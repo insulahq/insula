@@ -22,6 +22,9 @@ export function useMigrateTenantToWorker(tenantId: string) {
       qc.invalidateQueries({ queryKey: ['tenants', tenantId] });
       qc.invalidateQueries({ queryKey: ['tenants'] });
       qc.invalidateQueries({ queryKey: ['cluster-nodes'] });
+      // The pin moved: the placement view and its issue re-derive from it.
+      qc.invalidateQueries({ queryKey: ['tenant-placement', tenantId] });
+      qc.invalidateQueries({ queryKey: ['tenant-issues'] });
     },
   });
 }

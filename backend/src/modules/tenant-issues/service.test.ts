@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { listTenantIssues, summarise, type TenantIssue } from './service.js';
 
-function db(mailboxRows: unknown[], tenantRows: unknown[], failFirst = false) {
+function db(mailboxRows: unknown[], tenantRows: unknown[], failFirst = false, placementRows: unknown[] = []) {
   let call = 0;
   return {
     execute: vi.fn().mockImplementation(async () => {
@@ -10,7 +10,8 @@ function db(mailboxRows: unknown[], tenantRows: unknown[], failFirst = false) {
         if (failFirst) throw new Error('mailbox source exploded');
         return { rows: mailboxRows };
       }
-      return { rows: tenantRows };
+      // Sources run in declaration order: mailbox quota, tenant row, placement.
+      return { rows: call === 2 ? tenantRows : placementRows };
     }),
   } as never;
 }
@@ -55,6 +56,18 @@ describe('listTenantIssues', () => {
     ]));
     expect(issues.get('t1')!.map((i) => i.kind).sort())
       .toEqual(['bandwidth_capped', 'subscription_expiring']);
+  });
+
+  it('reports a tenant away from its primary node as a warning saying where it is and since when', async () => {
+    const issues = await listTenantIssues(db([], [], false, [{
+      tenant_id: 't1', name: 'Acme School', primary_node: 'node-a', actual_nodes: ['node-b'],
+      reasons: ['running on node-b', 'data on node-b'], misplaced_since: new Date('2026-10-02T05:10:00Z'),
+    }]));
+    expect(issues.get('t1')).toEqual([{
+      tenantId: 't1', kind: 'placement_misplaced', severity: 'warning', objectLabel: 'Acme School',
+      detail: 'Not on its primary node node-a: running on node-b, data on node-b',
+      actionPath: '/tenants/t1', since: '2026-10-02T05:10:00.000Z',
+    }]);
   });
 
   it('returns an empty map when the fleet is healthy', async () => {

@@ -27,6 +27,8 @@ export interface ActionPathInput {
  * `resourceType:'tenant'` + `resourceId:<tenantId>` on these rows.
  */
 const TENANT_SCOPED_ADMIN = new Set<string>([
+  'admin.tenant_storage_failover',
+  'admin.tenant_misplaced',
   'admin.tenant_bandwidth_warning',
   'admin.tenant_bandwidth_critical',
   'admin.tenant_resource_saturation_warning',
@@ -49,6 +51,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.slo_alert_resolved': '/monitoring',
   'admin.node_down': '/cluster/nodes',
   'admin.tenant_auto_repinned': '/tenants/list',
+  'admin.tenant_storage_failover': '/tenants/list',
+  'admin.tenant_misplaced': '/tenants/list',
   'admin.node_rebooting': '/cluster/nodes',
   'admin.node_startup_complete': '/cluster/nodes',
   'admin.node_joined': '/cluster/nodes',

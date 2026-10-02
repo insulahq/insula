@@ -24,6 +24,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **See where every tenant actually runs, and get told when it moves.** The Tenants table's
+  **Placement** column turns **red** and shows the node a tenant is actually on (with its primary
+  node underneath) when its workloads, attached volume or data are anywhere other than its primary
+  node, and the tenant's issues chip counts it. The tenant's **Placement** card shows where it runs
+  and keeps its data, and offers **Move back to <primary>** or **Make <current node> the primary
+  node** (each asks for confirmation), plus its recent storage failovers. Two new admin
+  notifications: **Tenant storage failover** (Longhorn lost every replica of a tenant volume,
+  salvaged and remounted it, and restarted the workloads — one notification per event, listing every
+  tenant it hit) and **Tenant not on its primary node** (after ten minutes away, once per episode).
+
 - **Refresh route DNS for many domains at once.** Admin → Tenants → Domains: select domains and
   choose **Refresh Route DNS** in the bulk bar to rewrite their ingress A/AAAA records from the
   current ingress addresses — the step needed after adding or removing an ingress node. Domains
@@ -60,6 +70,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never 0. The sizes are read with one storage-system query per page load.
 
 ### Fixed
+
+- **Tenants no longer drift off their node, and backups no longer move tenant data between nodes.**
+  Upgrading an app, changing its resources or redeploying it dropped the tenant's node pin from its
+  Deployment, so after a restart its pods could start on another node — and on a single-replica
+  volume Longhorn then copied the tenant's whole volume to that node. Every redeploy now keeps the
+  pin, and on upgrade the platform puts it back, one app at a time, on tenants that are still on
+  their primary node (tenants that already moved are left for you to decide in the Placement card;
+  `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
+  now run on the node that holds its data instead of wherever the scheduler put them, and nightly
+  mailbox backups run on the mail server's node, so their traffic stays on that node.
 
 - **Restoring a snapshot no longer leaves your applications showing "Stopped".** The status
   check that runs every 15 seconds read the restore's temporary scale-down as a stop, and once

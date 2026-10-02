@@ -25,6 +25,9 @@ import { success, paginated } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
+import type { TenantPlacementDetail } from '@insula/api-contracts';
+import { getPlacement, listPlacements, listStorageFailovers, type StoredPlacement } from '../tenant-placement/store.js';
+import { presentFailover, presentPlacement, presentPlacementSummary } from '../tenant-placement/present.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function tenantRoutes(app: FastifyInstance): Promise<void> {
@@ -317,6 +320,20 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   // 14 keys and neither of these was among them.
                   nodeName: { type: ['string', 'null'] },
                   storageTier: { type: 'string' },
+                  // Declared for the same reason as the two above: an
+                  // undeclared key is stripped, and the placement column would
+                  // silently never turn red.
+                  placement: {
+                    type: ['object', 'null'],
+                    properties: {
+                      status: { type: 'string' },
+                      primaryNode: { type: ['string', 'null'] },
+                      actualNodes: { type: 'array', items: { type: 'string' } },
+                      reasons: { type: 'array', items: { type: 'string' } },
+                      misplacedSince: { type: ['string', 'null'] },
+                      checkedAt: { type: 'string' },
+                    },
+                  },
                   createdAt: { type: 'string' },
                   updatedAt: { type: 'string' },
                 },
@@ -341,7 +358,17 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     const search = typeof query.search === 'string' ? query.search : undefined;
 
     const result = await service.listTenants(app.db, { ...paginationParams, search });
-    return paginated(result.data, result.pagination);
+    // Best-effort: the placement column is a hint on top of the list, and a
+    // failed read must cost the column, never the tenants table.
+    const placements = await listPlacements(app.db, result.data.map((t) => t.id)).catch((err) => {
+      request.log.warn({ err }, 'tenant list: placement read failed — rendering without it');
+      return new Map<string, StoredPlacement>();
+    });
+    const rows = result.data.map((t) => {
+      const p = placements.get(t.id);
+      return { ...t, placement: p ? presentPlacementSummary(p) : null };
+    });
+    return paginated(rows, result.pagination);
   });
 
   // GET /api/v1/tenants/:id
@@ -374,6 +401,28 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     }
     const placement = await service.getTenantStoragePlacement(app.db, id, k8s);
     return success(placement);
+  });
+
+  // GET /api/v1/tenants/:id/placement
+  //
+  // Where the tenant actually runs and keeps its data against its primary node,
+  // as last observed by the placement reconciler, plus its recent storage
+  // failovers (Longhorn salvages). Read by the Placement card. Served from the
+  // database — no cluster call on the request path.
+  app.get('/tenants/:id/placement', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    await service.getTenantById(app.db, id); // 404 for an unknown tenant
+    const [placement, failovers] = await Promise.all([
+      getPlacement(app.db, id),
+      listStorageFailovers(app.db, id, 10),
+    ]);
+    const body: TenantPlacementDetail = {
+      placement: placement ? presentPlacement(placement) : null,
+      failovers: failovers.map(presentFailover),
+    };
+    return success(body);
   });
 
   // PATCH /api/v1/tenants/:id

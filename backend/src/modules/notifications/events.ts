@@ -833,6 +833,43 @@ export async function notifyAdminNodeRemoved(
   await dispatchSafe(db, 'admin.node_removed', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminTenantPlacementPayload {
+  /** One tenant's name, or "N tenants". */
+  readonly summary: string;
+  /** One sentence per tenant: what happened, where it was, where it is. */
+  readonly details: string;
+  /** What to do about it. */
+  readonly guidance: string;
+}
+/**
+ * Longhorn salvaged one or more tenant volumes (every replica failed, the
+ * volume was remounted and the workloads restarted). One notification per
+ * reconciler pass, claimed by the insert of the event rows; `tenantId` only
+ * when it concerns exactly one tenant, so the link lands on that tenant.
+ */
+export async function notifyAdminTenantStorageFailover(
+  db: Database,
+  payload: AdminTenantPlacementPayload,
+  tenantId: string | undefined,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.tenant_storage_failover', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+/**
+ * One or more tenants have been away from their primary node for longer than
+ * the hysteresis window. Claimed per misplacement episode on
+ * `tenant_placement_state.notified_at`.
+ */
+export async function notifyAdminTenantMisplaced(
+  db: Database,
+  payload: AdminTenantPlacementPayload,
+  tenantId: string | undefined,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.tenant_misplaced', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
 export interface AdminNodeMemoryEventPayload {
   readonly nodeName: string;
   /** Human summary, e.g. "3 tenant pod(s) evicted" or "kernel SystemOOM (2 events)". */

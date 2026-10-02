@@ -2605,6 +2605,65 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   })(),
 
+  // ── Tenant placement: storage failover / not on its primary node ──
+  // One notification per reconciler pass, listing every tenant it concerns:
+  // a node-wide storage stall salvages many volumes at once, and one message
+  // per tenant would bury the one fact that matters (it was the node).
+  ...((): SeedTemplate[] => {
+    const placementVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'summary', type: 'string', required: true },
+      { name: 'details', type: 'string', required: true },
+      { name: 'guidance', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.tenant_storage_failover',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[STORAGE] Storage failover: {{summary}}',
+        bodyTemplate: emailMjml(
+          'Storage failover: {{summary}}',
+          'Longhorn lost every replica of the volume(s) below, salvaged them and restarted the '
+          + 'workloads. Each filesystem was shut down and remounted, and databases ran crash '
+          + 'recovery. {{details}} {{guidance}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_storage_failover',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[STORAGE] Storage failover: {{summary}}',
+        bodyTemplate: '{{details}} {{guidance}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_misplaced',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[PLACEMENT] Not on its primary node: {{summary}}',
+        bodyTemplate: emailMjml(
+          'Not on its primary node: {{summary}}',
+          '{{details}} {{guidance}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: placementVars,
+      },
+      {
+        categoryId: 'admin.tenant_misplaced',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[PLACEMENT] Not on its primary node: {{summary}}',
+        bodyTemplate: '{{details}} {{guidance}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: placementVars,
+      },
+    ];
+  })(),
+
   // ── admin.tenant_pod_oom (Phase 1d) ──
   ...((): SeedTemplate[] => {
     const oomVars: readonly NotificationTemplateVariable[] = [

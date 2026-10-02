@@ -129,6 +129,46 @@ async function tenantRowIssues(db: Database, horizonDays: number): Promise<Tenan
   return out;
 }
 
+interface PlacementRow extends Record<string, unknown> {
+  tenant_id: string;
+  name: string;
+  primary_node: string | null;
+  actual_nodes: string[] | null;
+  reasons: string[] | null;
+  misplaced_since: string | Date | null;
+}
+
+/**
+ * Tenants running or keeping data away from their primary node, as last
+ * observed by the placement reconciler (migration 0141). Admin-only, like
+ * every issue here — a tenant has no say over which node it is on.
+ *
+ * Warning, not critical: the tenant is serving. The tenants-table placement
+ * column turns red on its own; this puts the same fact in the status column
+ * and on the detail page's banner, with how long it has been true.
+ */
+async function placementIssues(db: Database): Promise<TenantIssue[]> {
+  const res = await db.execute<PlacementRow>(sql`
+    SELECT p.tenant_id, t.name, p.primary_node, p.actual_nodes, p.reasons, p.misplaced_since
+      FROM tenant_placement_state p
+      JOIN tenants t ON t.id = p.tenant_id
+     WHERE p.status = 'misplaced'
+  `);
+  return (res.rows ?? []).map((r) => {
+    const where = (r.actual_nodes ?? []).join(', ') || 'another node';
+    const why = (r.reasons ?? []).join(', ');
+    return {
+      tenantId: r.tenant_id,
+      kind: 'placement_misplaced',
+      severity: 'warning' as const,
+      objectLabel: r.name,
+      detail: `Not on its primary node ${r.primary_node ?? '—'}: ${why || `on ${where}`}`,
+      actionPath: `/tenants/${r.tenant_id}`,
+      since: r.misplaced_since ? new Date(r.misplaced_since).toISOString() : null,
+    };
+  });
+}
+
 export interface ListIssuesOptions {
   /** How far ahead a subscription expiry counts as an issue. */
   readonly expiryHorizonDays?: number;
@@ -149,6 +189,7 @@ export async function listTenantIssues(
   const sources: Array<[string, Promise<TenantIssue[]>]> = [
     ['mailbox_quota', mailboxQuotaIssues(db)],
     ['tenant_row', tenantRowIssues(db, horizon)],
+    ['placement', placementIssues(db)],
   ];
 
   const byTenant = new Map<string, TenantIssue[]>();

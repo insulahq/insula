@@ -3600,6 +3600,43 @@ export const tenantLifecycleTransitions = pgTable('tenant_lifecycle_transitions'
     .where(sql`state IN ('running', 'failed_blocking')`),
 ]);
 
+/**
+ * Migration 0141 — where a tenant actually runs and keeps its data, against its
+ * primary node (`tenants.node_name`). Rewritten every minute by
+ * tenant-placement/reconciler.ts; see the migration header for each status.
+ */
+export const tenantPlacementState = pgTable('tenant_placement_state', {
+  tenantId: varchar('tenant_id', { length: 36 }).primaryKey()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 16 }).notNull(),
+  primaryNode: varchar('primary_node', { length: 253 }),
+  storageTier: varchar('storage_tier', { length: 8 }).notNull().default('local'),
+  workloadNodes: text('workload_nodes').array().notNull().default([]),
+  attachedNodes: text('attached_nodes').array().notNull().default([]),
+  dataNodes: text('data_nodes').array().notNull().default([]),
+  actualNodes: text('actual_nodes').array().notNull().default([]),
+  reasons: text('reasons').array().notNull().default([]),
+  misplacedSince: timestamp('misplaced_since', { withTimezone: true }),
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Migration 0141 — one row per Longhorn salvage of a tenant volume. */
+export const tenantStorageFailovers = pgTable('tenant_storage_failovers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  volumeName: varchar('volume_name', { length: 253 }).notNull(),
+  pvcName: varchar('pvc_name', { length: 253 }),
+  remountRequestedAt: timestamp('remount_requested_at', { withTimezone: true }).notNull(),
+  nodesBefore: text('nodes_before').array().notNull().default([]),
+  nodesAfter: text('nodes_after').array().notNull().default([]),
+  detectedAt: timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('tenant_storage_failovers_event_unique').on(table.volumeName, table.remountRequestedAt),
+  index('tenant_storage_failovers_tenant_idx').on(table.tenantId, table.remountRequestedAt),
+]);
+
 export const tenantLifecycleHookRuns = pgTable('tenant_lifecycle_hook_runs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   transitionId: varchar('transition_id', { length: 36 })

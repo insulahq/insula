@@ -34,6 +34,7 @@ import { formatCurrency } from '@/lib/format-currency';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
 import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
+import PlacementStatusPanel from '@/components/tenants/PlacementStatusPanel';
 import { useEmailDomains, useMailboxes, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
 import type { BundleSummary } from '@insula/api-contracts';
@@ -3103,6 +3104,9 @@ function PlacementCard({ tenantId, tenant }: {
           Migrated — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
         </p>
       )}
+
+      {/* Where the tenant ACTUALLY is, against the pin chosen above. */}
+      <PlacementStatusPanel tenantId={tenantId} />
     </div>
   );
 }

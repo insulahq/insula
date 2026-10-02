@@ -487,6 +487,36 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.tenant_storage_failover',
+    cls: 'incident',
+    reportsOn: 'storage',
+    displayName: 'Tenant storage failover',
+    description: 'Longhorn lost every replica of a tenant volume (typically a storage stall on '
+      + 'its node), salvaged it and restarted the tenant\'s workloads, which shut down and '
+      + 'remounted the filesystem. Lists where the tenant ran before and after — the restart can '
+      + 'land on a node other than the tenant\'s primary one.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.tenant_misplaced',
+    cls: 'action',
+    reportsOn: 'storage',
+    displayName: 'Tenant not on its primary node',
+    description: 'A tenant\'s workloads or data have been running away from its primary node '
+      + '(the "primary data location" in its Placement card) for several minutes — after a storage '
+      + 'failover, a node outage or a pod that was scheduled elsewhere. Move it back, or make the '
+      + 'node it is on its primary, from the tenant\'s Placement card.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.node_removed',
     cls: 'record',
     reportsOn: null,
