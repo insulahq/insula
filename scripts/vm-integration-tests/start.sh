@@ -7,7 +7,10 @@
 # k3s node to report Ready. Prints the same coordinates run.sh prints, so a
 # resumed run is driven exactly like a fresh one.
 #
-#   start.sh <run-id>
+#   start.sh <run-id>                   wait for every k3s node Ready
+#   start.sh <run-id> --no-k3s-wait     VMs + services only (rebootstrap.sh: the
+#                                       platform is about to be wiped, and after a
+#                                       failed install there may be no k3s at all)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -17,7 +20,9 @@ source "$HERE/lib/driver.sh"
 # shellcheck source=lib/waitfor.sh
 source "$HERE/lib/waitfor.sh"
 
-RUN="${1:?usage: start.sh <run-id>}"
+RUN="${1:?usage: start.sh <run-id> [--no-k3s-wait]}"
+WAIT_K3S=1
+[[ "${2:-}" == "--no-k3s-wait" ]] && WAIT_K3S=0
 NET="insula-test-${RUN}"
 
 mapfile -t ALL < <(VIRSH list --all --name 2>/dev/null | grep "^vmt-${RUN}-" | sort)
@@ -89,7 +94,7 @@ for d in "${ordered[@]}"; do
 done
 
 S1="vmt-${RUN}-s1"
-if [[ -n "${IP[$S1]:-}" ]]; then
+if [[ "$WAIT_K3S" == "1" && -n "${IP[$S1]:-}" ]]; then
   wait_k3s_ready "${IP[$S1]}" 600 || { echo "k3s did not report every node Ready" >&2; exit 1; }
 fi
 

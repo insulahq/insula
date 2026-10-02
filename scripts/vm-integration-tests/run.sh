@@ -232,7 +232,9 @@ if [[ -n "$REUSE_RUN" ]]; then
   # The services VM and its containers already exist: power the run on and read
   # their coordinates from the state the original run saved.
   [[ -r "$STATE_FILE" ]] || { echo "ABORT: no saved state for run ${RUN} (${STATE_FILE}) — it predates reuse support; spawn a new run." >&2; exit 1; }
-  "$HERE/start.sh" "$RUN" >&2 || { echo "ABORT: could not start run ${RUN}" >&2; exit 1; }
+  # No k3s wait: the platform is wiped next, and a previous failed install may
+  # have left no k3s at all.
+  "$HERE/start.sh" "$RUN" --no-k3s-wait >&2 || { echo "ABORT: could not start run ${RUN}" >&2; exit 1; }
   # shellcheck source=/dev/null
   source "$STATE_FILE"
   export VMTEST_OS_ASSIGN VMTEST_OS_SEED VMTEST_REUSE=1
