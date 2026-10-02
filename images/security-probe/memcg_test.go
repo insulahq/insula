@@ -450,6 +450,34 @@ func TestContainerIDFromDir(t *testing.T) {
 	}
 }
 
+// A recorded OOM rise asks for an early publish — the backend will not judge
+// a kill until a snapshot newer than it exists. Plain reads do not.
+func TestOOMRiseSignalsAnEarlyPublish(t *testing.T) {
+	root, burst := fakeCgroupTree(t)
+	dir := addPod(t, burst, uidA, 0, 0, 0)
+	w, clk := newTestWitness(root)
+	w.rescan()
+	drainSignal(w.changed)
+	clk.advance(time.Second)
+	w.rescan()
+	select {
+	case <-w.changed:
+		t.Fatal("a read with no rise signalled a publish")
+	default:
+	}
+	writeEvents(t, dir, 1, 1, 1)
+	clk.advance(time.Second)
+	w.rescan()
+	select {
+	case <-w.changed:
+	default:
+		t.Fatal("an OOM rise did not signal a publish")
+	}
+	if got := w.snapshot().SnapshotAtMs; got != clk.now().UnixMilli() {
+		t.Fatalf("snapshotAtMs = %d, want the snapshot time %d", got, clk.now().UnixMilli())
+	}
+}
+
 // The backend parses this JSON; pin the field names it relies on.
 func TestSnapshotWireFormat(t *testing.T) {
 	root, burst := fakeCgroupTree(t)
@@ -462,7 +490,7 @@ func TestSnapshotWireFormat(t *testing.T) {
 	}
 	s := string(b)
 	for _, key := range []string{`"version":1`, `"available":true`, `"inotify":false`, `"startedAtMs":`,
-		`"rescannedAtMs":`, `"overflowsMs":[]`, `"pods":{"` + uidA + `":`, `"firstSeenMs":`, `"lastReadMs":`,
+		`"rescannedAtMs":`, `"snapshotAtMs":`, `"overflowsMs":[]`, `"pods":{"` + uidA + `":`, `"firstSeenMs":`, `"lastReadMs":`,
 		`"watched":false`, `"oomKill":1`, `"increases":[{"afterMs":0`} {
 		if !strings.Contains(s, key) {
 			t.Errorf("wire JSON lacks %s: %s", key, s)

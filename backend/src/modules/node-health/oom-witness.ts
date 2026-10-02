@@ -75,6 +75,8 @@ export const oomWitnessSchema = z.object({
   inotify: z.boolean(),
   startedAtMs: z.number(),
   rescannedAtMs: z.number(),
+  /** When the snapshot was taken; absent from the first witness build. */
+  snapshotAtMs: z.number().optional(),
   overflowsMs: z.array(z.number()),
   pods: z.record(z.string(), podSchema),
 });
@@ -82,6 +84,14 @@ export type OomWitness = z.infer<typeof oomWitnessSchema>;
 export type OomWitnessPod = z.infer<typeof podSchema>;
 
 export type KillCause = 'memory-limit' | 'node-oom' | 'oom' | 'unconfirmed' | 'not-oom';
+/**
+ * `pending`: the witness has not published a snapshot taken after this death,
+ * so it cannot speak to it yet — in either direction. Found on DEV: kills
+ * judged against a snapshot published 7 s BEFORE them were frozen as
+ * kubelet-only verdicts; and a watched pod killed after the snapshot would
+ * have read "watched, no rise" — not-oom — dropping a real OOM alert.
+ */
+export type KillVerdict = KillCause | 'pending';
 
 /**
  * A container's `finishedAt` is serialized to whole seconds, so the real exit
@@ -169,14 +179,27 @@ export function judgeKills(
   kills: ReadonlyArray<KillToJudge>,
   podUid: string,
   witness: OomWitness | undefined,
-): Map<string, KillCause> {
-  const out = new Map<string, KillCause>();
+): Map<string, KillVerdict> {
+  const out = new Map<string, KillVerdict>();
   const fallback = (k: KillToJudge): KillCause => (k.kubelet === 'explicit' ? 'oom' : 'unconfirmed');
-  const pod = witness?.available ? witness.pods[podUid] : undefined;
-  if (!witness || !pod) {
+  if (!witness || !witness.available) {
     for (const k of kills) out.set(k.key, fallback(k));
     return out;
   }
+  // Nothing about a death the snapshot predates — not even "this pod is not
+  // in it": a pod born and killed since the snapshot is not in it either.
+  const snapshotAt = witness.snapshotAtMs ?? witness.rescannedAtMs;
+  const judged: KillToJudge[] = [];
+  for (const k of kills) {
+    if (snapshotAt < k.finishedAt.getTime() + FINISHED_AT_RESOLUTION_MS + SKEW_MS) out.set(k.key, 'pending');
+    else judged.push(k);
+  }
+  const pod = witness.pods[podUid];
+  if (!pod) {
+    for (const k of judged) out.set(k.key, fallback(k));
+    return out;
+  }
+  kills = judged;
 
   type Increase = NonNullable<OomWitnessPod['increases']>[number];
   const killing = (pod.increases ?? []).filter((i) =>
@@ -261,8 +284,8 @@ export function judgeKill(
   podUid: string,
   witness: OomWitness | undefined,
   containerId?: string,
-): KillCause {
-  return judgeKills([{ key: 'k', kubelet, finishedAt, containerId }], podUid, witness).get('k') as KillCause;
+): KillVerdict {
+  return judgeKills([{ key: 'k', kubelet, finishedAt, containerId }], podUid, witness).get('k') as KillVerdict;
 }
 
 /**

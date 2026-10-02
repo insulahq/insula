@@ -77,6 +77,9 @@ const (
 	memcgMaxPods = 2000
 	// Overflow times kept — enough to cover the retention window in practice.
 	memcgMaxOverflows = 8
+	// After an OOM rise, wait this long before the early publish so a burst
+	// lands in one ConfigMap write.
+	memcgPublishSettle = 2 * time.Second
 )
 
 // containerIDRe matches a container's own cgroup inside a pod cgroup —
@@ -103,6 +106,10 @@ type MemcgWitnessWire struct {
 	Inotify       bool  `json:"inotify"`
 	StartedAtMs   int64 `json:"startedAtMs"`
 	RescannedAtMs int64 `json:"rescannedAtMs"`
+	// SnapshotAtMs: when this snapshot was taken. Everything the witness read
+	// up to here is in it — and nothing after. The backend will not judge a
+	// kill this snapshot predates: "no rise recorded" means nothing then.
+	SnapshotAtMs int64 `json:"snapshotAtMs"`
 	// OverflowsMs: when the inotify queue overflowed (events were lost).
 	OverflowsMs []int64                 `json:"overflowsMs"`
 	Pods        map[string]PodMemcgWire `json:"pods"`
@@ -181,6 +188,9 @@ type memcgWitness struct {
 
 	pods      map[string]*podMemcg // by pod UID
 	overflows []time.Time
+	// changed is signalled (never blocking) when an OOM rise is recorded, so
+	// the probe can publish it at once instead of on its next minute tick.
+	changed chan struct{}
 
 	// inotify. notify is nil when inotify could not be set up — the witness
 	// then runs on rescans alone. fd is the same descriptor for the watch
@@ -201,6 +211,7 @@ func newMemcgWitness(hostRoot string) *memcgWitness {
 		cgroupFS:  filepath.Join(hostRoot, "sys", "fs", "cgroup"),
 		now:       time.Now,
 		fd:        -1,
+		changed:   make(chan struct{}, 1),
 		pods:      map[string]*podMemcg{},
 		wdPod:     map[int32]string{},
 		wdScope:   map[int32]scopeRef{},
@@ -492,9 +503,17 @@ func (w *memcgWitness) readPodLocked(uid string, p *podMemcg, now time.Time) {
 		}
 		slog.Info("memcg witness: OOM counters rose", "podUid", uid,
 			"oom", c.oom, "oomKill", c.oomKill, "oomGroupKill", c.oomGroupKill, "containers", ids)
+		w.signalChanged()
 	}
 	p.counters = c
 	p.lastRead = now
+}
+
+func (w *memcgWitness) signalChanged() {
+	select {
+	case w.changed <- struct{}{}:
+	default:
+	}
 }
 
 func dirExists(dir string) bool {
@@ -564,6 +583,7 @@ func (w *memcgWitness) snapshot() MemcgWitnessWire {
 		Inotify:       w.notify != nil,
 		StartedAtMs:   w.started.UnixMilli(),
 		RescannedAtMs: unixMilliOrZero(w.rescanned),
+		SnapshotAtMs:  w.now().UnixMilli(),
 		OverflowsMs:   make([]int64, 0, len(w.overflows)),
 		Pods:          make(map[string]PodMemcgWire, len(w.pods)),
 	}

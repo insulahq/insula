@@ -534,6 +534,15 @@ stored as `node_memory_events.cause`:
 | `unconfirmed` | exit 137, no usable evidence either way | SIGKILLed, cause unconfirmed |
 | `not-oom` | the witness saw across the exit and nothing moved | **not recorded, not notified** |
 
+A death is judged only against a witness snapshot taken **after** it
+(`snapshotAtMs`). The probe republishes within ~2 s of an OOM rise and at least
+every minute; until a covering snapshot is published the kill is held — not
+recorded, because the first record is final — and a witness that never catches
+up (probe down) gets 10 minutes before the kill is recorded on the kubelet's
+word. Found on DEV: judging against the previous snapshot froze three kills as
+kubelet-only verdicts, and for a pod the witness was already watching it would
+have read "watched, no rise" — `not-oom` — and dropped a real OOM alert.
+
 `not-oom` is only ever concluded when the witness could have seen a kill: the
 pod's `memory.events` was watched live with no inotify overflow near the exit,
 or a read landed after the exit, or the counters were still zero when the pod

@@ -34,6 +34,37 @@ describe('judgeKill — no usable evidence falls back to the kubelet', () => {
   });
 });
 
+// Found on DEV: the reconciler judged three kills against a snapshot the
+// probe had published 7 s BEFORE them. The witness cannot speak to a death
+// its snapshot predates — in either direction.
+describe('judgeKill — a snapshot older than the death', () => {
+  const stale = { snapshotAtMs: T - 7_000, rescannedAtMs: T - 20_000 };
+
+  it('a watched pod OOM-killed after the snapshot is pending, NOT "not-oom"', () => {
+    // "watched, no rise recorded" in a snapshot from before the kill would
+    // have dropped a real OOM alert.
+    expect(judgeKill('inferred', new Date(T), UID, witness(pod(), stale))).toBe('pending');
+    expect(judgeKill('explicit', new Date(T), UID, witness(pod(), stale))).toBe('pending');
+  });
+
+  it('a pod born and killed since the snapshot is pending, not "unknown pod"', () => {
+    expect(judgeKill('inferred', new Date(T), UID, witness(undefined, stale))).toBe('pending');
+  });
+
+  it('the snapshot must clear the 1 s resolution of finishedAt', () => {
+    expect(judgeKill('inferred', new Date(T), UID, witness(pod(), { snapshotAtMs: T + 900 }))).toBe('pending');
+    expect(judgeKill('inferred', new Date(T), UID, witness(pod(), { snapshotAtMs: T + 5_000 }))).toBe('not-oom');
+  });
+
+  it('an older probe without snapshotAtMs is timed by its last rescan', () => {
+    expect(judgeKill('inferred', new Date(T), UID, witness(pod(), { rescannedAtMs: T - 1_000 }))).toBe('pending');
+  });
+
+  it('an unavailable witness is never waited for', () => {
+    expect(judgeKill('inferred', new Date(T), UID, witness(pod(), { ...stale, available: false }))).toBe('unconfirmed');
+  });
+});
+
 describe('judgeKill — a kill bracketing the exit', () => {
   it('oom and oom_kill both rose: the pod hit its own limit', () => {
     // The production tenant nginx kill: pod slice memory.events oom 1,

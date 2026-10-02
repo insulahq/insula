@@ -435,6 +435,18 @@ describe('collectOomKilledContainers — kernel witness', () => {
     expect(out.map((e) => [e.containerName, e.cause])).toEqual([['app', 'memory-limit']]);
   });
 
+  it('waits for a witness snapshot that covers the death, then falls back after 10 min', () => {
+    const staleWitness = new Map([['worker', {
+      ...witness({ 'pod-uid-1': killedAt(1) }).get('worker')!, snapshotAtMs: T - 7_000, rescannedAtMs: T - 20_000,
+    }]]);
+    const pod = [oomPod({ reason: 'Error', exitCode: 137, finishedAt: FINISHED })];
+    // Two minutes after the death: no record — the first record is final.
+    expect(collectOomKilledContainers(pod, new Date(T + 120_000), new Map(), staleWitness)).toEqual([]);
+    // A witness that never catches up must not swallow the kill for ever.
+    const [late] = collectOomKilledContainers(pod, new Date(T + 11 * 60_000), new Map(), staleWitness);
+    expect(late?.cause).toBe('unconfirmed');
+  });
+
   it("uses the witness of the pod's own node only", () => {
     const [e] = collectOomKilledContainers([oomPod({ node: 'other-node', reason: 'Error', exitCode: 137, finishedAt: FINISHED })],
       NOW, new Map(), witness({ 'pod-uid-1': killedAt(1) }));

@@ -26,6 +26,15 @@ import { notifyMemoryEvents } from './memory-event-notify.js';
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
 
 /**
+ * How long a kill waits for a witness snapshot that covers it. The probe
+ * publishes within seconds of an OOM and at least every minute, so a live
+ * witness covers a kill by the next reconcile tick; this only bounds a dead
+ * or stalled one — then the kill is recorded on the kubelet's word rather
+ * than never.
+ */
+const EVIDENCE_WAIT_MS = 10 * 60 * 1000;
+
+/**
  * Tenant vs platform is decided by `lib/namespace-tier.ts` — see there for why
  * this is a prefix rule and not the allowlist it used to be. In short: the old
  * list named 9 of production's 27 namespaces and reported the other eleven
@@ -290,7 +299,16 @@ export function collectOomKilledContainers(
     for (const c of candidates) {
       // One record per container status.
       if (recorded.has(c.status)) continue;
-      const cause = causes.get(c.key) ?? (c.oomKind === 'explicit' ? 'oom' : 'unconfirmed');
+      const fallback: KillCause = c.oomKind === 'explicit' ? 'oom' : 'unconfirmed';
+      let verdict = causes.get(c.key) ?? fallback;
+      if (verdict === 'pending') {
+        // The witness has not published past this death yet. Recording now
+        // would freeze a verdict without its evidence (the dedupe key makes
+        // the first record final) — so wait for the next tick.
+        if (now.getTime() - c.finished.getTime() < EVIDENCE_WAIT_MS) continue;
+        verdict = fallback;
+      }
+      const cause = verdict;
       // The kernel showed this SIGKILL was not memory. Not a memory event.
       if (cause === 'not-oom') continue;
       const kernelConfirmed = cause === 'memory-limit' || cause === 'node-oom';
