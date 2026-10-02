@@ -27,7 +27,7 @@
 
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { mailMigrationInFlight } from './active-node.js';
+import { mailMigrationInFlight, resolveActiveMailNode } from './active-node.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -616,12 +616,40 @@ export async function ensureMailStackPlacementApplied(
     }
   }
 
-  const activeNode = row?.mailActiveNode ?? null;
-  if (!activeNode) {
+  // A migration (operator move or DR failover) owns the Deployment pin and its
+  // restore annotation until it ends: between creating the target PVC and
+  // scaling up there is no pod, and re-applying affinity here (allowRestore
+  // false) would strip the restore stamp the migration just set — a routine
+  // platform-api restart during a migration would make it fresh-start. Skip;
+  // the migration records the outcome itself, and the next start reconciles.
+  const inFlight = await mailMigrationInFlight(db);
+  if (inFlight) {
     opts.logger?.warn?.(
-      'ensureMailStackPlacementApplied: mailActiveNode not set — skipping affinity reconcile (placement reconciles on first migration)',
+      `ensureMailStackPlacementApplied: mail migration ${inFlight} in flight — leaving the stack placement to it`,
     );
     return;
+  }
+
+  // Pin to where the stack IS — the live pod, else the node its volume is
+  // bound to, else the stored column — never to a stored value a migration
+  // abandoned mid-run left behind: that pinned Stalwart to a node its volume
+  // is not on (Pending, mail down) on the first platform-api start after a
+  // DR failover whose state machine was killed.
+  const { node: activeNode, source } = await resolveActiveMailNode(db, core, {
+    persist: true,
+    stored: (row?.mailActiveNode ?? null) as string | null,
+    logger: { warn: (msg: string) => opts.logger?.warn?.(msg) },
+  });
+  if (!activeNode) {
+    opts.logger?.warn?.(
+      'ensureMailStackPlacementApplied: no active mail node (no Stalwart pod, no bound mail volume, nothing stored) — skipping affinity reconcile',
+    );
+    return;
+  }
+  if (source !== 'settings' && activeNode !== row?.mailActiveNode) {
+    opts.logger?.warn?.(
+      `ensureMailStackPlacementApplied: stored active node ${row?.mailActiveNode ?? '(none)'} is stale — mail is on ${activeNode} (${source}); pinning there`,
+    );
   }
 
   const { applyDeploymentAffinity } = await import('./migration.js');

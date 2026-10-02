@@ -169,6 +169,26 @@ Active node's kubelet dies, k8s reports `Ready=False/Unknown` within
 Total time-to-recovery on a 13 MB working set: ~2-3 minutes from node
 death to Stalwart Ready.
 
+> **When the dead node also held the database primary** (HA mode, CNPG 3
+> instances), CNPG promotes a replica while the mail failover is running —
+> about a minute of failed queries. The state machine's progress and outcome
+> writes retry through that (`withDbRetry`, ~2 min budget). Before v2026.10.3 a
+> single failed progress write abandoned the failover: mail kept running on the
+> standby, but the run stayed `running`, `mailDrState` stayed `failing-over`,
+> and `mailActiveNode` still named the dead node — the next platform-api start
+> re-pinned Stalwart there (Pending: its volume is on the standby). Now:
+> - the active node is resolved live pod → bound mail volume → stored column
+>   (`resolveActiveMailNode`) by the startup/placement reconcile and the DR
+>   watcher, so mail is never pinned away from its data;
+> - a `failing-over` state with no run in flight (and the last run ended over
+>   60 s ago) is released to `degraded`, so the watcher decides again instead of
+>   staying stuck until someone edits `system_settings`.
+>
+> Recovering a cluster still on an older release from that state: set
+> `mail_active_node` to the node the `mail-stack-data` PV is bound to and
+> `mail_dr_state = 'failed-over'`, then delete one platform-api pod (its startup
+> reconcile re-pins Stalwart); fail back as usual afterwards.
+
 > **Operator-triggered failover no longer stalls on a dead source.**
 > `startMailMigration` (the path behind `/admin/mail/failover`, `/failback`
 > and `/migrate`) used to take a pre-migration snapshot unconditionally. With

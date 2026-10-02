@@ -38,6 +38,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql, isNotNull, count } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
@@ -550,11 +551,13 @@ export async function triggerRestoreBasedFailover(
     } as MigrationDeps, undefined, { skipFreshSnapshot: true });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await db.execute(sql`
+    // Retried: if this write is lost the run stays 'running', which blocks
+    // every later failover attempt until a platform-api restart reaps it.
+    await withDbRetry(() => db.execute(sql`
       UPDATE mail_migration_runs
       SET state = 'failed', error_message = ${errMsg}, finished_at = now()
       WHERE id = ${runId}
-    `).catch(() => { /* best-effort */ });
+    `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
     throw err;
   }
 
@@ -562,9 +565,9 @@ export async function triggerRestoreBasedFailover(
   // path that intermediate failures use. Without this check, a
   // PVC-delete timeout silently returns from the state machine
   // and execution falls through to the success-path stamp below.
-  const stateRows = await db.execute(sql`
+  const stateRows = await withDbRetry(() => db.execute(sql`
     SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
-  `) as { rows?: Array<{ state: string; error_message: string | null }> };
+  `)) as { rows?: Array<{ state: string; error_message: string | null }> };
   const stateRow = stateRows.rows?.[0];
   if (stateRow && stateRow.state === 'failed') {
     throw new Error(
@@ -573,9 +576,9 @@ export async function triggerRestoreBasedFailover(
   }
 
   // Only reached on success — stamp the new active node + state.
-  await db.update(systemSettings)
+  await withDbRetry(() => db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
-    .where(eq(systemSettings.id, SETTINGS_ID));
+    .where(eq(systemSettings.id, SETTINGS_ID)));
 }
 
 // ── State machine internals ───────────────────────────────────────────────────
@@ -690,11 +693,14 @@ async function setStep(
     throw new MigrationCancelledError(step);
   }
 
-  await db.execute(sql`
+  // Retried across a short DB outage: a node loss that also takes the CNPG
+  // primary fails this UPDATE during the promotion, and one failed progress
+  // write used to abandon a failover that was already moving mail.
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
     SET current_step = ${step}, state = ${state}
     WHERE id = ${runId}
-  `);
+  `));
 
   // Task-center progress: every state-machine step also
   // writes the chip's progress so the operator sees live state in the
@@ -765,11 +771,11 @@ async function failRun(
   message: string,
   taskId?: string | null,
 ): Promise<void> {
-  await db.execute(sql`
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'failed', error_message = ${message}, finished_at = now()
     WHERE id = ${runId}
-  `);
+  `));
   if (taskId) {
     try {
       const { finish: finishTask } = await import('../tasks/service.js');
@@ -1586,9 +1592,9 @@ async function runMigrationStateMachine(
   // Step 8: Update DB → success. An availability cutover (dataLossCutover)
   // succeeded on INCOMPLETE data, so it stays 'degraded' (with the data-loss
   // alert already fired) rather than 'healthy' — the operator must still see it.
-  await db.update(systemSettings)
+  await withDbRetry(() => db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: dataLossCutover ? 'degraded' : 'healthy' })
-    .where(eq(systemSettings.id, SETTINGS_ID));
+    .where(eq(systemSettings.id, SETTINGS_ID)));
 
   // Step 8b: re-reconcile port-exposure for the NEW active node. In
   // thisNodeOnly mode the stalwart-mail Service.externalIPs must follow
@@ -1827,11 +1833,11 @@ async function runMigrationStateMachine(
     }
   }
 
-  await db.execute(sql`
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
     SET state = 'done', current_step = 'complete', finished_at = now()
     WHERE id = ${runId}
-  `);
+  `));
 
   // Task-center finalisation (success path).
   if (taskId) {

@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// mailMigrationInFlight reads mail_migration_runs; these DB fakes have no
+// execute(). Default: nothing in flight (tests that need one override it).
+const migrationInFlight = vi.fn(async (): Promise<string | null> => null);
+vi.mock('./active-node.js', async (orig) => ({
+  ...(await orig<typeof import('./active-node.js')>()),
+  mailMigrationInFlight: () => migrationInFlight(),
+}));
+
+
 /**
  * placement.ts unit tests — covers the streamline self-heal:
  * `getMailPlacement` reads the live Stalwart pod's nodeName and
@@ -209,11 +218,14 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
   // to empty (most self-heal tests infer primary from the pod, not a
   // node list); the election tests override it.
   const mockSelfHealListNode = vi.fn(async () => ({ items: [] as unknown[] }));
+  // The mail volume's node (resolveActiveMailNode). Default: no PVC (404).
+  const mockSelfHealReadPvc = vi.fn(async (): Promise<unknown> => { throw Object.assign(new Error('nf'), { code: 404 }); });
 
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
     mockSelfHealListNode.mockResolvedValue({ items: [] });
+    mockSelfHealReadPvc.mockImplementation(async () => { throw Object.assign(new Error('nf'), { code: 404 }); });
     // Re-mock k8s client to expose AppsV1Api + BatchV1Api for this
     // describe block (the file-level mock only handles CoreV1Api).
     vi.doMock('@kubernetes/client-node', () => ({
@@ -227,6 +239,7 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
               listNode: mockSelfHealListNode,
               listNamespacedPod: mockListNamespacedPod,
               patchNode: mockPatchNode,
+              readNamespacedPersistentVolumeClaim: mockSelfHealReadPvc,
             };
           }
           if (name === 'AppsV1Api') {
@@ -245,6 +258,41 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
       AppsV1Api: { name: 'AppsV1Api' },
       BatchV1Api: { name: 'BatchV1Api' },
     }));
+  });
+
+  // DR failover abandoned mid-run (state machine killed): mail_active_node
+  // still names the dead source, the volume (and data) is on the standby, no
+  // Stalwart pod is Running. The startup reconcile pinned Stalwart back to the
+  // source — Pending forever ("didn't match PersistentVolume's node affinity").
+  // Between the migration creating the target PVC and scaling up there is no
+  // pod; re-applying affinity (allowRestore=false) would strip the restore
+  // stamp the migration just set and make the new pod fresh-start.
+  it('leaves the stack alone while a mail migration is in flight', async () => {
+    migrationInFlight.mockResolvedValueOnce('run-7');
+    mockListNamespacedPod.mockResolvedValue({ items: [] });
+    mockSelfHealReadPvc.mockResolvedValue({ metadata: { annotations: { 'volume.kubernetes.io/selected-node': 'target' } }, spec: {} });
+    const { db } = buildDbWithRow({ mailPrimaryNode: 'source', mailSecondaryNode: 'target', mailTertiaryNode: null, mailActiveNode: 'source' });
+    const warn = vi.fn();
+    const { ensureMailStackPlacementApplied } = await import('./placement.js');
+    await ensureMailStackPlacementApplied(db, { kubeconfigPath: undefined, logger: { warn } });
+    expect(mockPatchDeployment).not.toHaveBeenCalled();
+    expect(mockPatchNode).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('run-7'));
+  });
+
+  it('pins to the node the mail volume is bound to, not a stale stored active node', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [] });
+    mockSelfHealReadPvc.mockResolvedValue({ metadata: { annotations: { 'volume.kubernetes.io/selected-node': 'standby' } }, spec: {} });
+    const { db, writes } = buildDbWithRow({
+      mailPrimaryNode: 'source', mailSecondaryNode: 'standby', mailTertiaryNode: null, mailActiveNode: 'source',
+    });
+    const { ensureMailStackPlacementApplied } = await import('./placement.js');
+    await ensureMailStackPlacementApplied(db, { kubeconfigPath: undefined });
+    const pinned = JSON.stringify(mockPatchDeployment.mock.calls);
+    expect(pinned).toContain('"standby"');
+    expect(pinned).not.toContain('"source"');
+    // A PVC-derived answer is a guess about the future, not a settled fact: not recorded.
+    expect(writes.find((w) => 'mailActiveNode' in w.patch)).toBeUndefined();
   });
 
   it('backfills mail_primary_node from live Stalwart pod nodeName when DB is NULL', async () => {
