@@ -137,7 +137,19 @@ if [ -z "$BASTION_NODE" ] || [ "$BASTION_NODE" = "$ACTIVE" ]; then
 fi
 BASTION="root@$(node_addr "$BASTION_NODE")"; ACTIVE_ADDR="root@$(node_addr "$ACTIVE")"
 kc(){ ssh $SSH_OPTS "$BASTION" "kubectl $*"; }
-psql1(){ kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null | head -1 | tr -d ' '; }
+# Reads go to whichever system-db instance answers — the primary first, then a
+# replica (all psql1 queries are SELECTs). `items[0]` was the instance on the
+# node this suite stops: every read came back empty and a launched failover
+# read as "never launched". Stopping k3s leaves the primary label on that node.
+psql1(){
+  local pod out
+  for pod in $(kc "get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{range .items[*]}{.metadata.labels.cnpg\\.io/instanceRole}={.metadata.name} {end}'" 2>/dev/null \
+                 | tr ' ' '\n' | grep . | sort | cut -d= -f2); do
+    out=$(kc "exec --request-timeout=20s -n platform $pod -c postgres -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null) \
+      && { printf '%s\n' "$out" | head -1 | tr -d ' '; return 0; }
+  done
+  return 1
+}
 # HA means ANY node loss must be recoverable — including a node hosting
 # platform-api / system-db — so the standby is any node != active (override via
 # STANDBY_NODE). PAPI/DB nodes are surfaced only as diagnostics.
@@ -250,7 +262,7 @@ hdr "SETUP: standby + placement + probe mailbox"
 # Best-effort pre-flight sweep of leftover probe tenants from CRASHED prior runs
 # (the unique per-run DOMAIN already prevents collisions; this just stops orphan
 # tenants — and their retrying Stalwart-Domain destroys — from accumulating).
-for _t in $(kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM tenants WHERE name LIKE 'itest-drdp%';\"" 2>/dev/null | tr -d ' '); do
+for _t in $(kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM tenants WHERE name LIKE 'itest-drdp%';\"" 2>/dev/null | tr -d ' '); do
   [ -n "$_t" ] && AH -X DELETE "$API/tenants/$_t" -o /dev/null 2>/dev/null || true
 done
 kc "label node $STANDBY insula.host/mail-standby=true --overwrite" >/dev/null

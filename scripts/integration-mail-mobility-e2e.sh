@@ -74,7 +74,7 @@ fail_phase() { echo "PHASE_FAIL:$1:$2"; }
 pass_phase() { echo "PHASE_PASS:$1:$2"; }
 
 # Mint admin JWT once
-PGPOD=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
+PGPOD=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
 JWT_SECRET=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
 ADMIN_ID=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
 APIPOD=$(kubectl get pod -n platform -l app=platform-api -o jsonpath='{.items[0].metadata.name}')
