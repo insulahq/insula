@@ -105,7 +105,9 @@ def classify_kernel_line(line: str) -> str | None:
     return None
 
 
-_K3S_EXIT = re.compile(r'k3s(?:-agent)?\.service: (Main process exited, code=(?!exited, status=0)|Failed with result)')
+# One line per exit: systemd also logs "Failed with result" for the same exit,
+# so matching both would count every exit twice.
+_K3S_EXIT = re.compile(r'k3s(?:-agent)?\.service: Main process exited, code=(?!exited, status=0/)')
 
 
 def is_k3s_exit(line: str) -> bool:
@@ -438,7 +440,8 @@ def selftest() -> int:
         (classify_kernel_line('kernel: eth0: link up'), None),
         (is_k3s_exit('systemd[1]: k3s.service: Main process exited, code=exited, status=1/FAILURE'), True),
         (is_k3s_exit('systemd[1]: k3s.service: Main process exited, code=exited, status=0/SUCCESS'), False),
-        (is_k3s_exit('systemd[1]: k3s.service: Failed with result \'exit-code\'.'), True),
+        (is_k3s_exit('systemd[1]: k3s.service: Failed with result \'exit-code\'.'), False),
+        (is_k3s_exit('systemd[1]: k3s.service: Main process exited, code=killed, status=9/KILL'), True),
         (cpu_pcts([0] * 8, [10, 0, 10, 70, 5, 0, 0, 5]), (5.0, 5.0)),
         (psi_avg60('some avg10=0.10 avg60=0.20 avg300=0.30 total=1\nfull avg10=0.01 avg60=0.02 avg300=0.03 total=1', 'full'), 0.02),
         (vmstat_fields('balloon_inflate 2621440\nballoon_deflate 7\nnr_free_pages 1', ('balloon_inflate', 'balloon_deflate')),

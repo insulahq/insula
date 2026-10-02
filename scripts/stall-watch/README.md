@@ -49,6 +49,10 @@ ext4 errors), `balloon_out_of_puff`, `k3s_exits`, `longhorn_rw_timeouts`
 
 ## Reading the evidence
 
+- Only the probe columns (`fsync_*`, `frozen*`) are evidence about **this node's**
+  own disk and vCPU. etcd is one cluster: when one member's disk stalls, every
+  member logs slow applies, so `etcd_slow_1s` on a healthy node mostly reflects
+  its peer.
 - An `fsync` event **with** a `frozen` event at the same time: the vCPU stopped
   being scheduled — the hypervisor, not the disk alone.
 - `fsync` **without** `frozen`: the guest ran, its disk did not answer — host
