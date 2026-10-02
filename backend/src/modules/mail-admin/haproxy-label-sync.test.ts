@@ -5,13 +5,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { deriveSpy, inFlightSpy } = vi.hoisted(() => ({
-  deriveSpy: vi.fn(async (): Promise<string | null> => null),
+const { resolveSpy, inFlightSpy } = vi.hoisted(() => ({
+  resolveSpy: vi.fn(),
   inFlightSpy: vi.fn(() => false),
 }));
 vi.mock('./port-exposure.js', () => ({
-  deriveActiveNodeFromMailPvc: deriveSpy,
   portExposureApplyInFlight: inFlightSpy,
+}));
+// The active node comes from the shared resolver (active-node.ts, tested on its
+// own); here it answers with the stored value unless a test says otherwise.
+vi.mock('./active-node.js', () => ({
+  resolveActiveMailNode: resolveSpy,
 }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -44,6 +48,8 @@ interface Settings {
 }
 
 function dbStub(settings: Settings, runningTaskKinds: string[] = [], inFlightMigrationIds: string[] = []) {
+  const stored = settings.activeNode ?? null;
+  resolveSpy.mockResolvedValue({ node: stored, source: stored ? 'settings' : null });
   const taskQueries = vi.fn();
   const rawQueries: SQL[] = [];
   const db = {
@@ -81,7 +87,7 @@ const patchedLabels = (core: ReturnType<typeof coreStub>) => core.patchNode.mock
   .map((c) => [c[0].name, c[0].body.metadata.labels[MAIL_HAPROXY_LABEL_KEY]]);
 
 beforeEach(() => {
-  deriveSpy.mockReset().mockResolvedValue(null);
+  resolveSpy.mockReset();
   inFlightSpy.mockReset().mockReturnValue(false);
   __resetHaproxyLabelSyncLogForTest();
 });
@@ -124,12 +130,16 @@ describe('syncMailHaproxyLabels — allServerNodes', () => {
     expect(taskQueries).not.toHaveBeenCalled();
   });
 
-  it('derives the active node from the mail PVC when the DB has none', async () => {
-    deriveSpy.mockResolvedValue('sv2');
+  it('takes the active node from the shared resolver when the DB has none (live pod / mail PVC)', async () => {
     const { db } = dbStub({ mode: 'allServerNodes', activeNode: null });
+    resolveSpy.mockResolvedValue({ node: 'sv2', source: 'pod' });
     const core = coreStub();
     await syncMailHaproxyLabels(db, core as never, [server('sv1'), server('sv2'), server('sv3')]);
     expect(patchedLabels(core)).toEqual([['sv1', 'true'], ['sv3', 'true']]);
+    // Read-only, and limited to this cluster's nodes.
+    const [, , opts] = resolveSpy.mock.calls[0];
+    expect(opts.persist).toBeFalsy();
+    expect([...opts.knownNodes].sort()).toEqual(['sv1', 'sv2', 'sv3']);
   });
 });
 
@@ -180,9 +190,9 @@ describe('syncMailHaproxyLabels — stands down', () => {
     expect(core.patchNode).not.toHaveBeenCalled();
   });
 
-  it('when the derived active node is not a cluster node', async () => {
-    deriveSpy.mockResolvedValue('gone');
+  it('when the resolver finds no active node among this cluster\'s nodes', async () => {
     const { db } = dbStub({ mode: 'allServerNodes', activeNode: null });
+    resolveSpy.mockResolvedValue({ node: null, source: null });
     const core = coreStub();
     expect((await syncMailHaproxyLabels(db, core as never, nodes)).outcome).toBe('skipped');
     expect(core.patchNode).not.toHaveBeenCalled();

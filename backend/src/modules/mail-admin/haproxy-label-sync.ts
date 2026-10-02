@@ -44,7 +44,8 @@ import {
   type NodeRef,
   type PlacementSettings,
 } from './port-exposure-modes.js';
-import { deriveActiveNodeFromMailPvc, portExposureApplyInFlight } from './port-exposure.js';
+import { portExposureApplyInFlight } from './port-exposure.js';
+import { resolveActiveMailNode } from './active-node.js';
 
 /** Task kinds whose own orchestration owns the labels while they run. */
 export const LABEL_OWNING_TASK_KINDS = ['mail.port-exposure', 'mail.migration'] as const;
@@ -60,7 +61,8 @@ export type HaproxyLabelSync =
   | { readonly outcome: 'changed'; readonly added: readonly string[]; readonly removed: readonly string[] }
   | { readonly outcome: 'skipped'; readonly reason: string };
 
-type LabelSyncCore = Pick<CoreV1Api, 'patchNode' | 'readNamespacedPersistentVolumeClaim' | 'readPersistentVolume'>;
+type LabelSyncCore = Pick<CoreV1Api,
+  'patchNode' | 'listNamespacedPod' | 'readNamespacedPersistentVolumeClaim' | 'readPersistentVolume'>;
 
 /** Which nodes gain and which lose the label to reach `desired`. Pure. */
 export function planHaproxyLabelChanges(
@@ -118,14 +120,15 @@ export async function syncMailHaproxyLabels(
   const { mode, settings: stored } = await readModeAndPlacement(db);
   if (mode === 'activeNodeOnly') return skipped('port exposure is activeNodeOnly — no haproxy');
 
-  let settings = stored;
-  if (!settings.activeNode && nodes.length > 1) {
-    const derived = await deriveActiveNodeFromMailPvc(core);
-    if (!derived || !nodes.some((n) => n.metadata.name === derived)) {
-      return skipped('the active mail node is unknown — haproxy could land on the Stalwart node');
-    }
-    settings = { ...settings, activeNode: derived };
+  // Same answer the mode switch uses (active-node.ts). Read-only here: this
+  // runs every minute on every replica.
+  const active = await resolveActiveMailNode(db, core, {
+    knownNodes: new Set(nodes.map((n) => n.metadata.name)),
+  });
+  if (!active.node && nodes.length > 1) {
+    return skipped('the active mail node is unknown — haproxy could land on the Stalwart node');
   }
+  const settings = { ...stored, activeNode: active.node };
   const invalid = validateModeSwitch(mode, settings);
   if (invalid) return skipped(invalid);
 

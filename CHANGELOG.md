@@ -134,6 +134,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   re-applied the mode. The platform now adjusts which nodes run haproxy within a minute of the node
   set or the mail-node assignment changing, and stops it on nodes that left the set. It waits while
   a mode flip or mail migration is running.
+- **Switching mail to "All assigned mail nodes" no longer fails with "no active mail node is set"
+  while mail is running.** A cluster installed on several nodes never recorded which node serves
+  mail until someone opened Email → Operations, so the switch was refused through the API and
+  automation. Every mail placement and port-exposure decision now finds the active mail node the
+  same way — the node Stalwart is running on, else the recorded node, else the node its mailbox
+  volume lives on — and records it.
 - **New notifications: "Node joined the cluster" and "Node removed from the cluster"** — once per
   event, naming the node, its role and addresses.
 - **Mail reachability checks test only the nodes that actually serve mail.** A non-mail node (for
