@@ -149,27 +149,32 @@ if [ -z "$NEW_RUN" ]; then
   exit 1
 fi
 
-hdr "STEP 3: wait for failover migration to complete"
-END=$(( $(date +%s) + 540 ))
+hdr "STEP 3: wait for the failover to complete (following dr-watcher retries)"
+# A failed attempt is not the end: the dr-watcher hands back to 'degraded' and
+# launches a new run. Judge the LATEST run, not the first — following only the
+# first reported a failover that succeeded on attempt 3 as a failure.
+END=$(( $(date +%s) + 900 ))
 LAST_STEP=""
 FINAL=""
+ATTEMPTS=0
 while [ $(date +%s) -lt "$END" ]; do
-  R=$(db_q "SELECT state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs WHERE id='$NEW_RUN';" | head -1 | tr -d ' ')
+  ATTEMPTS=$(( $(db_q "SELECT COUNT(*) FROM mail_migration_runs;" | head -1 | tr -d ' ') - PRE_RUNS ))
+  R=$(db_q "SELECT left(id::text,8) || ':' || state || ':' || COALESCE(current_step,'?') FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;" | head -1 | tr -d ' ')
   if [ "$R" != "$LAST_STEP" ]; then
-    echo "  [$(date -Iseconds)] $R"
+    echo "  [$(date -Iseconds)] attempt ${ATTEMPTS}: $R"
     LAST_STEP="$R"
   fi
   case "$R" in
-    done:*) FINAL=done; break ;;
-    failed:*|rolled-back:*|cancelled:*) FINAL=${R%%:*}; break ;;
+    *:done:*) FINAL=done; break ;;
   esac
   sleep 5
 done
 
 if [ "$FINAL" != "done" ]; then
-  red "FAIL: failover migration ended in '$FINAL' (state: $LAST_STEP)"
+  red "FAIL: no failover attempt completed within 900s (${ATTEMPTS} attempt(s); last: $LAST_STEP)"
   exit 1
 fi
+[ "$ATTEMPTS" -gt 1 ] && amber "  METRIC: failover needed ${ATTEMPTS} attempts (earlier ones failed and were retried by the dr-watcher)"
 
 hdr "STEP 4: verify mail-stack pod on new active"
 sleep 5

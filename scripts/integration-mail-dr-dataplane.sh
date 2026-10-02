@@ -329,10 +329,18 @@ while [ $(date +%s) -lt $END ]; do
   sleep 20
 done
 [ -n "$NEWRUN" ] && ok "dr-watcher launched failover migration ($NEWRUN)" || { no "no failover migration within ${BUDGET}s"; exit 1; }
-END=$(( $(date +%s)+540 ))
-while [ $(date +%s) -lt $END ]; do R=$(psql1 "SELECT state FROM mail_migration_runs WHERE id='$NEWRUN';"); case "$R" in done) break;; failed|rolled-back|cancelled) break;; esac; sleep 5; done
+# Follow the LATEST run: a failed attempt is retried by the dr-watcher, and
+# judging only the first reported a failover that succeeded on attempt 3 as
+# "stalwart not on standby" (then probed mail mid-retry).
+END=$(( $(date +%s)+900 )); ATTEMPTS=0; R=""
+while [ $(date +%s) -lt $END ]; do
+  ATTEMPTS=$(( $(psql1 "SELECT COUNT(*) FROM mail_migration_runs;") - PRE ))
+  R=$(psql1 "SELECT state FROM mail_migration_runs ORDER BY started_at DESC LIMIT 1;")
+  [ "$R" = done ] && break; sleep 5
+done
+[ "$ATTEMPTS" -gt 1 ] && metric "failover needed $ATTEMPTS attempts (earlier ones failed; dr-watcher retried)"
 sleep 5; NODE_NOW=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
-[ "$NODE_NOW" = "$STANDBY" ] && ok "failover relocated stalwart → $STANDBY" || no "stalwart not on standby (on $NODE_NOW)"
+[ "$NODE_NOW" = "$STANDBY" ] && ok "failover relocated stalwart → $STANDBY (attempt $ATTEMPTS)" || no "stalwart not on standby (on $NODE_NOW; latest run: $R after $ATTEMPTS attempt(s))"
 kill "$PROBE_PID" 2>/dev/null; PROBE_PID=""
 
 hdr "REACHABILITY (metric) + recovery"
