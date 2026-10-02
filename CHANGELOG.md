@@ -71,6 +71,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Restoring a tenant's mailboxes no longer fails once the platform's report mailboxes exist.** The
+  platform adds `postmaster@` and `dmarc@` report mailboxes to every mail domain on its own. A tenant
+  backup taken before they appeared could not be restored — the restore insisted on restoring them
+  too, found nothing in the backup and failed the whole restore. Backups and restores now cover
+  only the tenant's own mailboxes.
+
 - **Out-of-memory alerts now say what actually happened.** A tenant container OOM-killed at its
   memory limit used to reach admins titled "Tenant evictions (memory pressure)" — nothing had been
   evicted — and then again from a second, hourly check; a container that merely exited with code
