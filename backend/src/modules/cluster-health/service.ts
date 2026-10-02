@@ -1,4 +1,4 @@
-import type { V1CSINode } from '@kubernetes/client-node';
+import type { V1CSINode, V1Node } from '@kubernetes/client-node';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // Surface the readiness of key infrastructure Deployments without
@@ -110,8 +110,12 @@ export interface NodeSubsystemReport {
  * (Calico BIRD socket + Longhorn CSI plugin
  * CrashLoopBackOff because of cross-subnet network plumbing).
  */
-export async function collectNodeSubsystemHealth(k8s: K8sClients): Promise<NodeSubsystemReport[]> {
-  const nodes = await k8s.core.listNode();
+export async function collectNodeSubsystemHealth(
+  k8s: K8sClients,
+  /** A Node list the caller already holds (the scheduler needs it too). */
+  prefetchedNodes?: { readonly items?: readonly V1Node[] },
+): Promise<NodeSubsystemReport[]> {
+  const nodes = prefetchedNodes ?? await k8s.core.listNode();
   const out: NodeSubsystemReport[] = [];
   // Field selector on listNamespacedPod is per-namespace, so we query
   // each tracked namespace once and bucket by spec.nodeName.

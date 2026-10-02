@@ -80,10 +80,13 @@ export async function backupsOverviewRoutes(app: FastifyInstance): Promise<void>
   }, async (request) => {
     const q = request.query as { tenantId?: string; limit?: string };
     const limit = q.limit ? Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 500) : 200;
+    const kubeconfigPath = (app.config as Record<string, unknown> | undefined)?.KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH;
+    const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
     return success(await service.listTenantSnapshots(app.db, {
       tenantId: q.tenantId,
       limit,
-    }));
+    }, createK8sClients(kubeconfigPath)));
   });
 
   app.get('/admin/backups/tenants/:tenantId/overview', {

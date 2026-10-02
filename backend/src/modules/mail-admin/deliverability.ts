@@ -107,17 +107,23 @@ export interface DeliverabilityDeps {
   /** mail.<apex> or operator override from webmail-settings; null disables probes. */
   readonly hostname: string | null;
   /**
-   * Server-role node IPs the cluster believes serve mail. In allServerNodes
-   * mode this is the full server-role pool; in thisNodeOnly mode it's the
-   * one pinned node's external IP. Empty array → probes return `skipped`.
+   * IPv4 of the mail ENDPOINTS — the nodes that publish the mail ports under
+   * the current placement + port-exposure mode (mail-endpoints.ts). A node
+   * that publishes no mail port, e.g. a standby or an unassigned server, is
+   * never in here. Empty array → probes return `skipped`.
    */
   readonly serverNodeIps: ReadonlyArray<string>;
   /**
-   * Global IPv6 addresses of the same mail nodes. Empty on a single-stack
+   * Global IPv6 addresses of the same mail endpoints. Empty on a single-stack
    * cluster (and on a dual-stack cluster whose hosts have no global v6), which
    * makes the AAAA probe report `skipped` rather than inventing a gap.
    */
   readonly serverNodeIpv6s?: ReadonlyArray<string>;
+  /**
+   * address → endpoint node name. Optional; when given, every per-address
+   * result (PTR, DNSBL) is labelled with the node it belongs to.
+   */
+  readonly addressNodes?: Readonly<Record<string, string>>;
   readonly clock?: () => number;
   /** Override for tests: forward DNS resolver (A + AAAA). */
   readonly resolveAddresses?: (hostname: string) => Promise<{ a: string[]; aaaa: string[] }>;
@@ -164,8 +170,9 @@ export async function probeDeliverability(deps: DeliverabilityDeps): Promise<Mai
     return notImplementedComponent(
       hostname,
       [],
-      'No server-role node IPs found. Label cluster server nodes with insula.host/node-role=server, ' +
-      'or check that the cluster API is reachable from platform-api.',
+      'No mail endpoint IPv4 address found. No node publishes the mail ports under the current ' +
+      'placement + port-exposure mode (is the Stalwart pod running, or a primary mail node set?), the ' +
+      'publishing nodes report no ExternalIP/InternalIP, or the cluster API is not reachable from platform-api.',
     );
   }
 
@@ -272,7 +279,7 @@ function notImplementedComponent(
     expectedMailIps: [...serverNodeIps],
     forwardDns: {
       severity: 'skipped',
-      assertion: 'Mail hostname resolves to all server-role node IPs',
+      assertion: 'Mail hostname resolves to every mail endpoint IP',
       actual: null,
       expected: null,
       remediation: reason,
@@ -412,8 +419,14 @@ async function probeIpv6Dns(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Forward DNS — does mail.<apex> resolve to every server-role node IP?
+// Forward DNS — does mail.<apex> resolve to every mail endpoint IP?
 // ─────────────────────────────────────────────────────────────────────
+
+/** `203.0.113.10 (node-1)` when the endpoint node is known, else the bare IP. */
+function labelIp(deps: DeliverabilityDeps, ip: string): string {
+  const node = deps.addressNodes?.[ip];
+  return node ? `${ip} (${node})` : ip;
+}
 
 async function probeForwardDns(
   deps: DeliverabilityDeps,
@@ -454,7 +467,7 @@ async function probeForwardDns(
   if (resolveErr) {
     return {
       severity: 'fail',
-      assertion: `${hostname} resolves to all server-role node IPs`,
+      assertion: `${hostname} resolves to every mail endpoint IP`,
       actual: `DNS lookup failed: ${resolveErr}`,
       expected: expectedIps.join(', '),
       remediation:
@@ -472,7 +485,7 @@ async function probeForwardDns(
   if (missingIps.length === 0 && extraIps.length === 0) {
     return {
       severity: 'ok',
-      assertion: `${hostname} resolves to all server-role node IPs`,
+      assertion: `${hostname} resolves to every mail endpoint IP`,
       actual: resolvedIps.join(', '),
       expected: expectedIps.join(', '),
       remediation: null,
@@ -486,14 +499,15 @@ async function probeForwardDns(
 
   const isFail = missingIps.length > 0;
   const remediation = isFail
-    ? `Add A record(s) for ${missingIps.join(', ')} to ${hostname} at your DNS provider. ` +
+    ? `Add A record(s) for ${missingIps.map((ip) => labelIp(deps, ip)).join(', ')} to ${hostname} at your DNS provider. ` +
       'Without this, MX-style routing and reverse-DNS / FCrDNS checks will mismatch and receivers will defer or reject mail.'
-    : `${hostname} resolves to ${extraIps.join(', ')} which are NOT cluster server-role nodes. ` +
-      'Remove the stale A records, or update the cluster node-role labels if those IPs are intended mail nodes.';
+    : `${hostname} resolves to ${extraIps.join(', ')}, which publish no mail ports under the current mail ` +
+      'placement + port-exposure mode — a client that picks one gets a connection failure. Remove the stale ' +
+      'records, or change the port exposure / placement if those addresses are meant to serve mail.';
 
   return {
     severity: isFail ? 'fail' : 'warning',
-    assertion: `${hostname} resolves to all server-role node IPs`,
+    assertion: `${hostname} resolves to every mail endpoint IP`,
     actual: resolvedIps.length > 0 ? resolvedIps.join(', ') : '(no records)',
     expected: expectedIps.join(', '),
     remediation,
@@ -514,7 +528,16 @@ async function probeReverseDnsAll(
   hostname: string,
   expectedIps: ReadonlyArray<string>,
 ): Promise<MailHealthReverseDnsProbe[]> {
-  return Promise.all(expectedIps.map((ip) => probeReverseDnsOne(deps, hostname, ip)));
+  const probes = await Promise.all(expectedIps.map((ip) => probeReverseDnsOne(deps, hostname, ip)));
+  return probes.map((p) => ({ ...p, ...addressLabel(deps, p.ip) }));
+}
+
+/** Per-address label (endpoint node + family) carried by every PTR / DNSBL row. */
+function addressLabel(
+  deps: DeliverabilityDeps,
+  ip: string,
+): { node: string | null; family: 'ipv4' | 'ipv6' } {
+  return { node: deps.addressNodes?.[ip] ?? null, family: isIpv6(ip) ? 'ipv6' : 'ipv4' };
 }
 
 // PTR is EXTERNAL configuration — it lives at the IP's network provider, not on
@@ -625,7 +648,8 @@ async function probeBlocklistsAll(
       tasks.push(probeBlocklistOne(deps, ip, bl));
     }
   }
-  return Promise.all(tasks);
+  const probes = await Promise.all(tasks);
+  return probes.map((p) => ({ ...p, ...addressLabel(deps, p.ip) }));
 }
 
 async function probeBlocklistOne(

@@ -474,6 +474,11 @@ export async function recordMemoryEvents(
   pods: ReadonlyArray<RawPod> = [],
   now: Date = new Date(),
   killingEvents: ReadonlyArray<RawMemoryEvent> = [],
+  /**
+   * Nodes whose notifications are held (join grace window, join-grace.ts).
+   * Their events are still RECORDED — only the notification is skipped.
+   */
+  isNotificationSuppressed: (nodeName: string) => boolean = () => false,
 ): Promise<{ readonly insertedCount: number }> {
   try {
     const probeKills = indexProbeKills(killingEvents);
@@ -508,6 +513,10 @@ export async function recordMemoryEvents(
     // notification can say WHO was hit, not just "1 tenant container(s)".
     const nsToLabel = await resolveTenantLabels(db, inserted);
     for (const n of summarizeForNotification(inserted, (ns) => nsToLabel.get(ns))) {
+      if (isNotificationSuppressed(n.nodeName)) {
+        console.log(`[node-health-monitor] ${n.nodeName} is joining — ${n.severity} memory-event notification suppressed (${n.summary})`);
+        continue;
+      }
       const hour = now.toISOString().slice(0, 13); // YYYY-MM-DDTHH
       await notifyAdminNodeMemoryEvents(db, n.severity, { nodeName: n.nodeName, summary: n.summary },
         `node-memory:${n.severity}:${n.nodeName}:${hour}`);

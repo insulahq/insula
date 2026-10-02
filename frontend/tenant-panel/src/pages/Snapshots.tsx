@@ -1,25 +1,21 @@
-import { useState } from 'react';
-import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle, CheckCircle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle } from 'lucide-react';
 import {
   useSnapshots,
   useCreateSnapshot,
   useDeleteSnapshot,
   useRestoreSnapshot,
-  useRestoreStatus,
 } from '@/hooks/use-snapshots';
 import type { TenantSnapshot } from '@insula/api-contracts';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import SnapshotCreateProgressModal from '@/components/SnapshotCreateProgressModal';
+import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressModal';
+import SnapshotDataSize from '@/components/SnapshotDataSize';
+import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 import { useSortable } from '@/hooks/use-sortable';
+import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '-';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
 
 function StatusBadge({ status }: { readonly status: string }) {
   const map: Record<string, string> = {
@@ -64,6 +60,24 @@ export default function Snapshots() {
   const [restoreOpId, setRestoreOpId] = useState<string | null>(null);
   const [createTaskSnapId, setCreateTaskSnapId] = useState<string | null>(null);
   const refreshTasks = useRefreshTaskCenter();
+
+  // This page stays mounted during a storage op (LifecycleGate
+  // allowDuringStorageOp) so a restore's progress dialog survives it. While
+  // an op runs, nothing here may start another one; and a restore started
+  // before a reload or a navigation re-opens its progress.
+  const lifecycle = useMyLifecycle().data;
+  const storageState = lifecycle?.storageLifecycleState ?? null;
+  const storageBusy = storageState !== null && storageState !== 'idle' && storageState !== 'failed';
+  const BUSY_HINT = 'Unavailable while a storage operation is running';
+  const activeRestoreId = lifecycle?.activeStorageOperation?.isSnapshotRestore
+    ? lifecycle.activeStorageOperation.id
+    : null;
+  const dismissedRestoreId = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeRestoreId && !restoreOpId && dismissedRestoreId.current !== activeRestoreId) {
+      setRestoreOpId(activeRestoreId);
+    }
+  }, [activeRestoreId, restoreOpId]);
 
   const onCreate = () => {
     setCreateError(null);
@@ -114,7 +128,9 @@ export default function Snapshots() {
         <button
           type="button"
           onClick={() => { setCreateOpen(true); setCreateError(null); setLabel(''); }}
-          className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          disabled={storageBusy}
+          title={storageBusy ? BUSY_HINT : undefined}
+          className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 dark:disabled:opacity-40"
           data-testid="create-snapshot"
         >
           <Plus className="h-4 w-4" /> Take snapshot
@@ -157,7 +173,8 @@ export default function Snapshots() {
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
                   <SortableHeader label="Label" sortKey="label" {...th} />
                   <SortableHeader label="Status" sortKey="status" {...th} />
-                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`hidden sm:table-cell ${th.className}`} />
+                  <SortableHeader label="Volume size" sortKey="sizeBytes" {...th} title={VOLUME_SIZE_HELP} className={`hidden sm:table-cell ${th.className}`} />
+                  <SortableHeader label="Data size" sortKey="dataSizeBytes" {...th} title={DATA_SIZE_HELP} className={`hidden sm:table-cell ${th.className}`} />
                   <SortableHeader label="Created" sortKey="createdAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
                   <SortableHeader label="Expires" sortKey="expiresAt" {...th} />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
@@ -173,7 +190,10 @@ export default function Snapshots() {
                         <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={s.lastError}>{s.lastError}</p>
                       )}
                     </td>
-                    <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
+                    <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell" data-testid={`snapshot-volume-size-${s.id}`}>{formatVolumeSize(s.sizeBytes)}</td>
+                    <td className="hidden px-6 py-3 sm:table-cell">
+                      <SnapshotDataSize bytes={s.dataSizeBytes} testId={`snapshot-data-size-${s.id}`} />
+                    </td>
                     <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
                     <td className="px-6 py-3 text-gray-500 dark:text-gray-400">
                       <span className="inline-flex items-center gap-1"><Clock size={12} /> <TimeCell iso={s.expiresAt} mode="until" /></span>
@@ -187,9 +207,10 @@ export default function Snapshots() {
                           <button
                             type="button"
                             onClick={() => { setConfirmRestore(s); setRestoreError(null); }}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                            disabled={storageBusy}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700 dark:disabled:opacity-40"
                             data-testid={`restore-snapshot-${s.id}`}
-                            title="Restore your storage to this snapshot"
+                            title={storageBusy ? BUSY_HINT : 'Restore your storage to this snapshot'}
                           >
                             <RotateCcw size={12} /> Restore
                           </button>
@@ -197,7 +218,9 @@ export default function Snapshots() {
                         <button
                           type="button"
                           onClick={() => setConfirmDelete(s)}
-                          className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
+                          disabled={storageBusy}
+                          title={storageBusy ? BUSY_HINT : undefined}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950 dark:disabled:opacity-40"
                           data-testid={`delete-snapshot-${s.id}`}
                         >
                           <Trash2 size={12} /> Delete
@@ -279,9 +302,12 @@ export default function Snapshots() {
         </Modal>
       )}
 
-      {/* Restore progress modal — polls the storage operation */}
+      {/* Restore progress modal — step-by-step timeline of the restore */}
       {restoreOpId && (
-        <RestoreProgressModal operationId={restoreOpId} onClose={() => { setRestoreOpId(null); snapsQ.refetch(); }} />
+        <SnapshotRestoreProgressModal
+          operationId={restoreOpId}
+          onClose={() => { dismissedRestoreId.current = restoreOpId; setRestoreOpId(null); snapsQ.refetch(); }}
+        />
       )}
 
       {/* Create progress modal — task-center driven */}
@@ -289,50 +315,6 @@ export default function Snapshots() {
         <SnapshotCreateProgressModal snapshotId={createTaskSnapId} onClose={() => { setCreateTaskSnapId(null); snapsQ.refetch(); }} />
       )}
     </div>
-  );
-}
-
-function RestoreProgressModal({ operationId, onClose }: { readonly operationId: string; readonly onClose: () => void }) {
-  const statusQ = useRestoreStatus(operationId);
-  const op = statusQ.data?.data;
-  const state = op?.state ?? 'quiescing';
-  const done = state === 'idle';
-  const failed = state === 'failed';
-  const inFlight = !done && !failed;
-
-  return (
-    <Modal title="Restoring from snapshot" onClose={inFlight ? () => {} : onClose}>
-      <div className="space-y-3">
-        {inFlight && (
-          <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <Loader2 size={16} className="animate-spin text-indigo-500" />
-            <span data-testid="restore-progress-msg">{op?.progressMessage || 'Working…'}</span>
-          </div>
-        )}
-        {inFlight && (
-          <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-            <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${op?.progressPct ?? 5}%` }} />
-          </div>
-        )}
-        {done && (
-          <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-400" data-testid="restore-done">
-            <CheckCircle size={18} /> Restore complete — your files are back to the snapshot.
-          </div>
-        )}
-        {failed && (
-          <div className="flex items-start gap-2 text-sm text-red-700 dark:text-red-400" data-testid="restore-failed">
-            <AlertTriangle size={18} className="mt-0.5 flex-shrink-0" />
-            <span>Restore failed: {op?.lastError || 'unknown error'}. Your previous files were left in place — contact support if this persists.</span>
-          </div>
-        )}
-        <p className="text-xs text-gray-400">{inFlight ? "Please keep this open — it's safe to leave the page; the restore continues on the server." : ''}</p>
-        <div className="flex justify-end">
-          <button type="button" onClick={onClose} disabled={inFlight} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700" data-testid="restore-close">
-            {inFlight ? 'Restoring…' : 'Close'}
-          </button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

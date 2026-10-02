@@ -12,7 +12,7 @@
  */
 
 import { useState } from 'react';
-import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle, CheckCircle, ArrowRight } from 'lucide-react';
+import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle, ArrowRight } from 'lucide-react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
@@ -21,18 +21,13 @@ import {
   useCreateTenantSnapshot,
   useDeleteTenantSnapshot,
   useRestoreTenantSnapshot,
-  useTenantRestoreStatus,
 } from '@/hooks/use-tenant-snapshots';
 import type { TenantSnapshot } from '@insula/api-contracts';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import SnapshotCreateProgressModal from './SnapshotCreateProgressModal';
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '-';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
+import SnapshotRestoreProgressModal from './SnapshotRestoreProgressModal';
+import SnapshotDataSize from './SnapshotDataSize';
+import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 
 function expiresIn(iso: string): string {
   const ms = new Date(iso).getTime() - Date.now();
@@ -185,7 +180,8 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
                   <SortableHeader label="Label" sortKey="label" {...th} />
                   <SortableHeader label="Status" sortKey="status" {...th} />
-                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} hidden sm:table-cell`} />
+                  <SortableHeader label="Volume size" sortKey="sizeBytes" {...th} title={VOLUME_SIZE_HELP} className={`${th.className} hidden sm:table-cell`} />
+                  <SortableHeader label="Data size" sortKey="dataSizeBytes" {...th} title={DATA_SIZE_HELP} className={`${th.className} hidden sm:table-cell`} />
                   <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} hidden lg:table-cell`} />
                   <SortableHeader label="Expires" sortKey="expiresAt" {...th} />
                   <th className="px-3 py-2 font-medium text-gray-500 dark:text-gray-400">Actions</th>
@@ -201,7 +197,10 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
                         <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={s.lastError}>{s.lastError}</p>
                       )}
                     </td>
-                    <td className="px-3 py-2 hidden text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
+                    <td className="px-3 py-2 hidden text-gray-600 dark:text-gray-400 sm:table-cell" data-testid={`admin-snapshot-volume-size-${s.id}`}>{formatVolumeSize(s.sizeBytes)}</td>
+                    <td className="px-3 py-2 hidden sm:table-cell">
+                      <SnapshotDataSize bytes={s.dataSizeBytes} testId={`admin-snapshot-data-size-${s.id}`} />
+                    </td>
                     <td className="px-3 py-2 hidden text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
                     <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
                       <span className="inline-flex items-center gap-1"><Clock size={12} /> {expiresIn(s.expiresAt)}</span>
@@ -313,7 +312,11 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
       )}
 
       {restoreOpId && (
-        <RestoreProgressModal tenantId={tenantId} operationId={restoreOpId} onClose={() => { setRestoreOpId(null); snapsQ.refetch(); }} />
+        <SnapshotRestoreProgressModal
+          tenantId={tenantId}
+          operationId={restoreOpId}
+          onClose={() => { setRestoreOpId(null); snapsQ.refetch(); refreshTasks(); }}
+        />
       )}
 
       {createTaskSnapId && (
@@ -324,49 +327,6 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
         />
       )}
     </div>
-  );
-}
-
-function RestoreProgressModal({ tenantId, operationId, onClose }: { readonly tenantId: string; readonly operationId: string; readonly onClose: () => void }) {
-  const statusQ = useTenantRestoreStatus(tenantId, operationId);
-  const op = statusQ.data?.data;
-  const state = op?.state ?? 'quiescing';
-  const done = state === 'idle';
-  const failed = state === 'failed';
-  const inFlight = !done && !failed;
-
-  return (
-    <Modal title="Restoring from snapshot" onClose={inFlight ? () => {} : onClose}>
-      <div className="space-y-3">
-        {inFlight && (
-          <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <Loader2 size={16} className="animate-spin text-indigo-500" />
-            <span data-testid="admin-restore-progress-msg">{op?.progressMessage || 'Working…'}</span>
-          </div>
-        )}
-        {inFlight && (
-          <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-            <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${op?.progressPct ?? 5}%` }} />
-          </div>
-        )}
-        {done && (
-          <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-400" data-testid="admin-restore-done">
-            <CheckCircle size={18} /> Restore complete — the tenant's storage is back to the snapshot.
-          </div>
-        )}
-        {failed && (
-          <div className="flex items-start gap-2 text-sm text-red-700 dark:text-red-400" data-testid="admin-restore-failed">
-            <AlertTriangle size={18} className="mt-0.5 flex-shrink-0" />
-            <span>Restore failed: {op?.lastError || 'unknown error'}. The previous volume was left in place.</span>
-          </div>
-        )}
-        <div className="flex justify-end">
-          <button type="button" onClick={onClose} disabled={inFlight} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700" data-testid="admin-restore-close">
-            {inFlight ? 'Restoring…' : 'Close'}
-          </button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

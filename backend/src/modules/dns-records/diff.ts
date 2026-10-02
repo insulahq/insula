@@ -20,7 +20,7 @@
  * the writing), so "in sync" means what it says.
  */
 
-import { formatContent, qualifyName } from '../dns-servers/wire-format.js';
+import { canonicalContent, qualifyName } from '../dns-servers/wire-format.js';
 
 export interface DnsRecordDiffEntry {
   readonly type: string;
@@ -67,6 +67,37 @@ export interface RemoteRecord {
  */
 const SERVER_OWNED_TYPES = new Set(['SOA']);
 
+/**
+ * The identity of one published record: type, absolute name, canonical value.
+ *
+ * Two rows with the same key are ONE record upstream — a server keeps a single
+ * copy of a value per (name, type). The diff pairs local with remote on it,
+ * and a delete must not withdraw a value another row still publishes.
+ *
+ * The value is the canonical wire content, or the raw value when it cannot be
+ * built: a legacy MX row with no priority genuinely cannot be published, so
+ * the diff surfaces it as `local_only` — the truth, it is not in DNS.
+ */
+export function recordKey(
+  zone: string,
+  r: { type: string; name: string | null; content: string; priority?: number | null; weight?: number | null; port?: number | null },
+): string {
+  let value: string;
+  try {
+    value = canonicalContent({
+      type: r.type,
+      name: r.name ?? '@',
+      content: r.content,
+      priority: r.priority ?? undefined,
+      weight: r.weight ?? undefined,
+      port: r.port ?? undefined,
+    });
+  } catch {
+    value = r.content;
+  }
+  return [r.type.toUpperCase(), qualifyName(zone, r.name), value].join('|');
+}
+
 export function computeRecordDiff(
   zone: string,
   localRecords: readonly LocalRecord[],
@@ -81,49 +112,19 @@ export function computeRecordDiff(
     return abs.endsWith(`.${zoneFqdn}`) ? abs.slice(0, -(zoneFqdn.length + 1)) : abs.replace(/\.$/, '');
   };
 
-  /**
-   * Canonical wire content — or the raw value when it cannot be built.
-   *
-   * A legacy MX row with no priority genuinely cannot be published, so
-   * falling back to the raw value surfaces it as `local_only`. That is
-   * the truth: the record does not exist in DNS.
-   */
-  const wire = (r: { type: string; name: string; content: string; priority?: number | null; weight?: number | null; port?: number | null }): string => {
-    try {
-      return formatContent({
-        type: r.type,
-        name: r.name,
-        content: r.content,
-        priority: r.priority ?? undefined,
-        weight: r.weight ?? undefined,
-        port: r.port ?? undefined,
-      });
-    } catch {
-      return r.content;
-    }
-  };
-
   const comparable = (type: string) => !SERVER_OWNED_TYPES.has(type.toUpperCase());
 
   const localMap = new Map<string, LocalRecord>();
   for (const r of localRecords) {
     if (!comparable(r.recordType)) continue;
-    const key = [
-      r.recordType.toUpperCase(),
-      qualifyName(zone, r.recordName),
-      wire({ type: r.recordType, name: r.recordName ?? '@', content: r.recordValue ?? '', priority: r.priority, weight: r.weight, port: r.port }),
-    ].join('|');
+    const key = recordKey(zone, { type: r.recordType, name: r.recordName, content: r.recordValue ?? '', priority: r.priority, weight: r.weight, port: r.port });
     localMap.set(key, r);
   }
 
   const remoteMap = new Map<string, RemoteRecord>();
   for (const r of remoteRecords) {
     if (!comparable(r.type)) continue;
-    const key = [
-      r.type.toUpperCase(),
-      qualifyName(zone, r.name),
-      wire({ type: r.type, name: r.name, content: r.content }),
-    ].join('|');
+    const key = recordKey(zone, { type: r.type, name: r.name, content: r.content });
     remoteMap.set(key, r);
   }
 

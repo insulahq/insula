@@ -20,6 +20,8 @@ export interface MyLifecycleInfo {
   readonly tenantStatus: TenantStatus | null;
   readonly storageLifecycleState: StorageLifecycleState | null;
   readonly tenantId: string | null;
+  /** The storage operation behind a non-idle state, when there is one. */
+  readonly activeStorageOperation: { readonly id: string; readonly isSnapshotRestore: boolean } | null;
 }
 
 interface AuthMeResponse {
@@ -28,6 +30,7 @@ interface AuthMeResponse {
     readonly tenantId: string | null;
     readonly tenantStatus?: TenantStatus | null;
     readonly storageLifecycleState?: StorageLifecycleState | null;
+    readonly activeStorageOperation?: { readonly id: string; readonly isSnapshotRestore: boolean } | null;
   };
 }
 
@@ -53,6 +56,7 @@ export function useMyLifecycle(): { readonly data: MyLifecycleInfo | null; reado
           tenantStatus: q.data.data.tenantStatus ?? null,
           storageLifecycleState: q.data.data.storageLifecycleState ?? null,
           tenantId: q.data.data.tenantId,
+          activeStorageOperation: q.data.data.activeStorageOperation ?? null,
         }
       : null,
   };

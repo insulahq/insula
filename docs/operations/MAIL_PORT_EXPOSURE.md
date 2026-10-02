@@ -49,6 +49,26 @@ Three other patch strategies were tried first and rejected (commit history `feat
 
 If you find yourself wanting to "just patch hostPort" with kubectl, don't — use the API. The API path encodes the rollout-wait + idempotency + ownership semantics that ad-hoc kubectl patches skip.
 
+### Between flips: the node set changes
+
+Which nodes run haproxy is decided by the `insula.host/mail-haproxy=true` node
+label (the DaemonSet's `nodeSelector`). Besides a flip, the label set is
+re-derived every 60 s by the node sync
+(`backend/src/modules/mail-admin/haproxy-label-sync.ts`) with the same resolver
+a flip uses (`resolveHaproxyNodes`), so a server that joins in `allServerNodes`
+— or a node promoted/demoted, or a changed assignment in `assignedMailNodes` —
+gets or loses haproxy without re-applying the mode. Only labels are patched;
+the DaemonSet, the Stalwart Deployment and the Service are left to the flip.
+
+The sync stands down (`[mail-haproxy-labels] not syncing: …`, logged once per
+reason and repeated every 30 min while it lasts) while a `mail.port-exposure`
+task is running or any `mail_migration_runs` row is not yet `done`/`failed`/
+`rolled-back`/`cancelled` — a migration, including the DR watcher's automatic
+failover, strips the target node's label before Stalwart moves there — and while
+the active mail node is unknown on a multi-node cluster, where it could not keep
+haproxy off Stalwart's node. A migration row stuck in flight is reaped after 2 h
+by the migration reconciler, which also releases the sync.
+
 ---
 
 ## Triggering a flip

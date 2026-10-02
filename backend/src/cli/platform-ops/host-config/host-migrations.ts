@@ -15,6 +15,8 @@
  *     run out of a half-migrated state. Operator-resumable (re-run continues).
  *   • Idempotent by marker: an already-applied script is skipped. Scripts are
  *     platform-authored + themselves idempotent (CI-enforced), not operator input.
+ *     Precedence: `.done` (ran) > `.skipped` (operator) > `.baseline` (a fresh
+ *     bootstrap already reflects it — ADR-056 §5); none of the three ever runs.
  *   • Deterministic order: (version, name) ascending, so skip-multiple walks the
  *     whole backlog in the same order it would have applied incrementally.
  */
@@ -91,6 +93,13 @@ export function runHostMigrations(
     const skip = deps.readSkip?.(s.key) ?? null;
     if (skip) {
       items.push({ key: s.key, state: 'skipped', skipReason: skip.reason });
+      continue;
+    }
+    // ADR-056 §5: a fresh bootstrap of this release already produced the end
+    // state, so it is treated as applied and never run — but reported with
+    // `baseline: true`, never as if it ran. `.done` (checked above) wins.
+    if (deps.readBaseline?.(s.key)) {
+      items.push({ key: s.key, state: 'already-applied', baseline: true });
       continue;
     }
     if (!enforcing) {

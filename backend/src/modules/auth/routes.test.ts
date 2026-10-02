@@ -127,6 +127,23 @@ describe('auth routes', () => {
     expect(body.data.role).toBe('admin');
   });
 
+  it('GET /api/v1/auth/me names the tenant\'s running snapshot restore so the panel can re-open its progress', async () => {
+    const limit = vi.fn()
+      .mockResolvedValueOnce([{ ...mockUser, tenantId: 't1', panel: 'tenant' }])
+      .mockResolvedValueOnce([{ status: 'active', state: 'restoring', opId: 'op-1' }])
+      .mockResolvedValueOnce([{ opType: 'restore', params: { mode: 'snapshot_revert', snapshotId: 's1' } }]);
+    mockSelectWhere.mockReturnValueOnce({ limit }).mockReturnValueOnce({ limit }).mockReturnValueOnce({ limit });
+    const token = app.jwt.sign({ sub: 'u1', role: 'tenant_admin', panel: 'tenant', iat: Math.floor(Date.now() / 1000) });
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { authorization: `Bearer ${token}` } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({
+      storageLifecycleState: 'restoring',
+      activeStorageOperation: { id: 'op-1', isSnapshotRestore: true },
+    });
+  });
+
   it('GET /api/v1/auth/me should reject without token', async () => {
     const res = await app.inject({
       method: 'GET',

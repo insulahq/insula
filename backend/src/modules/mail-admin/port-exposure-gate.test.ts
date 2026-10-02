@@ -13,6 +13,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  */
 
 const mockListNode = vi.fn(async () => ({ items: [] as unknown[] }));
+// Live Stalwart pods — empty unless a test places one (active-node.ts reads them).
+const mockListPods = vi.fn(async () => ({ items: [] as unknown[] }));
+const mockReadPvc = vi.fn(async () => { throw Object.assign(new Error('not found'), { code: 404 }); });
 
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class {
@@ -21,7 +24,12 @@ vi.mock('@kubernetes/client-node', () => ({
     makeApiClient(api: unknown) {
       const name = (api as { name?: string })?.name ?? '';
       if (name === 'CoreV1Api') {
-        return { listNode: mockListNode };
+        return {
+          listNode: mockListNode,
+          listNamespacedPod: mockListPods,
+          readNamespacedPersistentVolumeClaim: mockReadPvc,
+          readPersistentVolume: vi.fn(),
+        };
       }
       return {};
     }
@@ -33,7 +41,7 @@ vi.mock('@kubernetes/client-node', () => ({
 // Placement settings row: active node IS in the assigned set so the
 // pre-existing assignedMailNodes placement guard does not fire — we are
 // isolating the NEW node-count gate.
-function buildDb() {
+function buildDb(activeNode: string | null = 'server-0') {
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -41,12 +49,17 @@ function buildDb() {
           primaryNode: 'server-0',
           secondaryNode: 'server-1',
           tertiaryNode: null,
-          activeNode: 'server-0',
+          activeNode,
         }]),
       })),
     })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) })),
   } as unknown as import('../../db/index.js').Database;
 }
+
+const stalwartOn = (node: string) => ({
+  items: [{ metadata: {}, spec: { nodeName: node }, status: { phase: 'Running' } }],
+});
 
 /** Build a node list: `servers` Ready server-role + `workers` Ready worker-role. */
 function nodes(servers: number, workers: number) {
@@ -100,5 +113,34 @@ describe('mail-admin/port-exposure.validateModeSwitchAgainstDb node-count gate',
     const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
     const err = await validateModeSwitchAgainstDb('activeNodeOnly', buildDb(), undefined);
     expect(err).toBeNull();
+  });
+});
+
+describe('validateModeSwitchAgainstDb — active node from the live cluster', () => {
+  // VM release verification: on a cluster installed on several nodes
+  // mail_active_node is NULL, and assignedMailNodes was refused ("no active
+  // mail node is set") although Stalwart ran on an assigned node.
+  beforeEach(() => {
+    mockListNode.mockResolvedValue({ items: nodes(3, 1) });
+    mockListPods.mockReset().mockResolvedValue({ items: [] });
+  });
+
+  it('ALLOWS assignedMailNodes when nothing is stored but Stalwart runs on an assigned node', async () => {
+    mockListPods.mockResolvedValue(stalwartOn('server-0'));
+    const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
+    expect(await validateModeSwitchAgainstDb('assignedMailNodes', buildDb(null), undefined)).toBeNull();
+  });
+
+  it('still REFUSES when Stalwart runs outside the assigned set', async () => {
+    mockListPods.mockResolvedValue(stalwartOn('server-2'));
+    const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
+    const err = await validateModeSwitchAgainstDb('assignedMailNodes', buildDb(null), undefined);
+    expect(err).toContain("active mail node 'server-2'");
+  });
+
+  it('still REFUSES when no source knows the active node', async () => {
+    const { validateModeSwitchAgainstDb } = await import('./port-exposure.js');
+    const err = await validateModeSwitchAgainstDb('assignedMailNodes', buildDb(null), undefined);
+    expect(err).toContain('no active mail node is set');
   });
 });

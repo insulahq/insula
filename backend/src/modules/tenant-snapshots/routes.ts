@@ -15,6 +15,7 @@ import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { createSnapshot, listSnapshots, deleteSnapshot, restoreSnapshot, getRestoreOpStatus, waitForSnapshotReady } from './service.js';
 import { start as startTask, finishByRef as finishTaskByRef } from '../tasks/service.js';
+import { restoreStatusAudience } from './restore-status.js';
 
 export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -29,7 +30,9 @@ export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void>
     schema: { tags: ['TenantSnapshots'], summary: 'List a tenant\'s on-server volume snapshots', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    const result = await listSnapshots({ db: app.db, k8s: k8sFor() }, tenantId);
+    // withDataSize: one Longhorn list adds each snapshot's real data size
+    // (dataSizeBytes) next to the provisioned volume size.
+    const result = await listSnapshots({ db: app.db, k8s: k8sFor() }, tenantId, { withDataSize: true });
     return success(result);
   });
 
@@ -128,11 +131,15 @@ export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void>
   });
 
   // ── GET /api/v1/tenants/:tenantId/snapshots/restore-status/:operationId ──
+  // Step timeline + outcome for the restore progress modal (both panels).
+  // Tenant-scoped twice over: requireTenantAccess pins a tenant-panel token to
+  // its own :tenantId, and the service only returns an operation whose row
+  // belongs to that tenant. Tenant-panel callers get the sanitized view.
   app.get('/tenants/:tenantId/snapshots/restore-status/:operationId', {
-    schema: { tags: ['TenantSnapshots'], summary: 'Poll a snapshot restore operation', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantSnapshots'], summary: 'Poll a snapshot restore operation (step timeline)', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { tenantId, operationId } = request.params as { tenantId: string; operationId: string };
-    const status = await getRestoreOpStatus({ db: app.db, k8s: k8sFor() }, tenantId, operationId);
+    const status = await getRestoreOpStatus(app.db, tenantId, operationId, restoreStatusAudience(request.user));
     return success(status);
   });
 }

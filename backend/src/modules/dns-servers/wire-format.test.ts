@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fqdn, qualifyName, formatContent, splitContent } from './wire-format.js';
+import { fqdn, qualifyName, formatContent, splitContent, canonicalContent } from './wire-format.js';
 
 /**
  * Every expectation here was checked against a real PowerDNS 4.9 API.
@@ -192,5 +192,35 @@ describe('splitContent — for providers that take numeric fields separately', (
   it('agrees with formatContent on what the target is', () => {
     const input = { type: 'MX' as const, name: '@', content: 'mail.example.test', priority: 10 };
     expect(formatContent(input)).toBe(`${splitContent(input).priority} ${splitContent(input).content}`);
+  });
+});
+
+/**
+ * Two spellings of one value must compare equal, or a value-scoped delete
+ * matches nothing and the value it was meant to withdraw stays live.
+ */
+describe('canonicalContent', () => {
+  it('joins the character-strings PowerDNS splits a long TXT into', () => {
+    expect(canonicalContent({ type: 'TXT', name: 'sel._domainkey', content: '"v=DKIM1; p=AAAA" "BBBB"' }))
+      .toBe(canonicalContent({ type: 'TXT', name: 'sel._domainkey', content: 'v=DKIM1; p=AAAABBBB' }));
+  });
+
+  it('reduces every spelling of an IPv6 address to one', () => {
+    expect(canonicalContent({ type: 'AAAA', name: '@', content: '2001:DB8:0:0:0:0:0:1' })).toBe('2001:db8::1');
+    expect(canonicalContent({ type: 'AAAA', name: '@', content: '2001:db8::1' })).toBe('2001:db8::1');
+  });
+
+  it('compares hostname targets case-insensitively', () => {
+    expect(canonicalContent({ type: 'CNAME', name: 'www', content: 'Edge.Example.TEST' })).toBe('edge.example.test.');
+    expect(canonicalContent({ type: 'MX', name: '@', content: 'Mail.Example.test', priority: 10 })).toBe('10 mail.example.test.');
+  });
+
+  it('leaves A and TXT case alone — TXT content is case-sensitive', () => {
+    expect(canonicalContent({ type: 'A', name: '@', content: '203.0.113.1' })).toBe('203.0.113.1');
+    expect(canonicalContent({ type: 'TXT', name: '@', content: 'Google-Site-Verification=AbC' })).toBe('"Google-Site-Verification=AbC"');
+  });
+
+  it('throws where formatContent throws', () => {
+    expect(() => canonicalContent({ type: 'MX', name: '@', content: 'mail.example.test' })).toThrow(/priority/i);
   });
 });

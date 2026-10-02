@@ -1,0 +1,71 @@
+# Where platform-api may exec into pods.
+#
+# The platform-api ClusterRole grants pods/exec cluster-wide, because tenant
+# namespaces are created at runtime and RBAC cannot express "every tenant
+# namespace". This policy narrows it at admission: an exec by the platform-api
+# ServiceAccount (the API pods and the PITR Job, which runs under the same
+# account) is allowed only into
+#
+#   - tenant namespaces — `tenant-<slug>-<id>`, or the `ns-<id>` names the OIDC
+#     auto-provisioning path creates, which must also carry the
+#     `insula.host/tenant-namespace: "true"` annotation the provisioner sets;
+#   - platform  — system-db (CrowdSec/DB-isolation/Roundcube role reconcilers,
+#                 PITR), the node terminal;
+#   - mail      — Stalwart (health, JMAP, proxy networks, queue, migration);
+#   - traefik   — the ingress spool reaper;
+#   - crowdsec  — `cscli` in the LAPI pod (decisions, bouncers, allowlists,
+#                 auto-ban, console — security-hardening/cscli-exec.ts);
+#   - platform-system — `cscli` in the crowdsec-agent pods (scenarios,
+#                 parser metrics).
+#
+# Everything else — kube-system, flux-system, cert-manager, longhorn-system,
+# cnpg-system, calico-*, … — is denied. platform-api cannot lift
+# this: it has no access to admissionregistration.k8s.io.
+#
+# Adding a namespace here is a deliberate act: a new exec target in the
+# backend fails with "platform-api may not exec into pods in namespace …"
+# until it is listed. Live check: scripts/test-platform-api-guardrails.sh.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-pods-exec-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CONNECT"]
+        resources: ["pods/exec"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: ns
+      expression: "request.namespace"
+    - name: annotatedTenant
+      expression: >-
+        namespaceObject != null && has(namespaceObject.metadata.annotations) &&
+        'insula.host/tenant-namespace' in namespaceObject.metadata.annotations &&
+        namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true'
+  validations:
+    - expression: >-
+        variables.ns in ['platform', 'mail', 'traefik', 'crowdsec', 'platform-system'] ||
+        variables.ns.startsWith('tenant-') ||
+        (variables.ns.startsWith('ns-') && variables.annotatedTenant)
+      messageExpression: >-
+        'platform-api may not exec into pods in namespace ' + variables.ns +
+        ' (ValidatingAdmissionPolicy platform-api-pods-exec-scope)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-pods-exec-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-pods-exec-scope
+  validationActions: [Deny]

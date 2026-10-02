@@ -137,6 +137,7 @@ function summaryLine(r: MailHealthResponse): string {
     !r.components.rocksdb.healthy ? r.components.rocksdb.error :
     !r.components.cert.healthy ? r.components.cert.error :
     !r.components.tcp.healthy ? r.components.tcp.error :
+    (r.components.exposure && !r.components.exposure.healthy) ? r.components.exposure.error :
     (r.components.deliverability && !r.components.deliverability.healthy)
       ? r.components.deliverability.error
       : null;

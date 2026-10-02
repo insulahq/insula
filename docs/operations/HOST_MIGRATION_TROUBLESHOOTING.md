@@ -42,6 +42,7 @@ host-config host-migrations enforce [embedded]: 1 applied, 0 pending, 19 shipped
 | `run-failed` | the script exited non-zero. Blocks the rest **unless it declares `# blocks-on-failure: no`** |
 | `blocked` | queued behind a blocking `run-failed` script; not itself broken |
 | `skipped` | an operator recorded a `.skipped` marker — it never ran, and it does not block |
+| `already-applied` | a `.done` marker exists (ran on an earlier pass) — **or**, flagged `baseline`, a `.baseline` marker: a fresh bootstrap of that release already produced its end state, so it **never ran here** (see [Fresh nodes](#fresh-nodes-baseline-markers-adr-056-5)). Not listed per line; the summary counts baselines: `36 shipped (32 baseline)` |
 
 A repeat failure states how long it has been repeating, so a wedge is legible at
 a glance rather than looking like a fresh problem:
@@ -51,9 +52,12 @@ run-failed  2026.7.1/0001-… — <error>  (attempt 840, failing since 2026-07-0
 host-config host-migrations: 11 migration(s) BLOCKED behind 2026.7.1/0001-… — see …
 ```
 
-Per-node markers live at `/var/lib/platform/host-migrations/<version>/<name>.sh.done`.
-A missing marker means "not applied on this node" — they are per node, so check
-each one.
+Per-node markers live at `/var/lib/platform/host-migrations/<version>/<name>.sh.<kind>`,
+one of `.done` (ran), `.skipped` (operator decision, ADR-056 §2) or `.baseline`
+(a fresh bootstrap already reflects it, ADR-056 §5); `.failing` is failure
+bookkeeping, not a completion record. A script with none of the three is "not
+applied on this node" — they are per node, so check each one. Precedence when
+several exist: `.done` > `.skipped` > `.baseline`; none of them ever re-runs.
 
 ## Fix a `run-failed` migration
 
@@ -122,6 +126,67 @@ Two ways out, in order of preference:
 - Add `# blocks-on-failure: no` **iff nothing later depends on your script.** The
   header is optional and absent means `yes`, so the safe default holds; CI
   rejects any value other than `yes`/`no`.
+
+## Fresh nodes: `.baseline` markers (ADR-056 §5)
+
+A freshly bootstrapped node starts with an **empty** ledger, so without a
+baseline its first converge replays **every migration ever shipped**. That is
+wrong twice over: `bootstrap.sh` at release X already produces the end state of
+every migration ≤ X (a bootstrap change reaches fresh installs; the migration
+only backfills existing nodes), and replaying cluster-scoped history is
+dangerous. Production, 2026-10-01: a newly joined second server replayed all 36 —
+one re-applied the Calico operator manifest cluster-wide, one restarted k3s
+(stalling a 2-member etcd for ~13 s), and one began failing every hour.
+
+**When it is written.** `bootstrap.sh` stamps the ledger on a **fresh node only**
+— a run whose own k3s install happened in this invocation — right after it
+installs the operator CLI, with the release it is installing:
+
+```bash
+insula host-config baseline --up-to "$(cat platform/VERSION)"
+```
+
+A re-run of bootstrap over an existing install never calls it.
+
+**What it does.** For every valid shipped script with version **≤ `--up-to`** that
+has no `.done`, `.skipped` or `.baseline` marker yet, it writes
+`<version>/<name>.sh.baseline`, whose first line reads:
+
+```
+baseline: fresh bootstrap of 2026.10.2 at 2026-10-01T12:34:56Z — never run on this node
+```
+
+The converge then reports those as `already-applied` with `baseline: true`, and
+never runs them. Scripts **newer** than `--up-to` stay pending and run on the next
+converge as usual. The command is idempotent — a second run stamps nothing.
+
+| exit | meaning |
+|---|---|
+| `0` | stamped (or nothing left to stamp) |
+| `1` | failed — a marker write failed, the ledger is unreadable, or the binary has no catalog |
+| `2` | usage — `--up-to` missing or not CalVer, unknown flag |
+| `3` | **refused** — this node already has converge history (any `.done` or `.failing` marker) |
+
+**Why it refuses an existing node.** On a node that has already converged, some
+migrations ≤ `--up-to` may genuinely still be pending; a baseline there would
+silently skip them. `--force` overrides the check, and the marker then carries a
+second `forced:` line so the record never overstates how fresh the node was.
+Always `--dry-run` first — it lists exactly what would be stamped, and predicts a
+refusal with the same exit code.
+
+**Why not `.done`.** ADR-056 rejected touching `.done` for a script that never
+ran: `applied` must mean *it ran here*. `.baseline` says something different and
+true — *the bootstrap of release X already left the host in this state* — and the
+admin panel shows it (`36 applied (32 baseline)`), so an incident responder can
+tell the two apart.
+
+**Undo one.** Delete the `.baseline` file; the next converge (or
+`insula host-config apply`) runs that script — they are idempotent.
+
+**A node joined before this existed** has already replayed everything; its `.done`
+markers are true records and need nothing. For a replayed migration that now
+fails every hour, fix the condition, or — if it is genuinely not applicable to
+this host — record a `.skipped` with the reason (above).
 
 ## If a node never converges at all
 

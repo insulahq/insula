@@ -13,6 +13,7 @@ interface FakeOpts {
   readyz?: boolean; // apiserver reachable
   nodes?: string; // `kubectl get nodes --no-headers` stdout
   markers?: number;
+  baselineMarkers?: number; // ADR-056 §5 .baseline markers
 }
 
 function fakeDeps(o: FakeOpts = {}): { deps: Deps; out: string[]; err: string[] } {
@@ -25,7 +26,7 @@ function fakeDeps(o: FakeOpts = {}): { deps: Deps; out: string[]; err: string[] 
       return o.rclone ? { code: 0, stdout: '/usr/bin/rclone\n', stderr: '' } : { code: 1, stdout: '', stderr: '' };
     }
     if (cmd === 'sh' && a.includes('host-migrations')) {
-      return { code: 0, stdout: `${o.markers ?? 0}\n`, stderr: '' };
+      return { code: 0, stdout: `${o.markers ?? 0} ${o.baselineMarkers ?? 0}\n`, stderr: '' };
     }
     if (cmd === 'kubectl' && a.includes('/readyz')) {
       return o.readyz ? { code: 0, stdout: 'ok', stderr: '' } : { code: 1, stdout: '', stderr: 'forbidden' };
@@ -63,6 +64,20 @@ const HEALTHY: FakeOpts = {
 };
 
 describe('clusterDoctor', () => {
+  it('counts .baseline markers too — a freshly baselined node is not "none applied yet"', async () => {
+    const { deps, out } = fakeDeps({ ...HEALTHY, markers: 0, baselineMarkers: 32 });
+    await clusterDoctor([], deps);
+    const text = out.join('\n');
+    expect(text).toMatch(/host-migrations applied.*0 \.done \+ 32 \.baseline/);
+    expect(text).not.toMatch(/none applied yet/);
+  });
+
+  it('a node with neither marker kind still says none applied yet', async () => {
+    const { deps, out } = fakeDeps({ ...HEALTHY, markers: 0, baselineMarkers: 0 });
+    await clusterDoctor([], deps);
+    expect(out.join('\n')).toMatch(/none applied yet/);
+  });
+
   it('all green → exit 0 + "healthy"', async () => {
     const { deps, out } = fakeDeps(HEALTHY);
     expect(await clusterDoctor([], deps)).toBe(0);

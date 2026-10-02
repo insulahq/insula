@@ -9,8 +9,16 @@ import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
  * Dashboard + Notifications + UserSettings are intentionally exempt —
  * the customer can still see their account state and update their
  * profile even during a suspend.
+ *
+ * `allowDuringStorageOp` keeps a page mounted while a storage op runs. The
+ * Snapshots page needs it: a restore IS a storage op, and swapping the page
+ * for the placeholder unmounted the restore's own progress dialog seconds
+ * after it opened — the tenant never saw the restore finish.
  */
-export default function LifecycleGate({ children }: { readonly children: React.ReactNode }) {
+export default function LifecycleGate({ children, allowDuringStorageOp = false }: {
+  readonly children: React.ReactNode;
+  readonly allowDuringStorageOp?: boolean;
+}) {
   const { data } = useMyLifecycle();
   if (!data) return <>{children}</>;
 
@@ -34,7 +42,7 @@ export default function LifecycleGate({ children }: { readonly children: React.R
       />
     );
   }
-  if (storageLifecycleState && storageLifecycleState !== 'idle' && storageLifecycleState !== 'failed') {
+  if (!allowDuringStorageOp && storageLifecycleState && storageLifecycleState !== 'idle' && storageLifecycleState !== 'failed') {
     return (
       <Placeholder
         icon={<Loader2 size={40} className="animate-spin text-blue-500" />}

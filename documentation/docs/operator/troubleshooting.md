@@ -105,6 +105,10 @@ kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 insula bootstrap --remote <ip> --join-as worker --server <cp-ip> --token <token>
 ```
 
+Use `--join-as server` for a server node. Re-bootstrapping an existing node is
+always a **join** (node-local only); never re-run the first server's
+`--domain …` create command against a live cluster.
+
 ## A certificate won't issue
 
 Symptoms: a site or panel serves a browser warning, or a self-signed cert.

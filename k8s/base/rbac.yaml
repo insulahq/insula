@@ -51,8 +51,16 @@ rules:
   # migration fails at its FIRST step with a 403 — found by the DEV end-to-end
   # run, not by any unit test, because the k8s client is mocked in those.
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas", "limitranges"]
+    resources: ["pods", "services", "configmaps", "persistentvolumeclaims", "resourcequotas", "limitranges"]
     verbs: ["*"]
+  # Secrets: explicit verbs, never `*`. No `watch` (nothing in platform-api
+  # watches a Secret — no informer, no Watch) and no `deletecollection`
+  # (nothing deletes Secrets in bulk). `list` is still cluster-wide: the
+  # secrets bundle export + coverage audit list every namespace, tenant bundle
+  # export and custom deployments list tenant namespaces.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # Cluster-scoped PV access — listing is needed for storage inventory,
   # delete for the deprovision flow's Released-PV cleanup
   # (tenant SC reclaimPolicy=Retain leaves PVs around after PVC delete;
@@ -83,6 +91,10 @@ rules:
   # sub-roles like sftp-gateway's file-manager role). @kubernetes/tenant-node
   # v1 establishes the exec channel via a WebSocket GET, so `get` is also
   # required alongside `create`.
+  # Cluster-wide here only because tenant namespaces are created at runtime;
+  # the namespaces it actually reaches are limited at admission by
+  # platform-api-guardrails/pods-exec-scope.yaml (tenant, platform, mail, traefik,
+  # crowdsec, platform-system).
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]

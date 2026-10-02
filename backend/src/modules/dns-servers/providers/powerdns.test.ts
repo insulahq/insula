@@ -441,4 +441,24 @@ describe('PowerDnsProvider', () => {
       await expect(provider.listZones()).rejects.toThrow('Network error');
     });
   });
+
+  describe('deleteRecordValue', () => {
+    it('treats a missing zone as nothing to remove', async () => {
+      const { fn, calls } = mockFetch([{ status: 404, body: { error: 'Not Found' } }]);
+      globalThis.fetch = fn;
+
+      await new PowerDnsProvider(config).deleteRecordValue('gone.test', { type: 'A', name: '@', content: '203.0.113.1' });
+
+      expect(calls).toHaveLength(1); // the lookup only — no PATCH
+    });
+
+    it('surfaces any other lookup failure: the caller must not drop its row', async () => {
+      const { fn } = mockFetch([{ status: 401, body: { error: 'Unauthorized' } }]);
+      globalThis.fetch = fn;
+
+      await expect(
+        new PowerDnsProvider(config).deleteRecordValue('example.test', { type: 'A', name: '@', content: '203.0.113.1' }),
+      ).rejects.toThrow(/401/);
+    });
+  });
 });

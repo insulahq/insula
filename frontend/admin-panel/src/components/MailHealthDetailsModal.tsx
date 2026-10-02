@@ -12,6 +12,8 @@
  *     same shape as the banner for visual continuity)
  * - Deliverability section: grouped by
  *     sub-probe with expected/actual/remediation cards
+ *   - Mail endpoints section: the node/address set every per-node check
+ *     ran against (placement + port exposure), incl. untested standbys
  *
  * The deliverability section degrades gracefully: if the backend
  * doesn't emit `components.deliverability` (older build), the section
@@ -28,6 +30,7 @@ import {
   Info,
   Loader2,
   Mail,
+  Network,
   RefreshCw,
   Server,
   Shield,
@@ -37,14 +40,17 @@ import {
 } from 'lucide-react';
 import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import { timeAgo } from './MailHealthBanner';
+import MailEndpointsSection from './MailEndpointsSection';
 import type {
   DeliverabilityProbeSeverity,
   MailHealthBlocklistProbe,
   MailHealthCertComponent,
   MailHealthDeliverabilityComponent,
+  MailHealthExposureComponent,
   MailHealthJmapComponent,
   MailHealthPodComponent,
   MailHealthResponse,
+  MailHealthReverseDnsProbe,
   MailHealthRocksdbComponent,
   MailHealthTcpComponent,
 } from '@insula/api-contracts';
@@ -143,7 +149,16 @@ function DetailsContent({ r }: { readonly r: MailHealthResponse }) {
         <RocksdbCard data={r.components.rocksdb} />
         <CertCard data={r.components.cert} />
         <TcpCard data={r.components.tcp} />
+        {r.components.exposure && r.components.exposure.status !== 'not_implemented' && (
+          <ExposureCard data={r.components.exposure} />
+        )}
       </Section>
+
+      {r.endpoints && (
+        <Section title="Mail endpoints (what is tested)" icon={<Network size={14} />}>
+          <MailEndpointsSection endpoints={r.endpoints} exposure={r.components.exposure} />
+        </Section>
+      )}
 
       {r.components.deliverability && (
         <Section title="Deliverability (external)" icon={<Globe size={14} />}>
@@ -344,6 +359,32 @@ function TcpCard({ data }: { readonly data: MailHealthTcpComponent }) {
   );
 }
 
+function ExposureCard({ data }: { readonly data: MailHealthExposureComponent }) {
+  const ok = data.nodes.filter((n) => n.error === null);
+  return (
+    <ProbeCard
+      title="Mail port exposure"
+      severity={severityFromHealthy(data.healthy)}
+      assertion="Every mail endpoint node runs a Ready publisher (Stalwart hostPort / haproxy) for every mail port"
+      actual={
+        data.nodes.length > 0
+          ? `${ok.length}/${data.nodes.length} endpoint node(s) publishing: ` +
+            data.nodes.map((n) => `${n.node} (${n.exposure}) ${n.error === null ? 'ok' : 'FAIL'}`).join(', ')
+          : 'no endpoint nodes'
+      }
+      expected="all endpoint nodes publish all mail ports"
+      error={data.error}
+      remediation={
+        data.healthy
+          ? null
+          : 'See the Mail endpoints table below for the failing node. hostPort: check the Stalwart pod and ' +
+            'the port-exposure task. haproxy: `kubectl get pods -n mail -l app.kubernetes.io/component=stalwart-haproxy -o wide` ' +
+            'and the insula.host/mail-haproxy node label.'
+      }
+    />
+  );
+}
+
 // ── Deliverability section ─────────────────────────────────────────────
 
 function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComponent }) {
@@ -354,7 +395,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
         <div className="flex-1">
           <div className="font-medium">Deliverability probes skipped</div>
           <div className="text-xs mt-1">
-            {d.forwardDns?.remediation ?? 'Configure mail hostname under Email Management → Webmail Settings and ensure the cluster has server-role nodes labelled with insula.host/node-role=server.'}
+            {d.forwardDns?.remediation ?? 'Configure the mail hostname under Email Management → Webmail Settings and make sure a mail node publishes the mail ports (Email Operations → Placement / Port exposure).'}
           </div>
         </div>
       </div>
@@ -367,7 +408,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
         <Mail size={12} />
         Probing <span className="font-mono">{d.hostname}</span>
         {d.expectedMailIps.length > 0 && (
-          <> against {d.expectedMailIps.length} server IP{d.expectedMailIps.length === 1 ? '' : 's'}: <span className="font-mono">{d.expectedMailIps.join(', ')}</span></>
+          <> against {d.expectedMailIps.length} mail endpoint IPv4 address{d.expectedMailIps.length === 1 ? '' : 'es'}: <span className="font-mono">{d.expectedMailIps.join(', ')}</span></>
         )}
       </div>
 
@@ -401,7 +442,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
       {d.reverseDns.map((p) => (
         <ProbeCard
           key={`rdns-${p.ip}`}
-          title={`Reverse DNS (${p.ip})`}
+          title={reverseDnsTitle(p)}
           severity={p.severity}
           assertion={p.assertion}
           actual={p.actual}
@@ -444,6 +485,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
           <table className="w-full text-xs">
             <thead className="bg-gray-50 dark:bg-gray-900/30 text-gray-500 dark:text-gray-400">
               <tr>
+                <th className="text-left px-3 py-1.5 font-medium">Node</th>
                 <th className="text-left px-3 py-1.5 font-medium">IP</th>
                 <th className="text-left px-3 py-1.5 font-medium">List</th>
                 <th className="text-left px-3 py-1.5 font-medium">Status</th>
@@ -460,9 +502,17 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
   );
 }
 
+/** `Reverse DNS — node-1 · IPv6 (2001:db8::1)`; older backends send no node/family. */
+function reverseDnsTitle(p: MailHealthReverseDnsProbe): string {
+  const family = p.family === 'ipv6' ? 'IPv6' : p.family === 'ipv4' ? 'IPv4' : null;
+  const label = [p.node, family].filter(Boolean).join(' · ');
+  return label ? `Reverse DNS — ${label} (${p.ip})` : `Reverse DNS (${p.ip})`;
+}
+
 function BlocklistRow({ probe }: { readonly probe: MailHealthBlocklistProbe }) {
   return (
     <tr className={probe.listed ? 'bg-red-50/50 dark:bg-red-900/10' : undefined}>
+      <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{probe.node ?? '—'}</td>
       <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{probe.ip}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">
         {probe.list}

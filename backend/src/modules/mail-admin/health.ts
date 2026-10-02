@@ -24,6 +24,17 @@
  *   tcp      — Plain TCP connect to each mail port from the platform-api
  *              pod (which is on a different node than Stalwart). Catches
  *              NetworkPolicy denial, hostPort/haproxy misconfiguration.
+ *   exposure — per MAIL ENDPOINT (mail-endpoints.ts: the nodes that publish
+ *              the mail ports under the current placement + port-exposure
+ *              mode): is the publisher there and Ready, and does it declare
+ *              a hostPort for every mail port? Read from the cluster — no
+ *              connection to a public address (Stalwart auto-bans sources
+ *              that open bare connections to many ports).
+ *
+ * Every per-node / per-address check (exposure + the deliverability DNS /
+ * PTR / DNSBL probes) runs against the SAME endpoint set, which the response
+ * echoes as `endpoints` — including the standby placement nodes that were
+ * deliberately not tested, and why.
  *
  * Caching: result is in-process cached for `CACHE_TTL_MS`. The route
  * accepts `?refresh=1` to bypass. Operator UI MUST NOT poll faster
@@ -37,6 +48,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import {
+  type MailEndpointSet,
   type MailHealthResponse,
   type MailHealthRocksdbComponent,
   type MailHealthCertComponent,
@@ -47,6 +59,8 @@ import {
 } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { probeDeliverability, type DeliverabilityDeps } from './deliverability.js';
+import { endpointAddresses, endpointAddressNodes } from './mail-endpoints.js';
+import { probeExposure } from './exposure-probe.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STALWART_LABEL = 'app=stalwart-mail';
@@ -113,13 +127,25 @@ export interface MailHealthDeps {
   /** Visible for tests: override the cert exec probe. */
   readonly certExec?: (podName: string, kubeconfigPath: string | undefined, port: number, sni: string) => Promise<{ subject: string | null; issuer: string | null; notAfter: string | null; error: string | null }>;
   /**
-   * Server-role node IPs the cluster believes serve mail. Used by the
-   * deliverability probes (forward DNS, reverse DNS / FCrDNS, DNSBL).
-   * Resolved by the route from listNode + node-role label; null/empty
-   * makes deliverability report `not_implemented`.
+   * The mail endpoint set (resolveMailEndpoints) — drives the exposure probe
+   * and, unless the explicit lists below are given, the deliverability
+   * probes' IPv4/IPv6 lists and per-address node labels. Absent → exposure
+   * reports `not_implemented` (callers that predate the endpoint set).
+   */
+  readonly endpoints?: MailEndpointSet;
+  /**
+   * Set when the endpoint set could not be resolved (kube-API / DB error).
+   * The exposure probe then FAILS with this message instead of passing
+   * silently — "could not determine" is not "nothing to check".
+   */
+  readonly endpointsError?: string;
+  /**
+   * Explicit IPv4 list for the deliverability probes. Overrides `endpoints`;
+   * kept for callers/tests that pass addresses directly. Empty makes
+   * deliverability report `not_implemented`.
    */
   readonly serverNodeIps?: ReadonlyArray<string>;
-  /** Global IPv6 of the same mail nodes — drives the AAAA-coverage probe. */
+  /** Explicit IPv6 list for the AAAA-coverage + PTR probes. Overrides `endpoints`. */
   readonly serverNodeIpv6s?: ReadonlyArray<string>;
   /** Visible for tests: override the deliverability probe set wholesale. */
   readonly deliverabilityOverrides?: Partial<Omit<DeliverabilityDeps, 'hostname' | 'serverNodeIps' | 'clock'>>;
@@ -141,24 +167,28 @@ export async function getMailHealth(
   }
 
   // Pod probe runs first — its result feeds the exec-based probes
-  // (rocksdb, jmap, cert) which need a pod name. TCP probe + deliverability
-  // are independent (no pod-name dep) so they run in parallel with pod.
-  const [pod, tcp, deliverability] = await Promise.all([
+  // (rocksdb, jmap, cert) which need a pod name, and the exposure probe
+  // (hostPorts of the active node). TCP probe + deliverability are
+  // independent so they run in parallel with pod.
+  const [podResult, tcp, deliverability] = await Promise.all([
     probePod(deps),
     probeTcp(deps),
     probeDeliverability({
       hostname: deps.mailHostname,
-      serverNodeIps: deps.serverNodeIps ?? [],
-      serverNodeIpv6s: deps.serverNodeIpv6s ?? [],
+      serverNodeIps: deps.serverNodeIps ?? endpointAddresses(deps.endpoints, 'ipv4'),
+      serverNodeIpv6s: deps.serverNodeIpv6s ?? endpointAddresses(deps.endpoints, 'ipv6'),
+      addressNodes: endpointAddressNodes(deps.endpoints),
       clock: deps.clock,
       ...deps.deliverabilityOverrides,
     }),
   ]);
+  const { hostPorts, ...pod } = podResult;
   // Exec-based probes need pod.podName. They run in parallel with each other.
-  const [jmap, rocksdb, cert] = await Promise.all([
+  const [jmap, rocksdb, cert, exposure] = await Promise.all([
     probeJmap(deps, pod.podName),
     probeRocksdb(deps, pod.podName),
     probeCert(deps, pod.podName),
+    probeExposure(deps, { ...pod, hostPorts }),
   ]);
 
   const healthy =
@@ -167,10 +197,12 @@ export async function getMailHealth(
     && rocksdb.healthy
     && cert.healthy
     && tcp.healthy
-    && deliverability.healthy;
+    && deliverability.healthy
+    && exposure.healthy;
   const response = mailHealthResponseSchema.parse({
     healthy,
-    components: { pod, jmap, rocksdb, cert, tcp, deliverability },
+    components: { pod, jmap, rocksdb, cert, tcp, deliverability, exposure },
+    endpoints: deps.endpoints,
     checkedAt: new Date(now).toISOString(),
     cachedFor: Math.floor(CACHE_TTL_MS / 1000),
   });
@@ -197,7 +229,25 @@ interface PodProbeShape {
   error: string | null;
 }
 
-async function probePod(deps: MailHealthDeps): Promise<PodProbeShape> {
+/**
+ * Pod probe result + the hostPorts the stalwart container declares. The
+ * hostPorts feed the exposure probe only — they are not part of the `pod`
+ * component in the response.
+ */
+type PodProbeResult = PodProbeShape & { readonly hostPorts: ReadonlyArray<number> };
+
+async function probePod(deps: MailHealthDeps): Promise<PodProbeResult> {
+  const noPod = (error: string): PodProbeResult => ({
+    podName: null,
+    node: null,
+    phase: null,
+    containerReady: null,
+    restartCount: null,
+    initContainerStatus: null,
+    healthy: false,
+    error,
+    hostPorts: [],
+  });
   try {
     const pods = await deps.k8s.core.listNamespacedPod({
       namespace: MAIL_NAMESPACE,
@@ -205,26 +255,36 @@ async function probePod(deps: MailHealthDeps): Promise<PodProbeShape> {
     }) as { items?: Array<RawPod> };
 
     const items = pods.items ?? [];
-    const pod = items.find((p) => p.status?.phase === 'Running') ?? items[0];
+    // Prefer a Running pod that is NOT terminating — the same rule the mail
+    // endpoint resolver uses for the active node. During a rollover the old
+    // pod stays phase=Running through its grace period; picking it would make
+    // the exposure probe report the new active node as "Stalwart not here".
+    const pod = items.find((p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp)
+      ?? items.find((p) => p.status?.phase === 'Running')
+      ?? items[0];
 
     if (!pod) {
-      return {
-        podName: null,
-        node: null,
-        phase: null,
-        containerReady: null,
-        restartCount: null,
-        initContainerStatus: null,
-        healthy: false,
-        error: 'No Stalwart pod found in namespace mail (label app=stalwart-mail).',
-      };
+      return noPod('No Stalwart pod found in namespace mail (label app=stalwart-mail).');
     }
 
     const stalwartStatus = (pod.status?.containerStatuses ?? [])
       .find((c) => c.name === STALWART_CONTAINER);
+    const hostPorts = (pod.spec?.containers ?? [])
+      .filter((c) => c.name === STALWART_CONTAINER)
+      .flatMap((c) => c.ports ?? [])
+      .map((p) => p.hostPort)
+      .filter((p): p is number => typeof p === 'number' && p > 0);
     const initState = describeInitContainers(pod.status?.initContainerStatuses ?? []);
     const phase = normalisePhase(pod.status?.phase);
     const ready = stalwartStatus?.ready ?? null;
+    const base = {
+      podName: pod.metadata?.name ?? null,
+      node: pod.spec?.nodeName ?? null,
+      phase,
+      restartCount: stalwartStatus?.restartCount ?? null,
+      initContainerStatus: initState,
+      hostPorts,
+    };
 
     if (!ready) {
       const waiting = stalwartStatus?.state?.waiting;
@@ -234,39 +294,12 @@ async function probePod(deps: MailHealthDeps): Promise<PodProbeShape> {
         ?? initState
         ?? pod.status?.reason
         ?? 'container not ready';
-      return {
-        podName: pod.metadata?.name ?? null,
-        node: pod.spec?.nodeName ?? null,
-        phase,
-        containerReady: ready,
-        restartCount: stalwartStatus?.restartCount ?? null,
-        initContainerStatus: initState,
-        healthy: false,
-        error: `Stalwart pod not ready: ${reason}`,
-      };
+      return { ...base, containerReady: ready, healthy: false, error: `Stalwart pod not ready: ${reason}` };
     }
 
-    return {
-      podName: pod.metadata?.name ?? null,
-      node: pod.spec?.nodeName ?? null,
-      phase,
-      containerReady: true,
-      restartCount: stalwartStatus?.restartCount ?? null,
-      initContainerStatus: initState,
-      healthy: true,
-      error: null,
-    };
+    return { ...base, containerReady: true, healthy: true, error: null };
   } catch (err) {
-    return {
-      podName: null,
-      node: null,
-      phase: null,
-      containerReady: null,
-      restartCount: null,
-      initContainerStatus: null,
-      healthy: false,
-      error: `Pod probe failed: ${(err as Error).message ?? String(err)}`,
-    };
+    return noPod(`Pod probe failed: ${(err as Error).message ?? String(err)}`);
   }
 }
 
@@ -772,8 +805,11 @@ interface RawContainerStatus {
 }
 
 interface RawPod {
-  metadata?: { name?: string };
-  spec?: { nodeName?: string };
+  metadata?: { name?: string; deletionTimestamp?: unknown };
+  spec?: {
+    nodeName?: string;
+    containers?: Array<{ name?: string; ports?: Array<{ hostPort?: number }> }>;
+  };
   status?: {
     phase?: string;
     reason?: string;

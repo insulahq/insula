@@ -29,6 +29,12 @@ spec:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
+          # Count only THIS revision's pods: during a rollout the old pods
+          # still match labelSelector, so without this every new pod skews
+          # onto whichever node held none of the old ones (a newly joined,
+          # empty node gets them all).
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               app: admin-panel

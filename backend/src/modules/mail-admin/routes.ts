@@ -62,7 +62,8 @@ import {
   rotateResticPassword,
 } from './snapshot-settings.js';
 import { getMailPlacement, updateMailPlacement } from './placement.js';
-import { resolveServerNodeIps, resolveServerNodeIpv6s } from './server-node-ips.js';
+import { resolveMailEndpoints } from './mail-endpoints.js';
+import type { MailEndpointSet } from '@insula/api-contracts';
 import {
   startMailMigration,
   getMailMigrationStatus,
@@ -108,35 +109,9 @@ async function getCoreV1ApiForRotation(
 }
 
 /**
- * Resolve the list of node IPs that serve mail. In allServerNodes mode
- * this is every server-role node; in thisNodeOnly mode it's still the
- * whole server-role pool (deliverability checks every potential mail IP
- * so an operator can verify rDNS is set for all of them ahead of a
- * failover, not just whichever one happens to be pinned right now).
- *
- * Returns external IPs when available (these are the public mail-facing
- * IPs that DNSBLs see); falls back to internal IPs in dev clusters
- * where ExternalIP isn't populated.
- */
-/**
- * Resolve the set of NODE IPs that publicly serve mail right now —
- * MUST match the actual data-plane topology, not just "all server nodes".
- *
- * Modes:
- *   allServerNodes   — haproxy DaemonSet binds mail hostPorts on every
- *                      server-role node and forwards to the live Stalwart
- *                      pod via ClusterIP (regardless of whether the pod
- *                      is on a server or worker node). Public-facing IPs
- *                      are therefore the server-role nodes.
- *   thisNodeOnly     — Stalwart pod binds mail hostPorts directly on the
- *                      active node (which may be server OR worker per
- *                      affinity-patch-mail-stack.yaml). Public-facing IP
- *                      is the active node's IP, period.
- *
- * Pre- this hardcoded `role!== 'server' continue`, so when
- * mail-on-worker landed (Phase C of the mobility E2E) the deliverability
- * probes silently dropped the worker IP and the operator had no visibility
- * into PTR/DNSBL/SMTP-banner health for the actually-public IP.
+ * Mail-admin routes. GET /admin/mail/health probes the mail ENDPOINTS —
+ * the nodes that publish the mail ports under the current placement +
+ * port-exposure mode (mail-endpoints.ts) — and nothing else.
  */
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -211,25 +186,24 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       } catch {
         mailHostname = null;
       }
-      // Public-facing mail node IPs — drives the deliverability probes
-      // (forward DNS must cover them, each needs a PTR, each is checked
-      // against DNSBLs and gets an SMTP-banner probe). The resolver picks
-      // either ALL server-role nodes (allServerNodes mode) or just the
-      // active node (thisNodeOnly mode, even if it's a worker). Best-
-      // effort: empty list makes deliverability report `not_implemented`.
-      const serverNodeIps = await resolveServerNodeIps(k8s, app.db).catch((err) => {
-        app.log.warn({ err }, 'mail-admin: serverNodeIps lookup failed; deliverability probes skipped');
-        return [] as string[];
-      });
-      // Same nodes, IPv6 side. Empty on single-stack — the AAAA-coverage probe
-      // treats that as `skipped`, not as a missing record.
-      const serverNodeIpv6s = await resolveServerNodeIpv6s(k8s, app.db).catch((err) => {
-        app.log.warn({ err }, 'mail-admin: serverNodeIpv6s lookup failed; AAAA-coverage probe skipped');
-        return [] as string[];
-      });
+      // Mail endpoints — the nodes that publish the mail ports under the
+      // current placement + port-exposure mode, with their IPv4/IPv6. Drives
+      // every per-node / per-address probe (exposure, forward DNS, AAAA, PTR,
+      // DNSBL); standby placement nodes come back as `untested`, and nodes
+      // that are neither are not probed at all. A lookup failure is passed on
+      // as `endpointsError` so the exposure probe reports it instead of
+      // passing on an empty set.
+      let endpoints: MailEndpointSet | undefined;
+      let endpointsError: string | undefined;
+      try {
+        endpoints = await resolveMailEndpoints(k8s, app.db, app.log);
+      } catch (err) {
+        app.log.warn({ err }, 'mail-admin: mail endpoint lookup failed; per-endpoint probes skipped');
+        endpointsError = err instanceof Error ? err.message : String(err);
+      }
       const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, serverNodeIps, serverNodeIpv6s },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError },
         { refresh },
       );
       return success(result);

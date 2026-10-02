@@ -15,7 +15,7 @@ apex" *and* "the CNAME target tenant subdomains point at". R16 split them:
 
 | Setting | Means | Moves on rename? |
 |---------|-------|------------------|
-| `platform_domain` (apex/brand) | `admin.<apex>`, `tenant.<apex>`, `webmail.<apex>`, `mail.<apex>`, `stalwart.<apex>`, `tunnels.<apex>` | **Yes** |
+| `platform_domain` (apex/brand) | `admin.<apex>`, `tenant.<apex>`, `webmail.<apex>`, `mail.<apex>`, `stalwart.<apex>`, `tunnels.<apex>`, `suspended.<apex>` | **Yes** |
 | `ingress_base_domain` (platform apex) | platform's own hostnames; no longer a tenant CNAME target (routes use direct A/AAAA) | **No** |
 
 `getPlatformApex()` resolves `platform_domain`, falling back to
@@ -42,6 +42,8 @@ platform surfaces.
    - **stalwartWebadmin** — the `stalwart-webadmin` IngressRoute + Certificate
      (seed-then-disown: `reconcile: disabled`, platform-api owns the Host/cert)
    - **tunnelAnchor** — the `tunnels.<apex>` anchor IngressRoute + Certificate
+   - **suspendedPage** — the `suspended.<apex>` page IngressRoute + Certificate
+     (seed-then-disown), and re-points every suspended tenant's redirect to it
 3. Writes an audit row and returns a `dnsRequired` list — exactly which
    hostnames you must make resolvable.
 
@@ -55,8 +57,9 @@ The rename **moves the admin host**. The moment it commits, `admin.<old-apex>`
 stops routing to the panel and you continue at `admin.<new-apex>`. So:
 
 1. **Create DNS first.** For each host in the (anticipated) `dnsRequired` set —
-   `admin`, `tenant`, `webmail`, `mail`, `stalwart`, and `tunnels` (only if you
-   use private-worker tunnels) — create `A`/`AAAA` (or a `CNAME` to the ingress)
+   `admin`, `tenant`, `webmail`, `mail`, `stalwart`, `suspended` (where
+   suspended tenants' visitors are sent), and `tunnels` (only if you use
+   private-worker tunnels) — create `A`/`AAAA` (or a `CNAME` to the ingress)
    **before** renaming. DNS automation (PowerDNS, §3e) does **not** yet create
    these for you — this is a manual step.
 2. **Have the new admin URL ready.** You'll re-authenticate at
@@ -171,14 +174,15 @@ CLI: platform-ops domain rename --to <apex>   # same orchestration, in-pod
 | Mail host | `mail_server_hostname` | Stalwart domain reconciler (JMAP + ACME) |
 | Stalwart web-admin | `stalwart_admin_url` (apex default) | `reconcileStalwartWebadminIngress` |
 | Tunnel anchor | derived from apex | `reconcileTunnelAnchorIngress` |
+| Suspended-tenant page | derived from apex (`SUSPENDED_REDIRECT_URL` overrides) | `reconcileSuspendedPageIngress` |
 | **Tenant CNAME target** | `ingress_base_domain` | **untouched** |
 
 ## Where things live
 
 - Backend: `backend/src/modules/platform-domain/` (`routes.ts`, `service.ts`);
   resolver `backend/src/modules/system-settings/platform-domain.ts`; reconcilers
-  in `system-settings/`, `webmail-router/`, `mail-admin/`, `private-workers/`
-  (+ shared `traefik-host-reconcile.ts`).
+  in `system-settings/`, `webmail-router/`, `mail-admin/`, `private-workers/`,
+  `tenant-lifecycle/suspended-page.ts` (+ shared `traefik-host-reconcile.ts`).
 - CLI: `backend/src/cli/platform-ops/domain.ts` (host wrapper),
   `backend/src/cli/platform-domain-rename.ts` (in-pod entrypoint).
 - Admin UI: `frontend/admin-panel/src/pages/cluster/NetworkingPage.tsx`.

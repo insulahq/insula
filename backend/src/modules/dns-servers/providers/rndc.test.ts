@@ -209,6 +209,22 @@ describe('RndcDnsProvider', () => {
     });
   });
 
+  describe('apex records', () => {
+    it('writes and removes `@` at the zone apex, not at a label named `@`', async () => {
+      mockExecSuccess('');
+      const provider = new RndcDnsProvider(config);
+
+      await provider.createRecord('example.com', { type: 'A', name: '@', content: '1.2.3.4' });
+      await provider.deleteRecordValue('example.com', { type: 'A', name: '@', content: '1.2.3.4' });
+
+      const [add, del] = getExecCalls();
+      expect(add.args).toContain('example.com.');
+      expect(add.args.some((a: string) => a.startsWith('@'))).toBe(false);
+      expect(del.args).toEqual(expect.arrayContaining(['delrecord', 'example.com.', 'A', '1.2.3.4']));
+      expect(del.args.some((a: string) => a.startsWith('@'))).toBe(false);
+    });
+  });
+
   describe('createRecord', () => {
     it('should call rndc addrecord', async () => {
       mockExecSuccess('');

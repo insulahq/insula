@@ -2612,7 +2612,11 @@ chain; an auditable `.skipped` marker carrying a reason, reported as `skipped`
 never `applied`; consecutive-failure counting so a repeat failure states how long
 it has been repeating and a blocked chain announces itself; and an authoring
 contract distinguishing "not applicable → exit 0 loudly" from "tried and failed →
-exit 1".
+exit 1". Amended 2026-10-01 (§5): a fresh node's empty ledger is stamped with
+`.baseline` markers (`insula host-config baseline --up-to <release>`, called by
+bootstrap on a fresh node only) instead of replaying every migration ever shipped
+— reported `already-applied` + `baseline`, never `.done`, and refused on a node
+that already has converge history unless `--force`.
 
 
 ## ADR-058: The platform owns its ACME DNS-01 solver

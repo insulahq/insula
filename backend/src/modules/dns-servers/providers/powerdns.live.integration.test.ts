@@ -24,6 +24,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createDnsRecordSchema, dnsRecordFieldsFor } from '@insula/api-contracts';
 import { PowerDnsProvider } from './powerdns.js';
+import { applyRecordChange } from '../../dns-records/publish.js';
 
 const API_URL = process.env.PDNS_API_URL;
 const API_KEY = process.env.PDNS_API_KEY ?? 'probekey';
@@ -208,5 +209,57 @@ describe.skipIf(!API_URL)('PowerDnsProvider against a live PowerDNS', () => {
     await provider.deleteRecordValue(ZONE, { type: 'MX', name: '@', content: 'mail2.platform.test', priority: 20 });
     const mx = (await provider.listRecords(ZONE)).filter((r) => r.type === 'MX' && r.name === `${ZONE}.`);
     expect(mx.map((r) => r.content)).toEqual(['10 mail.platform.test.']);
+  });
+
+  // ── Value-scoped writes (the panel's delete / edit path) ────────────
+  // Deleting ONE apex A row in the panel used to send a whole-set DELETE:
+  // the apex stopped resolving while the panel still listed its remaining
+  // addresses.
+
+  const values = async (name: string, type: string) =>
+    (await provider.listRecords(ZONE)).filter((r) => r.name === name && r.type === type);
+
+  it('a panel delete of one apex address leaves the other answering, at its TTL', async () => {
+    await provider.createRecord(ZONE, { type: 'A', name: '@', content: '203.0.113.11', ttl: 3600 });
+    const before = (await values(`${ZONE}.`, 'A')).map((r) => r.content).sort();
+    expect(before).toEqual(['203.0.113.10', '203.0.113.11']);
+
+    await applyRecordChange(provider, ZONE, { action: 'delete', record: { type: 'A', name: '@', content: '203.0.113.10' } });
+
+    const after = await values(`${ZONE}.`, 'A');
+    expect(after.map((r) => r.content)).toEqual(['203.0.113.11']);
+    expect(after[0].ttl).toBe(3600);
+  });
+
+  it('a panel edit swaps one value and leaves no stale value behind', async () => {
+    await provider.createRecord(ZONE, { type: 'A', name: '@', content: '203.0.113.12', ttl: 3600 });
+
+    await applyRecordChange(provider, ZONE, {
+      action: 'update',
+      record: { type: 'A', name: '@', content: '203.0.113.13', ttl: 3600 },
+      previous: { type: 'A', name: '@', content: '203.0.113.11' },
+    });
+
+    expect((await values(`${ZONE}.`, 'A')).map((r) => r.content).sort()).toEqual(['203.0.113.12', '203.0.113.13']);
+  });
+
+  it('removes an IPv6 value written in another spelling', async () => {
+    await provider.createRecord(ZONE, { type: 'AAAA', name: 'v6', content: '2001:db8::20', ttl: 3600 });
+    await provider.createRecord(ZONE, { type: 'AAAA', name: 'v6', content: '2001:db8::21', ttl: 3600 });
+
+    await applyRecordChange(provider, ZONE, { action: 'delete', record: { type: 'AAAA', name: 'v6', content: '2001:DB8:0:0:0:0:0:20' } });
+
+    expect((await values(`v6.${ZONE}.`, 'AAAA')).map((r) => r.content)).toEqual(['2001:db8::21']);
+  });
+
+  it('removes a 2048-bit-sized DKIM key however the server stored it', async () => {
+    const key = `v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA${'q'.repeat(350)}IDAQAB`;
+    const name = `long._domainkey.${ZONE}`;
+    await provider.createRecord(ZONE, { type: 'TXT', name, content: key, ttl: 3600 });
+    expect(await values(`${name}.`, 'TXT')).toHaveLength(1);
+
+    await applyRecordChange(provider, ZONE, { action: 'delete', record: { type: 'TXT', name, content: key } });
+
+    expect(await values(`${name}.`, 'TXT')).toEqual([]);
   });
 });

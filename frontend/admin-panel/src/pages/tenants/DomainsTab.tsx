@@ -1,16 +1,23 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Loader2, Globe, ShieldCheck, Lock, Trash2, AlertTriangle } from 'lucide-react';
+import { Search, Loader2, Globe, ShieldCheck, Lock, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
+import BulkRunModal from '@/components/BulkRunModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import { useDomains } from '@/hooks/use-domains';
 import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
-import { useBulkVerifyDomains, useBulkDeleteDomains } from '@/hooks/use-bulk-domains';
+import { useBulkRun } from '@/hooks/use-bulk-run';
+import {
+  DOMAIN_BULK_RUNNERS,
+  useInvalidateDomainQueries,
+  type DomainBulkAction,
+  type DomainBulkItem,
+} from '@/hooks/use-bulk-domains';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -19,7 +26,7 @@ export default function DomainsTab() {
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [confirmAction, setConfirmAction] = useState<'verify' | 'delete' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<DomainBulkAction | null>(null);
 
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
@@ -42,8 +49,8 @@ export default function DomainsTab() {
   const { sortedData: sortedDomains, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName');
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
-  const bulkVerify = useBulkVerifyDomains();
-  const bulkDelete = useBulkDeleteDomains();
+  const bulkRun = useBulkRun();
+  const invalidateDomains = useInvalidateDomainQueries();
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -53,19 +60,24 @@ export default function DomainsTab() {
     w[key] = setTimeout(() => setDebouncedSearch(value), 300);
   };
 
-  const handleBulkAction = async () => {
-    if (!confirmAction) return;
-    const ids = [...selection.selectedIds];
-    try {
-      if (confirmAction === 'verify') await bulkVerify.mutateAsync(ids);
-      else if (confirmAction === 'delete') await bulkDelete.mutateAsync(ids);
-      selection.deselectAll();
-    } finally {
-      setConfirmAction(null);
-    }
-  };
+  // In table order, so the progress list reads like the table the operator selected from.
+  const selectedDomains: readonly DomainBulkItem[] = sortedDomains
+    .filter((d) => selection.isSelected(d.id))
+    .map((d) => ({ id: d.id, label: d.domainName, sublabel: tenantMap.get(d.tenantId), tenantId: d.tenantId }));
 
-  const isBulkPending = bulkVerify.isPending || bulkDelete.isPending;
+  const handleBulkAction = () => {
+    if (!confirmAction) return;
+    bulkRun.start({
+      title: BULK_TITLES[confirmAction],
+      noun: 'domain',
+      items: selectedDomains,
+      runItem: DOMAIN_BULK_RUNNERS[confirmAction],
+      onSettled: invalidateDomains,
+      // Keep only what still needs doing selected, so a re-run touches just those.
+      onClose: (remainingIds) => selection.setSelection(remainingIds),
+    });
+    setConfirmAction(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -193,13 +205,24 @@ export default function DomainsTab() {
         <button
           onClick={() => setConfirmAction('verify')}
           className="inline-flex items-center gap-1.5 rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition-colors"
+          data-testid="bulk-verify-domains"
         >
           <ShieldCheck size={14} />
           Verify Selected
         </button>
         <button
+          onClick={() => setConfirmAction('refresh-route-dns')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 transition-colors dark:bg-indigo-600 dark:hover:bg-indigo-500"
+          title="Rewrite the selected domains' ingress A/AAAA records from the current ingress addresses. Use after adding or removing an ingress node."
+          data-testid="bulk-refresh-route-dns"
+        >
+          <RefreshCw size={14} />
+          Refresh Route DNS
+        </button>
+        <button
           onClick={() => setConfirmAction('delete')}
           className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors"
+          data-testid="bulk-delete-domains"
         >
           <Trash2 size={14} />
           Delete Selected
@@ -210,12 +233,10 @@ export default function DomainsTab() {
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {confirmAction === 'delete' ? 'Delete' : 'Verify'} {selection.selectedCount} domain{selection.selectedCount !== 1 ? 's' : ''}?
+              {confirmAction === 'refresh-route-dns' ? 'Refresh route DNS for' : BULK_TITLES[confirmAction]} {selectedDomains.length} domain{selectedDomains.length !== 1 ? 's' : ''}?
             </h3>
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-              {confirmAction === 'delete'
-                ? 'This will permanently delete the selected domains and their DNS records. This action cannot be undone.'
-                : 'This will run DNS verification checks on the selected domains and update their verification status.'}
+              {BULK_DESCRIPTIONS[confirmAction]}
             </p>
             <div className="mt-4 flex justify-end gap-3">
               <button
@@ -226,23 +247,39 @@ export default function DomainsTab() {
               </button>
               <button
                 onClick={handleBulkAction}
-                disabled={isBulkPending}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                disabled={selectedDomains.length === 0}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
                   confirmAction === 'delete'
-                    ? 'bg-red-500 hover:bg-red-600'
-                    : 'bg-blue-500 hover:bg-blue-600'
+                    ? 'bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500'
+                    : confirmAction === 'refresh-route-dns'
+                      ? 'bg-indigo-500 hover:bg-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-500'
+                      : 'bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500'
                 }`}
+                data-testid="bulk-confirm"
               >
-                {isBulkPending && <Loader2 size={14} className="animate-spin" />}
                 Confirm
               </button>
             </div>
           </div>
         </div>
       )}
+
+      <BulkRunModal controller={bulkRun} />
     </div>
   );
 }
+
+const BULK_TITLES: Readonly<Record<DomainBulkAction, string>> = {
+  verify: 'Verify',
+  delete: 'Delete',
+  'refresh-route-dns': 'Refresh route DNS',
+};
+
+const BULK_DESCRIPTIONS: Readonly<Record<DomainBulkAction, string>> = {
+  verify: 'Runs DNS verification checks on each selected domain, one at a time, and updates its verification status.',
+  delete: 'This will permanently delete the selected domains and their DNS records. This action cannot be undone.',
+  'refresh-route-dns': "Rewrites each selected domain's ingress A/AAAA records from the current ingress addresses, one domain at a time. Records created by hand are not touched. Domains not in primary DNS mode are skipped.",
+};
 
 function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: number; tlsCertStatus?: string; tlsCertIssuer?: string | null; tlsCertExpiresAt?: string | null; tlsCertWildcard?: boolean; tlsCertError?: string | null; tlsCertFallbackActive?: boolean } }) {
   const status = domain.tlsCertStatus ?? (domain.sslAutoRenew ? 'pending' : 'none');

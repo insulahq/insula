@@ -12,6 +12,183 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
+  new cluster with `bootstrap.sh --domain <apex> …` — **without** `--join-as`. Join an existing
+  cluster with `bootstrap.sh --join-as server|worker --server <ip> --token <token>`. The old
+  first-server form `--join-as server` (no `--server`) is refused with a message showing the new
+  command; update any automation that still uses it. A join refuses cluster-wide flags
+  (`--domain`, `--env`, `--release-tag`, `--acme-*`, `--calico-*`, `--secrets-bundle`,
+  `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
+
+### Added
+
+- **Refresh route DNS for many domains at once.** Admin → Tenants → Domains: select domains and
+  choose **Refresh Route DNS** in the bulk bar to rewrite their ingress A/AAAA records from the
+  current ingress addresses — the step needed after adding or removing an ingress node. Domains
+  that are not in primary DNS mode are skipped, not failed.
+- **Bulk actions on the Tenants pages show live progress and a per-item report.** Every bulk action
+  on the Tenants, Domains and Cron Jobs tabs (suspend, reactivate, delete, verify, refresh route
+  DNS, enable, disable) now opens a progress dialog that works through the selection one item at a
+  time, showing each item as queued, running, succeeded, skipped or failed with the reason. You can
+  cancel between items, and the dialog ends with a summary ("N succeeded, M skipped, K failed").
+  Items that failed stay selected afterwards, and **Retry failed** re-runs only those. A tenant
+  whose lifecycle hooks did not all complete is now reported as failed with the failing hooks
+  listed, instead of counting as done. Bulk **Verify** now reports, per domain, whether it verified
+  and which checks failed.
+- **File Manager uploads show their speed.** While a file uploads, its line shows bytes sent of
+  the total and the current upload speed (averaged over the last few seconds); once every byte is
+  sent it says *Finishing…* until the server confirms. A completed upload keeps its final size,
+  how long it took and its average speed on screen until you close the dialog. Uploading several
+  files adds an overall line with the combined progress and speed, and the total size and average
+  speed of the batch when it finishes. Failed and cancelled uploads show no speed.
+- **Snapshot restores show their progress step by step.** Restoring a snapshot from the tenant
+  panel's **Snapshots** page now opens the same detailed progress view operators get: every step
+  of the restore (stop workloads → release the volume → attach it for the restore → revert to the
+  snapshot → detach → start workloads again) with its state, how long each step took and a running
+  clock on the current one. A failed restore names the step it stopped at and says what that means
+  for the tenant's files (not changed / restored / not confirmed) and whether the site was started
+  again; tenants never see node names or raw storage-engine errors. Operators see the same view on
+  a tenant's **Snapshots** tab and after **Backups → Tenants → Snapshots → Restore…**, with each
+  step's diagnostic detail, and the task-center chip reopens it.
+- **Snapshot tables show how much data each snapshot really holds.** Next to the volume size
+  (the provisioned size a restore gives back), the tenant panel's **Snapshots** page, a tenant's
+  **Snapshots** tab and **Backups → Tenants → Snapshots** now show a **Data size** column — the
+  space the snapshot actually uses on the server (Longhorn's per-snapshot size: what changed since
+  the previous snapshot). A snapshot whose size has not been measured shows **—** with a tooltip,
+  never 0. The sizes are read with one storage-system query per page load.
+
+### Fixed
+
+- **Restoring a snapshot no longer leaves your applications showing "Stopped".** The status
+  check that runs every 15 seconds read the restore's temporary scale-down as a stop, and once
+  an application was marked stopped it was not looked at again for ten minutes — so restored apps
+  that were already running showed as **Stopped**, with no CPU or memory usage, for up to ten
+  minutes. Applications now keep their status through a restore (and through a storage resize
+  or file-system check), and a status that is already wrong corrects itself within seconds of the
+  application running again.
+- **A snapshot restore no longer fails five minutes after it has actually finished.** If the
+  file manager was running when the restore started, the idle clean-up switched it off again while
+  the restore was waiting for it to come back, and the restore was reported as failed ("A storage
+  operation failed") even though your data had been restored.
+- **Joining a server no longer re-installs the platform over the live cluster.** A server join
+  used to run the whole cluster install again: it rewrote the cluster configuration with the
+  joining node's defaults (the admin, tenant and webmail certificates switched to the untrusted
+  Let's Encrypt **staging** issuer), reset seed-once settings to their install defaults (the
+  CrowdSec community blocklist was switched off and the platform database's WAL archive was
+  redirected), restarted the mail server, and created a second super-admin account. A join now
+  does node-local work only — hardening, firewall, k3s, node labels, the Longhorn node tag and
+  the operator CLI — and checks before touching the host that `--server` answers and that
+  `--token` belongs to that cluster.
+- **Re-running `bootstrap.sh` on the first server keeps the live cluster as it is.** It keeps the
+  existing certificate issuer and mail IP unless you explicitly pass new ones, leaves the platform
+  manifests to Flux, never overwrites seed-once objects, and no longer seeds a bootstrap admin on
+  an installed platform. It no longer patches the platform Deployments' placement either, so a
+  re-run does not restart the API and panels.
+- **The cluster join token is no longer world-readable.** New server joins keep it in the
+  root-only `k3s.service.env`; a host migration moves it there on servers joined by older
+  releases (applied at the node's next k3s restart — the migration never restarts k3s).
+- **A freshly bootstrapped node no longer replays every historical host migration.** Its ledger
+  is recorded as a baseline of the release it was installed at (`insula host-config baseline`,
+  shown as `baseline` in the host-migration status), so the first hourly converge has nothing to
+  replay. Replaying them had restarted k3s on a new server and stalled a 2-server control plane.
+- **Traefik writes its access log again — on every cluster.** Fresh installs never had one: the
+  install values set the log file and format but not `enabled`, which the Traefik chart requires
+  before it renders any access-log setting. Clusters upgraded from older releases had it only until
+  the 2026.9.18 latency-bucket update, whose Helm upgrade silently removed it. Without the access log
+  the CrowdSec agent had nothing to parse — its HTTP probing and crawling detections could never
+  fire — and no request was recorded anywhere. A host migration now enables it through Traefik's
+  Helm values, so later upgrades keep it (Traefik restarts one node at a time while it applies).
+  The CrowdSec agent now also picks the log up when it starts before Traefik has created the file
+  (a new node, or any node after a reboot) — previously it then never read it.
+  The older 2026.9.9 access-log migration no longer fails with "Duplicate value:
+  traefik-access-log" on a newly joined node, which had blocked platform updates.
+- **Traefik access logs are kept 30 days, then deleted.** They used to be rotated hourly and only
+  seven files kept (a few hours of history), and fresh installs had no rotation at all — nor, on
+  minimal OS images, the `logrotate` tool it needs. Every node now rotates the access log daily
+  (earlier once it passes 200 MB), compresses it, and removes anything older than 30 days.
+  Existing nodes are converted by a host migration, which also installs `logrotate` if missing.
+- **Rollouts spread replicas across nodes again.** Platform, CrowdSec, mail and webmail
+  Deployments count only the new revision's pods when spreading, so a rollout right after a node
+  joins no longer puts every replica on the new, empty node.
+- **The bootstrap transcript no longer contains secrets.** `/var/log/insula-bootstrap.log` is
+  root-only, secret values passed to `kubectl` are redacted in it, and the bootstrap admin
+  password is no longer printed.
+- **The admin panel's "Get bootstrap command" now gives the commands to run on the new node itself.**
+  They download this cluster's own `insula` release, verify its signature against the cluster's
+  release key before installing it (an unverified binary is never installed or run), and join with
+  the right flags — including `--dual-stack` when the cluster is dual-stack. A worker gets a real
+  join token that expires after two hours and is revoked once the node has joined; a server join
+  shows how to read the server token on an existing server (Kubernetes cannot hand that one out).
+  The old workstation command (`--remote`, `--ssh-key`, `peer-firewall-add`) is gone.
+- **A joining node no longer raises "node down / not ready" alerts while it bootstraps.** Health
+  notifications for a node are held for its first 30 minutes (`NODE_JOIN_ALERT_GRACE_MINUTES`); a
+  node that is still unhealthy when that window closes is alerted right away, so nothing is lost.
+  The same window holds the monitoring alerts about that node — CPU, memory, Longhorn disk usage,
+  kernel OOM and its scrape targets. They still show as firing on Monitoring → SLOs; only the
+  notification waits, and one that clears inside the window sends nothing.
+- **In the haproxy mail port-exposure modes, a new server gets its mail listener on its own.** A
+  server that joined after "All server nodes" was applied — or a node promoted to server — got no
+  haproxy, so it accepted no mail and failed the mail reachability check until the operator
+  re-applied the mode. The platform now adjusts which nodes run haproxy within a minute of the node
+  set or the mail-node assignment changing, and stops it on nodes that left the set. It waits while
+  a mode flip or mail migration is running.
+- **Switching mail to "All assigned mail nodes" no longer fails with "no active mail node is set"
+  while mail is running.** A cluster installed on several nodes never recorded which node serves
+  mail until someone opened Email → Operations, so the switch was refused through the API and
+  automation. Every mail placement and port-exposure decision now finds the active mail node the
+  same way — the node Stalwart is running on, else the recorded node, else the node its mailbox
+  volume lives on — and records it.
+- **New notifications: "Node joined the cluster" and "Node removed from the cluster"** — once per
+  event, naming the node, its role and addresses.
+- **Mail reachability checks test only the nodes that actually serve mail.** A non-mail node (for
+  example a newly joined server) showed failing PTR, blocklist and port checks: a renamed setting
+  made every server count as a mail endpoint. The checks now follow the mail placement and
+  port-exposure settings, test IPv4 and IPv6 per node, list standby nodes as "not tested — standby",
+  and the mail health view shows exactly which nodes and addresses were tested.
+- **Joining a second server warns about the 2-member etcd** it creates — the bootstrap output and
+  the admin panel's generated join command both say so. A 2-server control plane stops when
+  either server is down; go from one server to three, or add workers.
+- **Deleting one DNS record no longer deletes its siblings.** On PowerDNS, deleting a single
+  record in the DNS panel removed **every** value with that name and type — deleting one apex
+  `A` record took the whole apex offline while the panel still listed the remaining addresses.
+  Deletes now remove exactly that one value, and leave it in place when another record in the
+  panel still holds it (for example an older duplicate of a route's address). Editing a record's
+  value no longer leaves the old value answering next to the new one. Route clean-up and
+  "Refresh route DNS" remove only the addresses they replace, and a refresh no longer creates a
+  duplicate of an apex record written as `@`, empty, or the bare domain name. On Cloudflare,
+  Hetzner and ClouDNS, deleting a record works again (it was refused by the provider).
+- **"Refresh route DNS" also updates a route's `www` companion.** A route with *Add www* /
+  *Remove www* has address records on its companion name too; the refresh left those on the old
+  ingress addresses, so `www.<domain>` did not follow a new or removed ingress node.
+- **Deleting a route keeps the DNS records another route still needs.** Two routes on one
+  hostname with different paths (`/` and `/api`) share its address records; deleting either one
+  removed them, so the remaining route stopped resolving. The same happened to `www.<domain>`
+  when it was both a route of its own and another route's *Add www* companion. Route deletion —
+  and switching *Add www* / *Remove www* off — now removes the records only when no other route
+  serves that name.
+- **Suspended sites now show the suspension page.** Visitors of a suspended tenant's site were
+  redirected to `https://suspended.platform.local/`, a host that does not exist. They now land on
+  `https://suspended.<platform domain>/`, served over HTTPS with its own certificate, and the
+  redirect follows a platform-domain rename. Tenants that are already suspended are moved to the
+  new address when the platform API starts. If your DNS has no wildcard record for the platform
+  domain, add `suspended.<platform domain>` pointing at the ingress, like `admin.` and `tenant.`.
+
+### Security
+
+- **The management API can no longer watch Secrets or delete them in bulk.** Its role granted
+  every verb on Secrets in every namespace; it now has only the ones it uses (`get`, `list`,
+  `create`, `update`, `patch`, `delete`).
+- **The management API's own account is fenced in by admission policies.** Its role has to stay
+  broad, so seven policies now limit it to what it actually does: exec only into tenant,
+  `platform`, `mail`, `traefik` and CrowdSec pods; no kubelet exec through the node proxy; Flux may only be
+  suspended/resumed or pinned to a release, branch or commit — never pointed elsewhere; only
+  tenant namespaces and tenant RBAC may be written; Secrets and ConfigMaps only in the namespaces
+  it manages; and no workload may be created as a foreign ServiceAccount, or get a new image or
+  host access on a system component. `scripts/test-platform-api-guardrails.sh` checks a live
+  cluster (dry-run only, safe on production).
+
 ## [2026.10.2] - 2026-10-01
 
 ### Fixed

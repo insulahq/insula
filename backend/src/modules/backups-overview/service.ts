@@ -25,7 +25,10 @@ import type {
   TenantsBackupsOverviewResponse,
   TenantBackupDetail,
   TenantBackupOverviewRow,
+  TenantSnapshotListRow,
+  TenantSnapshotListResponse,
 } from '@insula/api-contracts';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // Avoid drizzle complaining about unused — kept for future joins.
 export const __unused = and;
@@ -485,32 +488,15 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
 // Backups tab, not here. `subsystem`/`targetId`/`targetName` are retained in the
 // row shape (frontend compatibility) but reflect the on-server nature.
 
-export interface TenantSnapshotListRow {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly tenantName: string | null;
-  readonly backupClass: string;
-  readonly label: string | null;
-  readonly subsystem: string;
-  readonly sizeBytes: number;
-  readonly status: string;
-  readonly targetId: string | null;
-  readonly targetName: string | null;
-  readonly createdAt: string;
-  readonly expiresAt: string | null;
-}
-
-export interface TenantSnapshotListResponse {
-  readonly rows: ReadonlyArray<TenantSnapshotListRow>;
-  readonly hasMore: boolean;
-  /** Operator-configured snapshot TTL (system_settings.snapshot_expiry_hours) —
-   *  the admin UI states that snapshots are temporary and when they reap. */
-  readonly expiryHours: number;
-}
+export type { TenantSnapshotListRow, TenantSnapshotListResponse };
 
 export async function listTenantSnapshots(
   db: Database,
   opts: { tenantId?: string; limit?: number },
+  /** When given, each ready row's real data size is read from Longhorn with
+   *  ONE list (tenant-snapshots/data-size.ts). Without it every row's
+   *  `dataSizeBytes` is null (not measured). */
+  k8s?: K8sClients,
 ): Promise<TenantSnapshotListResponse> {
   const limit = opts.limit ?? 200;
   const whereTenant = opts.tenantId
@@ -524,6 +510,8 @@ export async function listTenantSnapshots(
       label: tenantVolumeSnapshots.label,
       sizeBytes: tenantVolumeSnapshots.sizeBytes,
       status: tenantVolumeSnapshots.status,
+      longhornVolumeName: tenantVolumeSnapshots.longhornVolumeName,
+      longhornSnapshotName: tenantVolumeSnapshots.longhornSnapshotName,
       createdAt: tenantVolumeSnapshots.createdAt,
       expiresAt: tenantVolumeSnapshots.expiresAt,
     })
@@ -542,6 +530,7 @@ export async function listTenantSnapshots(
   const visible = rows.slice(0, limit);
   const { getSettings } = await import('../system-settings/service.js');
   const settings = await getSettings(db);
+  const sizes = k8s ? await readListDataSizes(k8s, visible) : new Map<string, number | null>();
   return {
     expiryHours: settings.snapshotExpiryHours,
     rows: visible.map((r) => ({
@@ -553,6 +542,9 @@ export async function listTenantSnapshots(
       label: r.label,
       subsystem: 'longhorn',
       sizeBytes: Number(r.sizeBytes ?? 0),
+      dataSizeBytes: r.status === 'ready' && r.longhornSnapshotName
+        ? sizes.get(r.longhornSnapshotName) ?? null
+        : null,
       status: r.status,
       targetId: null,
       targetName: 'on-server (Longhorn)',
@@ -561,6 +553,27 @@ export async function listTenantSnapshots(
     })),
     hasMore,
   };
+}
+
+/** One Longhorn list for the page's resolved, ready rows. New snapshots get
+ *  their Longhorn names when they turn ready; a snapshot taken before data
+ *  sizes were tracked stays "not measured" here until the tenant's own
+ *  snapshot list resolves it. A k8s failure is logged and reads the same way. */
+async function readListDataSizes(
+  k8s: K8sClients,
+  rows: ReadonlyArray<{ status: string; longhornVolumeName: string | null; longhornSnapshotName: string | null }>,
+): Promise<ReadonlyMap<string, number | null>> {
+  const volumes = rows
+    .filter((r) => r.status === 'ready' && r.longhornSnapshotName && r.longhornVolumeName)
+    .map((r) => r.longhornVolumeName!);
+  if (volumes.length === 0) return new Map();
+  try {
+    const { readLonghornSnapshotSizes } = await import('../tenant-snapshots/data-size.js');
+    return await readLonghornSnapshotSizes(k8s, volumes);
+  } catch (err) {
+    console.warn(`[backups-overview] reading tenant snapshot data sizes failed: ${err instanceof Error ? err.message : String(err)}`);
+    return new Map();
+  }
 }
 
 // trivial bump to force backend rebuild after the auto-pin

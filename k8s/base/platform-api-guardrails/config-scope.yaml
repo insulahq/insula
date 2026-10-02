@@ -1,0 +1,69 @@
+# Where platform-api may write Secrets and ConfigMaps.
+#
+# Its ClusterRole allows writes in every namespace. Overwriting a Secret or
+# ConfigMap that another system component trusts (cert-manager, Flux, CNPG,
+# Longhorn, kube-system) is an escalation route, so writes are limited to the
+# namespaces platform-api actually manages (inventory of every create/replace/
+# patch/delete call site):
+#
+#   Secrets + ConfigMaps  tenant namespaces, platform, platform-system, mail,
+#                         crowdsec, plesk-migration
+#   ConfigMaps only       traefik (modsec exclusions), redis-system (valkey-config)
+#   kube-system           CREATE of a node join token only: a Secret named
+#                         bootstrap-token-* of type bootstrap.kubernetes.io/token
+#                         (cluster-network/join-token.ts). It is removed by
+#                         owner-reference GC, never by platform-api.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-config-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["secrets", "configmaps"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: ns
+      expression: "request.namespace"
+    - name: isSecret
+      expression: "request.resource.resource == 'secrets'"
+    - name: tenantNs
+      expression: >-
+        variables.ns.startsWith('tenant-') ||
+        (variables.ns.startsWith('ns-') && namespaceObject != null &&
+          has(namespaceObject.metadata.annotations) &&
+          'insula.host/tenant-namespace' in namespaceObject.metadata.annotations &&
+          namespaceObject.metadata.annotations['insula.host/tenant-namespace'] == 'true')
+    - name: joinToken
+      expression: >-
+        variables.isSecret && variables.ns == 'kube-system' && request.operation == 'CREATE' &&
+        has(object.type) && object.type == 'bootstrap.kubernetes.io/token' &&
+        object.metadata.name.startsWith('bootstrap-token-')
+  validations:
+    - expression: >-
+        variables.tenantNs ||
+        variables.ns in ['platform', 'platform-system', 'mail', 'crowdsec', 'plesk-migration'] ||
+        (!variables.isSecret && variables.ns in ['traefik', 'redis-system']) ||
+        variables.joinToken
+      messageExpression: >-
+        'platform-api may not write ' + request.resource.resource + ' in namespace ' + variables.ns +
+        ' (ValidatingAdmissionPolicy platform-api-config-scope)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-config-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-config-scope
+  validationActions: [Deny]

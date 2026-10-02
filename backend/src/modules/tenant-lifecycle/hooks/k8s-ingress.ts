@@ -8,6 +8,7 @@ import {
   suspendNamespaceIngresses,
   resumeNamespaceIngresses,
 } from '../ingress-suspend.js';
+import { resolveSuspendedRedirectUrl } from '../suspended-page.js';
 
 /**
  * ingress-suspend hook.
@@ -25,8 +26,23 @@ async function runIngressSuspend(ctx: HookCtx): Promise<HookResult> {
     return { status: 'noop', detail: 'transition is not suspended' };
   }
   try {
-    await suspendNamespaceIngresses(ctx.k8s, ctx.namespace);
-    return { status: 'ok', detail: 'patched tenant ingresses to platform-suspended' };
+    const redirectUrl = await resolveSuspendedRedirectUrl(ctx.db);
+    if (!redirectUrl) {
+      return {
+        status: 'failed',
+        envelope: {
+          title: 'Ingress suspend failed',
+          detail: 'No platform domain is configured, so there is no suspended page to send visitors to.',
+          remediation: [
+            'Set the platform domain under Settings → Platform domain',
+            'Re-run via the lifecycle scheduler retry tick',
+          ],
+          raw: 'resolveSuspendedRedirectUrl returned null (no platform_domain / ingress_base_domain, no SUSPENDED_REDIRECT_URL)',
+        },
+      };
+    }
+    const { suspended } = await suspendNamespaceIngresses(ctx.k8s, ctx.namespace, redirectUrl);
+    return { status: 'ok', detail: `redirected ${suspended.length} tenant route(s) to ${redirectUrl}` };
   } catch (err) {
     return {
       status: 'failed',

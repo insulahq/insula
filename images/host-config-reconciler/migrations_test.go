@@ -181,3 +181,34 @@ func writeStatus(t *testing.T, st MigrationStatus) string {
 	}
 	return path
 }
+
+// ADR-056 §5: a `.baseline` item ("a fresh bootstrap already reflects this; it
+// never ran here") must reach the API. The relay unmarshals into a typed
+// struct, so a field missing here is silently DROPPED and the panel could not
+// tell a baselined node from one where every migration really ran.
+func TestReadMigrationStatusRelaysBaseline(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "status.json")
+	body := `{"schema":1,"mode":"enforce","source":"embedded","ok":true,"appliedCount":0,"items":[
+	  {"key":"2026.6.3/0001-a.sh","state":"already-applied","baseline":true},
+	  {"key":"2026.6.3/0002-b.sh","state":"already-applied","baseline":null}]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, errs := readMigrationStatus(p)
+	if len(errs) != 0 || st == nil {
+		t.Fatalf("unexpected: %v / %v", st, errs)
+	}
+	if st.Items[0].Baseline == nil || !*st.Items[0].Baseline {
+		t.Fatal("baseline:true must survive the relay")
+	}
+	if st.Items[1].Baseline != nil {
+		t.Fatal("a null baseline must stay absent")
+	}
+	out, err := json.Marshal(st.Items[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "baseline") {
+		t.Fatalf("an absent baseline must be omitted from the relayed item, got %s", out)
+	}
+}

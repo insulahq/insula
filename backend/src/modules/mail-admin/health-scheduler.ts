@@ -21,7 +21,8 @@
  */
 
 import { getMailHealth } from './health.js';
-import { resolveServerNodeIps, resolveServerNodeIpv6s } from './server-node-ips.js';
+import { resolveMailEndpoints } from './mail-endpoints.js';
+import type { MailEndpointSet } from '@insula/api-contracts';
 import { notifyAdminMailHealthDegraded } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 
@@ -38,6 +39,7 @@ const COMPONENT_LABELS: Record<string, string> = {
   cert: 'TLS certificate',
   tcp: 'mail ports',
   deliverability: 'deliverability',
+  exposure: 'mail port exposure',
 };
 
 /** 12h bucket: two alerts/day per component while a failure is sustained. */
@@ -130,15 +132,22 @@ export async function runMailHealthCheckOnce(
     jmapBaseUrl = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
   }
 
-  const [serverNodeIps, serverNodeIpv6s] = await Promise.all([
-    resolveServerNodeIps(k8s, db).catch(() => [] as string[]),
-    resolveServerNodeIpv6s(k8s, db).catch(() => [] as string[]),
-  ]);
+  // Same endpoint set the route uses: only nodes that publish the mail ports
+  // under the current placement + port-exposure mode are probed. A lookup
+  // failure is handed on (the exposure component reports it) rather than
+  // becoming an empty set that silently skips every per-node check.
+  let endpoints: MailEndpointSet | undefined;
+  let endpointsError: string | undefined;
+  try {
+    endpoints = await resolveMailEndpoints(k8s, db, log);
+  } catch (err) {
+    endpointsError = err instanceof Error ? err.message : String(err);
+  }
 
   // refresh:true — the on-demand cache would otherwise let this scheduler
   // re-read a stale response and alert (or stay silent) on old data.
   const health = await getMailHealth(
-    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, serverNodeIps, serverNodeIpv6s },
+    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError },
     { refresh: true },
   );
   if (health.healthy) return 0;

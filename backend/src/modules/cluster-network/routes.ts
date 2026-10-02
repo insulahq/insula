@@ -19,7 +19,7 @@
  *   GET    /admin/cluster/pending-peers
  *   POST   /admin/cluster/pending-peers
  *   DELETE /admin/cluster/pending-peers/:name
- *   GET    /admin/cluster/bootstrap-command/:name
+ *   POST   /admin/cluster/bootstrap-command/:name  (may mint a worker join token)
  *
  * Node listing is served by the existing /admin/nodes API. Phase 6
  * (PRIVATE NODE) will add exposure-toggle there alongside the
@@ -102,12 +102,23 @@ async function auditBlacklist(
   resourceId: string,
   changes: Record<string, unknown>,
 ): Promise<void> {
+  await auditWrite(app, req, 'firewall_blacklist', action, resourceId, changes);
+}
+
+async function auditWrite(
+  app: FastifyInstance,
+  req: AuthedRequest,
+  resourceType: string,
+  action: string,
+  resourceId: string,
+  changes: Record<string, unknown>,
+): Promise<void> {
   try {
     await app.db.insert(auditLogs).values({
       id: randomUUID(),
       tenantId: null,
       actionType: action,
-      resourceType: 'firewall_blacklist',
+      resourceType,
       resourceId: resourceId.slice(0, 36),
       actorId: userOf(req),
       actorType: 'user',
@@ -117,7 +128,7 @@ async function auditBlacklist(
       ipAddress: typeof req.ip === 'string' ? req.ip : null,
     });
   } catch (err) {
-    app.log.warn({ err: (err as Error).message }, 'firewall-blacklist: audit insert failed');
+    app.log.warn({ err: (err as Error).message, resourceType, action }, 'cluster-network: audit insert failed');
   }
 }
 
@@ -125,7 +136,6 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
   app.addHook('onRequest', authenticate);
   const cfg = app.config as Record<string, unknown>;
   const k8sOpts = { kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined };
-  const platformDomain = (cfg.PLATFORM_DOMAIN as string | undefined) ?? undefined;
 
   // ─── Trusted ranges ─────────────────────────────────────────────────
   app.get(
@@ -245,16 +255,34 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // ─── Bootstrap command ──────────────────────────────────────────────
-  app.get<{ Params: { name: string } }>(
+  // ─── Bootstrap (join) command ────────────────────────────────────────
+  // POST, not GET: for a WORKER it mints a short-lived k3s bootstrap token
+  // (a kube-system Secret owned by the pending peer). A SERVER join needs
+  // the cluster's root server token, which this endpoint never serves —
+  // the returned steps read it on an existing server instead. Node-scoped
+  // flags only, never --domain (bootstrap.sh refuses cluster-wide flags on
+  // a join). The response carries the token: never log it.
+  app.post<{ Params: { name: string } }>(
     '/admin/cluster/bootstrap-command/:name',
     { preHandler: requireRole('super_admin') },
     async (req: AuthedRequest) => {
       const name = paramName(req);
-      const cmd = await generateBootstrapCommand(name, {
-        ...k8sOpts,
-        domain: platformDomain,
+      const userId = userOf(req);
+      const cmd = await generateBootstrapCommand(name, k8sOpts, {
+        log: (msg, err) => app.log.warn({ name, err: String((err as Error)?.message ?? err).slice(0, 300) }, msg),
       });
+      const audit = {
+        role: cmd.role,
+        nodeIp: cmd.nodeIp,
+        serverIp: cmd.serverIp,
+        platformVersion: cmd.platformVersion,
+        dualStack: cmd.dualStack,
+        joinTokenKind: cmd.joinToken.kind,
+        tokenId: cmd.joinToken.tokenId,
+        tokenExpiresAt: cmd.joinToken.expiresAt,
+      };
+      app.log.warn({ userId, name, ...audit }, 'cluster-network: bootstrap command generated');
+      await auditWrite(app, req, 'cluster_pending_peer', 'cluster.bootstrap_command.generate', name, audit);
       return success(cmd);
     },
   );

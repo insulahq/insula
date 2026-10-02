@@ -69,6 +69,7 @@ interface RelayedItem {
   attempt?: unknown;
   failingSince?: unknown;
   skipReason?: unknown;
+  baseline?: unknown;
 }
 
 const STATES = new Set([
@@ -179,6 +180,8 @@ export function interpretNodeSnapshot(
         attempt: num(i.attempt),
         failingSince: str(i.failingSince),
         skipReason: str(i.skipReason),
+        // ADR-056 §5: recorded by a fresh bootstrap's `.baseline`, never run here.
+        baseline: i.baseline === true ? true : null,
       },
     ];
   });

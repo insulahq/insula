@@ -39,15 +39,52 @@ point" before a risky change (plugin update, bulk edit).
 Status badges: `creating` → `ready` (green) / `error` (red, shows the reason) /
 `deleting`. `sizeBytes` is 0 until `ready`.
 
+**Two sizes per snapshot.** *Volume size* (`sizeBytes`) is the VolumeSnapshot's
+`restoreSize` — the provisioned size of the volume, what a restore gives back.
+*Data size* (`dataSizeBytes`) is what the snapshot actually holds on the server:
+the Longhorn `snapshots.longhorn.io` CR's `status.size`, i.e. the data written
+since the previous snapshot of the volume (the first snapshot holds everything
+written so far; deleting an older snapshot merges its data into the next one, so
+that one's size grows). `dataSizeBytes: null` means **not measured** (still
+creating, the Longhorn snapshot isn't resolvable, or Longhorn didn't answer) and
+the UI shows "—" with a tooltip; a real `0` (nothing changed) shows "0 B".
+
+How it's read: when a snapshot turns ready (the create watcher's poll, or any
+list), the platform resolves the Longhorn volume + snapshot behind it once (VolumeSnapshot → VolumeSnapshotContent
+`snapshotHandle` = `snap://<volume>/<snapshot>`) and stores them on the row
+(`longhorn_volume_name`, `longhorn_snapshot_name`). Every list after that reads
+all sizes with **one** `snapshots.longhorn.io` list, label-selected by
+`longhornvolume`. Check one by hand:
+
+```bash
+kubectl -n longhorn-system get snapshots.longhorn.io <longhorn_snapshot_name> \
+  -o jsonpath='{.status.size} {.status.restoreSize}{"\n"}'
+```
+
 ## Full-volume restore (in-place revert)
 
 Restoring rolls the **entire** volume back to a snapshot — anything written since
-is lost and the site is briefly offline. The tenant panel shows an amber warning
-and a progress modal ("Quiescing workloads" → "Reverting your volume" → "Scaling
-back up").
+is lost and the site is briefly offline. The tenant panel shows an amber warning,
+then a step-by-step progress modal; the admin panel shows the same modal (tenant
+**Snapshots** tab, **Backups → Tenants → Snapshots → Restore…**, and the
+task-center chip re-opens it).
 
 - **Trigger:** `POST …/snapshots/:snapshotId/restore` → `202 { operationId }`.
-- **Poll:** `GET …/snapshots/restore-status/:operationId`.
+- **Poll:** `GET …/snapshots/restore-status/:operationId` → `outcome`
+  (`running`/`succeeded`/`failed`), `steps[]` (each `pending`/`running`/
+  `succeeded`/`failed`/`skipped` with start, finish and duration) and, on failure,
+  an `error` OperatorError for `<ErrorPanel>`.
+- **Steps:** `quiesce` → `wait-detach` → `attach-maintenance` →
+  `wait-maintenance` → `revert` → `detach-maintenance` → `unquiesce`, plus
+  `recover` after a failure (the engine starts the stopped workloads again
+  *before* marking the op `failed`, so the modal can show it). The orchestrator
+  persists the timeline to `storage_operations.progress_steps` after every step.
+- **Who sees what:** the endpoint is tenant-scoped (`requireTenantAccess` pins a
+  tenant token to its own `:tenantId`, and the service re-checks that the op row
+  belongs to that tenant and is a restore — anything else is 404). Tenant-panel
+  callers get no step `detail` (node names, volume state) and no raw engine error:
+  the failure says whether their files were changed and whether the site came
+  back. Staff tokens on the admin panel get the detail and the raw error.
 
 **Mechanism (why it's safe-by-design):** the restore is an **in-place Longhorn
 `snapshotRevert`**, *not* a clone or PVC swap:
@@ -177,13 +214,14 @@ confirm the marker is back and the site serves.
 
 | Table | Holds |
 |-------|-------|
-| `tenant_volume_snapshots` | on-server CSI snapshots: namespace, pvc_name, volume_snapshot_name, status, size, `expires_at` |
+| `tenant_volume_snapshots` | on-server CSI snapshots: namespace, pvc_name, volume_snapshot_name, status, size, `longhorn_volume_name`/`longhorn_snapshot_name` (for the data size), `expires_at` |
 | `storage_snapshots` | pre-resize / pre-archive / manual archival snapshots (off-site bundles), `kind`, `archive_path`, `target_id` |
-| `storage_operations` | every lifecycle op: `op_type`, `state`, `progress_pct/message`, `params` (incl. the quiesce snapshot), `last_error` |
+| `storage_operations` | every lifecycle op: `op_type`, `state`, `progress_pct/message`, `params` (incl. the quiesce snapshot), `progress_steps` (snapshot-restore step timeline), `last_error` |
 | `tenants.storage_lifecycle_state` / `active_storage_op_id` | the tenant's current phase + in-flight op guard |
 
 `system_settings.snapshot_expiry_hours` (default 48) controls on-server snapshot
-TTL. Migration `0067` adds `tenant_volume_snapshots` + the expiry setting.
+TTL. Migration `0067` adds `tenant_volume_snapshots` + the expiry setting;
+`0140` adds `storage_operations.progress_steps` and the two Longhorn name columns.
 
 ## Where things live
 

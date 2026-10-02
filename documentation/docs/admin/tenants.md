@@ -23,7 +23,7 @@ list of accounts, and the other tabs are cross-tenant views:
 | Tab | What it shows |
 |-----|---------------|
 | **Tenants** | Every account, searchable, with live CPU / memory / storage usage, **Placement**, storage tier (local / HA) and subscription **Expires**. Usage figures are collected when the list loads and re-used for 15 seconds, so what you see reflects the cluster now rather than the last background sweep. Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
-| **Domains** | All domains across all tenants — filter by tenant, bulk-verify, bulk-delete. → [Domains & DNS](domains-and-dns.md) |
+| **Domains** | All domains across all tenants — filter by tenant, then bulk-verify, bulk-refresh route DNS or bulk-delete. → [Domains & DNS](domains-and-dns.md) |
 | **Workloads** | Every deployment across all tenants, with a `custom` tag for bring-your-own-container deployments. → [Catalogs & applications](catalogs-and-applications.md) |
 | **Users** | Sub-users across all tenants. |
 | **Email Accounts** | Mailboxes across all tenants. → [Email](email.md) |
@@ -227,10 +227,27 @@ circuit breaker.
 
 On the **Tenants** tab, tick the checkbox on one or more rows to reveal
 the bulk action bar at the bottom: **Suspend**, **Reactivate**, and
-**Delete**. Each opens a confirmation dialog with the count. Bulk
-operations open a **Bulk Progress** modal that tracks every tenant
-individually, so a partial failure tells you exactly which ones need
-attention.
+**Delete**. The **Domains** and **Cron Jobs** tabs have their own bulk bars
+(verify / refresh route DNS / delete, and enable / disable / delete).
+
+Every bulk action asks for confirmation with the count, then opens a progress
+dialog that processes the selection **one item at a time**:
+
+- Each row shows its status — *Queued*, *Running*, *Succeeded*, *Skipped* or
+  *Failed* — and a line saying what happened or why it failed. For tenants this
+  includes the lifecycle hooks: a tenant whose hooks did not all complete is
+  shown as *Failed*, with each failing hook listed (failed hooks keep being
+  retried in the background).
+- A progress bar and running counts sit at the top.
+- **Cancel** stops before the next item; the one already running finishes.
+  Items that never ran are shown as *Not run*.
+- **Close** becomes available once the run has finished or been cancelled.
+- The dialog ends with a summary — *N succeeded, M skipped, K failed*. If
+  anything failed, a `BULK_PARTIAL_FAILURE` panel explains what to do, and
+  **Retry failed** runs only the failed items again.
+
+After you close the dialog, only the items that failed (or were not run)
+stay selected, so running the action again touches just those.
 
 The SYSTEM tenant's checkbox is always disabled — it can't be included in
 any bulk action.

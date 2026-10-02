@@ -12,6 +12,14 @@ see [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md).
 > The `sudo insula bootstrap …` commands below use the signed installer
 > binary (ADR-055) — download it per node, no repo clone. A repo checkout's
 > `./scripts/bootstrap.sh …` takes identical flags (the dev path).
+>
+> The **first server creates** the cluster (`--domain …`, no `--join-as`).
+> Every other node **joins** with `--join-as server|worker --server <ip>
+> --token <t>` and node-scoped flags only — a join refuses `--domain`,
+> `--env`, `--acme-*` and the other cluster-wide flags. Pre-enroll each
+> joining node's IP first, and grow servers 1 → 3: a 2-server etcd is less
+> available than one server (see
+> [MULTI_NODE_RUNBOOK.md](MULTI_NODE_RUNBOOK.md#add-servers-1--3-never-stop-at-2)).
 
 ## TL;DR — pick one
 
@@ -88,13 +96,13 @@ the only thing keeping the control plane safe.
 ### Bootstrap
 
 ```bash
-# First server (no --cluster-network-cidr → public mode)
-sudo insula bootstrap --join-as server \
+# First server — creates the cluster (no --cluster-network-cidr → public mode)
+sudo insula bootstrap \
     --domain example.test \
     --acme-email ops@... \
     --allow-source <operator-IP>/32
 
-# Subsequent servers / workers — same shape
+# Subsequent servers / workers — join (--join-as server for servers)
 sudo insula bootstrap --join-as worker \
     --server <existing-server-public-IP> \
     --token K10...
@@ -165,14 +173,14 @@ the switch). Verify the node has an IP in your chosen CIDR before
 running bootstrap.
 
 ```bash
-# First server
-sudo insula bootstrap --join-as server \
+# First server — creates the cluster
+sudo insula bootstrap \
     --cluster-network-cidr 10.0.0.0/16 \
     --domain example.test \
     --acme-email ops@... \
     --allow-source 10.0.0.0/16    # implicit; the CIDR also gets added
 
-# Subsequent servers + workers
+# Subsequent servers + workers — join (no --domain / --acme-email)
 sudo insula bootstrap --join-as server \
     --cluster-network-cidr 10.0.0.0/16 \
     --server 10.0.1.5 \
@@ -264,15 +272,15 @@ detects `wt0` / `tailscale0` and pins everything to the mesh IP.
 netbird up --management-url https://vpn.platform.net --setup-key <KEY>
 ip -br addr show wt0    # confirm 100.64.x.y bound
 
-# Then bootstrap:
-sudo insula bootstrap --join-as server \
+# Then create the cluster on the first server:
+sudo insula bootstrap \
     --domain example.test \
     --acme-email ops@... \
     --allow-source 100.64.0.0/10
     # bootstrap auto-detects wt0 → sets --node-ip=100.64.x.y
     # Calico autodetect inherits, MTU auto = wt0_mtu - 110
 
-# Subsequent server / worker (including NAT'd home boxes!)
+# Subsequent server / worker (including NAT'd home boxes!) — join
 sudo insula bootstrap --join-as worker \
     --server 100.64.1.5 \
     --token K10...

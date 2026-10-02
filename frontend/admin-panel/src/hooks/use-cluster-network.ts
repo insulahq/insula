@@ -6,7 +6,7 @@
  *   ClusterPendingPeer  — pre-authorise a node about to bootstrap (TTL'd)
  *
  * Plus a derived endpoint:
- *   GET /admin/cluster/bootstrap-command/:name → paste-ready insula bootstrap
+ *   POST /admin/cluster/bootstrap-command/:name → join steps for the NEW node
  *
  * Every mutation invalidates its sibling list query. Caches are short
  * (15s) since the reconciler rewrites status fields on every tick and
@@ -130,12 +130,13 @@ export function useDeletePendingPeer() {
 
 // ─── Bootstrap command ─────────────────────────────────────────────────────
 
-/** One-shot fetch — not a useQuery, since the operator triggers it from
- *  a button click (and seeing stale paste-ready commands would be
- *  confusing). Returns a regular Promise wrapping the apiFetch call. */
+/** One-shot POST — not a useQuery: the operator triggers it from a button
+ *  click, and for a WORKER each call mints a fresh short-lived join token
+ *  (a write), so it must never be refetched or cached. */
 export async function fetchBootstrapCommand(cppName: string): Promise<BootstrapCommandResponse> {
   const env = await apiFetch<Envelope<BootstrapCommandResponse>>(
     `/api/v1/admin/cluster/bootstrap-command/${encodeURIComponent(cppName)}`,
+    { method: 'POST' },
   );
   return env.data;
 }

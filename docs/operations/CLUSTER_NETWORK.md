@@ -5,7 +5,7 @@
 the same four nft sets and a deterministic input chain. CRD-driven
 trust changes converge onto every node via the
 `firewall-reconciler` DaemonSet. Day-2 trust management is via
-the admin panel under **Settings → Cluster Networking** — no
+the admin panel under **Security → Network Trust** — no
 per-node SSH, no firewall flags after bootstrap.
 
 > The legacy `cidr` / `set` / `single` modes are retained at the end
@@ -40,7 +40,7 @@ resources, defined in `k8s/base/cluster-network/`:
   after the node joins (`status.claimedAt` set when the matching
   InternalIP appears).
 
-Operator path: **Settings → Cluster Networking** in the admin panel
+Operator path: **Security → Network Trust** in the admin panel
 writes both CRD families. The reconciler converges them into the four
 nft sets within ~30 s.
 
@@ -50,7 +50,8 @@ Operator passes their workstation IP at first install so they can
 `kubectl` before the admin UI exists:
 
 ```
-sudo insula bootstrap --join-as server \
+# First server — creates the cluster (no --join-as):
+sudo insula bootstrap \
   --domain example.test --acme-email ops@... \
   --allow-source 198.51.100.7    # operator workstation
 ```
@@ -79,16 +80,23 @@ admin API or `kubectl label`) drives:
 
 ## Operator workflow — pre-enroll a new node
 
-1. **Settings → Cluster Networking → Pending Peers → Pre-Enroll Node.**
+1. **Security → Network Trust → Pending Peers → Pre-Enroll Node.**
    Paste the new node's public IP, role (server/worker), TTL.
 2. Platform-api creates a `ClusterPendingPeer` CR. Reconciler propagates
    the IP into every existing peer's `cluster_peers` nft set within ~30 s.
-3. Click **Get bootstrap command** — paste the rendered `bootstrap.sh`
-   invocation on your workstation. Replace the token placeholder by
-   running `cat /var/lib/rancher/k3s/server/node-token` on the existing
-   peer at the displayed IP.
-4. Run the bootstrap command. The new node's k3s join handshake reaches
-   `:6443` because step 2 opened the firewall.
+3. Click **Get bootstrap command** — paste the rendered
+   `insula bootstrap --join-as <role> --server <ip> --token <placeholder>`
+   JOIN command on your workstation. It carries node-scoped flags only
+   (never `--domain`/`--env`/`--acme-*` — a join refuses them). Replace the
+   token placeholder by running `cat /var/lib/rancher/k3s/server/node-token`
+   on the existing peer at the displayed IP. For a **server** join that
+   would leave an even etcd member count (above all 1 → 2) the dialog shows
+   a warning: a 2-member etcd is less available than one server, so grow
+   1 → 3 or join a worker instead.
+4. Run the join command. The new node's k3s join handshake reaches
+   `:6443` because step 2 opened the firewall. (The join checks
+   `https://<server>:6443/cacerts` before it touches the host, so a
+   missing pre-enrolment fails fast and harmlessly.)
 5. Once the new node registers, the reconciler sets
    `status.claimedAt` on the CPP. After a 5 min grace window, the CR
    auto-deletes — the node's IP is now in `cluster_peers` via the Node
@@ -235,7 +243,7 @@ operator passes --cluster-network-cidr ──────┐
 sysadmin brought up wt0 / tailscale0 ────► auto-detect mesh ─┐
 (BEFORE running bootstrap)                   │               │
                                              │               │
-HA install (--join-as server|worker) ────────┴──┬────────────┴──► CIDR mode
+multi-node (joins: --join-as …) ─────────────┴──┬────────────┴──► CIDR mode
                                                  │
                                                  ▼
                                             Set mode (Persona C)
@@ -280,25 +288,38 @@ this script. Once the mesh is up, bootstrap auto-detects it.
 apt-get install -y netbird   # or curl -fsSL https://pkgs.netbird.io/install.sh | sh
 netbird up --management-url https://vpn.example.com --setup-key <UUID>
 
-# Then run bootstrap — auto-detect picks wt0 → 100.64.0.0/10:
-sudo insula bootstrap --join-as server \
+# Then create the cluster on the first server — auto-detect picks wt0 → 100.64.0.0/10:
+sudo insula bootstrap \
   --domain example.com --acme-email ops@example.com
+
+# Every further node JOINS (node-scoped flags only — no --domain/--acme-email):
+sudo insula bootstrap --join-as worker \
+  --server <first-server-wt0-ip> --token <node-token>
 ```
 
 ### Persona-B example: Hetzner Cloud VLAN / AWS VPC / generic private network
 
 ```bash
-sudo insula bootstrap --join-as server \
+# First server — creates the cluster:
+sudo insula bootstrap \
   --domain example.com --acme-email ops@example.com \
+  --cluster-network-cidr 10.0.0.0/16 \
+  --cluster-network-cidr-v6 fd00:10::/48
+
+# Joins repeat the (node-scoped) CIDR flags, never --domain/--acme-email:
+sudo insula bootstrap --join-as server|worker \
+  --server <first-server-private-ip> --token <node-token> \
   --cluster-network-cidr 10.0.0.0/16 \
   --cluster-network-cidr-v6 fd00:10::/48
 ```
 
 If you want Calico WireGuard scoped to your VLAN as well (default is
-public, since that's the only safe choice on mesh underlays):
+public, since that's the only safe choice on mesh underlays) — a
+cluster-wide setting, so it goes on the first server's create run only
+(a join refuses `--calico-*`):
 
 ```bash
-sudo insula bootstrap --join-as server ... \
+sudo insula bootstrap --domain example.com ... \
   --cluster-network-cidr 10.0.0.0/16 \
   --calico-wg-public false
 ```
@@ -353,13 +374,16 @@ will switch to CIDR mode.
 
 ## Single mode
 
-Triggered when `--join-as` is not passed (or when there's clearly only
-one node and no mesh). No cluster-internal ports are opened — single-
-server installs don't need them.
+*Historical (legacy modes).* Was triggered when a single-server install
+ran with no peers and no mesh. No cluster-internal ports were opened. Today
+every install — the first server's create run (which passes no
+`--join-as`) as well as every join — uses always-on set mode, so a
+single-server cluster can still take joins later.
 
-To upgrade from single to HA later: re-run bootstrap on each new node
-with `--join-as server|worker --cluster-network-cidr <CIDR>` (or with a
-mesh up first, for auto-detect).
+To grow a cluster: pre-enroll each new node, then join it with
+`--join-as server|worker --server <ip> --token <t>` (plus
+`--cluster-network-cidr <CIDR>` on a pinned underlay, or with a mesh up
+first, for auto-detect).
 
 ## Operator kubectl from outside the cluster
 

@@ -33,6 +33,7 @@ import { reconcileWebmailIngress, reconcileStalwartCorsOrigin } from '../webmail
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
 import { reconcileStalwartWebadminIngress } from '../mail-admin/stalwart-webadmin-ingress.js';
+import { reconcileSuspendedPageIngress } from '../tenant-lifecycle/suspended-page.js';
 import { reconcileTunnelAnchorIngress } from '../private-workers/anchor-ingress-reconciler.js';
 
 const APEX_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -52,6 +53,7 @@ export interface RenamePlatformDomainResult {
     mail: string;
     stalwartWebadmin: string;
     tunnelAnchor: string;
+    suspendedPage: string;
   };
   readonly dnsRequired: ReadonlyArray<{ host: string; type: 'A/AAAA or CNAME -> ingress'; note: string }>;
   readonly mailNote: string;
@@ -105,6 +107,7 @@ export async function renamePlatformDomain(
         mail: 'no-change',
         stalwartWebadmin: 'no-change',
         tunnelAnchor: 'no-change',
+        suspendedPage: 'no-change',
       },
       dnsRequired: [],
       mailNote: 'apex unchanged — no reconcile performed.',
@@ -133,6 +136,7 @@ export async function renamePlatformDomain(
     mail: 'pending',
     stalwartWebadmin: 'pending',
     tunnelAnchor: 'pending',
+    suspendedPage: 'pending',
   };
 
   try {
@@ -212,6 +216,18 @@ export async function renamePlatformDomain(
     log.warn({ err }, 'platform-domain rename: tunnel anchor reconcile failed (non-blocking)');
   }
 
+  // Suspended page host + every suspended tenant's redirect target.
+  try {
+    if (!k8s) k8s = createK8sClients(kubeconfigPath);
+    const r = await reconcileSuspendedPageIngress(db, k8s.custom, log, clusterIssuerName);
+    reconciled.suspendedPage = r.host
+      ? `reconciled -> ${r.host} (${r.redirects?.repointed.length ?? 0} redirect(s) re-pointed)`
+      : 'skipped (no host resolved)';
+  } catch (err) {
+    reconciled.suspendedPage = `error: ${err instanceof Error ? err.message : String(err)}`;
+    log.warn({ err }, 'platform-domain rename: suspended page reconcile failed (non-blocking)');
+  }
+
   log.info({ previousApex, newApex, reconciled }, 'platform-domain renamed');
 
   return {
@@ -226,6 +242,7 @@ export async function renamePlatformDomain(
       { host: hostnames.mail, type: 'A/AAAA or CNAME -> ingress', note: 'mail host — needs DNS; TLS via Stalwart ACME on the reconciler tick' },
       { host: `stalwart.${newApex}`, type: 'A/AAAA or CNAME -> ingress', note: 'stalwart web-admin UI — needs DNS + cert (HTTP-01)' },
       { host: `tunnels.${newApex}`, type: 'A/AAAA or CNAME -> ingress', note: 'private-worker tunnel anchor — needs DNS + cert (HTTP-01); only if private-worker tunnels are used' },
+      { host: `suspended.${newApex}`, type: 'A/AAAA or CNAME -> ingress', note: 'suspended-tenant page — needs DNS + cert (HTTP-01); suspended sites redirect here' },
     ],
     mailNote:
       'mail_server_hostname rewritten; the stalwart-domain reconciler applies the mail host + ACME on its next tick.',

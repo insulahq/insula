@@ -14,6 +14,13 @@
  *   healthy  & firing      → resolve + notify
  *   healthy  & resolved    → touch lastEvaluatedAt
  *
+ * Joining nodes (node-health/join-grace.ts): a series whose `node` label names
+ * a node still inside its join grace window is evaluated and persisted like
+ * any other — the panel shows it firing — but NOT announced. Its row keeps
+ * `lastNotifiedAt` NULL, so if it is still firing when the window closes the
+ * next tick announces it, and if it clears inside the window nothing is sent
+ * (a resolution is only announced for an alert that was).
+ *
  * Who-watches-the-watcher: VM_FAILURE_THRESHOLD consecutive ticks where
  * vmsingle is unreachable raise the synthetic `monitoring-unreachable`
  * critical THROUGH THE SAME alert_state/notification path — which is
@@ -24,6 +31,7 @@ import type { Database } from '../../db/index.js';
 import { alertState, monitoringRuleOverrides } from '../../db/schema.js';
 import { notifyAdminSloAlertFiring, notifyAdminSloAlertResolved } from '../notifications/events.js';
 import { queryInstant, type VmClientOptions } from './vm-client.js';
+import { describeSuppression, type JoinGraceVerdict } from '../node-health/join-grace.js';
 import {
   SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey, formatSloValue,
   sloValueIsInformative,
@@ -71,6 +79,19 @@ interface TransitionInput {
    * preserves the pre-existing behaviour for those.
    */
   readonly subject: { key: string; labels: Record<string, string>; label: string | null };
+  /** Set when the subject's node is still joining — record, do not announce. */
+  readonly joining?: { readonly node: string; readonly verdict: JoinGraceVerdict } | null;
+}
+
+/** Per-tick source of join grace verdicts, keyed by node name. */
+export type JoinGraceLoader = () => Promise<ReadonlyMap<string, JoinGraceVerdict>>;
+
+export interface EvaluateOptions {
+  /**
+   * Consulted only for violated series that carry a `node` label, so a
+   * healthy tick never pays for it. Omitted → no node is treated as joining.
+   */
+  readonly joinGrace?: JoinGraceLoader;
 }
 
 const NO_SUBJECT = { key: '', labels: {}, label: null } as const;
@@ -107,7 +128,12 @@ async function applyRuleState(
     const wasFiring = existing?.state === 'firing';
     const throttleElapsed = !existing?.lastNotifiedAt
       || now.getTime() - existing.lastNotifiedAt.getTime() >= RENOTIFY_THROTTLE_MS;
-    const shouldNotify = !wasFiring || throttleElapsed;
+    const joining = input.joining ?? null;
+    const shouldNotify = !joining && (!wasFiring || throttleElapsed);
+    // NULL on an episode that started while held, even when an EARLIER episode
+    // was announced: a stale timestamp would make the post-window tick read the
+    // alert as already sent (24h throttle) and the operator would never hear of it.
+    const lastNotifiedAt = shouldNotify ? now : (wasFiring ? existing?.lastNotifiedAt ?? null : null);
 
     if (existing) {
       await db.update(alertState)
@@ -118,7 +144,7 @@ async function applyRuleState(
           lastValue: value,
           lastEvaluatedAt: now,
           subjectLabels: subject.labels,
-          ...(shouldNotify ? { lastNotifiedAt: now } : {}),
+          lastNotifiedAt,
         })
         .where(rowFilter);
     } else {
@@ -130,9 +156,13 @@ async function applyRuleState(
         severity: rule.severity,
         since: now,
         lastValue: value,
-        lastNotifiedAt: shouldNotify ? now : null,
+        lastNotifiedAt,
         lastEvaluatedAt: now,
       });
+    }
+
+    if (joining && !wasFiring) {
+      log.info(`monitoring: ${describeSuppression(joining.node, joining.verdict, `SLO alert ${rule.id}`)}`);
     }
 
     if (shouldNotify) {
@@ -171,6 +201,12 @@ async function applyRuleState(
     await db.update(alertState)
       .set({ state: 'resolved', since: now, lastValue: value, lastEvaluatedAt: now })
       .where(rowFilter);
+    if (!existing.lastNotifiedAt) {
+      // Fired while its node was joining and cleared before anyone was told —
+      // a "resolved" for an alert nobody received would only be noise.
+      log.info(`monitoring: alert cleared before it was announced — ${rule.id}${subject.label ? ` [${subject.label}]` : ''}`);
+      return;
+    }
     await notifyAdminSloAlertResolved(db, {
       ruleId: rule.id,
       ruleName: rule.name,
@@ -186,12 +222,28 @@ async function applyRuleState(
   }
 }
 
+/**
+ * The join grace verdict for a series, keyed by its `node` label — present on
+ * every node-scoped rule (`by (node)`) and on the raw `up` series of the
+ * per-node scrape jobs (kubelet, Traefik, Longhorn).
+ */
+async function joiningNodeOf(
+  labels: Record<string, string>,
+  loader: JoinGraceLoader | undefined,
+): Promise<TransitionInput['joining']> {
+  const node = labels.node;
+  if (!node || !loader) return null;
+  const verdict = (await loader()).get(node);
+  return verdict ? { node, verdict } : null;
+}
+
 /** Evaluate every enabled rule once. Exported for tests + the scheduler. */
 export async function evaluateOnce(
   db: Database,
   log: EvaluatorLogger,
   vmOpts: VmClientOptions = {},
   now: Date = new Date(),
+  opts: EvaluateOptions = {},
 ): Promise<void> {
   const overrides = await db.select().from(monitoringRuleOverrides);
   const overrideById = new Map(overrides.map((o) => [o.ruleId, o]));
@@ -247,6 +299,7 @@ export async function evaluateOnce(
           now,
           forSeconds: rule.forSeconds,
           subject: { key, labels: hit.labels, label: describeSubject(rule, hit.labels) },
+          joining: await joiningNodeOf(hit.labels, opts.joinGrace),
         }, log);
       }
 

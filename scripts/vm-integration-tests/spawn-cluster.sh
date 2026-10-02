@@ -11,7 +11,9 @@
 # exactly reproducible. Pin all nodes to one OS with VMTEST_OS=<id> for debugging.
 #
 # Fidelity is the whole point: bootstrap.sh is the SAME script staging/prod use
-# (--join-as server|worker); its pins are read from that file, never duplicated.
+# (first server: `--domain <apex>` creates the cluster; every other node:
+# `--join-as server|worker --server <ip> --token <t>` joins it); its pins are read
+# from that file, never duplicated.
 #
 # ⚠ UNTESTED until a VMTEST_DRIVER is enabled.
 set -euo pipefail
@@ -22,6 +24,7 @@ source "$HERE/lib/os-registry.sh"
 source "$HERE/lib/driver.sh"
 source "$HERE/lib/waitfor.sh"
 source "$HERE/lib/log-gate.sh"
+source "$HERE/lib/join-invariance.sh"
 
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
@@ -50,7 +53,9 @@ _planned=$(( VMTEST_SERVERS * VMTEST_RAM_MB + ${VMTEST_WORKERS:-0} * _worker_ram
 _avail=$(on_host "free -m | awk '/^Mem:/{print \$7}'" 2>/dev/null | tr -dc '0-9')
 _margin="${VMTEST_HOST_MEM_MARGIN_MB:-3072}"
 echo "── host-memory guard: planned guests=${_planned}MB, host available=${_avail:-?}MB, margin=${_margin}MB ──" >&2
-if [[ -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
+# Reuse mode boots no new guest: the run's VMs already exist and already count
+# against "available", so the planned footprint would be charged twice.
+if [[ "${VMTEST_REUSE:-0}" != "1" && -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
   echo "ABORT: planned guest memory ${_planned}MB + ${_margin}MB margin exceeds host available ${_avail}MB." >&2
   echo "  Lower VMTEST_RAM_MB / VMTEST_WORKER_RAM_MB / VMTEST_WORKERS / VMTEST_SERVERS, or free host RAM." >&2
   exit 1
@@ -160,8 +165,19 @@ MD
 }
 
 # boot_node <host> <idx> <os> → echoes the node IP
+#
+# VMTEST_REUSE=1 (rebootstrap.sh / run.sh VMTEST_REUSE_RUN): the VM already exists
+# from an earlier run — keep its disk and OS, just make sure it is running and
+# return its (pinned) address. No clone, no cloud-init seed, no new domain.
 boot_node() {
   local host="$1" idx="$2" os="$3" golden overlay mac ip=""
+  if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+    VIRSH dominfo "$host" >/dev/null 2>&1 || { echo "reuse: VM ${host} does not exist" >&2; return 1; }
+    [[ "$(VIRSH domstate "$host" 2>/dev/null)" == running ]] || VIRSH start "$host" >&2
+    for _ in $(seq 1 75); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
+    [[ -n "$ip" ]] || { echo "no lease for $host after 5 min" >&2; return 1; }
+    echo "$ip"; return 0
+  fi
   golden="$(ensure_golden "$os")"
   overlay="${VMTEST_DISK_DIR}/${host}.qcow2"
   mac=$(printf '52:54:00:%02x:%02x:%02x' "$OCTET" "$((RANDOM%256))" "$idx")
@@ -185,8 +201,14 @@ boot_node() {
 declare -A NODE_OS
 ASSIGN=""
 S1="vmt-${RUN}-s1"
-for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
-for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+if [[ "${VMTEST_REUSE:-0}" == "1" && -n "${VMTEST_OS_ASSIGN:-}" ]]; then
+  # "s1=debian-13  s2=ubuntu-24.04  w1=…" — the OSes these VMs were built with.
+  for kv in ${VMTEST_OS_ASSIGN}; do NODE_OS["vmt-${RUN}-${kv%%=*}"]="${kv#*=}"; done
+  ASSIGN="${VMTEST_OS_ASSIGN}  "
+else
+  for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
+  for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+fi
 echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${SUB}.0/24 =="
 echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
 echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
@@ -215,9 +237,29 @@ assert_guest_os_version() {
   echo "  ${ip}: ${os} ${actual} (matches pin)"
 }
 
-# bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
+# bootstrap_node <host> <ip> <mode> [extra bootstrap args…] — synchronous.
+#   mode=create        the FIRST server — CREATES the cluster: `--domain` + `--env` +
+#                      VMTEST_BOOTSTRAP_CREATE_ARGS, and NO `--join-as`.
+#   mode=server|worker JOINS the existing cluster: `--join-as <mode>`; the caller adds
+#                      `--server`/`--token`. A join is node-local only, so it gets NO
+#                      cluster-scoped flags (--domain/--env/--acme-*/…) — bootstrap.sh
+#                      rejects them loudly on a join.
+# VMTEST_BOOTSTRAP_EXTRA_ARGS reaches EVERY node, so it may only carry node-scoped
+# (join-allowed) flags; cluster-scoped ones belong in VMTEST_BOOTSTRAP_CREATE_ARGS.
 bootstrap_node() {
-  local host="$1" ip="$2" role="$3"; shift 3
+  local host="$1" ip="$2" mode="$3"; shift 3
+  local mode_args=()
+  case "$mode" in
+    create)
+      mode_args=(--domain "$APEX" --env "${VMTEST_ENV:-dev}")
+      if [[ -n "${VMTEST_BOOTSTRAP_CREATE_ARGS:-}" ]]; then
+        # shellcheck disable=SC2206
+        mode_args+=(${VMTEST_BOOTSTRAP_CREATE_ARGS})
+      fi
+      ;;
+    server|worker) mode_args=(--join-as "$mode") ;;
+    *) echo "ABORT: bootstrap_node: unknown mode '${mode}' (create|server|worker)" >&2; exit 2 ;;
+  esac
   # ssh ceiling 360s (was 180): the WORKER spawns LAST, onto a host already running the
   # 3-server HA cluster (k3s + Longhorn + platform pods), so its first boot + cloud-init
   # ssh-host-key generation runs much slower than the servers' and overran 180s (VM tier
@@ -225,7 +267,17 @@ bootstrap_node() {
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   assert_guest_os_version "$ip" "${NODE_OS[$host]}"
-  echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
+  # VMTEST_PLATFORM_OPS_BIN=<local insula binary> pre-places a locally built
+  # operator CLI (scripts/build-platform-ops.sh) exactly where an operator's
+  # `insula bootstrap` puts the signed one. Bootstrap then finds it "already at
+  # <version>" and keeps it, so a branch's CLI changes are exercised end to end
+  # instead of whichever release the node would download.
+  if [[ -n "${VMTEST_PLATFORM_OPS_BIN:-}" ]]; then
+    [[ -x "$VMTEST_PLATFORM_OPS_BIN" ]] || { echo "ABORT: VMTEST_PLATFORM_OPS_BIN=${VMTEST_PLATFORM_OPS_BIN} is not an executable" >&2; exit 2; }
+    scp -q -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_PLATFORM_OPS_BIN" "root@${ip}:/usr/local/bin/insula"
+    _vssh "$ip" "chmod 0755 /usr/local/bin/insula"
+  fi
+  echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (${mode_args[*]})"
   # Capture the status rather than letting `set -e` abort here. The gate below
   # must run on FAILURE above all — that is when its output is worth most, and
   # the first version of this code lost exactly that: bootstrap exited 1, set -e
@@ -243,8 +295,7 @@ bootstrap_node() {
 
   local boot_rc=0
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" \
-    ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
+    "${mode_args[@]}" ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
 
   # Judge the run by what it SAID as well as what it returned. An exit code of 0
   # was satisfied for months by a bootstrap printing seven `command not found`
@@ -269,27 +320,50 @@ bootstrap_node() {
   fi
 }
 
-# 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
-#    in the firewall so the other servers + worker attach as peers (a bare
+# 1) first server = etcd init (mode=create: no --join-as). --cluster-network-cidr
+#    whitelists the whole run subnet in the firewall so the other servers + worker
+#    attach as peers (a bare
 #    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
 #    mesh-whitelist is the right primitive for a known test subnet).
 S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
+# Reuse mode: the OS stays, the platform goes. destroy-cluster.sh (the same
+# wipe an operator runs before a real re-bootstrap: k3s uninstall, Calico,
+# Longhorn, firewall, host-migration ledger) runs on every cluster node first,
+# so the create + joins below install onto clean hosts.
+if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+  _inv="${VMTEST_TMP_DIR}/inventory-${RUN}.txt"; : > "$_inv"
+  for _n in $(VIRSH list --all --name | grep -E "^vmt-${RUN}-(s|w)[0-9]+$" | sort); do
+    _ip=$(boot_node "$_n" 0 "${NODE_OS[$_n]:-}") || exit 1
+    echo "${_n} ${_ip}" >> "$_inv"
+  done
+  echo "── reuse: wiping the platform from $(wc -l < "$_inv") node(s), keeping their OS ──" >&2
+  "$REPO/scripts/destroy-cluster.sh" --inventory "$_inv" --ssh-key "$VMTEST_SSH_KEY" --confirm >&2 \
+    || { echo "ABORT: destroy-cluster.sh failed on the reused nodes" >&2; exit 1; }
+  rm -f "$_inv"
+fi
 # Point cert-manager at the run's Pebble (test ACME CA) so the platform's certs ISSUE
 # for the private apex — real LE can't validate it. Same ACME issuance path as prod,
 # just a test CA; the harness trusts Pebble's root so it VERIFIES certs (no blanket -k).
 # Only the first server installs cert-manager, so only it needs the flag.
 ACME_ARGS=()
 [[ -n "${VMTEST_PEBBLE_IP:-}" ]] && ACME_ARGS=(--acme-server "https://${VMTEST_PEBBLE_IP}:14000/dir" --acme-skip-tls-verify)
-bootstrap_node "$S1" "$S1_IP" server --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" \
+bootstrap_node "$S1" "$S1_IP" create --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" \
   --cluster-network-cidr "${SUB}.0/24" ${ACME_ARGS[@]+"${ACME_ARGS[@]}"}
 wait_k3s_ready "$S1_IP" 360
 
 # 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.
+#    Joins carry ONLY node-scoped flags (--server/--token/--cluster-network-cidr +
+#    VMTEST_BOOTSTRAP_EXTRA_ARGS); the cluster was configured once, by step 1.
 TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$S1_IP" \
           "cat /var/lib/rancher/k3s/server/node-token")
+# Every join must leave the cluster's own state exactly as it found it
+# (lib/join-invariance.sh) — snapshot from the first server around each join.
 for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
+  _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+  join_assert_unchanged "server join ${SH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+  join_node_hygiene "$SIP" server || exit 1
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   # Workers carry no etcd/control-plane and few system pods, so they run comfortably smaller
@@ -297,7 +371,10 @@ for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   WH="vmt-${RUN}-w${w}"
   WIP=$(VMTEST_RAM_MB="${VMTEST_WORKER_RAM_MB:-${VMTEST_RAM_MB}}" VMTEST_VCPU="${VMTEST_WORKER_VCPU:-${VMTEST_VCPU}}" \
         boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
+  _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+  join_assert_unchanged "worker join ${WH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+  join_node_hygiene "$WIP" worker || exit 1
 done
 wait_k3s_ready "$S1_IP" 360
 

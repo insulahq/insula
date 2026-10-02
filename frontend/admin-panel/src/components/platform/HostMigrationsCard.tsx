@@ -86,6 +86,9 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
   }, [bad]);
 
   const interesting = node.items.filter((i) => i.state !== 'applied' && i.state !== 'already-applied');
+  // ADR-056 §5: recorded by a fresh bootstrap's `.baseline` — never ran on this
+  // node. Named so a freshly joined node's "applied" is not read as "ran here".
+  const baselined = node.items.filter((i) => i.baseline === true).length;
 
   return (
     <div className="border-t border-gray-100 dark:border-gray-700 pt-2 first:border-t-0 first:pt-0">
@@ -118,7 +121,9 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
           </span>
         ) : (
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            {node.note ?? `${node.appliedCount} applied${node.pendingCount ? ` · ${node.pendingCount} pending` : ''}`}
+            {node.note
+              ?? `${node.appliedCount} applied${baselined ? ` (${baselined} baseline)` : ''}`
+                + `${node.pendingCount ? ` · ${node.pendingCount} pending` : ''}`}
           </span>
         )}
       </button>

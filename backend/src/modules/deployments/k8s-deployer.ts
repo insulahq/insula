@@ -22,6 +22,7 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { describeTermination, isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
+import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import {
   deploymentKey,
   podsForApp,
@@ -186,6 +187,19 @@ export interface ComponentPodStatus {
   readonly message?: string;
   /** Node hosting the pod, when scheduled (used by status-reconciler to populate deployments.current_node_name). */
   readonly nodeName?: string | null;
+  /**
+   * Set when the Deployment carries the storage-operation hold
+   * (`insula.host/storage-quiesced`): a storage operation scaled it down and has
+   * not yet confirmed it back. Whatever phase it is in then is that
+   * operation's doing, not the deployment's — see status-reconciler.ts.
+   */
+  readonly heldByStorageOp?: boolean;
+  /**
+   * Creation time (epoch ms) of the OLDEST live pod, reported on a running
+   * component. Lets the reconciler tell a stop still in progress (pods predate
+   * the stop) from a workload that has since come back (every pod is newer).
+   */
+  readonly oldestPodCreatedAtMs?: number;
 }
 
 export interface AggregateDeploymentStatus {
@@ -1718,6 +1732,49 @@ async function getK8sDeploymentStatus(
     }
   }
 
+  const componentStatus = await classifyDeployment(
+    k8s, namespace, name, baseName, componentName, deployment, snapshot,
+  );
+  // The hold is stamped by quiesce() BEFORE it scales the workload down and
+  // cleared by unquiesce() only once the workload is available again, so it
+  // covers the whole window in which the replica count is the operation's.
+  return deployment.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true'
+    ? { ...componentStatus, heldByStorageOp: true }
+    : componentStatus;
+}
+
+/** Epoch ms of a pod's creation, or null when absent / unparseable. */
+function podCreatedAtMs(pod: SnapshotPod): number | null {
+  const raw = pod.metadata?.creationTimestamp;
+  if (raw === undefined) return null;
+  const ms = raw instanceof Date ? raw.getTime() : Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * The oldest live pod's creation time, or null if any live pod's is unknown —
+ * "every pod is newer than X" cannot be claimed about a pod with no timestamp.
+ */
+function oldestPodCreatedAtMs(pods: readonly SnapshotPod[]): number | null {
+  if (pods.length === 0) return null;
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const p of pods) {
+    const ms = podCreatedAtMs(p);
+    if (ms === null) return null;
+    if (ms < oldest) oldest = ms;
+  }
+  return oldest;
+}
+
+async function classifyDeployment(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+  baseName: string,
+  componentName: string,
+  deployment: SnapshotDeployment,
+  snapshot?: WorkloadSnapshot,
+): Promise<ComponentPodStatus> {
   const spec = deployment.spec;
   const status = deployment.status;
   const desiredReplicas = spec?.replicas ?? 1;
@@ -1809,7 +1866,11 @@ async function getK8sDeploymentStatus(
   }
 
   if (readyReplicas >= desiredReplicas) {
-    return { name: componentName, type: 'deployment', phase: 'running', ready: true, nodeName };
+    const oldest = oldestPodCreatedAtMs(livePods);
+    return {
+      name: componentName, type: 'deployment', phase: 'running', ready: true, nodeName,
+      ...(oldest !== null ? { oldestPodCreatedAtMs: oldest } : {}),
+    };
   }
 
   // Check K8s events for FailedCreate (quota exceeded, etc.) and

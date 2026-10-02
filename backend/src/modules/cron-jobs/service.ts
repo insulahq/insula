@@ -7,6 +7,7 @@ import type { Database } from '../../db/index.js';
 import { runAndRecord, type CronSchedulerDeps } from './scheduler.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+import type { BulkIdResult } from '@insula/api-contracts';
 
 export async function createCronJob(db: Database, tenantId: string, input: CreateCronJobInput) {
   await getTenantById(db, tenantId);
@@ -222,10 +223,7 @@ export async function deleteCronJob(db: Database, tenantId: string, cronJobId: s
   await db.delete(cronJobs).where(eq(cronJobs.id, cronJobId));
 }
 
-export interface BulkCronJobResult {
-  readonly succeeded: readonly string[];
-  readonly failed: readonly { readonly id: string; readonly error: string }[];
-}
+export type BulkCronJobResult = BulkIdResult;
 
 export async function bulkUpdateCronJobEnabled(
   db: Database,

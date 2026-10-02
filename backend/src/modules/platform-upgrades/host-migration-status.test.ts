@@ -120,6 +120,21 @@ describe('interpretNodeSnapshot', () => {
     expect(r.invalidCount).toBe(1);
     expect(isDegraded([r])).toBe(true);
   });
+
+  it('carries the ADR-056 §5 baseline flag — "recorded by a fresh bootstrap" is not "ran here"', () => {
+    const r = interpretNodeSnapshot('n1', snap({
+      ok: true,
+      items: [
+        { key: 'v/0001.sh', state: 'already-applied', baseline: true },
+        { key: 'v/0002.sh', state: 'already-applied' },
+        { key: 'v/0003.sh', state: 'already-applied', baseline: 'yes' }, // not a boolean → ignored
+      ],
+    }));
+    expect(r.items.map((i) => i.baseline)).toEqual([true, null, null]);
+    // still counted as applied, and a baselined node is healthy
+    expect(r.appliedCount).toBe(3);
+    expect(isDegraded([r])).toBe(false);
+  });
 });
 
 describe('isDegraded', () => {

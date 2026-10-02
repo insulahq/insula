@@ -199,3 +199,38 @@ export function splitContent(input: DnsRecordInput): SplitRecordContent {
 
   return { content: raw };
 }
+
+/**
+ * The wire content in a form two spellings of the SAME value compare equal in.
+ *
+ * `formatContent` produces what we SEND; a server stores and echoes its own
+ * spelling of it. A value-scoped delete or a "does another row still publish
+ * this?" check that compares raw strings silently misses whenever the two
+ * differ — the delete becomes a no-op and the old value stays live:
+ *   - TXT longer than 255 bytes comes back split into `"…" "…"` strings
+ *     (every 2048-bit DKIM key);
+ *   - IPv6 has many spellings of one address (`2001:DB8:0::1` / `2001:db8::1`);
+ *   - hostnames are case-insensitive (`Mail.Example.test.`).
+ *
+ * Throws exactly where `formatContent` does (an MX with no priority).
+ */
+export function canonicalContent(input: DnsRecordInput): string {
+  const type = input.type.toUpperCase();
+  const wire = formatContent(input);
+
+  if (type === 'TXT' || type === 'SPF') {
+    // Join adjacent character-strings: `"a" "b"` is the one value `"ab"`.
+    return wire.replace(/(?<!\\)"\s+"/g, '');
+  }
+  if (type === 'AAAA') {
+    try {
+      return new URL(`http://[${wire}]/`).hostname.slice(1, -1);
+    } catch {
+      return wire.toLowerCase();
+    }
+  }
+  if (type === 'MX' || type === 'SRV' || HOSTNAME_CONTENT_TYPES.has(type)) {
+    return wire.toLowerCase();
+  }
+  return wire;
+}

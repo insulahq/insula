@@ -6,6 +6,8 @@ import {
   DISK_USED_PCT_WARNING,
   buildEntry,
   computeClusterBaseline,
+  decideHealthNotification,
+  lastAnnouncedSeverity,
   missingDriversFor,
   overallSeverity,
   severityFor,
@@ -242,5 +244,81 @@ describe('shouldNotify', () => {
       newSeverity: 'normal', prevSeverity: 'normal',
       lastNotifiedAt: null, now,
     })).toBe(false);
+  });
+});
+
+// Join grace window (join-grace.ts). The decision is driven tick by tick the
+// way the reconciler drives it: persist what it returns, feed it back in.
+describe('decideHealthNotification — join grace', () => {
+  const H = 60 * 60 * 1000;
+  const t0 = new Date('2026-10-01T12:00:00Z');
+  const at = (ms: number) => new Date(t0.getTime() + ms);
+
+  it('notifies nothing while the node is joining and records the episode as unannounced', () => {
+    const d = decideHealthNotification({ newSeverity: 'critical', prev: undefined, suppressed: true, now: t0 });
+    expect(d).toEqual({ notify: false, prevSeverityForCopy: 'normal', lastNotifiedAt: null });
+  });
+
+  it('fires on the first tick after the window when the node is STILL unhealthy — the alert is late, not lost', () => {
+    let prev: { severity: 'critical'; lastNotifiedAt: Date | null } | undefined;
+    for (let m = 0; m < 30; m += 5) {
+      const d = decideHealthNotification({ newSeverity: 'critical', prev, suppressed: true, now: at(m * 60_000) });
+      expect(d.notify).toBe(false);
+      prev = { severity: 'critical', lastNotifiedAt: d.lastNotifiedAt };
+    }
+    const after = decideHealthNotification({ newSeverity: 'critical', prev, suppressed: false, now: at(30 * 60_000) });
+    expect(after.notify).toBe(true);
+    // Copy reads "flagged CRITICAL", not "still CRITICAL": nobody was told yet.
+    expect(after.prevSeverityForCopy).toBe('normal');
+    expect(after.lastNotifiedAt).toEqual(at(30 * 60_000));
+  });
+
+  it('sends no "recovered" for a problem that resolved inside the window', () => {
+    const during = decideHealthNotification({ newSeverity: 'critical', prev: undefined, suppressed: true, now: t0 });
+    const after = decideHealthNotification({
+      newSeverity: 'normal',
+      prev: { severity: 'critical', lastNotifiedAt: during.lastNotifiedAt },
+      suppressed: false,
+      now: at(H),
+    });
+    expect(after.notify).toBe(false);
+  });
+
+  it('never erases what the operator was already told — a known-bad node keeps the normal rules', () => {
+    // E.g. an established, announced-CRITICAL node that a fresh
+    // ClusterPendingPeer now matches because it is being re-bootstrapped.
+    const announced = { severity: 'critical' as const, lastNotifiedAt: at(-2 * H) };
+    const recovered = decideHealthNotification({ newSeverity: 'normal', prev: announced, suppressed: true, now: t0 });
+    expect(recovered).toEqual({ notify: true, prevSeverityForCopy: 'critical', lastNotifiedAt: t0 });
+    const still = decideHealthNotification({ newSeverity: 'critical', prev: announced, suppressed: true, now: t0 });
+    expect(still).toEqual({ notify: false, prevSeverityForCopy: 'critical', lastNotifiedAt: at(-2 * H) });
+  });
+
+  it('still holds news for a node whose last announcement was a recovery', () => {
+    const d = decideHealthNotification({
+      newSeverity: 'critical',
+      prev: { severity: 'normal', lastNotifiedAt: at(-2 * H) },
+      suppressed: true,
+      now: t0,
+    });
+    expect(d).toEqual({ notify: false, prevSeverityForCopy: 'normal', lastNotifiedAt: null });
+  });
+
+  it('leaves the normal rules untouched outside a window', () => {
+    const announced = { severity: 'critical' as const, lastNotifiedAt: at(-H) };
+    expect(decideHealthNotification({ newSeverity: 'critical', prev: announced, suppressed: false, now: t0 }).notify)
+      .toBe(false);
+    expect(decideHealthNotification({ newSeverity: 'critical', prev: announced, suppressed: false, now: at(24 * H) }).notify)
+      .toBe(true);
+    const recovered = decideHealthNotification({ newSeverity: 'normal', prev: announced, suppressed: false, now: t0 });
+    expect(recovered).toEqual({ notify: true, prevSeverityForCopy: 'critical', lastNotifiedAt: t0 });
+    expect(decideHealthNotification({ newSeverity: 'critical', prev: undefined, suppressed: false, now: t0 }).notify)
+      .toBe(true);
+  });
+
+  it('reads an unannounced row as "the operator was told: normal"', () => {
+    expect(lastAnnouncedSeverity(undefined)).toBe('normal');
+    expect(lastAnnouncedSeverity({ severity: 'warning', lastNotifiedAt: null })).toBe('normal');
+    expect(lastAnnouncedSeverity({ severity: 'warning', lastNotifiedAt: t0 })).toBe('warning');
   });
 });

@@ -230,3 +230,75 @@ describe('ADR-056 host-migration failure policy', () => {
     expect(cleared).toEqual(['2026.1.1/0001-a.sh']);
   });
 });
+
+// ── .baseline: a fresh bootstrap already reflects the migration ──────────────
+// A freshly bootstrapped node starts with an EMPTY ledger, so without this its
+// first converge replays every migration ever shipped — on production a joining
+// server re-applied a cluster-wide Calico manifest and restarted k3s on a
+// 2-member etcd. bootstrap.sh at release X already produces the end state of
+// every migration <= X, so those are stamped `.baseline` instead: honest (never
+// `.done` — they never ran here) and never run.
+describe('host-migration .baseline marker', () => {
+  const s = (key: string) => ({ version: key.split('/')[0] as string, name: key.split('/')[1] as string, key, body: '' });
+
+  function baselineDeps(over: Partial<HostMigrationDeps> = {}): { deps: HostMigrationDeps; ran: string[] } {
+    const ran: string[] = [];
+    const deps: HostMigrationDeps = {
+      readMode: async () => 'enforce',
+      isApplied: () => false,
+      markApplied: () => {},
+      runScript: (sc) => { ran.push(sc.key); },
+      source: 'embedded',
+      ...over,
+    };
+    return { deps, ran };
+  }
+
+  it('treats a baselined script as already-applied with baseline:true — and never runs it', () => {
+    const { deps, ran } = baselineDeps({ readBaseline: (k) => k === '2026.6.3/0001-a.sh' });
+    const r = runHostMigrations([s('2026.6.3/0001-a.sh'), s('2026.6.3/0002-b.sh')], true, deps);
+    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied', baseline: true });
+    expect(r.items[1]?.state).toBe('applied');
+    expect(ran).toEqual(['2026.6.3/0002-b.sh']);
+    expect(r.appliedCount).toBe(1); // a baseline is not something this pass applied
+    expect(r.ok).toBe(true);
+  });
+
+  it('reports a baselined script as already-applied in a dry-run too (not would-run)', () => {
+    const { deps, ran } = baselineDeps({ readBaseline: () => true });
+    const r = runHostMigrations([s('2026.6.3/0001-a.sh')], false, deps);
+    expect(r.items[0]).toMatchObject({ state: 'already-applied', baseline: true });
+    expect(ran).toHaveLength(0);
+  });
+
+  it('.done wins over .baseline — a script that really ran is reported without the baseline flag', () => {
+    const { deps } = baselineDeps({ isApplied: () => true, readBaseline: () => true });
+    const r = runHostMigrations([s('2026.6.3/0001-a.sh')], true, deps);
+    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied' });
+    expect(r.items[0]).not.toHaveProperty('baseline');
+  });
+
+  it('leaves .skipped behaviour unchanged — an operator skip is still reported as skipped', () => {
+    const { deps } = baselineDeps({
+      readSkip: () => ({ reason: 'not applicable here' }),
+      readBaseline: () => true,
+    });
+    const r = runHostMigrations([s('2026.6.3/0001-a.sh')], true, deps);
+    expect(r.items[0]).toMatchObject({ state: 'skipped', skipReason: 'not applicable here' });
+    expect(r.items[0]).not.toHaveProperty('baseline');
+  });
+
+  it('a baselined script does not block, and an invalid one is still never run', () => {
+    const { deps, ran } = baselineDeps({ readBaseline: () => true });
+    const r = runHostMigrations([s('latest/0001-a.sh')], true, deps);
+    expect(r.items[0]?.state).toBe('invalid');
+    expect(ran).toHaveLength(0);
+  });
+
+  it('without a readBaseline dep (older wiring) nothing changes', () => {
+    const { deps, ran } = baselineDeps();
+    const r = runHostMigrations([s('2026.6.3/0001-a.sh')], true, deps);
+    expect(r.items[0]?.state).toBe('applied');
+    expect(ran).toEqual(['2026.6.3/0001-a.sh']);
+  });
+});

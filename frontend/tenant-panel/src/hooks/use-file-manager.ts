@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { MAX_BULK_PATHS, type DiskUsage } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
@@ -6,6 +6,7 @@ import { apiFetch, API_BASE } from '@/lib/api-client';
 import { streamNdjsonOperation, type StreamProgress } from '@/lib/ndjson-progress';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { reportFileManagerError } from '@/hooks/use-file-manager-errors';
+import { addSpeedSample, currentSpeed, percentOf, type SpeedSample } from '@/lib/upload-speed';
 
 /**
  * Every file-manager mutation goes through this instead of `useMutation`.
@@ -492,6 +493,15 @@ export interface UploadProgress {
    *  (files larger than CHUNK_THRESHOLD). Empty/undefined for small
    *  files that go single-stream. */
   readonly chunks?: readonly UploadChunkProgress[];
+  /** performance.now() when the upload started, and when it completed.
+   *  Together with `total` they give the final average speed. */
+  readonly startedAt: number;
+  readonly finishedAt?: number;
+  /** Bytes/s over the last few seconds (lib/upload-speed). Null until
+   *  measurable and in every terminal state, so a failed or cancelled
+   *  upload can never show the speed it had when it stopped. */
+  readonly speed: number | null;
+  readonly speedSamples: readonly SpeedSample[];
 }
 
 // Files larger than this are split into chunks and uploaded in parallel.
@@ -502,11 +512,48 @@ const CHUNK_THRESHOLD = 8 * 1024 * 1024;
 const CHUNK_SIZE = 4 * 1024 * 1024;
 const PARALLEL_CHUNKS = 4;
 
+// XHR fires no progress events while a link is stalled; this heartbeat
+// re-samples every running upload so its live speed decays to 0 instead of
+// freezing at the last value.
+const SPEED_TICK_MS = 1000;
+
+const nowMs = (): number => performance.now();
+
+/** The speed fields of a just-started upload: anchored at 0 bytes now. */
+function speedStart(at: number): Pick<UploadProgress, 'startedAt' | 'speed' | 'speedSamples'> {
+  return { startedAt: at, speed: null, speedSamples: [{ at, loaded: 0 }] };
+}
+
+/** Terminal states carry no live speed. */
+const NO_LIVE_SPEED = { speed: null, speedSamples: [] } as const;
+
+/** `u` with `loaded` bytes sent as of `at`, live speed recomputed. */
+function withProgress(u: UploadProgress, loaded: number, at: number): UploadProgress {
+  const speedSamples = addSpeedSample(u.speedSamples, { at, loaded });
+  return {
+    ...u,
+    loaded,
+    percent: percentOf(loaded, u.total),
+    speedSamples,
+    speed: currentSpeed(speedSamples, at),
+  };
+}
+
 export function useUploadFiles() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const [visible, setVisible] = useState(false);
+
+  const anyRunning = uploads.some(u => u.status === 'uploading');
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = setInterval(() => {
+      const at = nowMs();
+      setUploads(prev => prev.map(u => (u.status === 'uploading' ? withProgress(u, u.loaded, at) : u)));
+    }, SPEED_TICK_MS);
+    return () => clearInterval(id);
+  }, [anyRunning]);
 
   const uploadFile = useCallback((file: File, targetDir: string) => {
     const filePath = targetDir === '/' ? `/${file.name}` : `${targetDir}/${file.name}`;
@@ -529,14 +576,14 @@ export function useUploadFiles() {
       xhr.abort();
       setUploads(prev => prev.map(u =>
         u.filename === file.name && u.status === 'uploading'
-          ? { ...u, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
+          ? { ...u, ...NO_LIVE_SPEED, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
           : u,
       ));
     };
 
     setUploads(prev => [...prev, {
       filename: file.name, loaded: 0, total: file.size, percent: 0,
-      status: 'uploading', abort: abortFn,
+      status: 'uploading', abort: abortFn, ...speedStart(nowMs()),
     }]);
     setVisible(true);
 
@@ -548,9 +595,10 @@ export function useUploadFiles() {
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
+        const at = nowMs();
         setUploads(prev => prev.map(u =>
           u.filename === file.name && u.status === 'uploading'
-            ? { ...u, loaded: e.loaded, total: e.total, percent: Math.round((e.loaded / e.total) * 100) }
+            ? withProgress({ ...u, total: e.total }, e.loaded, at)
             : u,
         ));
       }
@@ -558,9 +606,10 @@ export function useUploadFiles() {
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
+        const at = nowMs();
         setUploads(prev => prev.map(u =>
           u.filename === file.name && u.status === 'uploading'
-            ? { ...u, status: 'done', percent: 100, loaded: u.total, abort: undefined }
+            ? { ...u, ...NO_LIVE_SPEED, status: 'done', percent: 100, loaded: u.total, abort: undefined, finishedAt: at }
             : u,
         ));
         qc.invalidateQueries({ queryKey: ['files', tenantId] });
@@ -568,7 +617,7 @@ export function useUploadFiles() {
         const errMsg = (() => { try { return JSON.parse(xhr.responseText)?.error?.message; } catch { return xhr.statusText; } })();
         setUploads(prev => prev.map(u =>
           u.filename === file.name && u.status === 'uploading'
-            ? { ...u, status: 'error', error: errMsg || 'Upload failed', abort: undefined }
+            ? { ...u, ...NO_LIVE_SPEED, status: 'error', error: errMsg || 'Upload failed', abort: undefined }
             : u,
         ));
       }
@@ -577,7 +626,7 @@ export function useUploadFiles() {
     xhr.onerror = () => {
       setUploads(prev => prev.map(u =>
         u.filename === file.name && u.status === 'uploading'
-          ? { ...u, status: 'error', error: 'Network error', abort: undefined }
+          ? { ...u, ...NO_LIVE_SPEED, status: 'error', error: 'Network error', abort: undefined }
           : u,
       ));
     };
@@ -585,7 +634,7 @@ export function useUploadFiles() {
     xhr.onabort = () => {
       setUploads(prev => prev.map(u =>
         u.filename === file.name && u.status === 'uploading'
-          ? { ...u, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
+          ? { ...u, ...NO_LIVE_SPEED, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
           : u,
       ));
     };
@@ -642,7 +691,7 @@ function uploadFileChunked(
     for (const xhr of inFlight) try { xhr.abort(); } catch { /* ignore */ }
     setUploads(prev => prev.map(u =>
       u.filename === file.name && u.status === 'uploading'
-        ? { ...u, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
+        ? { ...u, ...NO_LIVE_SPEED, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
         : u,
     ));
   };
@@ -655,6 +704,7 @@ function uploadFileChunked(
     status: 'uploading',
     abort: abortFn,
     chunks,
+    ...speedStart(nowMs()),
   }]);
   setVisible(true);
 
@@ -666,7 +716,7 @@ function uploadFileChunked(
 
   const pushUpdate = () => {
     const totalLoaded = chunkLoaded.reduce((a, b) => a + b, 0);
-    const percent = Math.round((totalLoaded / total) * 100);
+    const at = nowMs();
     const next: UploadChunkProgress[] = chunks.map((c, i) => ({
       ...c,
       loaded: chunkLoaded[i],
@@ -674,7 +724,7 @@ function uploadFileChunked(
     }));
     setUploads(prev => prev.map(u =>
       u.filename === file.name && u.status === 'uploading'
-        ? { ...u, loaded: totalLoaded, percent, chunks: next }
+        ? { ...withProgress(u, totalLoaded, at), chunks: next }
         : u,
     ));
   };
@@ -747,14 +797,15 @@ function uploadFileChunked(
       if (chunkStatus.some(s => s === 'error')) {
         setUploads(prev => prev.map(u =>
           u.filename === file.name && u.status === 'uploading'
-            ? { ...u, status: 'error', error: 'One or more chunks failed', abort: undefined }
+            ? { ...u, ...NO_LIVE_SPEED, status: 'error', error: 'One or more chunks failed', abort: undefined }
             : u,
         ));
         return;
       }
+      const at = nowMs();
       setUploads(prev => prev.map(u =>
         u.filename === file.name && u.status === 'uploading'
-          ? { ...u, status: 'done', percent: 100, loaded: total, abort: undefined }
+          ? { ...u, ...NO_LIVE_SPEED, status: 'done', percent: 100, loaded: total, abort: undefined, finishedAt: at }
           : u,
       ));
       qc.invalidateQueries({ queryKey: ['files', tenantId] });
@@ -762,7 +813,7 @@ function uploadFileChunked(
       const msg = err instanceof Error ? err.message : 'Upload failed';
       setUploads(prev => prev.map(u =>
         u.filename === file.name && u.status === 'uploading'
-          ? { ...u, status: 'error', error: msg, abort: undefined }
+          ? { ...u, ...NO_LIVE_SPEED, status: 'error', error: msg, abort: undefined }
           : u,
       ));
     }

@@ -40,18 +40,35 @@ API keeps overhead minimal.
 
 ## Bootstrap flags
 
+The first server CREATES the cluster (no `--join-as`); every other node
+JOINS it with `--join-as server|worker --server <ip> --token <t>` and only
+node-scoped flags (a join refuses `--domain`, `--env`, `--acme-*`, …).
+
 ```
-./scripts/bootstrap.sh \
+# First server — creates the cluster:
+./scripts/bootstrap.sh --domain example.test \
+  --host-tenant-workloads false      # optional; servers default to the admin Setting
+```
+
+```
+# Additional server — joins (grow 1 → 3; a 2-server etcd is less available than 1):
+./scripts/bootstrap.sh --remote <server-ip> --ssh-key <key> \
   --join-as server \
-  --host-client-workloads false      # default for servers
+  --server <control-plane-ip> --token <k3s-join-token>
 ```
 
 ```
 ./scripts/bootstrap.sh --remote <worker-ip> --ssh-key <key> \
   --join-as worker \
   --server <control-plane-ip> --token <k3s-join-token>
-  # worker defaults: host-client-workloads=true (no taint)
+  # worker defaults: host-tenant-workloads=true (no taint)
 ```
+
+`--join-as` picks what **k3s** runs on the host — `server` = k3s server +
+embedded-etcd member, `worker` = k3s agent — and the `insula.host/node-role`
+label starts out matching it (stamped by bootstrap on servers; an unlabeled
+node counts as a worker). That k3s identity is fixed at join time; see
+*Role label vs k3s role* below.
 
 `apply_node_labels_and_taints` runs after k3s is up and before
 platform manifests apply. Worker mode is a log-only step — the script
@@ -117,6 +134,23 @@ DinD single-node dev stack deliberately has no labelled node).
   **Server→worker demotion is refused** (`409 NODE_DEMOTION_BLOCKED`)
   when the node still hosts any system pod. Pass `force: true` in the
   body to override — typically after a manual `kubectl drain`.
+
+### Role label vs k3s role
+
+The `role` PATCH (the admin UI's node role edit) changes **only** the
+platform label `insula.host/node-role` and the matching taints — i.e. which
+pods the scheduler places there. It does **not** change k3s server/agent or
+etcd membership: a node that joined with `--join-as server` keeps running a
+k3s server and stays an etcd member after being "demoted" to `worker`, and a
+`--join-as worker` node never gains a control plane by being labelled
+`server`.
+
+A real **server → worker demotion** is remove-and-rejoin: drain the node,
+`kubectl delete node` it (k3s removes its etcd member; confirm with
+`etcdctl member list` on a remaining server), run `k3s-uninstall.sh` on the
+host, pre-enroll its IP again and re-join with `--join-as worker`. Keep the
+remaining servers at an odd count (1 or ≥ 3). Step-by-step:
+[MULTI_NODE_RUNBOOK.md → Changing a node's role](../operations/MULTI_NODE_RUNBOOK.md#changing-a-nodes-role-server--worker).
 
 All routes are admin-only (`super_admin` / `admin`). Client-panel
 tokens have no visibility into cluster topology.
