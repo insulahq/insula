@@ -919,6 +919,10 @@ kubectl -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
 kubectl -n mail rollout restart deploy/bulwark >/dev/null 2>&1 || true
 for _ in \$(seq 1 36); do [ "\$(kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && { echo "  certs re-issued on the custom issuer"; break; }; sleep 5; done
 kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
+# Wait out OUR OWN platform-api restart too: the abort-on-red smoke gate runs next,
+# and with one replica the old pod's endpoint is gone before ingress sees the new
+# one — a clean v2026.10.2 run aborted on `GET /healthz → 502` (46/0 a minute later).
+kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true
 # ALWAYS bind the services-VM object store as the cluster's backup target before the suites — the
 # services VM exists to provide it, and every backup/DR suite fails its precondition without it
 # (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).
