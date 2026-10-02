@@ -97,6 +97,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **In high-availability mode, the platform database gets its redundancy back after a failover.**
+  When the database's primary server changed (a server lost, or a planned switchover), the old
+  primary could never rejoin as a replica: the platform's database hardening blocked the
+  connection it makes to the new primary first, so it waited forever and the cluster stayed with
+  one copy fewer — after a second failover, with none. The replication account may now connect to
+  the internal `postgres` database (it holds no application data). Clusters already in that state
+  recover by themselves within five minutes of updating.
 - **Mail failover after a server is lost is faster, and every mail move shows where its time
   went.** When the server running mail is down, the failover no longer waits 90 seconds for mail on
   that server to shut down cleanly — it cannot — before moving on. The mail migration progress

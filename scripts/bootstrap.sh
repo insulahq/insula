@@ -8321,6 +8321,9 @@ DECLARE
   has_exporter boolean := EXISTS (
     SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cnpg_metrics_exporter'
   );
+  has_replica boolean := EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'streaming_replica'
+  );
 BEGIN
   FOR d IN
     SELECT datname, pg_catalog.pg_get_userbyid(datdba) AS owner
@@ -8332,6 +8335,9 @@ BEGIN
     IF has_exporter THEN
       EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'cnpg_metrics_exporter');
     END IF;
+    IF has_replica AND d.datname = 'postgres' THEN
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'streaming_replica');
+    END IF;
     EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', d.datname);
   END LOOP;
 END
@@ -8340,7 +8346,7 @@ DBISOSQL
 )
   if echo "$sql" | kctl exec -i -n platform "$pg_pod" -- \
       psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
-    log "  PUBLIC CONNECT revoked; owners + metrics exporter granted."
+    log "  PUBLIC CONNECT revoked; owners, metrics exporter + replication (postgres db) granted."
   else
     warn "  Connection-isolation apply failed — the db-isolation converger retries every 5m."
   fi

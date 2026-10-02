@@ -39,6 +39,18 @@
 export const METRICS_EXPORTER_ROLE = 'cnpg_metrics_exporter';
 
 /**
+ * CNPG's replication role. A demoted primary rejoins as a replica by first
+ * connecting to the NEW primary's `postgres` database as this role (the
+ * availability check before pg_rewind; primary_conninfo uses dbname=postgres).
+ * Physical streaming needs no CONNECT, but that check does — and with PUBLIC's
+ * CONNECT revoked it waited forever ("Waiting for the new primary to be
+ * available"). On a 3-server HA cluster every database failover left the old
+ * primary a permanently dead replica. Granted on `postgres` only: it holds no
+ * application data, and the role already has REPLICATION.
+ */
+export const REPLICATION_ROLE = 'streaming_replica';
+
+/**
  * Converge connection isolation across every connectable, non-template
  * database in the cluster.
  *
@@ -97,12 +109,18 @@ const ISOLATE_ONE_BODY = [
   `    IF has_exporter THEN`,
   `      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, '${METRICS_EXPORTER_ROLE}');`,
   `    END IF;`,
+  `    IF has_replica AND d.datname = 'postgres' THEN`,
+  `      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, '${REPLICATION_ROLE}');`,
+  `    END IF;`,
   `    EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', d.datname);`,
 ].join('\n');
 
 const HAS_EXPORTER_DECL =
   `  has_exporter boolean := EXISTS (\n`
   + `    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${METRICS_EXPORTER_ROLE}'\n`
+  + `  );\n`
+  + `  has_replica boolean := EXISTS (\n`
+  + `    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${REPLICATION_ROLE}'\n`
   + `  );`;
 
 /**

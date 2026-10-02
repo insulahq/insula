@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   METRICS_EXPORTER_ROLE,
+  REPLICATION_ROLE,
   buildAtRiskRolesSql,
   buildDbIsolationSql,
   buildDbIsolationStateSql,
@@ -28,6 +29,20 @@ describe('buildDbIsolationSql', () => {
     expect(grantExporter).toBeLessThan(revoke);
   });
 
+  // A demoted CNPG primary rejoins by first connecting to the new primary's
+  // `postgres` database as streaming_replica (availability check, pg_rewind).
+  // With PUBLIC's CONNECT revoked it waited forever: on a 3-server VM cluster
+  // every database failover left the old primary stuck "replicating" until
+  // CONNECT was granted — 20 s later the cluster was 3/3 healthy again.
+  it('lets the replication role into the postgres database, BEFORE the revoke and nowhere else', () => {
+    const grantReplica = sql.indexOf(`'${REPLICATION_ROLE}'`);
+    const revoke = sql.indexOf('REVOKE CONNECT ON DATABASE %I FROM PUBLIC');
+    expect(grantReplica).toBeGreaterThan(-1);
+    expect(grantReplica).toBeLessThan(revoke);
+    expect(sql).toContain("IF has_replica AND d.datname = 'postgres' THEN");
+    expect(sql).toContain('has_replica boolean');
+  });
+
   it('grants the exporter only when that role exists', () => {
     // On a cluster without the CNPG exporter role, an unconditional GRANT
     // aborts the whole DO block and nothing gets revoked anywhere.
@@ -50,7 +65,7 @@ describe('buildDbIsolationSql', () => {
     // spliced into executed SQL. %I is what keeps a database named `my db`
     // (or worse) from being a syntax error or an injection.
     const executes = sql.match(/EXECUTE format\([^)]*\)/g) ?? [];
-    expect(executes.length).toBe(3);
+    expect(executes.length).toBe(4); // owner, exporter, replication (postgres db), revoke
     for (const stmt of executes) expect(stmt).toContain('%I');
     expect(sql).not.toMatch(/EXECUTE '[^']*' \|\|/);
   });
