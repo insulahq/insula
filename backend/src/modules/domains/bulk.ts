@@ -6,11 +6,9 @@ import { reconcileIngress } from './k8s-ingress.js';
 import { getTenantById } from '../tenants/service.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { BulkIdResult } from '@insula/api-contracts';
 
-interface BulkResult {
-  readonly succeeded: string[];
-  readonly failed: ReadonlyArray<{ readonly id: string; readonly error: string }>;
-}
+type BulkResult = BulkIdResult;
 
 export async function bulkVerifyDomains(
   db: Database,

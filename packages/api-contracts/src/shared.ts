@@ -38,6 +38,18 @@ export function dataResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
   });
 }
 
+/**
+ * Per-id outcome of an admin bulk endpoint (`/admin/domains/bulk`,
+ * `/admin/cron-jobs/bulk`). Not all-or-nothing: every id lands in exactly one
+ * of the two lists, failures with a reason.
+ */
+export const bulkIdResultSchema = z.object({
+  succeeded: z.array(z.string()),
+  failed: z.array(z.object({ id: z.string(), error: z.string() })),
+});
+
+export type BulkIdResult = z.infer<typeof bulkIdResultSchema>;
+
 // ─── Common Fields ───────────────────────────────────────────────────────────
 
 // Tenant lifecycle status. `archived` means the tenant was off-boarded:

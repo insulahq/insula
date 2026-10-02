@@ -6,11 +6,13 @@ import CronJobModal from '@/components/CronJobModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
+import BulkRunModal from '@/components/BulkRunModal';
 import { useCronJobs } from '@/hooks/use-cron-jobs';
 import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
-import { useBulkEnableCronJobs, useBulkDisableCronJobs, useBulkDeleteCronJobs } from '@/hooks/use-bulk-cron-jobs';
+import { useBulkRun } from '@/hooks/use-bulk-run';
+import { runCronJobBulkItem, useInvalidateCronJobQueries, type CronJobBulkAction } from '@/hooks/use-bulk-cron-jobs';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -45,7 +47,7 @@ export default function CronJobsTab() {
   const [showCreate, setShowCreate] = useState(false);
   /** Row being edited. The modal is keyed on this so switching rows remounts it. */
   const [editingJob, setEditingJob] = useState<(typeof cronJobs)[number] | null>(null);
-  const [confirmAction, setConfirmAction] = useState<'enable' | 'disable' | 'delete' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<CronJobBulkAction | null>(null);
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
   useEffect(() => {
@@ -69,9 +71,8 @@ export default function CronJobsTab() {
   const { sortedData: sortedCronJobs, sortKey, sortDirection, onSort } = useSortable(cronJobs, 'name');
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
-  const bulkEnable = useBulkEnableCronJobs();
-  const bulkDisable = useBulkDisableCronJobs();
-  const bulkDelete = useBulkDeleteCronJobs();
+  const bulkRun = useBulkRun();
+  const invalidateCronJobs = useInvalidateCronJobQueries();
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -81,20 +82,25 @@ export default function CronJobsTab() {
     w[key] = setTimeout(() => setDebouncedSearch(value), 300);
   };
 
-  const handleBulkAction = async () => {
-    if (!confirmAction) return;
-    const ids = [...selection.selectedIds];
-    try {
-      if (confirmAction === 'enable') await bulkEnable.mutateAsync(ids);
-      else if (confirmAction === 'disable') await bulkDisable.mutateAsync(ids);
-      else if (confirmAction === 'delete') await bulkDelete.mutateAsync(ids);
-      selection.deselectAll();
-    } finally {
-      setConfirmAction(null);
-    }
-  };
+  // In table order, so the progress list reads like the table the operator selected from.
+  const selectedJobs = sortedCronJobs
+    .filter((job) => selection.isSelected(job.id))
+    .map((job) => ({ id: job.id, label: job.name, sublabel: tenantMap.get(job.tenantId) }));
 
-  const isBulkPending = bulkEnable.isPending || bulkDisable.isPending || bulkDelete.isPending;
+  const handleBulkAction = () => {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    bulkRun.start({
+      title: BULK_TITLES[action],
+      noun: 'cron job',
+      items: selectedJobs,
+      runItem: (item) => runCronJobBulkItem(action, item),
+      onSettled: invalidateCronJobs,
+      // Keep only what still needs doing selected, so a re-run touches just those.
+      onClose: (remainingIds) => selection.setSelection(remainingIds),
+    });
+    setConfirmAction(null);
+  };
 
   const formatTarget = (job: (typeof cronJobs)[number]) => {
     if (job.type === 'webcron') {
@@ -341,7 +347,7 @@ export default function CronJobsTab() {
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {confirmAction === 'delete' ? 'Delete' : confirmAction === 'enable' ? 'Enable' : 'Disable'} {selection.selectedCount} cron job{selection.selectedCount !== 1 ? 's' : ''}?
+              {BULK_TITLES[confirmAction]} {selectedJobs.length} cron job{selectedJobs.length !== 1 ? 's' : ''}?
             </h3>
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
               {confirmAction === 'delete'
@@ -359,16 +365,16 @@ export default function CronJobsTab() {
               </button>
               <button
                 onClick={handleBulkAction}
-                disabled={isBulkPending}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                disabled={selectedJobs.length === 0}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
                   confirmAction === 'delete'
                     ? 'bg-red-500 hover:bg-red-600'
                     : confirmAction === 'enable'
                       ? 'bg-green-500 hover:bg-green-600'
                       : 'bg-amber-500 hover:bg-amber-600'
                 }`}
+                data-testid="bulk-confirm"
               >
-                {isBulkPending && <Loader2 size={14} className="animate-spin" />}
                 Confirm
               </button>
             </div>
@@ -398,6 +404,14 @@ export default function CronJobsTab() {
           tenantId={editingJob.tenantId}
         />
       )}
+
+      <BulkRunModal controller={bulkRun} />
     </div>
   );
 }
+
+const BULK_TITLES: Readonly<Record<CronJobBulkAction, string>> = {
+  enable: 'Enable',
+  disable: 'Disable',
+  delete: 'Delete',
+};

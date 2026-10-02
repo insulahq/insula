@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateDomainRequest } from '@insula/api-contracts';
+import type { CreateDomainRequest, RefreshRouteDnsResult } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
 
@@ -149,16 +149,16 @@ export function useDeleteDomain(tenantId: string | undefined) {
 /**
  * Re-derive ingress-route DNS from the CURRENT ingress address set.
  *
- * Apex A/AAAA records are a snapshot taken when the route was created, so
- * adding an ingress-capable node leaves existing apexes pointing at the old
- * set. Subdomains ride the <slug>.ingress.<apex> CNAME chain and self-heal.
- * Primary mode only — the API 409s otherwise.
+ * Route A/AAAA records are a snapshot of the ingress addresses taken when the
+ * route was created, so adding or removing an ingress-capable node leaves them
+ * pointing at the old set until refreshed. Primary mode only — the API 409s
+ * DNS_MODE_NOT_PRIMARY otherwise.
  */
 export function useRefreshRouteDns(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (domainId: string) =>
-      apiFetch<{ data: { hostnames: number; created: number; removed: number; failures: Array<{ hostname: string; detail: string }> } }>(
+      apiFetch<{ data: RefreshRouteDnsResult }>(
         `/api/v1/tenants/${tenantId}/domains/${domainId}/refresh-route-dns`,
         { method: 'POST' },
       ),

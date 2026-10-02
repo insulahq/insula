@@ -7,8 +7,7 @@ import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import TenantHealthChip from '@/components/outage/TenantHealthChip';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
-import BulkResultModal, { type BulkResult } from '@/components/BulkResultModal';
-import BulkProgressModal from '@/components/BulkProgressModal';
+import BulkRunModal from '@/components/BulkRunModal';
 import CreateTenantModal from '@/components/CreateTenantModal';
 import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
@@ -16,7 +15,8 @@ import { useSelection } from '@/hooks/use-selection';
 import { useLoginAsTenant } from '@/hooks/use-impersonate';
 import ErrorPanel from '@/components/ErrorPanel';
 import type { OperatorError } from '@insula/api-contracts';
-import { useBulkSuspendTenants, useBulkReactivateTenants, useBulkDeleteTenants } from '@/hooks/use-bulk-tenants';
+import { useBulkRun } from '@/hooks/use-bulk-run';
+import { runTenantBulkItem, useInvalidateTenantQueries, type TenantBulkAction } from '@/hooks/use-bulk-tenants';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
@@ -26,7 +26,7 @@ export default function TenantsListTab() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'suspend' | 'reactivate' | 'delete' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<TenantBulkAction | null>(null);
 
   const navigate = useNavigate();
   const pagination = useCursorPagination({ defaultLimit: 20 });
@@ -99,9 +99,8 @@ export default function TenantsListTab() {
   const issuesMap = issuesData?.data ?? {};
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
-  const bulkSuspend = useBulkSuspendTenants();
-  const bulkReactivate = useBulkReactivateTenants();
-  const bulkDelete = useBulkDeleteTenants();
+  const bulkRun = useBulkRun();
+  const invalidateTenants = useInvalidateTenantQueries();
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -111,41 +110,25 @@ export default function TenantsListTab() {
     w[key] = setTimeout(() => setDebouncedSearch(value), 300);
   };
 
-  const [bulkResult, setBulkResult] = useState<{ action: 'suspend' | 'reactivate' | 'delete'; result: BulkResult } | null>(null);
-  const [bulkProgress, setBulkProgress] = useState<{
-    bulkOpId: string;
-    action: 'suspend' | 'reactivate' | 'delete';
-    tenantCount: number;
-  } | null>(null);
+  // In table order, and never the SYSTEM tenant (it is not selectable).
+  const selectedTenants = sortedTenants
+    .filter((t) => !t.isSystem && selection.isSelected(t.id))
+    .map((t) => ({ id: t.id, label: t.name }));
 
-  const handleBulkAction = async () => {
+  const handleBulkAction = () => {
     if (!confirmAction) return;
-    const ids = [...selection.selectedIds];
-    try {
-      let res;
-      if (confirmAction === 'suspend') res = await bulkSuspend.mutateAsync(ids);
-      else if (confirmAction === 'reactivate') res = await bulkReactivate.mutateAsync(ids);
-      else res = await bulkDelete.mutateAsync(ids);
-      selection.deselectAll();
-      if (res.data.bulkOpId) {
-        setBulkProgress({
-          bulkOpId: res.data.bulkOpId,
-          action: confirmAction,
-          tenantCount: ids.length,
-        });
-      } else {
-        const compat: BulkResult = {
-          succeeded: res.data.succeeded.map((r) => r.id),
-          failed: res.data.failed.map((r) => ({ id: r.id, error: r.error ?? 'unknown' })),
-        };
-        setBulkResult({ action: confirmAction, result: compat });
-      }
-    } finally {
-      setConfirmAction(null);
-    }
+    const action = confirmAction;
+    bulkRun.start({
+      title: BULK_TITLES[action],
+      noun: 'tenant',
+      items: selectedTenants,
+      runItem: (item) => runTenantBulkItem(action, item),
+      onSettled: invalidateTenants,
+      // Keep only what still needs doing selected, so a re-run touches just those.
+      onClose: (remainingIds) => selection.setSelection(remainingIds),
+    });
+    setConfirmAction(null);
   };
-
-  const isBulkPending = bulkSuspend.isPending || bulkReactivate.isPending || bulkDelete.isPending;
 
   return (
     <div className="space-y-6">
@@ -381,7 +364,7 @@ export default function TenantsListTab() {
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {confirmAction === 'delete' ? 'Delete' : confirmAction === 'suspend' ? 'Suspend' : 'Reactivate'} {selection.selectedCount} tenant{selection.selectedCount !== 1 ? 's' : ''}?
+              {BULK_TITLES[confirmAction]} {selectedTenants.length} tenant{selectedTenants.length !== 1 ? 's' : ''}?
             </h3>
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
               {confirmAction === 'delete'
@@ -399,16 +382,16 @@ export default function TenantsListTab() {
               </button>
               <button
                 onClick={handleBulkAction}
-                disabled={isBulkPending}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                disabled={selectedTenants.length === 0}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
                   confirmAction === 'delete'
                     ? 'bg-red-500 hover:bg-red-600'
                     : confirmAction === 'suspend'
                       ? 'bg-amber-500 hover:bg-amber-600'
                       : 'bg-green-500 hover:bg-green-600'
                 }`}
+                data-testid="bulk-confirm"
               >
-                {isBulkPending && <Loader2 size={14} className="animate-spin" />}
                 Confirm
               </button>
             </div>
@@ -418,23 +401,16 @@ export default function TenantsListTab() {
 
       <CreateTenantModal open={showCreate} onClose={() => setShowCreate(false)} />
 
-      <BulkResultModal
-        result={bulkResult?.result ?? null}
-        action={bulkResult?.action ?? 'suspend'}
-        onClose={() => setBulkResult(null)}
-      />
-
-      {bulkProgress && (
-        <BulkProgressModal
-          bulkOpId={bulkProgress.bulkOpId}
-          action={bulkProgress.action}
-          tenantCount={bulkProgress.tenantCount}
-          onClose={() => setBulkProgress(null)}
-        />
-      )}
+      <BulkRunModal controller={bulkRun} />
     </div>
   );
 }
+
+const BULK_TITLES: Readonly<Record<TenantBulkAction, string>> = {
+  suspend: 'Suspend',
+  reactivate: 'Reactivate',
+  delete: 'Delete',
+};
 
 // ─── Metrics Cell Helpers ────────────────────────────────────────────────────
 

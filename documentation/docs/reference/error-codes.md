@@ -68,6 +68,13 @@ a field the endpoint does not accept.
 | `DRAIN_PRECHECK_FAILED` | 503 | Drain pre-checks could not complete |
 | `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Draining would take down a sole replica / conflicts with a pinned workload |
 
+## Bulk actions
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `BULK_PARTIAL_FAILURE` | — | Some items in a bulk action failed; the rest were applied. The failed items stay selected — use **Retry failed** or re-run the action ([Bulk actions](../admin/tenants.md#bulk-actions)) |
+| `DNS_MODE_NOT_PRIMARY` | 409 | Refresh route DNS needs a Primary-mode domain; bulk refresh reports these domains as skipped |
+
 !!! tip "Errors in the panels"
     Both panels surface these codes in their error panes with the human
     message — when you report an issue, include the code; it identifies the

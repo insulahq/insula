@@ -12,6 +12,7 @@ import {
   relativeRecordName,
   validateRouteHostname,
   siteFolderWithinAppRoot,
+  type RefreshRouteDnsResult,
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { clearOrphanedSiteFolder } from './detach.js';
@@ -996,12 +997,7 @@ export async function autoDeleteRouteDns(
 export async function refreshRouteDnsForDomain(
   db: Database,
   domainId: string,
-): Promise<{
-  hostnames: number;
-  created: number;
-  removed: number;
-  failures: Array<{ hostname: string; detail: string }>;
-}> {
+): Promise<RefreshRouteDnsResult> {
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domain) throw new ApiError('NOT_FOUND', 'Domain not found', 404);
   if (domain.dnsMode !== 'primary') {

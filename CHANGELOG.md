@@ -22,6 +22,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (`--domain`, `--env`, `--release-tag`, `--acme-*`, `--calico-*`, `--secrets-bundle`,
   `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
 
+### Added
+
+- **Refresh route DNS for many domains at once.** Admin → Tenants → Domains: select domains and
+  choose **Refresh Route DNS** in the bulk bar to rewrite their ingress A/AAAA records from the
+  current ingress addresses — the step needed after adding or removing an ingress node. Domains
+  that are not in primary DNS mode are skipped, not failed.
+- **Bulk actions on the Tenants pages show live progress and a per-item report.** Every bulk action
+  on the Tenants, Domains and Cron Jobs tabs (suspend, reactivate, delete, verify, refresh route
+  DNS, enable, disable) now opens a progress dialog that works through the selection one item at a
+  time, showing each item as queued, running, succeeded, skipped or failed with the reason. You can
+  cancel between items, and the dialog ends with a summary ("N succeeded, M skipped, K failed").
+  Items that failed stay selected afterwards, and **Retry failed** re-runs only those. A tenant
+  whose lifecycle hooks did not all complete is now reported as failed with the failing hooks
+  listed, instead of counting as done. Bulk **Verify** now reports, per domain, whether it verified
+  and which checks failed.
+
 ### Fixed
 
 - **Joining a server no longer re-installs the platform over the live cluster.** A server join
