@@ -4486,12 +4486,20 @@ scenario_mail_migration_fixes() {
   local orig_db_sched
   orig_db_sched=$(api GET /admin/backups/schedules/mail \
     | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('cronExpression') or '')" 2>/dev/null)
-  log "PART A: live schedule=${orig_sched} db cadence=${orig_db_sched:-<default>}"
+  # The mail schedule is seeded DISABLED (0011; an operator opts in) and binding
+  # a target does not enable it — the firing engine and NATIVE unsuspend both
+  # honour the toggle. On a fresh cluster this scenario therefore failed both
+  # firing asserts while the engine worked as designed. Enable it for the
+  # scenario and put the operator's setting back at the end.
+  local orig_enabled
+  orig_enabled=$(api GET /admin/backups/schedules/mail \
+    | python3 -c "import json,sys;print(str((json.load(sys.stdin).get('data') or {}).get('enabled')).lower())" 2>/dev/null)
+  log "PART A: live schedule=${orig_sched} db cadence=${orig_db_sched:-<default>} enabled=${orig_enabled:-?}"
 
   # */2: fires within ≤2 min — keeps the platform-fire wait short.
   local probe_sched='*/2 * * * *'
   local patch_resp patch_status gate_ok
-  patch_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\"}" 2>&1)
+  patch_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\",\"enabled\":true}" 2>&1)
   patch_status=$(printf '%s' "$patch_resp" | tail -1)
   if [[ "$patch_status" != "200" ]]; then
     fail "PART A: PATCH /admin/backups/schedules/mail returned ${patch_status}"
@@ -4583,7 +4591,7 @@ scenario_mail_migration_fixes() {
   local restore_expr="*/30 * * * *"
   local _restore_ok=0 _restore_try _restore_resp _restore_code
   for _restore_try in 1 2 3; do
-    _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" 2>&1)
+    _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\",\"enabled\":true}" 2>&1)
     _restore_code=$(printf '%s' "$_restore_resp" | tail -1)
     [[ "$_restore_code" == "200" ]] && { _restore_ok=1; break; }
     log "PART A: restore PATCH attempt ${_restore_try} returned '${_restore_code}' — retrying in 5s"
@@ -4620,6 +4628,11 @@ scenario_mail_migration_fixes() {
   fi
   # Clean up the platform-fired Job so repeated runs stay tidy.
   ssh_cp "kubectl -n mail delete jobs -l stalwart-snapshot-trigger=manual --wait=false" >/dev/null 2>&1 || true
+  # Put the operator's schedule toggle back (the scenario enabled it).
+  if [[ "${orig_enabled:-}" == "false" ]]; then
+    api_raw PATCH /admin/backups/schedules/mail '{"enabled":false}' >/dev/null 2>&1 \
+      || log "PART A: could not restore enabled=false on the mail schedule — set it back in Backups → Schedules"
+  fi
 
   # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──
   log "mail-migration-fixes: PART B — silent-loss guard does NOT brick a healthy migration"
