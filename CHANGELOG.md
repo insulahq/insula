@@ -108,6 +108,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **"Refresh route DNS" also updates a route's `www` companion.** A route with *Add www* /
   *Remove www* has address records on its companion name too; the refresh left those on the old
   ingress addresses, so `www.<domain>` did not follow a new or removed ingress node.
+- **Deleting a route keeps the DNS records another route still needs.** Two routes on one
+  hostname with different paths (`/` and `/api`) share its address records; deleting either one
+  removed them, so the remaining route stopped resolving. The same happened to `www.<domain>`
+  when it was both a route of its own and another route's *Add www* companion. Route deletion —
+  and switching *Add www* / *Remove www* off — now removes the records only when no other route
+  serves that name.
 
 ### Security
 

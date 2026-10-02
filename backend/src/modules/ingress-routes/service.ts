@@ -799,11 +799,13 @@ export async function deleteRoute(db: Database, routeId: string) {
   }
   await db.delete(ingressRoutes).where(eq(ingressRoutes.id, routeId));
 
-  // Auto-delete DNS records that were provisioned for this route
+  // Auto-delete DNS records that were provisioned for this route — kept when
+  // another route still serves the name (see autoDeleteRouteDns).
   try {
     await autoDeleteRouteDns(db, route.domainId, route.hostname);
-  } catch {
+  } catch (err) {
     // Non-blocking — DNS cleanup failure shouldn't block route deletion
+    console.warn(`[ingress-dns] DNS cleanup for '${route.hostname}' failed:`, err instanceof Error ? err.message : String(err));
   }
 
   // Also delete the companion DNS record if www redirect was active
@@ -811,8 +813,9 @@ export async function deleteRoute(db: Database, routeId: string) {
   if (companionHostname) {
     try {
       await autoDeleteRouteDns(db, route.domainId, companionHostname);
-    } catch {
+    } catch (err) {
       // Non-blocking
+      console.warn(`[ingress-dns] DNS cleanup for '${companionHostname}' failed:`, err instanceof Error ? err.message : String(err));
     }
   }
 }
@@ -885,10 +888,36 @@ export async function autoProvisionRouteDns(
 // ─── Auto-DNS Cleanup ───────────────────────────────────────────────────────
 
 /**
+ * Routes on this domain that still need `hostname` to resolve: a route on the
+ * same name (another path — `/` and `/api` are two routes, one DNS name) or a
+ * route whose www companion it is. Callers remove their own route first.
+ */
+export async function routesStillServingHostname(
+  db: Database,
+  domainId: string,
+  hostname: string,
+): Promise<string[]> {
+  const wanted = normalizeHostname(hostname);
+  const routes = await db
+    .select({ id: ingressRoutes.id, hostname: ingressRoutes.hostname, wwwRedirect: ingressRoutes.wwwRedirect })
+    .from(ingressRoutes)
+    .where(eq(ingressRoutes.domainId, domainId));
+  return routes
+    .filter((r) => {
+      const companion = getWwwCompanionHostname(r.hostname, r.wwwRedirect);
+      return normalizeHostname(r.hostname) === wanted
+        || (companion !== null && normalizeHostname(companion) === wanted);
+    })
+    .map((r) => r.id);
+}
+
+/**
  * Remove DNS records that were auto-provisioned when the route was created.
  *
  * For primary-mode domains this deletes the A/AAAA records from both the
- * external DNS provider and the local dns_records table.
+ * external DNS provider and the local dns_records table — unless another
+ * route still serves the name, in which case they are that route's records
+ * too and stay.
  */
 export async function autoDeleteRouteDns(
   db: Database,
@@ -898,6 +927,15 @@ export async function autoDeleteRouteDns(
   // 1. Check if domain is primary mode
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domain || domain.dnsMode !== 'primary') return;
+
+  // Deleting `/api` on example.test must not take `/` on example.test offline.
+  const stillServing = await routesStillServingHostname(db, domainId, hostname);
+  if (stillServing.length > 0) {
+    console.info(
+      `[ingress-dns] Keeping DNS for '${hostname}' — still served by route(s) ${stillServing.join(', ')}`,
+    );
+    return;
+  }
 
   // 2. Determine the record name relative to the domain. `relativeRecordName`
   //    (not `hostname.replace`) gets wildcards right: `*.sub.example.com` → `*.sub`.

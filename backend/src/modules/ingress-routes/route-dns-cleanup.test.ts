@@ -26,7 +26,8 @@ vi.mock('../dns-records/service.js', () => ({
   describeSyncFailure: vi.fn((o: { errors: Array<{ message: string }> }) => o.errors[0].message),
 }));
 
-import { autoDeleteRouteDns, refreshRouteDnsForDomain } from './service.js';
+import { autoDeleteRouteDns, deleteRoute, refreshRouteDnsForDomain } from './service.js';
+import { updateRedirectSettings } from './settings-service.js';
 import { domains, dnsRecords, ingressRoutes, platformSettings } from '../../db/schema.js';
 
 /** Every bound parameter in a drizzle condition — how the fake reads which
@@ -41,8 +42,13 @@ function paramsOf(node: unknown, out: unknown[] = []): unknown[] {
 
 const DOMAIN = { id: 'd1', domainName: 'example.test', dnsMode: 'primary' };
 
-function fakeDb(fixture: { settings: Record<string, string>; records?: unknown[]; routes?: Array<{ hostname: string }> }) {
+interface RouteFixture { id?: string; domainId?: string; hostname: string; path?: string; wwwRedirect?: string }
+
+function fakeDb(fixture: { settings: Record<string, string>; records?: unknown[]; routes?: RouteFixture[] }) {
   const deletedRows = vi.fn();
+  // Routes are stateful: deleteRoute removes its row before cleaning DNS up,
+  // and the "is the name still served?" check must not see the deleted route.
+  let routes = [...(fixture.routes ?? [])];
   const db = {
     select: () => ({
       from: (table: unknown) => ({
@@ -53,12 +59,33 @@ function fakeDb(fixture: { settings: Record<string, string>; records?: unknown[]
           }
           if (table === domains) return [DOMAIN];
           if (table === dnsRecords) return fixture.records ?? [];
-          if (table === ingressRoutes) return fixture.routes ?? [];
+          if (table === ingressRoutes) {
+            const params = paramsOf(cond);
+            return routes.filter((r) => !r.id || params.includes(r.id) || params.includes(r.domainId));
+          }
           return [];
         },
       }),
     }),
-    delete: () => ({ where: deletedRows }),
+    update: (table: unknown) => ({
+      set: (values: Partial<RouteFixture>) => ({
+        where: async (cond: unknown) => {
+          if (table !== ingressRoutes) return;
+          const params = paramsOf(cond);
+          routes = routes.map((r) => (params.includes(r.id) ? { ...r, ...values } : r));
+        },
+      }),
+    }),
+    delete: (table: unknown) => ({
+      where: async (cond: unknown) => {
+        if (table === ingressRoutes) {
+          const params = paramsOf(cond);
+          routes = routes.filter((r) => !params.includes(r.id));
+          return;
+        }
+        deletedRows(cond);
+      },
+    }),
   };
   return { db: db as never, deletedRows };
 }
@@ -87,6 +114,102 @@ describe('autoDeleteRouteDns', () => {
 
     expect(deletes.sort()).toEqual(['A shop 198.51.100.7', 'A shop 203.0.113.1']);
     expect(deletedRows).toHaveBeenCalledTimes(2); // the two A rows, never the TXT
+  });
+});
+
+describe('a name another route still serves keeps its DNS', () => {
+  const addressRows = [
+    { id: 'r1', recordType: 'A', recordName: 'shop', recordValue: '203.0.113.1' },
+  ];
+  const route = (id: string, hostname: string, extra: Partial<RouteFixture> = {}): RouteFixture =>
+    ({ id, domainId: 'd1', hostname, path: '/', wwwRedirect: 'none', ...extra });
+
+  it('deleting /api keeps the records / on the same hostname still resolves through', async () => {
+    const { db, deletedRows } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: addressRows,
+      routes: [route('root', 'shop.example.test'), route('api', 'shop.example.test', { path: '/api' })],
+    });
+
+    await deleteRoute(db, 'api');
+
+    expect(deletes).toEqual([]);
+    expect(deletedRows).not.toHaveBeenCalled();
+  });
+
+  it('deleting the last route on the name removes its records', async () => {
+    const { db, deletedRows } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: addressRows,
+      routes: [route('api', 'shop.example.test', { path: '/api' }), route('blog', 'blog.example.test')],
+    });
+
+    await deleteRoute(db, 'api');
+
+    expect(deletes).toEqual(['A shop 203.0.113.1']);
+    expect(deletedRows).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches the name case-insensitively', async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: addressRows,
+      routes: [route('root', 'Shop.Example.TEST')],
+    });
+
+    await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
+
+    expect(deletes).toEqual([]);
+  });
+
+  it("keeps www while it is another route's www companion", async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: [{ id: 'w1', recordType: 'A', recordName: 'www', recordValue: '203.0.113.1' }],
+      routes: [route('apex', 'example.test', { wwwRedirect: 'add-www' }), route('www', 'www.example.test')],
+    });
+
+    await deleteRoute(db, 'www');
+
+    expect(deletes).toEqual([]);
+  });
+
+  it('switching Add www off keeps www while www is a route of its own', async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: [{ id: 'w1', recordType: 'A', recordName: 'www', recordValue: '203.0.113.1' }],
+      routes: [route('apex', 'example.test', { wwwRedirect: 'add-www' }), route('www', 'www.example.test')],
+    });
+
+    await updateRedirectSettings(db, 'apex', 't1', { www_redirect: 'none' });
+
+    expect(deletes).toEqual([]);
+  });
+
+  it('switching Add www off removes www when nothing else serves it', async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: [{ id: 'w1', recordType: 'A', recordName: 'www', recordValue: '203.0.113.1' }],
+      routes: [route('apex', 'example.test', { wwwRedirect: 'add-www' })],
+    });
+
+    await updateRedirectSettings(db, 'apex', 't1', { www_redirect: 'none' });
+
+    expect(deletes).toEqual(['A www 203.0.113.1']);
+  });
+
+  it("a route's own www companion goes with it when nothing else serves www", async () => {
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      records: [{ id: 'a1', recordType: 'A', recordName: '@', recordValue: '203.0.113.1' }],
+      routes: [route('apex', 'example.test', { wwwRedirect: 'add-www' })],
+    });
+
+    await deleteRoute(db, 'apex');
+
+    // One delete per name: the apex and its companion (the fake returns the
+    // same rows for both lookups, so only the names matter here).
+    expect(deletes).toEqual(['A @ 203.0.113.1', 'A www 203.0.113.1']);
   });
 });
 
