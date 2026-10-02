@@ -200,6 +200,34 @@ describe('BulkRunModal + useBulkRun', () => {
     expect(onClose).toHaveBeenCalledWith(['c']);
   });
 
+  it('takes keyboard focus and keeps Tab inside the dialog while it runs', async () => {
+    const user = userEvent.setup();
+    const { calls, runItem } = heldRunner();
+    render(<Harness config={{ title: 'Delete', noun: 'domain', items: ITEMS, runItem }} />);
+
+    await user.click(screen.getByText('start'));
+    await waitFor(() => expect(runItem).toHaveBeenCalledTimes(1));
+    const modal = screen.getByTestId('bulk-run-modal');
+    expect(modal).toContainElement(document.activeElement as HTMLElement);
+
+    // Mid-run, Cancel is the only enabled control: Tab must not escape to the
+    // page behind (the "start" button stands in for the bulk bar).
+    await user.tab();
+    expect(screen.getByTestId('bulk-run-cancel')).toHaveFocus();
+    await user.tab();
+    expect(screen.getByTestId('bulk-run-cancel')).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByTestId('bulk-run-cancel')).toHaveFocus();
+    expect(screen.getByText('start')).not.toHaveFocus();
+
+    act(() => calls[0].resolve({ status: 'succeeded' }));
+    await waitFor(() => expect(runItem).toHaveBeenCalledTimes(2));
+    act(() => calls[1].resolve({ status: 'succeeded' }));
+    await waitFor(() => expect(runItem).toHaveBeenCalledTimes(3));
+    act(() => calls[2].resolve({ status: 'succeeded' }));
+    await waitFor(() => expect(screen.getByTestId('bulk-run-close')).toBeEnabled());
+  });
+
   it('under StrictMode each item is still requested exactly once', async () => {
     const user = userEvent.setup();
     const runItem = vi.fn(async (_item: BulkRunItem): Promise<BulkItemOutcome> => ({ status: 'succeeded' }));

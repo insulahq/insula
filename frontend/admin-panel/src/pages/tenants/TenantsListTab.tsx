@@ -385,10 +385,10 @@ export default function TenantsListTab() {
                 disabled={selectedTenants.length === 0}
                 className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
                   confirmAction === 'delete'
-                    ? 'bg-red-500 hover:bg-red-600'
+                    ? 'bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500'
                     : confirmAction === 'suspend'
-                      ? 'bg-amber-500 hover:bg-amber-600'
-                      : 'bg-green-500 hover:bg-green-600'
+                      ? 'bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                      : 'bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-500'
                 }`}
                 data-testid="bulk-confirm"
               >

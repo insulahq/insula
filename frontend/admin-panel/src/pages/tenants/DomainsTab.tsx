@@ -250,10 +250,10 @@ export default function DomainsTab() {
                 disabled={selectedDomains.length === 0}
                 className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
                   confirmAction === 'delete'
-                    ? 'bg-red-500 hover:bg-red-600'
+                    ? 'bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-500'
                     : confirmAction === 'refresh-route-dns'
                       ? 'bg-indigo-500 hover:bg-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-500'
-                      : 'bg-blue-500 hover:bg-blue-600'
+                      : 'bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500'
                 }`}
                 data-testid="bulk-confirm"
               >

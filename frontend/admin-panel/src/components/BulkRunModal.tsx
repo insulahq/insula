@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { X, Loader2, CheckCircle2, XCircle, MinusCircle, Clock, Ban, RotateCw } from 'lucide-react';
 import clsx from 'clsx';
 import ErrorPanel from '@/components/ErrorPanel';
@@ -35,18 +35,49 @@ interface BulkRunModalProps {
   readonly controller: BulkRunController;
 }
 
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export default function BulkRunModal({ controller }: BulkRunModalProps) {
   const { state, cancel, retryFailed, close } = controller;
   const finished = state?.phase === 'done' || state?.phase === 'cancelled';
+  const open = state !== null;
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!finished) return undefined;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') close(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [finished, close]);
 
+  // Move focus into the dialog when it opens. The overlay only blocks the
+  // pointer; without this, keyboard focus stays on the page behind it, where
+  // the bulk bar's buttons are still reachable mid-run.
+  useEffect(() => {
+    if (open) panelRef.current?.focus();
+  }, [open]);
+
   if (!state) return null;
+
+  // Keep Tab / Shift+Tab cycling inside the dialog.
+  const trapTab = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab' || !panelRef.current) return;
+    const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+    if (focusable.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panelRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || !panelRef.current.contains(active))) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   const counts = countRows(state.rows);
   const pct = counts.total === 0 ? 100 : Math.round((counts.processed / counts.total) * 100);
@@ -69,14 +100,19 @@ export default function BulkRunModal({ controller }: BulkRunModalProps) {
       aria-labelledby="bulk-run-title"
       data-testid="bulk-run-modal"
       onClick={(e) => { if (finished && e.target === e.currentTarget) close(); }}
+      onKeyDown={trapTab}
     >
-      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl dark:bg-gray-800">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="flex max-h-[calc(100vh-4rem)] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl outline-none dark:bg-gray-800"
+      >
         <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-3 dark:border-gray-700">
           <div className="min-w-0">
             <h3 id="bulk-run-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
               {state.title} — {plural(counts.total, state.noun)}
             </h3>
-            <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400" data-testid="bulk-run-phase">
+            <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400" aria-live="polite" data-testid="bulk-run-phase">
               {phaseText}
             </p>
           </div>
