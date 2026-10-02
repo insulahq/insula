@@ -33,6 +33,8 @@ import type {
   TenantsBackupsOverviewResponse,
   TenantBackupOverviewRow,
   RestoreJobSummary,
+  TenantSnapshotListRow,
+  TenantSnapshotListResponse,
 } from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
@@ -44,30 +46,14 @@ import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
+import SnapshotDataSize from '@/components/SnapshotDataSize';
+import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressModal';
+import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 
-// ── Local types ──────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────
 
-interface TenantSnapshotRow {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly tenantName: string | null;
-  readonly backupClass: string;
-  readonly label: string | null;
-  readonly subsystem: string;
-  readonly sizeBytes: number;
-  readonly status: string;
-  readonly targetId: string | null;
-  readonly targetName: string | null;
-  readonly createdAt: string;
-  readonly expiresAt: string | null;
-}
-
-interface TenantSnapshotListResponse {
-  readonly rows: ReadonlyArray<TenantSnapshotRow>;
-  readonly hasMore: boolean;
-  /** system_settings.snapshot_expiry_hours — snapshots reap after this. */
-  readonly expiryHours?: number;
-}
+/** GET /admin/backups/tenants/snapshots row — shape owned by api-contracts. */
+type TenantSnapshotRow = TenantSnapshotListRow;
 
 // ── Formatters ───────────────────────────────────────────────────────
 
@@ -368,7 +354,8 @@ function SnapshotsTab(p: SnapshotsTabProps) {
                 <SortableHeader label="Label" sortKey="label" {...th} />
                 <SortableHeader label="Subsystem" sortKey="subsystem" {...th} />
                 <SortableHeader label="Status" sortKey="status" {...th} />
-                <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} text-right`} />
+                <SortableHeader label="Volume size" sortKey="sizeBytes" {...th} title={VOLUME_SIZE_HELP} className={`${th.className} text-right`} />
+                <SortableHeader label="Data size" sortKey="dataSizeBytes" {...th} title={DATA_SIZE_HELP} className={`${th.className} text-right`} />
                 <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} text-right`} />
                 <SortableHeader label="Expires" sortKey="expiresAt" {...th} className={`${th.className} text-right`} />
                 <th className="px-4 py-2">Target</th>
@@ -384,7 +371,10 @@ function SnapshotsTab(p: SnapshotsTabProps) {
                     <td className="px-4 py-2 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
                     <td className="px-4 py-2 text-xs"><code>{r.subsystem}</code></td>
                     <td className="px-4 py-2"><StatusPill status={r.status} /></td>
-                    <td className="px-4 py-2 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-xs">{formatVolumeSize(r.sizeBytes)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-xs">
+                      <SnapshotDataSize bytes={r.dataSizeBytes} testId={`tenant-snap-data-size-${r.id}`} />
+                    </td>
                     <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
                     <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.expiresAt} mode="until" /></td>
                     <td className="px-4 py-2 text-xs">{r.targetName ?? <span className="text-gray-400">none</span>}</td>
@@ -1125,6 +1115,9 @@ export default function TenantsBackupsPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [wizardSnap, setWizardSnap] = useState<TenantSnapshotRow | null>(null);
+  // The snapshot restore started from the wizard — opens the step-by-step
+  // progress modal (the task-center chip re-opens it after a close).
+  const [restoreProgress, setRestoreProgress] = useState<{ tenantId: string; operationId: string } | null>(null);
   const [wizardBundle, setWizardBundle] = useState<BundleSummary | null>(null);
   const [snapshotAllPending, setSnapshotAllPending] = useState(false);
   const [bundleAllPending, setBundleAllPending] = useState(false);
@@ -1333,6 +1326,15 @@ export default function TenantsBackupsPage() {
             );
             return { taskId: r.data.operationId };
           }}
+          onCompleted={(operationId) => setRestoreProgress({ tenantId: wizardSnap.tenantId, operationId })}
+        />
+      )}
+
+      {restoreProgress && (
+        <SnapshotRestoreProgressModal
+          tenantId={restoreProgress.tenantId}
+          operationId={restoreProgress.operationId}
+          onClose={() => { setRestoreProgress(null); void snapshotsQ.refetch(); }}
         />
       )}
 

@@ -68,7 +68,21 @@ export function useRestoreTenantSnapshot(tenantId: string) {
   });
 }
 
-/** Poll a restore operation. Stops polling once the op is idle/failed. */
+/**
+ * Poll cadence for a restore: every 2s while it runs, stop once the outcome is
+ * terminal. With no response yet keep trying — slower after an error, so a
+ * transient blip recovers on its own without hammering a failing endpoint.
+ */
+export function restorePollInterval(
+  status: SnapshotRestoreStatus | undefined,
+  queryStatus: 'pending' | 'error' | 'success',
+): number | false {
+  if (status) return status.outcome === 'running' ? 2000 : false;
+  return queryStatus === 'error' ? 5000 : 2000;
+}
+
+/** Poll a restore operation's step timeline (operator view — the server adds
+ *  each step's diagnostic detail for staff tokens). Stops once terminal. */
 export function useTenantRestoreStatus(tenantId: string, operationId: string | null) {
   return useQuery({
     queryKey: ['admin-snapshot-restore', tenantId, operationId],
@@ -79,9 +93,6 @@ export function useTenantRestoreStatus(tenantId: string, operationId: string | n
       );
     },
     enabled: Boolean(tenantId && operationId),
-    refetchInterval: (query) => {
-      const st = query.state.data?.data?.state;
-      return st && st !== 'idle' && st !== 'failed' ? 2000 : false;
-    },
+    refetchInterval: (query) => restorePollInterval(query.state.data?.data, query.state.status),
   });
 }

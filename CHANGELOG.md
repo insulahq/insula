@@ -43,6 +43,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   how long it took and its average speed on screen until you close the dialog. Uploading several
   files adds an overall line with the combined progress and speed, and the total size and average
   speed of the batch when it finishes. Failed and cancelled uploads show no speed.
+- **Snapshot restores show their progress step by step.** Restoring a snapshot from the tenant
+  panel's **Snapshots** page now opens the same detailed progress view operators get: every step
+  of the restore (stop workloads → release the volume → attach it for the restore → revert to the
+  snapshot → detach → start workloads again) with its state, how long each step took and a running
+  clock on the current one. A failed restore names the step it stopped at and says what that means
+  for the tenant's files (not changed / restored / not confirmed) and whether the site was started
+  again; tenants never see node names or raw storage-engine errors. Operators see the same view on
+  a tenant's **Snapshots** tab and after **Backups → Tenants → Snapshots → Restore…**, with each
+  step's diagnostic detail, and the task-center chip reopens it.
+- **Snapshot tables show how much data each snapshot really holds.** Next to the volume size
+  (the provisioned size a restore gives back), the tenant panel's **Snapshots** page, a tenant's
+  **Snapshots** tab and **Backups → Tenants → Snapshots** now show a **Data size** column — the
+  space the snapshot actually uses on the server (Longhorn's per-snapshot size: what changed since
+  the previous snapshot). A snapshot whose size has not been measured shows **—** with a tooltip,
+  never 0. The sizes are read with one storage-system query per page load.
 
 ### Fixed
 

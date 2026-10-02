@@ -3395,6 +3395,12 @@ export const tenantVolumeSnapshots = pgTable('tenant_volume_snapshots', {
   // restoreSize from the VolumeSnapshot status once ready; 0 while creating.
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
   lastError: text('last_error'),
+  // The Longhorn volume + snapshot (`snapshots.longhorn.io`) behind the CSI
+  // VolumeSnapshot, resolved once from the VolumeSnapshotContent's
+  // snapshotHandle when the snapshot turns ready. With them on the row the list
+  // reads every snapshot's data size with ONE Longhorn list. NULL = unresolved.
+  longhornVolumeName: varchar('longhorn_volume_name', { length: 253 }),
+  longhornSnapshotName: varchar('longhorn_snapshot_name', { length: 253 }),
   // Who created it (tenant user or operator). null for system.
   triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -3427,6 +3433,10 @@ export const storageOperations = pgTable('storage_operations', {
   progressMessage: text('progress_message'),
   // Op-specific parameters (new_gi for resize, retention_days for archive, etc.)
   params: jsonb('params').$type<Record<string, unknown> | null>(),
+  // Step timeline `{ steps, inFlight }` for ops that run discrete steps (the
+  // in-place snapshot restore) — what the progress modals render per step.
+  // NULL for ops that record no steps. Shape: storage-lifecycle/restore-timeline.ts.
+  progressSteps: jsonb('progress_steps').$type<Record<string, unknown> | null>(),
   // Snapshot created as part of this op (pre-resize/pre-archive). null if none.
   snapshotId: varchar('snapshot_id', { length: 36 }).references(() => storageSnapshots.id, { onDelete: 'set null' }),
   // Rollback state: when true, a failure in the "replacing" step triggered

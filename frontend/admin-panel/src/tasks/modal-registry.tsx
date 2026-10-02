@@ -44,6 +44,10 @@ const AdminBundleProgressModal = lazy(async () => ({
   default: (await import('@/components/AdminBundleProgressModal')).AdminBundleProgressModal,
 }));
 const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCreateProgressModal'));
+// an in-place tenant snapshot restore records a step timeline; its
+// `storage.restore` task targets `snapshot-restore` ({ operationId, tenantId })
+// so the chip re-opens the step-by-step view instead of the generic one.
+const SnapshotRestoreProgressModal = lazy(() => import('@/components/SnapshotRestoreProgressModal'));
 // platform upgrade (ADR-045 re-pin). The apply enrolls a
 // `platform.upgrade` task with `target.modal = 'platform-upgrade'` so the chip
 // re-opens live roll progress + post-flight convergence.
@@ -68,6 +72,7 @@ const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'
 //   transition            → TransitionProgressModal     (tenant.transition)
 //   bulk                  → BulkProgressModal           (tenant.*.bulk)
 //   operation             → OperationProgressModal      (storage.*)
+//   snapshot-restore      → SnapshotRestoreProgressModal (storage.restore, in-place snapshot revert)
 //   provisioning          → ProvisioningProgressModal   (tenant.provision)
 //   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
 //   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger, webmail.engine-flip)
@@ -114,6 +119,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'snapshot-create': {
     Component: SnapshotCreateProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'snapshot-restore': {
+    Component: SnapshotRestoreProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
   'platform-upgrade': {
     Component: PlatformUpgradeProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,

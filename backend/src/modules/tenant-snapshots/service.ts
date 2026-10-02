@@ -21,7 +21,9 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getSettings } from '../system-settings/service.js';
 import { ApiError } from '../../shared/errors.js';
-import type { TenantSnapshot, TenantSnapshotStatus } from '@insula/api-contracts';
+import type { SnapshotRestoreStatus, TenantSnapshot, TenantSnapshotStatus } from '@insula/api-contracts';
+import { readLonghornSnapshotSizes, resolveLonghornNames } from './data-size.js';
+import { buildRestoreStatusView, type RestoreStatusAudience } from './restore-status.js';
 
 const SNAPSHOT_API = 'snapshot.storage.k8s.io';
 /** The `longhorn` VolumeSnapshotClass uses Longhorn `type=snap` → in-cluster
@@ -43,6 +45,7 @@ interface VolumeSnapshotLive {
   readonly status?: {
     readonly readyToUse?: boolean;
     readonly restoreSize?: string;
+    readonly boundVolumeSnapshotContentName?: string;
     readonly error?: { readonly message?: string };
   };
 }
@@ -124,13 +127,15 @@ async function mustGetTenant(db: Database, tenantId: string) {
   return t;
 }
 
-function toApi(row: TenantVolumeSnapshot): TenantSnapshot {
+/** `dataSizeBytes` is null unless the caller measured it — never 0 by default. */
+function toApi(row: TenantVolumeSnapshot, dataSizeBytes: number | null = null): TenantSnapshot {
   return {
     id: row.id,
     tenantId: row.tenantId,
     label: row.label,
     status: row.status as TenantSnapshotStatus,
     sizeBytes: row.sizeBytes,
+    dataSizeBytes,
     lastError: row.lastError,
     createdAt: row.createdAt.toISOString(),
     readyAt: row.readyAt ? row.readyAt.toISOString() : null,
@@ -214,6 +219,11 @@ export async function createSnapshot(
 export async function listSnapshots(
   deps: Deps,
   tenantId: string,
+  opts: {
+    /** Read each ready snapshot's real data size from Longhorn (one list).
+     *  The UI list asks for it; internal pollers (waitForSnapshotReady) don't. */
+    readonly withDataSize?: boolean;
+  } = {},
 ): Promise<{ snapshots: TenantSnapshot[]; expiryHours: number }> {
   const { db, k8s } = deps;
   const tenant = await mustGetTenant(db, tenantId);
@@ -223,13 +233,14 @@ export async function listSnapshots(
     .where(eq(tenantVolumeSnapshots.tenantId, tenantId))
     .orderBy(desc(tenantVolumeSnapshots.createdAt));
 
-  // Reconcile `creating` rows against the live VolumeSnapshots (one list
-  // call). Collect updates rather than mutating the fetched rows in place.
-  const updates = new Map<string, Partial<TenantVolumeSnapshot>>();
-  if (rows.some((r) => r.status === 'creating')) {
-    let live: VolumeSnapshotLive[] = [];
+  // The tenant's live VolumeSnapshots — listed at most ONCE per request, and
+  // only when a row needs them.
+  let liveByName: Map<string, VolumeSnapshotLive> | null = null;
+  const live = async (): Promise<Map<string, VolumeSnapshotLive>> => {
+    if (liveByName) return liveByName;
+    let items: VolumeSnapshotLive[] = [];
     try {
-      live = await listVolumeSnapshots(k8s, tenant.kubernetesNamespace!, `insula.host/tenant-id=${tenantId}`);
+      items = await listVolumeSnapshots(k8s, tenant.kubernetesNamespace!, `insula.host/tenant-id=${tenantId}`);
     } catch (err) {
       // Best-effort: a transient k8s error leaves rows as-is this tick — but
       // log it so a persistent RBAC/API failure (stuck-'creating' snapshots)
@@ -237,24 +248,92 @@ export async function listSnapshots(
       // eslint-disable-next-line no-console
       console.warn(`[tenant-snapshots] list reconcile for ${tenantId} failed: ${(err as Error).message}`);
     }
-    const byName = new Map(live.map((v) => [v.metadata?.name ?? '', v]));
+    liveByName = new Map(items.map((v) => [v.metadata?.name ?? '', v]));
+    return liveByName;
+  };
+
+  // Reconcile `creating` rows against the live VolumeSnapshots. Collect
+  // updates rather than mutating the fetched rows in place.
+  const updates = new Map<string, Partial<TenantVolumeSnapshot>>();
+  const patch = (id: string, p: Partial<TenantVolumeSnapshot>): void => {
+    updates.set(id, { ...(updates.get(id) ?? {}), ...p });
+  };
+  if (rows.some((r) => r.status === 'creating')) {
+    const byName = await live();
     for (const r of rows) {
       if (r.status !== 'creating') continue;
       const vs = byName.get(r.volumeSnapshotName);
       if (!vs) continue;
       if (vs.status?.error?.message) {
-        updates.set(r.id, { status: 'error', lastError: vs.status.error.message });
+        patch(r.id, { status: 'error', lastError: vs.status.error.message });
       } else if (vs.status?.readyToUse === true) {
-        updates.set(r.id, { status: 'ready', sizeBytes: parseQuantityToBytes(vs.status.restoreSize), readyAt: new Date() });
+        patch(r.id, { status: 'ready', sizeBytes: parseQuantityToBytes(vs.status.restoreSize), readyAt: new Date() });
       }
-    }
-    for (const [snapId, patch] of updates) {
-      await db.update(tenantVolumeSnapshots).set(patch).where(eq(tenantVolumeSnapshots.id, snapId));
     }
   }
 
-  const snapshots = rows.map((r) => toApi(updates.has(r.id) ? { ...r, ...updates.get(r.id)! } : r));
+  // Resolve the Longhorn snapshot behind each ready row that doesn't have it
+  // yet — once per snapshot (the names are stored), so steady-state lists
+  // pay nothing here. A row that turns ready in THIS call always resolves
+  // (the create watcher's poll lands here, so every new snapshot gets its
+  // names without anyone opening a list — the admin cross-tenant view reads
+  // them). Rows from before data sizes were tracked resolve on their first
+  // data-size list, as long as their VolumeSnapshot still exists.
+  {
+    const unresolved = rows.filter((r) => {
+      if (r.longhornSnapshotName) return false;
+      const flippedNow = updates.get(r.id)?.status === 'ready';
+      return flippedNow || (opts.withDataSize === true && r.status === 'ready');
+    });
+    if (unresolved.length > 0) {
+      const byName = await live();
+      for (const r of unresolved) {
+        const contentName = byName.get(r.volumeSnapshotName)?.status?.boundVolumeSnapshotContentName;
+        if (!contentName) continue;
+        try {
+          const names = await resolveLonghornNames(k8s, contentName);
+          if (names) patch(r.id, { longhornVolumeName: names.volumeName, longhornSnapshotName: names.snapshotName });
+        } catch (err) {
+          console.warn(`[tenant-snapshots] resolving the Longhorn snapshot for ${r.id} failed: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+
+  for (const [snapId, p] of updates) {
+    await db.update(tenantVolumeSnapshots).set(p).where(eq(tenantVolumeSnapshots.id, snapId));
+  }
+  const merged = rows.map((r) => (updates.has(r.id) ? { ...r, ...updates.get(r.id)! } : r));
+
+  const sizes = opts.withDataSize ? await readDataSizes(k8s, tenantId, merged) : new Map<string, number | null>();
+  const snapshots = merged.map((r) => toApi(r, dataSizeOf(r, sizes)));
   return { snapshots, expiryHours: settings.snapshotExpiryHours };
+}
+
+/** One Longhorn list for every resolved, ready row. A failure is logged and
+ *  reads as "unknown" for every row — never as 0. */
+async function readDataSizes(
+  k8s: K8sClients,
+  tenantId: string,
+  rows: ReadonlyArray<TenantVolumeSnapshot>,
+): Promise<ReadonlyMap<string, number | null>> {
+  const volumes = rows
+    .filter((r) => r.status === 'ready' && r.longhornSnapshotName && r.longhornVolumeName)
+    .map((r) => r.longhornVolumeName!);
+  if (volumes.length === 0) return new Map();
+  try {
+    return await readLonghornSnapshotSizes(k8s, volumes);
+  } catch (err) {
+    console.warn(`[tenant-snapshots] reading snapshot data sizes for ${tenantId} failed: ${(err as Error).message}`);
+    return new Map();
+  }
+}
+
+/** The measured size, or null when the row is not ready, not resolved, or its
+ *  Longhorn snapshot was not in the list. */
+export function dataSizeOf(row: TenantVolumeSnapshot, sizes: ReadonlyMap<string, number | null>): number | null {
+  if (row.status !== 'ready' || !row.longhornSnapshotName) return null;
+  return sizes.get(row.longhornSnapshotName) ?? null;
 }
 
 /**
@@ -330,24 +409,43 @@ export async function restoreSnapshot(
   });
 }
 
-/** Tenant-scoped poll for a restore operation. Verifies the op belongs to the
- *  tenant (an operator/tenant can only see their own op). */
+/**
+ * Tenant-scoped poll for a restore operation: the step timeline + outcome the
+ * progress modal renders, shaped for the caller (`audience` — tenant-panel
+ * callers get no step detail and no raw engine error; see restore-status.ts).
+ *
+ * Ownership is enforced twice. The query filters on the path tenant, AND the
+ * row's own tenant id is compared again before anything is returned — so a
+ * restore is only ever visible under the tenant that owns it, whatever the
+ * query layer does. The route's requireTenantAccess gate is what pins a
+ * tenant-panel token to its OWN tenant id in the path. Only snapshot restores
+ * are served here; any other storage operation id reads as not found.
+ */
 export async function getRestoreOpStatus(
-  deps: Deps,
+  db: Database,
   tenantId: string,
   operationId: string,
-): Promise<{ operationId: string; state: string; progressPct: number; progressMessage: string | null; lastError: string | null }> {
-  const [op] = await deps.db.select().from(storageOperations)
+  audience: RestoreStatusAudience,
+): Promise<SnapshotRestoreStatus> {
+  const [op] = await db.select({
+    id: storageOperations.id,
+    tenantId: storageOperations.tenantId,
+    opType: storageOperations.opType,
+    state: storageOperations.state,
+    progressPct: storageOperations.progressPct,
+    progressMessage: storageOperations.progressMessage,
+    lastError: storageOperations.lastError,
+    params: storageOperations.params,
+    progressSteps: storageOperations.progressSteps,
+    createdAt: storageOperations.createdAt,
+    completedAt: storageOperations.completedAt,
+  }).from(storageOperations)
     .where(and(eq(storageOperations.id, operationId), eq(storageOperations.tenantId, tenantId)))
     .limit(1);
-  if (!op) throw new ApiError('OPERATION_NOT_FOUND', `Operation ${operationId} not found`, 404);
-  return {
-    operationId: op.id,
-    state: op.state,
-    progressPct: op.progressPct,
-    progressMessage: op.progressMessage,
-    lastError: op.lastError,
-  };
+  if (!op || op.tenantId !== tenantId || op.opType !== 'restore') {
+    throw new ApiError('OPERATION_NOT_FOUND', `Operation ${operationId} not found`, 404);
+  }
+  return buildRestoreStatusView(op, audience);
 }
 
 /** In-flight storage lifecycle states — a snapshot must not be deleted while
