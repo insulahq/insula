@@ -114,13 +114,20 @@ the stack is currently running on** — operators never label nodes manually.
      mail_failover_threshold_seconds = 300
    WHERE id = 'system';
    ```
-3. Wait one `dr-watcher` tick (~30s). The startup reconciler runs and:
+3. **Saving placement applies it immediately** (admin panel, or
+   `PATCH /api/v1/admin/mail/placement`) — `ensureMailStackPlacementApplied`:
    - Pins `stalwart-mail` + `bulwark` Deployments to `mailActiveNode`.
-   - Adds `insula.host/mail-standby=true` label to
-     `mailSecondaryNode` + `mailTertiaryNode`.
-   - DaemonSet schedules pods on labelled nodes; first restic pull
+   - Adds `insula.host/mail-standby=true` to every configured candidate
+     except the active node (see above), and removes it elsewhere.
+   - DaemonSet schedules pods on labelled nodes; the first rsync
      populates `/var/lib/mail-stack-standby/{stalwart,bulwark}/` and
-     writes the `.standby-complete` sentinel.
+     writes the `.standby-complete` sentinel (seconds for a small store).
+
+   The SQL in steps 1–2 is NOT applied until the next platform-api start
+   (the same reconciler runs at boot) — prefer the panel/API. Before
+   v2026.10.3 the API save only wrote the DB too, so a standby chosen in the
+   panel stayed unlabelled until the next deploy, and a failover in that
+   window took the slow restic path.
 4. **Verify standby readiness** on each labelled node:
    ```bash
    ssh <secondary> "ls /var/lib/mail-stack-standby/.standby-complete"

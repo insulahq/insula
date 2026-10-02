@@ -27,6 +27,7 @@
 
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
+import { mailMigrationInFlight } from './active-node.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -382,6 +383,10 @@ export async function updateMailPlacement(
   },
   db: Database,
   opts: PlacementOptions,
+  deps: {
+    readonly apply?: (db: Database, opts: PlacementOptions) => Promise<void>;
+    readonly migrationInFlight?: (db: Database) => Promise<string | null>;
+  } = {},
 ): Promise<void> {
   const { core } = await loadK8sCoreTenant(opts.kubeconfigPath);
 
@@ -452,7 +457,33 @@ export async function updateMailPlacement(
   if ('failoverThresholdSeconds' in update)
     patch.mailFailoverThresholdSeconds = update.failoverThresholdSeconds;
 
+  // Saving re-pins the stack to the ACTIVE node (below). Mid-migration — an
+  // operator move or the DR watcher's failover — that would pull it back to the
+  // source while the run moves it to the target, so wait for the run to end.
+  if (await (deps.migrationInFlight ?? mailMigrationInFlight)(db)) {
+    throw new ApiError(
+      'MAIL_MIGRATION_ALREADY_RUNNING',
+      'A mail migration is in progress — save placement after it finishes',
+      409,
+    );
+  }
+
   await db.update(systemSettings).set(patch).where(eq(systemSettings.id, SETTINGS_ID));
+
+  // Apply what was just saved. The standby label is what makes the
+  // mail-stack-standby-replicate DaemonSet stage a warm copy on the new
+  // secondary/tertiary; only platform-api STARTUP used to run this, so a standby
+  // chosen here stayed unlabelled until the next deploy — and a DR failover in
+  // that window took the restic path, losing mail since the last backup.
+  try {
+    await (deps.apply ?? ensureMailStackPlacementApplied)(db, opts);
+  } catch (err) {
+    throw new ApiError(
+      'MAIL_PLACEMENT_APPLY_FAILED',
+      `Placement saved, but applying it to the cluster failed: ${(err as Error).message ?? String(err)} — save again to retry`,
+      502,
+    );
+  }
 }
 
 /**
@@ -493,6 +524,8 @@ export { MAIL_NAMESPACE };
  * Fire-and-forget; caller logs failures via .catch(). If
  * mailActiveNode is null (operator hasn't run placement yet), we
  * skip — the next placement-update or migration call will set it.
+ * Also run by updateMailPlacement after every save, so a newly chosen
+ * standby is labelled (and starts replicating) immediately.
  */
 export async function ensureMailStackPlacementApplied(
   db: Database,

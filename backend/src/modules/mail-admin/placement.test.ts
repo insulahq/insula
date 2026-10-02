@@ -380,6 +380,7 @@ describe('mail-admin/placement.ensureMailStackPlacementApplied primary self-heal
 // Setting primary alone on a single node is always allowed.
 
 describe('mail-admin/placement.updateMailPlacement node-count gate', () => {
+  const noopApply = vi.fn(async () => undefined);
   const mockReadNode = vi.fn(async () => ({}));
   const mockListNodeGate = vi.fn(async () => ({ items: [] as unknown[] }));
 
@@ -460,6 +461,7 @@ describe('mail-admin/placement.updateMailPlacement node-count gate', () => {
       { primaryNode: 'node-0' },
       db,
       { kubeconfigPath: undefined },
+      { apply: noopApply, migrationInFlight: async () => null },
     );
     expect(update).toHaveBeenCalled();
   });
@@ -472,6 +474,7 @@ describe('mail-admin/placement.updateMailPlacement node-count gate', () => {
       { primaryNode: 'node-0', secondaryNode: 'node-1' },
       db,
       { kubeconfigPath: undefined },
+      { apply: noopApply, migrationInFlight: async () => null },
     );
     expect(update).toHaveBeenCalled();
   });
@@ -484,7 +487,89 @@ describe('mail-admin/placement.updateMailPlacement node-count gate', () => {
       { primaryNode: 'node-0', secondaryNode: null, tertiaryNode: null },
       db,
       { kubeconfigPath: undefined },
+      { apply: noopApply, migrationInFlight: async () => null },
     );
     expect(update).toHaveBeenCalled();
+  });
+});
+
+// The standby label (insula.host/mail-standby=true) is what makes the
+// mail-stack-standby-replicate DaemonSet stage a warm copy on the secondary.
+// Saving placement only wrote the DB; the label was applied by platform-api
+// STARTUP alone — so a standby chosen in the UI stayed unlabelled until the
+// next deploy, and a DR failover in that window took the restic path (mail
+// since the last backup lost). Seen on a 3-server VM cluster: placement saved,
+// replicate DaemonSet at 0 desired until a platform-api pod was recreated.
+describe('mail-admin/placement.updateMailPlacement applies what it saved', () => {
+  const idle = async (): Promise<string | null> => null;
+  const mockReadNode = vi.fn(async () => ({}));
+  const mockListNodeGate = vi.fn(async () => ({ items: [] as unknown[] }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doMock('@kubernetes/client-node', () => ({
+      KubeConfig: class {
+        loadFromCluster() {}
+        loadFromFile() {}
+        makeApiClient() { return { readNode: mockReadNode, listNode: mockListNodeGate }; }
+      },
+      CoreV1Api: { name: 'CoreV1Api' },
+    }));
+    mockListNodeGate.mockResolvedValue({ items: [0, 1].map((i) => ({
+      metadata: { name: `node-${i}`, labels: { 'insula.host/node-role': 'server' } },
+      status: { conditions: [{ type: 'Ready', status: 'True' }] },
+    })) });
+  });
+
+  function db() {
+    const order: string[] = [];
+    const setWhere = vi.fn(async () => { order.push('saved'); });
+    return {
+      order,
+      db: { update: vi.fn(() => ({ set: vi.fn(() => ({ where: setWhere })) })) } as unknown as import('../../db/index.js').Database,
+    };
+  }
+
+  it('reconciles the cluster (standby label, affinity) right after saving — not at the next restart', async () => {
+    const { db: d, order } = db();
+    const apply = vi.fn(async () => { order.push('applied'); });
+    const { updateMailPlacement } = await import('./placement.js');
+    const opts = { kubeconfigPath: undefined };
+    await updateMailPlacement({ primaryNode: 'node-0', secondaryNode: 'node-1', autoFailoverEnabled: true }, d, opts, { apply, migrationInFlight: idle });
+    expect(apply).toHaveBeenCalledWith(d, opts);
+    expect(order).toEqual(['saved', 'applied']);
+  });
+
+  it('a failed apply is reported (placement saved) instead of passing silently', async () => {
+    const { db: d, order } = db();
+    const apply = vi.fn(async () => { throw new Error('nodes is forbidden'); });
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(updateMailPlacement({ primaryNode: 'node-0', secondaryNode: 'node-1' }, d, { kubeconfigPath: undefined }, { apply, migrationInFlight: idle }))
+      .rejects.toMatchObject({ code: 'MAIL_PLACEMENT_APPLY_FAILED', message: expect.stringContaining('nodes is forbidden') });
+    expect(order).toEqual(['saved']);
+  });
+
+  // Applying re-pins the stack to the ACTIVE node; mid-migration that would pull
+  // it back to the source while the run moves it to the target.
+  it('refuses while a mail migration / DR failover is in flight — nothing saved, nothing applied', async () => {
+    const { db: d, order } = db();
+    const apply = vi.fn(async () => undefined);
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(updateMailPlacement({ primaryNode: 'node-0', secondaryNode: 'node-1' }, d, { kubeconfigPath: undefined },
+      { apply, migrationInFlight: async () => 'run-7' }))
+      .rejects.toMatchObject({ code: 'MAIL_MIGRATION_ALREADY_RUNNING', status: 409 });
+    expect(order).toEqual([]);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('a refused update applies nothing', async () => {
+    mockListNodeGate.mockResolvedValue({ items: [] });
+    const { db: d } = db();
+    const apply = vi.fn(async () => undefined);
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(updateMailPlacement({ primaryNode: 'node-0', secondaryNode: 'node-1' }, d, { kubeconfigPath: undefined }, { apply }))
+      .rejects.toMatchObject({ message: '2 active nodes required' });
+    expect(apply).not.toHaveBeenCalled();
   });
 });

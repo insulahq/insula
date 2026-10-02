@@ -80,6 +80,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **A mail standby starts replicating as soon as you choose it.** Saving mail placement with a
+  standby (secondary or tertiary) server only stored the choice; the node was labelled — and the
+  warm copy of the mail store started — only after the management API next restarted, usually the
+  next update. A failover in that window could not use the warm standby and restored from the last
+  backup instead, losing mail received since. Saving placement now applies it to the cluster right
+  away, and reports an error if that fails instead of claiming success. While a mail migration or
+  failover is running, saving placement is refused until it finishes.
 - **A fresh install now applies exactly the release it is pinned to.** `bootstrap.sh --env
   production --release-tag vX` cloned the repository's default branch for its first apply and
   only then handed over to Flux at the tag. While a newer release candidate sat on `main`, a
