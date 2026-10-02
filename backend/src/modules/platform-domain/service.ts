@@ -219,7 +219,7 @@ export async function renamePlatformDomain(
   // Suspended page host + every suspended tenant's redirect target.
   try {
     if (!k8s) k8s = createK8sClients(kubeconfigPath);
-    const r = await reconcileSuspendedPageIngress(db, k8s.custom, log);
+    const r = await reconcileSuspendedPageIngress(db, k8s.custom, log, clusterIssuerName);
     reconciled.suspendedPage = r.host
       ? `reconciled -> ${r.host} (${r.redirects?.repointed.length ?? 0} redirect(s) re-pointed)`
       : 'skipped (no host resolved)';

@@ -10,9 +10,12 @@
  * were sent to a host no resolver knows. It now derives from the platform apex
  * like every other platform hostname; `SUSPENDED_REDIRECT_URL` still overrides.
  *
- * R16 seed-then-disown: Flux seeds `suspended.${DOMAIN}`; this module owns the
- * live Host + cert dnsNames so a platform-apex rename follows, and re-points
- * the redirects of tenants that are already suspended.
+ * This module owns the page's IngressRoute + Certificate: it CREATES them when
+ * missing, keeps Host + dnsNames on the apex (a platform-apex rename follows),
+ * and re-points the redirects of tenants that are already suspended. The
+ * `reconcile: disabled` manifests are only a fresh-install seed — Flux skips a
+ * disowned object even when it does not exist yet (measured: the apply log
+ * reports it `skipped`), so on an existing cluster nothing else creates them.
  */
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
@@ -25,7 +28,16 @@ import {
   type HostReconcileResult,
 } from '../../shared/traefik-host-reconcile.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { TRAEFIK_GROUP, TRAEFIK_VERSION, MIDDLEWARE_PLURAL } from '../ingress-routes/traefik-types.js';
+import {
+  TRAEFIK_GROUP,
+  TRAEFIK_VERSION,
+  MIDDLEWARE_PLURAL,
+  INGRESSROUTE_PLURAL,
+  CERTMANAGER_GROUP,
+  CERTMANAGER_VERSION,
+  CERTIFICATE_PLURAL,
+} from '../ingress-routes/traefik-types.js';
+import { isK8sNotFound } from '../ingress-routes/traefik-apply.js';
 
 export const SUSPENDED_PAGE_IR_NAME = 'platform-suspended-page';
 export const SUSPENDED_PAGE_CERT_NAME = 'platform-suspended-page';
@@ -55,8 +67,82 @@ export async function resolveSuspendedRedirectUrl(db: Database): Promise<string 
   return host ? `https://${host}/` : null;
 }
 
+const FLUX_DISOWNED = { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } as const;
+const PAGE_LABELS = { 'app.kubernetes.io/part-of': 'hosting-platform' } as const;
+const PAGE_TLS_SECRET = 'platform-suspended-page-tls';
+
+/** The page's IngressRoute as k8s/base/platform-suspended.yaml seeds it. */
+export function suspendedPageIngressRoute(host: string): Record<string, unknown> {
+  return {
+    apiVersion: `${TRAEFIK_GROUP}/${TRAEFIK_VERSION}`,
+    kind: 'IngressRoute',
+    metadata: {
+      name: SUSPENDED_PAGE_IR_NAME,
+      namespace: SUSPENDED_PAGE_NAMESPACE,
+      labels: { ...PAGE_LABELS },
+      annotations: { ...FLUX_DISOWNED },
+    },
+    spec: {
+      entryPoints: ['websecure'],
+      routes: [{
+        match: `Host(\`${host}\`)`,
+        kind: 'Rule',
+        services: [{ name: 'platform-suspended', port: 80 }],
+      }],
+      tls: { secretName: PAGE_TLS_SECRET },
+    },
+  };
+}
+
+/** The page's Certificate as k8s/base/platform-suspended.yaml seeds it. */
+export function suspendedPageCertificate(host: string, clusterIssuerName: string): Record<string, unknown> {
+  return {
+    apiVersion: `${CERTMANAGER_GROUP}/${CERTMANAGER_VERSION}`,
+    kind: 'Certificate',
+    metadata: {
+      name: SUSPENDED_PAGE_CERT_NAME,
+      namespace: SUSPENDED_PAGE_NAMESPACE,
+      labels: { ...PAGE_LABELS },
+      annotations: { ...FLUX_DISOWNED },
+    },
+    spec: {
+      secretName: PAGE_TLS_SECRET,
+      duration: '2160h',
+      renewBefore: '720h',
+      privateKey: { algorithm: 'ECDSA', size: 256, rotationPolicy: 'Always' },
+      usages: ['digital signature', 'key encipherment', 'server auth'],
+      dnsNames: [host],
+      issuerRef: { name: clusterIssuerName, kind: 'ClusterIssuer', group: CERTMANAGER_GROUP },
+    },
+  };
+}
+
+/** Create `body` unless it already exists. Returns whether it was created. */
+async function createIfMissing(
+  custom: k8s.CustomObjectsApi,
+  ref: { group: string; version: string; plural: string; name: string },
+  body: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    await custom.getNamespacedCustomObject({ ...ref, namespace: SUSPENDED_PAGE_NAMESPACE });
+    return false;
+  } catch (err) {
+    if (!isK8sNotFound(err)) throw err;
+  }
+  await custom.createNamespacedCustomObject({
+    group: ref.group,
+    version: ref.version,
+    namespace: SUSPENDED_PAGE_NAMESPACE,
+    plural: ref.plural,
+    body,
+  });
+  return true;
+}
+
 export interface SuspendedPageReconcileResult {
   readonly host: string | null;
+  /** Objects this run had to create (absent on an existing cluster). */
+  readonly created: string[];
   readonly ingressRoute: HostReconcileResult | null;
   readonly certificate: HostReconcileResult | null;
   readonly redirects: RepointResult | null;
@@ -70,14 +156,34 @@ export async function reconcileSuspendedPageIngress(
   db: Database,
   custom: k8s.CustomObjectsApi,
   log: Pick<Logger, 'info' | 'warn'>,
+  // platform-api's CLUSTER_ISSUER_NAME. Without it the Certificate is not
+  // created (Traefik then serves its default cert) — never a guessed issuer.
+  clusterIssuerName?: string,
 ): Promise<SuspendedPageReconcileResult> {
   const host = await resolveSuspendedPageHost(db);
   let ingressRoute: HostReconcileResult | null = null;
   let certificate: HostReconcileResult | null = null;
+  const created: string[] = [];
   if (host) {
-    // A failed patch must not cost the redirect re-point below, nor reject
-    // the startup Promise.all this runs in alongside the other hosts.
+    // A failed create/patch must not cost the redirect re-point below, nor
+    // reject the startup Promise.all this runs in alongside the other hosts.
     try {
+      if (await createIfMissing(
+        custom,
+        { group: TRAEFIK_GROUP, version: TRAEFIK_VERSION, plural: INGRESSROUTE_PLURAL, name: SUSPENDED_PAGE_IR_NAME },
+        suspendedPageIngressRoute(host),
+      )) created.push(`IngressRoute/${SUSPENDED_PAGE_IR_NAME}`);
+      const issuer = clusterIssuerName?.trim();
+      if (issuer) {
+        if (await createIfMissing(
+          custom,
+          { group: CERTMANAGER_GROUP, version: CERTMANAGER_VERSION, plural: CERTIFICATE_PLURAL, name: SUSPENDED_PAGE_CERT_NAME },
+          suspendedPageCertificate(host, issuer),
+        )) created.push(`Certificate/${SUSPENDED_PAGE_CERT_NAME}`);
+      } else {
+        log.warn({ host }, 'suspended-page: no CLUSTER_ISSUER_NAME — certificate not created');
+      }
+      if (created.length > 0) log.info({ host, created }, 'suspended-page: created the suspended page objects');
       ingressRoute = await reconcileIngressRouteHost(
         custom, { namespace: SUSPENDED_PAGE_NAMESPACE, name: SUSPENDED_PAGE_IR_NAME }, host, log,
       );
@@ -90,7 +196,7 @@ export async function reconcileSuspendedPageIngress(
   }
   const url = await resolveSuspendedRedirectUrl(db);
   const redirects = url ? await repointSuspendedRedirects(custom, url, log) : null;
-  return { host, ingressRoute, certificate, redirects };
+  return { host, created, ingressRoute, certificate, redirects };
 }
 
 export interface RepointResult {

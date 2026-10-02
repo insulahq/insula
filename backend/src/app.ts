@@ -953,12 +953,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           // fresh installs only — existing clusters gain the WAF chain here.
           reconcileTunnelAnchorMiddlewares(k8s.custom, app.log),
           // The suspended page + every suspended tenant's redirect target.
-          reconcileSuspendedPageIngress(app.db, k8s.custom, app.log),
+          reconcileSuspendedPageIngress(app.db, k8s.custom, app.log, cfg.CLUSTER_ISSUER_NAME as string | undefined),
         ]);
         if (
           sw.ingressRoute?.patched || sw.certificate?.patched ||
           ta.ingressRoute?.patched || ta.certificate?.patched || taMw.patched ||
-          sp.ingressRoute?.patched || sp.certificate?.patched || (sp.redirects?.repointed.length ?? 0) > 0
+          sp.created.length > 0 || sp.ingressRoute?.patched || sp.certificate?.patched ||
+          (sp.redirects?.repointed.length ?? 0) > 0
         ) {
           app.log.info(
             { stalwartWebadmin: sw.host, tunnelAnchor: ta.host, suspendedPage: sp.host },

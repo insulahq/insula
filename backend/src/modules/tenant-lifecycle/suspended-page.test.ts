@@ -110,6 +110,49 @@ describe('reconcileSuspendedPageIngress', () => {
       .toEqual({ spec: { redirectRegex: { replacement: 'https://suspended.example.test/' } } });
   });
 
+  it('creates the page and its certificate when Flux never did (existing clusters)', async () => {
+    const created: Array<{ plural: string; body: { metadata: { name: string; annotations: Record<string, string> }; spec: Record<string, unknown> } }> = [];
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    let exists = false;
+    const custom = {
+      getNamespacedCustomObject: vi.fn(async (a: { plural: string }) => {
+        if (!exists) throw notFound;
+        return a.plural === 'ingressroutes'
+          ? { metadata: { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }, spec: { routes: [{ match: 'Host(`suspended.example.test`)' }] } }
+          : { metadata: { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }, spec: { dnsNames: ['suspended.example.test'] } };
+      }),
+      createNamespacedCustomObject: vi.fn(async (a: (typeof created)[number]) => { created.push(a); if (created.length === 2) exists = true; }),
+      patchNamespacedCustomObject: vi.fn(async () => undefined),
+      listClusterCustomObject: vi.fn(async () => ({ items: [] })),
+    };
+
+    const r = await reconcileSuspendedPageIngress(db, custom as never, log, 'letsencrypt-prod-http01');
+
+    expect(r.created).toEqual(['IngressRoute/platform-suspended-page', 'Certificate/platform-suspended-page']);
+    const [ir, cert] = created;
+    expect(ir.body.metadata.annotations).toEqual({ 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' });
+    expect(JSON.stringify(ir.body.spec)).toContain('Host(`suspended.example.test`)');
+    expect(ir.body.spec.entryPoints).toEqual(['websecure']);
+    expect(cert.body.spec.dnsNames).toEqual(['suspended.example.test']);
+    expect(cert.body.spec.issuerRef).toEqual({ name: 'letsencrypt-prod-http01', kind: 'ClusterIssuer', group: 'cert-manager.io' });
+  });
+
+  it('creates no certificate without a known issuer — never a guessed one', async () => {
+    const notFound = Object.assign(new Error('not found'), { code: 404 });
+    const create = vi.fn(async () => undefined);
+    const custom = {
+      getNamespacedCustomObject: vi.fn(async () => { throw notFound; }),
+      createNamespacedCustomObject: create,
+      patchNamespacedCustomObject: vi.fn(async () => undefined),
+      listClusterCustomObject: vi.fn(async () => ({ items: [] })),
+    };
+
+    const r = await reconcileSuspendedPageIngress(db, custom as never, log, undefined);
+
+    expect(r.created).toEqual(['IngressRoute/platform-suspended-page']);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('still re-points tenants when the host patch fails, and does not throw', async () => {
     const { custom, patches } = cluster({ failIngressRoutePatch: true });
 

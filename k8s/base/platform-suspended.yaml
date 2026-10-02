@@ -88,15 +88,15 @@ spec:
 # only, and the redirect target defaulted to the same name — a host no
 # resolver knows. Every suspended tenant's visitors were sent to it.
 #
-# R16 seed-then-disown: Flux seeds `suspended.${DOMAIN}`; platform-api's
-# reconcileSuspendedPageIngress owns the live Host + cert dnsNames so a
-# platform-apex rename follows (mirrors stalwart-webadmin and the tunnel
-# anchor). The page is public by design — no admin auth gate.
-#
-# A NEW name on purpose: Flux creates a `reconcile: disabled` object that
-# does not exist yet, but never updates one that does. Reusing the old
-# `platform-suspended` name would have left every existing cluster on the
-# dead `suspended.platform.local` route; that object is pruned instead.
+# R16 seed-then-disown: these two objects are a fresh-install seed only
+# (bootstrap's `kubectl apply -k`). Flux SKIPS a `reconcile: disabled`
+# object even when it does not exist yet, so on an existing cluster
+# platform-api's reconcileSuspendedPageIngress (tenant-lifecycle/
+# suspended-page.ts) creates them, keeps Host + dnsNames on the platform
+# apex, and re-points suspended tenants. Keep both in step with that module.
+# The page is public by design — no admin auth gate. The old
+# `platform-suspended` IngressRoute (dead `suspended.platform.local` host)
+# is pruned by Flux.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
