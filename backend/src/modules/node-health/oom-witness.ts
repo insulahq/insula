@@ -108,6 +108,14 @@ const SKEW_MS = 2_000;
  * the pod really had on a neighbouring termination.
  */
 const EXIT_LAG_MS = 120_000;
+/**
+ * How far before a kill an `oom` rise still belongs to it. The kernel counts
+ * `oom` when the cgroup hits its limit and `oom_kill` once the victim is
+ * chosen; inotify can read in between, and on DEV it did every time — a rise
+ * of {oom 1} then, ~100 ms later, {oom_kill 2, oom_group_kill 1}. Judged on
+ * the kill rise alone, every limit kill read as a node-wide OOM.
+ */
+const LIMIT_HIT_LOOKBACK_MS = 30_000;
 
 /**
  * Read every node's witness. Never throws: a node whose ConfigMap is missing,
@@ -247,12 +255,15 @@ export function judgeKills(
     used.set(i, (used.get(i) ?? 0) + 1);
   }
 
+  // `oom` counts the cgroup (or a child) hitting its limit; a node-level OOM
+  // kill raises oom_kill alone. The limit hit may be its own, earlier rise.
+  const allRises = pod.increases ?? [];
+  const limitHit = (i: Increase): boolean => i.oom > 0 || allRises.some((j) =>
+    j !== i && j.oom > 0 && j.atMs <= i.atMs && j.atMs >= i.afterMs - LIMIT_HIT_LOOKBACK_MS);
   for (const k of kills) {
     const hit = explained.get(k.key);
     if (hit) {
-      // `oom` counts the cgroup (or a child) hitting its limit; a node-level
-      // OOM kill raises oom_kill alone.
-      out.set(k.key, hit.oom > 0 ? 'memory-limit' : 'node-oom');
+      out.set(k.key, limitHit(hit) ? 'memory-limit' : 'node-oom');
       continue;
     }
     const t = k.finishedAt.getTime();

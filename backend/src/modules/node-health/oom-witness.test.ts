@@ -75,6 +75,23 @@ describe('judgeKill — a kill bracketing the exit', () => {
     expect(judgeKill('inferred', new Date(T), UID, w)).toBe('memory-limit');
   });
 
+  it('a limit hit read separately, just before the kill, is still a limit kill (the DEV sequence)', () => {
+    // Recorded verbatim on DEV: inotify read between the kernel counting
+    // `oom` and counting the kill, ~100 ms apart.
+    const w = witness(pod({
+      oom: 1, oomKill: 2, oomGroupKill: 1,
+      increases: [inc(T - 3_000, T - 2_900, 1, 0, 0), inc(T - 2_900, T - 2_800, 0, 2, 1, [APP])],
+    }));
+    expect(judgeKill('explicit', new Date(T), UID, w, APP)).toBe('memory-limit');
+  });
+
+  it('an old limit hit, long before the kill, does not make a node-wide OOM a limit kill', () => {
+    const w = witness(pod({
+      increases: [inc(T - 900_000, T - 899_000, 1, 0, 0), inc(T - 25_000, T + 50, 0, 1, 1, [APP])],
+    }));
+    expect(judgeKill('explicit', new Date(T), UID, w, APP)).toBe('node-oom');
+  });
+
   it('oom_kill rose without oom: the NODE ran out of memory', () => {
     const w = witness(pod({ oomKill: 1, increases: [inc(T - 25_000, T + 50, 0)] }));
     expect(judgeKill('explicit', new Date(T), UID, w)).toBe('node-oom');
