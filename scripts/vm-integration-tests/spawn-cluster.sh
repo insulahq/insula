@@ -266,7 +266,14 @@ bootstrap_node() {
   # bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
-  assert_guest_os_version "$ip" "${NODE_OS[$host]}"
+  # The pin describes a FRESH VM from the registry image. A reused VM
+  # (rebootstrap.sh) keeps its OS, which has since taken point-release updates
+  # (debian 13.6 → 13.7) — that is the OS under test now, not a broken image.
+  if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+    echo "  ${ip}: reused VM — OS $(_vssh "$ip" "cat /etc/debian_version 2>/dev/null || . /etc/os-release && echo \$VERSION_ID" 2>/dev/null | head -1) kept"
+  else
+    assert_guest_os_version "$ip" "${NODE_OS[$host]}"
+  fi
   # VMTEST_PLATFORM_OPS_BIN=<local insula binary> pre-places a locally built
   # operator CLI (scripts/build-platform-ops.sh) exactly where an operator's
   # `insula bootstrap` puts the signed one. Bootstrap then finds it "already at
