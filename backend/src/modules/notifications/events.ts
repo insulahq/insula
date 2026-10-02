@@ -872,15 +872,23 @@ export async function notifyAdminTenantMisplaced(
 
 export interface AdminNodeMemoryEventPayload {
   readonly nodeName: string;
-  /** Human summary, e.g. "3 tenant pod(s) evicted" or "kernel SystemOOM (2 events)". */
+  /**
+   * What happened, for the subject — e.g. "Tenant pods evicted (node disk
+   * pressure)" or "Node ran out of memory (kernel OOM killer)". Built from the
+   * events themselves, so the subject can never name a different event class
+   * than the body (it used to say "memory pressure" for container OOM kills).
+   */
+  readonly headline: string;
+  /** Human summary naming each affected pod, plus what to do. */
   readonly summary: string;
 }
 /**
- * Node memory events: SystemOOM / evictions
- * touching SYSTEM workloads dispatch critical; tenant-only evictions
- * dispatch warning. Caller supplies an hour-scoped dedupeKey so a
- * sustained incident notifies at most once per node/class/hour (the
- * category rate limits back-stop bursts).
+ * Node memory events: kernel SystemOOM and kubelet evictions. SystemOOM or a
+ * SYSTEM eviction dispatches critical; tenant-only evictions dispatch warning.
+ * Container OOM kills are NOT node events and never come here — see
+ * notifyAdminTenantOom / notifyAdminSystemPodOom. Caller supplies an
+ * hour-scoped dedupeKey so a sustained incident notifies at most once per
+ * node/class/hour (the category rate limits back-stop bursts).
  */
 export async function notifyAdminNodeMemoryEvents(
   db: Database,
@@ -1528,31 +1536,59 @@ export async function notifyAdminTenantResourceRecovered(
   );
 }
 
-// ── Per-tenant OOM kill (Phase 1d) ──────────────────────────────────────────
+// ── Container OOM kills (node-health/memory-event-notify.ts) ─────────────────
 
 export interface AdminOomPayload {
   readonly tenantLabel: string;
   readonly podName: string;
   readonly containerName: string;
   readonly restartCount: string;
-  /** Subject fragment from describeOomEvent() — confirmed vs inferred kill. */
+  /** Subject fragment from describeContainerKill() — what the evidence supports. */
   readonly killSummary: string;
-  /** Body sentence from describeOomEvent(), including the remediation hint. */
+  /** Body sentence from describeContainerKill(), including the remediation hint. */
   readonly killDetail: string;
 }
 /**
- * A tenant container was OOM-killed. `dedupeKey` (caller passes
+ * A tenant container was OOM-killed, or SIGKILLed for a cause that could not
+ * be confirmed (the wording says which). `dedupeKey` (caller passes
  * tenant+pod+container+restartCount) fires once per distinct kill — a new kill
  * bumps restartCount and re-alerts; a still-Running-after-old-kill pod does not.
  */
 export async function notifyAdminTenantOom(
   db: Database,
-  tenantId: string,
+  tenantId: string | undefined,
   payload: AdminOomPayload,
   dedupeKey?: string,
 ): Promise<void> {
   // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
   await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminSystemPodOomPayload {
+  /** The namespace, or "platform component in tenant \"X\"" for a platform-sized pod. */
+  readonly component: string;
+  readonly podName: string;
+  readonly containerName: string;
+  readonly nodeName: string;
+  readonly restartCount: string;
+  /** Subject fragment from describeContainerKill(). */
+  readonly killSummary: string;
+  /** Body sentence from describeContainerKill(), including the remediation hint. */
+  readonly killDetail: string;
+}
+/**
+ * A PLATFORM container — a system namespace, or a platform-sized pod in a
+ * tenant namespace such as the file manager — was OOM-killed or SIGKILLed.
+ * Its own category because a platform workload is sized by the platform: the
+ * advice differs from a tenant's, and it was previously filed under the
+ * node-memory categories it is not. One per kill (dedupeKey).
+ */
+export async function notifyAdminSystemPodOom(
+  db: Database,
+  payload: AdminSystemPodOomPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.system_pod_oom', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 // ── Custom deployment failure (CrashLoopBackOff / ImagePullBackOff / OOM) ────

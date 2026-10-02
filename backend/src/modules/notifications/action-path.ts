@@ -59,6 +59,7 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.node_removed': '/cluster/nodes',
   'admin.node_memory_event_warning': '/cluster/nodes',
   'admin.node_memory_event_critical': '/cluster/nodes',
+  'admin.system_pod_oom': '/cluster/nodes',
   'admin.security_hardening_drift': '/security/posture',
   'admin.backup_failed': '/backups',
   'admin.backup_stale': '/backups',

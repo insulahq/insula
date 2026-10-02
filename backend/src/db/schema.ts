@@ -4570,6 +4570,8 @@ export const nodeMemoryEvents = pgTable('node_memory_events', {
   namespace: text('namespace'),
   podName: text('pod_name'),
   systemWorkload: boolean('system_workload').notNull().default(false),
+  // What actually happened (0142) — nodeMemoryEventCauseSchema in api-contracts.
+  cause: varchar('cause', { length: 32 }),
   message: text('message').notNull().default(''),
   occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

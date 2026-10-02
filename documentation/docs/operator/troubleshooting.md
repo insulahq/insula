@@ -184,10 +184,22 @@ Under real memory pressure this is the platform working as designed: nodes
 run swap-less with reserved headroom, and tenant workloads are always
 reclaimed before system components. Check **Monitoring → Node Health →
 Memory events** for exactly what was hit and when (you'll also have been
-notified). Chronic tenant evictions mean the node is oversubscribed — add a
-node, or move/upsize the noisy tenant. A **SYSTEM** row in that card is
-different: platform components should never lose the memory fight — treat it
-as an incident and check node sizing immediately.
+notified). Read the label before acting:
+
+- **OOM at memory limit** — the workload needs more memory than its limit (or
+  leaks): raise the limit / plan.
+- **OOM (node out of memory)** — the *node* ran out; the container's limit is
+  not the problem. Add capacity or move tenants.
+- **Evicted: memory pressure** — chronic ones mean the node is oversubscribed —
+  add a node, or move/upsize the noisy tenant. **Evicted: disk pressure** is a
+  full disk, not memory; **Evicted: storage limit** is one pod over its own
+  ephemeral-storage limit.
+- **SIGKILL, cause unconfirmed** — not evidence of a memory problem; check
+  the container's own logs first.
+
+A **SYSTEM** row in that card is different: platform components should never
+lose the memory fight — treat it as an incident and check node sizing
+immediately.
 
 !!! note "After a node reboot, don't trust a lone \"out of memory\" report"
     A graceful node shutdown kills whatever is still running and leaves those

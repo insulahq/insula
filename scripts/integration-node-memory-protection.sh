@@ -353,6 +353,98 @@ else
   echo "NOTE: backend $PLATFORM_VER predates the container-oom status watcher (ships v2026.7.3) — event-path assert skipped"
 fi
 
+# ── The kill is reported TRUTHFULLY ──────────────────────────────────────────
+# The cause comes from the kernel's own counters (security-probe OOM witness,
+# data.memcg of security-probe-<node>), not from exit 137. Gated on the API
+# carrying `cause` (older backends) and on the witness being published (older
+# probes): without it the honest answer is 'oom'/'unconfirmed', never a guess.
+HOG_NODE=$(k get pod -n "$E2E_NS" "${RUN_ID}-hog" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+WITNESS_OK=$(k get cm -n platform-system "security-probe-${HOG_NODE}" -o jsonpath='{.data.memcg}' 2>/dev/null \
+  | jq -r '.available // false' 2>/dev/null)
+HOG_ROW=$(api "$ADMIN_HOST/api/v1/admin/node-health/memory-events?limit=100" \
+  | jq -c --arg p "${RUN_ID}-hog" '[.data.events[] | select(.kind=="container-oom" and .podName==$p)][0] // empty')
+if [[ -z "$HOG_ROW" ]] || ! jq -e 'has("cause")' <<<"$HOG_ROW" >/dev/null; then
+  echo "NOTE: backend predates memory-event causes — truthful-cause asserts skipped"
+else
+  HOG_CAUSE=$(jq -r '.cause' <<<"$HOG_ROW")
+  if [[ "$WITNESS_OK" == "true" ]]; then
+    if [[ "$HOG_CAUSE" == "memory-limit" ]]; then
+      pass "hog kill judged kernel-confirmed: cause=memory-limit"
+    else
+      fail "hog kill cause=$HOG_CAUSE with the OOM witness available on $HOG_NODE (expected memory-limit)"
+    fi
+  else
+    case "$HOG_CAUSE" in
+      oom|unconfirmed) echo "NOTE: no OOM witness on $HOG_NODE — hog cause=$HOG_CAUSE (kubelet word only)" ;;
+      *) fail "hog cause=$HOG_CAUSE claims kernel evidence, but $HOG_NODE publishes no OOM witness" ;;
+    esac
+  fi
+
+  # Negative control: a container that simply exits 137. Not memory — with the
+  # witness it must not be recorded as a memory event at all, and it must never
+  # be worded as an OOM. (DEV, before this fix: it was alerted as a possible
+  # OOM under "Tenant evictions (memory pressure)".)
+  QUIT_IMAGE=$(k get deploy -n platform platform-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+  k apply -f - >/dev/null <<QUITPOD
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${RUN_ID}-quit
+  namespace: ${E2E_NS}
+spec:
+  restartPolicy: Never
+  nodeName: ${HOG_NODE}
+  containers:
+    - name: quitter
+      image: ${QUIT_IMAGE}
+      command: ["node", "-e", "setTimeout(()=>process.exit(137),3000)"]
+      resources:
+        requests: { cpu: 20m, memory: 32Mi }
+        limits: { memory: 64Mi }
+QUITPOD
+  QEXIT=""
+  for i in $(seq 1 12); do
+    QEXIT=$(k get pod -n "$E2E_NS" "${RUN_ID}-quit" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null)
+    [[ "$QEXIT" == "137" ]] && break
+    sleep 5
+  done
+  api -X POST "$ADMIN_HOST/api/v1/admin/node-health/reconcile" >/dev/null
+  sleep 5
+  QROW=$(api "$ADMIN_HOST/api/v1/admin/node-health/memory-events?limit=100" \
+    | jq -c --arg p "${RUN_ID}-quit" '[.data.events[] | select(.podName==$p)][0] // empty')
+  if [[ "$QEXIT" != "137" ]]; then
+    fail "negative control did not exit 137 (got '${QEXIT:-none}')"
+  elif [[ "$WITNESS_OK" == "true" ]]; then
+    if [[ -z "$QROW" ]]; then
+      pass "plain exit 137 NOT recorded as a memory event (kernel: no OOM counter moved)"
+    else
+      fail "plain exit 137 recorded as a memory event with the witness available: $QROW"
+    fi
+  elif [[ -z "$QROW" || "$(jq -r '.cause' <<<"$QROW")" == "unconfirmed" ]]; then
+    pass "plain exit 137 without a witness is at most 'unconfirmed'"
+  else
+    fail "plain exit 137 recorded as $(jq -r '.cause' <<<"$QROW") without kernel evidence"
+  fi
+
+  # One notification per kill, in the category it belongs to: never an
+  # eviction category, and nothing at all for the plain exit.
+  HOG_CATS=$(psql_q "SELECT string_agg(DISTINCT category_id, ',') FROM notifications WHERE message LIKE '%${RUN_ID}-hog%'")
+  if [[ "$HOG_CATS" != *node_memory_event* ]]; then
+    pass "hog kill not announced as a node memory event / eviction (categories: ${HOG_CATS:-none yet})"
+  else
+    fail "hog kill announced in a node-memory/eviction category: $HOG_CATS"
+  fi
+  if [[ "$WITNESS_OK" == "true" ]]; then
+    QUIT_N=$(psql_q "SELECT count(*) FROM notifications WHERE message LIKE '%${RUN_ID}-quit%'")
+    if [[ "${QUIT_N:-0}" == "0" ]]; then
+      pass "plain exit 137 produced no notification"
+    else
+      fail "plain exit 137 produced $QUIT_N notification row(s)"
+    fi
+  fi
+  k delete pod -n "$E2E_NS" "${RUN_ID}-quit" --wait=false >/dev/null 2>&1
+fi
+
 # The metric layer is OPPORTUNISTIC, never a hard fail: cadvisor's
 # container_oom_events_total is fed by its kmsg oomparser AND the killed
 # container's cgroup (with its metric series) is torn down within seconds

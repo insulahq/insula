@@ -71,6 +71,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Out-of-memory alerts now say what actually happened.** A tenant container OOM-killed at its
+  memory limit used to reach admins titled "Tenant evictions (memory pressure)" — nothing had been
+  evicted — and then again from a second, hourly check; a container that merely exited with code
+  137 was alerted as a possible OOM with advice to raise the tenant's memory limit. Now:
+  - The security probe reads the kernel's own out-of-memory counters for every pod (read-only
+    `/sys/fs/cgroup` mount), so a killed container is reported as **OOM-killed at its memory
+    limit**, **killed by the node's OOM killer** (its own limit is not the cause), **OOM-killed**
+    (the kubelet's word, when no kernel evidence is available) or **SIGKILLed, cause unconfirmed**.
+    A kill the kernel shows was not memory is no longer reported at all.
+  - One notification per event, in the category it belongs to: **Tenant workload OOM-killed**,
+    the new **Platform workload OOM-killed** (system namespaces, and platform-sized pods such as
+    the file manager), **Tenant pods evicted** and **Node out of memory / SYSTEM pod evicted**.
+    The eviction alerts are sent only for real kubelet evictions and name the resource — memory,
+    disk or PID pressure, or a pod over its own ephemeral-storage limit.
+  - Monitoring → Node Health → **Memory events** labels each row the same way; unconfirmed
+    SIGKILLs are grey.
+
 - **Tenants no longer drift off their node, and backups no longer move tenant data between nodes.**
   Upgrading an app, changing its resources or redeploying it dropped the tenant's node pin from its
   Deployment, so after a restart its pods could start on another node — and on a single-replica

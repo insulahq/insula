@@ -14,6 +14,13 @@
 #   5. WRITES exactly ONE ConfigMap (security-probe-<node>) in
 #      platform-system with the JSON snapshot in data.snapshot.
 #
+# Continuously, it also witnesses pod memory-cgroup OOM counters
+# (memory.events under /sys/fs/cgroup, read-only, via inotify) and
+# publishes them in the same ConfigMap at data.memcg. The backend's
+# node-health module uses them to say whether a killed container really
+# ran out of memory — exit 137 alone cannot tell (images/security-probe/
+# memcg.go).
+#
 # Security posture:
 #   * ALL mounts are readOnly: true.
 #   * capabilities.drop: [ALL]; nothing added.
@@ -201,11 +208,29 @@ spec:
             - name: var-lib-fail2ban
               mountPath: /host/var/lib/fail2ban
               readOnly: true
+            # OOM witness (memcg.go): every pod's and container's
+            # memory.events. Read-only — the cgroup tree holds resource
+            # counters, no credentials, and nothing here can write to it.
+            # The whole tree, not just kubepods: the witness needs
+            # cgroup.controllers at the root to tell v2 from v1, and the
+            # kubepods directory is named differently per cgroup driver
+            # (kubepods.slice vs kubepods) — a `Directory` mount of either one
+            # would crashloop the DaemonSet on nodes using the other.
+            - name: sys-fs-cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
       volumes:
         - name: var-lib-fail2ban
           hostPath:
             path: /var/lib/fail2ban
             type: DirectoryOrCreate
+        # Directory, not DirectoryOrCreate: every supported OS mounts
+        # cgroup2 here, and creating it on a host that does not would hide
+        # the problem. The witness reports "unavailable" on a v1 host.
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
         - name: etc-sshd-config
           hostPath:
             path: /etc/ssh/sshd_config

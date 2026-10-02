@@ -75,9 +75,11 @@ fi
 # 5) An unconfirmed exit-137 kill must not be worded as a confirmed OOM.
 #    Exit 137 is 128+SIGKILL from any source; claiming "OOM-killed at its
 #    memory limit" for it is what sent an admin to raise a limit on a container
-#    sitting at 13% of one.
-if ! grep -q "oomConfidence" "$ALERT" 2>/dev/null; then
-  echo "ci-namespace-classification: $ALERT must distinguish confirmed OOMs from inferred exit-137 kills (oomConfidence)" >&2
+#    sitting at 13% of one. Each kill carries a `cause` from judgeKill() (the
+#    kernel witness, else the kubelet's word), and the unconfirmed cause has
+#    wording of its own.
+if ! grep -qE "judgeKills?\(" "$ALERT" 2>/dev/null || ! grep -q "case 'unconfirmed':" "$ALERT" 2>/dev/null; then
+  echo "ci-namespace-classification: $ALERT must judge each kill (judgeKills) and word the unconfirmed cause separately" >&2
   fail=1
 fi
 
