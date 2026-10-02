@@ -163,12 +163,30 @@ export function needsStatusWrite(
  * must be reported as it is, not frozen at whatever the row said before. Same
  * rule workload-health and quiesce-watchdog already apply: an in-flight
  * operation owns the namespace.
+ *
+ * `activeAtTickStart` is the tenant read taken once per tick. A held workload
+ * whose tenant looked idle then is re-checked against the database: the tick
+ * walks rows one by one, and wherever it reads the cluster per row (custom
+ * containers always; catalog apps when the workload snapshot failed) an
+ * operation can start between that tenant read and this row's read. Every
+ * operation records itself on the tenant BEFORE quiesce stamps the hold, so a
+ * hold seen now with no operation on the re-read really has outlived it. The
+ * re-read only happens for a held workload, which is rare.
  */
-export function heldByInFlightStorageOp(
+export async function storageOpOwnsWorkload(
+  db: Database,
+  tenantId: string,
   components: readonly Pick<ComponentPodStatus, 'heldByStorageOp'>[],
-  tenantHasActiveStorageOp: boolean,
-): boolean {
-  return tenantHasActiveStorageOp && components.some((c) => c.heldByStorageOp === true);
+  activeAtTickStart: ReadonlySet<string>,
+): Promise<boolean> {
+  if (!components.some((c) => c.heldByStorageOp === true)) return false;
+  if (activeAtTickStart.has(tenantId)) return true;
+  const [t] = await db
+    .select({ activeStorageOpId: tenants.activeStorageOpId })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return Boolean(t?.activeStorageOpId);
 }
 
 /**
@@ -279,10 +297,9 @@ export async function reconcileDeploymentStatuses(
   const tenantIds = [...new Set(activeDeployments.map(d => d.tenantId))];
   // Read AFTER the workload snapshot, so an operation that had already started
   // when the snapshot was taken is visible here too. One that starts later is
-  // not in the snapshot either — the snapshot predates its scale-down. (Without
-  // a snapshot, the per-call reads below can still catch one mid-quiesce; the
-  // row it marks stopped converges through stoppedRowMayChange once the pods
-  // are back.)
+  // not in the snapshot either — the snapshot predates its scale-down. Rows
+  // read from the cluster one by one can still catch a later one mid-quiesce;
+  // storageOpOwnsWorkload re-checks the tenant for exactly those.
   const tenantRows = await db
     .select({
       id: tenants.id,
@@ -332,9 +349,8 @@ export async function reconcileDeploymentStatuses(
       checked++;
       try {
         const outcome = await reconcileCustomRow(db, k8s, deployment, namespace);
-        if (heldByInFlightStorageOp(
-          [{ heldByStorageOp: outcome.heldByStorageOp }],
-          tenantsWithActiveStorageOp.has(deployment.tenantId),
+        if (await storageOpOwnsWorkload(
+          db, deployment.tenantId, [{ heldByStorageOp: outcome.heldByStorageOp }], tenantsWithActiveStorageOp,
         )) continue;
         if (deployment.status === 'stopped' && outcome.status !== 'stopped'
           && !stoppedRowMayChange(
@@ -362,7 +378,7 @@ export async function reconcileDeploymentStatuses(
     try {
       const components = resolveComponentsForReconcile(entry);
       const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components, snapshot);
-      if (heldByInFlightStorageOp(k8sStatus.components, tenantsWithActiveStorageOp.has(deployment.tenantId))) {
+      if (await storageOpOwnsWorkload(db, deployment.tenantId, k8sStatus.components, tenantsWithActiveStorageOp)) {
         continue;
       }
       let newDbStatus = phaseToDbStatus(k8sStatus.phase);

@@ -16,7 +16,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   reconcileDeploymentStatuses,
   stoppedRowMayChange,
-  heldByInFlightStorageOp,
+  storageOpOwnsWorkload,
   STOPPED_RECHECK_MS,
 } from './status-reconciler.js';
 import { getDeploymentStatus } from './k8s-deployer.js';
@@ -116,12 +116,25 @@ interface Row {
 }
 
 /**
+ * Whether the tenant has a storage operation in flight — either one answer for
+ * the whole tick, or what the tick-start read saw vs what a later re-read sees
+ * (an operation that started mid-tick).
+ */
+type ActiveOp = boolean | { readonly atTickStart: boolean; readonly onReRead: boolean };
+
+/**
  * The reconciler's database: one deployment row, its tenant, its catalog entry.
  * Records every UPDATE so a test can assert what the reconciler WROTE — the
  * only thing the tenant ever sees.
  */
-function fakeDb(row: Row, tenantHasActiveStorageOp: boolean) {
+function fakeDb(row: Row, activeOp: ActiveOp) {
   const writes: Array<Record<string, unknown>> = [];
+  let tenantReads = 0;
+  const activeNow = (): boolean => {
+    tenantReads += 1;
+    if (typeof activeOp === 'boolean') return activeOp;
+    return tenantReads === 1 ? activeOp.atTickStart : activeOp.onReRead;
+  };
   const deploymentRow = {
     id: 'd-1',
     tenantId: TENANT,
@@ -137,7 +150,7 @@ function fakeDb(row: Row, tenantHasActiveStorageOp: boolean) {
   const rowsFor = (table: unknown): unknown[] => {
     if (table === deployments) return [deploymentRow];
     if (table === tenants) {
-      return [{ id: TENANT, kubernetesNamespace: NS, activeStorageOpId: tenantHasActiveStorageOp ? 'op-1' : null, name: 'Acme' }];
+      return [{ id: TENANT, kubernetesNamespace: NS, activeStorageOpId: activeNow() ? 'op-1' : null, name: 'Acme' }];
     }
     if (table === catalogEntries) {
       return [{
@@ -149,13 +162,14 @@ function fakeDb(row: Row, tenantHasActiveStorageOp: boolean) {
   };
   const db = {
     select: () => ({
-      from: (table: unknown) => {
-        const result = Promise.resolve(rowsFor(table));
-        return Object.assign(result, {
-          limit: async () => rowsFor(table),
-          where: () => Object.assign(Promise.resolve(rowsFor(table)), { limit: async () => rowsFor(table) }),
-        });
-      },
+      from: (table: unknown) => ({
+        then: (resolve: (v: unknown[]) => unknown) => resolve(rowsFor(table)),
+        limit: async () => rowsFor(table),
+        where: () => {
+          const rows = rowsFor(table);
+          return Object.assign(Promise.resolve(rows), { limit: async () => rows });
+        },
+      }),
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => ({
@@ -219,6 +233,23 @@ describe('a snapshot restore as the status reconciler sees it', () => {
     await reconcileDeploymentStatuses(db, k8s);
 
     expect(writes.map((w) => w.status)).toEqual(['stopped']);
+  });
+
+  /**
+   * Custom containers are read from the cluster row by row, after the tenant
+   * read the tick starts with — so a restore can begin in between. The hold is
+   * seen; the tick-start read says no operation; the re-read says there is one.
+   */
+  it('does not record a quiesce that began mid-tick as a stop', async () => {
+    const { db, writes } = fakeDb(
+      { status: 'running', updatedAt: new Date(NOW - 3_600_000), source: 'custom' },
+      { atTickStart: false, onReRead: true },
+    );
+    const k8s = fakeK8s({ deployments: [deploy(0, 0, true)], pods: [] });
+
+    await reconcileDeploymentStatuses(db, k8s);
+
+    expect(writes).toEqual([]);
   });
 
   it('does not record the quiesce as a stop for a custom container either', async () => {
@@ -313,11 +344,35 @@ describe('stoppedRowMayChange', () => {
   });
 });
 
-describe('heldByInFlightStorageOp', () => {
-  it('is true only when a component is held AND the tenant has an operation in flight', () => {
-    expect(heldByInFlightStorageOp([{ heldByStorageOp: true }], true)).toBe(true);
-    expect(heldByInFlightStorageOp([{ heldByStorageOp: true }], false)).toBe(false);
-    expect(heldByInFlightStorageOp([{ heldByStorageOp: false }, {}], true)).toBe(false);
+describe('storageOpOwnsWorkload', () => {
+  /** A db whose tenant re-read answers `active`, counting how often it is asked. */
+  function reReadDb(active: boolean) {
+    let reads = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({ limit: async () => { reads += 1; return [{ activeStorageOpId: active ? 'op-1' : null }]; } }),
+        }),
+      }),
+    } as never;
+    return { db, reads: () => reads };
+  }
+
+  it('is false for a workload nothing holds — without touching the database', async () => {
+    const { db, reads } = reReadDb(true);
+    expect(await storageOpOwnsWorkload(db, TENANT, [{ heldByStorageOp: false }, {}], new Set([TENANT]))).toBe(false);
+    expect(reads()).toBe(0);
+  });
+
+  it('is true for a held workload whose tenant had an operation in flight at tick start', async () => {
+    const { db, reads } = reReadDb(false);
+    expect(await storageOpOwnsWorkload(db, TENANT, [{ heldByStorageOp: true }], new Set([TENANT]))).toBe(true);
+    expect(reads()).toBe(0);
+  });
+
+  it('re-reads the tenant for a held workload that looked idle at tick start', async () => {
+    expect(await storageOpOwnsWorkload(reReadDb(true).db, TENANT, [{ heldByStorageOp: true }], new Set())).toBe(true);
+    expect(await storageOpOwnsWorkload(reReadDb(false).db, TENANT, [{ heldByStorageOp: true }], new Set())).toBe(false);
   });
 });
 
