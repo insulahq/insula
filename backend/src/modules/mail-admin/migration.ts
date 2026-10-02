@@ -316,7 +316,7 @@ export async function startMailMigration(
       : (err instanceof Error ? err.message : String(err));
     await db.execute(sql`
       UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now()
+      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
       WHERE id = ${runId}
     `).catch(() => { /* best-effort */ });
     if (taskId) {
@@ -468,16 +468,18 @@ export async function getMailMigrationStatus(
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  stepTimings: StepTiming[];
 }> {
-  const result = await deps.db.execute<MigrationRunRow>(sql`
+  const result = await deps.db.execute<MigrationRunRow & { step_timings?: unknown }>(sql`
     SELECT id, source_node, target_node, state, current_step, progress_bytes,
-           started_at, finished_at, error_message
+           started_at, finished_at, error_message, step_timings
     FROM mail_migration_runs
     WHERE id = ${runId}
   `);
-  const rows = (result as unknown as { rows: MigrationRunRow[] }).rows;
+  const rows = (result as unknown as { rows: Array<MigrationRunRow & { step_timings?: unknown }> }).rows;
   const r = rows?.[0];
   if (!r) throw new ApiError('MAIL_MIGRATION_NOT_FOUND', 'Migration run not found', 404);
+  const finished = r.finished_at != null ? new Date(r.finished_at as unknown as string) : null;
   return {
     runId: r.id,
     sourceNode: r.source_node,
@@ -490,6 +492,7 @@ export async function getMailMigrationStatus(
       ? (r.finished_at instanceof Date ? r.finished_at.toISOString() : String(r.finished_at))
       : null,
     error: r.error_message ?? null,
+    stepTimings: stepDurations(r.step_timings, finished ?? new Date()),
   };
 }
 
@@ -555,7 +558,7 @@ export async function triggerRestoreBasedFailover(
     // every later failover attempt until a platform-api restart reaps it.
     await withDbRetry(() => db.execute(sql`
       UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now()
+      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
       WHERE id = ${runId}
     `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
     throw err;
@@ -649,6 +652,35 @@ const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   done: { label: 'Migration complete', pct: 100 },
 };
 
+/** step_timings with `{step, at: now()}` appended (migration 0143). */
+function appendStepTiming(step: string) {
+  return sql`coalesce(step_timings, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('step', ${step}::text, 'at', now()))`;
+}
+
+export interface StepTiming {
+  readonly step: string;
+  readonly at: string;
+  /** Seconds until the next entry (or `end`); null for the closing entry. */
+  readonly seconds: number | null;
+}
+
+/** Per-step durations from the recorded start times; the last entry closes the run. */
+export function stepDurations(raw: unknown, end: Date | null = null): StepTiming[] {
+  const entries = (Array.isArray(raw) ? raw : [])
+    .filter((e): e is { step: string; at: string } => !!e && typeof (e as { step?: unknown }).step === 'string' && typeof (e as { at?: unknown }).at === 'string');
+  return entries.map((e, i) => {
+    const next = entries[i + 1]?.at ?? (end ? end.toISOString() : null);
+    const terminal = e.step === 'done' || e.step === 'failed';
+    const seconds = !terminal && next ? Math.max(0, Math.round((Date.parse(next) - Date.parse(e.at)) / 100) / 10) : null;
+    return { step: e.step, at: e.at, seconds };
+  });
+}
+
+/** "preflight 1.2s · scaling-down 3s · …" for the completion log line. */
+export function summarizeStepDurations(timings: readonly StepTiming[]): string {
+  return timings.filter((t) => t.seconds !== null).map((t) => `${t.step} ${t.seconds}s`).join(' · ');
+}
+
 /**
  * Sentinel thrown by setStep when the operator has POSTed
  * /admin/mail/migrate/:runId/cancel. State machine top-level catch
@@ -699,7 +731,7 @@ async function setStep(
   // write used to abandon a failover that was already moving mail.
   await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET current_step = ${step}, state = ${state}
+    SET current_step = ${step}, state = ${state}, step_timings = ${appendStepTiming(step)}
     WHERE id = ${runId}
   `));
 
@@ -774,7 +806,7 @@ async function failRun(
 ): Promise<void> {
   await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET state = 'failed', error_message = ${message}, finished_at = now()
+    SET state = 'failed', error_message = ${message}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
     WHERE id = ${runId}
   `));
   if (taskId) {
@@ -1194,6 +1226,16 @@ async function runMigrationStateMachine(
   // PV is retained (rollback-safe), so once the graceful window elapses we
   // force-delete the mail pod(s) to guarantee the PVC releases for the swap.
   // RocksDB recovers via its WAL, so the grace-0 SIGKILL here is data-safe.
+  // Source node DOWN (DR failover, or a planned move whose source just died):
+  // its pods can never shut down gracefully, so the 90 s graceful window
+  // below only delayed the failover (VM drill: ~90 s of a 4.5 min failover of
+  // an almost-empty store). Force-delete them now — the data on that node is
+  // not what the target restores from, and RocksDB recovers via its WAL.
+  if (!sourceNodeReachable) {
+    log.warn(`[migration ${runId}] source node ${sourceNode} is down — force-deleting its mail pods now instead of waiting for a graceful stop`);
+    await forceDeleteMailPodsMountingPvc(core, MAIL_PVC_NAME, { onlyTerminating: false })
+      .catch((e: unknown) => log.warn(`[migration ${runId}] immediate force-delete failed (the graceful wait follows): ${(e as Error).message}`));
+  }
   try {
     await waitForReplicaCount(apps, 0, 90, () => isCancelRequested(db, runId));
   } catch (err) {
@@ -1909,9 +1951,13 @@ async function runMigrationStateMachine(
 
   await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET state = 'done', current_step = 'complete', finished_at = now()
+    SET state = 'done', current_step = 'complete', finished_at = now(), step_timings = ${appendStepTiming('done')}
     WHERE id = ${runId}
   `));
+  try {
+    const t = await db.execute(sql`SELECT step_timings FROM mail_migration_runs WHERE id = ${runId}`) as { rows?: Array<{ step_timings: unknown }> };
+    log.info(`[migration ${runId}] ${sourceNode} → ${targetNode} done — ${summarizeStepDurations(stepDurations(t.rows?.[0]?.step_timings))}`);
+  } catch { /* the summary is informational only */ }
 
   // Task-center finalisation (success path).
   if (taskId) {

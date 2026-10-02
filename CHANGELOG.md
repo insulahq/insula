@@ -97,6 +97,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **Mail failover after a server is lost is faster, and every mail move shows where its time
+  went.** When the server running mail is down, the failover no longer waits 90 seconds for mail on
+  that server to shut down cleanly — it cannot — before moving on. The mail migration progress
+  view now shows how long each step took, and the timings are kept with the run.
 - **Moving mail to another server no longer loses the last few minutes of mail.** A planned move —
   **Migrate** or **Failback** in Mail placement — restored the new server from the standby copy,
   which is refreshed only every five minutes, so mail that arrived since the last refresh was gone
