@@ -361,7 +361,15 @@ metric "^ mail-port outage window on surviving nodes during relocation (inbound 
 # reachability must be RESTORED by now on surviving nodes
 sleep 5
 r1=$(smtp probe "$S_BASTION" 25); r2=$(smtp probe "$S_STANDBY" 25)
-[ "$r1" = OK ] && [ "$r2" = OK ] && ok "mail reachable again on surviving nodes post-failover" || no "mail NOT reachable post-failover ($S_BASTION=$r1 $S_STANDBY=$r2)"
+# In activeNodeOnly mode only the active mail node binds the mail ports (no
+# HAProxy on the others) — the bastion is not expected to answer there. Every
+# other mode puts HAProxy on the surviving nodes, so both must answer.
+PE_MODE=$(AH "$API/admin/mail/placement" | jg "d['data']['portExposureMode']")
+if [ "$PE_MODE" = activeNodeOnly ]; then
+  [ "$r2" = OK ] && ok "mail reachable again on the new active post-failover (activeNodeOnly)" || no "mail NOT reachable post-failover on the new active ($S_STANDBY=$r2; activeNodeOnly)"
+else
+  [ "$r1" = OK ] && [ "$r2" = OK ] && ok "mail reachable again on surviving nodes post-failover ($PE_MODE)" || no "mail NOT reachable post-failover ($S_BASTION=$r1 $S_STANDBY=$r2; $PE_MODE)"
+fi
 # TLS: the new active must serve a VALID cert covering $MAILHOST (not the
 # self-signed rcgen fallback a restore can leave behind). Invalid cert = FAIL.
 assert_cert_valid "$S_STANDBY" "new active $STANDBY"
