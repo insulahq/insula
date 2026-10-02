@@ -10,6 +10,7 @@ const healthy: PreflightFacts = {
   maxDiskUsedPct: 40,
   nodesWithDiskPressure: 0,
   freshestBackupAgeHours: 2,
+  fluxSuspended: [],
 };
 
 const gate = (r: ReturnType<typeof evaluatePreflight>, id: string) => r.gates.find((g) => g.id === id)!;
@@ -110,9 +111,40 @@ describe('evaluatePreflight', () => {
       maxDiskUsedPct: 99,
       nodesWithDiskPressure: 2,
       freshestBackupAgeHours: null,
+      fluxSuspended: ['Kustomization/platform'],
     });
     expect(r.failures).toBe(0);
     expect(r.ok).toBe(true);
     expect(r.gates.every((g) => g.status !== 'fail')).toBe(true);
+  });
+
+  // A suspended platform Kustomization (the documented manual-rollback step) or
+  // source makes the re-pin a no-op: the upgrade answered "Flux is reconciling",
+  // nothing rolled, and post-flight counted its way to abort-recommended with no
+  // gate naming the cause — found driving the upgrade on a VM cluster.
+  describe('flux-reconciling', () => {
+    it('production: a suspended Kustomization or source → fail (blocking), named', () => {
+      const r = evaluatePreflight({ ...healthy, fluxSuspended: ['Kustomization/platform', 'GitRepository/hosting-platform-production'] });
+      const g = gate(r, 'flux-reconciling');
+      expect(g.status).toBe('fail');
+      expect(g.detail).toContain('Kustomization/platform');
+      expect(g.detail).toContain('GitRepository/hosting-platform-production');
+      expect(g.detail).toContain('flux resume');
+      expect(r.ok).toBe(false);
+    });
+
+    it('staging: the same condition is a warn', () => {
+      expect(gate(evaluatePreflight({ ...healthy, environment: 'staging', fluxSuspended: ['Kustomization/platform'] }), 'flux-reconciling').status).toBe('warn');
+    });
+
+    it('nothing suspended → pass', () => {
+      expect(gate(evaluatePreflight(healthy), 'flux-reconciling').status).toBe('pass');
+    });
+
+    it('unknown (Flux objects unreadable) → warn, never a silent pass', () => {
+      const g = gate(evaluatePreflight({ ...healthy, fluxSuspended: null }), 'flux-reconciling');
+      expect(g.status).toBe('warn');
+      expect(g.detail).toMatch(/could not read/);
+    });
   });
 });

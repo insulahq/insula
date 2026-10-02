@@ -80,7 +80,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
   now run on the node that holds its data instead of wherever the scheduler put them, and nightly
   mailbox backups run on the mail server's node, so their traffic stays on that node.
-
+- **A fresh install now applies exactly the release it is pinned to.** `bootstrap.sh --env
+  production --release-tag vX` cloned the repository's default branch for its first apply and
+  only then handed over to Flux at the tag. While a newer release candidate sat on `main`, a
+  production install of the stable release briefly ran the candidate's images — including its
+  database migrations — and kept objects that exist only in the newer manifests, because Flux
+  removes only what it applied itself. The first apply now uses the same git ref Flux reconciles:
+  the pinned tag on production, the tag Flux resolved on staging, `development` on dev — and on a
+  re-run, the ref the cluster is currently pinned to, so re-running bootstrap after an upgrade
+  never re-applies an older release.
+- **An upgrade is refused while Flux is suspended.** With the platform Kustomization or its git
+  source suspended (for example after a manual rollback), **Upgrade** re-pinned the release,
+  reported "Flux is reconciling", and nothing happened; the post-upgrade checks then recommended
+  an abort without naming the cause. The pre-flight now has a **Flux reconciling the platform**
+  check that names the suspended object, and every upgrade path — the admin panel, `platform-ops
+  upgrade --apply` and automatic updates — refuses to re-pin until it is resumed.
 - **Restoring a snapshot no longer leaves your applications showing "Stopped".** The status
   check that runs every 15 seconds read the restore's temporary scale-down as a stop, and once
   an application was marked stopped it was not looked at again for ten minutes — so restored apps
