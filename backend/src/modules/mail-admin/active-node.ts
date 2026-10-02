@@ -20,9 +20,18 @@
  * `persist: true` writes a pod-derived answer back to the column when it
  * differs (debounced per process), so later readers that only look at the DB —
  * the DR watcher, migration source checks — see the same node. Only the pod is
- * persisted: the other two are already the stored value or a guess from storage.
+ * persisted, and only when it is safe to treat it as settled:
+ *   - the pod is READY, not merely Running — a migration's target pod is
+ *     Running (and binds hostPort 25) long before it is Ready, and the
+ *     migration may still time out and roll back to the source node;
+ *   - no mail migration is in flight (a non-terminal mail_migration_runs row,
+ *     operator- or DR-triggered). A migration records the new active node
+ *     itself, on success only; recording it earlier would leave the DR watcher
+ *     watching the wrong node after a rollback.
+ * The ANSWER is still the Running pod's node either way: that is where
+ * hostPort 25 is bound, which is what haproxy placement must avoid.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
 import { systemSettings } from '../../db/schema.js';
@@ -51,10 +60,39 @@ export interface ResolveActiveMailNodeOptions {
   readonly logger?: { warn: (msg: string) => void };
 }
 
+/** Terminal mail_migration_runs states (same set the migration orphan reaper uses). */
+const MIGRATION_TERMINAL_STATES = sql`('done', 'failed', 'rolled-back', 'cancelled')`;
+
+/**
+ * The id of a mail migration that is still in flight (operator migration or the
+ * DR watcher's automatic failover — the latter writes only this row, no task),
+ * or null.
+ */
+export async function mailMigrationInFlight(db: Database): Promise<string | null> {
+  const res = await db.execute<{ id: string }>(sql`
+    SELECT id FROM mail_migration_runs
+     WHERE state NOT IN ${MIGRATION_TERMINAL_STATES}
+     LIMIT 1
+  `);
+  return ((res as unknown as { rows?: Array<{ id: string }> }).rows ?? [])[0]?.id ?? null;
+}
+
+export interface LiveStalwartPod {
+  readonly node: string;
+  /** The pod's Ready condition — Running alone is not settled (see header). */
+  readonly ready: boolean;
+}
+
 /** The node a Running, not-terminating Stalwart pod is scheduled on, or null. */
 export async function readLiveStalwartNode(
   core: Pick<CoreV1Api, 'listNamespacedPod'>,
 ): Promise<string | null> {
+  return (await readLiveStalwartPod(core))?.node ?? null;
+}
+
+export async function readLiveStalwartPod(
+  core: Pick<CoreV1Api, 'listNamespacedPod'>,
+): Promise<LiveStalwartPod | null> {
   const pods = (await core.listNamespacedPod({
     namespace: MAIL_NAMESPACE,
     labelSelector: STALWART_POD_SELECTOR,
@@ -62,13 +100,16 @@ export async function readLiveStalwartNode(
     items?: ReadonlyArray<{
       metadata?: { deletionTimestamp?: unknown };
       spec?: { nodeName?: string };
-      status?: { phase?: string };
+      status?: { phase?: string; conditions?: ReadonlyArray<{ type?: string; status?: string }> };
     }>;
   };
-  const running = (pods.items ?? []).find(
+  const running = (pods.items ?? []).filter(
     (p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp && p.spec?.nodeName,
   );
-  return running?.spec?.nodeName ?? null;
+  const isReady = (p: (typeof running)[number]): boolean =>
+    (p.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+  const pick = running.find(isReady) ?? running[0];
+  return pick?.spec?.nodeName ? { node: pick.spec.nodeName, ready: isReady(pick) } : null;
 }
 
 /**
@@ -127,21 +168,34 @@ export async function resolveActiveMailNode(
     .where(eq(systemSettings.id, SETTINGS_ID));
   const stored = (row?.activeNode ?? null) as string | null;
 
-  let live: string | null = null;
+  let livePod: LiveStalwartPod | null = null;
   try {
-    live = await readLiveStalwartNode(core);
+    livePod = await readLiveStalwartPod(core);
   } catch (err) {
     opts.logger?.warn(`active mail node: live Stalwart pod lookup failed (${(err as Error).message}) — using the stored value`);
   }
 
+  const live = livePod?.node ?? null;
   if (usable(live)) {
-    if (opts.persist && live !== stored) await persist(db, live);
+    if (opts.persist && live !== stored && livePod?.ready && !(await migrationInFlightSafe(db, opts))) {
+      await persist(db, live);
+    }
     return { node: live, source: 'pod' };
   }
   if (usable(stored)) return { node: stored, source: 'settings' };
   const fromPvc = await deriveActiveNodeFromMailPvc(core);
   if (usable(fromPvc)) return { node: fromPvc, source: 'pvc' };
   return { node: null, source: null };
+}
+
+/** In-flight check for the persist gate; an unreadable table counts as in flight (do not write). */
+async function migrationInFlightSafe(db: Database, opts: ResolveActiveMailNodeOptions): Promise<boolean> {
+  try {
+    return (await mailMigrationInFlight(db)) !== null;
+  } catch (err) {
+    opts.logger?.warn(`active mail node: migration check failed (${(err as Error).message}) — not recording`);
+    return true;
+  }
 }
 
 async function persist(db: Database, node: string): Promise<void> {

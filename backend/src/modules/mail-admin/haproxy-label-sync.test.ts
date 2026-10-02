@@ -14,7 +14,8 @@ vi.mock('./port-exposure.js', () => ({
 }));
 // The active node comes from the shared resolver (active-node.ts, tested on its
 // own); here it answers with the stored value unless a test says otherwise.
-vi.mock('./active-node.js', () => ({
+vi.mock('./active-node.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./active-node.js')>(),
   resolveActiveMailNode: resolveSpy,
 }));
 

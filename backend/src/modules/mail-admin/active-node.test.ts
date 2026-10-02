@@ -13,9 +13,13 @@ import {
   resolveActiveMailNode,
 } from './active-node.js';
 
-function dbStub(stored: string | null) {
+function dbStub(stored: string | null, inFlightMigration: string | null | Error = null) {
   const updates: Array<Record<string, unknown>> = [];
   const db = {
+    execute: async () => {
+      if (inFlightMigration instanceof Error) throw inFlightMigration;
+      return { rows: inFlightMigration ? [{ id: inFlightMigration }] : [] };
+    },
     select: () => ({
       from: (t: unknown) => ({
         where: async () => (t === systemSettings ? [{ activeNode: stored }] : []),
@@ -30,7 +34,7 @@ function dbStub(stored: string | null) {
   return { db: db as never, updates };
 }
 
-type Pod = { node?: string; phase?: string; terminating?: boolean };
+type Pod = { node?: string; phase?: string; terminating?: boolean; ready?: boolean };
 function coreStub(pods: Pod[] | Error, pvc?: { selectedNode?: string; volumeName?: string; pvHost?: string } | Error) {
   return {
     listNamespacedPod: vi.fn(async () => {
@@ -39,7 +43,10 @@ function coreStub(pods: Pod[] | Error, pvc?: { selectedNode?: string; volumeName
         items: pods.map((p) => ({
           metadata: p.terminating ? { deletionTimestamp: new Date() } : {},
           spec: { nodeName: p.node },
-          status: { phase: p.phase ?? 'Running' },
+          status: {
+            phase: p.phase ?? 'Running',
+            conditions: [{ type: 'Ready', status: p.ready === false ? 'False' : 'True' }],
+          },
         })),
       };
     }),
@@ -117,6 +124,34 @@ describe('resolveActiveMailNode — persist', () => {
     await resolveActiveMailNode(db, core as never, { knownNodes: KNOWN, persist: true });
     await resolveActiveMailNode(db, core as never, { knownNodes: KNOWN, persist: true });
     expect(updates).toEqual([{ mailActiveNode: 'sv1' }]);
+  });
+
+  it('answers with a Running-but-not-Ready pod, but does not record it (a migration target may still roll back)', async () => {
+    const { db, updates } = dbStub('sv2');
+    const r = await resolveActiveMailNode(db, coreStub([{ node: 'sv1', ready: false }]) as never, { knownNodes: KNOWN, persist: true });
+    expect(r).toEqual({ node: 'sv1', source: 'pod' });
+    expect(updates).toEqual([]);
+  });
+
+  it('does not record while a mail migration (or DR failover) is in flight', async () => {
+    const { db, updates } = dbStub('sv2', 'run-7');
+    const r = await resolveActiveMailNode(db, coreStub([{ node: 'sv1' }]) as never, { knownNodes: KNOWN, persist: true });
+    expect(r.node).toBe('sv1');
+    expect(updates).toEqual([]);
+  });
+
+  it('does not record when the migration check itself fails', async () => {
+    const { db, updates } = dbStub('sv2', new Error('db down'));
+    const warn = vi.fn();
+    await resolveActiveMailNode(db, coreStub([{ node: 'sv1' }]) as never, { knownNodes: KNOWN, persist: true, logger: { warn } });
+    expect(updates).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not recording'));
+  });
+
+  it('prefers a Ready pod over a not-Ready one', async () => {
+    const { db } = dbStub(null);
+    const r = await resolveActiveMailNode(db, coreStub([{ node: 'w1', ready: false }, { node: 'sv1' }]) as never, { knownNodes: KNOWN });
+    expect(r.node).toBe('sv1');
   });
 
   it('never writes without persist, when the stored value already matches, or for a PVC-derived guess', async () => {

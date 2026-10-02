@@ -31,7 +31,7 @@
  *     could not exclude Stalwart's node and would label haproxy onto it;
  *   - placement no longer satisfies the mode (the same check a switch runs).
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { MailPortExposureMode } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
@@ -45,13 +45,10 @@ import {
   type PlacementSettings,
 } from './port-exposure-modes.js';
 import { portExposureApplyInFlight } from './port-exposure.js';
-import { resolveActiveMailNode } from './active-node.js';
+import { mailMigrationInFlight, resolveActiveMailNode } from './active-node.js';
 
 /** Task kinds whose own orchestration owns the labels while they run. */
 export const LABEL_OWNING_TASK_KINDS = ['mail.port-exposure', 'mail.migration'] as const;
-
-/** Same terminal set the migration orphan reaper uses (migration.ts). */
-const MIGRATION_TERMINAL_STATES = sql`('done', 'failed', 'rolled-back', 'cancelled')`;
 
 /** How often an unchanged "not syncing" line is repeated, so a stuck sync stays visible. */
 export const HAPROXY_LABEL_SYNC_RELOG_MS = 30 * 60_000;
@@ -143,13 +140,8 @@ export async function syncMailHaproxyLabels(
     .where(and(inArray(tasks.kind, [...LABEL_OWNING_TASK_KINDS]), eq(tasks.status, 'running')))
     .limit(1);
   if (running) return skipped(`a ${running.kind} task is running`);
-  const migrations = await db.execute<{ id: string }>(sql`
-    SELECT id FROM mail_migration_runs
-     WHERE state NOT IN ${MIGRATION_TERMINAL_STATES}
-     LIMIT 1
-  `);
-  const migration = ((migrations as unknown as { rows?: Array<{ id: string }> }).rows ?? [])[0];
-  if (migration) return skipped(`mail migration ${migration.id} is in flight`);
+  const migration = await mailMigrationInFlight(db);
+  if (migration) return skipped(`mail migration ${migration} is in flight`);
 
   await reconcileMailHaproxyLabels(core, desired, nodes);
   return { outcome: 'changed', ...plan };
