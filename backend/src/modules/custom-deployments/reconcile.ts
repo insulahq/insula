@@ -23,6 +23,7 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
 import { isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 import { formatQuotaExceededMessage } from '../deployments/k8s-deployer.js';
+import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -38,6 +39,10 @@ interface ReconcileOutcome {
   readonly status: DbStatus;
   readonly statusMessage: string | null;
   readonly node: string | null;
+  /** The Deployment carries the storage-operation hold — see status-reconciler.ts. */
+  readonly heldByStorageOp?: boolean;
+  /** Creation time (epoch ms) of the oldest live pod; null when unknown. */
+  readonly oldestPodCreatedAtMs?: number | null;
 }
 
 /**
@@ -153,6 +158,8 @@ export async function reconcileCustomRow(
     status,
     statusMessage,
     node: podObservation.node,
+    heldByStorageOp: k8sDeployment.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true',
+    oldestPodCreatedAtMs: podObservation.oldestCreatedAtMs,
   };
 }
 
@@ -160,6 +167,12 @@ interface PodObservation {
   readonly node: string | null;
   readonly failureReason: string | null;
   readonly pendingReason: string | null;
+  /**
+   * Creation time (epoch ms) of the oldest live pod — null when there is none,
+   * or when any live pod's is unknown ("every pod is newer than X" cannot be
+   * claimed about a pod without a timestamp).
+   */
+  readonly oldestCreatedAtMs: number | null;
 }
 
 /**
@@ -240,7 +253,8 @@ export async function readFirstPodObservation(
     // metadata.deletionTimestamp + status.reason are the pod-level markers
     // isReplacedPodRecord() reads. Omitting either compiles fine and silently
     // restores the node-reboot false positive — see lib/container-termination.ts.
-    metadata?: { deletionTimestamp?: string };
+    // creationTimestamp is a Date from the typed client, a string from a raw read.
+    metadata?: { deletionTimestamp?: string; creationTimestamp?: string | Date };
     spec?: { nodeName?: string };
     status?: {
       phase?: string;
@@ -267,12 +281,14 @@ export async function readFirstPodObservation(
       labelSelector: `app=${deploymentName}`,
     } as Parameters<typeof k8s.core.listNamespacedPod>[0])) as unknown as { items?: PodListItem[] };
   } catch {
-    return { node: null, failureReason: null, pendingReason: null };
+    return { node: null, failureReason: null, pendingReason: null, oldestCreatedAtMs: null };
   }
 
   let node: string | null = null;
   let failureReason: string | null = null;
   let pendingReason: string | null = null;
+  let oldestCreatedAtMs: number | null = null;
+  let creationKnown = true;
   for (const pod of pods.items ?? []) {
     // Skip dead pod OBJECTS the ReplicaSet has already replaced. A node-reboot
     // corpse keeps its exit-137 container status for as long as terminated-pod
@@ -284,6 +300,11 @@ export async function readFirstPodObservation(
       reason: pod.status?.reason,
       deletionTimestamp: pod.metadata?.deletionTimestamp,
     })) continue;
+    const rawCreated = pod.metadata?.creationTimestamp;
+    const createdMs = rawCreated instanceof Date ? rawCreated.getTime()
+      : rawCreated !== undefined ? Date.parse(rawCreated) : Number.NaN;
+    if (!Number.isFinite(createdMs)) creationKnown = false;
+    else if (oldestCreatedAtMs === null || createdMs < oldestCreatedAtMs) oldestCreatedAtMs = createdMs;
     if (!node && pod.spec?.nodeName) node = pod.spec.nodeName;
     for (const cs of pod.status?.containerStatuses ?? []) {
       const name = cs.name ?? 'container';
@@ -323,10 +344,11 @@ export async function readFirstPodObservation(
       }
     }
   }
-  return { node, failureReason, pendingReason };
+  return { node, failureReason, pendingReason, oldestCreatedAtMs: creationKnown ? oldestCreatedAtMs : null };
 }
 
 interface K8sDeploymentLike {
+  metadata?: { annotations?: Record<string, string> };
   status?: { readyReplicas?: number };
   spec?: { replicas?: number };
 }

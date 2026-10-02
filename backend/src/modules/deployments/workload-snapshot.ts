@@ -60,8 +60,16 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
-/** The Deployment fields `getK8sDeploymentStatus` actually reads. */
+/**
+ * The Deployment fields `getK8sDeploymentStatus` actually reads.
+ *
+ * `metadata.annotations` carries the storage-operation hold
+ * (`insula.host/storage-quiesced`). Dropping it compiles fine and silently
+ * brings back "restored workloads reported as STOPPED": a Deployment a storage
+ * operation holds at 0 is indistinguishable from one a user stopped.
+ */
 export interface SnapshotDeployment {
+  readonly metadata?: { readonly annotations?: Record<string, string> };
   readonly spec?: { readonly replicas?: number };
   readonly status?: { readonly replicas?: number; readonly readyReplicas?: number };
 }
@@ -78,10 +86,15 @@ export interface SnapshotDeployment {
  * `metadata.labels` is present here but absent from the equivalent per-call
  * type: the apiserver used to do the `app=<baseName>` filtering via
  * `labelSelector`, and that filtering now happens in-process instead.
+ *
+ * `metadata.creationTimestamp` tells the status reconciler whether a workload
+ * came back AFTER its row was marked stopped. The typed client hands it over
+ * as a `Date`; a raw read yields the RFC 3339 string. Both are accepted.
  */
 export interface SnapshotPod {
   readonly metadata?: {
     readonly deletionTimestamp?: string;
+    readonly creationTimestamp?: string | Date;
     readonly labels?: Record<string, string>;
   };
   readonly spec?: { readonly nodeName?: string };

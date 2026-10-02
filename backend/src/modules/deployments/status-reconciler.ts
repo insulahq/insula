@@ -5,10 +5,10 @@
  * Detects CrashLoopBackOff, OOMKilled, ImagePullBackOff.
  */
 
-import { eq, inArray, or, and, lt } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { deployments, catalogEntries, tenants } from '../../db/schema.js';
 import { getDeploymentStatus } from './k8s-deployer.js';
-import type { DeployComponentInput } from './k8s-deployer.js';
+import type { ComponentPodStatus, DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { reconcileCustomRow, applyReconcileOutcome } from '../custom-deployments/reconcile.js';
@@ -29,10 +29,19 @@ const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
 /**
  * How long a `stopped` row must sit untouched before the reconciler will
- * re-examine it. Comfortably longer than the gap between writing the status
- * and scaling the workload down, so a stop in progress is never undone.
+ * believe the cluster over it WITHOUT further evidence. Comfortably longer than
+ * the gap between writing the status and scaling the workload down, so a stop
+ * in progress is never undone. {@link stoppedRowMayChange} has the evidence
+ * that lets a row converge sooner.
  */
-const STOPPED_RECHECK_MS = 10 * 60 * 1000; // 10 minutes
+export const STOPPED_RECHECK_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Allowance for the two clocks being compared: a row's `updated_at` is stamped
+ * by platform-api, a pod's `creationTimestamp` by the apiserver. Same cluster,
+ * NTP-synced — this only has to absorb skew, not a scheduling delay.
+ */
+const POD_CLOCK_SKEW_MS = 10 * 1000;
 
 // ─── Map K8s phase to DB status ─────────────────────────────────────────────
 
@@ -132,6 +141,73 @@ export function needsStatusWrite(
 }
 
 /**
+ * Is this workload in the hands of a storage operation right now?
+ *
+ * A storage operation (snapshot restore, resize, fsck, suspend, the
+ * workload-health heal, …) quiesces the tenant: it stamps the hold annotation
+ * on each Deployment and scales it to 0, does its work, scales it back up and
+ * releases the hold only once the workload is available again. Read during that
+ * window, the cluster says `replicas: 0` — which the phase logic reports as
+ * `stopped`, exactly what a user's Stop looks like.
+ *
+ * Recording that was the bug: a 15-second tick always lands inside a restore,
+ * so the row flipped to `stopped` minutes into it. After the restore the pods
+ * were back, but a `stopped` row is not re-examined for {@link STOPPED_RECHECK_MS}
+ * — so the tenant saw their restored apps as STOPPED for up to ten minutes, and
+ * every panel that reads usage only for `running` apps showed none.
+ *
+ * So the row is left alone while BOTH hold: the workload carries the hold, AND
+ * the tenant has an operation in flight. Requiring the second is deliberate.
+ * A hold that outlives its operation (the op failed, and unquiesce keeps the
+ * hold for quiesce-watchdog) marks a workload that is genuinely down; that one
+ * must be reported as it is, not frozen at whatever the row said before. Same
+ * rule workload-health and quiesce-watchdog already apply: an in-flight
+ * operation owns the namespace.
+ */
+export function heldByInFlightStorageOp(
+  components: readonly Pick<ComponentPodStatus, 'heldByStorageOp'>[],
+  tenantHasActiveStorageOp: boolean,
+): boolean {
+  return tenantHasActiveStorageOp && components.some((c) => c.heldByStorageOp === true);
+}
+
+/**
+ * May a row that says `stopped` be moved to `next` now?
+ *
+ * `stopped` is usually INTENT, and `updateDeployment` writes it BEFORE it scales
+ * the workload down — so for a moment the pods are still Ready, and believing
+ * the cluster then would undo a stop in progress. That is why a stopped row
+ * used to be ignored outright until it was {@link STOPPED_RECHECK_MS} old.
+ *
+ * Age is one proof that no stop is in flight. The other is the pods themselves:
+ * a stop in progress is acting on pods that already existed when the row was
+ * written. If EVERY live pod of a running workload was created after that write,
+ * something brought the workload back since — a restore, a resume, a recovery —
+ * and the row is simply stale. Waiting out the remainder of ten minutes then
+ * only prolongs a wrong answer.
+ *
+ * Only a move to `running` takes that shortcut: it is the one transition the
+ * evidence fully supports (pods exist, are newer, and are Ready). Anything else
+ * waits for age, as before.
+ *
+ * @param oldestPodCreatedAtMs  one entry per running Deployment component: the
+ *   creation time of its oldest live pod, or null/undefined when unknown.
+ */
+export function stoppedRowMayChange(
+  updatedAt: Date,
+  next: string,
+  oldestPodCreatedAtMs: ReadonlyArray<number | null | undefined>,
+  now: number = Date.now(),
+): boolean {
+  if (now - updatedAt.getTime() >= STOPPED_RECHECK_MS) return true;
+  if (next !== 'running' || oldestPodCreatedAtMs.length === 0) return false;
+  const stoppedAt = updatedAt.getTime();
+  return oldestPodCreatedAtMs.every(
+    (ms) => typeof ms === 'number' && ms > stoppedAt + POD_CLOCK_SKEW_MS,
+  );
+}
+
+/**
  * Minimal logger surface, matching the shape the bandwidth meter uses. Kept
  * optional so the existing tests can call the reconciler with two arguments.
  */
@@ -154,8 +230,7 @@ export async function reconcileDeploymentStatuses(
   // failed the reconciler ignores it forever and the UI shows it as
   // broken even though the pods are healthy.
   //
-  // ★ And `stopped`, for exactly the same reason, but only once it has gone
-  // STALE.
+  // ★ And `stopped`, for exactly the same reason.
   //
   // Excluding it made the status a one-way door: a row marked stopped was
   // never looked at again, so a deployment whose pods came back stayed
@@ -165,23 +240,18 @@ export async function reconcileDeploymentStatuses(
   // workload while it consumes real CPU and memory: the CPU-tier dry run and
   // migration (ADR-062) and the deployments list API among them.
   //
-  // The grace window matters. `updateDeployment` writes status='stopped'
-  // BEFORE it scales the workload to zero, so for the moment in between the
-  // pods are still Ready and a reconciler tick would read that as `running`
-  // and undo a stop in progress. A row that has not been touched for
-  // STOPPED_RECHECK_MS cannot be one of those. A deliberately stopped
-  // deployment sits at replicas=0, which the phase logic reports as
-  // `stopped` anyway, so this heals drift without ever overriding intent.
+  // EVERY stopped row is fetched; whether it may move is decided per row by
+  // stoppedRowMayChange, which needs the pods to decide. That gate is what
+  // protects a stop in progress (`updateDeployment` writes status='stopped'
+  // BEFORE it scales to zero). It used to be an `updated_at` bound in this
+  // query, which could not see the pods — so a row wrongly marked stopped sat
+  // there for the full window even while its freshly restored pods served.
+  // Cost: nearly every stopped row was already past that bound, and with the
+  // workload snapshot a row is an in-memory lookup, not an API call.
   const activeDeployments = await db
     .select()
     .from(deployments)
-    .where(or(
-      inArray(deployments.status, ['running', 'pending', 'deploying', 'failed']),
-      and(
-        eq(deployments.status, 'stopped'),
-        lt(deployments.updatedAt, new Date(Date.now() - STOPPED_RECHECK_MS)),
-      ),
-    ));
+    .where(inArray(deployments.status, ['running', 'pending', 'deploying', 'failed', 'stopped']));
 
   if (activeDeployments.length === 0) {
     return { checked: 0, updated: 0, errors: [] };
@@ -207,16 +277,28 @@ export async function reconcileDeploymentStatuses(
 
   // Group deployments by tenant for namespace lookup
   const tenantIds = [...new Set(activeDeployments.map(d => d.tenantId))];
+  // Read AFTER the workload snapshot, so an operation that had already started
+  // when the snapshot was taken is visible here too. One that starts later is
+  // not in the snapshot either — the snapshot predates its scale-down. (Without
+  // a snapshot, the per-call reads below can still catch one mid-quiesce; the
+  // row it marks stopped converges through stoppedRowMayChange once the pods
+  // are back.)
   const tenantRows = await db
-    .select({ id: tenants.id, kubernetesNamespace: tenants.kubernetesNamespace })
+    .select({
+      id: tenants.id,
+      kubernetesNamespace: tenants.kubernetesNamespace,
+      activeStorageOpId: tenants.activeStorageOpId,
+    })
     .from(tenants)
     .where(inArray(tenants.id, tenantIds));
 
   const namespaceMap = new Map<string, string>();
+  const tenantsWithActiveStorageOp = new Set<string>();
   for (const c of tenantRows) {
     if (c.kubernetesNamespace) {
       namespaceMap.set(c.id, c.kubernetesNamespace);
     }
+    if (c.activeStorageOpId) tenantsWithActiveStorageOp.add(c.id);
   }
 
   // Pre-fetch all catalog entries needed. Custom deployments have
@@ -250,6 +332,16 @@ export async function reconcileDeploymentStatuses(
       checked++;
       try {
         const outcome = await reconcileCustomRow(db, k8s, deployment, namespace);
+        if (heldByInFlightStorageOp(
+          [{ heldByStorageOp: outcome.heldByStorageOp }],
+          tenantsWithActiveStorageOp.has(deployment.tenantId),
+        )) continue;
+        if (deployment.status === 'stopped' && outcome.status !== 'stopped'
+          && !stoppedRowMayChange(
+            deployment.updatedAt,
+            outcome.status,
+            outcome.status === 'running' ? [outcome.oldestPodCreatedAtMs] : [],
+          )) continue;
         const wasChanged = await applyReconcileOutcome(db, deployment.id, deployment, outcome);
         if (wasChanged) updated++;
       } catch (err) {
@@ -270,8 +362,22 @@ export async function reconcileDeploymentStatuses(
     try {
       const components = resolveComponentsForReconcile(entry);
       const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components, snapshot);
+      if (heldByInFlightStorageOp(k8sStatus.components, tenantsWithActiveStorageOp.has(deployment.tenantId))) {
+        continue;
+      }
       let newDbStatus = phaseToDbStatus(k8sStatus.phase);
       let timeoutMessage: string | null = null;
+
+      if (deployment.status === 'stopped' && newDbStatus !== 'stopped'
+        && !stoppedRowMayChange(
+          deployment.updatedAt,
+          newDbStatus,
+          k8sStatus.components
+            .filter((c) => c.type === 'deployment' && c.phase === 'running')
+            .map((c) => c.oldestPodCreatedAtMs),
+        )) {
+        continue;
+      }
 
       // Staleness timeout: if deployment has been in pending/deploying for too long, escalate to failed
       if (newDbStatus === 'pending' && (deployment.status === 'pending' || deployment.status === 'deploying')) {

@@ -46,6 +46,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Restoring a snapshot no longer leaves your applications showing "Stopped".** The status
+  check that runs every 15 seconds read the restore's temporary scale-down as a stop, and once
+  an application was marked stopped it was not looked at again for ten minutes — so restored apps
+  that were already running showed as **Stopped**, with no CPU or memory usage, for up to ten
+  minutes. Applications now keep their status through a restore (and through a storage resize
+  or file-system check), and a status that is already wrong corrects itself within seconds of the
+  application running again.
+- **A snapshot restore no longer fails five minutes after it has actually finished.** If the
+  file manager was running when the restore started, the idle clean-up switched it off again while
+  the restore was waiting for it to come back, and the restore was reported as failed ("A storage
+  operation failed") even though your data had been restored.
 - **Joining a server no longer re-installs the platform over the live cluster.** A server join
   used to run the whole cluster install again: it rewrote the cluster configuration with the
   joining node's defaults (the admin, tenant and webmail certificates switched to the untrusted
