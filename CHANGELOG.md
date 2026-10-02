@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.3-rc.2] - 2026-10-02
+
 ### BREAKING
 
 - **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
