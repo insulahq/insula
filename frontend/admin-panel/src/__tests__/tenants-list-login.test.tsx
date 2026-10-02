@@ -26,9 +26,8 @@ vi.mock('@/hooks/use-tenants', async (importOriginal) => ({
 }));
 
 vi.mock('@/hooks/use-bulk-tenants', () => ({
-  useBulkSuspendTenants: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useBulkReactivateTenants: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useBulkDeleteTenants: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  runTenantBulkItem: vi.fn(),
+  useInvalidateTenantQueries: () => () => {},
 }));
 
 vi.mock('@/hooks/use-resource-metrics', () => ({
@@ -37,8 +36,7 @@ vi.mock('@/hooks/use-resource-metrics', () => ({
 
 // Heavy children that pull in their own hook trees — not under test here.
 vi.mock('@/components/CreateTenantModal', () => ({ default: () => null }));
-vi.mock('@/components/BulkProgressModal', () => ({ default: () => null }));
-vi.mock('@/components/BulkResultModal', () => ({ default: () => null }));
+vi.mock('@/components/BulkRunModal', () => ({ default: () => null }));
 
 const TenantsListTab = (await import('@/pages/tenants/TenantsListTab')).default;
 

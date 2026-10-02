@@ -20,13 +20,19 @@ import {
 } from './sysctls.js';
 import { convergePackages, packageNameValid, packageVersionValid } from './packages.js';
 import { runHostMigrations, hostMigrationValid } from './host-migrations.js';
+import { loadHostMigrationCatalog, splitMigrationKey } from './catalog.js';
+import { stampHostMigrationBaseline } from './baseline.js';
 import { convergeUlimits, ulimitLineValid } from './ulimits.js';
 import { convergeModules, moduleNameValid } from './modules.js';
 import type {
   ConvergeResult,
   HostConfigDeps,
   HostConfigOptions,
+  HostMigrationBaselineDeps,
+  HostMigrationBaselineOptions,
+  HostMigrationBaselineResult,
   HostMigrationDeps,
+  HostMigrationMarkerKind,
   HostMigrationResult,
   HostMigrationScript,
   ModuleConvergeResult,
@@ -46,6 +52,8 @@ export type {
   HostConfigOptions,
   PackageConvergeResult,
   HostMigrationResult,
+  HostMigrationBaselineOptions,
+  HostMigrationBaselineResult,
   UlimitConvergeResult,
   ModuleConvergeResult,
 } from './types.js';
@@ -96,10 +104,9 @@ const MODPROBE_TIMEOUT_MS = 30_000;
 const PKG_QUERY_TIMEOUT_MS = 30_000;
 const PKG_INSTALL_TIMEOUT_MS = 300_000;
 
-// Host-migration roots + budget. Markers are the per-node applied record; the
-// filesystem dir is the dev/escape-hatch catalog source (production is SEA-embedded).
+// Host-migration marker root + budget. Markers are the per-node applied record
+// (the catalog itself is loaded by ./catalog.ts).
 const HOST_MIGRATION_MARKER_ROOT = '/var/lib/platform/host-migrations';
-const DEFAULT_HOST_MIGRATIONS_DIR = '/usr/local/share/platform-ops/host-migrations';
 const HOST_MIGRATION_TIMEOUT_MS = 600_000;
 const HOST_MIGRATION_MAX_OUTPUT = 8 * 1024 * 1024;
 
@@ -326,12 +333,6 @@ export function realPackageDeps(env: NodeJS.ProcessEnv): PackageDeps {
 
 // ── Host-migration runner (W10c) ─────────────────────────────────────────────
 
-function splitMigrationKey(key: string): { version: string; name: string } {
-  const slash = key.indexOf('/');
-  if (slash < 0) return { version: '', name: key };
-  return { version: key.slice(0, slash), name: key.slice(slash + 1) };
-}
-
 /** Build a contained marker path for a key + suffix, or null if it fails validation. */
 function migrationMarkerPathFor(key: string, suffix: string): string | null {
   const { version, name } = splitMigrationKey(key);
@@ -422,6 +423,7 @@ function writeHostMigrationStatusFile(result: HostMigrationResult): void {
         attempt: i.attempt ?? null,
         failingSince: i.failingSince ?? null,
         skipReason: i.skipReason ?? null,
+        baseline: i.baseline ?? null,
       })),
     };
     writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
@@ -453,6 +455,64 @@ function migrationMarkApplied(key: string): void {
   writeFileSync(p, `applied-by platform-ops host-migration runner\n`, { mode: 0o644 });
 }
 
+// ── ADR-056 §5: `.baseline` markers ──────────────────────────────────────────
+// A fresh bootstrap of release X already produced the end state of every
+// migration <= X. `.baseline` records that honestly — distinct from `.done`,
+// because the script never ran on this node.
+
+function migrationReadBaseline(key: string): boolean {
+  const p = migrationMarkerPathFor(key, '.baseline');
+  return p !== null && existsSync(p);
+}
+
+/** The ledger marker this script already has, in the runner's precedence order. */
+function migrationExistingMarker(key: string): HostMigrationMarkerKind | null {
+  if (migrationIsApplied(key)) return 'done';
+  const skipped = migrationMarkerPathFor(key, '.skipped');
+  if (skipped !== null && existsSync(skipped)) return 'skipped';
+  return migrationReadBaseline(key) ? 'baseline' : null;
+}
+
+/**
+ * Converge history anywhere in the ledger — `.done` (ran) and `.failing`
+ * (attempted) markers under <root>/<version>/, including versions no longer in
+ * the catalog. An absent root is a fresh node; any other read error THROWS, so
+ * baseline never assumes a freshness it could not actually see.
+ */
+function migrationLedgerHistory(): { done: number; failing: number } {
+  let versions: string[];
+  try {
+    versions = readdirSync(HOST_MIGRATION_MARKER_ROOT, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { done: 0, failing: 0 };
+    throw err;
+  }
+  const names = versions.flatMap((v) => readdirSync(join(HOST_MIGRATION_MARKER_ROOT, v)));
+  return {
+    done: names.filter((n) => n.endsWith('.done')).length,
+    failing: names.filter((n) => n.endsWith('.failing')).length,
+  };
+}
+
+/** Write `<name>.baseline`: validated + contained path, 0644, never over an existing file. */
+function migrationWriteBaseline(key: string, content: string): void {
+  const p = migrationMarkerPathFor(key, '.baseline');
+  if (!p) throw new Error(`refusing baseline marker for invalid key ${JSON.stringify(key)}`);
+  mkdirSync(join(p, '..'), { recursive: true });
+  writeFileSync(p, content, { mode: 0o644, flag: 'wx' });
+}
+
+export function realHostMigrationBaselineDeps(): HostMigrationBaselineDeps {
+  return {
+    existingMarker: migrationExistingMarker,
+    ledgerHistory: migrationLedgerHistory,
+    writeBaseline: migrationWriteBaseline,
+    now: () => new Date(),
+  };
+}
+
 // Run a script via bash from STDIN (no temp file → no path/symlink race), argv-
 // only, with a clean minimal env and a hard timeout. Scripts are platform-
 // authored + shellcheck-gated; they must not rely on $0/$BASH_SOURCE (stdin).
@@ -471,80 +531,6 @@ function migrationRunScript(script: HostMigrationScript): void {
     const detail = (e.stderr || e.message || 'script failed').toString().trim().split('\n').slice(-4).join('; ');
     throw new Error(detail);
   }
-}
-
-/** Parse a catalog dir on disk: <root>/<version>/<NNNN-name.sh>. */
-function loadFilesystemCatalog(dir: string): HostMigrationScript[] {
-  const out: HostMigrationScript[] = [];
-  let versions: string[] = [];
-  try {
-    versions = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch {
-    return out;
-  }
-  for (const version of versions) {
-    let files: string[] = [];
-    try {
-      files = readdirSync(join(dir, version)).filter((f) => f.endsWith('.sh'));
-    } catch {
-      continue;
-    }
-    for (const name of files) {
-      // Only read files that pass validation — never touch an odd path.
-      if (!hostMigrationValid({ version, name })) {
-        out.push({ version, name, key: `${version}/${name}`, body: '' });
-        continue; // surfaced as "invalid" by the runner; body unused
-      }
-      try {
-        const body = readFileSync(join(dir, version, name), 'utf8');
-        out.push({ version, name, key: `${version}/${name}`, body });
-      } catch {
-        // unreadable → skip; absence is benign
-      }
-    }
-  }
-  return out;
-}
-
-/**
- * Load the shipped catalog: SEA-embedded assets in production (so scripts travel
- * with every self-upgrade), or a filesystem dir in dev / as an escape hatch.
- */
-async function loadHostMigrationCatalog(
-  env: NodeJS.ProcessEnv,
-): Promise<{ source: 'embedded' | 'filesystem' | 'absent'; scripts: HostMigrationScript[] }> {
-  // 1. SEA-embedded (the production path). Distinguish "not a SEA" from "is a SEA
-  // but the assets won't load": a real SEA binary ALWAYS carries the manifest, so
-  // an asset failure means a CORRUPT binary — refuse outright rather than silently
-  // falling through to the lower-trust filesystem (which would let a node that
-  // self-upgraded into a bad binary execute env/dir-pointed scripts as root).
-  let sea: typeof import('node:sea') | null = null;
-  try {
-    sea = await import('node:sea');
-  } catch {
-    sea = null; // not a SEA runtime (dev / tests / plain node)
-  }
-  if (sea?.isSea()) {
-    try {
-      const manifestRaw = sea.getAsset('host-migrations/manifest.json', 'utf8') as string;
-      const manifest = JSON.parse(manifestRaw) as { scripts?: string[] };
-      const scripts: HostMigrationScript[] = [];
-      for (const key of manifest.scripts ?? []) {
-        const { version, name } = splitMigrationKey(key);
-        const body = sea.getAsset(`host-migrations/${key}`, 'utf8') as string;
-        scripts.push({ version, name, key, body });
-      }
-      return { source: 'embedded', scripts };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`host-config: embedded host-migration catalog unreadable (corrupt binary?) — refusing: ${msg}\n`);
-      return { source: 'absent', scripts: [] };
-    }
-  }
-  // 2. Filesystem — dev / non-SEA only (NEVER reached from a real node binary).
-  const dir = env.PLATFORM_OPS_HOST_MIGRATIONS_DIR?.trim() || DEFAULT_HOST_MIGRATIONS_DIR;
-  if (!existsSync(dir)) return { source: 'absent', scripts: [] };
-  return { source: 'filesystem', scripts: loadFilesystemCatalog(dir) };
 }
 
 async function readHostMigrationMode(env: NodeJS.ProcessEnv): Promise<string | null> {
@@ -571,6 +557,7 @@ export function realHostMigrationDeps(
     isApplied: migrationIsApplied,
     markApplied: migrationMarkApplied,
     readSkip: migrationReadSkip,
+    readBaseline: migrationReadBaseline,
     noteFailure: migrationNoteFailure,
     clearFailure: migrationClearFailure,
     runScript: migrationRunScript,
@@ -742,6 +729,8 @@ export interface HostConfigOps {
   packages: (opts: HostConfigOptions) => Promise<PackageConvergeResult>;
   /** Apply pending host-migration scripts (host-migrations-desired policy). */
   hostMigrations: (opts: HostConfigOptions) => Promise<HostMigrationResult>;
+  /** Stamp `.baseline` markers on a FRESH node for every shipped script <= upTo (ADR-056 §5). */
+  baseline: (opts: HostMigrationBaselineOptions) => Promise<HostMigrationBaselineResult>;
   /** Converge the managed limits.d drop-in (host-ulimits-desired policy). */
   ulimits: (opts: HostConfigOptions) => Promise<UlimitConvergeResult>;
   /** Ensure declared kernel modules are loaded (host-modules-desired policy). */
@@ -784,6 +773,12 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
       const result = runHostMigrations(catalog.scripts, enforcing, hmDeps);
       writeHostMigrationStatusFile(result);
       return result;
+    },
+    async baseline(opts) {
+      // The SAME catalog the runner walks — a baseline over a different set
+      // would stamp scripts the converge never sees, or miss ones it will run.
+      const catalog = await loadHostMigrationCatalog(env);
+      return stampHostMigrationBaseline(catalog, opts, realHostMigrationBaselineDeps());
     },
     async ulimits(opts) {
       const desired = await ulimitDeps.readDesired();

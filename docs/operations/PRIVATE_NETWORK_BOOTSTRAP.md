@@ -40,38 +40,46 @@ second server with a different CIDR (or no CIDR) is refused by a
 pre-flight check. Switching the underlay later requires a full
 cluster rebuild.
 
+Every example below follows the create/join contract: the **first
+server creates** the cluster (`--domain …`, no `--join-as`); every
+other node **joins** with `--join-as server|worker --server <ip>
+--token <t>` and node-scoped flags only — a join refuses `--domain`,
+`--env`, `--acme-*` and the other cluster-wide flags. Pre-enroll each
+joining node's IP (admin UI → Pre-Enroll Node, or a
+`ClusterPendingPeer`) before its join, and grow servers 1 → 3 — a
+2-server etcd is less available than one server (see
+[MULTI_NODE_RUNBOOK.md](MULTI_NODE_RUNBOOK.md#add-servers-1--3-never-stop-at-2)).
+
 ## Examples
 
 ### NetBird mesh (recommended)
 
 NetBird is the supported overlay for this project. Default CGNAT
-range is `100.64.0.0/10`. Bootstrap can bring NetBird up itself:
+range is `100.64.0.0/10`. Bootstrap does **not** install or enrol
+NetBird — bring `wt0` up on every node first (the old
+`--netbird-management-url` / `--netbird-setup-key` flags are
+deprecated and ignored):
 
 ```bash
-# First server:
-sudo insula bootstrap --join-as server \
+# First server — creates the cluster:
+sudo insula bootstrap \
   --domain example.test --acme-email ops@example.test \
-  --netbird-management-url https://vpn.example.test \
-  --netbird-setup-key <UUID>
+  --cluster-network-cidr 100.64.0.0/10
 
-# Second + third servers (note: --server is the FIRST server's wt0
-# IP, NOT its public IP):
+# Second + third servers — join (note: --server is the FIRST server's
+# wt0 IP, NOT its public IP; no --domain/--acme-email on a join):
 sudo insula bootstrap --join-as server \
   --server 100.64.1.5 --token K10abc...:server:def... \
-  --domain example.test --acme-email ops@example.test \
-  --netbird-management-url https://vpn.example.test \
-  --netbird-setup-key <UUID>
+  --cluster-network-cidr 100.64.0.0/10
 
-# Worker:
+# Worker — join:
 sudo insula bootstrap --join-as worker \
   --server 100.64.1.5 --token K10abc...:server:def... \
-  --netbird-management-url https://vpn.example.test \
-  --netbird-setup-key <UUID>
+  --cluster-network-cidr 100.64.0.0/10
 ```
 
-`--cluster-network-cidr` defaults to `100.64.0.0/10` when both
-NetBird flags are passed; override with `--cluster-network-cidr
-<other>` if you've reconfigured NetBird's CGNAT range.
+Use your own range in `--cluster-network-cidr` if you've reconfigured
+NetBird's CGNAT range.
 
 ### Tailscale
 
@@ -82,10 +90,12 @@ Operator brings Tailscale up first:
 tailscale up --auth-key tskey-auth-...
 ```
 
-Then:
+Then, on the first server (joins add `--join-as server|worker
+--server <first-server-tailnet-ip> --token …` and drop `--domain` /
+`--acme-email`, as in the NetBird example):
 
 ```bash
-sudo insula bootstrap --join-as server \
+sudo insula bootstrap \
   --domain example.test --acme-email ops@example.test \
   --cluster-network-cidr 100.64.0.0/10
 ```
@@ -99,7 +109,9 @@ Operator attaches the private interface (`eth1` or whatever) before
 bootstrap. The interface needs an IP in a stable CIDR:
 
 ```bash
-sudo insula bootstrap --join-as server \
+# First server (joins: --join-as … --server <its 10.0.x.y> --token …,
+# same --cluster-network-cidr, no --domain/--acme-email):
+sudo insula bootstrap \
   --domain example.test --acme-email ops@example.test \
   --cluster-network-cidr 10.0.0.0/16
 ```
@@ -111,13 +123,13 @@ to the public; you get a single-server install with no path to add
 peers later. **Going to HA from this state requires a full rebuild.**
 
 ```bash
-sudo insula bootstrap --join-as server \
+sudo insula bootstrap \
   --domain example.test --acme-email ops@example.test
 ```
 
 ## Pre-flight checks
 
-When joining (`--server` is set), bootstrap validates that the
+When joining (`--join-as` with `--server`), bootstrap validates that the
 local CIDR matches the existing cluster's:
 
 ```

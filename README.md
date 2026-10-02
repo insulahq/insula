@@ -163,12 +163,17 @@ openssl dgst -sha256 -verify cosign.pub \
   -signature <(base64 -d insula-linux-amd64.sig) insula-linux-amd64
 
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
-sudo insula bootstrap --join-as server --domain hosting.example.com --acme-email ops@example.com
+# First server: CREATES the cluster (no --join-as).
+sudo insula bootstrap --domain hosting.example.com --acme-email ops@example.com
 ```
 
-Add worker nodes, scale to HA, and harden via the same binary and the admin
-UI. (A repo checkout + `./scripts/bootstrap.sh` still works for development.)
-See the deployment docs below.
+Add nodes with the same binary: pre-enroll the node's IP in the admin UI
+(*Pre-Enroll Node*), then join it with
+`insula bootstrap --join-as worker --server <existing-node-ip> --token <node-token>`
+(or `--join-as server` — grow servers 1 → 3, since a 2-server etcd is *less*
+available than one). A join is node-local only and refuses cluster-wide flags
+such as `--domain`. (A repo checkout + `./scripts/bootstrap.sh` still works for
+development.) See the deployment docs below.
 
 ### Running from a fork
 

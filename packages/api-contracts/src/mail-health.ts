@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { mailPortExposureModeEnum } from './mail-placement.js';
 
 /**
  * GET /admin/mail/health
@@ -106,6 +107,103 @@ export const mailHealthTcpComponentSchema = componentStatusSchema.extend({
   ports: z.array(mailHealthTcpPortSchema),
 });
 
+// ── Mail endpoints — WHICH node addresses must answer on the public mail
+// ports, derived from the mail config (placement + port-exposure mode).
+//
+// Every per-node / per-address check (forward DNS, AAAA, PTR, DNSBL, port
+// exposure) runs against this set and nothing else. A node that is neither a
+// mail endpoint nor a placement slot does not appear here at all; a placement
+// slot that does not publish the mail ports right now (a cold standby) is
+// listed under `untested` with the reason, never as a failure.
+
+export const mailPlacementRoleSchema = z.enum(['primary', 'secondary', 'tertiary']);
+export type MailPlacementRole = z.infer<typeof mailPlacementRoleSchema>;
+
+export const mailEndpointFamilySchema = z.enum(['ipv4', 'ipv6']);
+export type MailEndpointFamily = z.infer<typeof mailEndpointFamilySchema>;
+
+/**
+ * How a node publishes the mail ports:
+ *   `hostPort` — the active node: Stalwart's own hostPort (CNI portmap), every mode.
+ *   `haproxy`  — a non-active node running the stalwart-haproxy DaemonSet
+ *                (assignedMailNodes / allServerNodes modes only).
+ */
+export const mailEndpointExposureSchema = z.enum(['hostPort', 'haproxy']);
+export type MailEndpointExposure = z.infer<typeof mailEndpointExposureSchema>;
+
+export const mailEndpointAddressSchema = z.object({
+  address: z.string(),
+  family: mailEndpointFamilySchema,
+  /** Kubernetes Node address type the address was taken from. */
+  source: z.enum(['ExternalIP', 'InternalIP']),
+});
+export type MailEndpointAddress = z.infer<typeof mailEndpointAddressSchema>;
+
+export const mailEndpointNodeSchema = z.object({
+  node: z.string(),
+  /** Placement slots this node holds (empty for e.g. an allServerNodes server that is in no slot). */
+  roles: z.array(mailPlacementRoleSchema),
+  /** True for the node the Stalwart pod runs on (or is expected to run on). */
+  active: z.boolean(),
+  exposure: mailEndpointExposureSchema,
+  /** At most one address per family. Empty = the node publishes ports but reports no usable address. */
+  addresses: z.array(mailEndpointAddressSchema),
+});
+export type MailEndpointNode = z.infer<typeof mailEndpointNodeSchema>;
+
+export const mailUntestedNodeSchema = z.object({
+  node: z.string(),
+  roles: z.array(mailPlacementRoleSchema),
+  /**
+   * `standby`        — a placement slot that does not publish the mail ports
+   *                    under the current mode (cold failover target).
+   * `not_in_cluster` — a placement slot naming a node the cluster does not have.
+   */
+  reason: z.enum(['standby', 'not_in_cluster']),
+  detail: z.string(),
+});
+export type MailUntestedNode = z.infer<typeof mailUntestedNodeSchema>;
+
+export const mailEndpointSetSchema = z.object({
+  mode: mailPortExposureModeEnum,
+  activeNode: z.string().nullable(),
+  /** Where `activeNode` came from — the live Stalwart pod wins over the stored settings. */
+  activeNodeSource: z.enum(['pod', 'settings', 'primary', 'sole_node']).nullable(),
+  /** Public mail ports every endpoint publishes. */
+  ports: z.array(z.number().int()),
+  endpoints: z.array(mailEndpointNodeSchema),
+  untested: z.array(mailUntestedNodeSchema),
+});
+export type MailEndpointSet = z.infer<typeof mailEndpointSetSchema>;
+
+/**
+ * Per-endpoint port exposure: is the thing that publishes the mail ports on
+ * each endpoint node actually there and Ready? Read from the cluster (the
+ * Stalwart pod's hostPorts on the active node, the stalwart-haproxy pod on the
+ * others) — no connection is opened to a public address, so the probe can
+ * never trip Stalwart's auto-ban against a cluster source.
+ */
+export const mailHealthExposurePortSchema = z.object({
+  port: z.number().int(),
+  published: z.boolean(),
+});
+
+export const mailHealthExposureNodeSchema = z.object({
+  node: z.string(),
+  exposure: mailEndpointExposureSchema,
+  /** The publishing pod (Stalwart or haproxy) on this node is Ready. */
+  ready: z.boolean(),
+  ports: z.array(mailHealthExposurePortSchema),
+  error: z.string().nullable(),
+});
+
+export const mailHealthExposureComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  nodes: z.array(mailHealthExposureNodeSchema),
+});
+export type MailHealthExposureComponent = z.infer<typeof mailHealthExposureComponentSchema>;
+export type MailHealthExposureNode = z.infer<typeof mailHealthExposureNodeSchema>;
+
 // ── Deliverability sub-probes (forward DNS, reverse DNS / FCrDNS, DNSBL,
 // cert SAN match, SMTP banner). These hit *external* infrastructure
 // (recursor + DNSBL providers) so they are inherently slower and
@@ -179,6 +277,9 @@ export type MailHealthIpv6DnsProbe = z.infer<typeof mailHealthIpv6DnsProbeSchema
 
 export const mailHealthReverseDnsProbeSchema = deliverabilityProbeBaseSchema.extend({
   ip: z.string(),
+  /** Mail endpoint node that owns `ip`. Optional — older backends omit it. */
+  node: z.string().nullable().optional(),
+  family: mailEndpointFamilySchema.optional(),
   ptrRecords: z.array(z.string()),
   expectedPtr: z.string(),
   fcrdnsOk: z.boolean(),
@@ -187,6 +288,9 @@ export type MailHealthReverseDnsProbe = z.infer<typeof mailHealthReverseDnsProbe
 
 export const mailHealthBlocklistProbeSchema = deliverabilityProbeBaseSchema.extend({
   ip: z.string(),
+  /** Mail endpoint node that owns `ip`. Optional — older backends omit it. */
+  node: z.string().nullable().optional(),
+  family: mailEndpointFamilySchema.optional(),
   /** Short label, e.g. "Spamhaus ZEN". */
   list: z.string(),
   /** DNS zone queried, e.g. "zen.spamhaus.org". */
@@ -223,7 +327,7 @@ export const mailHealthDeliverabilityComponentSchema = componentStatusSchema.ext
   status: optionalProbeStatusSchema,
   /** Hostname the probes were run against (mail.<apex> or operator override). */
   hostname: z.string().nullable(),
-  /** Server-role node IPs that the cluster believes serve mail. */
+  /** IPv4 addresses of the mail endpoints (see `MailHealthResponse.endpoints`). */
   expectedMailIps: z.array(z.string()),
   forwardDns: mailHealthForwardDnsProbeSchema.nullable(),
   /** AAAA coverage on a dual-stack cluster. Optional — older backends omit it. */
@@ -258,7 +362,17 @@ export const mailHealthResponseSchema = z.object({
      * modal section only when this is present.
      */
     deliverability: mailHealthDeliverabilityComponentSchema.optional(),
+    /**
+     * Per-endpoint port exposure (publisher present + Ready on every node that
+     * must answer on the mail ports). Optional — older backends omit it.
+     */
+    exposure: mailHealthExposureComponentSchema.optional(),
   }),
+  /**
+   * The mail endpoint set every per-node / per-address check ran against.
+   * Optional — older backends omit it.
+   */
+  endpoints: mailEndpointSetSchema.optional(),
   checkedAt: z.string().datetime(),
   cachedFor: z.number().int().nonnegative(),
 });

@@ -316,6 +316,46 @@ operator decision.
 If a compliance requirement ever forces the issue, the patched build is the only option
 that survives a re-test; partial suppression will not.
 
+## What the management API's own account may do
+
+The `platform-api` ServiceAccount (the API pods, the PITR Job and the CLIs
+`platform-ops` runs inside the API pod) holds a broad ClusterRole
+(`k8s/base/rbac.yaml`): it provisions tenant namespaces at runtime and RBAC
+cannot say "every tenant namespace". Secrets get explicit verbs only (no
+`watch`, no `deletecollection`). Everything else is narrowed at admission by
+ValidatingAdmissionPolicies in `k8s/base/platform-api-guardrails/`, built from
+an inventory of every call the backend makes. The account has no rights on
+admission policies, so it cannot lift them.
+
+| Policy | What platform-api may still do |
+|---|---|
+| `platform-api-pods-exec-scope` | exec into pods in tenant namespaces, `platform`, `mail`, `traefik`, `crowdsec`, `platform-system` (CrowdSec `cscli`) |
+| `platform-api-proxy-scope` | read kubelet `/stats/summary` via `nodes/proxy` (no `/exec`, `/run`, …); proxy only to tenant `file-manager` and `mail/stalwart-mgmt` |
+| `platform-api-flux-scope` | change only `spec.suspend` on a Flux Kustomization, and only `spec.ref` (release tag, `main`/`development` branch, or full commit SHA) on a GitRepository |
+| `platform-api-namespace-scope` | create, label and delete tenant namespaces only |
+| `platform-api-rbac-scope` | write the `sftp-gateway-exec` Role/RoleBinding in tenant namespaces; delete ClusterRoleBindings whose subjects are all in tenant namespaces |
+| `platform-api-config-scope` | write Secrets/ConfigMaps in tenant namespaces, `platform`, `platform-system`, `mail`, `crowdsec`, `plesk-migration` (ConfigMaps also `traefik`, `redis-system`); in `kube-system` only create a node join token |
+| `platform-api-workload-scope` | create/change workloads only in managed namespaces (in `kube-system` only the image-purge Pod); ServiceAccount `default` except the four `platform` Jobs' accounts, never changed on update; tenant workloads without privileged/host access or non-baseline capabilities; system workloads never get a new image, container or host access from it |
+
+A refusal names its policy, e.g. `… ValidatingAdmissionPolicy
+'platform-api-workload-scope' … denied request: platform-api may not run a
+workload as ServiceAccount platform/…`. **Adding a backend feature that writes
+somewhere new means extending the policy in the same change** — otherwise that
+feature fails with such a message.
+
+Verify a live cluster (impersonates the account; every write is a server-side
+dry run; safe on production):
+
+```bash
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml scripts/test-platform-api-guardrails.sh
+```
+
+What this does **not** do: platform-api still creates privileged pods by
+design — the node terminal (`platform`) and image purge (`kube-system`) — and
+may exec into `platform`, so a stolen token can still reach root on a node.
+Closing that needs those features moved behind a separate identity, or the
+node terminal turned off. Secret `list` is still cluster-wide (next step).
+
 ## CI guards
 
 - `scripts/ci-firewall-check.sh` — validates bootstrap.sh has the right SSH rendering paths AND dual-stack symmetry on saddr scopes.

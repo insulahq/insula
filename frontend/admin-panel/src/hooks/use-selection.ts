@@ -11,6 +11,8 @@ interface UseSelectionResult<T extends SelectableItem> {
   readonly toggle: (id: string) => void;
   readonly selectAll: (items: readonly T[]) => void;
   readonly deselectAll: () => void;
+  /** Replace the selection, e.g. narrow it to the rows a bulk action failed on. */
+  readonly setSelection: (ids: Iterable<string>) => void;
   readonly isAllSelected: (items: readonly T[]) => boolean;
   readonly isIndeterminate: (items: readonly T[]) => boolean;
 }
@@ -43,6 +45,10 @@ export function useSelection<T extends SelectableItem>(resetKey?: unknown): UseS
     setSelectedIds(new Set());
   }, []);
 
+  const setSelection = useCallback((ids: Iterable<string>) => {
+    setSelectedIds(new Set(ids));
+  }, []);
+
   const isSelected = useCallback(
     (id: string) => selectedIds.has(id),
     [selectedIds],
@@ -68,6 +74,7 @@ export function useSelection<T extends SelectableItem>(resetKey?: unknown): UseS
     toggle,
     selectAll,
     deselectAll,
+    setSelection,
     isAllSelected,
     isIndeterminate,
   };

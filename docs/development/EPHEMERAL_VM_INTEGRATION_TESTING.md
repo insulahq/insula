@@ -216,7 +216,8 @@ construction.
 - **P0 — single node, cold.** `os-images.sh` + `driver.sh` (one backend) + `spawn-cluster.sh` for
   1 server (`VMTEST_SERVERS=1`) + `bootstrap.sh --cold` + `make smoke`. Proves the substrate.
 - **P1 — full HA gate.** Default topology (**3 servers + 1 worker**): etcd HA control plane via
-  `--join-as server` joins + `ClusterPendingPeer` pre-enroll, Longhorn on virtual disks,
+  `--join-as server --server <s1> --token <t>` joins (the first server CREATES with `--domain`, no
+  `--join-as`) + `ClusterPendingPeer` pre-enroll, Longhorn on virtual disks,
   PowerDNS+Pebble, MinIO backup target, `run.sh` → full `integration-all` green **including HA mode**
   (CNPG 1→3, Deployments 2→3, topologySpread).
 - **P2 — automation.** Nightly cron on the Unraid host (or a self-hosted GH runner) → cold full

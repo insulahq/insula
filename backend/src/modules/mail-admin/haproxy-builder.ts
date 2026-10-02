@@ -35,6 +35,9 @@ import { MAIL_HAPROXY_LABEL_KEY } from './port-exposure-modes.js';
 
 const NAMESPACE = 'mail';
 const NAME = 'stalwart-haproxy';
+// Pod-template `app.kubernetes.io/component` value — also what the mail
+// health exposure probe selects haproxy pods by (HAPROXY_POD_LABEL_SELECTOR).
+const COMPONENT_LABEL = 'stalwart-haproxy';
 const MAIL_HAPROXY_LABEL_VALUE = 'true';
 
 /**
@@ -67,7 +70,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
       name: NAME,
       namespace: NAMESPACE,
       labels: {
-        'app.kubernetes.io/component': 'stalwart-haproxy',
+        'app.kubernetes.io/component': COMPONENT_LABEL,
         'app.kubernetes.io/part-of': 'hosting-platform',
         // Marker so the harness + future tooling can tell at a glance
         // that this object was platform-api-built and not Flux-managed.
@@ -79,13 +82,13 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
     },
     spec: {
       selector: {
-        matchLabels: { 'app.kubernetes.io/component': 'stalwart-haproxy' },
+        matchLabels: { 'app.kubernetes.io/component': COMPONENT_LABEL },
       },
       updateStrategy: { type: 'RollingUpdate' },
       template: {
         metadata: {
           labels: {
-            'app.kubernetes.io/component': 'stalwart-haproxy',
+            'app.kubernetes.io/component': COMPONENT_LABEL,
             'app.kubernetes.io/part-of': 'hosting-platform',
           },
         },
@@ -206,3 +209,5 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
 
 export const HAPROXY_DS_NAMESPACE = NAMESPACE;
 export const HAPROXY_DS_NAME = NAME;
+/** Label selector matching the haproxy DaemonSet's pods. */
+export const HAPROXY_POD_LABEL_SELECTOR = `app.kubernetes.io/component=${COMPONENT_LABEL}`;

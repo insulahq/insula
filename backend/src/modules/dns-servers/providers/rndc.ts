@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { formatContent } from '../wire-format.js';
+import { formatContent, qualifyName } from '../wire-format.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, RndcConfig } from './types.js';
 
 const exec = promisify(execFile);
@@ -81,7 +81,8 @@ export class RndcDnsProvider implements DnsProviderAdapter {
 
   async createRecord(zone: string, input: DnsRecordInput): Promise<DnsRecord> {
     const normalized = zone.endsWith('.') ? zone : `${zone}.`;
-    const name = input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    // qualifyName: `@` / '' is the apex, not a label called `@`.
+    const name = qualifyName(zone, input.name);
     // Was MX-only, and even then produced a non-canonical target. BIND
     // wants the same presentation-format RDATA every other authoritative
     // server does, for every type.
@@ -115,5 +116,12 @@ export class RndcDnsProvider implements DnsProviderAdapter {
     const [name, type, content] = recordId.split('|');
     // rndc delrecord zone name type content (BIND 9.11+)
     await this.rndc('delrecord', normalized, name, type, content);
+  }
+
+  /** `delrecord` with content is already value-scoped; send the same RDATA
+   *  `createRecord` wrote, or the delete matches nothing. */
+  async deleteRecordValue(zone: string, input: DnsRecordInput): Promise<void> {
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    await this.rndc('delrecord', normalized, qualifyName(zone, input.name), input.type, formatContent(input));
   }
 }

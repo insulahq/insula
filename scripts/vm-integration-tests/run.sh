@@ -94,8 +94,10 @@ case "$VMTEST_TIER" in
     VMTEST_RELEASE_TAG="$_tag"
     VMTEST_EXPECT_IMAGE_TAG="$_ver"
     export VMTEST_ENV VMTEST_RELEASE_TAG VMTEST_EXPECT_IMAGE_TAG
-    VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --release-tag ${_tag}"
-    export VMTEST_BOOTSTRAP_EXTRA_ARGS
+    # --release-tag only sets the Flux source ref — CLUSTER-scoped, so it goes to
+    # the FIRST server only. bootstrap.sh rejects it on a --join-as join.
+    VMTEST_BOOTSTRAP_CREATE_ARGS="${VMTEST_BOOTSTRAP_CREATE_ARGS:-} --release-tag ${_tag}"
+    export VMTEST_BOOTSTRAP_CREATE_ARGS
     echo "── tier=release: testing ${_tag} exactly as an operator installs it ──"
     echo "   env=${VMTEST_ENV}  flux-source=${_tag}  expected image tag=${_ver}"
     ;;
@@ -117,7 +119,18 @@ if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
   echo "── dual-stack: libvirt net gains a ULA v6 subnet; bootstrap gets --dual-stack ──"
 fi
 
-RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
+# VMTEST_REUSE_RUN=<run-id> (rebootstrap.sh): keep that run's VMs, OSes, services VM
+# and network; wipe only the platform and install it again. Otherwise a new run.
+REUSE_RUN="${VMTEST_REUSE_RUN:-}"
+if [[ -n "$REUSE_RUN" ]]; then
+  RUN="$REUSE_RUN"
+else
+  RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"      # unique per run
+fi
+# Per-run state (service coordinates + credentials, OS assignment) so a STOPPED run
+# can be resumed or re-bootstrapped later without rebuilding its services VM.
+VMTEST_STATE_DIR="${VMTEST_STATE_DIR:-$HOME/.cache/insula-vmtest}"
+STATE_FILE="${VMTEST_STATE_DIR%/}/run-${RUN}.env"
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
 APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
 mkdir -p "$VMTEST_REPORT_DIR"                          # local (report written by local integration-all)
@@ -137,13 +150,15 @@ cleanup() {
   # Restore the old behaviour with VMTEST_KEEP=0 (CI should set that).
   if [[ "${VMTEST_KEEP:-1}" == "1" ]]; then
     echo "── run ${RUN} RETAINED (rc=$rc; VMTEST_KEEP=1 is the default) ──"
+    echo "   stop when idle:  $HERE/stop.sh ${RUN}    (keeps VMs + OS; start.sh ${RUN} resumes)"
+    echo "   fresh platform:  $HERE/rebootstrap.sh ${RUN}    (same VMs + OS, platform re-installed)"
     echo "   inspect:  virsh -c qemu+ssh://\${VMTEST_HOST_SSH#*@}/system list --all | grep ${RUN}"
     # Without the key + an IP a retained cluster cannot be logged into, which
     # makes retention pointless. Print both.
     echo "   ssh key:  ${VMTEST_SSH_KEY:-<unset>}"
     [[ -n "${VMTEST_CP_IP:-}" ]] && echo "   ssh:      ssh -i ${VMTEST_SSH_KEY} root@${VMTEST_CP_IP}   (control-plane)"
     [[ -n "${VMTEST_RUNNER_IP:-}" ]] && echo "   runner:   ssh -i ${VMTEST_SSH_KEY} root@${VMTEST_RUNNER_IP}"
-    echo "   teardown: $HERE/teardown.sh ${RUN}"
+    echo "   teardown: $HERE/teardown.sh ${RUN}    (destroys the VMs — only when they are no longer wanted)"
     return
   fi
   if [[ "$rc" -ne 0 && "${VMTEST_KEEP_ON_FAIL:-0}" == "1" ]]; then
@@ -155,11 +170,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Reclaim PREVIOUS runs before building this one. Retain-by-default (above) keeps
-# the last run's evidence, but a retained 6-VM topology is ~36GB — leave two of
+# STOP previous runs before building this one. Retain-by-default (above) keeps
+# the last run's evidence, but a running 6-VM topology is ~36GB — leave two of
 # them up and the next run dies in the memory preflight ("planned guest memory …
-# exceeds host available"), which is a confusing way to learn you forgot to tear
-# something down. So: the LAST run stays, older ones are reclaimed here.
+# exceeds host available"). So older runs are powered OFF here — stopped, not
+# destroyed: their VMs, OSes and state stay for start.sh / rebootstrap.sh.
 # VMTEST_KEEP_ALL=1 opts out (you then manage host RAM yourself).
 if [[ "${VMTEST_KEEP_ALL:-0}" != "1" ]]; then
   # run.sh sources only config.env — VIRSH lives in lib/driver.sh, and without
@@ -168,8 +183,10 @@ if [[ "${VMTEST_KEEP_ALL:-0}" != "1" ]]; then
   source "$HERE/lib/driver.sh"
   _stale=$(VIRSH list --all --name 2>/dev/null | grep '^vmt-' | sed -E 's/^vmt-([0-9a-f]+)-.*/\1/' | sort -u | grep -v "^${RUN}$" || true)
   for _r in $_stale; do
-    echo "── reclaiming previous run ${_r} (retain-by-default keeps only the latest; VMTEST_KEEP_ALL=1 to keep them all) ──"
-    "$HERE/teardown.sh" "$_r" >/dev/null 2>&1 || true
+    _running=$(VIRSH list --name 2>/dev/null | grep -c "^vmt-${_r}-" || true)
+    (( _running > 0 )) || continue
+    echo "── stopping previous run ${_r} (kept; start.sh ${_r} resumes it; VMTEST_KEEP_ALL=1 leaves it running) ──"
+    "$HERE/stop.sh" "$_r" >/dev/null 2>&1 || true
   done
 fi
 
@@ -211,8 +228,18 @@ seed_apex_dns() {
 # 1) per-run services (spawn-cluster fetches only the per-node goldens it draws).
 #    Capture the service IPs AND the PowerDNS API key (used to seed the apex zone
 #    below) + MinIO creds (for backup suites, when wired).
-eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
-        | grep -E '^VMTEST_(DNS_IP|PEBBLE_IP|MINIO_IP|MINIO_USER|MINIO_PW|MINIO_BUCKET|PDNS_API_KEY|SFTP_IP|SFTP_PORT|SFTP_USER|SFTP_PW|SFTP_PATH|CIFS_IP|CIFS_SHARE|CIFS_USER|CIFS_PW)=')"
+if [[ -n "$REUSE_RUN" ]]; then
+  # The services VM and its containers already exist: power the run on and read
+  # their coordinates from the state the original run saved.
+  [[ -r "$STATE_FILE" ]] || { echo "ABORT: no saved state for run ${RUN} (${STATE_FILE}) — it predates reuse support; spawn a new run." >&2; exit 1; }
+  "$HERE/start.sh" "$RUN" >&2 || { echo "ABORT: could not start run ${RUN}" >&2; exit 1; }
+  # shellcheck source=/dev/null
+  source "$STATE_FILE"
+  export VMTEST_OS_ASSIGN VMTEST_OS_SEED VMTEST_REUSE=1
+else
+  eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
+          | grep -E '^VMTEST_(DNS_IP|PEBBLE_IP|MINIO_IP|MINIO_USER|MINIO_PW|MINIO_BUCKET|PDNS_API_KEY|SFTP_IP|SFTP_PORT|SFTP_USER|SFTP_PW|SFTP_PATH|CIFS_IP|CIFS_SHARE|CIFS_USER|CIFS_PW)=')"
+fi
 # spawn-cluster.sh runs as a child and reads VMTEST_PEBBLE_IP to hand the first server
 # --acme-server (Pebble). Export so it's inherited.
 export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
@@ -227,12 +254,15 @@ export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 # this tier was untestable. Trust + reachability for that CA are wired
 # post-bootstrap (Secret + `pebble` Service below, egress via the
 # stalwart-extra-ca component).
+# --stalwart-acme-directory is CLUSTER-scoped: it goes to the FIRST server only
+# (VMTEST_BOOTSTRAP_CREATE_ARGS). bootstrap.sh rejects it on a --join-as join, so
+# it must never ride in VMTEST_BOOTSTRAP_EXTRA_ARGS, which reaches every node.
 if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
-  case " ${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} " in
+  case " ${VMTEST_BOOTSTRAP_CREATE_ARGS:-} " in
     *" --stalwart-acme-directory "*) : ;;
-    *) VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
+    *) VMTEST_BOOTSTRAP_CREATE_ARGS="${VMTEST_BOOTSTRAP_CREATE_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
   esac
-  export VMTEST_BOOTSTRAP_EXTRA_ARGS
+  export VMTEST_BOOTSTRAP_CREATE_ARGS
 fi
 
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
@@ -241,6 +271,15 @@ eval "$(grep -E '^VMTEST_(CP_IP|RUNNER_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
 OS_SEED="$(grep -E '^VMTEST_OS_SEED=' <<<"$SPAWN_OUT" | cut -d= -f2)"
 OS_ASSIGN="$(grep -E '^VMTEST_OS_ASSIGN=' <<<"$SPAWN_OUT" | cut -d= -f2-)"
 echo "  cluster OS assignment: ${OS_ASSIGN}  (os-seed=${OS_SEED})"
+# Save what a later start.sh / rebootstrap.sh needs (0600: carries service credentials).
+( umask 077; mkdir -p "$VMTEST_STATE_DIR"
+  for _v in VMTEST_DNS_IP VMTEST_PEBBLE_IP VMTEST_MINIO_IP VMTEST_MINIO_USER VMTEST_MINIO_PW VMTEST_MINIO_BUCKET \
+            VMTEST_PDNS_API_KEY VMTEST_SFTP_IP VMTEST_SFTP_PORT VMTEST_SFTP_USER VMTEST_SFTP_PW VMTEST_SFTP_PATH \
+            VMTEST_CIFS_IP VMTEST_CIFS_SHARE VMTEST_CIFS_USER VMTEST_CIFS_PW; do
+    printf '%s=%q\n' "$_v" "${!_v:-}"
+  done
+  printf 'VMTEST_OS_SEED=%q\nVMTEST_OS_ASSIGN=%q\n' "$OS_SEED" "$OS_ASSIGN"
+) > "$STATE_FILE"
 
 # 3) seed the private apex into the run's PowerDNS (apex + wildcard → ingress node).
 #    Must happen AFTER the cluster is up (needs the ingress IP) and BEFORE any suite

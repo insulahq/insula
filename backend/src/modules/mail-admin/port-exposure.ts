@@ -41,6 +41,7 @@ import { ApiError } from '../../shared/errors.js';
 import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartRollout } from './rollout-wait.js';
+import { resolveActiveMailNode } from './active-node.js';
 import { systemSettings, tasks } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -310,7 +311,7 @@ export async function validateModeSwitchAgainstDb(
   db: Database,
   kubeconfigPath: string | undefined,
 ): Promise<string | null> {
-  const { settings } = await loadPlacementAndNodes(db, kubeconfigPath);
+  const { settings: stored, nodes } = await loadPlacementAndNodes(db, kubeconfigPath);
 
   // Node-count gate (authoritative, server-side): the HA-proxy modes —
   // any non-activeNodeOnly mode (assignedMailNodes + allServerNodes) —
@@ -325,8 +326,18 @@ export async function validateModeSwitchAgainstDb(
       return 'Mail HA-Proxy requires 2 or more server nodes.';
     }
   }
+  if (target === 'activeNodeOnly') return validateModeSwitch(target, stored);
 
-  return validateModeSwitch(target, settings);
+  // The stored active node alone is not enough: it is NULL on a cluster that
+  // was installed on several nodes and never ran a migration, and the switch
+  // itself resolves it from the live pod / mail PVC — validate against the
+  // same answer (active-node.ts), or a valid switch is refused.
+  const { core } = await loadK8sAppsTenant(kubeconfigPath);
+  const active = await resolveActiveMailNode(db, core, {
+    knownNodes: new Set(nodes.map((n) => n.metadata.name)),
+    persist: true,
+  });
+  return validateModeSwitch(target, { ...stored, activeNode: active.node });
 }
 
 /**
@@ -449,6 +460,18 @@ export async function ensureMailPortExposureApplied(
  */
 let applyModeMutex: Promise<void> = Promise.resolve();
 
+/** Callers inside (or queued for) applyModeToCluster in this process. */
+let applyModeCallers = 0;
+
+/**
+ * True while a mode switch is applying or queued in THIS process. The
+ * background label sync (haproxy-label-sync.ts) stands down meanwhile — the
+ * switch moves labels in a deliberate order around the Stalwart rollout.
+ */
+export function portExposureApplyInFlight(): boolean {
+  return applyModeCallers > 0;
+}
+
 /**
  * Two-step cluster mutation for the given mode. Extracted from
  * `updateMailPortExposure` so the startup reconciler can reuse it
@@ -463,13 +486,15 @@ async function applyModeToCluster(
   // Chain onto the existing mutex tail. Errors don't poison the chain
   // — we catch the prior result so a failed prior call doesn't prevent
   // subsequent calls from proceeding.
+  applyModeCallers += 1;
   const prior = applyModeMutex.catch(() => undefined);
   let release: () => void;
   applyModeMutex = new Promise<void>((resolve) => { release = resolve; });
-  await prior;
   try {
+    await prior;
     await applyModeToClusterUnlocked(mode, opts, onProgress, db);
   } finally {
+    applyModeCallers -= 1;
     release!();
   }
 }
@@ -506,21 +531,16 @@ async function applyModeToClusterUnlocked(
     const { settings: dbSettings, nodes } = await loadPlacementAndNodes(db, opts.kubeconfigPath);
     allNodes = nodes;
 
-    // Fallback active-node derivation (fresh-multi-node deadlock fix).
-    // On a cold multi-node bootstrap `mail_active_node` is never seeded,
-    // so the haproxy resolver can't exclude the node Stalwart needs and
-    // would label haproxy onto EVERY server node — colliding on the mail
-    // hostPorts and pinning stalwart-mail Pending. The mail-stack PVC is
-    // pinned (local-path RWO) to exactly the node Stalwart must run on, so
-    // derive the active node from it when the DB has none yet. DB value
-    // always wins when set (current behaviour unchanged).
-    let settings = dbSettings;
-    if (!dbSettings.activeNode) {
-      const derived = await deriveActiveNodeFromMailPvc(core);
-      if (derived && nodes.some((n) => n.metadata.name === derived)) {
-        settings = { ...dbSettings, activeNode: derived };
-      }
-    }
+    // The active node decides where haproxy must NOT go (Stalwart binds the
+    // mail hostPorts there). Resolved the same way as the pre-switch
+    // validation (active-node.ts: live pod → stored → mail PVC), so a switch
+    // the API accepted is applied to the same node — on a cold multi-node
+    // bootstrap the stored column is still NULL.
+    const active = await resolveActiveMailNode(db, core, {
+      knownNodes: new Set(nodes.map((n) => n.metadata.name)),
+      persist: true,
+    });
+    const settings = { ...dbSettings, activeNode: active.node };
 
     activeNode = settings.activeNode;
     haproxyNodes = resolveHaproxyNodes(mode, settings, nodes);
@@ -950,75 +970,6 @@ function isConflict(err: unknown): boolean {
   return code === 409;
 }
 
-// Combined mail-stack PVC (Stalwart RocksDB + Bulwark data). A single
-// `local-path` RWO volume whose PV is pinned to exactly one node via
-// `spec.nodeAffinity` — and that pinned node is where Stalwart MUST run.
-const MAIL_PVC_NAME = 'mail-stack-data';
-
-/**
- * Derive the node the mail-stack PVC is bound to, used as a FALLBACK for
- * the active mail node when `system_settings.mail_active_node` is unset.
- *
- * On a fresh multi-node bootstrap the DB column is never seeded (it is
- * only written on a migration run or by the placement self-heal once a
- * Stalwart pod is Running). With activeNode=null the haproxy-placement
- * resolver can't exclude the node Stalwart needs, so haproxy gets
- * labelled onto EVERY server node — including the one Stalwart must
- * schedule on — and the two fight for hostPort 25/465/587/143/993/995/4190.
- * Stalwart then stays Pending (observed on the staging cold
- * multi-node re-bootstrap: stalwart-mail Pending ~2h).
- *
- * The PVC is `local-path` RWO, so its bound PV is pinned to a single
- * node via `kubernetes.io/hostname` node-affinity — exactly the node
- * Stalwart runs on. Prefer the PVC's `volume.kubernetes.io/selected-node`
- * annotation (set by the provisioner at bind time); fall back to the PV
- * node-affinity hostname (mirrors migration.ts:readActualPvcBoundNode).
- *
- * Best-effort: returns null when the PVC/PV doesn't exist yet or carries
- * no hostname affinity. Callers must treat null as "no active node
- * derived" and stay safe (the single-node guard + null-active handling
- * in the pure resolvers prevent any all-nodes-haproxy regression).
- */
-async function deriveActiveNodeFromMailPvc(
-  core: import('@kubernetes/client-node').CoreV1Api,
-): Promise<string | null> {
-  try {
-    const pvc = await core.readNamespacedPersistentVolumeClaim({
-      name: MAIL_PVC_NAME,
-      namespace: MAIL_NS,
-    }) as { metadata?: { annotations?: Record<string, string> }; spec?: { volumeName?: string } };
-    const selectedNode = pvc.metadata?.annotations?.['volume.kubernetes.io/selected-node'];
-    if (selectedNode) return selectedNode;
-    // Older PVCs without the annotation — read the bound PV's nodeAffinity.
-    const pvName = pvc.spec?.volumeName;
-    if (!pvName) return null;
-    const pv = await core.readPersistentVolume({ name: pvName }) as {
-      spec?: {
-        nodeAffinity?: {
-          required?: {
-            nodeSelectorTerms?: ReadonlyArray<{
-              matchExpressions?: ReadonlyArray<{ key?: string; values?: string[] }>;
-            }>;
-          };
-        };
-      };
-    };
-    // Scan ALL terms × ALL matchExpressions for key === 'kubernetes.io/hostname'.
-    // local-path always uses that key; scanning (rather than [0][0]) is
-    // defensive against PVs that also carry a zone matchExpression.
-    const terms = pv.spec?.nodeAffinity?.required?.nodeSelectorTerms ?? [];
-    for (const term of terms) {
-      for (const expr of term.matchExpressions ?? []) {
-        if (expr.key === 'kubernetes.io/hostname' && expr.values && expr.values.length > 0) {
-          return expr.values[0];
-        }
-      }
-    }
-    return null;
-  } catch (err) {
-    if (isNotFound(err)) return null;
-    // Other read errors are non-fatal for the fallback — surface null and
-    // let the resolver's null-active safety handling take over.
-    return null;
-  }
-}
+// The mail-PVC → node derivation now lives with the other active-node sources
+// (active-node.ts); re-exported for existing importers.
+export { deriveActiveNodeFromMailPvc } from './active-node.js';

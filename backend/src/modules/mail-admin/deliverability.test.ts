@@ -608,3 +608,62 @@ describe('banner / EHLO extractors', () => {
     expect(extractEhloHostname('250 mail.example.com')).toBe('mail.example.com');
   });
 });
+
+// Every per-address row names the mail endpoint node and the address family,
+// so the operator sees exactly WHAT was tested (and can tell a standby or an
+// unassigned node was not).
+describe('per-address labels (node + family)', () => {
+  const addressNodes = {
+    '198.51.100.10': 'node-1',
+    '2001:db8::10': 'node-1',
+    '198.51.100.11': 'node-2',
+  };
+
+  it('labels every PTR and DNSBL row with its endpoint node and family', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10', '198.51.100.11'],
+      serverNodeIpv6s: ['2001:db8::10'],
+      addressNodes,
+      resolveAddresses: async () => ({ a: ['198.51.100.10', '198.51.100.11'], aaaa: ['2001:db8::10'] }),
+    }));
+    expect(r.reverseDns.map((p) => [p.ip, p.node, p.family])).toEqual([
+      ['198.51.100.10', 'node-1', 'ipv4'],
+      ['198.51.100.11', 'node-2', 'ipv4'],
+      ['2001:db8::10', 'node-1', 'ipv6'],
+    ]);
+    expect(r.blocklists.length).toBe(2 * 8);
+    for (const b of r.blocklists) {
+      expect(b.node).toBe(addressNodes[b.ip as keyof typeof addressNodes]);
+      expect(b.family).toBe('ipv4');
+    }
+  });
+
+  it('an address with no known node is labelled null, never guessed', async () => {
+    const r = await probeDeliverability(makeDeps({}));
+    expect(r.reverseDns[0]).toEqual(expect.objectContaining({ ip: '198.51.100.10', node: null, family: 'ipv4' }));
+  });
+
+  it('a missing A record names the endpoint node in the remediation', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10', '198.51.100.11'],
+      addressNodes,
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: [] }),
+    }));
+    expect(r.forwardDns?.assertion).toMatch(/every mail endpoint IP/);
+    expect(r.forwardDns?.remediation).toContain('198.51.100.11 (node-2)');
+  });
+
+  it('an A record for a node that publishes no mail port is a warning that says so', async () => {
+    const r = await probeDeliverability(makeDeps({
+      resolveAddresses: async () => ({ a: ['198.51.100.10', '198.51.100.11'], aaaa: [] }),
+    }));
+    expect(r.forwardDns?.severity).toBe('warning');
+    expect(r.forwardDns?.remediation).toMatch(/publish no mail ports/);
+  });
+
+  it('no endpoint address → not_implemented with a placement / exposure hint', async () => {
+    const r = await probeDeliverability(makeDeps({ serverNodeIps: [] }));
+    expect(r.forwardDns?.remediation).toMatch(/No mail endpoint IPv4 address/);
+    expect(r.forwardDns?.remediation).toMatch(/port-exposure mode/);
+  });
+});

@@ -19,6 +19,16 @@ import {
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
+import {
+  EMPTY_TIMELINE,
+  RESTORE_STEP_LABELS,
+  RESTORE_STEP_PCT,
+  applyRevertStep,
+  beginStep,
+  endStep,
+  failInFlight,
+  type StepTimeline,
+} from './restore-timeline.js';
 
 /**
  * Render a raw exception message into the operator-error envelope JSON
@@ -144,7 +154,9 @@ const INTERACTIVE_RESTORE_TIMEOUT_MS = 30_000;
  * skipped the unquiesce, and the tenant stayed at 0 replicas with no
  * automatic recovery. The snapshot is
  * persisted on the op row BEFORE any mutation, so fall back to that copy.
- * Best-effort: never throws.
+ * Best-effort: never throws. Resolves `true` when the workloads were brought
+ * back (or there was nothing to bring back), `false` when that failed — the
+ * snapshot-restore timeline shows it as its `recover` step.
  */
 export async function unquiesceBestEffort(
   db: Database,
@@ -153,18 +165,40 @@ export async function unquiesceBestEffort(
   namespace: string,
   localSnap: QuiesceSnapshot | null,
   opts: { availableTimeoutMs?: number } = {},
-): Promise<void> {
+): Promise<boolean> {
   const snap = localSnap ?? await loadPersistedQuiesceSnapshot(db, opId);
   if (snap) {
-    await unquiesce(k8s, namespace, snap, opts).catch((err) => {
+    return unquiesce(k8s, namespace, snap, opts).then(() => true, (err) => {
       console.warn(`[storage-lifecycle] failure-path unquiesce for op ${opId} (${namespace}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     });
-    return;
   }
-  // No snapshot at all (crash raced the persist) — at least clear the
-  // file-manager hold so reactive auto-start works again.
-  const { clearQuiesceHold } = await import('./quiesce.js');
-  await clearQuiesceHold(k8s, namespace);
+  // No snapshot at all (crash raced the persist, so nothing was scaled
+  // down) — at least clear the file-manager hold so reactive auto-start
+  // works again.
+  try {
+    const { clearQuiesceHold } = await import('./quiesce.js');
+    await clearQuiesceHold(k8s, namespace);
+    return true;
+  } catch (err) {
+    console.warn(`[storage-lifecycle] failure-path quiesce-hold clear for op ${opId} (${namespace}) failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Persist a snapshot-restore step timeline to `storage_operations.progress_steps`.
+ * Best-effort: the timeline is what the progress modal draws, never what the
+ * restore depends on, so a failed write is logged and the restore carries on.
+ */
+async function persistRestoreTimeline(db: Database, opId: string, timeline: StepTimeline): Promise<void> {
+  try {
+    await db.update(storageOperations)
+      .set({ progressSteps: timeline as unknown as Record<string, unknown> })
+      .where(eq(storageOperations.id, opId));
+  } catch (err) {
+    console.warn(`[storage-lifecycle] restore timeline write for op ${opId} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function updateOp(
@@ -200,6 +234,7 @@ async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> 
       progressMessage: storageOperations.progressMessage,
       lastError: storageOperations.lastError,
       triggeredByUserId: storageOperations.triggeredByUserId,
+      params: storageOperations.params,
     })
     .from(storageOperations)
     .where(eq(storageOperations.id, opId))
@@ -222,14 +257,26 @@ async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> 
   // storage tab. The admin-panel registry maps `modal: 'operation'` to
   // <OperationProgressModal /> which takes `operationId` (the
   // storageOperations.id) + an optional title.
-  const target = {
-    type: 'modal' as const,
-    modal: 'operation',
-    modalProps: {
-      operationId: op.id,
-      title: `${op.opType.replace(/_/g, ' ')} — ${op.tenantId.slice(0, 8)}`,
-    },
-  };
+  //
+  // An in-place snapshot restore records a step timeline, so its chip opens
+  // the snapshot-restore modal that draws it (same view as the Snapshots tab)
+  // rather than the generic single-line one.
+  const isSnapshotRevert = op.opType === 'restore'
+    && (op.params as { mode?: unknown } | null)?.mode === 'snapshot_revert';
+  const target = isSnapshotRevert
+    ? {
+      type: 'modal' as const,
+      modal: 'snapshot-restore',
+      modalProps: { operationId: op.id, tenantId: op.tenantId },
+    }
+    : {
+      type: 'modal' as const,
+      modal: 'operation',
+      modalProps: {
+        operationId: op.id,
+        title: `${op.opType.replace(/_/g, ' ')} — ${op.tenantId.slice(0, 8)}`,
+      },
+    };
 
   const { start: startTask, finishByRef } = await import('../tasks/service.js');
   const { toSafeText } = await import('@insula/api-contracts');
@@ -1124,36 +1171,73 @@ async function runRestoreFromSnapshot(
     await updateOp(db, opId, { state, progressPct: pct, progressMessage: msg });
     await db.update(tenants).set({ storageLifecycleState: state }).where(eq(tenants.activeStorageOpId, opId));
   };
+  // Every step lands in `progress_steps` so both panels can draw the timeline
+  // (restore-timeline.ts). Each transition yields a NEW timeline; this is the
+  // one binding that tracks the latest.
+  let timeline: StepTimeline = EMPTY_TIMELINE;
+  const track = async (next: StepTimeline): Promise<void> => {
+    timeline = next;
+    await persistRestoreTimeline(db, opId, next);
+  };
 
   try {
     await progress('quiescing', 5, 'Scaling workloads to zero');
+    await track(beginStep(timeline, 'quiesce', new Date()));
     // quiesce persists the snapshot before scaling (force-cancel safety).
     quiesceSnap = await quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
     await waitForQuiesced(k8s, namespace);
+    await track(endStep(timeline, 'quiesce', true, null, new Date()));
 
     await progress('restoring', 40, 'Reverting your volume to the snapshot');
+    await track(beginStep(timeline, 'wait-detach', new Date()));
     const { revertVolumeToSnapshot } = await import('./longhorn-revert.js');
     await revertVolumeToSnapshot(k8s, volumeName, snapshotName, {
       onStep: async (step) => {
-        await updateOp(db, opId, { progressMessage: `Restoring — ${step.step}${step.detail ? ` (${step.detail})` : ''}` });
+        await track(applyRevertStep(timeline, step, new Date()));
+        // The cleanup detach after a failure is reported as a successful
+        // step; writing its label here would read like progress for the
+        // moment until the failure path below takes over the message.
+        if (step.detail === 'after-failure') return;
+        // The message names the step now RUNNING, in the same words as the
+        // timeline. The step's raw `detail` (node name, volume state) stays
+        // in the timeline, which the tenant view strips — it never reaches
+        // this message, which tenants and the task chip both read.
+        const finished = timeline.steps[timeline.steps.length - 1]?.key;
+        const current = timeline.inFlight?.key ?? finished;
+        if (!finished || !current) return;
+        await updateOp(db, opId, {
+          progressPct: RESTORE_STEP_PCT[finished],
+          progressMessage: `Restoring — ${RESTORE_STEP_LABELS[current]}`,
+        });
       },
     });
 
     await progress('unquiescing', 90, 'Scaling workloads back up');
+    await track(beginStep(timeline, 'unquiesce', new Date()));
     if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap);
+    await track(endStep(timeline, 'unquiesce', true, null, new Date()));
 
     await updateOp(db, opId, { state: 'idle', progressPct: 100, progressMessage: 'Restore complete', completedAt: new Date() });
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'idle', null);
   } catch (err) {
     const persisted = formatLifecycleError(err, 'pvc');
-    await updateOp(db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+    // Record where it stopped, then bring the workloads back BEFORE the op
+    // turns terminal: a progress modal stops polling at `failed`, so the
+    // recovery has to be visible (as the `recover` step) while it runs.
+    await track(failInFlight(timeline, new Date()));
+    await updateOp(db, opId, { progressMessage: 'Restore failed — starting workloads again' }).catch((e: unknown) => {
+      console.warn(`[storage-lifecycle] restore op ${opId}: progress write before recovery failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    await track(beginStep(timeline, 'recover', new Date()));
     // Best-effort unquiesce so the old workloads come back up. The volume
     // was never deleted; on failure the tenant remounts it in whatever state
     // the revert reached (either fully reverted, or unchanged if we failed
     // before the snapshotRevert call landed). Falls back to the
     // op-persisted snapshot when quiesce() threw mid-flight.
-    await unquiesceBestEffort(db, k8s, opId, namespace, quiesceSnap);
+    const recovered = await unquiesceBestEffort(db, k8s, opId, namespace, quiesceSnap);
+    await track(endStep(timeline, 'recover', recovered, null, new Date()));
+    await updateOp(db, opId, { state: 'failed', progressMessage: 'Restore failed', lastError: persisted, completedAt: new Date() });
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'failed', null);
   }

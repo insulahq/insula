@@ -783,6 +783,56 @@ export async function notifyAdminNodeStartupComplete(
   await dispatchSafe(db, 'admin.node_startup_complete', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminNodeJoinedPayload {
+  readonly nodeName: string;
+  /** "server" or "worker". */
+  readonly nodeRole: string;
+  /** Every address the Node publishes, each labelled internal/external. */
+  readonly addresses: string;
+  /** Kubelet version, e.g. "v1.31.4+k3s1". */
+  readonly k8sVersion: string;
+  /** Whether, and until when, health alerts for the node are held (join grace). */
+  readonly graceNote: string;
+  /** The Node object's creationTimestamp (ISO) — when it registered. */
+  readonly occurredAt: string;
+}
+/**
+ * A node registered with the cluster — for the first time, or again after it
+ * had been removed. Detected from the persisted inventory (nodes/lifecycle.ts),
+ * so a platform-api restart does not re-announce existing nodes. dedupeKey is
+ * per (node x Node object), i.e. once per registration.
+ */
+export async function notifyAdminNodeJoined(
+  db: Database,
+  payload: AdminNodeJoinedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_joined', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminNodeRemovedPayload {
+  readonly nodeName: string;
+  /** "server" or "worker", as last recorded. */
+  readonly nodeRole: string;
+  /** The public address(es) last recorded for the node. */
+  readonly addresses: string;
+  /** How the removal was seen, and what (if anything) to do about it. */
+  readonly removalDetail: string;
+}
+/**
+ * A node that was in the inventory is no longer registered with Kubernetes —
+ * deleted from the admin panel, or seen missing from a SUCCESSFUL Node list (a
+ * failed list call never counts). Claimed on `cluster_nodes.removed_at`, so it
+ * fires once per removal across replicas and restarts.
+ */
+export async function notifyAdminNodeRemoved(
+  db: Database,
+  payload: AdminNodeRemovedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_removed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeMemoryEventPayload {
   readonly nodeName: string;
   /** Human summary, e.g. "3 tenant pod(s) evicted" or "kernel SystemOOM (2 events)". */

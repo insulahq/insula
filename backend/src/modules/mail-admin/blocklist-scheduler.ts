@@ -2,7 +2,9 @@
  * Scheduled DNSBL / blocklist watch.
  *
  * The deliverability probe (probeDeliverability) already checks each
- * server-role sending IP against 8 DNSBLs, but only ON DEMAND when an
+ * mail endpoint IPv4 (mail-endpoints.ts — the nodes that publish the mail
+ * ports under the current placement + port-exposure mode, never a standby or
+ * an unassigned server) against 8 DNSBLs, but only ON DEMAND when an
  * admin opens Monitoring → Mail → Deliverability. Getting the sending IP
  * blocklisted is a serious, silent deliverability event — this scheduler
  * runs the same probe hourly and fires an admin notification per listing.
@@ -16,6 +18,7 @@
 
 import { probeDeliverability } from './deliverability.js';
 import { resolveServerNodeIps } from './server-node-ips.js';
+import type { MailEndpointK8s } from './mail-endpoints.js';
 import { resolveDefaultMailHost } from './mail-acme-override-route.js';
 import { notifyAdminMailBlocklisted } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
@@ -33,7 +36,7 @@ export async function runBlocklistCheckOnce(
 ): Promise<number> {
   // Resolve the sending IPs (via the shared resolver the deliverability
   // route uses) + the mail hostname. Any missing precondition → skip.
-  let k8s: { core: { listNode: (q?: object) => Promise<unknown> } };
+  let k8s: MailEndpointK8s;
   try {
     const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
     k8s = createK8sClients(kubeconfigPath);

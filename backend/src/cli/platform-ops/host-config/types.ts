@@ -148,6 +148,13 @@ export interface HostMigrationItem {
   readonly failingSince?: string;
   /** Operator-supplied reason from the .skipped marker (ADR-056 §2). */
   readonly skipReason?: string;
+  /**
+   * ADR-056 §5. Set (always `true`) on an `already-applied` item whose ledger
+   * entry is a `.baseline` marker: a fresh bootstrap of that release already
+   * produced its end state, so it was never run on this node. Absent for a
+   * script that really ran (`.done`), which takes precedence.
+   */
+  readonly baseline?: boolean;
 }
 
 export interface HostMigrationResult {
@@ -198,6 +205,12 @@ export interface HostMigrationDeps {
    */
   readonly readSkip?: (key: string) => { reason: string } | null;
   /**
+   * ADR-056 §5. Does this script carry a `.baseline` marker (stamped by
+   * `host-config baseline` on a fresh node)? Treated as applied — never run —
+   * but reported as such, never as `.done`. Optional: absent = no baselines.
+   */
+  readonly readBaseline?: (key: string) => boolean;
+  /**
    * Consecutive-failure bookkeeping (ADR-056 §3). `noteFailure` returns the
    * updated count + first-seen so the report can escalate; `clearFailure` is
    * called when a script finally applies.
@@ -208,6 +221,62 @@ export interface HostMigrationDeps {
   readonly runScript: (script: HostMigrationScript) => void;
   /** Where the catalog came from (for reporting). */
   readonly source: 'embedded' | 'filesystem' | 'absent';
+}
+
+// ── host-config baseline (ADR-056 §5) ────────────────────────────────────────
+// A FRESH node's ledger is empty, so its first converge would replay every
+// migration ever shipped — even though bootstrap.sh at release X already
+// produced the end state of every migration <= X. `host-config baseline` stamps
+// those as `.baseline` (never `.done`: they never ran here) so they are skipped.
+
+/** The ledger marker kinds that record a script as dealt with on this node. */
+export type HostMigrationMarkerKind = 'done' | 'skipped' | 'baseline';
+
+export interface HostMigrationCatalog {
+  readonly source: 'embedded' | 'filesystem' | 'absent';
+  readonly scripts: readonly HostMigrationScript[];
+}
+
+export interface HostMigrationBaselineOptions {
+  /** Release the node was bootstrapped at; scripts with version <= this are stamped. */
+  readonly upTo: string;
+  /** Stamp even though the ledger shows converge history (NOT a fresh node). */
+  readonly force: boolean;
+  /** Report only — write nothing. */
+  readonly dryRun: boolean;
+}
+
+export interface HostMigrationBaselineDeps {
+  /** The ledger marker this script already has (.done > .skipped > .baseline), or null. */
+  readonly existingMarker: (key: string) => HostMigrationMarkerKind | null;
+  /**
+   * Evidence this node has ALREADY converged: counts of `.done` (ran) and
+   * `.failing` (attempted) markers anywhere in the ledger. Throws when the
+   * ledger cannot be read — freshness is then unproven and baseline refuses.
+   */
+  readonly ledgerHistory: () => { done: number; failing: number };
+  /** Write `<name>.baseline` with this content (0644, contained path, never overwrites); throws on failure. */
+  readonly writeBaseline: (key: string, content: string) => void;
+  readonly now: () => Date;
+}
+
+export interface HostMigrationBaselineResult {
+  /** ok → exit 0 · refused (node has converge history, no --force) → exit 3 · failed → exit 1. */
+  readonly status: 'ok' | 'refused' | 'failed';
+  readonly dryRun: boolean;
+  readonly upTo: string;
+  readonly source: 'embedded' | 'filesystem' | 'absent';
+  /** Keys stamped this run (or that WOULD be, in a dry-run). */
+  readonly stamped: readonly string[];
+  /** Keys <= upTo that already carry a .done / .skipped / .baseline marker. */
+  readonly alreadyRecorded: readonly string[];
+  /** Keys > upTo — left pending; the next converge runs them. */
+  readonly pending: readonly string[];
+  /** Keys that failed catalog validation — never stamped, never run. */
+  readonly invalid: readonly string[];
+  readonly failed: readonly { readonly key: string; readonly error: string }[];
+  /** Why the run was refused / failed as a whole. */
+  readonly reason?: string;
 }
 
 // ── ulimits / limits.d (W10 follow-up) ───────────────────────────────────────

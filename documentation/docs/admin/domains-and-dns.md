@@ -23,8 +23,22 @@ Let's Encrypt) and a `WC` marker for wildcard certs. Hover it for the full
 status, issuer, type, and expiry.
 
 **Bulk actions:** tick rows to reveal **Verify Selected** (re-runs DNS
-verification) and **Delete Selected** (removes the domains and their DNS
-records — confirm required).
+verification), **Refresh Route DNS** (rewrites each domain's ingress
+`A`/`AAAA` records from the current ingress addresses — use it after adding or
+removing an ingress node) and **Delete Selected** (removes the domains and their
+DNS records). Each asks for confirmation, then opens a progress dialog that works
+through the domains one at a time and reports each one:
+
+- **Verify** — *Verified* with the number of checks that passed, or *Not
+  verified* with each failing check listed.
+- **Refresh Route DNS** — how many hostnames the domain has, how many were
+  refreshed and how many stale records were removed. A hostname that could not
+  be refreshed fails the domain and is listed by name. Domains that are not in
+  **Primary** DNS mode are *skipped*, because the platform does not control
+  their zone.
+
+See [Bulk actions](tenants.md#bulk-actions) for how the progress dialog,
+**Cancel** and **Retry failed** work.
 
 Clicking a row jumps to that tenant; to manage one domain in depth, open
 it from the tenant's **Domains** tab, which takes you to the domain detail

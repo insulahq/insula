@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeRecordDiff, type LocalRecord, type RemoteRecord } from './diff.js';
+import { computeRecordDiff, recordKey, type LocalRecord, type RemoteRecord } from './diff.js';
 
 const ZONE = 'example.test';
 
@@ -180,5 +180,26 @@ describe('computeRecordDiff — display names', () => {
   it('renders a remote apex record as @', () => {
     const diff = computeRecordDiff(ZONE, [], [remote({ type: 'A', content: '203.0.113.10' })]);
     expect(diff[0].name).toBe('@');
+  });
+});
+
+describe('recordKey — one identity per published record', () => {
+  const key = (name: string | null, content: string, type = 'A') => recordKey(ZONE, { type, name, content });
+
+  it('treats every spelling of the apex as the apex', () => {
+    expect(new Set([key('@', '203.0.113.1'), key('', '203.0.113.1'), key(null, '203.0.113.1'), key(ZONE, '203.0.113.1'), key(`${ZONE}.`, '203.0.113.1')]).size)
+      .toBe(1);
+  });
+
+  it('keeps different values and different names apart', () => {
+    expect(key('@', '203.0.113.1')).not.toBe(key('@', '203.0.113.2'));
+    expect(key('@', '203.0.113.1')).not.toBe(key('www', '203.0.113.1'));
+    expect(key('@', '203.0.113.1', 'A')).not.toBe(key('@', '203.0.113.1', 'TXT'));
+  });
+
+  it('pairs a local IPv6 row with the server spelling of the same address', () => {
+    const local: LocalRecord[] = [{ id: 'r1', recordType: 'AAAA', recordName: '@', recordValue: '2001:DB8:0::1', ttl: 3600 }];
+    const remote: RemoteRecord[] = [{ type: 'AAAA', name: `${ZONE}.`, content: '2001:db8::1', ttl: 3600 }];
+    expect(computeRecordDiff(ZONE, local, remote).map((e) => e.status)).toEqual(['in_sync']);
   });
 });

@@ -206,6 +206,12 @@ export const hostMigrationItemSchema = z.object({
   failingSince: z.string().nullable().optional(),
   /** Operator-recorded reason from a `.skipped` marker. */
   skipReason: z.string().nullable().optional(),
+  /**
+   * ADR-056 §5: `true` on an `already-applied` item recorded by a `.baseline`
+   * marker — a fresh bootstrap of that release already produced its end state,
+   * so it NEVER RAN on this node. Absent/null for a script that really ran.
+   */
+  baseline: z.boolean().nullable().optional(),
 });
 export type HostMigrationItem = z.infer<typeof hostMigrationItemSchema>;
 

@@ -322,16 +322,33 @@ export async function authRoutes(app: FastifyInstance) {
     // have no tenantId and skip this lookup entirely.
     let tenantStatus: string | null = null;
     let storageLifecycleState: string | null = null;
+    // The op behind a non-idle state, so the Snapshots page can re-open the
+    // progress of a restore the tenant started before a reload / navigation.
+    let activeStorageOperation: { id: string; isSnapshotRestore: boolean } | null = null;
     if (user.tenantId) {
-      const { tenants } = await import('../../db/schema.js');
+      const { tenants, storageOperations } = await import('../../db/schema.js');
       const [c] = await app.db
-        .select({ status: tenants.status, state: tenants.storageLifecycleState })
+        .select({ status: tenants.status, state: tenants.storageLifecycleState, opId: tenants.activeStorageOpId })
         .from(tenants)
         .where(eq(tenants.id, user.tenantId))
         .limit(1);
       if (c) {
         tenantStatus = c.status;
         storageLifecycleState = c.state;
+        if (c.opId) {
+          const [op] = await app.db
+            .select({ opType: storageOperations.opType, params: storageOperations.params })
+            .from(storageOperations)
+            .where(eq(storageOperations.id, c.opId))
+            .limit(1);
+          if (op) {
+            activeStorageOperation = {
+              id: c.opId,
+              isSnapshotRestore: op.opType === 'restore'
+                && (op.params as { mode?: unknown } | null)?.mode === 'snapshot_revert',
+            };
+          }
+        }
       }
     }
 
@@ -346,6 +363,7 @@ export async function authRoutes(app: FastifyInstance) {
         timezone: user.timezone ?? null,
         tenantStatus,
         storageLifecycleState,
+        activeStorageOperation,
       },
     };
   });

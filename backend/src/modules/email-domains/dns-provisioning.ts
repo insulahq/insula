@@ -73,6 +73,11 @@ export async function syncRecordToProviders(
             port: record.port ?? undefined,
           });
         } else if (action === 'delete' && record.id) {
+          // Deliberately the WHOLE (name, type) set: every caller deletes at a
+          // name this module owns outright (`<selector>._domainkey`, `_dmarc`,
+          // `webmail`), where clearing the set is what "replace" means. Never
+          // route a shared name (the apex SPF TXT, MX) through here — use
+          // dns-records' syncRecordToProviders, which removes one value.
           await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
         }
       } catch (err) {

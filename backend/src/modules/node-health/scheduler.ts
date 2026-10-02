@@ -36,12 +36,13 @@ import {
 } from './boot-events.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
+import { describeSuppression, loadJoinGrace } from './join-grace.js';
 import { reapShutdownDebris } from './shutdown-debris.js';
 import {
   buildEntry,
   computeClusterBaseline,
+  decideHealthNotification,
   overallSeverity,
-  shouldNotify,
   type NodeFacts,
 } from './service.js';
 import type {
@@ -54,8 +55,10 @@ const INITIAL_DELAY_MS = 90_000;
 const EVICTION_WINDOW_MS = 60 * 60 * 1000; // 1h
 
 interface RawNode {
-  readonly metadata?: { readonly name?: string };
+  /** creationTimestamp + addresses feed the join grace window (join-grace.ts). */
+  readonly metadata?: { readonly name?: string; readonly creationTimestamp?: Date | string };
   readonly status?: {
+    readonly addresses?: ReadonlyArray<{ readonly type?: string; readonly address?: string }>;
     readonly conditions?: ReadonlyArray<{
       readonly type?: string;
       readonly status?: string;
@@ -190,6 +193,10 @@ export async function reconcileNodeHealth(
   const baseline = computeClusterBaseline(facts);
   const entries = facts.map((f) => buildEntry(f, baseline, now));
 
+  // Nodes still inside their join grace window: their state is persisted and
+  // shown as usual, but nothing about them is NOTIFIED (join-grace.ts).
+  const grace = await loadJoinGrace(k8s, nodeList.items ?? [], now);
+
   // ── 5. Diff against persisted state, persist + notify ──────────
   const prevRows = await db.select().from(nodeHealthState);
   const prevByName = new Map(prevRows.map((r) => [r.nodeName, r]));
@@ -216,18 +223,22 @@ export async function reconcileNodeHealth(
 
   for (const entry of entries) {
     const prev = prevByName.get(entry.name);
-    const prevSeverity = (prev?.severity ?? 'normal') as NodeHealthSeverity;
-    const lastNotifiedAt = prev?.lastNotifiedAt ?? null;
-    const willNotify = shouldNotify({
+    const joining = grace.get(entry.name);
+    const decision = decideHealthNotification({
       newSeverity: entry.severity,
-      prevSeverity,
-      lastNotifiedAt,
+      prev: prev
+        ? { severity: prev.severity as NodeHealthSeverity, lastNotifiedAt: prev.lastNotifiedAt ?? null }
+        : undefined,
+      suppressed: joining !== undefined,
       now,
     });
-    const notifiedAt = willNotify ? now : lastNotifiedAt;
+    const willNotify = decision.notify;
+    const notifiedAt = decision.lastNotifiedAt;
 
     // A new boot resets the "already announced" flag; announcing a shutdown
-    // sets it. Anything else carries the previous value forward.
+    // sets it. Anything else carries the previous value forward. A shutdown
+    // held back by the join grace window was NOT announced, so it must not be
+    // recorded as if it had been — startup-complete would then claim it was.
     const bootFact = bootFactByNode.get(entry.name);
     const transition = transitionByNode.get(entry.name);
     const nextBootId = bootFact?.bootId ?? prev?.bootId ?? null;
@@ -236,7 +247,13 @@ export async function reconcileNodeHealth(
     );
     const nextRebootAnnounced = bootRolled
       ? false
-      : transition?.kind === 'rebooting' ? true : (prev?.rebootAnnounced ?? false);
+      : transition?.kind === 'rebooting' && !joining ? true : (prev?.rebootAnnounced ?? false);
+
+    if (joining && (entry.severity !== 'normal' || transition)) {
+      console.log(`[node-health-monitor] ${describeSuppression(
+        entry.name, joining, `${entry.severity} health alert${transition ? ` and ${transition.kind} notice` : ''}`,
+      )}`);
+    }
 
     await db.insert(nodeHealthState)
       .values({
@@ -273,7 +290,7 @@ export async function reconcileNodeHealth(
       });
 
     if (willNotify) {
-      await fanoutNotification(db, adminUserIds, entry, prevSeverity);
+      await fanoutNotification(db, adminUserIds, entry, decision.prevSeverityForCopy);
       notified.push(entry.name);
     }
   }
@@ -283,6 +300,9 @@ export async function reconcileNodeHealth(
   // re-detected (and re-sent) on the next tick. dispatchSafe never throws, but
   // the ordering is the guarantee, not its implementation.
   for (const t of bootTransitions) {
+    // A joining node restarts k3s and sometimes the whole host while it
+    // bootstraps; neither is a reboot anyone needs telling about.
+    if (grace.has(t.nodeName)) continue;
     if (t.kind === 'rebooting') {
       const boot = bootFactByNode.get(t.nodeName)?.bootId ?? 'unknown';
       await notifyAdminNodeRebooting(db, { nodeName: t.nodeName }, `node-reboot:${t.nodeName}:${boot}`);
@@ -322,6 +342,9 @@ export async function reconcileNodeHealth(
     (podList.items ?? []) as Parameters<typeof recordMemoryEvents>[3],
     now,
     killingEventList.items ?? [],
+    // Recorded for the panel either way; only the notification waits out the
+    // join grace window.
+    (nodeName) => grace.has(nodeName),
   );
 
   // ── 7. Reap node-reboot debris ─────────────────────────────────

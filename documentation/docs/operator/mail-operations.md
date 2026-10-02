@@ -55,6 +55,19 @@ sees real client IPs in its logs and rate limiter.
     *Active node only* is always available. The two haproxy modes need **2 or
     more Ready server nodes**; below that, their radio buttons are disabled.
 
+### Adding or changing nodes
+
+In the haproxy modes you do **not** need to re-apply the mode after the node
+set changes. Within about a minute the platform starts haproxy on a server
+that joined (*All server nodes*) or on a node you added to the assigned set
+(*All assigned mail nodes*), and stops it on a node that left the set — a
+server demoted to worker, or a node removed from the assignment. The active
+mail node never gets haproxy: Stalwart serves it directly.
+
+This adjustment waits while a mode flip or a mail migration is running, and
+does nothing while the active mail node is not known yet. Remember to add the
+new node's addresses to your mail DNS once it serves mail.
+
 ### Flipping a mode
 
 On **Email → Operations**, select the target mode, click **Apply**, and confirm.

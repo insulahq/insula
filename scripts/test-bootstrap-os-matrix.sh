@@ -44,8 +44,9 @@ TIER_REJECT=(
   "amazonlinux:2"
 )
 
-# Common dry-run args. Domain/email values are placeholders — dry-run
-# exits before they're validated against ACME/DNS.
+# Common dry-run args — a first-server CREATE (no --join-as: that flag is for
+# joining an existing cluster only). Domain/email values are placeholders —
+# dry-run exits before they're validated against ACME/DNS.
 #
 # --allow-source exercises Phase 1 trust-seed validation (regex + python
 # ipaddress). Includes IPv4 single, IPv4 CIDR, comma-tolerant form, and
@@ -54,7 +55,6 @@ TIER_REJECT=(
 # returns, which surfaces as a non-zero exit on the matrix run.
 DRY_ARGS=(
   --dry-run
-  --join-as server
   --domain test.invalid
   --acme-email t@t.invalid
   --allow-source 198.51.100.7

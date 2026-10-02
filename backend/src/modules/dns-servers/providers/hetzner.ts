@@ -86,8 +86,10 @@ export class HetznerDnsProvider implements DnsProviderAdapter {
   async listRecords(zone: string): Promise<DnsRecord[]> {
     const zoneId = await this.getZoneId(zone);
     const resp = await this.request<{ records: HtzRecord[] }>(`/records?zone_id=${zoneId}&per_page=100`);
+    const apex = `${zone.replace(/\.$/, '')}.`;
     return resp.records.map((r) => ({
-      id: r.id, type: r.type, name: `${r.name}.${zone.replace(/\.$/, '')}.`,
+      // Hetzner names the apex `@`; `@.<zone>.` matched no record anywhere.
+      id: r.id, type: r.type, name: r.name === '@' ? apex : `${r.name}.${apex}`,
       content: r.value, ttl: r.ttl ?? 3600, priority: null,
     }));
   }

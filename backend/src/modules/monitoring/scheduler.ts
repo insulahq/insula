@@ -9,9 +9,16 @@
  * consumed the minute (re-running the same minute from another replica
  * would double-notify on transient DB errors); the next minute retries
  * naturally.
+ *
+ * With `k8s` the evaluator also holds back alerts about a node that is still
+ * joining (node-health/join-grace.ts) — the same 30-minute window the node
+ * health detectors use, so a bootstrapping node's CPU or a not-yet-scraped
+ * kubelet does not page while the operator watches the join.
  */
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { lazyJoinGrace } from '../node-health/join-grace.js';
 import { evaluateOnce, type EvaluatorLogger } from './evaluator.js';
 
 export const EVALUATOR_TICK_MS = 60_000;
@@ -27,7 +34,7 @@ function minuteFloor(d: Date): Date {
 export function startMonitoringEvaluator(
   db: Database,
   log: EvaluatorLogger,
-  opts: { tickMs?: number; initialDelayMs?: number } = {},
+  opts: { tickMs?: number; initialDelayMs?: number; k8s?: Pick<K8sClients, 'core' | 'custom'> } = {},
 ): { readonly stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
@@ -47,7 +54,10 @@ export function startMonitoringEvaluator(
       `);
       const rows = (claimed as unknown as { rows?: unknown[] }).rows ?? [];
       if (rows.length > 0) {
-        await evaluateOnce(db, log);
+        const now = new Date();
+        await evaluateOnce(db, log, {}, now, {
+          joinGrace: opts.k8s ? lazyJoinGrace(opts.k8s, now) : undefined,
+        });
       }
     } catch (err) {
       log.warn('monitoring evaluator tick failed:', err instanceof Error ? err.message : String(err));

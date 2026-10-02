@@ -68,18 +68,19 @@ describe('reconcileDeploymentStatuses — which rows it reconsiders', () => {
   });
 
   /**
-   * ★ …but only stale ones. updateDeployment writes status='stopped' BEFORE
-   * it scales the workload to zero, so in the moment between the two the pods
-   * are still Ready — a reconciler reading that would flip the row back to
-   * running and undo a stop in progress. The query therefore carries a bound
-   * on updated_at; without it this fix would trade a permanent divergence for
-   * an intermittent one.
+   * ★ …ALL of them, fresh ones included. The query used to bound stopped rows
+   * by updated_at to protect a stop in progress (updateDeployment writes
+   * status='stopped' BEFORE it scales to zero). But SQL cannot see the pods, so
+   * the bound also hid a row that was simply WRONG — a snapshot restore's
+   * quiesce recorded as a stop — for the full ten minutes while its restored
+   * pods served. The protection now lives in stoppedRowMayChange, which can
+   * tell the two apart; status-reconciler-storage-op.test.ts pins it.
    */
-  it('bounds stopped rows by age, so a stop in progress is never undone', async () => {
+  it('fetches stopped rows of any age — the stop-in-progress gate is per row, not in SQL', async () => {
     const { db, terms: t } = captureWhere();
     await reconcileDeploymentStatuses(db, k8s);
-    expect(t()).toContain('updated_at');
-    expect(t()).toContain('<date>');
+    expect(t()).toContain('stopped');
+    expect(t()).not.toContain('updated_at');
   });
 
   it('returns an empty result rather than throwing when nothing matches', async () => {

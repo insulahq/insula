@@ -22,8 +22,9 @@
 #     admin API. RBAC enforced at the platform-api layer; CRD itself
 #     is not webhook-validated in v1alpha1.
 #   - The reconciler does NOT trust spec.role for any firewall decision —
-#     role is purely a UI hint for which `--join-as` flag to suggest in
-#     the bootstrap command shown to the operator.
+#     role is purely a UI hint for which `--join-as server|worker` the
+#     generated JOIN command uses (`insula bootstrap --join-as <role>
+#     --server <ip> --token <t>`; node-scoped flags only, never --domain).
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -80,7 +81,7 @@ spec:
                   enum:
                     - server
                     - worker
-                  description: 'UI hint for the bootstrap.sh --join-as flag. Not used by the reconciler.'
+                  description: 'UI hint for the --join-as value of the generated join command (insula bootstrap --join-as <role> --server <ip> --token <t>). Not used by the reconciler.'
                 ttlSeconds:
                   type: integer
                   description: 'Auto-cleanup TTL in seconds since creationTimestamp. Reconciler removes from nft and deletes CR after expiry.'

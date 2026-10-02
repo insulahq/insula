@@ -51,6 +51,7 @@
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
+| [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
 
 ---
 
@@ -1894,18 +1895,25 @@ labels and taints, the Calico MTU calculation, and the host-migration
 converger. It joins the cluster and is quietly unlike every other node —
 which is the shape of failure that takes days to attribute.
 
-**Why this is not already fixed.** `bootstrap.sh --join-as server` exists
-and is the correct replacement for most of these invocations, but the
-surrounding procedures — an HA control-plane join, a rolling k3s upgrade —
-have not been exercised against it. Replacing a *visibly* wrong command
+**Why this is not already fixed.** `bootstrap.sh --join-as server|worker
+--server <existing-node-ip> --token <node-token>` exists and is the correct
+replacement for most of these invocations — a JOIN, which since the
+create/join split does node-local work only (host hardening, firewall, k3s
+join, node labels/taints, Longhorn node tag, operator CLI) and refuses every
+cluster-scoped flag (`--domain`, `--env`, `--acme-*`, `--release-tag`, …).
+Only the first server CREATES (`bootstrap.sh --domain <apex>`, no
+`--join-as`). But the surrounding procedures — an HA control-plane join, a
+rolling k3s upgrade — have not been exercised against it. Replacing a *visibly* wrong command
 with a plausible untested one is worse: the reader stops questioning it.
 Both documents therefore carry a warning that the commands illustrate the
 underlying k3s steps and are not instructions to run.
 
-**Proposal.** Rewrite both procedures around `bootstrap.sh --join-as
-server|worker` and `platform-ops cluster upgrade`, and prove each on a
-throwaway multi-node cluster — the HA join at minimum, since that is the
-one an operator reaches for under pressure. `scripts/vm-integration-tests/`
+**Proposal.** Rewrite both procedures around the join form
+(`bootstrap.sh --join-as server|worker --server … --token …`, after a
+`ClusterPendingPeer` pre-enrol) and `platform-ops cluster upgrade`, and prove
+each on a throwaway multi-node cluster — the HA join at minimum, since that
+is the one an operator reaches for under pressure. The HA join must go 1 → 3
+servers: a 2-member etcd is less available than one server. `scripts/vm-integration-tests/`
 already stands up multiple nodes and is the natural harness.
 
 **Decide before building:** whether the runbooks should keep the raw k3s
@@ -1964,3 +1972,41 @@ number is chosen. Setting one silently would start evicting live sites.
 
 Found while answering "how are large temp uploads managed if memory limits are
 low?" during the multi-host isolation work (ADR-059).
+
+## R40 — Cluster traffic shows a wire total it does not explain
+
+**Status:** Not started. **Priority:** P2.
+
+The cluster view of **Traffic** reports the node NIC (cAdvisor's root cgroup —
+every byte that crossed the wire). The tenant view reports what the ingress
+served for tenants. They are different instruments by design, and on a quiet
+production day the wire total ran 3–7× the tenant total with nothing on the page
+saying where the rest went. Operators read the gap as a metering error.
+
+It is not one. A measured 24 h on a single-node production cluster, 33.8 GB on
+the wire against 4.8 GB served to tenants:
+
+- restic reading bundle exports back from the backup target (~16.7 GB, one day's
+  investigation — amplified ~2× by the shim's read-ahead, since fixed);
+- the mail snapshot Job pruning its repo on every run (~2.1 GB in / 0.3 GB out
+  per day, since fixed: forget every run, prune daily);
+- nightly bundle uploads, platform HTTP (admin-panel downloads), TCP/TLS overhead.
+
+Off-site backup traffic used to be a row on the page and was removed because it
+was measured with the wrong instrument: the shim POD's counters include traffic
+to the backup Jobs inside the node, and the row routinely exceeded the wire total
+it claimed to be part of. No pod counter can isolate what left the node.
+
+**What would close it** — subsets of the wire, each measured where the bytes
+actually leave:
+
+1. *Served via ingress*: Traefik service bytes, split tenant / platform. A real
+   subset of the wire for external clients.
+2. *Backup target*: a host-side counter on traffic to and from the bound backup
+   target's address (an nftables counter maintained with the target binding),
+   which needs a host-migration to reach existing clusters.
+3. A labelled remainder: mail, image pulls, Git, DNS, protocol overhead.
+
+Ship 1 and 3 first if 2 slips: even an honest "unattributed" row beats a gap
+with no label.
+

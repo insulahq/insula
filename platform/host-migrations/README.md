@@ -14,6 +14,11 @@ config file, relabelling a mount, a one-time data move.
 - On each daily `host-config apply`, the runner walks all shipped scripts in
   `(version, name)` order, **skips** any already applied (per-node marker at
   `/var/lib/platform/host-migrations/<version>/<name>.done`), and runs the rest.
+- A **fresh** node does not replay history: bootstrap stamps every script ≤ the
+  release it installs as `<name>.baseline` (`insula host-config baseline`,
+  ADR-056 §5), so only newer scripts run there. This relies on your migration's
+  end state ALSO being produced by `bootstrap.sh` on a fresh install — keep the
+  two in sync.
 - **Enforced by default**: scripts run when the `host-migrations-desired`
   ConfigMap has `mode: enforce`, which is the **default** (platform-migration
   0008; these scripts are platform-authored, CI-validated and embedded in the

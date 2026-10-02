@@ -12,6 +12,18 @@ import {
 import { getSettings } from '../system-settings/service.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { NodeRole, NodeIngressMode } from '@insula/api-contracts';
+import {
+  claimArrival,
+  claimDepartures,
+  drizzleInventoryRepo,
+  nodeAddressesText,
+  planNodeLifecycle,
+  type InventoryEntry,
+  type LifecyclePlan,
+  type NodeInventoryRepo,
+} from './lifecycle.js';
+import type { ArrivalFacts } from './lifecycle-announce.js';
+import { parseK8sTime } from '../node-health/join-grace.js';
 
 interface NodeUsageAggregate {
   pods: number;
@@ -28,13 +40,72 @@ interface NodeUsageAggregate {
  * worker/true — matching the migration default and the legacy
  * pre-M1 behavior (every node hosted everything).
  */
-export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<number> {
+export async function syncNodesOnce(
+  db: Database,
+  k8s: K8sClients,
+  repo: NodeInventoryRepo = drizzleInventoryRepo(db),
+): Promise<number> {
+  // Inventory BEFORE the Node list — the ordering lifecycle.ts relies on to
+  // keep concurrent replicas from inventing a re-join.
+  const inventory = await readInventoryOrSkip(repo);
   const [nodesRes, usage] = await Promise.all([
     k8s.core.listNode(),
     collectNodeUsage(k8s),
   ]);
   const items = nodesRes.items ?? [];
+  const now = new Date();
+  // A failed listNode() threw above, so reaching here means a SUCCESSFUL list —
+  // the only kind allowed to declare a node removed.
+  const plan: LifecyclePlan = inventory === null
+    ? { baseline: true, arrivals: new Map(), departures: [], staleDepartures: [] }
+    : planNodeLifecycle(
+      inventory,
+      items.map((n) => n.metadata?.name).filter((n): n is string => Boolean(n)),
+      now,
+    );
 
+  await upsertObservedNodes({ db, k8s, repo, items, usage, plan, now });
+
+  // Mirror node-role label → Longhorn node tag "system" so the platform
+  // StorageClass can pin replicas to system servers only. Worker nodes
+  // get the tag removed if it was previously set (e.g. operator
+  // demoted a server). Best-effort — Longhorn may not be installed yet
+  // (fresh dev cluster) — failures are logged and ignored.
+  await reconcileLonghornNodeTags(k8s, items);
+
+  // Same kind of mirror for the mail proxy: in the HA mail port-exposure modes
+  // the haproxy node label follows the node set, so a server that joins (or is
+  // promoted/demoted) gets the right listener without re-applying the mode.
+  await syncMailHaproxyLabelsSafely(db, k8s, items);
+
+  // Removals are claimed only after every live node was upserted, then
+  // announced (lifecycle.ts).
+  const departures = await claimDepartures(repo, plan, now);
+  await announceSafely(departures.length > 0, async (m) => m.announceDepartures(db, departures, 'kubernetes'));
+  return items.length;
+}
+
+interface UpsertPass {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly repo: NodeInventoryRepo;
+  readonly items: readonly K8sNode[];
+  readonly usage: ReadonlyMap<string, NodeUsageAggregate>;
+  readonly plan: LifecyclePlan;
+  readonly now: Date;
+}
+
+/**
+ * The per-node pass: server-default labels, usage, arrival claim, upsert.
+ *
+ * An arrival is CLAIMED (its row written) before its upsert, because for a
+ * brand-new node the upsert is what creates the row and "was it new?" is no
+ * longer answerable afterwards. A claimed arrival can therefore never be
+ * detected again — so it is announced in `finally`, even when a later node's
+ * upsert throws and fails the tick.
+ */
+async function upsertObservedNodes(pass: UpsertPass): Promise<void> {
+  const { db, k8s, repo, items, usage, plan, now } = pass;
   // Read the platform default once per cycle. Used by the per-node
   // pass below to fill in the missing host-tenant-workloads label on
   // freshly joined servers — operator-set explicit labels are never
@@ -52,43 +123,111 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
     newServerDefault = true;
   }
 
-  for (const node of items) {
-    let observed = projectNode(node);
+  const arrivals: ArrivalFacts[] = [];
+  try {
+    for (const node of items) {
+      let observed = projectNode(node);
 
-    // Apply the system-defined default for new SERVER nodes whose
-    // bootstrap did not stamp an explicit host-tenant-workloads label.
-    // The k8s label is the source of truth — once written, future
-    // sync cycles see it and skip this branch.
-    const labels = node.metadata?.labels ?? {};
-    const hasExplicitHostLabel = labels[HOST_TENANT_WORKLOADS_LABEL] !== undefined;
-    if (observed.role === 'server' && !hasExplicitHostLabel) {
-      try {
-        await applyNewServerDefault(k8s, observed.name, newServerDefault, observed.taints);
-        // Reflect what we just wrote so the DB row matches k8s.
-        observed = { ...observed, canHostTenantWorkloads: newServerDefault };
-      } catch (err) {
-        // Best-effort — logging keeps the operator informed without
-        // failing the whole sync cycle. Next tick retries.
-        console.warn(
-          `[node-sync] failed to apply newServerHostsTenantWorkloads=${newServerDefault} to ${observed.name}:`,
-          (err as Error).message,
-        );
+      // Apply the system-defined default for new SERVER nodes whose
+      // bootstrap did not stamp an explicit host-tenant-workloads label.
+      // The k8s label is the source of truth — once written, future
+      // sync cycles see it and skip this branch.
+      const labels = node.metadata?.labels ?? {};
+      const hasExplicitHostLabel = labels[HOST_TENANT_WORKLOADS_LABEL] !== undefined;
+      if (observed.role === 'server' && !hasExplicitHostLabel) {
+        try {
+          await applyNewServerDefault(k8s, observed.name, newServerDefault, observed.taints);
+          // Reflect what we just wrote so the DB row matches k8s.
+          observed = { ...observed, canHostTenantWorkloads: newServerDefault };
+        } catch (err) {
+          // Best-effort — logging keeps the operator informed without
+          // failing the whole sync cycle. Next tick retries.
+          console.warn(
+            `[node-sync] failed to apply newServerHostsTenantWorkloads=${newServerDefault} to ${observed.name}:`,
+            (err as Error).message,
+          );
+        }
       }
-    }
 
-    const u = usage.get(observed.name);
-    observed.scheduledPods = u?.pods ?? 0;
-    observed.cpuRequestsMillicores = u?.cpuMillis ?? 0;
-    observed.memoryRequestsBytes = u?.memoryBytes ?? 0;
-    await upsertNodeFromK8s(db, observed);
+      const u = usage.get(observed.name);
+      observed.scheduledPods = u?.pods ?? 0;
+      observed.cpuRequestsMillicores = u?.cpuMillis ?? 0;
+      observed.memoryRequestsBytes = u?.memoryBytes ?? 0;
+
+      const arrivalKind = plan.arrivals.get(observed.name);
+      if (arrivalKind && await claimArrival(repo, arrivalKind, observed)) {
+        arrivals.push(arrivalFactsFor(node, observed));
+      }
+      await upsertNodeFromK8s(db, observed);
+    }
+  } finally {
+    await announceSafely(arrivals.length > 0, async (m) => m.announceArrivals(db, k8s, arrivals, now));
   }
-  // Mirror node-role label → Longhorn node tag "system" so the platform
-  // StorageClass can pin replicas to system servers only. Worker nodes
-  // get the tag removed if it was previously set (e.g. operator
-  // demoted a server). Best-effort — Longhorn may not be installed yet
-  // (fresh dev cluster) — failures are logged and ignored.
-  await reconcileLonghornNodeTags(k8s, items);
-  return items.length;
+}
+
+/**
+ * Best-effort, like the Longhorn tag mirror: a failure is logged (once per
+ * distinct outcome) and never fails the node sync. Lazy import keeps the mail
+ * module out of this module's static import graph.
+ */
+async function syncMailHaproxyLabelsSafely(
+  db: Database,
+  k8s: K8sClients,
+  items: ReadonlyArray<{ metadata?: { name?: string; labels?: Record<string, string> } }>,
+): Promise<void> {
+  let sync: typeof import('../mail-admin/haproxy-label-sync.js');
+  try {
+    sync = await import('../mail-admin/haproxy-label-sync.js');
+  } catch (err) {
+    console.warn('[node-sync] mail haproxy label sync unavailable:', (err as Error).message);
+    return;
+  }
+  let line: string | null;
+  try {
+    line = sync.describeHaproxyLabelSync(await sync.syncMailHaproxyLabels(db, k8s.core, sync.toNodeRefs(items)));
+  } catch (err) {
+    line = sync.describeHaproxyLabelSync({ outcome: 'skipped', reason: `failed: ${(err as Error).message}` });
+  }
+  if (line) console.log(line);
+}
+
+/**
+ * Lazy import, like every other emitter: it keeps the notification dispatcher
+ * out of this module's static import graph. Never throws — the claims are
+ * already persisted, and a failed announcement must not fail the sync.
+ */
+async function announceSafely(
+  needed: boolean,
+  run: (m: typeof import('./lifecycle-announce.js')) => Promise<void>,
+): Promise<void> {
+  if (!needed) return;
+  try {
+    await run(await import('./lifecycle-announce.js'));
+  } catch (err) {
+    console.warn('[node-sync] membership notification failed:', (err as Error).message);
+  }
+}
+
+/** null = the read failed: skip lifecycle detection this tick, keep syncing. */
+async function readInventoryOrSkip(repo: NodeInventoryRepo): Promise<InventoryEntry[] | null> {
+  try {
+    return await repo.readInventory();
+  } catch (err) {
+    console.warn('[node-sync] inventory read failed — skipping join/removal detection this tick:', (err as Error).message);
+    return null;
+  }
+}
+
+function arrivalFactsFor(node: K8sNode, observed: ObservedNode): ArrivalFacts {
+  const addresses = node.status?.addresses ?? [];
+  return {
+    name: observed.name,
+    role: observed.role,
+    addressesText: nodeAddressesText(addresses),
+    kubeletVersion: observed.kubeletVersion,
+    createdAt: parseK8sTime(node.metadata?.creationTimestamp),
+    addresses: addresses.map((a) => a.address ?? '').filter((a) => a.length > 0),
+  };
 }
 
 /**
@@ -266,6 +405,8 @@ interface K8sNode {
   metadata?: {
     name?: string;
     labels?: Record<string, string>;
+    /** Date from the typed client, string from raw JSON. */
+    creationTimestamp?: Date | string;
   };
   status?: {
     nodeInfo?: {

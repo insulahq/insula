@@ -102,13 +102,18 @@ async function checkRclone(deps: Deps): Promise<Check> {
 async function checkHostMigrations(deps: Deps): Promise<Check> {
   // Light read-only signal: any applied markers? (full pending/shipped diff lives
   // in `host-config status`.) Absent dir is normal on a node that never enforced.
-  const r = await deps.exec('sh', ['-c', `ls ${HOST_MIGRATION_MARKERS}/*/*.done 2>/dev/null | wc -l`], {});
-  const n = Number((r.stdout || '').trim()) || 0;
-  return {
-    name: 'host-migrations applied',
-    status: 'ok',
-    detail: n > 0 ? `${n} marker(s) under ${HOST_MIGRATION_MARKERS}` : 'none applied yet (run host-config apply, or none shipped)',
-  };
+  // `.baseline` (ADR-056 §5) is counted separately: a freshly bootstrapped node
+  // has only those, and must not read as "none applied yet".
+  const count = (kind: string): string => `$(ls ${HOST_MIGRATION_MARKERS}/*/*.${kind} 2>/dev/null | wc -l)`;
+  const r = await deps.exec('sh', ['-c', `echo "${count('done')} ${count('baseline')}"`], {});
+  const [done = 0, baseline = 0] = (r.stdout || '').trim().split(/\s+/).map((v) => Number(v) || 0);
+  const detail =
+    done + baseline === 0
+      ? 'none applied yet (run host-config apply, or none shipped)'
+      : baseline === 0
+        ? `${done} marker(s) under ${HOST_MIGRATION_MARKERS}`
+        : `${done} .done + ${baseline} .baseline marker(s) under ${HOST_MIGRATION_MARKERS}`;
+  return { name: 'host-migrations applied', status: 'ok', detail };
 }
 
 function checkSwapOff(deps: Deps): Check {

@@ -179,3 +179,35 @@ export const tenantBackupDetailSchema = z.object({
   generatedAt: z.string().datetime(),
 });
 export type TenantBackupDetail = z.infer<typeof tenantBackupDetailSchema>;
+
+// ─── /admin/backups/tenants/snapshots ─────────────────────────────────
+
+/** One tenant on-server (Longhorn CSI) snapshot in the cross-tenant list. */
+export const tenantSnapshotListRowSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  tenantName: z.string().nullable(),
+  backupClass: z.string(),
+  label: z.string().nullable(),
+  subsystem: z.string(),
+  /** Provisioned size of the snapshotted volume (VolumeSnapshot restoreSize). */
+  sizeBytes: z.number(),
+  /** Bytes the snapshot actually holds (Longhorn `status.size`); `null` =
+   *  not measured — distinct from a measured `0`. Same meaning as
+   *  `TenantSnapshot.dataSizeBytes`. */
+  dataSizeBytes: z.number().nullable(),
+  status: z.string(),
+  targetId: z.string().nullable(),
+  targetName: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string().nullable(),
+});
+export type TenantSnapshotListRow = z.infer<typeof tenantSnapshotListRowSchema>;
+
+export const tenantSnapshotListResponseSchema = z.object({
+  rows: z.array(tenantSnapshotListRowSchema),
+  hasMore: z.boolean(),
+  /** Operator-configured snapshot TTL (system_settings.snapshot_expiry_hours). */
+  expiryHours: z.number(),
+});
+export type TenantSnapshotListResponse = z.infer<typeof tenantSnapshotListResponseSchema>;

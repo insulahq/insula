@@ -31,6 +31,7 @@ import {
 interface CppShape {
   readonly metadata?: {
     readonly name?: string;
+    readonly uid?: string;
     readonly creationTimestamp?: string;
   };
   readonly spec?: {
@@ -109,6 +110,16 @@ export async function getPendingPeer(
   opts: LoadOptions = {},
   tenants?: ClusterNetworkClients,
 ): Promise<PendingPeer> {
+  return (await getPendingPeerRecord(name, opts, tenants)).peer;
+}
+
+/** The pending peer plus its object uid — what an ownerReference needs
+ *  (a join token Secret owned by the CPP dies with the pre-enrolment). */
+export async function getPendingPeerRecord(
+  name: string,
+  opts: LoadOptions = {},
+  tenants?: ClusterNetworkClients,
+): Promise<{ readonly peer: PendingPeer; readonly uid: string | null }> {
   const c = tenants ?? (await loadClusterNetworkClients(opts));
   try {
     const resp = (await c.custom.getClusterCustomObject({
@@ -117,7 +128,7 @@ export async function getPendingPeer(
       plural: CPP_PLURAL,
       name,
     } as unknown as Parameters<typeof c.custom.getClusterCustomObject>[0])) as CppShape;
-    return toPendingPeer(resp);
+    return { peer: toPendingPeer(resp), uid: resp.metadata?.uid ?? null };
   } catch (err) {
     if (statusOf(err) === 404) {
       throw new ApiError(

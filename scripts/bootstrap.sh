@@ -287,6 +287,25 @@ PLATFORM_DOMAIN=""
 STALWART_MASTER_DOMAIN="local.host"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
+# What this run does, decided ONLY by flags (resolve_bootstrap_mode):
+#   create — no --join-as: this host becomes the FIRST server of a NEW cluster
+#            and installs the platform.
+#   join   — --join-as server|worker + --server + --token: this host joins an
+#            EXISTING cluster and does node-local work only. It never touches
+#            cluster-wide state (config, manifests, secrets, databases, helm).
+# The old shape — `--join-as server` both creating a cluster (no --server) and
+# joining one (with --server) — let a second server re-run the whole install
+# against a live production cluster: the cluster config was rewritten with the
+# joiner's defaults (Let's Encrypt STAGING issuer, its own IP as the mail IP),
+# every seed-once object was force-applied back to its manifest default, and a
+# second super_admin was seeded.
+BOOTSTRAP_MODE=""
+# Every --flag the operator passed, in order. The join allowlist reads it.
+PASSED_FLAGS=()
+# true only when install_k3s installed k3s on this host in THIS run. A fresh
+# node already reflects every host-migration of this release, so its ledger is
+# stamped as a baseline instead of replaying them (see stamp_host_migration_baseline).
+K3S_FRESH_INSTALL=false
 K3S_VERSION="v1.36.2+k3s1"
 CALICO_VERSION="v3.32.1"
 
@@ -725,7 +744,9 @@ RELEASE_TAG=""
 
 usage() {
   cat <<'HELPTEXT'
-Usage: bootstrap.sh --join-as <server|worker> [OPTIONS]
+Usage: bootstrap.sh --domain <FQDN> [OPTIONS]                  CREATE a new cluster
+       bootstrap.sh --join-as <server|worker> --server <IP> --token <TOKEN> [NODE OPTIONS]
+                                                               JOIN an existing one
 
 Server provisioning and platform installation for insula.
 
@@ -740,16 +761,33 @@ SUPPORTED OPERATING SYSTEMS:
     - Ubuntu < 22.04, Debian < 12
     - Alpine, Talos, Flatcar, NixOS, anything systemd-less
 
-REQUIRED:
+MODES (decided by flags alone; contradictions fail before the host is touched):
+  CREATE  no --join-as. This host becomes the FIRST server of a NEW cluster
+          and installs the whole platform. Requires --domain.
+  JOIN    --join-as server|worker + --server + --token. This host joins an
+          EXISTING cluster and does NODE-LOCAL work only (hardening, firewall,
+          k3s, node labels, Longhorn node tag, operator CLI). It never writes
+          cluster state — config, manifests, secrets, databases, certificates.
+          Cluster-wide flags (--domain, --env, --release-tag, --acme-*,
+          --calico-*, --secrets-bundle, --backup-target-*, --skip-flux, …) are
+          REFUSED on a join. Pre-enrol the host first (ClusterPendingPeer CR or
+          admin panel → Cluster Networking → Pre-Enroll Node): the join checks
+          that --server answers and that --token belongs to its cluster.
+          A SECOND server makes a 2-member etcd, which is LESS available than
+          one server (either down = no control plane). Go 1 → 3 servers, or add
+          workers.
+
+JOIN FLAGS:
   --join-as <server|worker>
-                         What this node joins as. server = control plane
-                         (etcd member); worker = kubelet only. The first
-                         control-plane invocation is `--join-as server`
-                         WITHOUT --server/--token; subsequent control-
-                         plane joins pass --server + --token.
+                         server = control plane (etcd member); worker =
+                         kubelet only.
+  --server <IP>          An existing node's IP (bare IPv4).
+  --token <TOKEN>        /var/lib/rancher/k3s/server/node-token on an
+                         existing server. Stored root-only, never on a
+                         command line.
 
 OPTIONS:
-  --domain <FQDN>        Base domain (required for first server)
+  --domain <FQDN>        Base domain (CREATE only, required there)
   --host-tenant-workloads <true|false>
                          Whether this node accepts tenant pods.
                          Workers: defaults true (workers exist to run
@@ -1058,11 +1096,10 @@ REMOTE MODE:
 
 EXAMPLES:
 
-  # ─ Single server, public-only ──────────────────────────────────────
+  # ─ CREATE: single server, public-only ──────────────────────────────
   # cluster_peers seeds with self-IP. Operator's workstation IP is
   # added so kubectl works before the admin panel exists.
-  ./bootstrap.sh --join-as server \
-    --domain example.test --acme-email ops@example.test \
+  ./bootstrap.sh --domain example.test \
     --allow-source 198.51.100.7
 
   # ─ NetBird-private 3-server HA cluster ─────────────────────────────
@@ -1070,39 +1107,42 @@ EXAMPLES:
   #   netbird up --management-url https://vpn.example.com --setup-key <UUID>
   # Auto-detect picks wt0 → 100.64.0.0/10 (also added to allow-source).
 
-  # First server (creates the cluster):
-  ./bootstrap.sh --join-as server \
-    --domain example.test --acme-email ops@example.test \
+  # First server (CREATES the cluster):
+  ./bootstrap.sh --domain example.test \
     --allow-source 198.51.100.7
 
-  # Second & third servers (join over NetBird wt0 IP, NOT public IP):
+  # Pre-enrol each joining host (on the cluster, or admin panel →
+  # Cluster Networking → Pre-Enroll Node), THEN join it.
+
+  # Second AND third server (join over the NetBird wt0 IP, NOT the public
+  # IP; add both before relying on HA — 2 servers is less available than 1):
   ./bootstrap.sh --join-as server \
-    --server 100.64.1.5 --token K10abc...:server:def... \
-    --domain example.test --acme-email ops@example.test
+    --server 100.64.1.5 --token K10abc...::server:def...
 
   # Worker:
   ./bootstrap.sh --join-as worker \
-    --server 100.64.1.5 --token K10abc...:server:def...
+    --server 100.64.1.5 --token K10abc...::server:def...
 
-  # ─ Hetzner private LAN + monitoring scraper ────────────────────────
-  ./bootstrap.sh --join-as server \
-    --domain example.test --acme-email ops@example.test \
+  # ─ CREATE on a Hetzner private LAN + monitoring scraper ────────────
+  ./bootstrap.sh --domain example.test \
     --cluster-network-cidr 10.0.0.0/16 \
     --allow-source 203.0.113.42 \
     --allow-source 198.51.100.0/24
 
   # ─ Multiple sources (repeatable + comma) ───────────────────────────
-  ./bootstrap.sh --join-as server \
-    --domain example.test --acme-email ops@example.test \
+  ./bootstrap.sh --domain example.test \
     --allow-source 100.64.0.0/10,fd00::/8 \
     --allow-source 198.51.100.7 \
     --allow-source 2001:db8::42
 
-  # ─ Remote bootstrap from workstation ───────────────────────────────
-  ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/hosting-platform.key \
-    --join-as server \
-    --domain example.test --acme-email ops@example.test \
+  # ─ Remote CREATE from a workstation ────────────────────────────────
+  ./bootstrap.sh --remote 192.0.2.4 --ssh-key ~/.ssh/id_ed25519 \
+    --domain example.test \
     --allow-source 198.51.100.7
+
+  # ─ Remote JOIN from a workstation ──────────────────────────────────
+  ./bootstrap.sh --remote 192.0.2.5 --ssh-key ~/.ssh/id_ed25519 \
+    --join-as worker --server 192.0.2.4 --token K10abc...::server:def...
 HELPTEXT
   exit 0
 }
@@ -1309,8 +1349,68 @@ PYEOF
   done
 }
 
+# Flags that configure the CLUSTER, not this host. They belong to the first
+# server's create run; the cluster a node joins already has its answer. A join
+# carrying one is refused rather than ignored — silently ignoring --domain on a
+# join is how an operator ends up believing they reconfigured something.
+JOIN_REJECTED_FLAGS=(
+  --domain --env --release-tag
+  --acme-email --acme-server --acme-skip-tls-verify --acme-ca --trust-ca
+  --stalwart-acme-directory --stalwart-external-ip
+  --calico-wg-public --calico-mtu
+  --with-monitoring --skip-monitoring --skip-flux --skip-longhorn --skip-cnpg
+  --skip-smoke --require-smoke-pass --smoke-wait
+  --operator-age-recipient --force-rotate-operator-key --force-domain-change
+  --secrets-bundle --age-key --restore-profile --restore-dry-run
+  --restore-extract-to --override-skip-at-restore
+  --backup-target-s3-endpoint --backup-target-s3-bucket --backup-target-s3-region
+  --backup-target-s3-prefix --backup-target-name
+  --pre-enroll-peer
+)
+
+# resolve_bootstrap_mode — create vs join, from flags alone (see BOOTSTRAP_MODE).
+# Fails loudly on every ambiguous or contradictory combination so nothing on
+# the host — let alone the cluster — is touched by a mistyped command line.
+resolve_bootstrap_mode() {
+  if [[ -n "$NODE_ROLE" ]]; then
+    if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
+      error "Invalid --join-as: '${NODE_ROLE}'. Must be 'server' or 'worker'. To create a NEW cluster, omit --join-as."
+    fi
+    if [[ -z "$K3S_SERVER_IP" || -z "$K3S_TOKEN" ]]; then
+      error "--join-as ${NODE_ROLE} joins an EXISTING cluster and needs both --server <existing-node-ip> and --token <node-token> (on an existing server: cat /var/lib/rancher/k3s/server/node-token).
+To create a NEW cluster on this host, omit --join-as:  bootstrap.sh --domain <apex> ..."
+    fi
+    local flag rejected bad=()
+    for flag in "${PASSED_FLAGS[@]}"; do
+      for rejected in "${JOIN_REJECTED_FLAGS[@]}"; do
+        if [[ "$flag" == "$rejected" ]] && [[ " ${bad[*]} " != *" ${flag} "* ]]; then
+          bad+=("$flag")
+        fi
+      done
+    done
+    if (( ${#bad[@]} > 0 )); then
+      error "Refusing to join with cluster-wide flag(s): ${bad[*]}
+A join only prepares THIS host — it never changes cluster state, and the cluster
+already has these settings from its first server. Drop them and re-run."
+    fi
+    BOOTSTRAP_MODE="join"
+    return 0
+  fi
+  if [[ -n "$K3S_SERVER_IP" || -n "$K3S_TOKEN" ]]; then
+    error "--server/--token join an EXISTING cluster and require --join-as server|worker.
+To create a NEW cluster on this host instead, drop --server and --token."
+  fi
+  NODE_ROLE="server"
+  BOOTSTRAP_MODE="create"
+  if [[ -z "$PLATFORM_DOMAIN" ]]; then
+    error "Creating a new cluster requires --domain. Example: bootstrap.sh --domain example.test
+(To JOIN an existing cluster: --join-as server|worker --server <existing-node-ip> --token <node-token>.)"
+  fi
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
+    [[ "$1" == --* ]] && PASSED_FLAGS+=("$1")
     case "$1" in
       --join-as)         NODE_ROLE="$2"; shift 2 ;;
       --host-tenant-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
@@ -1405,9 +1505,9 @@ parse_args() {
     esac
   done
 
-  if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
-    error "Missing or invalid --join-as: '${NODE_ROLE}'. Must be 'server' or 'worker'. Run with --help for examples."
-  fi
+  # Decides create vs join (and sets NODE_ROLE=server for a create) BEFORE any
+  # role-dependent default below reads NODE_ROLE.
+  resolve_bootstrap_mode
 
   # Resolve HOST_CLIENT_WORKLOADS default.
   #
@@ -1449,44 +1549,13 @@ parse_args() {
     error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev', 'staging', or 'production'."
   fi
 
-  # First-server bootstrap (--join-as server, no --server/--token) requires
-  # --domain. Subsequent control-plane joins inherit the domain from the
-  # existing cluster's etcd state.
-  local is_first_server=false
-  if [[ "$NODE_ROLE" == "server" && -z "$K3S_SERVER_IP" && -z "$K3S_TOKEN" ]]; then
-    is_first_server=true
-  fi
-  if [[ "$is_first_server" == true ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
-    error "First-server bootstrap requires --domain. Example: --domain example.test"
-  fi
-
   # ACME/Let's Encrypt registration email defaults to the platform admin
   # address (admin@<domain>) so --acme-email is never a required flag — the
   # cert-manager ClusterIssuer (le_email) + fresh-install support-email both
-  # fall back to this same value. Pass --acme-email only to override. Derive
-  # once the domain is known (first server); a join inherits it from the
-  # cluster, so an empty value there is fine.
+  # fall back to this same value. Pass --acme-email only to override. Only a
+  # create carries --domain; a join refuses it (resolve_bootstrap_mode).
   if [[ -z "$ACME_EMAIL" && -n "$PLATFORM_DOMAIN" ]]; then
     ACME_EMAIL="admin@${PLATFORM_DOMAIN}"
-  fi
-
-  # Worker join — both --server and --token required.
-  if [[ "$NODE_ROLE" == "worker" ]]; then
-    if [[ -z "$K3S_SERVER_IP" ]]; then
-      error "--join-as worker requires --server <CONTROL_PLANE_IP>"
-    fi
-    if [[ -z "$K3S_TOKEN" ]]; then
-      error "--join-as worker requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
-    fi
-  fi
-
-  # HA control-plane join requires both --server and --token. (First-server
-  # bootstrap with neither was already handled above.)
-  if [[ "$NODE_ROLE" == "server" && -n "$K3S_SERVER_IP" && -z "$K3S_TOKEN" ]]; then
-    error "--join-as server with --server requires --token (joining existing cluster)"
-  fi
-  if [[ "$NODE_ROLE" == "server" && -z "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
-    error "--join-as server with --token requires --server (joining existing cluster)"
   fi
 
   # Validate CLUSTER_NETWORK_CIDR shape if set. Tight regex: 4 octets +
@@ -1693,6 +1762,61 @@ harden_ssh() {
 
   marker_set "ssh-hardened"
   log "SSH hardened."
+}
+
+# Traefik's JSON access log (/var/log/traefik/access.log, a hostPath written by
+# the Traefik DaemonSet on EVERY node and tailed by the CrowdSec agent) is kept
+# 30 days and reaped after that: rotated daily — earlier once it passes 200M,
+# checked hourly — and compressed. copytruncate because Traefik holds the file
+# open (it reopens only on SIGUSR1) and the agent tails the same path.
+#
+# Was hourly/`rotate 7` (≈7 hours kept) and installed ONLY by host-migration
+# 2026.9.9/0002 — so fresh installs had no rotation at all once their ledger is
+# baselined. The three heredocs below are the contract: host-migration
+# 2026.10.3/0003-traefik-access-log-retention.sh carries an identical copy for
+# existing nodes, and scripts/test-traefik-access-log-values.sh diffs them.
+configure_traefik_access_log_rotation() {
+  install -d -m 0755 /etc/logrotate.d /var/lib/logrotate
+  cat > /etc/logrotate.d/insula-traefik-access <<'TRAEFIKLOGROTATE'
+/var/log/traefik/access.log {
+    daily
+    rotate 30
+    maxage 30
+    maxsize 200M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}
+TRAEFIKLOGROTATE
+  chmod 0644 /etc/logrotate.d/insula-traefik-access
+  cat > /etc/systemd/system/insula-traefik-logrotate.service <<'TRAEFIKLOGROTATESERVICE'
+[Unit]
+Description=Rotate the Traefik access log (Insula)
+Documentation=https://github.com/insulahq/insula
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate -s /var/lib/logrotate/insula-traefik.status /etc/logrotate.d/insula-traefik-access
+TRAEFIKLOGROTATESERVICE
+  cat > /etc/systemd/system/insula-traefik-logrotate.timer <<'TRAEFIKLOGROTATETIMER'
+[Unit]
+Description=Hourly Traefik access-log rotation check (Insula)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+TRAEFIKLOGROTATETIMER
+  systemctl daemon-reload
+  systemctl enable --now insula-traefik-logrotate.timer >/dev/null 2>&1 \
+    || warn "could not enable insula-traefik-logrotate.timer — the distro's daily logrotate still rotates the access log."
+  log "Traefik access log: rotated daily (200M cap, hourly check), kept 30 days."
 }
 
 configure_node_logging_caps() {
@@ -2335,6 +2459,7 @@ install_packages_apt() {
     age \
     tmux \
     rclone \
+    logrotate \
     >/dev/null 2>&1
   # iptables: NOT for us — k3s bundles its own and the platform firewall is
   # nftables. It is here because OTHER host software probes for an `iptables`
@@ -2414,7 +2539,10 @@ install_packages_dnf() {
     bind-utils \
     python3 \
     tmux \
+    logrotate \
     >/dev/null 2>&1
+  # logrotate: reaps the Traefik access log (configure_traefik_access_log_rotation);
+  # minimal cloud images ship without it, and the rotation unit then fails hourly.
   # python3: same broad use as the apt path (CIDR/IP validation, node-IP pin,
   # admin/backup JSON bodies). RHEL-9 family + AL2023 ship it in baseos.
   # tmux: required by the admin node-terminal feature (ADR-041) for
@@ -3351,27 +3479,17 @@ pin_system_components_to_servers() {
 
   log "Pinning Helm-managed system components to server nodes..."
 
-  # M12: every system Deployment with replicas>1 also gets a topology
-  # spread constraint so the replicas land one-per-host (with maxSkew=1
-  # ScheduleAnyway as the soft constraint — degrades gracefully when
-  # only 1 server exists). Without this, the scheduler keeps placing
-  # replicas on whichever server got Ready first; on the
-  # 4-node staging cluster that put all CoreDNS/oauth2-proxy/dex/
-  # admin/client/postgres/redis pods on staging, leaving staging at
-  # ~52% RAM while staging2/3 sat near idle.
+  # Topology spread is NOT patched here any more. The platform Deployments are
+  # Flux-managed and their replicas/spread belong to the HA-tier reconciler
+  # (platform-storage-policy); patching them from bootstrap only ever took
+  # effect on a RE-RUN or a server JOIN (on a fresh install they do not exist
+  # yet) and then fought both owners — each patch a rolling restart of the API
+  # and both panels. CoreDNS keeps k3s's own spread (hostname, DoNotSchedule),
+  # which k3s re-applies on every server start anyway.
   local server_patch
   server_patch='{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"insula.host/node-role","operator":"In","values":["server"]}]}]}}},"tolerations":[{"key":"insula.host/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
   local toleration_only_patch
   toleration_only_patch='{"spec":{"template":{"spec":{"tolerations":[{"key":"insula.host/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
-
-  # Apply a topology spread constraint to a Deployment by pod label.
-  # Args: namespace, deployment-name, label-key, label-value
-  apply_topology_spread() {
-    local ns="$1" name="$2" lkey="$3" lval="$4"
-    local patch
-    patch='{"spec":{"template":{"spec":{"topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"kubernetes.io/hostname","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"'"$lkey"'":"'"$lval"'"}}}]}}}}'
-    kubectl patch deployment "$name" -n "$ns" --type=strategic --patch="$patch" 2>/dev/null || true
-  }
 
   # Control-plane-only (pin to server + tolerate server-only taint).
   # `|| true` because not every combination is guaranteed to exist on
@@ -3475,51 +3593,18 @@ pin_system_components_to_servers() {
     --patch='{"spec":{"template":{"spec":{"priorityClassName":"system-cluster-critical"}}}}' \
     2>/dev/null || true
 
-  # M12: scale CoreDNS to 2 replicas + spread across servers.
-  # k3s ships CoreDNS=1 by default; on a 3-server cluster that's a
-  # single point of DNS failure. Bump to 2 and topology-spread so
-  # killing one server doesn't take cluster DNS down.
+  # M12: CoreDNS to 2 replicas (3 with 3+ servers) — k3s ships 1, a single
+  # point of DNS failure. Replicas only: k3s's packaged manifest already
+  # spreads it (hostname, DoNotSchedule) and re-applies its pod template on
+  # every server start, so a template patch here was reverted on the next k3s
+  # restart and rolled CoreDNS twice per restart.
   if kubectl get deploy coredns -n kube-system &>/dev/null 2>&1; then
     local desired=2
     local nodes
     nodes=$(kubectl get nodes -l insula.host/node-role=server --no-headers 2>/dev/null | wc -l)
     if [[ "$nodes" -ge 3 ]]; then desired=3; fi
-    log "Scaling CoreDNS to ${desired} replicas + topology spread."
+    log "Scaling CoreDNS to ${desired} replicas."
     kubectl scale deployment/coredns -n kube-system --replicas="$desired" 2>/dev/null || true
-    apply_topology_spread kube-system coredns k8s-app kube-dns
-  fi
-
-  # M12: spread the public-facing platform Deployments across servers.
-  # These all live in the platform overlay (Flux-managed); patch them
-  # in-place so the constraint sticks even after Flux re-reconciles
-  # (kubectl patch updates the Deployment spec, Flux server-side-apply
-  # preserves the field on next reconcile because we own that path).
-  for ns_name_label in \
-      "platform:platform-api:app=platform-api" \
-      "platform:admin-panel:app=admin-panel" \
-      "platform:tenant-panel:app=tenant-panel" \
-      "platform:dex:app=dex" \
-      "platform:oauth2-proxy:app.kubernetes.io/name=oauth2-proxy"; do
-    local ns="${ns_name_label%%:*}"
-    local rest="${ns_name_label#*:}"
-    local name="${rest%%:*}"
-    local label="${rest#*:}"
-    local lkey="${label%%=*}"
-    local lval="${label#*=}"
-    apply_topology_spread "$ns" "$name" "$lkey" "$lval"
-  done
-
-  # M12: scale platform-api to N replicas (one per server). HA + halves
-  # the load on the original first-server host. Only do this on the
-  # FIRST bootstrap (NODE_ROLE==server, no --server flag); subsequent
-  # server-joins skip — they'd just thrash the existing replica count.
-  if [[ -z "$K3S_SERVER_IP" ]] && kubectl get deploy platform-api -n platform &>/dev/null 2>&1; then
-    local api_desired=2
-    local server_count
-    server_count=$(kubectl get nodes -l insula.host/node-role=server --no-headers 2>/dev/null | wc -l)
-    if [[ "$server_count" -ge 3 ]]; then api_desired=3; fi
-    log "Scaling platform-api to ${api_desired} replicas across servers."
-    kubectl scale deployment/platform-api -n platform --replicas="$api_desired" 2>/dev/null || true
   fi
 
   log "Helm component pinning applied."
@@ -3722,6 +3807,8 @@ install_k3s() {
     fi
   fi
 
+  # Reached only when k3s is absent or being upgraded; absent = a fresh node.
+  command -v k3s &>/dev/null || K3S_FRESH_INSTALL=true
   if [[ "$NODE_ROLE" == "server" ]]; then
     install_k3s_server
   else
@@ -4354,7 +4441,10 @@ install_k3s_server() {
   local init_or_join
   if [[ -n "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
     log "  joining existing cluster at ${K3S_SERVER_IP}..."
-    init_or_join="--server=https://${K3S_SERVER_IP}:6443 --token=${K3S_TOKEN}"
+    # The token rides in K3S_TOKEN (env) — the installer writes it to the
+    # root-only k3s.service.env. As a `--token=` argument it landed in the
+    # world-readable unit file and every `ps` listing (seen on production).
+    init_or_join="--server=https://${K3S_SERVER_IP}:6443"
   else
     log "  bootstrapping new cluster (--cluster-init)..."
     init_or_join="--cluster-init"
@@ -4464,6 +4554,7 @@ install_k3s_server() {
     printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
+      K3S_TOKEN="$K3S_TOKEN" \
       sh -s - \
         ${init_or_join} \
         ${node_pin} \
@@ -5183,7 +5274,20 @@ kctl() {
   if [[ -t 1 ]]; then
     local _out _rc=0
     _out="$(kubectl --kubeconfig="$KUBECONFIG" "$@" 2>&1)" || _rc=$?
-    [[ -n "$_out" ]] && ui_record "kubectl $* → ${_rc}"$'\n'"$_out"
+    # Secret VALUES never reach the transcript: `create secret --from-literal=K=V`
+    # is how several bootstrap secrets are made, and the recorded command line
+    # used to carry them verbatim (a seeded admin password sat in a node log).
+    # Redacted per ARGUMENT (before flattening), so a value with spaces is
+    # covered whole.
+    local _cmd="kubectl" _a _kv
+    for _a in "$@"; do
+      if [[ "$_a" == --from-literal=*=* ]]; then
+        _kv="${_a#--from-literal=}"
+        _a="--from-literal=${_kv%%=*}=<redacted>"
+      fi
+      _cmd+=" ${_a}"
+    done
+    [[ -n "$_out" ]] && ui_record "${_cmd} → ${_rc}"$'\n'"$_out"
     (( _rc != 0 )) && [[ -n "$_out" ]] && printf '%s\n' "$_out" >&2
     return "$_rc"
   fi
@@ -5402,6 +5506,12 @@ install_traefik() {
 # triage. No cookies, no Authorization: this log is read by a DaemonSet and
 # lands in node-local files.
 accessLog:
+  # REQUIRED. The chart renders every --accesslog* argument inside
+  # `{{- if .enabled }}`; without it the keys below are silently ignored and
+  # Traefik writes no access log at all — which is how every install shipped
+  # until this line existed (the values looked complete, the DaemonSet had no
+  # --accesslog flag, /var/log/traefik stayed empty).
+  enabled: true
   # Written to a host FILE, not stdout, and deliberately so.
   #
   # The kubelet wraps every stdout line in the CRI envelope
@@ -7222,16 +7332,33 @@ STALWART_EOF
   # one, inject as a Secret, and persist to /etc/platform/admin-credentials
   # on the node for the operator. Deployment/platform-api picks it up
   # via envFrom on this secret (see k8s/base/platform/api.yaml).
+  #
+  # Only for a platform that has never been installed. The backend deletes this
+  # Secret once the first admin changes the password, so on a running platform
+  # "Secret absent" is the NORMAL state — re-creating it there seeds a second
+  # super_admin with a password sitting in a node file (production, a server
+  # join). A lost admin password is scripts/admin-password-reset.sh.
   if kctl get secret -n platform platform-admin-seed &>/dev/null 2>&1; then
     log "Admin seed credentials already exist, skipping."
+  elif kctl get deployment platform-api -n platform &>/dev/null 2>&1; then
+    log "Platform already installed — not seeding a bootstrap admin (lost access: scripts/admin-password-reset.sh)."
   else
     local admin_email="${ADMIN_EMAIL:-admin@${PLATFORM_DOMAIN:-k8s-platform.test}}"
     local admin_password
     admin_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 20)"
-    kctl create secret generic platform-admin-seed \
-      --namespace=platform \
-      --from-literal=ADMIN_EMAIL="$admin_email" \
-      --from-literal=ADMIN_PASSWORD="$admin_password"
+    # Manifest on stdin, never --from-literal: the kctl transcript and `ps`
+    # would otherwise carry the password.
+    kctl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-admin-seed
+  namespace: platform
+type: Opaque
+stringData:
+  ADMIN_EMAIL: "${admin_email}"
+  ADMIN_PASSWORD: "${admin_password}"
+EOF
     mkdir -p /etc/platform
     umask 077
     cat > /etc/platform/admin-credentials <<EOF
@@ -7247,8 +7374,7 @@ EOF
     # here just makes them wonder which is real. The write itself is left on the
     # legacy path deliberately — other readers still reference it, and moving it
     # is a separate change with its own risk.
-    log "Admin seed credentials written to /etc/insula/admin-credentials."
-    log "  Login: $admin_email / $admin_password"
+    log "Admin seed credentials written to /etc/insula/admin-credentials (root-only) — login ${admin_email}."
   fi
 
   # Phase 1 (RocksDB migration): mail-pg-app-credentials Secret removed.
@@ -9471,6 +9597,38 @@ except Exception:
   fi
 }
 
+# drop_existing_seed_once_objects <rendered.yaml> — remove from the stream every
+# `kustomize.toolkit.fluxcd.io/reconcile: disabled` object that already exists.
+# Those are seed-once: created by the first install, owned by the platform (or
+# the operator) afterwards. Only NotFound counts as absent — any other lookup
+# error fails closed, because "could not check" must never mean "overwrite".
+drop_existing_seed_once_objects() {
+  local rendered="$1" api kind ns name group out listing skip=()
+  # Capture first: as a `< <(yq …)` feed a yq FAILURE would read as "no
+  # seed-once objects" and the whole stream would be force-applied — the
+  # incident this function exists to prevent.
+  listing="$(yq -N 'select(.metadata.annotations["kustomize.toolkit.fluxcd.io/reconcile"] == "disabled") | .apiVersion + "|" + .kind + "|" + (.metadata.namespace // "") + "|" + .metadata.name' "$rendered")" \
+    || error "cannot enumerate seed-once objects in the render (yq failed) — refusing to apply over a live cluster without that check."
+  while IFS='|' read -r api kind ns name; do
+    [[ -n "$kind" && -n "$name" ]] || continue
+    group=""
+    [[ "$api" == */* ]] && group=".${api%/*}"
+    local ns_args=()
+    [[ -n "$ns" ]] && ns_args=(-n "$ns")
+    if out="$(kctl get "${kind,,}${group}" "$name" "${ns_args[@]}" -o name 2>&1)"; then
+      skip+=("${api}|${kind}|${ns}|${name}")
+      log "  seed-once ${kind} ${ns:+${ns}/}${name} already exists — leaving the live object alone."
+    elif ! grep -qE "NotFound|doesn't have a resource type|no matches for kind" <<<"$out"; then
+      error "cannot tell whether seed-once ${kind} ${ns:+${ns}/}${name} exists (${out}) — refusing to apply over it."
+    fi
+  done <<<"$listing"
+  (( ${#skip[@]} > 0 )) || return 0
+  SKIP_IDS="$(printf '%s\n' "${skip[@]}")" yq -i \
+    'select(((.apiVersion + "|" + .kind + "|" + (.metadata.namespace // "") + "|" + .metadata.name) as $id | (strenv(SKIP_IDS) | split("\n") | any_c(. == $id))) | not)' \
+    "$rendered" \
+    || error "could not remove existing seed-once objects from the render (yq failed) — refusing to apply."
+}
+
 apply_platform_manifests() {
   log "Applying platform manifests..."
 
@@ -9589,10 +9747,14 @@ expected k8s/overlays/${overlay_env}/ to exist (dev | development | production).
   # (admin.${DOMAIN}, tenant.${DOMAIN}, dex.${DOMAIN}, …) and 502'ing
   # the admin panel until the CM was patched back manually. Observed
   # on staging1.
-  local existing_domain="" existing_env=""
+  local existing_domain="" existing_env="" existing_issuer="" existing_mail_ip=""
+  local cm_preexisted=false
   if kctl get cm -n flux-system platform-cluster-config >/dev/null 2>&1; then
+    cm_preexisted=true
     existing_domain=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.DOMAIN}' 2>/dev/null || echo "")
     existing_env=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.ENV}' 2>/dev/null || echo "")
+    existing_issuer=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.CLUSTER_ISSUER_NAME}' 2>/dev/null || echo "")
+    existing_mail_ip=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.STALWART_EXTERNAL_IP}' 2>/dev/null || echo "")
     if [[ -n "$existing_domain" && "$existing_domain" != "$PLATFORM_DOMAIN" ]]; then
       if [[ "$FORCE_DOMAIN_CHANGE" != "true" ]]; then
         error "Refusing to change platform-cluster-config DOMAIN: existing=${existing_domain} new=${PLATFORM_DOMAIN}.
@@ -9624,6 +9786,17 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # the same value bootstrap pinned into platform-config above.
   local cluster_issuer_for_cm
   cluster_issuer_for_cm=$(select_cluster_issuer "${PLATFORM_DOMAIN:-}" "${PLATFORM_ENV}")
+  # A re-run keeps the LIVE issuer unless the operator explicitly asked for a
+  # different one (--acme-server / CLUSTER_ISSUER_NAME). select_cluster_issuer
+  # derives its answer from whether the apex resolves to THIS host, so any run
+  # from a host the apex does not point at "discovers" LE-staging — a join did
+  # exactly that on production and swapped the admin/tenant/webmail certs for
+  # untrusted STAGING ones.
+  if [[ -n "$existing_issuer" && "$existing_issuer" != "$cluster_issuer_for_cm" \
+        && -z "${ACME_SERVER:-}" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    log "Keeping the live CLUSTER_ISSUER_NAME=${existing_issuer} (this run derived ${cluster_issuer_for_cm}; pass --acme-server or CLUSTER_ISSUER_NAME to change it)."
+    cluster_issuer_for_cm="$existing_issuer"
+  fi
 
   # STALWART_EXTERNAL_IP — the node's public IPv4 that the staging
   # stalwart-mail overlay binds to Service.spec.externalIPs. Detect it
@@ -9632,6 +9805,10 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # which broke every re-bootstrap onto a new VPS until the literal was
   # hand-edited. --stalwart-external-ip overrides detection.
   local stalwart_external_ip="${STALWART_EXTERNAL_IP_OVERRIDE:-}"
+  # Same rule as the issuer: a re-run keeps the live value unless overridden.
+  if [[ -z "$stalwart_external_ip" && -n "$existing_mail_ip" ]]; then
+    stalwart_external_ip="$existing_mail_ip"
+  fi
   if [[ -z "$stalwart_external_ip" ]]; then
     stalwart_external_ip=$(detect_public_ipv4 2>/dev/null || echo "")
   fi
@@ -9689,8 +9866,35 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     fi
   fi
 
+  # Re-run on an ESTABLISHED cluster (its config existed before this run) that
+  # Flux already manages: Flux owns the platform manifests from here on. Do not
+  # apply this checkout's render over them — it may be a different version than
+  # the cluster's pinned release, and it would force-apply every seed-once
+  # (`kustomize.toolkit.fluxcd.io/reconcile: disabled`) object back to its
+  # manifest default. On production that reset the CrowdSec community blocklist
+  # to off and redirected the platform database's WAL archive.
+  if [[ "$cm_preexisted" == true ]] \
+     && kctl get kustomization.kustomize.toolkit.fluxcd.io platform -n flux-system >/dev/null 2>&1; then
+    log "Platform already installed and Flux-managed — not re-applying manifests from this checkout; requesting a Flux reconcile instead."
+    kctl annotate --overwrite kustomization.kustomize.toolkit.fluxcd.io platform -n flux-system \
+      "reconcile.fluxcd.io/requestedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1 \
+      || warn "could not request a Flux reconcile (flux-system/platform) — Flux will still reconcile on its own interval."
+    return 0
+  fi
+
   if ! command -v envsubst >/dev/null 2>&1; then
     error "envsubst not found on PATH; install gettext-base / gettext."
+  fi
+
+  # Without Flux, a re-run still must not overwrite seed-once objects that the
+  # platform has owned since the first install (same incident as above). Needs
+  # yq to read the rendered stream; refuse rather than clobber when it is absent.
+  local seed_once_skip=""
+  if [[ "$cm_preexisted" == true ]]; then
+    if ! yq --version 2>/dev/null | grep -q mikefarah; then
+      error "Re-running on an existing cluster without Flux needs mikefarah yq v4 to protect seed-once objects (kustomize.toolkit.fluxcd.io/reconcile: disabled) from being overwritten — the yq on PATH is missing or a different tool. Install mikefarah yq v4 and re-run."
+    fi
+    seed_once_skip="yes"
   fi
   log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}, STALWART_EXTERNAL_IP=${stalwart_external_ip:-<unset>}, CLUSTER_ISSUER_NAME=${cluster_issuer_for_cm}) and applying..."
   # SSA with field-manager=kustomize-controller (Flux's default). Without
@@ -9737,19 +9941,34 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   #
   # 6 attempts × 10s backoff = 1 min cap. Hard-fails after exhaustion
   # with the underlying kubectl error.
+  # Render ONCE, the way Flux postBuild renders it: the three cluster-config
+  # variables substituted AND `$$` unescaped to `$`. envsubst alone leaves the
+  # Flux escape (`$${VAR}`, `$$(cmd)`) in place, so every bootstrap apply
+  # produced a pod template Flux then changed back — on production a join
+  # restarted the mail server three times that way. (The one object Flux does
+  # not substitute, Job/stalwart-bootstrap, carries no `$$`; a test guards it.)
+  local rendered=""
+  trap '[[ -n "${rendered:-}" ]] && rm -f "$rendered"' RETURN EXIT
+  rendered="$(mktemp)"
+  DOMAIN="${PLATFORM_DOMAIN}" \
+  STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
+  CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
+    kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
+    | DOMAIN="${PLATFORM_DOMAIN}" \
+      STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
+      CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
+      envsubst '${DOMAIN} ${STALWART_EXTERNAL_IP} ${CLUSTER_ISSUER_NAME}' \
+    | sed 's/\$\$/$/g' > "$rendered" \
+    || error "rendering overlay ${overlay_dir} failed"
+  if [[ -n "$seed_once_skip" ]]; then
+    drop_existing_seed_once_objects "$rendered"
+  fi
+
   local apply_attempt apply_err apply_ok=false
   for apply_attempt in 1 2 3 4 5 6; do
     if apply_err=$(
-        DOMAIN="${PLATFORM_DOMAIN}" \
-        STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
-        CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
-          kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
-          | DOMAIN="${PLATFORM_DOMAIN}" \
-            STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
-            CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
-            envsubst '${DOMAIN} ${STALWART_EXTERNAL_IP} ${CLUSTER_ISSUER_NAME}' \
-          | kctl apply --server-side --force-conflicts \
-                       --field-manager=kustomize-controller -f - 2>&1
+        kctl apply --server-side --force-conflicts \
+                   --field-manager=kustomize-controller -f "$rendered" 2>&1
     ); then
       apply_ok=true
       break
@@ -10586,33 +10805,432 @@ run_preflight() {
 # 2026.8.2, migration never applied, 0 nft rules — and nothing reported it,
 # because a timer that was never installed emits no failures.
 install_platform_ops_cli() {
-  if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
-    phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
-  elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
-    phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
-  else
+  local root
+  if ! root="$(bootstrap_release_root)"; then
     warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
+    return 0
   fi
+  phase_platform_ops "$root" || true
+  stamp_host_migration_baseline "$root"
+}
+
+# The release tree this script ships in (holds platform/VERSION): scripts/.. on
+# the git-clone path, beside the flattened script on --remote.
+bootstrap_release_root() {
+  if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+    (cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)
+  elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
+    printf '%s\n' "${BOOTSTRAP_SCRIPT_DIR}"
+  else
+    return 1
+  fi
+}
+
+# stamp_host_migration_baseline <release-root> — a node whose k3s THIS run
+# installed already carries the end state of every host-migration up to this
+# release (each migration backfills a change bootstrap makes on fresh installs).
+# Record that as a baseline so the first hourly converge does not replay the
+# whole history. On production a freshly joined server replayed all 36 —
+# one re-applied the Calico operator manifest cluster-wide, one restarted k3s
+# (a 13 s etcd stall on a 2-member control plane), one began failing hourly.
+#
+# Only on a FRESH node: a re-run over an existing install may have genuinely
+# pending migrations, and the CLI refuses a ledger that already has .done markers.
+# phase_platform_ops has just enabled the hourly converge timer; it never fires
+# on first enable (no Persistent stamp yet) and its next slot is the hour mark
+# plus up to 15 min, so the seconds until this stamp are not a practical race —
+# and losing it only means a refusal (exit 3) and the old replay, with a warning.
+stamp_host_migration_baseline() {
+  local root="$1" bin="${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" version
+  [[ "$K3S_FRESH_INSTALL" == true ]] || return 0
+  version="$(tr -d '[:space:]' < "${root}/platform/VERSION" 2>/dev/null || true)"
+  # An RC (2026.10.3-rc.1) tree already carries that release's bootstrap
+  # changes, so its own migrations are part of the baseline too — compare
+  # against the release, not the pre-release (SemVer would leave them pending).
+  version="${version%%-*}"
+  if [[ ! -x "$bin" || -z "$version" ]]; then
+    warn "host-migration baseline NOT stamped (operator CLI or platform/VERSION missing) — the first converge will replay every host-migration on this fresh node."
+    return 0
+  fi
+  if "$bin" host-config baseline --up-to "$version"; then
+    log "host-migration ledger baselined at ${version} (fresh node — nothing to replay)."
+  else
+    warn "host-migration baseline failed — the first converge will replay every host-migration on this fresh node. Retry: ${bin} host-config baseline --up-to ${version}"
+  fi
+}
+
+# ─── Join mode (node-local only) ──────────────────────────────────────────────
+
+# Where the k3s installer writes its units (overridable for the test harness).
+K3S_UNIT_DIR="${K3S_UNIT_DIR:-/etc/systemd/system}"
+
+# k3s_unit_has <pattern> — does this host's k3s SERVER unit carry the flag?
+k3s_unit_has() {
+  [[ -f "${K3S_UNIT_DIR}/k3s.service" ]] && grep -q -- "$1" "${K3S_UNIT_DIR}/k3s.service"
+}
+
+# guard_bootstrap_target — refuse when this host's existing k3s contradicts the
+# requested mode. Re-running the SAME mode is fine (idempotent convergence); a
+# create on a node that joined a cluster would re-install the platform against
+# that cluster, which is exactly the incident this split exists to prevent.
+guard_bootstrap_target() {
+  if [[ "$BOOTSTRAP_MODE" == "create" ]]; then
+    if [[ -f ${K3S_UNIT_DIR}/k3s-agent.service ]]; then
+      error "This host is a WORKER of an existing cluster (k3s-agent is installed). A create would install a second platform against that cluster.
+To re-converge this node, re-run its join: --join-as worker --server <ip> --token <token>."
+    fi
+    if k3s_unit_has "--server="; then
+      error "This host JOINED an existing cluster as a server. A create would re-install the platform against that live cluster.
+To re-converge this node, re-run its join: --join-as server --server <ip> --token <token>."
+    fi
+    return 0
+  fi
+  if k3s_unit_has "--cluster-init"; then
+    error "This host is the FIRST server of its own cluster (--cluster-init). Joining it elsewhere would abandon that cluster.
+Uninstall k3s first (/usr/local/bin/k3s-uninstall.sh) if that is really what you want."
+  fi
+  if [[ "$NODE_ROLE" == "server" && -f ${K3S_UNIT_DIR}/k3s-agent.service ]]; then
+    error "This host is already a WORKER (k3s-agent). Promoting it to a server needs k3s-agent-uninstall.sh first."
+  fi
+  if [[ "$NODE_ROLE" == "worker" && -f ${K3S_UNIT_DIR}/k3s.service ]]; then
+    error "This host is already a SERVER (k3s). Demoting it to a worker means removing it from etcd and uninstalling k3s first — see docs/operations/MULTI_NODE_RUNBOOK.md."
+  fi
+}
+
+# run_join_preflight — before ANYTHING on this host changes: the join target
+# must answer, and the token must belong to its cluster. Both used to surface
+# only after the host was hardened and k3s installed (and a wrong-cluster token
+# only as an opaque k3s retry loop).
+run_join_preflight() {
+  local url="https://${K3S_SERVER_IP}:6443" ca_file="" reached=false _try
+  # The token hashes the RAW /cacerts bytes (trailing newline included), so the
+  # body goes to a file — `$(curl …)` strips that newline and every correct
+  # token would then read as "another cluster".
+  trap '[[ -n "${ca_file:-}" ]] && rm -f "$ca_file"' RETURN
+  ca_file="$(mktemp)"
+  for _try in 1 2 3 4 5 6; do
+    if curl -sk --max-time 5 -o "$ca_file" "${url}/cacerts" 2>/dev/null \
+       && grep -q "BEGIN CERTIFICATE" "$ca_file"; then
+      reached=true
+      break
+    fi
+    sleep 5
+  done
+  if [[ "$reached" != true ]]; then
+    error "Cannot reach the cluster at ${url} (tried for 30s). Pre-enrol THIS host's IP on the cluster first —
+admin panel → Settings → Cluster Networking → Pre-Enroll Node (or a ClusterPendingPeer CR) — then re-run.
+Nothing on this host has been changed."
+  fi
+  # Secure token format: K10<sha256 of the cluster CA bundle>::<user>:<password>.
+  if [[ "$K3S_TOKEN" =~ ^K10([0-9a-f]{64}):: ]]; then
+    local want="${BASH_REMATCH[1]}" got
+    got="$(sha256sum "$ca_file" | awk '{print $1}')"
+    if [[ "$got" != "$want" ]]; then
+      error "--token belongs to a DIFFERENT cluster: its CA hash does not match the CA served by ${K3S_SERVER_IP}.
+Copy the token from /var/lib/rancher/k3s/server/node-token on a server of the cluster you mean to join."
+    fi
+    ui_ok "join target ${K3S_SERVER_IP} reachable; --token matches its cluster CA"
+  else
+    ui_warn "--token is not in the K10<ca-hash>:: format — cannot verify before joining that it belongs to ${K3S_SERVER_IP}'s cluster"
+  fi
+}
+
+# wait_for_local_node_ready — servers only (a worker has no kubeconfig).
+wait_for_local_node_ready() {
+  local node _w
+  node="$(hostname)"
+  log "Waiting for node ${node} to become Ready (up to 300s)..."
+  for _w in $(seq 1 150); do
+    if [[ "$(kubectl --kubeconfig="$KUBECONFIG" get node "$node" \
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" == "True" ]]; then
+      ui_ok "node ${node} Ready"
+      return 0
+    fi
+    sleep 2
+  done
+  error "Node ${node} did not become Ready within 300s. Investigate: kubectl describe node ${node}; journalctl -u k3s -n 100"
+}
+
+# wait_for_local_pod <namespace> <selector> — a Running+Ready pod of a
+# DaemonSet on THIS node; returns 1 (never fatal) after 300s.
+wait_for_local_pod() {
+  local ns="$1" selector="$2" _w ready
+  for _w in $(seq 1 150); do
+    ready="$(kubectl --kubeconfig="$KUBECONFIG" -n "$ns" get pod -l "$selector" \
+      --field-selector "spec.nodeName=$(hostname)" \
+      -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+    [[ "$ready" == "True" ]] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# warn_on_even_etcd_members — an even etcd membership tolerates no more
+# failures than one member fewer, and 2 is strictly worse than 1: either
+# server down = no quorum = no control plane. Said once, loudly, at the moment
+# the operator can still act on it (join another server, or re-join as worker).
+warn_on_even_etcd_members() {
+  local voters
+  # Advisory only — a kubectl blip right after the join must not turn a
+  # completed join into a failed run (pipefail + set -e would).
+  voters="$(kubectl --kubeconfig="$KUBECONFIG" get nodes -l node-role.kubernetes.io/etcd=true \
+    --no-headers 2>/dev/null | wc -l)" || return 0
+  (( voters > 0 && voters % 2 == 0 )) || return 0
+  ui_warn "the cluster now has ${voters} etcd members — quorum is $((voters / 2 + 1)), so it survives only $(( (voters - 1) / 2 )) server failure(s), no more than $((voters - 1)) members would."
+  if (( voters == 2 )); then
+    ui_warn "with 2 servers, EITHER one going down stops the control plane, every reboot or k3s upgrade of either one blips it, and a permanently lost server needs 'k3s server --cluster-reset' on the survivor."
+  fi
+  ui_warn "join one more server to reach an odd count, or re-join this node as a worker (docs/operations/MULTI_NODE_RUNBOOK.md)."
+}
+
+# run_join_server — a control-plane join. Node-local work ONLY: the cluster
+# already has its platform, config, secrets and databases, and this function
+# must never write any of them. Everything here targets THIS node's objects.
+run_join_server() {
+  ui_phase "Preparing this server"
+  wait_for_local_node_ready
+  # Host tools only (no helm install / flux bootstrap): host-migrations run on
+  # every server and some of them call helm/flux to read versions.
+  install_helm
+  install_flux_cli
+  apply_node_labels_and_taints
+  tag_longhorn_node_for_system_replicas
+  if wait_for_local_pod traefik "app.kubernetes.io/name=traefik"; then
+    ensure_traefik_cni_portmap "join"
+  else
+    warn "no Ready Traefik pod on this node after 300s — ingress on this node's IP is not serving yet."
+  fi
+  if wait_for_local_pod platform-system "app=sftp-gateway"; then
+    ensure_hostport_dnat "join" "SFTP gateway" "platform-system" "app=sftp-gateway" 23022
+  fi
+  install_platform_ops_cli
+  warn_on_even_etcd_members
+  local cli_ver
+  cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
+  ui_banner "SERVER JOIN COMPLETE"
+  ui_section "This node"
+  ui_line "Joined control plane: ${K3S_SERVER_IP}"
+  ui_line "k3s status:           $(systemctl is-active k3s 2>/dev/null || echo unknown)"
+  ui_line "operator CLI:         ${cli_ver:-not installed}"
+  ui_line "host-config timer:    $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
+  ui_section "Not touched (cluster-wide, owned by the cluster)"
+  ui_line "platform config, manifests, secrets, databases, certificates, helm releases"
+  ui_section "Verify"
+  ui_line "kubectl get nodes -o wide"
+}
+
+# run_join_worker — an agent join (no kubeconfig on a worker).
+run_join_worker() {
+  apply_node_labels_and_taints
+
+  # Workers need the operator CLI too — see install_platform_ops_cli. A worker
+  # is a HOST like any other: same kernel, same firewall, same packages, and
+  # the same host-migrations apply to it. Without the CLI there is no
+  # host-config converge timer, so a worker silently keeps the host state it
+  # was born with.
+  install_platform_ops_cli
+
+  # Report the binary at its INSTALL path, not whatever `insula` PATH resolves
+  # to — a worker's root PATH is not guaranteed to carry /usr/local/bin, and a
+  # false "not installed" here would send an operator chasing a non-problem.
+  # platform_ops_installed_version prints NOTHING when the binary is absent
+  # (it returns 0 early), so an empty result must render as an explicit
+  # "not installed" — a blank field reads as "fine" at a glance.
+  local worker_cli_ver
+  worker_cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
+  ui_banner "WORKER NODE BOOTSTRAP COMPLETE"
+  ui_section "This node"
+  ui_line "Joined control plane: ${K3S_SERVER_IP}"
+  ui_line "k3s agent status:     $(systemctl is-active k3s-agent 2>/dev/null || echo unknown)"
+  ui_line "operator CLI:         ${worker_cli_ver:-not installed}"
+  ui_line "host-config timer:    $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
+  ui_section "Verify from the control plane"
+  ui_line "kubectl get nodes"
+}
+
+# run_create_cluster — the FIRST server of a NEW cluster: installs the whole
+# platform. Also the path of an idempotent re-run on that same first server, so
+# every cluster-wide step below must leave an established cluster's live state
+# alone (see apply_platform_manifests / generate_platform_secrets).
+run_create_cluster() {
+  # Calico + platform components only on the control plane.
+  # NOTE: apply_node_labels_and_taints (and the server-only NoSchedule
+  # taint it carries when host-tenant-workloads=false) is intentionally
+  # deferred to AFTER pin_system_components_to_servers — applying the
+  # taint earlier blocks the Helm pre-install hooks (ingress-nginx,
+  # cert-manager) from scheduling on a single-server install.
+  install_calico
+
+  # Phase 3: Platform components
+  log ""
+  ui_phase "Installing platform components"
+  install_helm
+  install_flux_cli
+  # CrowdSec bouncer key Secret must exist BEFORE install_traefik so
+  # the Traefik DaemonSet's volume mount (--set volumes[0].type=secret
+  # crowdsec-bouncer-key) finds the Secret on first start; otherwise
+  # the pod stays Pending with FailedMount until the Secret lands.
+  generate_crowdsec_bouncer_key
+  generate_crowdsec_agent_credentials
+  install_traefik
+  install_cert_manager
+  install_sealed_secrets
+  install_longhorn
+  # M10: CNPG operator (passive — no Cluster CR applied). Installs
+  # alongside Longhorn so the Postgres replication activation flow
+  # is a single-CR step rather than a multi-phase upgrade when the
+  # time comes.
+  install_cnpg
+  # CRITICAL ORDERING(Cut 3 staging-cutover lesson):
+  # generate_platform_secrets MUST run BEFORE install_flux. Flux's
+  # Kustomization starts reconciling within seconds of creation; if
+  # it applies v016 manifests before stalwart-admin-creds exists, the
+  # Stalwart Deployment crashes with "secret not found".
+  # Phase 1 (RocksDB): mail-pg-app-credentials is no longer needed.
+  # generate_platform_secrets is fully self-contained — it only needs
+  # the kube-API + namespaces/Secrets RBAC, which are available right
+  # after install_cnpg.
+  #
+  # System Backup Phase 1.4: --secrets-bundle import runs FIRST so
+  # generate_platform_secrets sees the imported Secrets and skips
+  # regeneration. No-op when --secrets-bundle is not passed.
+  import_secrets_bundle
+  generate_platform_secrets
+  install_flux
+  # M1 C5: pin Helm-managed Deployments to server nodes + add
+  # server-only toleration. Runs AFTER all Helm installs so every
+  # target Deployment exists by the time we patch it. See function
+  # definition above for the split between nodeSelector+toleration
+  # (control-plane only) and toleration-only (data plane DaemonSets).
+  pin_system_components_to_servers
+  # Apply the server-only taint AFTER all Helm components have their
+  # tolerations patched in by pin_system_components_to_servers — order
+  # matters so that ingress-nginx admission webhook, cert-manager
+  # webhook, etc. can complete their initial install on a single-node
+  # cluster without being evicted by the taint.
+  apply_node_labels_and_taints
+  create_platform_configmap
+  generate_operator_recipient
+  apply_platform_manifests
+  # Seed ClusterTrustedRange CRs from --allow-source entries. Runs
+  # AFTER apply_platform_manifests so the CRDs are guaranteed
+  # present. The reconciler converges these CRs into the host nft
+  # trusted_ranges_v{4,6} sets — without this seed, the reconciler's
+  # atomic flush+add wipes the bootstrap-time-only nft seed on first
+  # tick and operator NetBird/workstation access disappears.
+  seed_cluster_trusted_range_crs
+  # Sister seed for --pre-enroll-peer entries.
+  # Same rationale: nft entries seeded in Phase 1 get reaped by the
+  # firewall-reconciler unless backed by a Node or ClusterPendingPeer
+  # CR. Joining bootstraps would then hit a dropped :6443 because
+  # the pre-enrolled entries vanished before they could complete.
+  seed_cluster_pending_peer_crs
+  # Tag the Longhorn Node CR (.spec.tags + each disk .tags = "system")
+  # so the platform's longhorn-system-local StorageClass can schedule
+  # replicas. apply_platform_manifests waits for the longhorn admission
+  # webhook before applying overlay, so by here the webhook is ready;
+  # the function still re-checks defensively. See issue 2 in
+  # project_testing_bootstrap_2026_05_08.md.
+  tag_longhorn_node_for_system_replicas
+  # Stalwart 0.16 first-install bootstrap. Runs after apply_platform_manifests
+  # so the stalwart-mail manifests (Deployment, CNPG Cluster, bootstrap Job)
+  # exist in the cluster before we wait for them. Skips gracefully when the
+  # stalwart-mail overlay was not applied (mail not deployed). Idempotent:
+  # re-run is safe when stalwart-admin-creds already exists + full mode.
+  # bootstrap_stalwart_v016 is a CLUSTER-WIDE one-time operation owned
+  # by the FIRST server (it bootstraps the single stalwart-mail
+  # Deployment for the whole cluster). Joins never reach this function.
+  bootstrap_stalwart_v016
+  # Cut 3: Roundcube webmail PG database+role provisioning.
+  # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
+  # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
+  create_roundcube_db
+  # Install-time default only; the operator owns it afterwards via the
+  # System Backups UI. See the function header for why it is not in the
+  # Flux-managed manifest.
+  set_default_archive_timeout
+  harden_database_connect_acls
+  # Cut 3: Stalwart master user (Roundcube SSO impersonator).
+  # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery
+  # admin can authenticate to the cli). Idempotent — re-runs only update
+  # credentials/roles to converge after rotation.
+  provision_stalwart_master_user
+  # Platform-api's separate bouncer key + pre-registered "platform-api"
+  # bouncer name. Runs LATE in phase 3 because it needs the CrowdSec
+  # Deployment to be ready (cscli exec). Idempotent — re-runs reuse
+  # the existing Secret and skip the cscli bouncers add when the
+  # bouncer is already pre-registered.
+  generate_platform_api_bouncer_key
+
+  # Tier-1 secrets bundle for offline retrieval. Runs after
+  # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
+  # so all bundled material (including stalwart-admin-creds) exists.
+  # See docs/operations/SECRETS_LIFECYCLE.md.
+  bundle_bootstrap_secrets
+
+  # Phase 4: Verify
+  log ""
+  ui_phase "Verifying the install"
+  verify
+  # Real install verification — actually probe admin login + healthz.
+  # Non-fatal (warn only) so a transient cert-manager / DNS issue
+  # doesn't fail bootstrap; operator gets a clear message either way.
+  verify_install || true
+  # Optional: configure the Longhorn + DR backup-target if the
+  # operator passed --backup-target-s3-endpoint. Requires the API to
+  # be reachable (verify_install just confirmed it). No-op if the
+  # endpoint flag is empty. Non-fatal — bootstrap.sh stays a one-shot
+  # green path; a misconfigured backup target is a warning the
+  # operator handles via the admin panel.
+  configure_backup_target_s3 || true
+
+  install_platform_ops_cli
+
+  # Phase 5: post-install cluster-network smoke. Advisory by default;
+  # the operator can wire it into CI with --require-smoke-pass. Create
+  # only — joins never reach this function.
+  #
+  # ORDERING: this runs after every MANDATORY step (an advisory step placed
+  # mid-sequence lets an outer timeout skip real work silently) but BEFORE the
+  # completion report. The report has to be the last thing on screen — when the
+  # advisory smoke printed after it, a handful of first-boot timing failures
+  # were the operator's final impression of a successful install.
+  run_post_install_smoke
+
+  print_summary
 }
 
 main() {
   parse_args "$@"
   check_root
   check_os
-  # Declared BEFORE the first ui_phase, or preflight renders "[1/0]". Six on a
-  # full first-server run: preflight, hardening, k3s, platform components,
-  # verification, smoke. A worker join short-circuits after k3s and simply never
-  # reaches the rest — the summary then reports "3/6 phases", which is accurate
-  # rather than a bar forced to 100%.
-  ui_phase_total 6
+  # Declared BEFORE the first ui_phase, or preflight renders "[1/0]". A create
+  # runs six: preflight, hardening, k3s, platform components, verification,
+  # smoke. A server join runs four (… k3s, preparing this server); a worker join
+  # three.
+  case "$BOOTSTRAP_MODE:$NODE_ROLE" in
+    create:*)     ui_phase_total 6 ;;
+    join:server)  ui_phase_total 4 ;;
+    *)            ui_phase_total 3 ;;
+  esac
   run_preflight
+  # Both checks run before ANYTHING on this host changes, so a wrong mode,
+  # an unreachable join target or a token for another cluster costs nothing.
+  guard_bootstrap_target
+  if [[ "$BOOTSTRAP_MODE" == "join" ]]; then
+    run_join_preflight
+  fi
 
   # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
   # compat symlinks) BEFORE any phase writes markers/credentials into them.
   configure_branded_paths
 
   log "════════════════════════════════════════════════"
-  log "  Hosting Platform — Bootstrap (${NODE_ROLE}, ${PLATFORM_ENV})"
+  if [[ "$BOOTSTRAP_MODE" == "create" ]]; then
+    log "  Hosting Platform — CREATE a new cluster (first server, ${PLATFORM_ENV})"
+  else
+    log "  Hosting Platform — JOIN ${K3S_SERVER_IP} as ${NODE_ROLE} (node-local only)"
+  fi
   log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
   log "════════════════════════════════════════════════"
   log ""
@@ -10631,6 +11249,7 @@ main() {
   install_packages
   if [[ "$DRY_RUN" != true ]]; then
     configure_node_logging_caps
+    configure_traefik_access_log_rotation
     configure_memory_protection
     configure_control_plane_resilience
     configure_graceful_shutdown
@@ -10660,199 +11279,17 @@ main() {
   ui_phase "Installing Kubernetes (k3s)"
   install_k3s
 
-  # M1: label + taint the node with platform-managed role state. Must
-  # run BEFORE apply_platform_manifests so that system-node-affinity
-  # Kustomize patches (landing in M1 C5) don't deadlock the scheduler
-  # on first apply. For workers this is a log-only step — the label
-  # has to be applied from the control plane.
-  if [[ "$NODE_ROLE" == "server" ]]; then
-    # Calico + platform components only on the control plane.
-    # NOTE: apply_node_labels_and_taints (and the server-only NoSchedule
-    # taint it carries when host-tenant-workloads=false) is intentionally
-    # deferred to AFTER pin_system_components_to_servers — applying the
-    # taint earlier blocks the Helm pre-install hooks (ingress-nginx,
-    # cert-manager) from scheduling on a single-server install.
-    install_calico
-
-    # Phase 3: Platform components
-    log ""
-    ui_phase "Installing platform components"
-    install_helm
-    install_flux_cli
-    # CrowdSec bouncer key Secret must exist BEFORE install_traefik so
-    # the Traefik DaemonSet's volume mount (--set volumes[0].type=secret
-    # crowdsec-bouncer-key) finds the Secret on first start; otherwise
-    # the pod stays Pending with FailedMount until the Secret lands.
-    generate_crowdsec_bouncer_key
-    generate_crowdsec_agent_credentials
-    install_traefik
-    install_cert_manager
-    install_sealed_secrets
-    install_longhorn
-    # M10: CNPG operator (passive — no Cluster CR applied). Installs
-    # alongside Longhorn so the Postgres replication activation flow
-    # is a single-CR step rather than a multi-phase upgrade when the
-    # time comes.
-    install_cnpg
-    # CRITICAL ORDERING(Cut 3 staging-cutover lesson):
-    # generate_platform_secrets MUST run BEFORE install_flux. Flux's
-    # Kustomization starts reconciling within seconds of creation; if
-    # it applies v016 manifests before stalwart-admin-creds exists, the
-    # Stalwart Deployment crashes with "secret not found".
-    # Phase 1 (RocksDB): mail-pg-app-credentials is no longer needed.
-    # generate_platform_secrets is fully self-contained — it only needs
-    # the kube-API + namespaces/Secrets RBAC, which are available right
-    # after install_cnpg.
-    #
-    # System Backup Phase 1.4: --secrets-bundle import runs FIRST so
-    # generate_platform_secrets sees the imported Secrets and skips
-    # regeneration. No-op when --secrets-bundle is not passed.
-    import_secrets_bundle
-    generate_platform_secrets
-    install_flux
-    # M1 C5: pin Helm-managed Deployments to server nodes + add
-    # server-only toleration. Runs AFTER all Helm installs so every
-    # target Deployment exists by the time we patch it. See function
-    # definition above for the split between nodeSelector+toleration
-    # (control-plane only) and toleration-only (data plane DaemonSets).
-    pin_system_components_to_servers
-    # Apply the server-only taint AFTER all Helm components have their
-    # tolerations patched in by pin_system_components_to_servers — order
-    # matters so that ingress-nginx admission webhook, cert-manager
-    # webhook, etc. can complete their initial install on a single-node
-    # cluster without being evicted by the taint.
-    apply_node_labels_and_taints
-    create_platform_configmap
-    generate_operator_recipient
-    apply_platform_manifests
-    # Seed ClusterTrustedRange CRs from --allow-source entries. Runs
-    # AFTER apply_platform_manifests so the CRDs are guaranteed
-    # present. The reconciler converges these CRs into the host nft
-    # trusted_ranges_v{4,6} sets — without this seed, the reconciler's
-    # atomic flush+add wipes the bootstrap-time-only nft seed on first
-    # tick and operator NetBird/workstation access disappears.
-    seed_cluster_trusted_range_crs
-    # Sister seed for --pre-enroll-peer entries.
-    # Same rationale: nft entries seeded in Phase 1 get reaped by the
-    # firewall-reconciler unless backed by a Node or ClusterPendingPeer
-    # CR. Joining bootstraps would then hit a dropped :6443 because
-    # the pre-enrolled entries vanished before they could complete.
-    seed_cluster_pending_peer_crs
-    # Tag the Longhorn Node CR (.spec.tags + each disk .tags = "system")
-    # so the platform's longhorn-system-local StorageClass can schedule
-    # replicas. apply_platform_manifests waits for the longhorn admission
-    # webhook before applying overlay, so by here the webhook is ready;
-    # the function still re-checks defensively. See issue 2 in
-    # project_testing_bootstrap_2026_05_08.md.
-    tag_longhorn_node_for_system_replicas
-    # Stalwart 0.16 first-install bootstrap. Runs after apply_platform_manifests
-    # so the stalwart-mail manifests (Deployment, CNPG Cluster, bootstrap Job)
-    # exist in the cluster before we wait for them. Skips gracefully when the
-    # stalwart-mail overlay was not applied (mail not deployed). Idempotent:
-    # re-run is safe when stalwart-admin-creds already exists + full mode.
-    # bootstrap_stalwart_v016 is a CLUSTER-WIDE one-time operation owned
-    # by the FIRST server (it bootstraps the single stalwart-mail
-    # Deployment for the whole cluster). On a join-server (K3S_SERVER_IP
-    # set) re-running it is redundant AND harmful: it waits 300s for the
-    # rollout, then returns 1 on the auth probe when stalwart-mail isn't
-    # Ready from the joiner's vantage — which, under set -euo pipefail,
-    # aborts the otherwise-successful join with exit=1 even though the
-    # node joined fine (observed on the staging multi-node
-    # rebootstrap: staging2/staging3 BOOTSTRAP_EXIT=1). Skip on joiners.
-    if [[ -z "$K3S_SERVER_IP" ]]; then
-      bootstrap_stalwart_v016
-    else
-      log "  Skipping Stalwart bootstrap on join-server (first server owns it)."
-    fi
-    # Cut 3: Roundcube webmail PG database+role provisioning.
-    # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
-    # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
-    create_roundcube_db
-    # Install-time default only; the operator owns it afterwards via the
-    # System Backups UI. See the function header for why it is not in the
-    # Flux-managed manifest.
-    set_default_archive_timeout
-    harden_database_connect_acls
-    # Cut 3: Stalwart master user (Roundcube SSO impersonator).
-    # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery
-    # admin can authenticate to the cli). Idempotent — re-runs only update
-    # credentials/roles to converge after rotation.
-    provision_stalwart_master_user
-    # Platform-api's separate bouncer key + pre-registered "platform-api"
-    # bouncer name. Runs LATE in phase 3 because it needs the CrowdSec
-    # Deployment to be ready (cscli exec). Idempotent — re-runs reuse
-    # the existing Secret and skip the cscli bouncers add when the
-    # bouncer is already pre-registered.
-    generate_platform_api_bouncer_key
-
-    # Tier-1 secrets bundle for offline retrieval. Runs after
-    # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
-    # so all bundled material (including stalwart-admin-creds) exists.
-    # See docs/operations/SECRETS_LIFECYCLE.md.
-    bundle_bootstrap_secrets
-
-    # Phase 4: Verify
-    log ""
-    ui_phase "Verifying the install"
-    verify
-    # Real install verification — actually probe admin login + healthz.
-    # Non-fatal (warn only) so a transient cert-manager / DNS issue
-    # doesn't fail bootstrap; operator gets a clear message either way.
-    verify_install || true
-    # Optional: configure the Longhorn + DR backup-target if the
-    # operator passed --backup-target-s3-endpoint. Requires the API to
-    # be reachable (verify_install just confirmed it). No-op if the
-    # endpoint flag is empty. Non-fatal — bootstrap.sh stays a one-shot
-    # green path; a misconfigured backup target is a warning the
-    # operator handles via the admin panel.
-    configure_backup_target_s3 || true
-
-    install_platform_ops_cli
-
-    # Phase 5: post-install cluster-network smoke. Advisory by default;
-    # the operator can wire it into CI with --require-smoke-pass. Only
-    # runs on the first server (the only role that has KUBECONFIG +
-    # cluster-wide reachability for the matrix probes).
-    #
-    # ORDERING: this runs after every MANDATORY step (an advisory step placed
-    # mid-sequence lets an outer timeout skip real work silently) but BEFORE the
-    # completion report. The report has to be the last thing on screen — when the
-    # advisory smoke printed after it, a handful of first-boot timing failures
-    # were the operator's final impression of a successful install.
-    if [[ -z "$K3S_SERVER_IP" ]]; then
-      run_post_install_smoke
-    fi
-
-    print_summary
-  else
-    apply_node_labels_and_taints
-
-    # Workers need the operator CLI too — see install_platform_ops_cli. A worker
-    # is a HOST like any other: same kernel, same firewall, same packages, and
-    # the same host-migrations apply to it. Without the CLI there is no
-    # host-config converge timer, so a worker silently keeps the host state it
-    # was born with.
-    install_platform_ops_cli
-
-    # Worker — same completion register as the server report (ui_banner/section/
-    # line), not `log`. Two banners rendered differently is worse than either
-    # choice made consistently.
-    # Report the binary at its INSTALL path, not whatever `insula` PATH resolves
-    # to — a worker's root PATH is not guaranteed to carry /usr/local/bin, and a
-    # false "not installed" here would send an operator chasing a non-problem.
-    # platform_ops_installed_version prints NOTHING when the binary is absent
-    # (it returns 0 early), so an empty result must render as an explicit
-    # "not installed" — a blank field reads as "fine" at a glance.
-    worker_cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
-    ui_banner "WORKER NODE BOOTSTRAP COMPLETE"
-    ui_section "This node"
-    ui_line "Joined control plane: ${K3S_SERVER_IP}"
-    ui_line "k3s agent status:     $(systemctl is-active k3s-agent 2>/dev/null || echo unknown)"
-    ui_line "operator CLI:         ${worker_cli_ver:-not installed}"
-    ui_line "host-config timer:    $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
-    ui_section "Verify from the control plane"
-    ui_line "kubectl get nodes"
-  fi
+  case "$BOOTSTRAP_MODE" in
+    create) run_create_cluster ;;
+    join)
+      if [[ "$NODE_ROLE" == "server" ]]; then
+        run_join_server
+      else
+        run_join_worker
+      fi
+      ;;
+    *) error "internal: unresolved bootstrap mode '${BOOTSTRAP_MODE}'" ;;
+  esac
 
   marker_set "bootstrap-complete"
   # Last thing on screen. Carries the warning/error tally, so a run that

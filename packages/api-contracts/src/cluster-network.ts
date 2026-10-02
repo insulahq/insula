@@ -106,6 +106,9 @@ export const pendingPeerSchema = z.object({
   ip: bareIpString,
   /** spec.hostname — operator hint, not used by reconciler. */
   hostname: z.string().max(253).default(''),
+  /** spec.role — the `--join-as` value of the generated JOIN command
+   *  (`insula bootstrap --join-as <role> --server <ip> --token <t>`). Not
+   *  used by the reconciler. A server join adds an etcd member: grow 1 → 3. */
   role: z.enum(['server', 'worker']),
   ttlSeconds: z.number().int().min(60).max(86400),
   addedBy: z.string().max(200).default(''),
@@ -139,26 +142,77 @@ export type CreatePendingPeerRequest = z.infer<typeof createPendingPeerRequestSc
 
 // ─── Bootstrap command ────────────────────────────────────────────────────
 
-/** Returned by GET /admin/cluster/bootstrap-command/:name. The command is
- *  the operator's paste-ready bootstrap.sh invocation for the new node.
- *  The platform-api already knows the existing cluster's join-server IP
- *  (one of the existing nodes' InternalIPs) and join-token (k3s server
- *  node-token, fetched at request time). */
+/** Where a join step runs. Every step runs on the NEW node, except reading
+ *  the cluster's server token — only an existing server holds it. */
+export const bootstrapStepHostSchema = z.enum(['new-node', 'existing-server']);
+export type BootstrapStepHost = z.infer<typeof bootstrapStepHostSchema>;
+
+/** One shell step of the join procedure, run as root on `runOn`. */
+export const bootstrapStepSchema = z.object({
+  /** Stable key: `server-token` | `download` | `verify-install` | `join`. */
+  id: z.string(),
+  title: z.string(),
+  runOn: bootstrapStepHostSchema,
+  /** Shell to paste (bash, as root). May span several lines. */
+  command: z.string(),
+  /** One operator hint shown under the step, or null. */
+  note: z.string().nullable(),
+});
+export type BootstrapStep = z.infer<typeof bootstrapStepSchema>;
+
+/** How the join step authenticates to the cluster.
+ *   bootstrap  — a short-lived k3s agent bootstrap token minted for this
+ *                pre-enrolment (workers). Already embedded in the join step;
+ *                revoked with the pre-enrolment, expires at `expiresAt`.
+ *   node-token — the cluster's server token. A SERVER join needs it (k3s
+ *                bootstrap tokens join agents only), and the platform never
+ *                serves it: the `server-token` step reads it on an existing
+ *                server and the join step prompts for it. Also the fallback
+ *                for a worker when minting failed (see `notes`). */
+export const joinTokenInfoSchema = z.object({
+  kind: z.enum(['bootstrap', 'node-token']),
+  /** bootstrap only — the public token id (`k3s token list` shows it). */
+  tokenId: z.string().nullable(),
+  /** bootstrap only — when k3s deletes the token (ISO-8601). */
+  expiresAt: z.string().datetime().nullable(),
+});
+export type JoinTokenInfo = z.infer<typeof joinTokenInfoSchema>;
+
+/** Returned by POST /admin/cluster/bootstrap-command/:name (POST: it may
+ *  mint a join token). The steps run ON THE NEW NODE as root: download the
+ *  `insula` CLI for the cluster's own release, verify its signature against
+ *  the cluster's release key, install it, then run the `insula bootstrap`
+ *  JOIN. Node-scoped flags only — never --domain, --env or --acme-*
+ *  (cluster-scoped; bootstrap.sh rejects them on a join). */
 export const bootstrapCommandResponseSchema = z.object({
-  /** The peer-firewall-add break-glass step the operator may need to run
-   *  on each existing peer if the reconciler hasn't propagated the
-   *  pending_peers entry yet. Optional — most operators won't need it. */
-  preAuthCommand: z.string().nullable(),
-  /** The full bootstrap.sh command to run on the NEW node. Includes
-   *  --join-as, --server, --token, --domain, --acme-email, and any
-   *  --allow-source the operator should seed. */
+  /** Ordered steps. `runOn: existing-server` steps come first. */
+  steps: z.array(bootstrapStepSchema).min(1),
+  /** Every `new-node` step as ONE paste-safe block: a bash subshell that
+   *  stops at the first failure, so an unverified binary is never run. */
+  script: z.string(),
+  /** The join step's command: the `insula bootstrap --join-as …` line (for
+   *  a node-token join, preceded by the hidden `read` of the token). */
   bootstrapCommand: z.string(),
-  /** Echo of the inputs for the UI to display alongside the command. */
+  /** The existing server the join targets (`--server`, an IPv4 InternalIP). */
   serverIp: z.string(),
   /** Role hint from spec.role. */
   role: z.enum(['server', 'worker']),
   /** The new node's IP from spec.ip. */
   nodeIp: z.string(),
+  /** The release the CLI download is pinned to — the cluster's version
+   *  (a newer CLI would install a different k3s than the cluster runs). */
+  platformVersion: z.string(),
+  /** True when the cluster runs IPv4+IPv6 — the join carries --dual-stack. */
+  dualStack: z.boolean(),
+  joinToken: joinTokenInfoSchema,
+  /** Operator caution for a SERVER join that leaves an even etcd member
+   *  count (above all 1 → 2, which is less available than one server).
+   *  Null for workers and for joins that reach an odd count. Optional so an
+   *  older platform-api that omits it still satisfies the type. */
+  warning: z.string().nullable().optional(),
+  /** Further cautions the operator must read before running the steps
+   *  (private-network underlay, IPv6-only pre-enrolment, mint fallback). */
+  notes: z.array(z.string()),
 });
 export type BootstrapCommandResponse = z.infer<typeof bootstrapCommandResponseSchema>;
 

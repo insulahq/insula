@@ -188,3 +188,20 @@ export const bulkDomainActionSchema = z.object({
   action: z.enum(['verify', 'delete']),
 });
 export type BulkDomainAction = z.infer<typeof bulkDomainActionSchema>;
+
+// ─── Refresh route DNS ─────────────────────────────────────────────────
+//
+// POST /tenants/:tenantId/domains/:domainId/refresh-route-dns. 409
+// DNS_MODE_NOT_PRIMARY when the domain is not in primary mode.
+
+export const refreshRouteDnsResultSchema = z.object({
+  /** Distinct route hostnames on the domain, www companions included. */
+  hostnames: z.number().int().nonnegative(),
+  /** Hostnames whose address records were provisioned again. */
+  created: z.number().int().nonnegative(),
+  /** Platform-owned address records removed before re-provisioning. */
+  removed: z.number().int().nonnegative(),
+  /** One entry per hostname the refresh could not complete. */
+  failures: z.array(z.object({ hostname: z.string(), detail: z.string() })),
+});
+export type RefreshRouteDnsResult = z.infer<typeof refreshRouteDnsResultSchema>;

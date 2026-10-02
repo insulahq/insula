@@ -3,19 +3,10 @@ import { randomUUID } from 'crypto';
 import { tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { BulkTenantItemResult, BulkTenantResult } from '@insula/api-contracts';
 
-interface PerTenantResult {
-  readonly id: string;
-  /** Transition row id when the cascade was dispatched. null on error/skip. */
-  readonly transitionId: string | null;
-  readonly error?: string;
-}
-
-interface BulkResult {
-  readonly bulkOpId: string;
-  readonly succeeded: readonly PerTenantResult[];
-  readonly failed: readonly PerTenantResult[];
-}
+type PerTenantResult = BulkTenantItemResult;
+type BulkResult = BulkTenantResult;
 
 /**
  * Bulk status change. Each per-tenant transition is dispatched through
@@ -45,7 +36,7 @@ export async function bulkUpdateTenantStatus(
     db,
     bulkOpId,
     action === 'suspend' ? 'tenant.suspend.bulk' : 'tenant.reactivate.bulk',
-    `${action} ${tenantIds.length} tenants`,
+    `${action} ${tenantCountLabel(tenantIds.length)}`,
     tenantIds.length,
     triggeredByUserId ?? null,
   );
@@ -173,7 +164,7 @@ export async function bulkDeleteTenants(
     db,
     bulkOpId,
     'tenant.delete.bulk',
-    `delete ${tenantIds.length} tenants`,
+    `delete ${tenantCountLabel(tenantIds.length)}`,
     tenantIds.length,
     triggeredByUserId ?? null,
   );
@@ -245,6 +236,11 @@ export async function bulkDeleteTenants(
 }
 
 // ─── Task Tracker fan-out helpers ─────────────────────────────────────────
+
+/** The admin panel sends one tenant per request, so the singular is common. */
+function tenantCountLabel(count: number): string {
+  return `${count} tenant${count === 1 ? '' : 's'}`;
+}
 
 async function createBulkParentTask(
   db: Database,

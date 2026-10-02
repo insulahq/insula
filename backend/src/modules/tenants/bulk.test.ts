@@ -26,6 +26,14 @@ vi.mock('../tenant-lifecycle/registry/index.js', () => ({
 vi.mock('../tenant-lifecycle/bulk-tag.js', () => ({
   tagBulkOpOnLatestTransition: tagSpy,
 }));
+const { startTaskSpy } = vi.hoisted(() => ({
+  startTaskSpy: vi.fn(async (_db: unknown, _opts: { label: string }) => ({ id: 'task-1' })),
+}));
+vi.mock('../tasks/service.js', () => ({
+  start: startTaskSpy,
+  progress: vi.fn(async () => undefined),
+  finish: vi.fn(async () => undefined),
+}));
 
 import { bulkUpdateTenantStatus, bulkDeleteTenants } from './bulk.js';
 
@@ -107,6 +115,24 @@ describe('bulkUpdateTenantStatus', () => {
     expect(result.succeeded).toHaveLength(0);
     expect(result.failed).toHaveLength(0);
     expect(applySuspendedSpy).not.toHaveBeenCalled();
+  });
+
+  // The admin panel sends one tenant per request, so the task label has to
+  // read right in the singular.
+  it('labels the task-center row with a correctly pluralised tenant count', async () => {
+    startTaskSpy.mockClear();
+    const db = makeDb(new Map([
+      ['c1', { id: 'c1', status: 'active', kubernetesNamespace: 'tenant-c1' }],
+      ['c2', { id: 'c2', status: 'active', kubernetesNamespace: 'tenant-c2' }],
+    ]));
+    await bulkUpdateTenantStatus(db as never, ['c1'], 'suspend', fakeK8s, 'user-1');
+    await bulkUpdateTenantStatus(db as never, ['c1', 'c2'], 'reactivate', fakeK8s, 'user-1');
+    await bulkDeleteTenants(db as never, ['c2'], fakeK8s, 'user-1');
+    expect(startTaskSpy.mock.calls.map(([, opts]) => String(opts.label))).toEqual([
+      'suspend 1 tenant',
+      'reactivate 2 tenants',
+      'delete 1 tenant',
+    ]);
   });
 
   it('cascade exception: reports per-tenant failure, does not abort batch', async () => {

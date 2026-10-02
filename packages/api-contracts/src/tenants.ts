@@ -354,3 +354,23 @@ export const bulkDeleteTenantsSchema = z.object({
   tenant_ids: z.array(z.string().min(1).max(36)).min(1),
 });
 export type BulkDeleteTenants = z.infer<typeof bulkDeleteTenantsSchema>;
+
+const bulkTenantItemResultSchema = z.object({
+  id: z.string(),
+  /** Lifecycle transition the request dispatched; null on error or skip. */
+  transitionId: z.string().nullable(),
+  error: z.string().optional(),
+});
+export type BulkTenantItemResult = z.infer<typeof bulkTenantItemResultSchema>;
+
+/**
+ * Response of POST and DELETE /admin/tenants/bulk. `bulkOpId` is stamped on
+ * every transition the call dispatched, so
+ * GET /admin/lifecycle/bulk-ops/:bulkOpId returns their hook runs.
+ */
+export const bulkTenantResultSchema = z.object({
+  bulkOpId: z.string(),
+  succeeded: z.array(bulkTenantItemResultSchema),
+  failed: z.array(bulkTenantItemResultSchema),
+});
+export type BulkTenantResult = z.infer<typeof bulkTenantResultSchema>;
