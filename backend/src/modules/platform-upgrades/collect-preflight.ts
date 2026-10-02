@@ -9,6 +9,7 @@ import { tenantLifecycleTransitions, nodeHealthState } from '../../db/schema.js'
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PreflightFacts } from './preflight.js';
+import { readFluxSuspension } from './flux-repin.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 const CNPG_NS = 'platform';
@@ -144,12 +145,13 @@ async function freshestBackupAgeHours(k8s: K8sClients, nowMs: number): Promise<n
 }
 
 export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs: number): Promise<PreflightFacts> {
-  const [cnpg, lhAtRisk, inFlight, disk, backupAge] = await Promise.all([
+  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended] = await Promise.all([
     cnpgReady(k8s),
     longhornAtRiskVolumes(k8s),
     inFlightTransitions(db),
     nodeDiskFacts(db),
     freshestBackupAgeHours(k8s, nowMs),
+    readFluxSuspension(k8s),
   ]);
   return {
     environment: ENVIRONMENT,
@@ -160,5 +162,6 @@ export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs
     maxDiskUsedPct: disk.maxDiskUsedPct,
     nodesWithDiskPressure: disk.nodesWithDiskPressure,
     freshestBackupAgeHours: backupAge,
+    fluxSuspended,
   };
 }

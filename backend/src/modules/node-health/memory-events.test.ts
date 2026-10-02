@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  classifyEviction,
   indexProbeKills,
   collectOomKilledContainers,
   normalizeMemoryEvents,
-  summarizeForNotification,
   type RawMemoryEvent,
   type RawPod,
 } from './memory-events.js';
+import type { OomWitness } from './oom-witness.js';
 
 const NOW = new Date('2026-07-25T12:00:00Z');
 
@@ -46,6 +47,8 @@ describe('normalizeMemoryEvents', () => {
       namespace: 'tenant-tenant1',
       podName: 'web-abc123',
       systemWorkload: false,
+      // The fixture message names no resource the kubelet uses — so no claim.
+      cause: 'other',
     });
     const oom = out.find((e) => e.kind === 'system-oom');
     expect(oom).toMatchObject({
@@ -54,6 +57,7 @@ describe('normalizeMemoryEvents', () => {
       namespace: null,
       podName: null,
       systemWorkload: true,
+      cause: 'node-oom',
     });
   });
 
@@ -77,6 +81,19 @@ describe('normalizeMemoryEvents', () => {
     expect(out).toHaveLength(0);
   });
 
+  it('records the resource the kubelet named on each eviction', () => {
+    const out = normalizeMemoryEvents([
+      evictedEvent({ uid: 'm', message: 'The node was low on resource: memory. Threshold quantity: 256Mi, available: 101Mi.' }),
+      evictedEvent({ uid: 'd', message: 'The node was low on resource: ephemeral-storage. Threshold quantity: 10%.' }),
+      evictedEvent({ uid: 's', message: 'Pod ephemeral local storage usage exceeds the total limit of containers 1Mi. ' }),
+    ], [], NOW);
+    expect(out.map((e) => [e.dedupeKey, e.cause])).toEqual([
+      ['m:1', 'node-memory-pressure'],
+      ['d:1', 'node-disk-pressure'],
+      ['s:1', 'pod-storage-limit'],
+    ]);
+  });
+
   it('SystemOOM listed among evictions (and vice versa) is not double-counted', () => {
     // Defensive: each list is reason-filtered independently.
     const out = normalizeMemoryEvents([oomEvent()], [evictedEvent()], NOW);
@@ -84,84 +101,10 @@ describe('normalizeMemoryEvents', () => {
   });
 });
 
-describe('summarizeForNotification', () => {
-  it('groups by node and severity class', () => {
-    const events = normalizeMemoryEvents(
-      [
-        evictedEvent({ uid: 'e1', pod: 'a', ns: 'tenant-t1', host: 'worker' }),
-        evictedEvent({ uid: 'e2', pod: 'b', ns: 'tenant-t2', host: 'worker' }),
-        evictedEvent({ uid: 'e3', pod: 'platform-api-x', ns: 'platform', host: 'staging1' }),
-      ],
-      [oomEvent({ uid: 'o1', node: 'staging1' })],
-      NOW,
-    );
-    const summaries = summarizeForNotification(events);
-    expect(summaries).toHaveLength(2);
-
-    const worker = summaries.find((s) => s.nodeName === 'worker');
-    expect(worker).toMatchObject({ severity: 'warning' });
-    expect(worker?.summary).toContain('2 tenant pod(s) evicted');
-
-    const staging1 = summaries.find((s) => s.nodeName === 'staging1');
-    expect(staging1).toMatchObject({ severity: 'critical' });
-    expect(staging1?.summary).toContain('kernel SystemOOM (1 event)');
-    expect(staging1?.summary).toContain('1 SYSTEM pod(s) evicted');
-  });
-
-  it('returns nothing for an empty batch', () => {
-    expect(summarizeForNotification([])).toHaveLength(0);
-  });
-
-  it('names the tenant, pod, and container, and gives an action path + advice', () => {
-    const events = collectOomKilledContainers(
-      [oomPod({ uid: 'u1', ns: 'tenant-acme', pod: 'acme-web-7d9', container: 'app', restarts: 3, node: 'sv1' })],
-      NOW,
-    );
-    const [s] = summarizeForNotification(events, (ns) => (ns === 'tenant-acme' ? 'Acme Corp' : undefined));
-    // WHO: resolved tenant display name, not the raw namespace or a bare count.
-    expect(s.summary).toContain('tenant "Acme Corp"');
-    expect(s.summary).toContain('pod acme-web-7d9');
-    expect(s.summary).toContain('container app');
-    // Action path + advice — the thing the old count-only summary lacked.
-    expect(s.summary).toContain('Monitoring -> Node health -> Memory events');
-    expect(s.summary.toLowerCase()).toContain('plan/memory limit');
-    // And it must NOT be the old identity-free phrasing.
-    expect(s.summary).not.toMatch(/^\d+ tenant container\(s\) OOM-killed at their limit$/);
-  });
-
-  it('falls back to the namespace when no tenant name resolves', () => {
-    const events = collectOomKilledContainers([oomPod({ ns: 'tenant-ghost', pod: 'p1', container: 'c1' })], NOW);
-    const [s] = summarizeForNotification(events); // no resolver
-    expect(s.summary).toContain('tenant "tenant-ghost"');
-  });
-
-  it('names up to MAX_NAMED then summarizes the rest as "+N more"', () => {
-    const pods = Array.from({ length: 5 }, (_, i) =>
-      oomPod({ uid: `u${i}`, ns: `tenant-t${i}`, pod: `pod-${i}`, container: 'app', node: 'sv1' }));
-    const events = collectOomKilledContainers(pods, NOW);
-    const [s] = summarizeForNotification(events, (ns) => ns.replace('tenant-', 'Tenant '));
-    expect(s.summary).toContain('5 tenant container(s) OOM-killed at their memory limit');
-    expect(s.summary).toContain('+2 more'); // 5 named-capped at 3
-    expect(s.summary).toContain('pod-0');
-    expect(s.summary).not.toContain('pod-4'); // beyond the cap
-  });
-
-  it('critical (SYSTEM) events use the raw namespace and an investigate-now advice', () => {
-    const events = collectOomKilledContainers(
-      [oomPod({ ns: 'platform', pod: 'platform-api-x', container: 'api', node: 'sv1' })],
-      NOW,
-    );
-    const [s] = summarizeForNotification(events, () => 'should-not-be-used');
-    expect(s.severity).toBe('critical');
-    expect(s.summary).toContain('platform (container api, pod platform-api-x)');
-    expect(s.summary.toLowerCase()).toContain('investigate now');
-  });
-});
-
 function oomPod(overrides: Partial<{
   uid: string; pod: string; ns: string; node: string; container: string;
   restarts: number; reason: string; exitCode: number; finishedAt: string; terminal: boolean;
-  deletionTimestamp: string; podReason: string;
+  deletionTimestamp: string; podReason: string; labels: Record<string, string>;
 }> = {}): RawPod {
   const term = {
     reason: overrides.reason ?? 'OOMKilled',
@@ -173,6 +116,7 @@ function oomPod(overrides: Partial<{
       uid: overrides.uid ?? 'pod-uid-1',
       name: overrides.pod ?? 'web-x',
       namespace: overrides.ns ?? 'tenant-t1',
+      ...(overrides.labels ? { labels: overrides.labels } : {}),
       ...(overrides.deletionTimestamp ? { deletionTimestamp: overrides.deletionTimestamp } : {}),
     },
     spec: { nodeName: overrides.node ?? 'worker' },
@@ -200,7 +144,11 @@ describe('collectOomKilledContainers', () => {
       systemWorkload: false,
     });
     expect(e?.dedupeKey).toBe(`oomk:pod-uid-1:app:1:${new Date('2026-07-25T11:00:00Z').getTime()}`);
-    expect(e?.message).toContain('OOM-killed at its memory limit');
+    // The kubelet's OOMKilled alone cannot say whether the pod's own limit or
+    // a node-wide OOM did it — so the record does not claim "at its limit".
+    expect(e?.cause).toBe('oom');
+    expect(e?.message).toContain('OOM-killed');
+    expect(e?.message).not.toContain('at its memory limit');
   });
 
   it('records a terminal-state kill (restartPolicy Never)', () => {
@@ -213,20 +161,27 @@ describe('collectOomKilledContainers', () => {
     expect(e?.systemWorkload).toBe(true);
   });
 
+  it('counts a platform-sized pod in a TENANT namespace as platform', () => {
+    // The file manager lives in the tenant namespace but is sized by the
+    // platform — "raise the tenant's plan" would be wrong advice for it.
+    const [e] = collectOomKilledContainers(
+      [oomPod({ ns: 'tenant-t1', pod: 'file-manager-x', labels: { 'platform.io/system': 'true' } })], NOW);
+    expect(e).toMatchObject({ systemWorkload: true, platformManaged: true });
+  });
+
   it('includes Error/137 but marks it unconfirmed, never as an OOM', () => {
     const [e] = collectOomKilledContainers([oomPod({ reason: 'Error', exitCode: 137 })], NOW);
     expect(e?.kind).toBe('container-oom');
-    expect(e?.oomConfidence).toBe('unconfirmed');
+    expect(e?.cause).toBe('unconfirmed');
     expect(e?.message).toContain('cause unconfirmed');
     // The old wording asserted an OOM it could not prove, which is how an
     // admin came to be told to raise a limit on a container at 13% of it.
     expect(e?.message).not.toContain('OOM-killed at its memory limit');
   });
 
-  it('marks an explicit OOMKilled as confirmed', () => {
+  it("takes an explicit OOMKilled at the kubelet's word", () => {
     const [e] = collectOomKilledContainers([oomPod({ reason: 'OOMKilled' })], NOW);
-    expect(e?.oomConfidence).toBe('confirmed');
-    expect(e?.message).toContain('OOM-killed at its memory limit');
+    expect(e?.cause).toBe('oom');
   });
 
   it('DROPS an unconfirmed exit-137 on a TERMINATING pod (rollout SIGKILL, not an OOM)', () => {
@@ -249,7 +204,7 @@ describe('collectOomKilledContainers', () => {
       NOW,
     );
     expect(events).toHaveLength(1);
-    expect(events[0]?.oomConfidence).toBe('confirmed');
+    expect(events[0]?.cause).toBe('oom');
   });
 
   it('ignores non-OOM terminations and stale kills', () => {
@@ -271,17 +226,6 @@ describe('collectOomKilledContainers', () => {
       },
     };
     expect(collectOomKilledContainers([both], NOW)).toHaveLength(1);
-  });
-
-  it('summaries count container-ooms separately per class', () => {
-    const events = collectOomKilledContainers([
-      oomPod({ uid: 'u1', ns: 'tenant-t1', node: 'worker' }),
-      oomPod({ uid: 'u2', ns: 'platform', pod: 'platform-api-x', node: 'staging1' }),
-    ], NOW);
-    const summaries = summarizeForNotification(events);
-    expect(summaries.find((s) => s.nodeName === 'worker')?.summary).toContain('1 tenant container(s) OOM-killed');
-    expect(summaries.find((s) => s.nodeName === 'staging1')?.summary).toContain('1 SYSTEM container(s) OOM-killed');
-    expect(summaries.find((s) => s.nodeName === 'staging1')?.severity).toBe('critical');
   });
 
 });
@@ -315,7 +259,7 @@ describe('collectOomKilledContainers — node shutdown', () => {
       NOW,
     );
     expect(events).toHaveLength(1);
-    expect(events[0].oomConfidence).toBe('confirmed');
+    expect(events[0].cause).toBe('oom');
   });
 
   it('KEEPS an inferred kill on a pod that is NOT shutting down', () => {
@@ -324,7 +268,7 @@ describe('collectOomKilledContainers — node shutdown', () => {
       NOW,
     );
     expect(events).toHaveLength(1);
-    expect(events[0].oomConfidence).toBe('unconfirmed');
+    expect(events[0].cause).toBe('unconfirmed');
   });
 });
 
@@ -380,7 +324,7 @@ describe('probe-restart exclusion', () => {
       indexProbeKills([probeEvent]),
     );
     expect(events).toHaveLength(1);
-    expect(events[0].oomConfidence).toBe('confirmed');
+    expect(events[0].cause).toBe('oom');
   });
 
   it('KEEPS an inferred kill when the probe event is for a DIFFERENT container', () => {
@@ -410,5 +354,119 @@ describe('probe-restart exclusion', () => {
       NOW,
     );
     expect(events).toHaveLength(1);
+  });
+});
+
+// ── the kernel's word (security-probe OOM witness) ──
+//
+// Exit 137 cannot tell an OOM from any other SIGKILL, in either direction. The
+// witness's memory.events counters can. These are the two real cases that
+// motivated it.
+describe('collectOomKilledContainers — kernel witness', () => {
+  const FINISHED = '2026-07-25T11:00:00Z';
+  const T = Date.parse(FINISHED);
+
+  function witness(pods: OomWitness['pods']): Map<string, OomWitness> {
+    return new Map([['worker', {
+      version: 1, available: true, reason: null, inotify: true,
+      startedAtMs: T - 86_400_000, rescannedAtMs: T + 600_000, overflowsMs: [], pods,
+    }]]);
+  }
+  const killedAt = (oom: number) => ({
+    firstSeenMs: T - 3_600_000, lastReadMs: T + 600_000, watched: true, oom, oomKill: 1, oomGroupKill: 1,
+    increases: [{ afterMs: T - 30_000, atMs: T - 200, oom, oomKill: 1, oomGroupKill: 1 }],
+  });
+
+  it("confirms a cgroup OOM the kubelet only reported as Error/137 (production's vmsingle)", () => {
+    const [e] = collectOomKilledContainers(
+      [oomPod({ ns: 'monitoring', pod: 'vmsingle-x', reason: 'Error', exitCode: 137, finishedAt: FINISHED })],
+      NOW, new Map(), witness({ 'pod-uid-1': killedAt(1) }));
+    expect(e?.cause).toBe('memory-limit');
+    expect(e?.message).toContain('OOM-killed at its memory limit (kernel-confirmed)');
+  });
+
+  it('records nothing for an exit 137 the kernel shows was not memory (DEV exit-137 pod)', () => {
+    const quiet = { firstSeenMs: T - 3_600_000, lastReadMs: T + 600_000, watched: true };
+    expect(collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, terminal: true, restarts: 0, finishedAt: FINISHED })],
+      NOW, new Map(), witness({ 'pod-uid-1': quiet }))).toEqual([]);
+  });
+
+  it('says the node did it when oom_kill rose without oom', () => {
+    const [e] = collectOomKilledContainers([oomPod({ finishedAt: FINISHED })],
+      NOW, new Map(), witness({ 'pod-uid-1': killedAt(0) }));
+    expect(e?.cause).toBe('node-oom');
+    expect(e?.message).toContain('not the container');
+  });
+
+  it('KEEPS a kernel-confirmed OOM on a draining pod and on a probe-killed one', () => {
+    // A container can genuinely hit its limit while being drained or while
+    // failing a probe; the kernel's word beats both exclusions.
+    const probe = indexProbeKills([{
+      reason: 'Killing', message: 'Container app failed liveness probe, will be restarted',
+      involvedObject: { kind: 'Pod', namespace: 'tenant-t1', name: 'web-x' }, eventTime: FINISHED,
+    }]);
+    const w = witness({ 'pod-uid-1': killedAt(1) });
+    expect(collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, deletionTimestamp: FINISHED, finishedAt: FINISHED })], NOW, new Map(), w,
+    )[0]?.cause).toBe('memory-limit');
+    expect(collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, finishedAt: FINISHED })], NOW, probe, w,
+    )[0]?.cause).toBe('memory-limit');
+  });
+
+  it("one container's kernel-confirmed kill is not pinned on its sibling (multi-container pod)", () => {
+    const APP = 'a1'.repeat(32);
+    const SIDE = 'b2'.repeat(32);
+    const p: RawPod = {
+      metadata: { uid: 'pod-uid-1', name: 'web-x', namespace: 'tenant-t1' },
+      spec: { nodeName: 'worker' },
+      status: {
+        containerStatuses: [
+          { name: 'app', restartCount: 1, lastState: { terminated: { reason: 'OOMKilled', exitCode: 137, finishedAt: FINISHED, containerID: `containerd://${APP}` } } },
+          { name: 'sidecar', restartCount: 1, lastState: { terminated: { reason: 'Error', exitCode: 137, finishedAt: '2026-07-25T11:01:00Z', containerID: `containerd://${SIDE}` } } },
+        ],
+      },
+    };
+    const w = witness({ 'pod-uid-1': {
+      ...killedAt(1), increases: [{ afterMs: T - 30_000, atMs: T - 200, oom: 1, oomKill: 1, oomGroupKill: 1, containerIds: [APP] }],
+    } });
+    const out = collectOomKilledContainers([p], NOW, new Map(), w);
+    expect(out.map((e) => [e.containerName, e.cause])).toEqual([['app', 'memory-limit']]);
+  });
+
+  it('waits for a witness snapshot that covers the death, then falls back after 10 min', () => {
+    const staleWitness = new Map([['worker', {
+      ...witness({ 'pod-uid-1': killedAt(1) }).get('worker')!, snapshotAtMs: T - 7_000, rescannedAtMs: T - 20_000,
+    }]]);
+    const pod = [oomPod({ reason: 'Error', exitCode: 137, finishedAt: FINISHED })];
+    // Two minutes after the death: no record — the first record is final.
+    expect(collectOomKilledContainers(pod, new Date(T + 120_000), new Map(), staleWitness)).toEqual([]);
+    // A witness that never catches up must not swallow the kill for ever.
+    const [late] = collectOomKilledContainers(pod, new Date(T + 11 * 60_000), new Map(), staleWitness);
+    expect(late?.cause).toBe('unconfirmed');
+  });
+
+  it("uses the witness of the pod's own node only", () => {
+    const [e] = collectOomKilledContainers([oomPod({ node: 'other-node', reason: 'Error', exitCode: 137, finishedAt: FINISHED })],
+      NOW, new Map(), witness({ 'pod-uid-1': killedAt(1) }));
+    expect(e?.cause).toBe('unconfirmed');
+  });
+});
+
+describe('classifyEviction', () => {
+  it.each([
+    ['The node was low on resource: memory. Threshold quantity: 256Mi, available: 101Mi. ', 'node-memory-pressure'],
+    ['The node had condition: [MemoryPressure]. ', 'node-memory-pressure'],
+    ['The node was low on resource: ephemeral-storage. Threshold quantity: 10%. ', 'node-disk-pressure'],
+    ['The node was low on resource: inodes. ', 'node-disk-pressure'],
+    ['The node had condition: [DiskPressure]. ', 'node-disk-pressure'],
+    ['The node was low on resource: pids. ', 'node-pid-pressure'],
+    ['Pod ephemeral local storage usage exceeds the total limit of containers 1Mi. ', 'pod-storage-limit'],
+    ['Container app exceeded its local ephemeral storage limit "1Mi". ', 'pod-storage-limit'],
+    ['Usage of EmptyDir volume "cache" exceeds the limit "1Mi". ', 'pod-storage-limit'],
+    ['Pod was evicted: something new', 'other'],
+  ])('%s -> %s', (message, cause) => {
+    expect(classifyEviction(message)).toBe(cause);
   });
 });

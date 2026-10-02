@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import TenantIssuesChip from '@/components/tenants/TenantIssuesChip';
+import PlacementCell from '@/components/tenants/PlacementCell';
 import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import TenantHealthChip from '@/components/outage/TenantHealthChip';
 import PaginationBar from '@/components/ui/PaginationBar';
@@ -280,25 +281,7 @@ export default function TenantsListTab() {
                       <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="memory" tenantStatus={tenant.status} />
                       <MetricsCell metrics={metricsMap[tenant.id]} loading={metricsLoading} resource="storage" tenantStatus={tenant.status} />
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
-                        {tenant.nodeName ? (
-                          <span
-                            className="font-mono text-gray-700 dark:text-gray-300"
-                            title={`Pinned to node ${tenant.nodeName}`}
-                          >
-                            {tenant.nodeName}
-                          </span>
-                        ) : (
-                          // Not pinned is NOT the same as unknown. A bare "—"
-                          // read as missing data, which is what the column
-                          // actually showed for everyone while nodeName was
-                          // being stripped by the response schema.
-                          <span
-                            className="italic text-gray-500 dark:text-gray-400"
-                            title="No node pin — the Kubernetes scheduler places this tenant's workloads"
-                          >
-                            auto
-                          </span>
-                        )}
+                        <PlacementCell nodeName={tenant.nodeName} placement={tenant.placement} />
                       </td>
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
                         {tenant.storageTier === 'ha' ? (

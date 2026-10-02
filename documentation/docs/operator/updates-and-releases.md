@@ -56,7 +56,11 @@ On **Platform Settings → Upgrades** (`super_admin`):
    *update available*.
 2. **Pre-flight checks** — a live list of gates (pass / warn / fail). Click
    **refresh** to re-run them. If any **blocking** check fails, the Apply button
-   stays disabled until you resolve it.
+   stays disabled until you resolve it. **Flux reconciling the platform** fails
+   when the platform Kustomization or its git source is suspended (for example
+   after a manual rollback) — the upgrade only re-pins the release Flux applies,
+   so it would change nothing. Resume them first:
+   `flux resume source git <name>` and `flux resume kustomization platform`.
 3. **Host migrations** — shows whether the release carries host-level migration
    scripts and whether they will run on each node.
 4. **Run upgrade** — leave the version box blank to take the latest, or type a

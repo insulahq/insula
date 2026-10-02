@@ -96,6 +96,20 @@ describe('resolveActiveMailNode — order', () => {
     expect(await deriveActiveNodeFromMailPvc(core as never)).toBe('w1');
   });
 
+  it('prefers the PVC-bound node over a stale stored value when no pod runs (abandoned failover)', async () => {
+    const { db } = dbStub('sv1');
+    const r = await resolveActiveMailNode(db, coreStub([], { selectedNode: 'sv2' }) as never, { knownNodes: KNOWN });
+    expect(r).toEqual({ node: 'sv2', source: 'pvc' });
+  });
+
+  it('uses a caller-supplied stored value instead of reading the settings row', async () => {
+    const { db } = dbStub('ignored');
+    const select = vi.spyOn(db as unknown as { select: () => unknown }, 'select');
+    const r = await resolveActiveMailNode(db, coreStub([]) as never, { knownNodes: KNOWN, stored: 'w1' });
+    expect(r).toEqual({ node: 'w1', source: 'settings' });
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it('skips a candidate that is not a node of this cluster', async () => {
     const { db } = dbStub('gone-node');
     const r = await resolveActiveMailNode(db, coreStub([{ node: 'old-node' }], { selectedNode: 'sv2' }) as never, { knownNodes: KNOWN });

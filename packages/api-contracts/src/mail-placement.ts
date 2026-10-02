@@ -45,6 +45,13 @@ export const mailMigrationStatusResponseSchema = z.object({
   startedAt: z.string(),
   finishedAt: z.string().nullable(),
   error: z.string().nullable(),
+  // When each step began (migration 0143) and how long it took; the closing
+  // 'done' / 'failed' entry has seconds=null. Empty for runs before 0143.
+  stepTimings: z.array(z.object({
+    step: z.string(),
+    at: z.string(),
+    seconds: z.number().nullable(),
+  })).optional(),
 });
 
 export type MailMigrationStartRequest = z.infer<typeof mailMigrationStartRequestSchema>;

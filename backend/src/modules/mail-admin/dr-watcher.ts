@@ -21,6 +21,8 @@ import { eq, sql } from 'drizzle-orm';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerRestoreBasedFailover } from './migration.js';
+import { resolveActiveMailNode } from './active-node.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { safeTick } from '../../shared/safe-tick.js';
 
 const SETTINGS_ID = 'system';
@@ -76,15 +78,32 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
   try {
     const [settings] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
     if (!settings) return;
-    if (!settings.mailAutoFailoverEnabled) return;
-    if (!settings.mailActiveNode) return;
-
     // Only act in stable states — if already failing-over or failed-over,
-    // leave the state machine alone.
+    // leave the state machine alone. Except a failover whose state machine is
+    // GONE: its run ended (or was reaped) without the watcher's own state ever
+    // leaving 'failing-over', and nothing else ever moves it — auto-failover
+    // stayed dead until someone edited the database. Released even with
+    // auto-failover switched OFF (an operator taking manual control mid-incident
+    // must not freeze the state): releasing starts nothing by itself.
     const drState = settings.mailDrState ?? 'healthy';
+    if (drState === 'failing-over') {
+      await releaseAbandonedFailover(db, log);
+      return;
+    }
+    if (!settings.mailAutoFailoverEnabled) return;
     if (drState !== 'healthy' && drState !== 'degraded') return;
 
-    const nodeReady = await isNodeReady(core, settings.mailActiveNode);
+    // Where mail IS (live pod → its volume → the stored column), recorded when
+    // settled: after a failover the run never finished, the column still named
+    // the dead source while Stalwart served from the standby.
+    const { node: activeNode } = await resolveActiveMailNode(db, core, {
+      persist: true,
+      stored: settings.mailActiveNode ?? null,
+      logger: { warn: (msg: string) => log.warn(msg) },
+    });
+    if (!activeNode) return;
+
+    const nodeReady = await isNodeReady(core, activeNode);
 
     if (!nodeReady) {
       const thresholdSec = settings.mailFailoverThresholdSeconds ?? 300;
@@ -104,7 +123,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
         `) as { rows?: unknown[] };
         if ((cas.rows ?? []).length > 0) {
           log.warn(
-            `Active mail node ${settings.mailActiveNode} is NotReady — entering degraded state (threshold ${thresholdSec}s)`,
+            `Active mail node ${activeNode} is NotReady — entering degraded state (threshold ${thresholdSec}s)`,
           );
         }
         return;
@@ -117,7 +136,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
 
       if (degradedSince < thresholdSec) {
         log.info(
-          `Node ${settings.mailActiveNode} still degraded — ${Math.round(degradedSince)}s / ${thresholdSec}s threshold`,
+          `Node ${activeNode} still degraded — ${Math.round(degradedSince)}s / ${thresholdSec}s threshold`,
         );
         return;
       }
@@ -128,7 +147,8 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       // mail placements (see affinity-patch-mail-stack.yaml). Earlier
       // server-role gating was reverted — the mail-stack
       // affinity now spans both roles, so failover to a worker is fine.
-      const candidates = [settings.mailSecondaryNode, settings.mailTertiaryNode].filter((n): n is string => !!n);
+      const candidates = [settings.mailSecondaryNode, settings.mailTertiaryNode]
+        .filter((n): n is string => !!n && n !== activeNode);
       let targetNode: string | null = null;
       const skipped: string[] = [];
       for (const c of candidates) {
@@ -174,7 +194,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       }
 
       log.warn(
-        `Node ${settings.mailActiveNode} degraded for ${Math.round(degradedSince)}s >= threshold ${thresholdSec}s — ` +
+        `Node ${activeNode} degraded for ${Math.round(degradedSince)}s >= threshold ${thresholdSec}s — ` +
         `triggering auto-failover to ${targetNode}`,
       );
 
@@ -183,17 +203,19 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
         log.warn(`Auto-failover to ${targetNode} complete — state set to failed-over`);
       } catch (err) {
         log.warn('Auto-failover failed — resetting to degraded for next tick retry:', err);
-        await db.update(systemSettings)
+        // Retried across a short DB outage (the dead node may have held the
+        // primary). If it is still lost, releaseAbandonedFailover is the backstop.
+        await withDbRetry(() => db.update(systemSettings)
           .set({ mailDrState: 'degraded' })
-          .where(eq(systemSettings.id, SETTINGS_ID))
-          .catch(() => { /* best-effort */ });
+          .where(eq(systemSettings.id, SETTINGS_ID)))
+          .catch(() => { /* still down — releaseAbandonedFailover picks it up */ });
       }
     } else if (drState === 'degraded') {
       // Node recovered from degraded state before threshold — reset to healthy.
       await db.update(systemSettings)
         .set({ mailDrState: 'healthy' })
         .where(eq(systemSettings.id, SETTINGS_ID));
-      log.info(`Active mail node ${settings.mailActiveNode} recovered — drState reset to healthy`);
+      log.info(`Active mail node ${activeNode} recovered — drState reset to healthy`);
     }
   } catch (err) {
     // Never let a tick crash the interval — log and wait for next cycle.
@@ -203,6 +225,41 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * A run that ended this recently may still be stamping the outcome itself —
+ * through up to two retried writes (withDbRetry, ~2 min each) after the run row
+ * reached 'done'. 5 min outlasts that; the release is a backstop, not a race.
+ */
+const ABANDONED_FAILOVER_GRACE_SECONDS = 300;
+
+/**
+ * 'failing-over' with no mail migration in flight and the last run ended over a
+ * minute ago: the state machine that owned the transition is gone (its process
+ * died, or its outcome writes were lost to a DB outage and the run was reaped).
+ * Hand the decision back to the watcher — 'degraded' keeps the original
+ * detection time, so the next tick either retries at once (node still down) or
+ * returns to healthy (node back, or mail already running elsewhere).
+ */
+async function releaseAbandonedFailover(
+  db: Database,
+  log: { warn: (...args: unknown[]) => void },
+): Promise<void> {
+  const res = await db.execute(sql`
+    UPDATE system_settings
+    SET mail_dr_state = 'degraded'
+    WHERE id = ${SETTINGS_ID} AND mail_dr_state = 'failing-over'
+      AND NOT EXISTS (
+        SELECT 1 FROM mail_migration_runs
+         WHERE state NOT IN ('done', 'failed', 'rolled-back', 'cancelled')
+            OR finished_at > now() - make_interval(secs => ${ABANDONED_FAILOVER_GRACE_SECONDS})
+      )
+    RETURNING id
+  `) as { rows?: unknown[] };
+  if ((res.rows ?? []).length > 0) {
+    log.warn('DR state was stuck at failing-over with no failover running — released to degraded so the watcher decides again');
+  }
+}
 
 async function isNodeReady(core: CoreV1Api, nodeName: string): Promise<boolean> {
   try {

@@ -45,15 +45,25 @@ from, so a chip and the message an operator received cannot disagree:
 | **Mailbox over quota** | a mailbox is at or past 80% — one issue per mailbox, at its highest open threshold |
 | **Subscription expiring** | expiry is within 35 days (critical inside 7) |
 | **Bandwidth capped** | the monthly cap has been reached and traffic is being refused |
+| **Not on its primary node** | the tenant's workloads, its attached volume or its data are on a node other than its primary one — see [Placement](#reading-the-placement-and-expires-columns) |
 
 Click the tenant to see the detail, which names the specific object.
 
 ### Reading the Placement and Expires columns
 
-**Placement** is the node the tenant's workloads are pinned to. Most tenants
-show `auto`, which means no pin is set and Kubernetes schedules them wherever
-there is room — that is the normal state, not a missing value. A node name
-appears once you pin the tenant from **Nodes & storage**.
+**Placement** is the tenant's **primary node** — the node its workloads are
+pinned to and its data lives on. `auto` means no pin is set and Kubernetes
+schedules the tenant wherever there is room — that is a normal state, not a
+missing value. A node name appears once the tenant is pinned (new local-tier
+tenants are pinned automatically at creation).
+
+When a tenant is **not on its primary node**, the column shows where it
+**actually** is, in **red**, with `primary <node>` underneath — hover it for
+what is elsewhere (running on, volume attached on, data on). This happens after
+a storage failover, a node outage, or a pod scheduled onto another node. The
+platform checks every minute; the same fact adds a **Not on its primary node**
+entry to the tenant's issues chip. To resolve it, open the tenant's
+[Placement card](#the-tenant-detail-page).
 
 **Expires** is the subscription expiry date, colour-coded so a lapsing account
 is visible without reading dates:
@@ -133,7 +143,21 @@ buttons (below). Underneath are several cards and a tabbed resource view.
   share model. Saving a share or ceiling writes it; this delivers it to the
   tenant's namespace (see below).
 - **Storage Lifecycle** — current storage state and grow/shrink controls.
-- **Placement** — which node the tenant is pinned to.
+- **Placement** — the tenant's primary node and storage tier, and where it
+  actually runs and keeps its data right now (checked every minute). When
+  those differ, a red **Not on its primary node** banner says what is
+  elsewhere and since when, with two ways out:
+    - **Move back to &lt;primary&gt;** re-pins the tenant to its primary node
+      and restarts its workloads there. Longhorn then copies the tenant's data
+      back — the tenant restarts now, and the copy takes as long as the volume
+      is large.
+    - **Make &lt;current node&gt; the primary node** accepts where it is: the
+      workloads restart once on the same node to pick up the new pin, and no
+      data is copied.
+  Both ask for a second click that says what they will do. Below the banner,
+  **Storage failovers** lists the tenant's recent Longhorn salvages — when a
+  volume lost every replica and was remounted — with where the tenant ran
+  before and after.
 
 A **namespace health banner** appears above Storage Lifecycle only when
 something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).

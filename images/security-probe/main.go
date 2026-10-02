@@ -12,7 +12,9 @@
 //     /host/proc/stat boot time, and presence of fail2ban /
 //     sshguard / unattended-upgrades binaries on the host,
 //  5. WRITES one ConfigMap (security-probe-<node>) in
-//     platform-system with the JSON snapshot at data.snapshot.
+//     platform-system with the JSON snapshot at data.snapshot,
+//  6. and, continuously, witnesses pod memory-cgroup OOM counters
+//     (/host/sys/fs/cgroup, memcg.go), published at data.memcg.
 //
 // Security posture (see daemonset.yaml for the corresponding
 // SecurityContext): readOnlyRootFilesystem, capabilities drop ALL,
@@ -86,12 +88,14 @@ func main() {
 
 	pub := newConfigMapPublisher(clientset, namespace, nodeName)
 	collector := newCollector("/host")
+	witness := newMemcgWitness("/host")
+	go witness.run(ctx)
 
 	slog.Info("security-probe starting",
 		"node", nodeName, "namespace", namespace, "intervalSeconds", interval.Seconds())
 
 	// Kick once at start so the page has data before the first tick.
-	runOnce(ctx, collector, pub, hs)
+	last := runOnce(ctx, collector, pub, witness, hs, nil)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -100,14 +104,31 @@ func main() {
 			slog.Info("security-probe exiting")
 			return
 		case <-t.C:
-			runOnce(ctx, collector, pub, hs)
+			last = runOnce(ctx, collector, pub, witness, hs, nil)
+		case <-witness.changed:
+			// An OOM just happened. Publish the witness now rather than up to a
+			// minute later — the backend will not judge a kill until a snapshot
+			// newer than it is published. A short settle window lets a burst
+			// (every container of a pod, every ancestor cgroup) land as one.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(memcgPublishSettle):
+			}
+			drainSignal(witness.changed)
+			last = runOnce(ctx, collector, pub, witness, hs, last)
 		}
 	}
 }
 
 // runOnce wraps one collect+publish cycle in recover() so a panic in
-// (say) sshd_config parsing doesn't kill the pod.
-func runOnce(ctx context.Context, c *collector, pub *configMapPublisher, hs *healthState) {
+// (say) sshd_config parsing doesn't kill the pod. With `reuse` set it skips
+// the host-posture collection and republishes that snapshot with a fresh
+// OOM witness. Returns the posture snapshot it published.
+func runOnce(
+	ctx context.Context, c *collector, pub *configMapPublisher, witness *memcgWitness, hs *healthState, reuse *Snapshot,
+) (published *Snapshot) {
+	published = reuse
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("probe loop panic",
@@ -115,15 +136,32 @@ func runOnce(ctx context.Context, c *collector, pub *configMapPublisher, hs *hea
 				"stack", string(debug.Stack()))
 		}
 	}()
-	snap, err := c.collect()
-	if err != nil {
-		slog.Warn("collect partial", "err", err)
+	snap := Snapshot{}
+	if reuse != nil {
+		snap = *reuse
+	} else {
+		var err error
+		snap, err = c.collect()
+		if err != nil {
+			slog.Warn("collect partial", "err", err)
+		}
 	}
-	if err := pub.publish(ctx, snap); err != nil {
+	if err := pub.publish(ctx, snap, witness.snapshot()); err != nil {
 		slog.Error("publish", "err", err)
-		return
+		return published
 	}
 	hs.markHealthy(time.Now())
+	return &snap
+}
+
+func drainSignal(ch <-chan struct{}) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
 }
 
 // parseInterval honors PROBE_INTERVAL_SECONDS within [min,max], falls

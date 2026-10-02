@@ -49,6 +49,9 @@ export interface PreflightFacts {
   readonly nodesWithDiskPressure: number | null;
   /** Age of the freshest CNPG backup in hours, or null if none/unknown. */
   readonly freshestBackupAgeHours: number | null;
+  /** Suspended Flux objects the upgrade depends on (`Kind/name`: the platform
+   *  Kustomization, its GitRepository); [] = reconciling, null = unreadable. */
+  readonly fluxSuspended: readonly string[] | null;
 }
 
 const DISK_WARN_PCT = 80;
@@ -139,6 +142,25 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
       label: 'Recent database backup',
       status: stale ? 'warn' : 'pass',
       detail: `freshest backup ${facts.freshestBackupAgeHours}h old${stale ? ` (> ${BACKUP_STALE_HOURS}h — consider a fresh one)` : ''}`,
+    });
+  }
+
+  // 6. Flux is actually reconciling the platform. The upgrade IS a re-pin of the
+  //    platform source; with the Kustomization or its GitRepository suspended
+  //    (the documented manual-rollback step) the re-pin changes nothing, while
+  //    the API answered "Flux is reconciling" and post-flight counted failures
+  //    to abort-recommended without ever naming the cause.
+  if (facts.fluxSuspended === null) {
+    gates.push({ id: 'flux-reconciling', label: 'Flux reconciling the platform', status: 'warn', detail: 'could not read the platform Kustomization / source — check `flux get kustomizations`' });
+  } else {
+    const names = facts.fluxSuspended;
+    gates.push({
+      id: 'flux-reconciling',
+      label: 'Flux reconciling the platform',
+      status: sev(env, names.length > 0),
+      detail: names.length > 0
+        ? `suspended: ${names.join(', ')} — the upgrade would change nothing; resume first (flux resume kustomization / flux resume source git)`
+        : 'platform Kustomization and source reconciling',
     });
   }
 

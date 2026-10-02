@@ -62,7 +62,6 @@ for f in \
   backend/src/modules/deployments/db-manager.ts \
   backend/src/modules/deployments/k8s-deployer.ts \
   backend/src/modules/deployments/routes.ts \
-  backend/src/modules/metrics/oom-scan.ts \
   backend/src/modules/node-health/memory-events.ts
 do
   if ! grep -q "lib/container-termination.js" "$f" 2>/dev/null; then
@@ -105,7 +104,6 @@ for f in \
   backend/src/modules/deployments/db-manager.ts \
   backend/src/modules/deployments/k8s-deployer.ts \
   backend/src/modules/deployments/routes.ts \
-  backend/src/modules/metrics/oom-scan.ts \
   backend/src/modules/node-health/memory-events.ts
 do
   if ! grep -qE '(^|[^A-Za-z0-9_])(isExpectedSigkill|isReplacedPodRecord)\(' "$f" 2>/dev/null; then
@@ -130,7 +128,6 @@ for f in \
   backend/src/modules/deployments/db-manager.ts \
   backend/src/modules/deployments/k8s-deployer.ts \
   backend/src/modules/deployments/routes.ts \
-  backend/src/modules/metrics/oom-scan.ts \
   backend/src/modules/node-health/memory-events.ts
 do
   if ! grep -qE 'reason: +[A-Za-z_][A-Za-z0-9_]*\.status\?\.reason' "$f" 2>/dev/null; then
@@ -160,6 +157,37 @@ fi
 if ! grep -qF "'reason=Killing'" backend/src/modules/node-health/scheduler.ts 2>/dev/null; then
   echo "ci-oom-classification: the node-health reconciler no longer fetches" >&2
   echo "  reason=Killing events, so indexProbeKills() can only ever be empty." >&2
+  fail=1
+fi
+
+# 8) Container kills must be judged against the KERNEL's OOM counters.
+#    Exit 137 cannot tell an OOM from any other SIGKILL, and the kubelet's
+#    OOMKilled is not always set for a real one: production's vmsingle was
+#    OOM-killed (memory.events oom_kill 2) and reported "cause unconfirmed",
+#    while on DEV a container that merely exited 137 was alerted as a possible
+#    OOM. judgeKill() reads the security-probe witness (oom-witness.ts); a
+#    collector that stops calling it silently goes back to guessing.
+if ! grep -E '(^|[^A-Za-z0-9_])judgeKills?\(' "$f" 2>/dev/null | grep -qv 'export function'; then
+  echo "ci-oom-classification: $f no longer calls judgeKills(), so container kills" >&2
+  echo "  are no longer checked against the kernel's OOM counters." >&2
+  fail=1
+fi
+if ! grep -qE '(^|[^A-Za-z0-9_])readOomWitnesses\(' backend/src/modules/node-health/scheduler.ts 2>/dev/null; then
+  echo "ci-oom-classification: the node-health reconciler no longer reads the OOM" >&2
+  echo "  witness, so judgeKill() only ever sees the kubelet's word." >&2
+  fail=1
+fi
+
+# 9) ONE sender per container kill. A second, hourly OOM scan in the metrics
+#    scheduler announced every tenant OOM again, 23 minutes after the first
+#    alert. Only node-health/memory-event-notify.ts may dispatch these.
+senders=$(grep -rln --include=*.ts -E 'notifyAdmin(TenantOom|SystemPodOom)\(' backend/src 2>/dev/null \
+  | grep -v '\.test\.ts$' \
+  | grep -v '^backend/src/modules/notifications/events.ts$' \
+  | grep -v '^backend/src/modules/node-health/memory-event-notify.ts$' || true)
+if [ -n "$senders" ]; then
+  echo "ci-oom-classification: container-kill alerts dispatched outside memory-event-notify.ts:" >&2
+  echo "$senders" | sed 's/^/  /' >&2
   fail=1
 fi
 

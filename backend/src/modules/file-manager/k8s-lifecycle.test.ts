@@ -47,6 +47,76 @@ describe('File Manager K8s Lifecycle', () => {
     });
 
 
+    describe('placement on the tenant data node', () => {
+      // A file manager started for a stopped tenant used to go wherever the
+      // scheduler liked; Longhorn data locality then copied the tenant's whole
+      // volume to that node. It now starts where the data is.
+      const withLonghorn = (replicaNodes: string[]) => {
+        (mockK8s.core as unknown as Record<string, unknown>).readNamespacedPersistentVolumeClaim =
+          vi.fn().mockResolvedValue({ spec: { volumeName: 'pvc-x' } });
+        (mockK8s as unknown as Record<string, unknown>).custom = {
+          listNamespacedCustomObject: vi.fn().mockResolvedValue({
+            items: replicaNodes.map((n) => ({ spec: { nodeID: n }, status: { currentState: 'stopped' } })),
+          }),
+        };
+      };
+      const createdNodeSelector = () => (mockK8s.apps.createNamespacedDeployment as unknown as {
+        mock: { calls: Array<[{ body: { spec: { template: { spec: { nodeSelector?: Record<string, string> } } } } }]> };
+      }).mock.calls[0][0].body.spec.template.spec.nodeSelector;
+      const fullSpec = (replicas: number, nodeSelector?: Record<string, string>) => ({
+        spec: { replicas, template: { spec: {
+          ...(nodeSelector ? { nodeSelector } : {}),
+          volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '256Mi' }, requests: { cpu: '25m', memory: '64Mi' } } }],
+        } } },
+      });
+
+      it('creates a new file manager on the node holding the single replica', async () => {
+        withLonghorn(['node-a']);
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+        expect(createdNodeSelector()).toEqual({ 'kubernetes.io/hostname': 'node-a' });
+      });
+
+      it('an explicit target node still wins', async () => {
+        withLonghorn(['node-a']);
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 0, 'node-c');
+        expect(createdNodeSelector()).toEqual({ 'kubernetes.io/hostname': 'node-c' });
+      });
+
+      it('stays unpinned for an HA volume with replicas on several nodes', async () => {
+        withLonghorn(['node-a', 'node-b']);
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+        expect(createdNodeSelector()).toBeUndefined();
+      });
+
+      it('re-points a scaled-to-zero file manager at the data node in the scale-up patch', async () => {
+        withLonghorn(['node-b']);
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(0, { 'kubernetes.io/hostname': 'node-a' }));
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
+        const patch = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }]> } }).mock.calls[0][0].body;
+        expect(patch).toEqual({ spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } });
+      });
+
+      it('never touches the placement of a RUNNING file manager', async () => {
+        // Some callers (SFTP) reach this while the file manager serves a user;
+        // a pin change there would mean delete + recreate under them.
+        withLonghorn(['node-b']);
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(1));
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
+        expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+        expect(mockK8s.apps.patchNamespacedDeployment).not.toHaveBeenCalled();
+      });
+    });
+
     // Shared fixture: a deployment that exists with a matching spec except for
     // the image, at `replicas`. An image bump is the common trigger for the
     // recreate path.

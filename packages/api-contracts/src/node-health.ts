@@ -95,6 +95,34 @@ export type NodeHealthSummaryResponse = z.infer<typeof nodeHealthSummaryResponse
 export const nodeMemoryEventKindSchema = z.enum(['system-oom', 'pod-evicted', 'container-oom']);
 export type NodeMemoryEventKind = z.infer<typeof nodeMemoryEventKindSchema>;
 
+// What actually happened — so a row never claims more than is known.
+//
+// container-oom (kernel evidence from the security-probe OOM witness, else the
+// kubelet's word):
+//   memory-limit  the pod hit its own memory limit (kernel-confirmed)
+//   node-oom      the NODE ran out of memory and the kernel picked this
+//                 container; its own limit was not the cause
+//   oom           the kubelet reported OOMKilled; limit vs node unknown
+//   unconfirmed   exit 137 (SIGKILL) with no evidence either way
+// pod-evicted (from the kubelet's eviction message):
+//   node-memory-pressure / node-disk-pressure / node-pid-pressure — the node
+//   ran low; pod-storage-limit — the pod exceeded its own ephemeral-storage
+//   limit (an eviction, but not node pressure); other — anything else.
+// system-oom: node-oom.
+// null on rows recorded before the field existed and not backfilled.
+export const nodeMemoryEventCauseSchema = z.enum([
+  'memory-limit',
+  'node-oom',
+  'oom',
+  'unconfirmed',
+  'node-memory-pressure',
+  'node-disk-pressure',
+  'node-pid-pressure',
+  'pod-storage-limit',
+  'other',
+]);
+export type NodeMemoryEventCause = z.infer<typeof nodeMemoryEventCauseSchema>;
+
 export const nodeMemoryEventSchema = z.object({
   id: z.string(),
   kind: nodeMemoryEventKindSchema,
@@ -105,6 +133,7 @@ export const nodeMemoryEventSchema = z.object({
   podName: z.string().nullable(),
   /** True when the event touches a system namespace or the node itself. */
   systemWorkload: z.boolean(),
+  cause: nodeMemoryEventCauseSchema.nullable(),
   message: z.string(),
   occurredAt: z.string().datetime(),
 });

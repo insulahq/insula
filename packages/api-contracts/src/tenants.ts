@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { tenantPlacementSummarySchema } from './tenant-placement.js';
 import { cpuTierSchema } from './cpu-migration.js';
 import { tenantStatusEnum, storageLifecycleStateEnum, uuidField, paginatedResponseSchema, identityEmailSchema } from './shared.js';
 import { provisioningStatusEnum } from './provisioning.js';
@@ -234,6 +235,9 @@ export const tenantResponseSchema = z.object({
   nodeName: z.string().nullable().optional(),
   // M7: current tenant storage tier.
   storageTier: tenantStorageTierEnum.optional(),
+  // Where the tenant actually is versus its primary node (nodeName). Present
+  // on the admin list rows; null until the placement reconciler has seen it.
+  placement: tenantPlacementSummarySchema.nullable().optional(),
   createdBy: z.string().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),

@@ -12,10 +12,15 @@
  * Order, first hit wins, each candidate only if it is a node of this cluster:
  *   1. pod      — the node a Running, not-terminating Stalwart pod is on. The
  *                 live truth; it is what serves mail on hostPort 25.
- *   2. settings — the stored column (Stalwart not running right now).
- *   3. pvc      — the node the mail PVC is bound to (local-path RWO, so the only
- *                 node Stalwart CAN run on) — a fresh install before the pod
- *                 ever came up.
+ *   2. pvc      — the node the mail PVC is bound to (local-path RWO, so the only
+ *                 node Stalwart CAN run on): physical truth when no pod runs.
+ *   3. settings — the stored column, last.
+ *
+ * The PVC outranks the stored column because the column is only as current as
+ * the last migration that finished: a DR failover abandoned mid-run (its
+ * state machine killed) left the column on the dead source while the PVC — and
+ * the data — had moved to the standby, and a startup reconcile that trusted the
+ * column pinned Stalwart to a node its volume is not on (Pending; mail down).
  *
  * `persist: true` writes a pod-derived answer back to the column when it
  * differs (debounced per process), so later readers that only look at the DB —
@@ -39,7 +44,9 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 
 const SETTINGS_ID = 'system';
 const MAIL_NAMESPACE = 'mail';
-const STALWART_POD_SELECTOR = 'app=stalwart-mail';
+/** Labels that select the Stalwart server pod — also used to co-locate pods with it. */
+export const STALWART_POD_LABELS = { app: 'stalwart-mail' } as const;
+const STALWART_POD_SELECTOR = `app=${STALWART_POD_LABELS.app}`;
 export const MAIL_PVC_NAME = 'mail-stack-data';
 
 export type ActiveMailNodeSource = 'pod' | 'settings' | 'pvc';
@@ -58,6 +65,8 @@ export interface ResolveActiveMailNodeOptions {
   /** Write a pod-derived node back to system_settings when it differs. */
   readonly persist?: boolean;
   readonly logger?: { warn: (msg: string) => void };
+  /** The stored column, when the caller already read the settings row. */
+  readonly stored?: string | null;
 }
 
 /** Terminal mail_migration_runs states (same set the migration orphan reaper uses). */
@@ -163,10 +172,7 @@ export async function resolveActiveMailNode(
 ): Promise<ActiveMailNode> {
   const usable = (n: string | null): n is string => !!n && (!opts.knownNodes || opts.knownNodes.has(n));
 
-  const [row] = await db.select({ activeNode: systemSettings.mailActiveNode })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, SETTINGS_ID));
-  const stored = (row?.activeNode ?? null) as string | null;
+  const stored = opts.stored !== undefined ? opts.stored : await readStoredActiveNode(db);
 
   let livePod: LiveStalwartPod | null = null;
   try {
@@ -182,10 +188,17 @@ export async function resolveActiveMailNode(
     }
     return { node: live, source: 'pod' };
   }
-  if (usable(stored)) return { node: stored, source: 'settings' };
   const fromPvc = await deriveActiveNodeFromMailPvc(core);
   if (usable(fromPvc)) return { node: fromPvc, source: 'pvc' };
+  if (usable(stored)) return { node: stored, source: 'settings' };
   return { node: null, source: null };
+}
+
+async function readStoredActiveNode(db: Database): Promise<string | null> {
+  const [row] = await db.select({ activeNode: systemSettings.mailActiveNode })
+    .from(systemSettings)
+    .where(eq(systemSettings.id, SETTINGS_ID));
+  return (row?.activeNode ?? null) as string | null;
 }
 
 /** In-flight check for the persist gate; an unreadable table counts as in flight (do not write). */

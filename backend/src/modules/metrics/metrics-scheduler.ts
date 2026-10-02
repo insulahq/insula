@@ -3,8 +3,6 @@ import { hostingPlans, tenants, platformSettings } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectTenantMetrics } from './resource-metrics.js';
 import { evaluateTenantSaturation, gcClearedSaturationEpisodes } from './tenant-saturation.js';
-import { scanTenantOom, describeOomEvent } from './oom-scan.js';
-import { notifyAdminTenantOom } from '../notifications/events.js';
 import { recordHourlyUsage } from './usage-rollup.js';
 import type { Database } from '../../db/index.js';
 import { tenantDisplayLimits } from './tenant-display-limits.js';
@@ -99,38 +97,10 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
           console.warn(`[metrics-scheduler] Failed for ${tenant.id}:`, err instanceof Error ? err.message : String(err));
         }
 
-        // Phase 1d: per-tenant OOM alerts off the same loop (no extra scheduler,
-        // no time-series). Deduped per (tenant, pod, container, restartCount).
-        if (tenant.namespace) {
-          try {
-            // The 5th arg is what makes the catch below reachable for the
-            // most likely failure: scanTenantOom never throws, so without a
-            // reporter a kube-API error arrived as an empty array and read
-            // as "no OOM kills".
-            const ooms = await scanTenantOom(
-              k8s, tenant.namespace, Date.now(), undefined,
-              (ns, message) => console.warn(`[metrics-scheduler] OOM scan failed for ${ns}: ${message}`),
-            );
-            for (const o of ooms) {
-              const { killSummary, killDetail } = describeOomEvent(o);
-              await notifyAdminTenantOom(
-                db,
-                tenant.id,
-                {
-                  tenantLabel: tenant.name,
-                  podName: o.podName,
-                  containerName: o.containerName,
-                  restartCount: String(o.restartCount),
-                  killSummary,
-                  killDetail,
-                },
-                `oom:${tenant.id}:${o.podName}:${o.containerName}:${o.restartCount}`,
-              );
-            }
-          } catch (err) {
-            console.warn(`[metrics-scheduler] OOM scan failed for ${tenant.id}:`, err instanceof Error ? err.message : String(err));
-          }
-        }
+        // Container OOM kills are announced by the node-health reconciler
+        // (node-health/memory-event-notify.ts), which judges each one against
+        // the kernel's own OOM counters. This loop used to scan for them too,
+        // an hour late, so every tenant OOM reached the admins twice.
 
         // Stagger to avoid overwhelming K8s API
         if (i < provisioned.length - 1) {

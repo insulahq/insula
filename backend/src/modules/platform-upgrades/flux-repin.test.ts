@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { gitTagForVersion, repinGitRepositoryTag, repinGitRepositoryRef } from './flux-repin.js';
+import { gitTagForVersion, readFluxSuspension, repinGitRepositoryTag, repinGitRepositoryRef } from './flux-repin.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 describe('gitTagForVersion', () => {
@@ -105,5 +105,52 @@ describe('repinGitRepositoryRef (rollback — restore any tag/branch/commit)', (
     const r = await repinGitRepositoryRef(k8s, 'nope', { branch: 'staging' });
     expect(r.ok).toBe(false);
     expect(patches).toHaveLength(0);
+  });
+});
+
+describe('readFluxSuspension', () => {
+  type Obj = { suspend?: boolean; sourceRef?: { kind?: string; name?: string } } | Error;
+  function k8sWith(ks: Obj, repo: Obj): K8sClients {
+    return {
+      custom: {
+        getNamespacedCustomObject: vi.fn(async (a: { plural: string }) => {
+          const o = a.plural === 'kustomizations' ? ks : repo;
+          if (o instanceof Error) throw o;
+          return { spec: o };
+        }),
+      },
+    } as unknown as K8sClients;
+  }
+  const src = { kind: 'GitRepository', name: 'hosting-platform-production' };
+
+  it('names a suspended platform Kustomization', async () => {
+    expect(await readFluxSuspension(k8sWith({ suspend: true, sourceRef: src }, {}))).toEqual(['Kustomization/platform']);
+  });
+
+  it('names a suspended source — the re-pin lands on it and nothing fetches', async () => {
+    expect(await readFluxSuspension(k8sWith({ sourceRef: src }, { suspend: true })))
+      .toEqual(['GitRepository/hosting-platform-production']);
+  });
+
+  it('both suspended → both named; neither → empty', async () => {
+    expect(await readFluxSuspension(k8sWith({ suspend: true, sourceRef: src }, { suspend: true })))
+      .toEqual(['Kustomization/platform', 'GitRepository/hosting-platform-production']);
+    expect(await readFluxSuspension(k8sWith({ suspend: false, sourceRef: src }, { suspend: false }))).toEqual([]);
+  });
+
+  it('an unreadable Kustomization or source → null (unknown), never "not suspended"', async () => {
+    expect(await readFluxSuspension(k8sWith(new Error('forbidden'), {}))).toBeNull();
+    expect(await readFluxSuspension(k8sWith({ sourceRef: src }, new Error('forbidden')))).toBeNull();
+  });
+
+  it('reads the source from the namespace the Kustomization names', async () => {
+    const k8s = k8sWith({ sourceRef: { ...src, namespace: 'releases' } }, { suspend: true });
+    expect(await readFluxSuspension(k8s)).toEqual(['GitRepository/hosting-platform-production']);
+    const calls = (k8s.custom.getNamespacedCustomObject as unknown as { mock: { calls: Array<[{ plural: string; namespace: string }]> } }).mock.calls;
+    expect(calls.find(([a]) => a.plural === 'gitrepositories')?.[0].namespace).toBe('releases');
+  });
+
+  it('a Kustomization without a GitRepository source still reports its own suspension', async () => {
+    expect(await readFluxSuspension(k8sWith({ suspend: true }, {}))).toEqual(['Kustomization/platform']);
   });
 });

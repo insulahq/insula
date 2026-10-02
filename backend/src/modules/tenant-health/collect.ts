@@ -48,7 +48,10 @@ interface RawNode {
   };
 }
 interface RawPod {
-  metadata?: { namespace?: string; name?: string; creationTimestamp?: string | Date };
+  metadata?: {
+    namespace?: string; name?: string; creationTimestamp?: string | Date;
+    ownerReferences?: Array<{ kind?: string; controller?: boolean }>;
+  };
   spec?: { nodeName?: string };
   status?: {
     phase?: string;
@@ -56,7 +59,7 @@ interface RawPod {
   };
 }
 interface LhReplica {
-  spec?: { volumeName?: string; nodeID?: string };
+  spec?: { volumeName?: string; nodeID?: string; failedAt?: string };
   status?: { currentState?: string };
 }
 interface LhVolume {
@@ -65,6 +68,13 @@ interface LhVolume {
     robustness?: string;
     /** attached | detached | attaching | detaching | creating | deleting */
     state?: string;
+    /** Node the volume is attached to (where its engine runs); "" when detached. */
+    currentNodeID?: string;
+    /**
+     * Set by Longhorn when it salvaged the volume after every replica failed
+     * and asked the workload to remount — the storage failover signal.
+     */
+    remountRequestedAt?: string;
     kubernetesStatus?: {
       namespace?: string;
       pvcName?: string;
@@ -307,6 +317,7 @@ export async function collectFacts(
       // string on others; normalise so the grace window never silently reads a
       // "[object Object]" that Date.parse turns into NaN.
       createdAt: toIsoOrNull(p.metadata?.creationTimestamp),
+      controllerKind: (p.metadata?.ownerReferences ?? []).find((o) => o.controller)?.kind ?? null,
     }));
 
   const replicas: ReplicaFact[] = (replicaResp.items ?? []).map((r) => ({
@@ -317,6 +328,7 @@ export async function collectFacts(
     // how "your data is on the dead node" becomes "rebuilding, no action
     // required".
     running: r.status?.currentState === 'running',
+    failed: !!r.spec?.failedAt || r.status?.currentState === 'error',
   })).filter((r) => r.volumeName !== '');
 
   const volumes: VolumeFact[] = (volumeResp.items ?? []).map((v) => ({
@@ -329,6 +341,8 @@ export async function collectFacts(
     // it is lost. Treat "" / missing as "still referenced" — only a non-empty
     // value marks the volume as a leftover.
     pvcRefLostAt: v.status?.kubernetesStatus?.lastPVCRefAt || null,
+    attachedNode: v.status?.currentNodeID || null,
+    remountRequestedAt: v.status?.remountRequestedAt || null,
   })).filter((v) => v.volumeName !== '');
 
   const tenantFacts: TenantFact[] = tenantRows

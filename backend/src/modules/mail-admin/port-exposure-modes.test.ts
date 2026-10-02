@@ -12,6 +12,15 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+
+// mailMigrationInFlight reads mail_migration_runs; these DB fakes have no
+// execute(). Default: nothing in flight (tests that need one override it).
+const migrationInFlight = vi.fn(async (): Promise<string | null> => null);
+vi.mock('./active-node.js', async (orig) => ({
+  ...(await orig<typeof import('./active-node.js')>()),
+  mailMigrationInFlight: () => migrationInFlight(),
+}));
+
 import {
   validateModeSwitch,
   resolveDataPlaneNodes,

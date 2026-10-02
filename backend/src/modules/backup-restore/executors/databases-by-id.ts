@@ -67,7 +67,7 @@ import {
 } from '../../deployments/db-manager.js';
 import { getReadyFileManagerPod } from '../../file-manager/service.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
-import { buildFilesPathsJobSpec, findNodeAttachingPvc, waitForJob } from './files-paths.js';
+import { buildFilesPathsJobSpec, resolveRestoreJobNode, waitForJob } from './files-paths.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
 import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../../tenant-bundles/restic-driver.js';
 import {
@@ -643,7 +643,7 @@ async function fetchPredumpsFromSnapshot(args: {
   const jobName = `rs-dbpd-${safe}`.slice(0, 63);
   const credsSecretName = `rs-dbpd-creds-${safe}`.slice(0, 63);
   const pvcName = `${namespace}-storage`;
-  const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
+  const pinToNode = await resolveRestoreJobNode(app.db, k8s, { tenantId, namespace, pvcName, logger: app.log });
 
   let credsCreated = false;
   let ownerRefWired = false;

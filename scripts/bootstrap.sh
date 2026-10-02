@@ -6677,6 +6677,62 @@ install_cnpg() {
 # GitOps-managed) is gone; see docs/operations/MONITORING_OBSERVABILITY.md
 # (incl. the uninstall note for clusters that ever ran --with-monitoring).
 
+# The release tag a production install pins: --release-tag, else v<platform/VERSION>
+# of the checkout running bootstrap (the version whose scripts do the install).
+# Unvalidated — install_flux enforces the CalVer shape and that the tag exists.
+resolve_production_release_tag() {
+  local tag="$RELEASE_TAG"
+  if [[ -z "$tag" && -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+    tag="v$(tr -d '[:space:]' < "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION")"
+  fi
+  printf '%s' "$tag"
+}
+
+# The git ref apply_platform_manifests clones for its one-shot apply (the
+# "seed"): the SAME ref Flux reconciles. Seeding from origin HEAD (main) while
+# Flux was pinned to a release tag applied main's manifests on a `--release-tag
+# v2026.10.2` install with an RC on main — RC images ran the RC's DB migrations
+# before Flux rolled them back, and main-only objects (admission policies) were
+# left behind for good, since Flux prunes only what it applied itself.
+#
+# Order: the live GitRepository's pinned tag/branch (a RE-run on a cluster the
+# upgrade flow has since re-pinned must not seed an older release); else the tag
+# Flux resolved from a semver range (staging — waits for the first artifact);
+# else, with no source at all (--skip-flux), the ref install_flux would pin.
+# Prints nothing and returns 1 when it cannot know (staging without a source).
+platform_seed_ref() {
+  local src
+  case "$PLATFORM_ENV" in
+    dev)        src="hosting-platform" ;;
+    staging)    src="hosting-platform-staging" ;;
+    production) src="hosting-platform-production" ;;
+    *)          return 1 ;;
+  esac
+  if [[ "$SKIP_FLUX" != true ]]; then
+    local pinned rev _
+    pinned="$(kctl -n flux-system get gitrepository "$src" -o jsonpath='{.spec.ref.tag}' 2>/dev/null)"
+    [[ -z "$pinned" ]] && pinned="$(kctl -n flux-system get gitrepository "$src" -o jsonpath='{.spec.ref.branch}' 2>/dev/null)"
+    if [[ -n "$pinned" ]]; then printf '%s' "$pinned"; return 0; fi
+    # Only staging's semver source has no pinned ref — wait for the tag Flux
+    # resolved. Revision shape: "<tag>@sha1:<sha>"; a semver source only ever
+    # resolves to a tag, anything else (a branch name) is not what staging promises.
+    if [[ "$PLATFORM_ENV" == "staging" ]]; then
+      for _ in $(seq 1 "${SEED_REF_WAIT_TRIES:-24}"); do
+        rev="$(kctl -n flux-system get gitrepository "$src" -o jsonpath='{.status.artifact.revision}' 2>/dev/null)"
+        if [[ "$rev" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)@sha1: ]]; then
+          printf '%s' "${BASH_REMATCH[1]}"; return 0
+        fi
+        sleep 5
+      done
+    fi
+  fi
+  case "$PLATFORM_ENV" in
+    dev)        printf 'development' ;;
+    production) resolve_production_release_tag ;;
+    *)          return 1 ;;
+  esac
+}
+
 install_flux() {
   if [[ "$SKIP_FLUX" == true ]]; then
     log "Skipping Flux v2 (--skip-flux)."
@@ -6719,10 +6775,7 @@ install_flux() {
     # of THIS checkout (Decision: first prod bootstrap lands on the
     # version whose scripts are doing the bootstrapping — no skew
     # between the bootstrap logic and the manifests it applies).
-    flux_tag="$RELEASE_TAG"
-    if [[ -z "$flux_tag" && -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
-      flux_tag="v$(tr -d '[:space:]' < "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION")"
-    fi
+    flux_tag="$(resolve_production_release_tag)"
     if [[ ! "$flux_tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
       error "Production Flux source needs a CalVer release tag (got '${flux_tag:-<empty>}').
 Pass --release-tag vYYYY.M.PATCH or bootstrap from a release-tag checkout
@@ -8268,6 +8321,9 @@ DECLARE
   has_exporter boolean := EXISTS (
     SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cnpg_metrics_exporter'
   );
+  has_replica boolean := EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'streaming_replica'
+  );
 BEGIN
   FOR d IN
     SELECT datname, pg_catalog.pg_get_userbyid(datdba) AS owner
@@ -8279,6 +8335,9 @@ BEGIN
     IF has_exporter THEN
       EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'cnpg_metrics_exporter');
     END IF;
+    IF has_replica AND d.datname = 'postgres' THEN
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', d.datname, 'streaming_replica');
+    END IF;
     EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', d.datname);
   END LOOP;
 END
@@ -8287,7 +8346,7 @@ DBISOSQL
 )
   if echo "$sql" | kctl exec -i -n platform "$pg_pod" -- \
       psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
-    log "  PUBLIC CONNECT revoked; owners + metrics exporter granted."
+    log "  PUBLIC CONNECT revoked; owners, metrics exporter + replication (postgres db) granted."
   else
     warn "  Connection-isolation apply failed — the db-isolation converger retries every 5m."
   fi
@@ -9657,16 +9716,22 @@ apply_platform_manifests() {
     # not found").
     #
     # Fetch the SAME git ref Flux will reconcile for this env — NOT origin's
-    # default branch (main). A --env dev bootstrap that refreshed /opt/insula to
-    # origin HEAD (main) applied MAIN's overlays/development (carrying main's
-    # stale system-db storage size) while Flux tracked the `development` branch,
-    # so CNPG rejected the shrink and the platform Kustomization deadlocked
-    # Ready=False ("can't shrink existing storage from 20Gi to 2Gi") — observed
-    # on the DEV re-bootstrap. dev → the `development` branch;
-    # staging/production converge via Flux tag pinning, where origin HEAD is an
-    # acceptable imperative seed (overlays match the release lineage).
-    local apply_ref="HEAD"
-    [[ "$PLATFORM_ENV" == "dev" ]] && apply_ref="development"
+    # default branch (main), in ANY environment (platform_seed_ref). A --env dev
+    # bootstrap that refreshed /opt/insula to origin HEAD applied MAIN's
+    # overlays/development (main's stale system-db storage size) while Flux
+    # tracked `development`, and CNPG's refused shrink deadlocked the platform
+    # Kustomization. A production `--release-tag` install did the same with an
+    # RC on main: the RC's images and DB migrations ran on a "v2026.10.2"
+    # install. Only staging without a resolvable source (--skip-flux) still
+    # seeds from origin HEAD, and says so.
+    local apply_ref=""
+    if ! apply_ref="$(platform_seed_ref)" || [[ -z "$apply_ref" ]]; then
+      if [[ "$PLATFORM_ENV" != "staging" ]]; then
+        error "Cannot determine the git ref Flux reconciles for env=${PLATFORM_ENV} — refusing to seed the platform from an unrelated branch."
+      fi
+      warn "No resolved Flux source for staging — seeding the platform from origin HEAD; Flux corrects it once its source resolves."
+      apply_ref="HEAD"
+    fi
     local clone_branch_flag=()
     [[ "$apply_ref" != "HEAD" ]] && clone_branch_flag=(--branch "$apply_ref")
     if [[ -d "/opt/insula/.git" ]]; then

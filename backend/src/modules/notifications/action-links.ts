@@ -62,6 +62,9 @@ const EXTRA_LINKS: Readonly<Record<string, readonly LinkSpec[]>> = {
   'admin.tenant_pod_oom': [
     { text: 'Open node health', path: '/cluster/nodes', style: 'secondary' },
   ],
+  'admin.system_pod_oom': [
+    { text: 'Open monitoring', path: '/monitoring', style: 'secondary' },
+  ],
   'admin.node_memory_event_critical': [
     { text: 'Open monitoring', path: '/monitoring', style: 'secondary' },
   ],

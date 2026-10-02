@@ -12,7 +12,7 @@ import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { planUpgrade, type UpgradeDecision } from './upgrade-planner.js';
-import { gitTagForVersion, repinGitRepositoryTag, resolveUpgradeGitRepository, FLUX_NAMESPACE, type RepinResult } from './flux-repin.js';
+import { gitTagForVersion, readFluxSuspension, repinGitRepositoryTag, resolveUpgradeGitRepository, FLUX_NAMESPACE, type RepinResult } from './flux-repin.js';
 
 const CURRENT_VERSION = (process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown').trim();
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
@@ -107,6 +107,18 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
   const tag = gitTagForVersion(decision.target!, { allowPrerelease });
   if (!tag) {
     return { decision, environment: ENVIRONMENT, gitRepository, applied: false, summary: `target ${decision.target} has no clean release tag` };
+  }
+
+  // The upgrade IS the re-pin: with the platform Kustomization or its source
+  // suspended it changes nothing while reporting "Flux is reconciling". Refused
+  // here so every caller (API, host CLI, auto-update) gets it, not only the UI's
+  // pre-flight. Unreadable (null) proceeds — the pre-flight surfaces that warn.
+  const suspended = await readFluxSuspension(k8s);
+  if (suspended && suspended.length > 0) {
+    return {
+      decision, environment: ENVIRONMENT, gitRepository, applied: false,
+      summary: `refused — Flux is suspended (${suspended.join(', ')}), so a re-pin would change nothing; resume it first (flux resume source git / flux resume kustomization)`,
+    };
   }
 
   // MANDATORY rollback safety net (W16, #15): capture rescue snapshots + record

@@ -38,6 +38,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql, isNotNull, count } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
@@ -315,7 +316,7 @@ export async function startMailMigration(
       : (err instanceof Error ? err.message : String(err));
     await db.execute(sql`
       UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now()
+      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
       WHERE id = ${runId}
     `).catch(() => { /* best-effort */ });
     if (taskId) {
@@ -467,16 +468,18 @@ export async function getMailMigrationStatus(
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  stepTimings: StepTiming[];
 }> {
-  const result = await deps.db.execute<MigrationRunRow>(sql`
+  const result = await deps.db.execute<MigrationRunRow & { step_timings?: unknown }>(sql`
     SELECT id, source_node, target_node, state, current_step, progress_bytes,
-           started_at, finished_at, error_message
+           started_at, finished_at, error_message, step_timings
     FROM mail_migration_runs
     WHERE id = ${runId}
   `);
-  const rows = (result as unknown as { rows: MigrationRunRow[] }).rows;
+  const rows = (result as unknown as { rows: Array<MigrationRunRow & { step_timings?: unknown }> }).rows;
   const r = rows?.[0];
   if (!r) throw new ApiError('MAIL_MIGRATION_NOT_FOUND', 'Migration run not found', 404);
+  const finished = r.finished_at != null ? new Date(r.finished_at as unknown as string) : null;
   return {
     runId: r.id,
     sourceNode: r.source_node,
@@ -489,6 +492,7 @@ export async function getMailMigrationStatus(
       ? (r.finished_at instanceof Date ? r.finished_at.toISOString() : String(r.finished_at))
       : null,
     error: r.error_message ?? null,
+    stepTimings: stepDurations(r.step_timings, finished ?? new Date()),
   };
 }
 
@@ -550,11 +554,13 @@ export async function triggerRestoreBasedFailover(
     } as MigrationDeps, undefined, { skipFreshSnapshot: true });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await db.execute(sql`
+    // Retried: if this write is lost the run stays 'running', which blocks
+    // every later failover attempt until a platform-api restart reaps it.
+    await withDbRetry(() => db.execute(sql`
       UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now()
+      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
       WHERE id = ${runId}
-    `).catch(() => { /* best-effort */ });
+    `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
     throw err;
   }
 
@@ -562,9 +568,9 @@ export async function triggerRestoreBasedFailover(
   // path that intermediate failures use. Without this check, a
   // PVC-delete timeout silently returns from the state machine
   // and execution falls through to the success-path stamp below.
-  const stateRows = await db.execute(sql`
+  const stateRows = await withDbRetry(() => db.execute(sql`
     SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
-  `) as { rows?: Array<{ state: string; error_message: string | null }> };
+  `)) as { rows?: Array<{ state: string; error_message: string | null }> };
   const stateRow = stateRows.rows?.[0];
   if (stateRow && stateRow.state === 'failed') {
     throw new Error(
@@ -573,9 +579,9 @@ export async function triggerRestoreBasedFailover(
   }
 
   // Only reached on success — stamp the new active node + state.
-  await db.update(systemSettings)
+  await withDbRetry(() => db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
-    .where(eq(systemSettings.id, SETTINGS_ID));
+    .where(eq(systemSettings.id, SETTINGS_ID)));
 }
 
 // ── State machine internals ───────────────────────────────────────────────────
@@ -639,11 +645,41 @@ const MIGRATION_STEP_META: Record<string, { label: string; pct: number }> = {
   // standby node). SKIPPED when no mail BackupTarget is configured.
   snapshotting: { label: 'Taking pre-migration mail backup (offsite)', pct: 15 },
   'scaling-down': { label: 'Scaling Stalwart to 0', pct: 30 },
+  'final-sync': { label: 'Copying the latest mail to the target node', pct: 40 },
   'swapping-pvc': { label: 'Swapping PVC to target node', pct: 50 },
   'scaling-up': { label: 'Restoring DataStore on target node', pct: 80 },
   verifying: { label: 'Verifying RocksDB sentinel', pct: 95 },
   done: { label: 'Migration complete', pct: 100 },
 };
+
+/** step_timings with `{step, at: now()}` appended (migration 0143). */
+function appendStepTiming(step: string) {
+  return sql`coalesce(step_timings, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('step', ${step}::text, 'at', now()))`;
+}
+
+export interface StepTiming {
+  readonly step: string;
+  readonly at: string;
+  /** Seconds until the next entry (or `end`); null for the closing entry. */
+  readonly seconds: number | null;
+}
+
+/** Per-step durations from the recorded start times; the last entry closes the run. */
+export function stepDurations(raw: unknown, end: Date | null = null): StepTiming[] {
+  const entries = (Array.isArray(raw) ? raw : [])
+    .filter((e): e is { step: string; at: string } => !!e && typeof (e as { step?: unknown }).step === 'string' && typeof (e as { at?: unknown }).at === 'string');
+  return entries.map((e, i) => {
+    const next = entries[i + 1]?.at ?? (end ? end.toISOString() : null);
+    const terminal = e.step === 'done' || e.step === 'failed';
+    const seconds = !terminal && next ? Math.max(0, Math.round((Date.parse(next) - Date.parse(e.at)) / 100) / 10) : null;
+    return { step: e.step, at: e.at, seconds };
+  });
+}
+
+/** "preflight 1.2s · scaling-down 3s · …" for the completion log line. */
+export function summarizeStepDurations(timings: readonly StepTiming[]): string {
+  return timings.filter((t) => t.seconds !== null).map((t) => `${t.step} ${t.seconds}s`).join(' · ');
+}
 
 /**
  * Sentinel thrown by setStep when the operator has POSTed
@@ -690,11 +726,14 @@ async function setStep(
     throw new MigrationCancelledError(step);
   }
 
-  await db.execute(sql`
+  // Retried across a short DB outage: a node loss that also takes the CNPG
+  // primary fails this UPDATE during the promotion, and one failed progress
+  // write used to abandon a failover that was already moving mail.
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET current_step = ${step}, state = ${state}
+    SET current_step = ${step}, state = ${state}, step_timings = ${appendStepTiming(step)}
     WHERE id = ${runId}
-  `);
+  `));
 
   // Task-center progress: every state-machine step also
   // writes the chip's progress so the operator sees live state in the
@@ -765,11 +804,11 @@ async function failRun(
   message: string,
   taskId?: string | null,
 ): Promise<void> {
-  await db.execute(sql`
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET state = 'failed', error_message = ${message}, finished_at = now()
+    SET state = 'failed', error_message = ${message}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
     WHERE id = ${runId}
-  `);
+  `));
   if (taskId) {
     try {
       const { finish: finishTask } = await import('../tasks/service.js');
@@ -933,6 +972,22 @@ export async function waitForServedMailCert(
     await sleep(pollMs);
   }
   return { ok: false, selfSigned, issuer };
+}
+
+/**
+ * Whether a migration copies the quiet source volume to the target before the
+ * swap (Step 3b). Only for a planned move of the live store: not when the
+ * source node is down (DR — keeps the documented standby RPO), not in recovery
+ * mode (the source is broken), not when restoring a chosen snapshot (that
+ * deliberately restores older data), and not for a same-node restore.
+ */
+export function shouldRunFinalSync(input: {
+  readonly sourceNodeReachable: boolean;
+  readonly recoverFromBrokenState: boolean;
+  readonly restoreSnapshotId: string | null;
+  readonly sameNode: boolean;
+}): boolean {
+  return input.sourceNodeReachable && !input.recoverFromBrokenState && !input.restoreSnapshotId && !input.sameNode;
 }
 
 async function runMigrationStateMachine(
@@ -1171,6 +1226,16 @@ async function runMigrationStateMachine(
   // PV is retained (rollback-safe), so once the graceful window elapses we
   // force-delete the mail pod(s) to guarantee the PVC releases for the swap.
   // RocksDB recovers via its WAL, so the grace-0 SIGKILL here is data-safe.
+  // Source node DOWN (DR failover, or a planned move whose source just died):
+  // its pods can never shut down gracefully, so the 90 s graceful window
+  // below only delayed the failover (VM drill: ~90 s of a 4.5 min failover of
+  // an almost-empty store). Force-delete them now — the data on that node is
+  // not what the target restores from, and RocksDB recovers via its WAL.
+  if (!sourceNodeReachable) {
+    log.warn(`[migration ${runId}] source node ${sourceNode} is down — force-deleting its mail pods now instead of waiting for a graceful stop`);
+    await forceDeleteMailPodsMountingPvc(core, MAIL_PVC_NAME, { onlyTerminating: false })
+      .catch((e: unknown) => log.warn(`[migration ${runId}] immediate force-delete failed (the graceful wait follows): ${(e as Error).message}`));
+  }
   try {
     await waitForReplicaCount(apps, 0, 90, () => isCancelRequested(db, runId));
   } catch (err) {
@@ -1199,6 +1264,63 @@ async function runMigrationStateMachine(
         `${err2 instanceof Error ? err2.message : String(err2)} (after force-delete; ${diag})`,
         500,
       );
+    }
+  }
+
+  // Step 3b: FINAL SYNC — planned moves only (source alive). The target
+  // restores from its standby copy, which the replicate DaemonSet refreshes
+  // every 5 min; without this, mail received since that refresh was lost on
+  // every operator move / failback. Stalwart + Bulwark are at 0 now, so the
+  // copy taken here is the complete, quiet store. A failure aborts the move
+  // and restarts mail on the source (nothing has been swapped yet).
+  if (shouldRunFinalSync({
+    sourceNodeReachable,
+    recoverFromBrokenState: !!opts.recoverFromBrokenState,
+    restoreSnapshotId: opts.restoreSnapshotId ?? null,
+    sameNode: sourceNode === targetNode,
+  })) {
+    // Mail is at 0 from here until the swap: any way out (failure OR operator
+    // cancel) restarts it on the source first — nothing has been moved yet.
+    const restartOnSource = async (why: string): Promise<void> => {
+      log.warn(`[migration ${runId}] ${why} — restarting mail on ${sourceNode}`);
+      await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
+      await restoreMailOnSource(core, apps, null, sourceNode, log).catch((e: unknown) => {
+        log.warn(`[migration ${runId}] restart on ${sourceNode} also failed: ${(e as Error).message}`);
+      });
+    };
+    try {
+      await setStep(db, runId, 'final-sync', 'running', taskId);
+    } catch (err) {
+      if (err instanceof MigrationCancelledError) await restartOnSource('cancelled before the final sync');
+      throw err;
+    }
+    // The snapshot CronJob (every 2 min) mounts the same volume; stop it now,
+    // not at the swap, so it does not compete with the copy. Idempotent with
+    // the swap step's own suspend.
+    await suspendSnapshotCronJobAndDeleteCompletedPods(deps).catch((e: unknown) => {
+      log.warn(`[migration ${runId}] snapshot CronJob suspend before the final sync failed (non-fatal): ${(e as Error).message}`);
+    });
+    const { runFinalStandbySync } = await import('./final-sync.js');
+    const sync = await runFinalStandbySync(
+      {
+        core, apps,
+        log: { info: (m: string) => log.info(m), warn: (m: string) => log.warn(m) },
+        cancelCheck: () => isCancelRequested(db, runId),
+      },
+      { runId, sourceNode, targetNode, pvcName: MAIL_PVC_NAME },
+    );
+    if (!sync.ok && sync.cancelled) {
+      await restartOnSource('cancelled during the final sync');
+      throw new MigrationCancelledError('final-sync');
+    }
+    if (!sync.ok) {
+      await restartOnSource(`final sync failed: ${sync.reason}`);
+      await failRun(
+        db, runId,
+        `final sync to ${targetNode} failed — nothing was moved, mail restarted on ${sourceNode}: ${sync.reason}`,
+        taskId,
+      );
+      return;
     }
   }
 
@@ -1586,9 +1708,9 @@ async function runMigrationStateMachine(
   // Step 8: Update DB → success. An availability cutover (dataLossCutover)
   // succeeded on INCOMPLETE data, so it stays 'degraded' (with the data-loss
   // alert already fired) rather than 'healthy' — the operator must still see it.
-  await db.update(systemSettings)
+  await withDbRetry(() => db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: dataLossCutover ? 'degraded' : 'healthy' })
-    .where(eq(systemSettings.id, SETTINGS_ID));
+    .where(eq(systemSettings.id, SETTINGS_ID)));
 
   // Step 8b: re-reconcile port-exposure for the NEW active node. In
   // thisNodeOnly mode the stalwart-mail Service.externalIPs must follow
@@ -1827,11 +1949,15 @@ async function runMigrationStateMachine(
     }
   }
 
-  await db.execute(sql`
+  await withDbRetry(() => db.execute(sql`
     UPDATE mail_migration_runs
-    SET state = 'done', current_step = 'complete', finished_at = now()
+    SET state = 'done', current_step = 'complete', finished_at = now(), step_timings = ${appendStepTiming('done')}
     WHERE id = ${runId}
-  `);
+  `));
+  try {
+    const t = await db.execute(sql`SELECT step_timings FROM mail_migration_runs WHERE id = ${runId}`) as { rows?: Array<{ step_timings: unknown }> };
+    log.info(`[migration ${runId}] ${sourceNode} → ${targetNode} done — ${summarizeStepDurations(stepDurations(t.rows?.[0]?.step_timings))}`);
+  } catch { /* the summary is informational only */ }
 
   // Task-center finalisation (success path).
   if (taskId) {

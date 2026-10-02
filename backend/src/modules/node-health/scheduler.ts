@@ -35,6 +35,7 @@ import {
   type PrevBootState,
 } from './boot-events.js';
 import { recordMemoryEvents } from './memory-events.js';
+import { readOomWitnesses } from './oom-witness.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
 import { describeSuppression, loadJoinGrace } from './join-grace.js';
 import { reapShutdownDebris } from './shutdown-debris.js';
@@ -327,25 +328,29 @@ export async function reconcileNodeHealth(
 
   // ── 6. Record distinct memory events + notify admins ───────────
   // (never throws — a notification hiccup must not fail the tick)
-  // Container-OOM kills come from pod STATUS (containerd-sourced) — the
-  // only durable signal: kubelet SystemOOM events and cadvisor's
-  // container_oom_events_total both ride the kmsg oomparser (observed
-  // permanently broken on a live node), and the per-container metric
-  // series is torn down before the 60s scrape can capture a short-lived
-  // kill.
-  const podList = await (k8s.core.listPodForAllNamespaces({}) as Promise<{ items?: ReadonlyArray<unknown> }>)
-    .catch(() => ({ items: [] as unknown[] }));
-  await recordMemoryEvents(
-    db,
-    eventList.items ?? [],
-    oomEventList.items ?? [],
-    (podList.items ?? []) as Parameters<typeof recordMemoryEvents>[3],
+  // Container kills come from pod STATUS (containerd-sourced) — the only
+  // durable record that one happened: kubelet SystemOOM events and cadvisor's
+  // container_oom_events_total both ride the kmsg oomparser (observed broken
+  // on live nodes). WHETHER each was an OOM comes from the kernel's own
+  // counters, via the security-probe witness (oom-witness.ts).
+  const [podList, witnesses] = await Promise.all([
+    (k8s.core.listPodForAllNamespaces({}) as Promise<{ items?: ReadonlyArray<unknown> }>)
+      .catch(() => ({ items: [] as unknown[] })),
+    readOomWitnesses(k8s, (message) =>
+      console.warn(`[node-health-monitor] OOM witness unreadable — kills judged on the kubelet's word: ${message}`)),
+  ]);
+  type MemoryEventPods = NonNullable<Parameters<typeof recordMemoryEvents>[1]['pods']>;
+  await recordMemoryEvents(db, {
+    evicted: eventList.items ?? [],
+    systemOom: oomEventList.items ?? [],
+    pods: (podList.items ?? []) as MemoryEventPods,
+    killing: killingEventList.items ?? [],
+    witnesses,
     now,
-    killingEventList.items ?? [],
     // Recorded for the panel either way; only the notification waits out the
     // join grace window.
-    (nodeName) => grace.has(nodeName),
-  );
+    isNotificationSuppressed: (nodeName) => grace.has(nodeName),
+  });
 
   // ── 7. Reap node-reboot debris ─────────────────────────────────
   // Nothing in Kubernetes removes these (terminated-pod-gc-threshold defaults

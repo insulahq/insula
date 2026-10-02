@@ -79,6 +79,39 @@ export async function resolveUpgradeGitRepository(
   }
 }
 
+/**
+ * The platform Kustomization and its GitRepository source, named `Kind/name`,
+ * when they are suspended — a re-pin onto either is a no-op (nothing fetches or
+ * applies the new tag). `[]` = both reconciling; null = could not tell (read
+ * failed), which the pre-flight reports as unknown, never as "fine".
+ */
+export async function readFluxSuspension(
+  k8s: K8sClients,
+  ksName = process.env.PLATFORM_FLUX_KS_NAME || 'platform',
+  namespace = FLUX_NAMESPACE,
+): Promise<string[] | null> {
+  if (!/^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$/.test(ksName)) return null;
+  type Spec = { spec?: { suspend?: boolean; sourceRef?: { kind?: string; name?: string; namespace?: string } } };
+  const read = async (group: string, plural: string, ns: string, name: string): Promise<Spec> =>
+    (await k8s.custom.getNamespacedCustomObject({
+      group, version: FLUX_SRC_VERSION, namespace: ns, plural, name,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0])) as Spec;
+  try {
+    const suspended: string[] = [];
+    const ks = await read(FLUX_KS_GROUP, FLUX_KS_PLURAL, namespace, ksName);
+    if (ks.spec?.suspend === true) suspended.push(`Kustomization/${ksName}`);
+    const src = ks.spec?.sourceRef;
+    if (src?.name && (!src.kind || src.kind === 'GitRepository')) {
+      // Flux lets a Kustomization name its source in another namespace.
+      const repo = await read(FLUX_SRC_GROUP, FLUX_SRC_PLURAL, src.namespace || namespace, src.name);
+      if (repo.spec?.suspend === true) suspended.push(`GitRepository/${src.name}`);
+    }
+    return suspended;
+  } catch {
+    return null;
+  }
+}
+
 export async function readGitRepositoryRef(
   k8s: K8sClients,
   name: string,

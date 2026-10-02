@@ -15,6 +15,8 @@ const STEP_LABELS: Record<string, string> = {
   // → scaling-down in that case.
   snapshotting: 'Taking pre-migration mail backup',
   'scaling-down': 'Scaling Stalwart to 0',
+  // Planned moves only (source alive) — skipped on a DR failover.
+  'final-sync': 'Copying the latest mail to the target node',
   'swapping-pvc': 'Swapping PVC to target node',
   'scaling-up': 'Scaling Stalwart up (restoring data via rsync FAST PATH)',
   verifying: 'Verifying restore content',
@@ -27,6 +29,7 @@ const STEP_ORDER = [
   'preflight',
   'snapshotting',
   'scaling-down',
+  'final-sync',
   'swapping-pvc',
   'scaling-up',
   'verifying',
@@ -189,6 +192,8 @@ function MigrationStepList({ status }: { readonly status: MailMigrationStatusRes
   const currentIdx = stepIndex(current);
   const isDone = status.state === 'done';
   const isFailed = status.state === 'failed' || status.state === 'rolled-back';
+  // How long each step took (or has been running) — where a slow move spends its time.
+  const seconds = new Map((status.stepTimings ?? []).map((t) => [t.step, t.seconds]));
 
   return (
     <ol className="space-y-1.5">
@@ -223,6 +228,11 @@ function MigrationStepList({ status }: { readonly status: MailMigrationStatusRes
             >
               {STEP_LABELS[step] ?? step}
             </span>
+            {seconds.get(step) != null && (isPast || isCurrent || isFailedStep) && (
+              <span className="ml-auto text-xs tabular-nums text-gray-400 dark:text-gray-500">
+                {formatSeconds(seconds.get(step) as number)}
+              </span>
+            )}
           </li>
         );
       })}
@@ -235,4 +245,8 @@ function formatBytes(b: number): string {
   if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(2)} MiB`;
   if (b >= 1024) return `${(b / 1024).toFixed(2)} KiB`;
   return `${b} B`;
+}
+
+function formatSeconds(s: number): string {
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }

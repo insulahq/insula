@@ -266,7 +266,22 @@ bootstrap_node() {
   # bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
-  assert_guest_os_version "$ip" "${NODE_OS[$host]}"
+  # The pin describes a FRESH VM from the registry image. A reused VM
+  # (rebootstrap.sh) keeps its OS, which has since taken point-release updates
+  # (debian 13.6 → 13.7) — that is the OS under test now, not a broken image.
+  if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
+    echo "  ${ip}: reused VM — OS $(_vssh "$ip" "cat /etc/debian_version 2>/dev/null || . /etc/os-release && echo \$VERSION_ID" 2>/dev/null | head -1) kept"
+    # The OS is kept, the operator CLI is NOT: destroy-cluster.sh leaves
+    # /usr/local/bin/insula (an operator re-bootstraps from it), and bootstrap
+    # keeps any binary that reports the target version. A previous run's locally
+    # built CLI is stamped with platform/VERSION, so a "v2026.10.2" re-install
+    # silently ran a dev build carrying the NEXT release's host-migrations.
+    # Remove it; VMTEST_PLATFORM_OPS_BIN (below) or the signed release replaces it.
+    _vssh "$ip" "rm -f /usr/local/bin/insula" \
+      || echo "  ${ip}: WARN could not remove a stale /usr/local/bin/insula — bootstrap may keep it"
+  else
+    assert_guest_os_version "$ip" "${NODE_OS[$host]}"
+  fi
   # VMTEST_PLATFORM_OPS_BIN=<local insula binary> pre-places a locally built
   # operator CLI (scripts/build-platform-ops.sh) exactly where an operator's
   # `insula bootstrap` puts the signed one. Bootstrap then finds it "already at
@@ -294,7 +309,10 @@ bootstrap_node() {
   [[ -n "${VMTEST_BOOTSTRAP_EXTRA_ARGS:-}" ]] && extra=(${VMTEST_BOOTSTRAP_EXTRA_ARGS})
 
   local boot_rc=0
-  "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
+  # VMTEST_BOOTSTRAP_SH: install with ANOTHER release's bootstrap.sh (e.g. a
+  # worktree at a published tag) — how an upgrade test builds the "before"
+  # cluster exactly as that release installed it.
+  "${VMTEST_BOOTSTRAP_SH:-$REPO/scripts/bootstrap.sh}" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     "${mode_args[@]}" ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
 
   # Judge the run by what it SAID as well as what it returned. An exit code of 0
@@ -362,8 +380,10 @@ for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
   _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
-  join_assert_unchanged "server join ${SH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
-  join_node_hygiene "$SIP" server || exit 1
+  if [[ "${VMTEST_SKIP_JOIN_INVARIANCE:-0}" != "1" ]]; then
+    join_assert_unchanged "server join ${SH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+    join_node_hygiene "$SIP" server || exit 1
+  fi
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   # Workers carry no etcd/control-plane and few system pods, so they run comfortably smaller
@@ -373,8 +393,12 @@ for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
         boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
   _before="$(join_snapshot "$S1_IP")"
   bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
-  join_assert_unchanged "worker join ${WH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
-  join_node_hygiene "$WIP" worker || exit 1
+  # Skipped only when installing an OLDER release on purpose (its joins re-run the
+  # cluster install — the bug the invariance check exists to catch).
+  if [[ "${VMTEST_SKIP_JOIN_INVARIANCE:-0}" != "1" ]]; then
+    join_assert_unchanged "worker join ${WH}" "$_before" "$(join_snapshot "$S1_IP")" || exit 1
+    join_node_hygiene "$WIP" worker || exit 1
+  fi
 done
 wait_k3s_ready "$S1_IP" 360
 

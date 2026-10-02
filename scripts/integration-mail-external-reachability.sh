@@ -70,7 +70,7 @@ api_patch() {
 body=$(printf '%s' "$1" | base64 -d)
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
-PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
+PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
 AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
 AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e '
@@ -304,7 +304,7 @@ mail_reconcile() {
   ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' <<'SSH' >/dev/null 2>&1 || true
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
-PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
+PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
 AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
 AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e 'const {SignJWT}=require("jose");(async()=>{const enc=new TextEncoder().encode(process.env.JWT_SECRET);const t=await new SignJWT({sub:process.env.SUB,role:"super_admin",panel:"admin"}).setProtectedHeader({alg:"HS256"}).setIssuedAt().setExpirationTime("1h").sign(enc);process.stdout.write(t);})();' 2>/dev/null)
@@ -439,7 +439,7 @@ probe_node_ports() {
 # ── topology snapshot ────────────────────────────────────────────────────
 hdr "TOPOLOGY"
 NODES_JSON=$(ssh_kubectl 'kubectl get node -o json')
-ACTIVE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\"" | head -1)
+ACTIVE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\"" | head -1)
 # system_settings.mail_active_node is NOT seeded on a cold multi-node bootstrap,
 # so on a fresh cluster this is empty and every expectation built from it is
 # wrong: PHASE 2 then expects NOBODY to serve and reports the real active node as
@@ -449,11 +449,11 @@ if [ -z "$ACTIVE" ]; then
   ACTIVE=$(ssh_kubectl "kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null | head -1)
   [ -n "$ACTIVE" ] && amber "  mail_active_node unset in the DB — derived from the live Stalwart pod: ${ACTIVE}"
 fi
-PRE_MODE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_port_exposure_mode FROM system_settings;\"" | head -1)
+PRE_MODE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_port_exposure_mode FROM system_settings;\"" | head -1)
 echo "Active mail node: $ACTIVE"
 echo "Current mode: $PRE_MODE"
 # Mail hostname the served :465 cert must cover (SNI). Live value from settings.
-MAILHOST=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT 'mail.'||platform_domain FROM system_settings;\"" 2>/dev/null | head -1)
+MAILHOST=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT 'mail.'||platform_domain FROM system_settings;\"" 2>/dev/null | head -1)
 MAILHOST="${MAILHOST:-mail}"
 echo "Mail hostname (cert SNI): $MAILHOST"
 
@@ -786,7 +786,7 @@ else
   P1=$(sql_str_or_null "${OTHER_ARR[0]:-}")
   P2=$(sql_str_or_null "${OTHER_ARR[1]:-}")
   P3=$(sql_str_or_null "${OTHER_ARR[2]:-}")
-  ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
+  ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
   REFUSAL_RESP=$(api_patch '{"mode":"assignedMailNodes"}')
   CODE=$(echo "$REFUSAL_RESP" | jq -r '.error.code // ""')
   MSG=$(echo "$REFUSAL_RESP" | jq -r '.error.message // ""')
@@ -812,7 +812,7 @@ done
 P1=$(sql_str_or_null "${ASSIGNED_NEW[0]:-}")
 P2=$(sql_str_or_null "${ASSIGNED_NEW[1]:-}")
 P3=$(sql_str_or_null "${ASSIGNED_NEW[2]:-}")
-ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
 echo "  placement re-set: ${ASSIGNED_NEW[*]}"
 
 ASSIGNED_IPS=""
@@ -856,7 +856,7 @@ hdr "Restoring original placement"
 P1=$(sql_str_or_null "${PRE_PRIMARY:-}")
 P2=$(sql_str_or_null "${PRE_SECONDARY:-}")
 P3=$(sql_str_or_null "${PRE_TERTIARY:-}")
-ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
+ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -c \"UPDATE system_settings SET mail_primary_node=$P1, mail_secondary_node=$P2, mail_tertiary_node=$P3;\"" >/dev/null 2>&1
 
 # ── Restore prior mode ──────────────────────────────────────────────────
 hdr "Restoring mode to $PRE_MODE"
@@ -877,7 +877,7 @@ hdr "Deliverability sub-probe IP coverage (after restore)"
 HEALTH=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' <<'SSH'
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
-PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
+PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
 AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
 AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e '

@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.3-rc.1] - 2026-10-02
-
 ### BREAKING
 
 - **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
@@ -25,6 +23,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
 
 ### Added
+
+- **See where every tenant actually runs, and get told when it moves.** The Tenants table's
+  **Placement** column turns **red** and shows the node a tenant is actually on (with its primary
+  node underneath) when its workloads, attached volume or data are anywhere other than its primary
+  node, and the tenant's issues chip counts it. The tenant's **Placement** card shows where it runs
+  and keeps its data, and offers **Move back to <primary>** or **Make <current node> the primary
+  node** (each asks for confirmation), plus its recent storage failovers. Two new admin
+  notifications: **Tenant storage failover** (Longhorn lost every replica of a tenant volume,
+  salvaged and remounted it, and restarted the workloads — one notification per event, listing every
+  tenant it hit) and **Tenant not on its primary node** (after ten minutes away, once per episode).
 
 - **Refresh route DNS for many domains at once.** Admin → Tenants → Domains: select domains and
   choose **Refresh Route DNS** in the bulk bar to rewrite their ingress A/AAAA records from the
@@ -63,6 +71,88 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Out-of-memory alerts now say what actually happened.** A tenant container OOM-killed at its
+  memory limit used to reach admins titled "Tenant evictions (memory pressure)" — nothing had been
+  evicted — and then again from a second, hourly check; a container that merely exited with code
+  137 was alerted as a possible OOM with advice to raise the tenant's memory limit. Now:
+  - The security probe reads the kernel's own out-of-memory counters for every pod (read-only
+    `/sys/fs/cgroup` mount), so a killed container is reported as **OOM-killed at its memory
+    limit**, **killed by the node's OOM killer** (its own limit is not the cause), **OOM-killed**
+    (the kubelet's word, when no kernel evidence is available) or **SIGKILLed, cause unconfirmed**.
+    A kill the kernel shows was not memory is no longer reported at all.
+  - One notification per event, in the category it belongs to: **Tenant workload OOM-killed**,
+    the new **Platform workload OOM-killed** (system namespaces, and platform-sized pods such as
+    the file manager), **Tenant pods evicted** and **Node out of memory / SYSTEM pod evicted**.
+    The eviction alerts are sent only for real kubelet evictions and name the resource — memory,
+    disk or PID pressure, or a pod over its own ephemeral-storage limit.
+  - Monitoring → Node Health → **Memory events** labels each row the same way; unconfirmed
+    SIGKILLs are grey.
+
+- **Tenants no longer drift off their node, and backups no longer move tenant data between nodes.**
+  Upgrading an app, changing its resources or redeploying it dropped the tenant's node pin from its
+  Deployment, so after a restart its pods could start on another node — and on a single-replica
+  volume Longhorn then copied the tenant's whole volume to that node. Every redeploy now keeps the
+  pin, and on upgrade the platform puts it back, one app at a time, on tenants that are still on
+  their primary node (tenants that already moved are left for you to decide in the Placement card;
+  `TENANT_PIN_REPAIR=disable` skips this). Backup, restore and file-manager pods for a stopped tenant
+  now run on the node that holds its data instead of wherever the scheduler put them, and nightly
+  mailbox backups run on the mail server's node, so their traffic stays on that node.
+- **In high-availability mode, the platform database gets its redundancy back after a failover.**
+  When the database's primary server changed (a server lost, or a planned switchover), the old
+  primary could never rejoin as a replica: the platform's database hardening blocked the
+  connection it makes to the new primary first, so it waited forever and the cluster stayed with
+  one copy fewer — after a second failover, with none. The replication account may now connect to
+  the internal `postgres` database (it holds no application data). Clusters already in that state
+  recover by themselves within five minutes of updating.
+- **Mail failover after a server is lost is faster, and every mail move shows where its time
+  went.** When the server running mail is down, the failover no longer waits 90 seconds for mail on
+  that server to shut down cleanly — it cannot — before moving on. The mail migration progress
+  view now shows how long each step took, and the timings are kept with the run.
+- **Moving mail to another server no longer loses the last few minutes of mail.** A planned move —
+  **Migrate** or **Failback** in Mail placement — restored the new server from the standby copy,
+  which is refreshed only every five minutes, so mail that arrived since the last refresh was gone
+  after the move. The move now copies the complete mail store from the old server after mail has
+  stopped there, then switches over; if that copy fails, nothing is moved and mail starts again on
+  the old server. Automatic failover after a server is lost is unchanged (it can only use the last
+  standby copy). The standby copy itself is also kept intact while mail is stopped for a move or a
+  failover — before, a refresh in that window discarded a good copy, and the move restored from the
+  older backup instead.
+- **Mail moves and failovers no longer fail because the webmail was restarted mid-way.** A move
+  stops webmail together with mail and starts both again on the new server; a periodic check that
+  keeps webmail running started it again in between, on the old server. On a failover that server
+  is down, so the move failed and had to be retried — automatic failover took about three times
+  as long. Webmail is now left to the move while one is running.
+- **Mail failover survives losing the database's primary server at the same time.** On a
+  high-availability cluster, losing the server that ran both mail and the database primary broke
+  automatic mail failover: mail moved to the standby and kept working, but one progress update
+  failed while the database switched servers, so the failover was recorded as still running and
+  the platform kept pointing at the failed server. When the management API next restarted, it moved
+  mail back to that server, where its data no longer was — mail stayed down until fixed by hand,
+  and automatic failover never ran again. The failover now rides out a database switch-over, mail
+  is always placed where its data actually is, and a failover left unfinished is released so the
+  next check decides again.
+- **A mail standby starts replicating as soon as you choose it.** Saving mail placement with a
+  standby (secondary or tertiary) server only stored the choice; the node was labelled — and the
+  warm copy of the mail store started — only after the management API next restarted, usually the
+  next update. A failover in that window could not use the warm standby and restored from the last
+  backup instead, losing mail received since. Saving placement now applies it to the cluster right
+  away, and reports an error if that fails instead of claiming success. While a mail migration or
+  failover is running, saving placement is refused until it finishes.
+- **A fresh install now applies exactly the release it is pinned to.** `bootstrap.sh --env
+  production --release-tag vX` cloned the repository's default branch for its first apply and
+  only then handed over to Flux at the tag. While a newer release candidate sat on `main`, a
+  production install of the stable release briefly ran the candidate's images — including its
+  database migrations — and kept objects that exist only in the newer manifests, because Flux
+  removes only what it applied itself. The first apply now uses the same git ref Flux reconciles:
+  the pinned tag on production, the tag Flux resolved on staging, `development` on dev — and on a
+  re-run, the ref the cluster is currently pinned to, so re-running bootstrap after an upgrade
+  never re-applies an older release.
+- **An upgrade is refused while Flux is suspended.** With the platform Kustomization or its git
+  source suspended (for example after a manual rollback), **Upgrade** re-pinned the release,
+  reported "Flux is reconciling", and nothing happened; the post-upgrade checks then recommended
+  an abort without naming the cause. The pre-flight now has a **Flux reconciling the platform**
+  check that names the suspended object, and every upgrade path — the admin panel, `platform-ops
+  upgrade --apply` and automatic updates — refuses to re-pin until it is resumed.
 - **Restoring a snapshot no longer leaves your applications showing "Stopped".** The status
   check that runs every 15 seconds read the restore's temporary scale-down as a stop, and once
   an application was marked stopped it was not looked at again for ten minutes — so restored apps
