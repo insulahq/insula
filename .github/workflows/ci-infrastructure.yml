@@ -208,6 +208,7 @@ jobs:
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
+      - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-host-migration-k3s-token.sh
       - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-longhorn-reservation.sh
