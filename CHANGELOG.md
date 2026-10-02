@@ -114,6 +114,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   when it was both a route of its own and another route's *Add www* companion. Route deletion —
   and switching *Add www* / *Remove www* off — now removes the records only when no other route
   serves that name.
+- **Suspended sites now show the suspension page.** Visitors of a suspended tenant's site were
+  redirected to `https://suspended.platform.local/`, a host that does not exist. They now land on
+  `https://suspended.<platform domain>/`, served over HTTPS with its own certificate, and the
+  redirect follows a platform-domain rename. Tenants that are already suspended are moved to the
+  new address when the platform API starts. If your DNS has no wildcard record for the platform
+  domain, add `suspended.<platform domain>` pointing at the ingress, like `admin.` and `tenant.`.
 
 ### Security
 

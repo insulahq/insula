@@ -11,6 +11,7 @@ import {
   deleteMiddleware,
   isK8sNotFound,
 } from '../ingress-routes/traefik-apply.js';
+import { SUSPEND_MIDDLEWARE_LABEL } from './suspended-page.js';
 
 /**
  * IngressRoute suspend / resume — when a tenant is suspended, redirect
@@ -36,10 +37,6 @@ import {
  */
 
 const SUSPENDED_MARKER_ANNOTATION = 'platform.io/suspended';
-// Platform-wide suspended URL — the `platform-suspended` Deployment /
-// Service / IngressRoute in the `platform` namespace host this page.
-const SUSPENDED_REDIRECT_URL_ENV = 'SUSPENDED_REDIRECT_URL';
-const SUSPENDED_REDIRECT_URL_DEFAULT = 'https://suspended.platform.local/';
 
 // IngressRoute shape we care about — just the fields we read/mutate.
 type IngressRouteSpec = {
@@ -146,9 +143,10 @@ async function listNamespaceIngressRoutes(
 export async function suspendNamespaceIngresses(
   k8s: K8sClients,
   namespace: string,
+  // Resolved by the caller from the platform apex — see
+  // suspended-page.ts:resolveSuspendedRedirectUrl.
+  redirectUrl: string,
 ): Promise<{ suspended: string[] }> {
-  const redirectUrl = process.env[SUSPENDED_REDIRECT_URL_ENV] ?? SUSPENDED_REDIRECT_URL_DEFAULT;
-
   const routes = await listNamespaceIngressRoutes(k8s.custom, namespace);
   const suspended: string[] = [];
 
@@ -156,14 +154,12 @@ export async function suspendNamespaceIngresses(
     const name = ing.metadata?.name;
     if (!name) continue;
     const annotations = ing.metadata?.annotations ?? {};
-    if (annotations[SUSPENDED_MARKER_ANNOTATION] === 'true') {
-      // Already suspended — skip but keep in the result for caller stats.
-      suspended.push(name);
-      continue;
-    }
+    const alreadySuspended = annotations[SUSPENDED_MARKER_ANNOTATION] === 'true';
 
     // 1. Apply the RedirectRegex Middleware first so the IngressRoute
-    //    patch references something Traefik has already loaded.
+    //    patch references something Traefik has already loaded. Also on an
+    //    already-suspended route: re-applying is how a retry or re-suspend
+    //    moves a stale redirect target to the current one.
     const mwName = suspendMiddlewareName(name);
     const middleware = buildMiddleware({
       name: mwName,
@@ -177,11 +173,15 @@ export async function suspendNamespaceIngresses(
         permanent: false,
       }),
       labels: {
-        'hosting-platform/suspend': 'true',
+        [SUSPEND_MIDDLEWARE_LABEL]: 'true',
         'hosting-platform/ingressroute-name': name,
       },
     });
     await applyMiddleware(k8s.custom, middleware);
+    if (alreadySuspended) {
+      suspended.push(name);
+      continue;
+    }
 
     // 2. Patch the IngressRoute: add the suspend Middleware ref to every
     //    route's middlewares list (front of list so it wins). Stamp the

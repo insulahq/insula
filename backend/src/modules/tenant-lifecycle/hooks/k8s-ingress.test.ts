@@ -5,14 +5,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // to the K8s implementation. vi.hoisted is required because vi.mock()
 // factories run BEFORE module-level test code, so plain `const` spies
 // would be in the temporal dead zone when the factory runs.
-const { suspendSpy, resumeSpy, reconcileSpy } = vi.hoisted(() => ({
-  suspendSpy: vi.fn(async () => undefined),
+const { suspendSpy, resumeSpy, reconcileSpy, redirectUrlSpy } = vi.hoisted(() => ({
+  suspendSpy: vi.fn(async () => ({ suspended: ['r1'] })),
   resumeSpy: vi.fn(async () => undefined),
   reconcileSpy: vi.fn(async () => undefined),
+  redirectUrlSpy: vi.fn(async (): Promise<string | null> => 'https://suspended.example.test/'),
 }));
 vi.mock('../ingress-suspend.js', () => ({
   suspendNamespaceIngresses: suspendSpy,
   resumeNamespaceIngresses: resumeSpy,
+}));
+vi.mock('../suspended-page.js', () => ({
+  resolveSuspendedRedirectUrl: redirectUrlSpy,
 }));
 vi.mock('../../domains/k8s-ingress.js', () => ({
   reconcileIngress: reconcileSpy,
@@ -40,10 +44,19 @@ function ctx(transition: Transition): HookCtx {
 describe('ingress-suspend hook', () => {
   beforeEach(() => suspendSpy.mockClear());
 
-  it('calls suspendNamespaceIngresses on suspended transition', async () => {
+  it('redirects to the apex-derived suspended page, never a placeholder host', async () => {
     const r = await ingressSuspendHook.run(ctx('suspended'));
     expect(r.status).toBe('ok');
-    expect(suspendSpy).toHaveBeenCalledWith({ core: {} }, 'tenant-test');
+    expect(suspendSpy).toHaveBeenCalledWith({ core: {} }, 'tenant-test', 'https://suspended.example.test/');
+    expect(r.detail).toContain('https://suspended.example.test/');
+  });
+
+  it('fails visibly when no platform domain is configured', async () => {
+    redirectUrlSpy.mockResolvedValueOnce(null);
+    const r = await ingressSuspendHook.run(ctx('suspended'));
+    expect(r.status).toBe('failed');
+    expect(r.envelope?.detail).toMatch(/no platform domain/i);
+    expect(suspendSpy).not.toHaveBeenCalled();
   });
 
   it('noop on other transitions', async () => {
