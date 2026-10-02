@@ -271,6 +271,14 @@ bootstrap_node() {
   # (debian 13.6 → 13.7) — that is the OS under test now, not a broken image.
   if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
     echo "  ${ip}: reused VM — OS $(_vssh "$ip" "cat /etc/debian_version 2>/dev/null || . /etc/os-release && echo \$VERSION_ID" 2>/dev/null | head -1) kept"
+    # The OS is kept, the operator CLI is NOT: destroy-cluster.sh leaves
+    # /usr/local/bin/insula (an operator re-bootstraps from it), and bootstrap
+    # keeps any binary that reports the target version. A previous run's locally
+    # built CLI is stamped with platform/VERSION, so a "v2026.10.2" re-install
+    # silently ran a dev build carrying the NEXT release's host-migrations.
+    # Remove it; VMTEST_PLATFORM_OPS_BIN (below) or the signed release replaces it.
+    _vssh "$ip" "rm -f /usr/local/bin/insula" \
+      || echo "  ${ip}: WARN could not remove a stale /usr/local/bin/insula — bootstrap may keep it"
   else
     assert_guest_os_version "$ip" "${NODE_OS[$host]}"
   fi
