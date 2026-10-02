@@ -105,7 +105,7 @@ export default function App() {
             <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
             <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
             <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
-            <Route path="snapshots" element={<LifecycleGate><Snapshots /></LifecycleGate>} />
+            <Route path="snapshots" element={<LifecycleGate allowDuringStorageOp><Snapshots /></LifecycleGate>} />
             <Route path="email" element={<LifecycleGate><Email /></LifecycleGate>} />
             <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
             <Route path="backups/restore/:bundleId" element={<LifecycleGate><TenantRestoreCart /></LifecycleGate>} />

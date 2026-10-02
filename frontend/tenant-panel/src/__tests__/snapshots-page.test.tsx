@@ -11,6 +11,11 @@ let listData: { data: { snapshots: unknown[]; expiryHours: number } } | undefine
   data: { snapshots: [], expiryHours: 48 },
 };
 
+let lifecycle: unknown = null;
+vi.mock('../hooks/use-my-lifecycle', () => ({
+  useMyLifecycle: vi.fn(() => ({ data: lifecycle, isLoading: false })),
+}));
+
 vi.mock('../hooks/use-snapshots', () => ({
   useSnapshots: vi.fn(() => ({ data: listData, isLoading: false, isError: false, refetch: vi.fn() })),
   useCreateSnapshot: vi.fn(() => ({ mutate: createMutate, isPending: false, error: null })),
@@ -42,6 +47,7 @@ describe('Snapshots page', () => {
     deleteMutate.mockClear();
     restoreMutate.mockClear();
     listData = { data: { snapshots: [], expiryHours: 48 } };
+    lifecycle = null;
   });
 
   const readySnap = {
@@ -137,6 +143,30 @@ describe('Snapshots page', () => {
     fireEvent.click(screen.getByTestId('confirm-restore-snapshot'));
     expect(screen.getByTestId('restore-progress-modal')).toBeInTheDocument();
     restoreMutate.mockReset();
+  });
+
+  it('★ re-opens the progress of a restore already running (reload / navigated back)', () => {
+    listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
+    lifecycle = {
+      tenantStatus: 'active', storageLifecycleState: 'restoring', tenantId: 't',
+      activeStorageOperation: { id: 'op-1', isSnapshotRestore: true },
+    };
+    render(<Snapshots />, { wrapper });
+    expect(screen.getByTestId('restore-progress-modal')).toBeInTheDocument();
+  });
+
+  it('★ while a storage operation runs, nothing here can start another one', () => {
+    listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
+    lifecycle = {
+      tenantStatus: 'active', storageLifecycleState: 'resizing', tenantId: 't',
+      activeStorageOperation: { id: 'op-2', isSnapshotRestore: false },
+    };
+    render(<Snapshots />, { wrapper });
+    expect(screen.getByTestId('create-snapshot')).toBeDisabled();
+    expect(screen.getByTestId('restore-snapshot-snap-1')).toBeDisabled();
+    expect(screen.getByTestId('delete-snapshot-snap-1')).toBeDisabled();
+    // Not a snapshot restore — no restore progress to re-open.
+    expect(screen.queryByTestId('restore-progress-modal')).not.toBeInTheDocument();
   });
 
   it('does NOT offer restore for a still-creating snapshot', () => {

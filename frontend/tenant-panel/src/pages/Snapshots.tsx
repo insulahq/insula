@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle } from 'lucide-react';
 import {
   useSnapshots,
@@ -13,6 +13,7 @@ import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressMo
 import SnapshotDataSize from '@/components/SnapshotDataSize';
 import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 import { useSortable } from '@/hooks/use-sortable';
+import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
 
@@ -59,6 +60,24 @@ export default function Snapshots() {
   const [restoreOpId, setRestoreOpId] = useState<string | null>(null);
   const [createTaskSnapId, setCreateTaskSnapId] = useState<string | null>(null);
   const refreshTasks = useRefreshTaskCenter();
+
+  // This page stays mounted during a storage op (LifecycleGate
+  // allowDuringStorageOp) so a restore's progress dialog survives it. While
+  // an op runs, nothing here may start another one; and a restore started
+  // before a reload or a navigation re-opens its progress.
+  const lifecycle = useMyLifecycle().data;
+  const storageState = lifecycle?.storageLifecycleState ?? null;
+  const storageBusy = storageState !== null && storageState !== 'idle' && storageState !== 'failed';
+  const BUSY_HINT = 'Unavailable while a storage operation is running';
+  const activeRestoreId = lifecycle?.activeStorageOperation?.isSnapshotRestore
+    ? lifecycle.activeStorageOperation.id
+    : null;
+  const dismissedRestoreId = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeRestoreId && !restoreOpId && dismissedRestoreId.current !== activeRestoreId) {
+      setRestoreOpId(activeRestoreId);
+    }
+  }, [activeRestoreId, restoreOpId]);
 
   const onCreate = () => {
     setCreateError(null);
@@ -109,7 +128,9 @@ export default function Snapshots() {
         <button
           type="button"
           onClick={() => { setCreateOpen(true); setCreateError(null); setLabel(''); }}
-          className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          disabled={storageBusy}
+          title={storageBusy ? BUSY_HINT : undefined}
+          className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 dark:disabled:opacity-40"
           data-testid="create-snapshot"
         >
           <Plus className="h-4 w-4" /> Take snapshot
@@ -186,9 +207,10 @@ export default function Snapshots() {
                           <button
                             type="button"
                             onClick={() => { setConfirmRestore(s); setRestoreError(null); }}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                            disabled={storageBusy}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700 dark:disabled:opacity-40"
                             data-testid={`restore-snapshot-${s.id}`}
-                            title="Restore your storage to this snapshot"
+                            title={storageBusy ? BUSY_HINT : 'Restore your storage to this snapshot'}
                           >
                             <RotateCcw size={12} /> Restore
                           </button>
@@ -196,7 +218,9 @@ export default function Snapshots() {
                         <button
                           type="button"
                           onClick={() => setConfirmDelete(s)}
-                          className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
+                          disabled={storageBusy}
+                          title={storageBusy ? BUSY_HINT : undefined}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950 dark:disabled:opacity-40"
                           data-testid={`delete-snapshot-${s.id}`}
                         >
                           <Trash2 size={12} /> Delete
@@ -280,7 +304,10 @@ export default function Snapshots() {
 
       {/* Restore progress modal — step-by-step timeline of the restore */}
       {restoreOpId && (
-        <SnapshotRestoreProgressModal operationId={restoreOpId} onClose={() => { setRestoreOpId(null); snapsQ.refetch(); }} />
+        <SnapshotRestoreProgressModal
+          operationId={restoreOpId}
+          onClose={() => { dismissedRestoreId.current = restoreOpId; setRestoreOpId(null); snapsQ.refetch(); }}
+        />
       )}
 
       {/* Create progress modal — task-center driven */}
