@@ -37,6 +37,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   whose lifecycle hooks did not all complete is now reported as failed with the failing hooks
   listed, instead of counting as done. Bulk **Verify** now reports, per domain, whether it verified
   and which checks failed.
+- **File Manager uploads show their speed.** While a file uploads, its line shows bytes sent of
+  the total and the current upload speed (averaged over the last few seconds); once every byte is
+  sent it says *Finishing…* until the server confirms. A completed upload keeps its final size,
+  how long it took and its average speed on screen until you close the dialog. Uploading several
+  files adds an overall line with the combined progress and speed, and the total size and average
+  speed of the batch when it finishes. Failed and cancelled uploads show no speed.
 
 ### Fixed
 
