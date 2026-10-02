@@ -42,6 +42,15 @@ describe('buildResticRestoreJobSpec', () => {
     };
   };
 
+  it('runs on the node it is given — the fresh volume is built where this pod runs', () => {
+    const pinned = buildResticRestoreJobSpec({
+      jobName: 'j', namespace: 'tenant-abc', pvcName: 'tenant-abc-storage', tenantId: 'abc',
+      bundleId: 'bkp-1', credsSecretName: 'c', snapshotId: 'a'.repeat(64), pinToNode: 'node-a',
+    }) as { spec: { template: { spec: { nodeName?: string } } } };
+    expect(pinned.spec.template.spec.nodeName).toBe('node-a');
+    expect((spec as unknown as { spec: { template: { spec: { nodeName?: string } } } }).spec.template.spec.nodeName).toBeUndefined();
+  });
+
   it('labels the Job restore-files (shim NetworkPolicy egress)', () => {
     expect(spec.metadata.labels['platform.io/component']).toBe('restore-files');
     expect(spec.spec.template.metadata.labels['platform.io/component']).toBe('restore-files');

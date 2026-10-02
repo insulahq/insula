@@ -31,6 +31,7 @@
  * cache cannot share a size limit with the mail tree.
  */
 
+import { STALWART_POD_LABELS } from '../../mail-admin/active-node.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 
 /** Where the Maildir tree for the mailbox being captured is written. */
@@ -284,6 +285,32 @@ export function buildMailboxesResticJobSpec(
         spec: {
           restartPolicy: 'Never',
           priorityClassName: 'platform-tenant-overhead',
+          // Run on Stalwart's node. The capture pulls every message of every
+          // mailbox out of Stalwart over JMAP/IMAP; scheduled anywhere else,
+          // all of it crosses the inter-node tunnel. On a two-node production
+          // cluster the nightly run put all ten capture pods on the other node
+          // and moved ~48 GB between nodes in one hour — traffic that never
+          // left the host while the cluster had one node.
+          //
+          // REQUIRED, not preferred: preferred affinity is one score among
+          // several and loses to resource balancing on an emptier node, which
+          // is exactly the node a capture pod is drawn to. Pod affinity rather
+          // than a node name resolved up front, so it follows Stalwart through
+          // a mail migration or DR failover without a lookup that can go stale
+          // between resolve and schedule. If Stalwart is not running the pod
+          // waits — and the capture could not have worked without it anyway.
+          affinity: {
+            podAffinity: {
+              requiredDuringSchedulingIgnoredDuringExecution: [{
+                labelSelector: { matchLabels: { ...STALWART_POD_LABELS } },
+                // Explicit: Stalwart runs in the mail namespace, which is also
+                // where this Job runs. Spelled out so a Job moved to another
+                // namespace cannot silently match nothing and wait forever.
+                namespaces: [input.mailNamespace],
+                topologyKey: 'kubernetes.io/hostname',
+              }],
+            },
+          },
           containers: [{
             name: 'mailboxes',
             image: input.toolsImage,

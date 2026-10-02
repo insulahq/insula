@@ -134,20 +134,30 @@ export interface DeployCatalogEntryInput {
   /** Client timezone — injected as TZ env var */
   readonly timezone?: string;
   /**
-   * M5: worker pin from tenants.node_name. Null/undefined lets
-   * the default scheduler pick any node matching the implicit
-   * constraints (server-only taints prevent tenant pods from landing
-   * on tainted control-plane nodes). When set:
+   * M5: worker pin from tenants.node_name. Null lets the default
+   * scheduler pick any node matching the implicit constraints
+   * (server-only taints prevent tenant pods from landing on tainted
+   * control-plane nodes). When set:
    *   - Local tier: hard nodeSelector (pod must run on that node).
    *   - HA tier: soft preferred affinity (pod can fail over).
+   *
+   * REQUIRED, not optional, and every caller reads it from the tenant row
+   * (`loadTenantPlacement`). It used to be optional and only the create path
+   * passed it: every upgrade, config redeploy and credential rotation
+   * re-rendered the Deployment WITHOUT the pin, and a fleet-wide redeploy
+   * stripped it from nearly every tenant. With two nodes, the next pod
+   * restart could then land on the node without the data, and Longhorn's
+   * data locality copied the whole volume across. Making it required turns
+   * an unthreaded call into a compile error instead of a silent unpin.
    */
-  readonly nodeName?: string | null;
+  readonly nodeName: string | null;
   /**
    * Storage tier from tenants.storage_tier. Drives whether the worker
    * pin is hard (nodeSelector) or soft (preferred affinity). HA tier
    * MUST use soft so the pod can reschedule when the pin node fails.
+   * Required for the same reason as `nodeName`.
    */
-  readonly storageTier?: 'local' | 'ha' | null;
+  readonly storageTier: 'local' | 'ha' | null;
   /**
    * Runtime-firewall declaration propagated from the catalog manifest.
    * When present, the deployer stamps two annotations onto the Pod

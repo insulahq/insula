@@ -39,7 +39,9 @@ import { isNotFound } from '../../shared/k8s-errors.js';
 
 const SETTINGS_ID = 'system';
 const MAIL_NAMESPACE = 'mail';
-const STALWART_POD_SELECTOR = 'app=stalwart-mail';
+/** Labels that select the Stalwart server pod — also used to co-locate pods with it. */
+export const STALWART_POD_LABELS = { app: 'stalwart-mail' } as const;
+const STALWART_POD_SELECTOR = `app=${STALWART_POD_LABELS.app}`;
 export const MAIL_PVC_NAME = 'mail-stack-data';
 
 export type ActiveMailNodeSource = 'pod' | 'settings' | 'pvc';
