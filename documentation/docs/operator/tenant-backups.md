@@ -150,8 +150,21 @@ succeeded.
     **completed**.
 
 To diagnose, open the bundle and look at the per-component status — anything
-other than `completed` is the culprit. The component's `lastError` carries a
-sanitised reason; full detail is in the platform-api logs:
+other than `completed` is the culprit. The component's `lastError` starts with
+the Kubernetes reason the capture Job failed (for example `DeadlineExceeded`).
+When the Job's pod never ran, a `diagnosis:` part follows it: which pod, on
+which node, why it was waiting, the warning events that explain it, and — for
+the files capture — which node the pod was pinned to and why. A typical one:
+
+```text
+files-component Job failed: DeadlineExceeded: Job was active longer than specified deadline;
+diagnosis: FailedAttachVolume: Multi-Attach error for volume "pvc-…" Volume is already used by
+pod(s) app-…; pinned to node node-a (mounted)
+```
+
+That one means the capture was sent to a node the tenant's volume is not
+attached to. Tenants only ever see the reason, never the diagnosis or the pod
+logs. Full detail is in the platform-api logs:
 
 ```bash
 kubectl -n platform logs -l app=platform-api --tail=200

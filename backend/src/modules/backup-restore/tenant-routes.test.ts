@@ -184,6 +184,11 @@ describe('tenant-routes auth boundaries', () => {
     expect(sanitize('Bundle failed: timeout')).toBe('Bundle failed: timeout');
     expect(sanitize('mailboxes-component failed: backoff; logs: TOKEN=xyz secret'))
       .toBe('mailboxes-component failed: backoff');
+    // The Job-failure diagnosis names nodes, pods and raw Kubernetes events —
+    // operator-only, and it comes BEFORE the logs, so cutting at `; logs:`
+    // alone would hand it to the tenant.
+    expect(sanitize('files-component Job x failed: DeadlineExceeded; diagnosis: pod x-1 on node node-a never started; logs: stderr'))
+      .toBe('files-component Job x failed: DeadlineExceeded');
   });
 
   it('GET /tenants/:tenantId/bundles/:id/status returns the route (own tenant; bundle absence is later 404)', async () => {

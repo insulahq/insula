@@ -86,7 +86,8 @@ import { notifyResticFailure } from '../restic-failure-notify.js';
 import { resolveBundleRepoLayout } from '../repo-layout.js';
 import { makeRepoInitSerialiser } from '../repo-init-lock.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
-import { resolveTenantDataNode } from '../../tenant-placement/data-node.js';
+import { resolveTenantDataNode, type DataNodeChoice } from '../../tenant-placement/data-node.js';
+import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
 
 /**
  * PVC mount point inside the capture Job. `restic backup /source`
@@ -513,7 +514,9 @@ export async function captureFilesComponent(
       }
     }
 
-    await waitForJob(opts.k8s, opts.namespace, jobName, jobCreatedAt, orchestratorTimeoutMs, opts.onProgress);
+    await waitForJob(
+      opts.k8s, opts.namespace, jobName, jobCreatedAt, orchestratorTimeoutMs, describePlacement(dataNode), opts.onProgress,
+    );
 
     const log = await readEndOfJobLog(opts.k8s, opts.namespace, jobName);
     const parsed = parseFilesDone(log, opts.backupId);
@@ -601,12 +604,23 @@ export function parseFilesDone(
   return null;
 }
 
+/**
+ * Where the capture pod was sent and on what evidence — carried into the
+ * operator-only diagnosis, because a pod pinned to the wrong node is the one
+ * failure its own events cannot name (Kubernetes only reports that the volume
+ * is busy).
+ */
+function describePlacement(choice: DataNodeChoice): string {
+  return choice.node ? `pinned to node ${choice.node} (${choice.source})` : 'not pinned';
+}
+
 async function waitForJob(
   k8s: K8sClients,
   namespace: string,
   jobName: string,
   jobCreatedAtMs: number,
   timeoutMs: number,
+  placement: string,
   onProgress?: (msg: string) => Promise<void> | void,
 ): Promise<void> {
   const start = Date.now();
@@ -638,7 +652,7 @@ async function waitForJob(
         const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
         if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
       } catch { /* ignore */ }
-      const msg = failed?.message ?? 'Job failed';
+      const msg = formatJobFailure(await describeJobFailure(k8s.core, namespace, jobName, status.conditions), [placement]);
       throw new Error(`files-component Job ${jobName} failed: ${msg}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {

@@ -76,6 +76,7 @@ import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
 import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 import { assertMailboxDomainsOwnedByTenant } from '../mailbox-domain-ownership.js';
@@ -859,7 +860,8 @@ async function waitForJob(
         const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
         if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
       } catch { /* ignore */ }
-      throw new Error(`mailboxes-by-address Job ${jobName} failed: ${failed?.message ?? 'unknown'}${logTail}`);
+      const msg = formatJobFailure(await describeJobFailure(k8s.core, namespace, jobName, status.conditions), []);
+      throw new Error(`mailboxes-by-address Job ${jobName} failed: ${msg}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`mailboxes-by-address Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);

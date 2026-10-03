@@ -9455,9 +9455,19 @@ bootstrap_stalwart_v016() {
 
   # Use the JMAP mgmt Service (always reachable from within cluster).
   local mgmt_url="http://stalwart-mgmt.mail.svc.cluster.local:8080"
+  # The probe runs curl from an admin-panel pod (the api image ships no curl).
+  # Resolve it on EVERY attempt, Running and not terminating: picked once, the
+  # name went stale when admin-panel rolled inside the probe window (a second
+  # ReplicaSet a minute after the first), and every `kctl exec` into the gone
+  # pod read as 000 for the full 10 minutes → "refusing to bootstrap" on a
+  # healthy Stalwart (seen on a VM upgrade-baseline install).
+  _stalwart_probe_pod() {
+    kctl get pod -n platform -l app=admin-panel --field-selector=status.phase=Running \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null \
+      | awk 'NF == 1 { print $1; exit }'
+  }
   local probe_pod
-  probe_pod=$(kctl get pod -n platform -l app=admin-panel \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  probe_pod=$(_stalwart_probe_pod || true)
   if [[ -z "$probe_pod" ]]; then
     warn "  No admin-panel pod found — cannot probe Stalwart auth state."
     return 0
@@ -9486,6 +9496,8 @@ bootstrap_stalwart_v016() {
   # never riding out the Reloader roll(VM tier: probe reported "000000"). Use
   # assign-then-|| (replaces, not appends) and normalise to the last 3 digits.
   for probe_attempt in $(seq 1 100); do
+    probe_pod=$(_stalwart_probe_pod || true)
+    [[ -z "$probe_pod" ]] && probe_pod="admin-panel-pod-pending"   # exec fails → 000 → retry
     admin_code=$(kctl exec -n platform "$probe_pod" -- \
       curl -s -o /dev/null -w '%{http_code}' \
       -u "admin:${stalwart_admin_pw}" --max-time 5 \

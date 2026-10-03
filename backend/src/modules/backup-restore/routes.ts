@@ -50,6 +50,7 @@ import {
 import { browseFilesTree } from './browse-files-restic.js';
 import { createSnapshot, restoreSnapshot, waitForSnapshotReady } from '../tenant-snapshots/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { formatUtcMinute } from '../../shared/format-utc.js';
 
 export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -385,7 +386,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
         const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
         await notifyAdminOperationalEvent(app.db, 'database', {
           subsystem: 'Restore cart',
-          objectLabel: `${cartId} (tenant ${job.tenantId})`,
+          // The cart id is not a name — the dispatcher would print "(unnamed)".
+          objectLabel: `created ${formatUtcMinute(job.createdAt)} (tenant ${job.tenantId})`,
           detail: `The restore stopped at a failed item. ${firstFailureMsg}.`,
           severityLabel: 'failed',
           recommendedAction: "Re-invoke /execute to retry from the failed item, or roll back via the cart's pre-restore snapshot.",

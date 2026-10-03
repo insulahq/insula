@@ -85,6 +85,24 @@ describe('emailChannel.deliver', () => {
     expect(sendNotificationEmailMock.mock.calls[0][3]).toMatchObject({ subject: 's', html: 'b' });
   });
 
+  it('greets the recipient by name, never by user id', async () => {
+    getActiveTemplateMock.mockResolvedValue({
+      categoryId: 'tenant.suspended', channel: 'email', locale: 'en',
+      subjectTemplate: 'S', bodyTemplate: 'Hi {{userName}}', bodyFormat: 'plaintext', isActive: true,
+    });
+    const limit = vi.fn().mockResolvedValue([{ fullName: 'Ada Lovelace' }]);
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) };
+    await emailChannel.deliver({
+      db: db as never,
+      notification: {
+        id: 'n1', userId: 'u1', type: 'info', title: 't', message: 'm',
+        resourceType: null, resourceId: null, categoryId: 'tenant.suspended',
+      } as never,
+      encryptionKey: 'K',
+    });
+    expect(renderTemplateAsyncMock.mock.calls[0]![1]).toMatchObject({ userName: 'Ada Lovelace' });
+  });
+
   it('returns failed when email-sender throws', async () => {
     sendNotificationEmailMock.mockRejectedValue(new Error('SMTP down'));
     const r = await emailChannel.deliver({

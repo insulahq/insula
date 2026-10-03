@@ -18,6 +18,7 @@
 import { sendNotificationEmail } from '../email-sender.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
+import { userDisplayName } from '../dispatcher/envelope.js';
 import type { NotificationChannel, DeliveryContext, DeliveryResult } from './types.js';
 
 interface NotificationRowWithCategory {
@@ -59,7 +60,10 @@ export const emailChannel: NotificationChannel = {
         const tpl = await getActiveTemplate(ctx.db, cat, 'email', locale);
         if (tpl) {
           const rendered = await renderTemplateAsync(tpl, {
-            userName: ctx.notification.userId,
+            // The recipient's NAME. This was the user id, which the five templates
+            // that greet by {{userName}} printed raw: this path renders without
+            // the dispatcher's id resolution.
+            userName: await userDisplayName(ctx.db, ctx.notification.userId, null),
             title: ctx.notification.title,
             message: ctx.notification.message,
             platformName: 'Hosting Platform',

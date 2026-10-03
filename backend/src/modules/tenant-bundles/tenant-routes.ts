@@ -48,6 +48,7 @@ import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import { decrypt } from '../oidc/crypto.js';
+import { tenantVisibleText } from '../../shared/operator-only-text.js';
 
 export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -295,15 +296,13 @@ function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupCompone
 }
 
 /**
- * Drop the `; logs: …` suffix appended by `mailboxes.ts:waitForJob`
- * so tenant-visible error messages don't include raw pod stderr
- * . Helper mirrored from the new
- * `backup-restore/tenant-routes.ts:sanitizeTenantVisibleError`.
+ * Drop the operator-only tail of a Job error — the `; diagnosis:` (node and
+ * pod names, raw Kubernetes events) and `; logs:` (raw pod stderr) the Job
+ * watchers append — so a tenant sees only the headline. See
+ * shared/operator-only-text.ts.
  */
 function sanitizeTenantVisibleError(raw: string | null): string | null {
-  if (!raw) return raw;
-  const idx = raw.indexOf('; logs:');
-  return idx >= 0 ? raw.slice(0, idx) : raw;
+  return raw ? tenantVisibleText(raw) : raw;
 }
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
