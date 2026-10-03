@@ -492,9 +492,9 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
 
 function CertificatesTile({ summary }: { summary: Summary | undefined }) {
   const c = summary?.certificates.data;
-  if (!c) return <SectionFallback title="Certificates" to="/domains" section={summary?.certificates ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!c) return <SectionFallback title="Certificates" to="/tenants/domains" section={summary?.certificates ?? { state: 'stale', reason: null, observedAt: null }} />;
   return (
-    <MatrixTile title="Certificates" to="/domains" cells={[
+    <MatrixTile title="Certificates" to="/tenants/domains" cells={[
       { k: 'Issued', v: String(c.issued) },
       { k: 'Wildcards', v: String(c.wildcards), tone: 'ok' },
       { k: 'Nearest expiry', v: c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays}d`,
@@ -513,9 +513,9 @@ function CertificatesTile({ summary }: { summary: Summary | undefined }) {
 
 function ScheduledTasksTile({ summary }: { summary: Summary | undefined }) {
   const t = summary?.scheduledTasks.data;
-  if (!t) return <SectionFallback title="Scheduled" to="/platform/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!t) return <SectionFallback title="Scheduled" to="/tenants/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
   return (
-    <MatrixTile title="Scheduled tasks" to="/platform/cron-jobs" cells={[
+    <MatrixTile title="Scheduled tasks" to="/tenants/cron-jobs" cells={[
       { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
       { k: 'Failed · 24h', v: String(t.failed24h), tone: t.failed24h > 0 ? 'warn' : 'ok' },
       { k: 'Enabled', v: String(t.enabled) },

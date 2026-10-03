@@ -1243,6 +1243,7 @@ export default function TenantsBackupsPage() {
         onImported={() => { void refetchRollup(); }}
       />
       <BackupClassPage
+        page="/backups/tenants"
         icon={Package}
         title="Tenant Backups"
         subtitle="Per-tenant snapshots (PVC block copies) and bundles (files + mailboxes + config). One row per snapshot or bundle — filter by tenant or free-text to drill in."

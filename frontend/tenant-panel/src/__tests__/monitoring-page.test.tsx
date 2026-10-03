@@ -65,7 +65,7 @@ describe('tenant Monitoring page', () => {
   it('declares the legacy path as a REDIRECT, not a second mount', () => {
     // Mounting the page at two URLs would give Monitoring two canonical
     // addresses and list it twice in search.
-    expect(appSrc).toMatch(/path="resource-usage"[\s\S]{0,160}<Navigate to="\/monitoring\?tab=resource-usage" replace/);
+    expect(appSrc).toMatch(/path="resource-usage"[\s\S]{0,160}<Navigate to="\/monitoring\/resource-usage" replace/);
   });
 
   it('ignores a nonsense ?tab= rather than rendering nothing', () => {
@@ -74,20 +74,34 @@ describe('tenant Monitoring page', () => {
   });
 });
 
+/** Declared routes; a tabbed page is declared as `<page>/:tab?`. */
+function declaredRoutes(app: string): { pages: Set<string>; tabbed: Set<string> } {
+  const raw = [...app.matchAll(/<Route\s+path="([^"]+)"/g)].map(([, p]) => p.replace(/^\//, ''));
+  return {
+    pages: new Set(raw.map((p) => p.replace(/\/:tab\?$/, ''))),
+    tabbed: new Set(raw.filter((p) => p.endsWith('/:tab?')).map((p) => p.replace(/\/:tab\?$/, ''))),
+  };
+}
+
+/** A page, or a tab of a tabbed page (`monitoring/resource-usage`). */
+function resolves(d: { pages: Set<string>; tabbed: Set<string> }, path: string): boolean {
+  if (d.pages.has(path)) return true;
+  const cut = path.lastIndexOf('/');
+  return cut > 0 && d.tabbed.has(path.slice(0, cut));
+}
+
 describe('navigation targets resolve', () => {
   it('every sidebar link matches a declared route', () => {
     // A rename that misses one surface produces a link to nowhere, and the
     // only symptom is a blank page for whoever clicks it.
     const sidebar = sidebarSrc;
     const app = appSrc;
-    const declared = new Set(
-      [...app.matchAll(/<Route\s+path="([^"]+)"/g)].map(([, p]) => p.replace(/^\//, '')),
-    );
+    const declared = declaredRoutes(app);
     const targets = [...sidebar.matchAll(/to:\s*'\/([^']*)'/g)].map(([, p]) => p.split('?')[0]);
     expect(targets.length).toBeGreaterThan(3);
     for (const t of targets) {
       if (t === '') continue; // index route
-      expect(declared, `sidebar links /${t}`).toContain(t);
+      expect(resolves(declared, t), `sidebar links /${t}`).toBe(true);
     }
   });
 
@@ -101,13 +115,11 @@ describe('navigation targets resolve', () => {
   });
 
   it('every search registry target resolves to a declared route', () => {
-    const declared = new Set(
-      [...appSrc.matchAll(/<Route\s+path="([^"]+)"/g)].map(([, p]) => p.replace(/^\//, '')),
-    );
+    const declared = declaredRoutes(appSrc);
     for (const [, to] of registrySrc.matchAll(/to:\s*'\/([^']*)'/g)) {
       const path = to.split('?')[0];
       if (path === '') continue;
-      expect(declared, `registry links /${path}`).toContain(path);
+      expect(resolves(declared, path), `registry links /${path}`).toBe(true);
     }
   });
 });

@@ -17,7 +17,7 @@ export interface RegistryEntry {
   readonly label: string;
   /** Where it lives, rendered as the second line ("Security → Web Defense"). */
   readonly group: string;
-  /** In-app route, including any `?tab=`. */
+  /** In-app route, including any tab segment (`/monitoring/slos`). */
   readonly to: string;
   /**
    * Words an operator might reach for that are not in the label. This is

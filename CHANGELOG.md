@@ -22,6 +22,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (`--domain`, `--env`, `--release-tag`, `--acme-*`, `--calico-*`, `--secrets-bundle`,
   `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
 
+### Changed
+
+- **Every tab has its own address.** Tabs are part of the URL path — `/monitoring/slos`,
+  `/tenants/<id>/backups`, `/email/aliases` — so any view can be bookmarked, shared or linked.
+  Older `?tab=` links keep working and are rewritten to the new form, and a tab that does not
+  exist opens the page on its default tab instead of "Page Not Found". The tenant Email page's
+  tabs are now linkable too.
+
 ### Added
 
 - **See where every tenant actually runs, and get told when it moves.** The Tenants table's
@@ -77,6 +85,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   mounting … manual restore required". The platform now finds the workload directly from its
   definition. This also works when the workload is currently stopped.
 
+- **Dashboard tiles, notifications and other links no longer lead to "Page Not Found" or the
+  wrong tab.** An audit of every link the panels render found many that went nowhere:
+  - the SLO warning tile opened `/monitoring/slo` (the tab is `slos`);
+  - the admin Certificates and Scheduled-tasks tiles, and the admin certificate alert, linked to
+    tenant-panel pages;
+  - the orphaned-volumes alert linked to `/settings/storage`;
+  - the "Check DNS records" notification linked to `/dns`;
+  - task-center links for system backups, Stalwart password rotation and cache purge led
+    nowhere, and a DNS verification started by a tenant opened an admin-only page;
+  - search results for applications opened a tenant tab that does not exist, and mailbox searches
+    and the tenant Email search entries ignored the tab they named;
+  - the web-defense tenant links, the Stalwart admin link in the DKIM dialog and a few others
+    were dead.
+  Every link is now checked against the route table and tab list of the panel that renders it,
+  so a dead link fails the build instead of reaching an operator or tenant.
 - **A fresh install no longer gives up on a healthy mail server.** Before declaring the mail server
   ready, bootstrap probes it from an admin-panel pod. It picked that pod once. If admin-panel was
   replaced while the probe was waiting, every later attempt went to a pod that no longer existed.

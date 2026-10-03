@@ -13,6 +13,7 @@ import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listProviderGroups } from '../dns-servers/service.js';
+import { panelRoute } from '../tasks/panel-route.js';
 
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -262,7 +263,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
           userId,
           tenantId,
           label: toSafeText(`Verify DNS — ${domain.domainName}`),
-          target: { type: 'route', href: `/tenants/${tenantId}/domains/${domainId}` },
+          target: panelRoute(taskScope, { admin: `/tenants/${tenantId}/domains/${domainId}`, tenant: `/domains/${domainId}` }),
         },
         verifyAndPersist,
       );

@@ -23,8 +23,6 @@
  * to the rest of the CrowdSec configuration.
  */
 
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -33,8 +31,10 @@ import {
   WafExclusionsTab,
   WafSettingsTab,
 } from '@/components/security/web-defense-tabs';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type TabId = 'waf' | 'bans' | 'exclusions' | 'settings';
+type TabId = TabOf<'/security/web-defense'>;
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly hint: string }> = [
   { id: 'waf', label: 'WAF Events', hint: 'Cluster-wide ModSec/CRS event stream' },
@@ -43,20 +43,8 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly
   { id: 'settings', label: 'WAF Settings', hint: 'CrowdSec status, auto-ban, L4 enforcement' },
 ];
 
-const VALID_TABS: ReadonlySet<TabId> = new Set(['waf', 'bans', 'exclusions', 'settings']);
-
 export default function WebDefensePage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get('tab');
-  const activeTab: TabId = useMemo(() => {
-    if (requested && VALID_TABS.has(requested as TabId)) return requested as TabId;
-    return 'waf';
-  }, [requested]);
-  const setActiveTab = (id: TabId): void => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', id);
-    setSearchParams(next, { replace: true });
-  };
+  const [activeTab, setActiveTab] = useTabParam('/security/web-defense');
 
   return (
     <div className="space-y-6">

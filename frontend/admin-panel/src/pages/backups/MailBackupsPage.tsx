@@ -263,6 +263,7 @@ export default function MailBackupsPage() {
   return (
     <>
       <BackupClassPage
+        page="/backups/mail"
         icon={Mail}
         title="Mail Backups"
         subtitle="Stalwart RocksDB restic uploads to the bound off-site target. Mail has no in-cluster snapshot path — restic IS the backup, written straight to the Remote Storage Target every 2 min."

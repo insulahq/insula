@@ -5,6 +5,7 @@ import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import RouteFallback from '@/components/RouteFallback';
+import TabRoute from '@/routes/TabRoute';
 const Login = lazy(() => import('@/pages/Login'));
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Domains = lazy(() => import('@/pages/Domains'));
@@ -84,14 +85,15 @@ export default function App() {
             <Route path="settings/mtls-providers" element={<MtlsProviders />} />
             <Route path="settings/openziti-providers" element={<OpenZitiProviders />} />
             <Route path="settings/zrok-providers" element={<ZrokProviders />} />
-            <Route path="monitoring" element={<Monitoring />} />
+            <Route path="monitoring/:tab?" element={<TabRoute page="/monitoring"><Monitoring /></TabRoute>} />
             {/* The page was Resource Usage before Traffic joined it. Old links
                 and bookmarks redirect to the tab they meant — a redirect, not
                 a second mount, so Monitoring keeps exactly one canonical URL
-                and does not appear twice in search. */}
+                and does not appear twice in search. `<page>/:tab?` routes
+                carry the tab in the path; tabs live in routes/tabbed-pages.ts. */}
             <Route
               path="resource-usage"
-              element={<Navigate to="/monitoring?tab=resource-usage" replace />}
+              element={<Navigate to="/monitoring/resource-usage" replace />}
             />
             <Route path="notifications" element={<Notifications />} />
             <Route path="notification-preferences" element={<NotificationPreferences />} />
@@ -102,11 +104,11 @@ export default function App() {
             <Route path="domains" element={<LifecycleGate><Domains /></LifecycleGate>} />
             <Route path="domains/:domainId" element={<LifecycleGate><DomainDetail /></LifecycleGate>} />
             <Route path="domains/:domainId/routes/:routeId" element={<LifecycleGate><RouteDetail /></LifecycleGate>} />
-            <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
+            <Route path="applications/:tab?" element={<LifecycleGate><TabRoute page="/applications"><Applications /></TabRoute></LifecycleGate>} />
             <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
             <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
             <Route path="snapshots" element={<LifecycleGate allowDuringStorageOp><Snapshots /></LifecycleGate>} />
-            <Route path="email" element={<LifecycleGate><Email /></LifecycleGate>} />
+            <Route path="email/:tab?" element={<LifecycleGate><TabRoute page="/email"><Email /></TabRoute></LifecycleGate>} />
             <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
             <Route path="backups/restore/:bundleId" element={<LifecycleGate><TenantRestoreCart /></LifecycleGate>} />
             <Route path="users" element={<LifecycleGate><SubUsers /></LifecycleGate>} />

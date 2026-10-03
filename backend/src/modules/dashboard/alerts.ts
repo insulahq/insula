@@ -102,7 +102,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       // problem, so the list is the right answer then.
       href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
         ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
-        : '/domains',
+        : '/tenants/domains',
       detail: [['Expiring within 14 days', String(cert.n)],
                ['Soonest', `${soonest} days`]],
       note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
@@ -273,7 +273,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: String(row.n),
       title: critical ? 'Monitoring rules firing' : 'Monitoring warnings',
       subtitle: row.subject && row.subject.length > 0 ? row.subject : 'see Monitoring → SLOs',
-      href: '/monitoring/slo',
+      href: '/monitoring/slos',
       detail: [['Firing', String(row.n)], ['Severity', row.severity]],
       note: null,
     }));
