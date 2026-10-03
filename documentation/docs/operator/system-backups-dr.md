@@ -31,6 +31,12 @@ restore (in-place revert), and prune older snapshots. CNPG database clusters
 collapse into a single row. Snapshots are the quickest way back from an
 accidental change when the infrastructure is otherwise intact.
 
+The **mail store** is listed too, but it cannot be snapshotted. It lives on
+storage local to its node, which the block-level snapshots do not cover. Its
+dialog explains this instead of offering snapshot actions, and the API refuses
+a snapshot or restore of it with `VOLUME_NOT_SNAPSHOTTABLE`. Mail is protected
+by the mail backup (**Backups → Mail**) and by the standby copy on a second node.
+
 The **Backups** tab covers the off-cluster artefacts: Postgres WAL + base, etcd
 snapshots, the secrets bundle, and other restic-backed components.
 
