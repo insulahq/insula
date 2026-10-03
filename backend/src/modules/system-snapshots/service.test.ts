@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
+  assertLonghornVolume,
   listSystemPvcSnapshots,
   listSnapshotsForVolume,
   pruneVolumeSnapshots,
@@ -210,5 +211,54 @@ describe('takeSnapshot', () => {
     const call = spies.create.mock.calls[0][0] as { body: { metadata: { labels: Record<string, string> }; spec: { volume: string } } };
     expect(call.body.metadata.labels['insula.host/user-label']).toBe('pre-upgrade_test_123_');
     expect(call.body.spec.volume).toBe('vol-x');
+  });
+});
+
+// The mail store sits on node-local `local-path` storage — no Longhorn volume.
+// Snapshotting it reached the operator as a 500 "Rejected by an admission
+// webhook" (Longhorn's mutator: "failed to get volume"), with advice about
+// degraded volumes (v2026.10.3-rc.2 VM run, integration-system-snapshots).
+describe('volumes Longhorn cannot snapshot', () => {
+  const pvcs = {
+    platform: [{ metadata: { name: 'system-db-1', namespace: 'platform' }, spec: { volumeName: 'pvc-db' }, status: { capacity: { storage: '10Gi' } } }],
+    mail: [{ metadata: { name: 'mail-stack-data', namespace: 'mail' }, spec: { volumeName: 'pvc-local' }, status: { capacity: { storage: '20Gi' } } }],
+  };
+  const lhVolumes = [{ metadata: { name: 'pvc-db', labels: {} }, spec: { size: '10737418240' }, status: { robustness: 'healthy' } }];
+
+  it('listing marks a PVC with no Longhorn volume as not snapshot-capable', async () => {
+    const { k8s } = makeK8s({ pvcByNs: pvcs, longhornVolumes: lhVolumes });
+    const rows = await listSystemPvcSnapshots(k8s);
+    const byPvc = Object.fromEntries(rows.map((r) => [r.pvcName, r.snapshotCapable]));
+    expect(byPvc).toEqual({ 'system-db-1': true, 'mail-stack-data': false });
+  });
+
+  it('a failed Longhorn volume LIST keeps every row capable — unknown is not "no"', async () => {
+    const { k8s } = makeK8s({ pvcByNs: pvcs, longhornVolumes: lhVolumes });
+    const list = (k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> }).listNamespacedCustomObject;
+    list.mockImplementation(({ plural }: { plural: string }) =>
+      plural === 'volumes' ? Promise.reject(new Error('apiserver timeout')) : Promise.resolve({ items: [] }));
+    const rows = await listSystemPvcSnapshots(k8s);
+    expect(rows.every((r) => r.snapshotCapable)).toBe(true);
+  });
+
+  it('assertLonghornVolume: no Longhorn volume → 409 VOLUME_NOT_SNAPSHOTTABLE naming the mail backup', async () => {
+    const { k8s } = makeK8s({});
+    await expect(assertLonghornVolume(k8s, 'pvc-local')).rejects.toMatchObject({
+      code: 'VOLUME_NOT_SNAPSHOTTABLE',
+      status: 409,
+      remediation: expect.stringContaining('mail backup'),
+    });
+  });
+
+  it('assertLonghornVolume: an existing Longhorn volume passes', async () => {
+    const { k8s, spies } = makeK8s({});
+    spies.get.mockResolvedValueOnce({ metadata: { name: 'pvc-db' } });
+    await expect(assertLonghornVolume(k8s, 'pvc-db')).resolves.toBeUndefined();
+  });
+
+  it('assertLonghornVolume: any other lookup failure is rethrown, not called "not snapshottable"', async () => {
+    const { k8s, spies } = makeK8s({});
+    spies.get.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { code: 403 }));
+    await expect(assertLonghornVolume(k8s, 'pvc-db')).rejects.toThrow('forbidden');
   });
 });

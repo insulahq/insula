@@ -22,6 +22,12 @@ export const systemPvcSnapshotSummarySchema = z.object({
     name: z.string(),
   }).nullable().default(null),
   cnpgRole: z.enum(['primary', 'replica']).nullable().default(null),
+  /**
+   * False when no Longhorn volume backs this PVC — the mail store, on
+   * node-local `local-path` storage, protected by the mail backup and the
+   * standby copy instead. Snapshot actions do not apply to such a volume.
+   */
+  snapshotCapable: z.boolean().default(true),
 });
 export type SystemPvcSnapshotSummary = z.infer<typeof systemPvcSnapshotSummarySchema>;
 

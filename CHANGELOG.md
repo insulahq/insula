@@ -71,6 +71,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **System snapshots: the mail volume no longer offers actions that cannot work.** The mail store
+  lives on storage local to its node, which the snapshot system cannot snapshot. The mail volume
+  is protected by the mail backup and its standby copy instead. "Take snapshot" on it used to fail
+  with a misleading "rejected by an admission webhook" error. The page now explains this instead of
+  offering the action, and the API refuses with a clear message.
+- **System snapshots: editing a volume's snapshot schedule works again.** The snapshot dialog kept
+  re-rendering in a loop, which used CPU in the browser and reset the schedule fields while the
+  operator was typing in them.
+
 - **A suspended tenant's websites stay suspended.** Suspending a tenant sends its sites to the
   "suspended" page. But any later rebuild of that tenant's web routes removed the redirect and put
   the sites back online. Such rebuilds happen without an operator: a certificate being issued, the
