@@ -23,6 +23,7 @@ import {
   type StalwartAccountAliasEntry,
 } from '../stalwart-jmap/account-aliases.js';
 import type { Database } from '../../db/index.js';
+import { aliasIsLive } from './alias-live.js';
 
 const log = mailLogger().child({ module: 'mailbox-aliases-reconcile' });
 
@@ -139,7 +140,7 @@ export async function reconcileAllMailboxAliases(db: Database): Promise<MailboxA
     const desired: DesiredAccountAlias[] = rows.map((r) => ({
       localPart: r.localPart,
       stalwartDomainId,
-      enabled: mailboxActive && r.enabled === 1,
+      enabled: aliasIsLive(mailboxActive, r.enabled),
     }));
     const current = aliasMapByPrincipal.get(box.stalwartPrincipalId) ?? [];
 

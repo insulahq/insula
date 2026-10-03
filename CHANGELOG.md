@@ -38,6 +38,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   DNS Records so they can be deleted there; before, they vanished from the panel while still
   resolving. A DNS server that cannot be reached is tried once, not once per record (42 s → about
   10 s). The admin panel asks before removing a route.
+- **Mail data drift alerts open Email → Data Drift again, and a suspended tenant's aliases are not
+  drift.** The drift alert shares its notification category with mail migrations, so it opened
+  Email → Operations, which shows no drift; it now says it is about drift and opens the Data Drift
+  page — in the panel, the email button and the phone (ntfy) alike. Suspending a tenant turns its
+  mailbox aliases off on the mail server on purpose; the drift check flagged them (abuse@, dmarc@)
+  minutes after a suspend. It now expects an alias on the server only while its mailbox is active,
+  by the same rule the alias push uses. On the phone (ntfy), a sending-limit alert about one
+  tenant now opens that tenant instead of the tenants list.
+- **Data Drift keeps resolved items for 30 days.** The section is now **Resolved History (last 30
+  days)**, and resolved items older than that are deleted. Active items are listed in full: a shared
+  100-row limit with the history could hide older active ones. The page's explanation no longer
+  blames a long-fixed failover bug for every drift item.
 
 - **Move back no longer pulls the disk out from under a running tenant.** Re-pinning a running
   tenant rolled its pods onto the target node while the old ones still held the volume, and

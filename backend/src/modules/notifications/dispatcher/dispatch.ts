@@ -485,6 +485,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           eventId,
           category,
           tenantId: opts.tenantId ?? null,
+          resourceType: opts.resourceType ?? (opts.tenantId ? 'tenant' : null),
+          resourceId: opts.resourceId ?? opts.tenantId ?? null,
           variables: Object.fromEntries(
             Object.entries({
               platformName: brand,

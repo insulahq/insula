@@ -11,8 +11,7 @@ import type { MailDriftItem } from '@insula/api-contracts';
  * Email → Data Drift.
  *
  * Surfaces the platform_db / Stalwart drift items detected by the
- * principals-sync reconciler. Typical cause: a failed mail-stack
- * failover prior to the silent-loss fix. Two destructive
+ * principals-sync reconciler. Two destructive
  * actions per item:
  *
  *   - "Restore from snapshot" — disabled until a whole-stack
@@ -38,7 +37,7 @@ export default function EmailDriftPage() {
       <MailSectionCard
         icon={AlertTriangle}
         title="Mail data drift"
-        summary={`Active: ${active.length} • Resolved: ${resolved.length}`}
+        summary={`Active: ${active.length} • Resolved (last 30 days): ${resolved.length}`}
         dataTestId="mail-drift-section"
         storageKey="drift"
         defaultOpen
@@ -54,13 +53,10 @@ export default function EmailDriftPage() {
           <Info size={14} className="mt-0.5 shrink-0" />
           <div>
             <strong>What this means.</strong> The principals-sync reconciler
-            found platform DB rows whose Stalwart entries no longer exist
-            — typically caused by a failed mail-stack failover before the
-            2026-05-27 silent-loss fix. The fix itself prevents future
-            occurrences (init container CrashLoopBackOffs instead of
-            silently fresh-starting; the migration verifies restored
-            content). This page exists to surface PRE-EXISTING drift and
-            give you a controlled path to remediate.
+            found platform DB rows whose Stalwart entries no longer exist.
+            This page exists to surface drifting items and give you a
+            controlled path to remediate in addition to the automatic
+            remediation efforts.
           </div>
         </div>
         )}
@@ -563,7 +559,10 @@ function ResolvedHistory({ items }: { readonly items: ReadonlyArray<MailDriftIte
         onClick={() => setOpen(!open)}
       >
         <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
-        Resolved history ({items.length})
+        Resolved History (last 30 days)
+        <span className="rounded-full bg-gray-100 px-1.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300" data-testid="mail-drift-resolved-count">
+          {items.length}
+        </span>
       </summary>
       <div className="divide-y divide-gray-100 dark:divide-gray-700">
         {items.map((i) => (

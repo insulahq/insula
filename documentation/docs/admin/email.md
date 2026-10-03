@@ -269,7 +269,15 @@ is a live forwarding address nobody manages). The page explains each drift
 item and offers remediation: dismiss, recreate the missing Stalwart entry
 empty, or — for orphans — a type-to-confirm **delete from Stalwart**.
 Detection runs continuously (the reconciler sweeps every few minutes and
-alerts admins on new items).
+alerts admins on new items — the alert opens this page).
+
+Resolved items stay under **Resolved History (last 30 days)** and are deleted
+once they were resolved more than 30 days ago.
+
+A **suspended** tenant's mailbox aliases are not drift: suspending a tenant
+turns every alias off on the mail server on purpose and keeps the alias rows
+for reactivation, so they are only expected on the server while the mailbox is
+active.
 
 !!! warning "Recreating empty loses messages"
     "Recreate empty" rebuilds the missing Stalwart entry with no data — a

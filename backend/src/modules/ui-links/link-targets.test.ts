@@ -163,14 +163,17 @@ describe('notification links', () => {
   it('every category opens a real page and tab in the panel of its audience', async () => {
     const { ALL_CATEGORIES } = await import('../notifications/categories/seed.js');
     const { linkPathsFor } = await import('../notifications/action-links.js');
+    const { RESOURCE_PATHS } = await import('../notifications/action-path.js');
     const problems: Problem[] = [];
     let seen = 0;
     for (const cat of ALL_CATEGORIES) {
       const panels: readonly Panel[] = BOTH_PANELS.has(cat.id) ? ['admin', 'tenant'] : [cat.audience === 'admin' ? 'admin' : 'tenant'];
-      // With and without a resource: deep links differ from list links.
+      // With and without a resource: deep links differ from list links. Plus
+      // every resource a category routes on its own (mail drift → Data Drift).
       for (const resource of [
         { resourceType: null, resourceId: null, tenantId: null },
         { resourceType: 'tenant', resourceId: '11111111-2222-4333-8444-555555555555', tenantId: '11111111-2222-4333-8444-555555555555' },
+        ...Object.keys(RESOURCE_PATHS[cat.id] ?? {}).map((resourceType) => ({ resourceType, resourceId: null, tenantId: null })),
       ]) {
         for (const link of linkPathsFor({ categoryId: cat.id, ...resource })) {
           seen++;

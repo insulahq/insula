@@ -39,6 +39,7 @@ import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { cappedList } from '../notifications/list-items.js';
+import { aliasIsLive } from '../mailbox-aliases/alias-live.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
@@ -515,6 +516,7 @@ async function syncPrincipals(params: {
         id: mailboxes.id,
         fullAddress: mailboxes.fullAddress,
         stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+        status: mailboxes.status,
       })
       .from(mailboxes);
 
@@ -539,8 +541,15 @@ async function syncPrincipals(params: {
         .filter((m) => stalwartMailboxByEmail.has(m.fullAddress.toLowerCase()))
         .map((m) => m.id),
     );
+    const mailboxActive = new Map(aliasMailboxes.map((m) => [m.id, m.status === 'active']));
     for (const a of aliasRows) {
-      if (a.enabled !== 1) continue; // a disabled row records intent, not a live address
+      // Expected on the server only when the alias push would put it there
+      // (`aliasIsLive`, the rule desiredAliasesForMailbox pushes by): a disabled
+      // row, or any alias of a disabled mailbox — every mailbox of a SUSPENDED
+      // tenant, whose aliases the suspend hook turns off on purpose — records
+      // intent, not a live address. Checking the row alone reported a
+      // suspended tenant's abuse@/dmarc@ as drift minutes after the suspend.
+      if (!aliasIsLive(mailboxActive.get(a.mailboxId) ?? false, a.enabled)) continue;
       if (!liveMailboxIds.has(a.mailboxId)) {
         // The parent mailbox itself is not in Stalwart. That IS the drift, and
         // it is already reported as kind='mailbox' — reporting the alias too
@@ -650,6 +659,15 @@ async function syncPrincipals(params: {
   try {
     const insertFailures: string[] = [];
     const newItems = await reconcileDriftItems(db, driftThisTick, insertFailures);
+    // Resolved History keeps RESOLVED_DRIFT_RETENTION_DAYS; older rows go here,
+    // once per tick. A failure only delays the reap — never the drift check.
+    try {
+      const { reapResolvedDriftItems } = await import('../mail-drift/retention.js');
+      const reaped = await reapResolvedDriftItems(db);
+      if (reaped > 0) log.info({ reaped }, 'mail-drift: reaped resolved items past the retention window');
+    } catch (err) {
+      log.warn({ err }, 'mail-drift: reaping resolved items failed');
+    }
     if (insertFailures.length > 0) {
       // Surfaced, not swallowed. A row the database refuses means the detector
       // and the schema disagree about what a drift kind is — exactly the
@@ -861,6 +879,9 @@ async function emitDriftNotification(
     // Dispatched, not inserted: the raw row carried no category, so it
     // reached no template, no email, no preference gate and no audit.
     const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    const { MAIL_DRIFT_RESOURCE } = await import('../notifications/action-path.js');
+    // Named as drift so it opens Email → Data Drift, not the mail category's
+    // generic Operations page.
     await notifyAdminOperationalEvent(db, 'mail', {
       subsystem: 'Mail principal sync',
       objectLabel: title,
@@ -868,7 +889,7 @@ async function emitDriftNotification(
       items,
       severityLabel: 'warning',
       recommendedAction: action,
-    }, `principals:${new Date().toISOString().slice(0, 13)}`);
+    }, `principals:${new Date().toISOString().slice(0, 13)}`, MAIL_DRIFT_RESOURCE);
   } catch (err) {
     log.warn({ err }, 'mail-drift: failed to dispatch the admin notification');
   }

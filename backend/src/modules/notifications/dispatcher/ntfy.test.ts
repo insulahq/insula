@@ -60,6 +60,8 @@ const baseInput = {
   eventId: 'evt-1',
   category: CATEGORY,
   tenantId: null,
+  resourceType: null,
+  resourceId: null,
   variables: {},
   dedupeKey: undefined,
   hashSalt: 'salt',
@@ -136,5 +138,39 @@ describe('emitNtfyForEvent template lookup', () => {
     const res = await emitNtfyForEvent(db, baseInput);
     expect(res).toEqual({ status: 'skipped', error: 'no_ntfy_provider' });
     expect(getActiveTemplateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('emitNtfyForEvent click-through', () => {
+  /** Whatever the delivery carries as its click URL, wherever it is recorded. */
+  const clickOf = (inserted: Record<string, unknown>[]) =>
+    JSON.stringify([inserted, enqueueNtfyDeliveryMock.mock.calls]).match(/https:\/\/admin\.example\.test[^"\\]*/)?.[0];
+
+  it("opens the page for what the event is about, not the category's generic page", async () => {
+    getActiveTemplateMock.mockResolvedValue({ id: 'tpl', version: 1, channel: 'ntfy' });
+    const { db, inserted } = fakeDb([[PROVIDER], [{ adminPanelUrl: 'https://admin.example.test' }]]);
+
+    await emitNtfyForEvent(db, {
+      ...baseInput,
+      category: { ...CATEGORY, id: 'admin.mail_event' },
+      resourceType: 'mail_drift',
+    });
+
+    expect(clickOf(inserted)).toBe('https://admin.example.test/email/drift');
+  });
+
+  it('still deep-links a tenant-scoped alert to its tenant', async () => {
+    getActiveTemplateMock.mockResolvedValue({ id: 'tpl', version: 1, channel: 'ntfy' });
+    const { db, inserted } = fakeDb([[PROVIDER], [{ adminPanelUrl: 'https://admin.example.test' }]]);
+
+    await emitNtfyForEvent(db, {
+      ...baseInput,
+      category: { ...CATEGORY, id: 'admin.tenant_misplaced' },
+      tenantId: 't-1',
+      resourceType: 'tenant',
+      resourceId: 't-1',
+    });
+
+    expect(clickOf(inserted)).toBe('https://admin.example.test/tenants/t-1');
   });
 });

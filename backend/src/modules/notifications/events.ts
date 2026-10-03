@@ -1214,14 +1214,19 @@ const OPERATIONAL_CATEGORY = {
 
 export type OperationalSubsystem = keyof typeof OPERATIONAL_CATEGORY;
 
-/** Operator-facing subsystem event. */
+/**
+ * Operator-facing subsystem event. `resourceType` names what the event is
+ * about when the subsystem's category covers several things — it picks the
+ * page the notification opens (action-path.ts `RESOURCE_PATHS`).
+ */
 export async function notifyAdminOperationalEvent(
   db: Database,
   subsystem: OperationalSubsystem,
   payload: OperationalEventPayload,
   dedupeKey?: string,
+  resourceType?: string,
 ): Promise<void> {
-  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, withItems(payload), undefined, { dedupeKey });
+  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, withItems(payload), undefined, { dedupeKey, resourceType });
 }
 
 /** Tenant-facing domain-verification state. */
