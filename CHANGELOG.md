@@ -29,6 +29,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Route changes say what they are doing, and removing one says how it ended.** Removing an
+  ingress route waits on the DNS server; when that server did not answer, the page sat still for
+  most of a minute and a second click only got "not found". The Routing tab (admin and tenant
+  panel) now shows a spinner and a sentence while a route is added, changed or removed, the row
+  being removed says **Removing…**, and afterwards **Removed …** — or that its DNS records are
+  still published (admins also see the server and its error). Those records stay listed under
+  DNS Records so they can be deleted there; before, they vanished from the panel while still
+  resolving. A DNS server that cannot be reached is tried once, not once per record (42 s → about
+  10 s). The admin panel asks before removing a route.
+
 - **Move back no longer pulls the disk out from under a running tenant.** Re-pinning a running
   tenant rolled its pods onto the target node while the old ones still held the volume, and
   Longhorn detached it under the tenant's remaining pods (seen on production: the device went

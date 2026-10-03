@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeFetchFailure, summarizeUpstreamBody } from './fetch-error.js';
+import { describeFetchFailure, isUnreachableFailure, summarizeUpstreamBody } from './fetch-error.js';
 
 /** Shape of a real undici failure: opaque message, real code on `cause`. */
 function fetchFailure(code: string): Error {
@@ -79,5 +79,32 @@ describe('summarizeUpstreamBody', () => {
 
   it('passes a short JSON body through untouched', () => {
     expect(summarizeUpstreamBody('{"error": "Unauthorized"}')).toBe('{"error": "Unauthorized"}');
+  });
+});
+
+describe('isUnreachableFailure', () => {
+  const failure = (code: string) => Object.assign(new Error('fetch failed'), { cause: { code } });
+  const target = 'http://100.64.0.9:8081/api/v1';
+
+  it.each(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ESOMETHINGNEW'])(
+    'a server that could not be reached (%s)',
+    (code) => {
+      expect(isUnreachableFailure(describeFetchFailure(failure(code), target))).toBe(true);
+    },
+  );
+
+  it('matches inside a provider message that prefixes the description', () => {
+    expect(isUnreachableFailure(`PowerDNS: ${describeFetchFailure(failure('ETIMEDOUT'), target)}`)).toBe(true);
+  });
+
+  it.each(['ECONNRESET', 'ERR_SSL_WRONG_VERSION_NUMBER', 'CERT_HAS_EXPIRED'])(
+    'a server that answered is not unreachable (%s)',
+    (code) => {
+      expect(isUnreachableFailure(describeFetchFailure(failure(code), target))).toBe(false);
+    },
+  );
+
+  it('an upstream error is not unreachable', () => {
+    expect(isUnreachableFailure('PowerDNS API error: 422 Unprocessable Entity')).toBe(false);
   });
 });

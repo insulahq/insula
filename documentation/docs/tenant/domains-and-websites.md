@@ -93,6 +93,15 @@ do this.
    to route all traffic.
 4. Click **Create Route**.
 
+**Remove a route**
+
+Click the bin icon on the route's row, then **Confirm**. While the route is
+being removed the page says so with a spinner — it usually takes a few seconds,
+and can take up to a minute when the DNS server is slow to answer. If the DNS
+records for the address could not be removed at the same time, the page tells
+you; they stay listed on the **DNS Records** tab, where you can delete them
+later.
+
 **Finding a route**
 
 The list is sorted alphabetically by hostname. Click **Hostname**, **Path** or

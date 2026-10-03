@@ -31,6 +31,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadSection from '@/components/CertDownloadSection';
 import ErrorPanel from '@/components/ErrorPanel';
+import RouteOperationStatus, { type RouteOperation, type RouteRemovalResult } from '@/components/routes/RouteOperationStatus';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import FolderPickerDialog from '@/components/FolderPickerDialog';
 
@@ -771,6 +772,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<RouteRemovalResult | null>(null);
   const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
   /** Which of the two roots the open picker is choosing. */
   const [folderPickerField, setFolderPickerField] = useState<'app_root' | 'site_folder'>('app_root');
@@ -894,8 +896,28 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     const pathValue = (fd.elements.namedItem('path') as HTMLInputElement)?.value?.trim();
     // Send path only if non-empty; backend defaults to "/"
     const path = pathValue || undefined;
+    setRemoval(null);
     createRoute.mutate({ hostname, path }, {
       onSuccess: () => { setSubdomain(''); setSubdomainError(null); setShowAddRoute(false); },
+    });
+  };
+
+  const hostnameOf = (routeId: string | undefined) => routes.find((r) => r.id === routeId)?.hostname ?? 'the route';
+
+  // What the server is working on right now. A removal waits on the DNS
+  // server and can take most of a minute; without this nothing on the page
+  // moved while it did.
+  const pendingOnPage: RouteOperation | null =
+    deleteRoute.isPending ? { kind: 'remove', hostname: hostnameOf(deleteRoute.variables) }
+    : updateRoute.isPending ? { kind: 'update', hostname: hostnameOf(updateRoute.variables?.routeId) }
+    : null;
+
+  const handleDeleteRoute = (routeId: string) => {
+    const hostname = hostnameOf(routeId);
+    setRemoval(null);
+    deleteRoute.mutate(routeId, {
+      onSuccess: (res) => setRemoval({ hostname, dnsWarning: res?.data?.dnsWarning ?? null }),
+      onSettled: () => setDeleteRouteConfirmId(null),
     });
   };
 
@@ -1035,6 +1057,17 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
         />
       )}
 
+      <RouteOperationStatus pending={pendingOnPage} removal={removal} />
+
+      {deleteRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(deleteRoute.error)}
+          severity="error"
+          compact
+          testId="route-delete-error"
+        />
+      )}
+
       {isLoading ? (
         <div className="flex items-center gap-2 py-4">
           <Loader2 size={16} className="animate-spin text-blue-600" />
@@ -1100,12 +1133,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                       </td>
                     </tr>
                   )}
-                  {visibleRoutes.map((route) => (
+                  {visibleRoutes.map((route) => {
+                    const removingThis = deleteRoute.isPending && deleteRoute.variables === route.id;
+                    return (
                     <tr
                       key={route.id}
-                      className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
+                      className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer', removingThis && 'opacity-60')}
                       onClick={() => navigate(`/domains/${domainId}/routes/${route.id}`)}
                       data-testid={`route-row-${route.id}`}
+                      aria-busy={removingThis || assigningRouteId === route.id}
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -1137,7 +1173,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                               return isCustom && route.servicePort ? `${route.deploymentId}:${route.servicePort}` : route.deploymentId;
                             })()}
                             onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
-                            disabled={assigningRouteId === route.id}
+                            disabled={assigningRouteId !== null}
                             className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
                           >
                             <option value="">Not assigned</option>
@@ -1201,7 +1237,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                               <button
                                 type="button"
                                 onClick={() => { setFolderPickerField('app_root'); setFolderPickerRouteId(route.id); }}
-                                disabled={assigningRouteId === route.id}
+                                disabled={assigningRouteId !== null}
                                 className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                                 data-testid={`app-root-button-${route.id}`}
                                 title={pathHint}
@@ -1218,7 +1254,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                                 <button
                                   type="button"
                                   onClick={() => { setFolderPickerField('site_folder'); setFolderPickerRouteId(route.id); }}
-                                  disabled={assigningRouteId === route.id}
+                                  disabled={assigningRouteId !== null}
                                   className="inline-flex items-center gap-1 rounded border border-dashed border-gray-200 dark:border-gray-600 px-1.5 py-0.5 font-mono text-[11px] text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                                   data-testid={`site-folder-button-${route.id}`}
                                   title={pathHint}
@@ -1230,7 +1266,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                                 <button
                                   type="button"
                                   onClick={() => setClearDocRootRoute({ id: route.id, hostname: route.hostname })}
-                                  disabled={assigningRouteId === route.id}
+                                  disabled={assigningRouteId !== null}
                                   className="inline-flex items-center rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50 dark:hover:bg-red-900/30"
                                   data-testid={`site-folder-clear-${route.id}`}
                                   aria-label={`Clear the document root for ${route.hostname}`}
@@ -1275,15 +1311,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         </span>
                       </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        {deleteRouteConfirmId === route.id ? (
+                        {removingThis ? (
+                          <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400" data-testid={`route-removing-${route.id}`}>
+                            <Loader2 size={14} className="animate-spin" aria-hidden="true" /> Removing…
+                          </span>
+                        ) : deleteRouteConfirmId === route.id ? (
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => {
-                                deleteRoute.mutate(route.id, {
-                                  onSuccess: () => setDeleteRouteConfirmId(null),
-                                });
-                              }}
+                              onClick={() => handleDeleteRoute(route.id)}
                               disabled={deleteRoute.isPending}
                               className="rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
                               data-testid={`route-delete-confirm-${route.id}`}
@@ -1303,7 +1339,8 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                           <button
                             type="button"
                             onClick={() => setDeleteRouteConfirmId(route.id)}
-                            className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                            disabled={deleteRoute.isPending}
+                            className="rounded-md p-1 text-gray-400 hover:text-red-500 disabled:opacity-40 dark:hover:text-red-400"
                             data-testid={`route-delete-${route.id}`}
                             aria-label="Delete route"
                           >
@@ -1312,7 +1349,8 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1375,6 +1413,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                   URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
                 </p>
               </div>
+              {createRoute.isPending && createRoute.variables && (
+                <RouteOperationStatus pending={{ kind: 'add', hostname: createRoute.variables.hostname }} removal={null} />
+              )}
               {createRoute.error && (
                 <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
                   <AlertCircle size={16} />

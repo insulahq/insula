@@ -98,6 +98,29 @@ export function describeFetchFailure(err: unknown, target: string): string {
 }
 
 /**
+ * The openings `describeFetchFailure` gives a server that could not be reached
+ * at all — no name, no route, nothing listening, or packets dropped. Kept next
+ * to the sentences they match so the two cannot drift apart.
+ */
+const UNREACHABLE_OPENINGS = [
+  'the hostname in ',
+  'nothing is listening on ',
+  'timed out connecting to ',
+  'no route from the cluster to ',
+  'could not connect to ',
+] as const;
+
+/**
+ * True when a failure said the server could not be reached at all. A caller
+ * with several more requests for the same server stops there: each would wait
+ * out the same connect timeout. A server that answered — with an error, a TLS
+ * problem or a reset — is not unreachable.
+ */
+export function isUnreachableFailure(message: string): boolean {
+  return UNREACHABLE_OPENINGS.some((opening) => message.includes(opening));
+}
+
+/**
  * Condense an upstream error body for display.
  *
  * Upstream bodies get spliced into operator-facing messages, and an upstream

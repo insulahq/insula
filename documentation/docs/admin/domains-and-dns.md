@@ -111,6 +111,16 @@ deployment later from the per-route dropdown. The table also shows the
 CNAME target and TLS state per route. A route with no deployment is
 skipped by the ingress reconciler until you bind one.
 
+**Removing a route** asks for a second click (**Remove**). While a route is
+added, changed or removed, a status line above the table says what the
+platform is doing — removing waits on the DNS server, which usually takes a
+few seconds but can take up to a minute when the server is slow to answer.
+Afterwards it says **Removed …**, or — when the DNS server could not withdraw
+the route's records — that they are still published and why (the server and
+its error). Those records then stay listed on the **DNS Records** tab; delete
+them there once the server answers. A server that cannot be reached at all is
+tried once per hostname, not once per record.
+
 **Application root and document root (multi-host apps).** When a route points
 at a deployment with multi-host serving turned on, two folder buttons appear
 under the deployment dropdown.
