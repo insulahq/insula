@@ -2623,6 +2623,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (result.synced > 0) {
             app.log.info(`Certificate reconciler: synced ${result.synced}/${result.checked}`);
           }
+          if (result.ingressRefreshed > 0) {
+            app.log.info(`Certificate reconciler: rebuilt ingress for ${result.ingressRefreshed} tenant(s) after first issuance`);
+          }
           if (result.unreachable) {
             // Distinct from per-domain errors on purpose: this is one outage,
             // and the count is what was left UNKNOWN rather than what failed.

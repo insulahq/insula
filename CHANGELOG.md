@@ -71,6 +71,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A newly added domain gets its HTTPS certificate served reliably.** Right after a domain was
+  verified, the platform could collide with the certificate manager while both updated the same
+  certificate record. When that happened, the site was left on the web server's placeholder
+  certificate, and browsers showed a warning until some unrelated change to the tenant. The
+  platform now retries that update. It also rebuilds the tenant's web routes, within a minute,
+  whenever a domain's certificate is issued for the first time.
+
 - **Migrating a tenant to another cluster, or re-creating a deleted tenant from its backup, restores
   its files and mail again.** Since v2026.9.38, tenant backups are stored in one repository per
   tenant, but the backup's description file did not record that. The cluster receiving the tenant
