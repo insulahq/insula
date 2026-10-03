@@ -9,7 +9,9 @@ import type { RouteDnsLeftovers } from './service.js';
  */
 export function routeDnsWarning(left: RouteDnsLeftovers, forStaff: boolean): string {
   const names = left.hostnames.map((h) => `'${h}'`).join(' and ');
-  const what = `The route is removed, but the DNS records for ${names} are still published`;
-  const why = forStaff ? left.reason : 'the DNS server could not withdraw them right now';
-  return `${what}: ${why}. They stay listed under DNS Records — delete them there once the DNS server answers.`;
+  // The staff reason already names the hostname and how many records are left.
+  const what = forStaff
+    ? `The route is removed, but ${left.reason}`
+    : `The route is removed, but the DNS records for ${names} are still published: the DNS server could not withdraw them right now`;
+  return `${what}. They stay listed under DNS Records — delete them there once the DNS server answers.`;
 }

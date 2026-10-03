@@ -9,8 +9,10 @@ const LEFT = {
 describe('routeDnsWarning', () => {
   it('tells staff which server failed and why', () => {
     const text = routeDnsWarning(LEFT, true);
-    expect(text).toContain("The route is removed, but the DNS records for 'shop.example.test' are still published");
-    expect(text).toContain('timed out connecting to 100.64.0.9:8081');
+    expect(text).toBe(
+      "The route is removed, but 2 of 2 record(s) for 'shop.example.test' are still published — timed out connecting to "
+      + '100.64.0.9:8081. They stay listed under DNS Records — delete them there once the DNS server answers.',
+    );
     expect(text).toContain('delete them there once the DNS server answers');
   });
 
@@ -20,6 +22,10 @@ describe('routeDnsWarning', () => {
     expect(text).not.toContain('100.64.0.9');
     expect(text).not.toContain('timed out');
     expect(text).toContain('They stay listed under DNS Records');
+  });
+
+  it('says "still published" once', () => {
+    expect(routeDnsWarning(LEFT, true).match(/still published/g)).toHaveLength(1);
   });
 
   it('names both hostnames when a www companion was left behind too', () => {
