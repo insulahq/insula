@@ -51,6 +51,8 @@ export function useUpdateClusterNode(name: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cluster-nodes'] });
+      // The alias is what every surface shows (use-node-labels).
+      qc.invalidateQueries({ queryKey: ['node-labels'] });
     },
   });
 }

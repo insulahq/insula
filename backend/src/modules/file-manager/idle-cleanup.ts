@@ -1,13 +1,18 @@
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import { LAST_ACCESS_ANNOTATION, hasLiveLease } from './lease-annotations.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const LAST_ACCESS_ANNOTATION = 'insula.host/file-manager-last-access';
 
 // Per-process cache (reduces API server load between writes — we still
 // reconcile against the Deployment annotation for cross-pod truth).
 const lastAccessMap = new Map<string, number>();
+
+/** This replica's last recorded access for `namespace` (epoch ms), 0 if none. */
+export function cachedFileManagerAccess(namespace: string): number {
+  return lastAccessMap.get(namespace) ?? 0;
+}
 
 /**
  * Record activity. Updates the in-process cache AND the FM Deployment
@@ -79,6 +84,11 @@ export function idleScaleDownDue(deploy: IdleCandidate, cachedLastAccessMs: numb
   if (replicas === 0) return null; // Already scaled down
   const annotations = deploy.metadata?.annotations ?? {};
   if (annotations[STORAGE_QUIESCED_ANNOTATION] === 'true') return null;
+  // ★ Nor while platform code holds it (file-manager/lease.ts). A backup's
+  // SQLite dump or a database restore execs into a file manager that had been
+  // idle for days; by the access clock it is overdue, so this loop scaled it
+  // down mid-exec within one tick of the scale-up. The holder hands it back.
+  if (hasLiveLease(annotations, now)) return null;
 
   // Cross-pod truth: annotation set by recordFileManagerAccess() in any
   // platform-api replica. Falls back to the in-memory cache if the annotation

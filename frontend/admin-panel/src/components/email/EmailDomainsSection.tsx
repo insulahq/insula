@@ -27,6 +27,8 @@ import {
 } from '@/hooks/use-email';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { usePlatformUrls, resolveStalwartAdminUrl } from '@/hooks/use-platform-urls';
+import { config } from '@/lib/runtime-config';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -223,6 +225,10 @@ function DkimStatusModal({
 }) {
   const { data: statusRes, isLoading } = useDkimStatus(d.id);
   const status = statusRes?.data;
+  // The Stalwart web admin is on its own subdomain — sub-path embedding does
+  // not work (see StalwartAdminPanel). `/__stalwart/` was a dead link.
+  const { data: urls } = usePlatformUrls();
+  const stalwartUrl = resolveStalwartAdminUrl(urls) || config.STALWART_ADMIN_URL || '';
 
   return (
     <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
@@ -247,7 +253,7 @@ function DkimStatusModal({
             <span>
               Stalwart 0.16 manages DKIM key generation and rotation natively. To rotate manually, use the{' '}
               <a
-                href="/__stalwart/"
+                href={stalwartUrl || '/email/settings'}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-0.5 underline"

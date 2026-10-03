@@ -5,6 +5,7 @@ import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import { NodeTerminalHost } from '@/components/NodeTerminalHost';
+import TabRoute from '@/routes/TabRoute';
 const Login = lazy(() => import('@/pages/Login'));
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const TenantsLayout = lazy(() => import('@/pages/tenants/TenantsLayout'));
@@ -124,32 +125,34 @@ export default function App() {
               <Route path="cron-jobs" element={<CronJobsTab />} />
               <Route path="sftp-users" element={<SftpUsersTab />} />
             </Route>
-            <Route path="tenants/:id" element={<TenantDetail />} />
+            {/* `<page>/:tab?` — the tab is part of the path (/monitoring/slos); the
+                tabs themselves are declared in routes/tabbed-pages.ts. */}
+            <Route path="tenants/:id/:tab?" element={<TabRoute page="/tenants/:id"><TenantDetail /></TabRoute>} />
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
-            <Route path="applications" element={<Applications />} />
+            <Route path="applications/:tab?" element={<TabRoute page="/applications"><Applications /></TabRoute>} />
             <Route path="backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupsDashboard /></ProtectedRoute>} />
-            <Route path="backups/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemBackupsPage /></ProtectedRoute>} />
-            <Route path="backups/tenants" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantsBackupsPage /></ProtectedRoute>} />
-            <Route path="backups/mail" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><MailBackupsPage /></ProtectedRoute>} />
+            <Route path="backups/system/:tab?" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TabRoute page="/backups/system"><SystemBackupsPage /></TabRoute></ProtectedRoute>} />
+            <Route path="backups/tenants/:tab?" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TabRoute page="/backups/tenants"><TenantsBackupsPage /></TabRoute></ProtectedRoute>} />
+            <Route path="backups/mail/:tab?" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TabRoute page="/backups/mail"><MailBackupsPage /></TabRoute></ProtectedRoute>} />
             <Route path="backups/targets" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RemoteStorageTargetsPage /></ProtectedRoute>} />
             <Route path="backups/disaster-recovery" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DisasterRecoveryPage /></ProtectedRoute>} />
             {/* Security Hub */}
             <Route path="security" element={<Navigate to="/security/posture" replace />} />
-            <Route path="security/posture" element={<ProtectedRoute allowedRoles={['super_admin']}><PosturePage /></ProtectedRoute>} />
-            <Route path="security/network-trust" element={<ProtectedRoute allowedRoles={['super_admin']}><NetworkTrustPage /></ProtectedRoute>} />
+            <Route path="security/posture/:tab?" element={<ProtectedRoute allowedRoles={['super_admin']}><TabRoute page="/security/posture"><PosturePage /></TabRoute></ProtectedRoute>} />
+            <Route path="security/network-trust/:tab?" element={<ProtectedRoute allowedRoles={['super_admin']}><TabRoute page="/security/network-trust"><NetworkTrustPage /></TabRoute></ProtectedRoute>} />
             <Route path="security/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityAndSessionsPage /></ProtectedRoute>} />
-            <Route path="security/web-defense" element={<ProtectedRoute allowedRoles={['super_admin']}><WebDefensePage /></ProtectedRoute>} />
+            <Route path="security/web-defense/:tab?" element={<ProtectedRoute allowedRoles={['super_admin']}><TabRoute page="/security/web-defense"><WebDefensePage /></TabRoute></ProtectedRoute>} />
             <Route path="security/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcPage /></ProtectedRoute>} />
 
             {/* Monitoring */}
-            <Route path="monitoring" element={<Monitoring />} />
+            <Route path="monitoring/:tab?" element={<TabRoute page="/monitoring"><Monitoring /></TabRoute>} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
 
             {/* Email */}
             <Route path="email" element={<Navigate to="/email/domains" replace />} />
             <Route path="email/domains" element={<EmailDomainsPage />} />
-            <Route path="email/settings" element={<EmailSettingsPage />} />
-            <Route path="email/operations" element={<EmailOperationsPage />} />
+            <Route path="email/settings/:tab?" element={<TabRoute page="/email/settings"><EmailSettingsPage /></TabRoute>} />
+            <Route path="email/operations/:tab?" element={<TabRoute page="/email/operations"><EmailOperationsPage /></TabRoute>} />
             <Route path="email/drift" element={<EmailDriftPage />} />
 
             {/* Cluster — operations / infrastructure (replaces standalone
@@ -180,7 +183,7 @@ export default function App() {
             <Route path="platform/integrations" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IntegrationsPage /></ProtectedRoute>} />
             <Route path="platform/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiPage /></ProtectedRoute>} />
             <Route path="platform/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksPage /></ProtectedRoute>} />
-            <Route path="platform/notifications" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NotificationsPage /></ProtectedRoute>} />
+            <Route path="platform/notifications/:tab?" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TabRoute page="/platform/notifications"><NotificationsPage /></TabRoute></ProtectedRoute>} />
             <Route path="notifications" element={<MyNotifications />} />
             <Route path="platform/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImportPage /></ProtectedRoute>} />
 

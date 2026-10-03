@@ -34,6 +34,7 @@ import BackupClassPage from './BackupClassPage';
 import MailObjectBackupCard from '@/components/backups/MailObjectBackupCard';
 import { useMailBackups, useRestoreMailBackup, useUnlockMailRestic } from '@/hooks/use-mail-backups';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 import { useMailPlacement } from '@/hooks/use-mail-placement';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
 
@@ -88,6 +89,7 @@ function RestoreDialog({
   // equal the full 64-char id (`snapshot.shortId`), so we re-expand at
   // submit time. Restic accepts either form on the restore command line.
   const [typedShortId, setTypedShortId] = useState('');
+  const nodeLabel = useNodeLabel();
   const restore = useRestoreMailBackup();
   const canSubmit =
     targetNode.length > 0 &&
@@ -161,7 +163,7 @@ function RestoreDialog({
           >
             {availableNodes.map((n) => (
               <option key={n} value={n}>
-                {n}
+                {nodeLabel(n)}
                 {n === defaultTargetNode ? ' (current mail node)' : ''}
               </option>
             ))}
@@ -263,6 +265,7 @@ export default function MailBackupsPage() {
   return (
     <>
       <BackupClassPage
+        page="/backups/mail"
         icon={Mail}
         title="Mail Backups"
         subtitle="Stalwart RocksDB restic uploads to the bound off-site target. Mail has no in-cluster snapshot path — restic IS the backup, written straight to the Remote Storage Target every 2 min."

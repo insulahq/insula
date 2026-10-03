@@ -41,6 +41,8 @@ import {
 import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import { timeAgo } from './MailHealthBanner';
 import MailEndpointsSection from './MailEndpointsSection';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeText } from '@/hooks/use-node-labels';
 import type {
   DeliverabilityProbeSeverity,
   MailHealthBlocklistProbe,
@@ -512,7 +514,7 @@ function reverseDnsTitle(p: MailHealthReverseDnsProbe): string {
 function BlocklistRow({ probe }: { readonly probe: MailHealthBlocklistProbe }) {
   return (
     <tr className={probe.listed ? 'bg-red-50/50 dark:bg-red-900/10' : undefined}>
-      <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{probe.node ?? '—'}</td>
+      <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{probe.node ? <NodeName name={probe.node} /> : '—'}</td>
       <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{probe.ip}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">
         {probe.list}
@@ -560,6 +562,8 @@ function ProbeCard({
   readonly remediation: string | null;
 }) {
   const showAdvice = severity !== 'ok' && (remediation || error);
+  // Probe text names nodes by their Kubernetes name — show the aliases.
+  const nodeText = useNodeText();
   return (
     <div className={`rounded-md border ${cardBorder(severity)} px-3 py-2.5`}>
       <div className="flex items-start gap-2.5">
@@ -568,7 +572,7 @@ function ProbeCard({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
-            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{title}</div>
+            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{nodeText(title)}</div>
             <SeverityChip severity={severity} compact />
           </div>
           <div className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">{assertion}</div>
@@ -577,13 +581,13 @@ function ProbeCard({
               {expected && (
                 <>
                   <div className="text-gray-500 dark:text-gray-400">Expected:</div>
-                  <div className="text-gray-700 dark:text-gray-300 break-words">{expected}</div>
+                  <div className="text-gray-700 dark:text-gray-300 break-words">{nodeText(expected)}</div>
                 </>
               )}
               {actual && (
                 <>
                   <div className="text-gray-500 dark:text-gray-400">Actual:</div>
-                  <div className="text-gray-700 dark:text-gray-300 break-words">{actual}</div>
+                  <div className="text-gray-700 dark:text-gray-300 break-words">{nodeText(actual)}</div>
                 </>
               )}
             </div>
@@ -592,8 +596,8 @@ function ProbeCard({
             <div className={`mt-2 rounded ${adviceBg(severity)} px-2.5 py-1.5 text-xs flex items-start gap-2`}>
               <ChevronRight size={12} className="mt-0.5 shrink-0" />
               <div className="flex-1">
-                {error && <div className="font-medium mb-0.5">{error}</div>}
-                {remediation}
+                {error && <div className="font-medium mb-0.5">{nodeText(error)}</div>}
+                {nodeText(remediation)}
               </div>
             </div>
           )}

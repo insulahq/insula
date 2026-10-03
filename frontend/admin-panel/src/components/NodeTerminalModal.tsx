@@ -15,7 +15,8 @@ interface NodeTerminalModalProps {
 // input into the entry chunk. Re-exported so existing importers keep working.
 // `export … from` creates no local binding, hence the separate import for the
 // three uses below.
-import { titleCase } from './node-terminal-utils';
+import { terminalNodeTitle } from './node-terminal-utils';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 export { titleCase } from './node-terminal-utils';
 
 /**
@@ -37,6 +38,7 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
   const minimize = useTerminalSessions((s) => s.minimize);
   const terminate = useTerminalSessions((s) => s.terminate);
   const reconnect = useTerminalSessions((s) => s.reconnect);
+  const nodeTitle = terminalNodeTitle(nodeName, useNodeLabel()(nodeName));
   // Subscribe to this specific session's WS status (connecting /
   // connected / disconnected). Drives the title-bar status pill +
   // Reconnect button visibility.
@@ -104,7 +106,7 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Root terminal on ${nodeName}`}
+        aria-label={`Root terminal on ${nodeTitle}`}
         className={`flex ${modalSizeClass} flex-col overflow-hidden shadow-2xl`}
         data-testid={`node-terminal-modal-${nodeName}`}
       >
@@ -114,7 +116,7 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
           <div className="flex items-center gap-2 text-sm font-medium">
             <TerminalIcon size={16} aria-hidden="true" className="text-zinc-400" />
             <span data-testid="node-terminal-banner">
-              <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-100">{titleCase(nodeName)}</code>
+              <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-100">{nodeTitle}</code>
               {' '}root shell — every command is audited.
             </span>
             {/* Operator hint — tmux's mouse=on captures the wheel for
@@ -214,6 +216,7 @@ export function NodeTerminalStepUpDialog({
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState<'password' | 'passkey' | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const nodeTitle = terminalNodeTitle(nodeName, useNodeLabel()(nodeName));
 
   const canPassword = methods.includes('password');
   const canPasskey = methods.includes('passkey');
@@ -260,7 +263,7 @@ export function NodeTerminalStepUpDialog({
           <h2 className="text-lg font-semibold">Re-authenticate to open a root shell</h2>
         </div>
         <p className="mb-4 text-sm text-zinc-400">
-          Opening a privileged terminal on <span className="font-mono">{titleCase(nodeName)}</span> requires a
+          Opening a privileged terminal on <span className="font-mono">{nodeTitle}</span> requires a
           fresh credential check.
         </p>
 
@@ -390,6 +393,7 @@ interface OpeningOverlayProps {
 }
 
 export function NodeTerminalOpeningOverlay({ nodeName }: OpeningOverlayProps) {
+  const nodeTitle = terminalNodeTitle(nodeName, useNodeLabel()(nodeName));
   return (
     <div
       className="fixed inset-0 z-[65] flex items-center justify-center bg-black/60 backdrop-blur-sm"
@@ -400,7 +404,7 @@ export function NodeTerminalOpeningOverlay({ nodeName }: OpeningOverlayProps) {
       <div className="flex flex-col items-center gap-4 rounded-lg border border-zinc-700 bg-zinc-900 px-8 py-6 text-zinc-200 shadow-2xl">
         <Loader2 size={28} className="animate-spin text-zinc-400" aria-hidden="true" />
         <div className="text-sm">
-          Opening shell on <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-zinc-100">{titleCase(nodeName)}</code>…
+          Opening shell on <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-zinc-100">{nodeTitle}</code>…
         </div>
         <div className="text-xs text-zinc-500">
           Provisioning the privileged pod (may take ~30s on first use).

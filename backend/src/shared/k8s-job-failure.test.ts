@@ -129,6 +129,16 @@ describe('summariseWarningEvents', () => {
       .toEqual([`FailedCreate: Error creating: pods "${JOB}-…" is forbidden: exceeded quota: q, requested: pods=1`]);
   });
 
+  it('folds the event aggregator prefix, which a DEV quota block produced as a second copy', () => {
+    const combined = {
+      type: 'Warning', reason: 'FailedCreate', involvedObject: { kind: 'Job', name: JOB },
+      message: `(combined from similar events): Error creating: pods "${JOB}-ddddd" is forbidden: exceeded quota: q`,
+    };
+    const plain = { ...combined, message: `Error creating: pods "${JOB}-eeeee" is forbidden: exceeded quota: q` };
+    expect(summariseWarningEvents([plain, combined], JOB, new Set()))
+      .toEqual([`FailedCreate: Error creating: pods "${JOB}-…" is forbidden: exceeded quota: q`]);
+  });
+
   it('caps a long message', () => {
     const [line] = summariseWarningEvents([
       { type: 'Warning', reason: 'FailedMount', message: 'x'.repeat(1000), involvedObject: { kind: 'Pod', name: POD } },
@@ -200,7 +210,10 @@ describe('formatJobFailure', () => {
       { reason: 'DeadlineExceeded: x', details: [`pod ${POD} on node node-a never started`] },
       ['pinned to node node-a (mounted)'],
     );
-    expect(text).toBe(`DeadlineExceeded: x; diagnosis: pod ${POD} on node node-a never started; pinned to node node-a (mounted)`);
+    // The caller's detail (where it pinned the pod) leads: event text can be
+    // long, notifications are capped, and placement is the line that names a
+    // wrong-node failure.
+    expect(text).toBe(`DeadlineExceeded: x; diagnosis: pinned to node node-a (mounted); pod ${POD} on node node-a never started`);
     expect(tenantVisibleText(text)).toBe('DeadlineExceeded: x');
   });
 

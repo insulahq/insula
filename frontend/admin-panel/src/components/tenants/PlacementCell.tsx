@@ -1,4 +1,5 @@
 import type { TenantPlacementSummary } from '@insula/api-contracts';
+import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
 
 interface PlacementCellProps {
   /** `tenants.node_name` — the primary node ("primary data location"). */
@@ -15,10 +16,13 @@ interface PlacementCellProps {
  * underneath: the column must not keep claiming a node the tenant left.
  */
 export default function PlacementCell({ nodeName, placement }: PlacementCellProps) {
+  const nodeLabel = useNodeLabel();
+  const nodeText = useNodeText();
   if (placement?.status === 'misplaced') {
-    const actual = placement.actualNodes.length > 0 ? placement.actualNodes.join(', ') : 'unknown';
-    const primary = placement.primaryNode ?? nodeName ?? '—';
-    const why = placement.reasons.length > 0 ? ` — ${placement.reasons.join(', ')}` : '';
+    const actual = placement.actualNodes.length > 0 ? placement.actualNodes.map((n) => nodeLabel(n)).join(', ') : 'unknown';
+    const primaryName = placement.primaryNode ?? nodeName ?? null;
+    const primary = primaryName ? nodeLabel(primaryName) : '—';
+    const why = placement.reasons.length > 0 ? ` — ${nodeText(placement.reasons.join(', '))}` : '';
     return (
       <span
         className="flex flex-col"
@@ -32,9 +36,13 @@ export default function PlacementCell({ nodeName, placement }: PlacementCellProp
   }
 
   if (nodeName) {
+    const label = nodeLabel(nodeName);
     return (
-      <span className="font-mono text-gray-700 dark:text-gray-300" title={`Pinned to node ${nodeName}`}>
-        {nodeName}
+      <span
+        className="font-mono text-gray-700 dark:text-gray-300"
+        title={label === nodeName ? `Pinned to node ${nodeName}` : `Pinned to node ${label} (${nodeName})`}
+      >
+        {label}
       </span>
     );
   }

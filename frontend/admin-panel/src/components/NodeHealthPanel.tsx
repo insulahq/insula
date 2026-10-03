@@ -4,6 +4,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePodCounts, type NodeHealthEntry, type NodeHealthSeverity } from '@/hooks/use-node-health';
 import NodeRecoveryModal from '@/components/NodeRecoveryModal';
 import { memoryEventBadgeClass, memoryEventLabel } from '@/lib/memory-event-label';
+import NodeName from '@/components/nodes/NodeName';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -153,7 +154,7 @@ export default function NodeHealthPanel() {
                 const Icon = SEVERITY_ICON[n.severity];
                 return (
                   <tr key={n.name} className="border-t border-gray-100 dark:border-gray-700/40" data-testid={`node-health-row-${n.name}`}>
-                    <td className="px-3 py-2 font-mono text-xs">{n.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs"><NodeName name={n.name} /></td>
                     <td className="px-3 py-2">
                       <span className="inline-flex items-center gap-1.5">
                         <Icon
@@ -288,7 +289,7 @@ function MemoryEventsCard() {
                       {memoryEventLabel(e)}
                     </span>
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs">{e.nodeName}</td>
+                  <td className="px-3 py-2 font-mono text-xs"><NodeName name={e.nodeName} /></td>
                   <td className="px-3 py-2 font-mono text-xs">
                     {e.podName ? (
                       <>

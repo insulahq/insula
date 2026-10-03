@@ -41,6 +41,7 @@ export default function SystemBackupsPage() {
   return (
     <>
       <BackupClassPage
+        page="/backups/system"
         icon={KeyRound}
         title="System Backups"
         subtitle="Postgres WAL + base backup, etcd snapshots, secrets bundle, monitoring + restic-backed components."

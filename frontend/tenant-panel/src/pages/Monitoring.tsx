@@ -6,20 +6,19 @@
  * at the top of the Traffic tab is metered from the same wire the Resource
  * tab reports on.
  *
- * `/resource-usage` still resolves: App.tsx redirects it here with
- * `?tab=resource-usage`, so bookmarks and older links land on the tab they
- * meant instead of a 404, and this page keeps one canonical URL.
+ * `/resource-usage` still resolves: App.tsx redirects it to
+ * `/monitoring/resource-usage`, so bookmarks and older links land on the tab
+ * they meant instead of a 404, and this page keeps one canonical URL.
  */
 
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { Activity } from 'lucide-react';
 import clsx from 'clsx';
 import TenantTrafficTab from '@/components/traffic/TenantTrafficTab';
 import ResourceUsage from './ResourceUsage';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type Tab = 'traffic' | 'resource-usage';
-const VALID: ReadonlySet<Tab> = new Set<Tab>(['traffic', 'resource-usage']);
+type Tab = TabOf<'/monitoring'>;
 
 const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
   { key: 'traffic', label: 'Traffic' },
@@ -27,18 +26,7 @@ const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
 ];
 
 export default function Monitoring() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get('tab');
-  const activeTab: Tab = useMemo(
-    () => (requested && VALID.has(requested as Tab) ? (requested as Tab) : 'traffic'),
-    [requested],
-  );
-
-  const setActiveTab = (key: Tab): void => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', key);
-    setSearchParams(next, { replace: true });
-  };
+  const [activeTab, setActiveTab] = useTabParam('/monitoring');
 
   return (
     <div className="space-y-6">

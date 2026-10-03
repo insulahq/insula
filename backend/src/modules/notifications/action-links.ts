@@ -83,7 +83,7 @@ const EXTRA_LINKS: Readonly<Record<string, readonly LinkSpec[]>> = {
   ],
   // Certificates fail for DNS reasons far more often than for cert reasons.
   'admin.cert_issuance_failed': [
-    { text: 'Check DNS records', path: '/dns', style: 'secondary' },
+    { text: 'Check DNS records', path: '/platform/dns', style: 'secondary' },
   ],
   // This one is a cluster problem, not a DNS or certificate problem — send the
   // operator to node health, where an API outage is actually diagnosable.

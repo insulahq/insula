@@ -41,6 +41,7 @@ import {
 import clsx from 'clsx';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
+import NodeName from '@/components/nodes/NodeName';
 
 /** Compact identity block under the sidebar title — installed version, the
  *  node serving us, and the build branch. Hidden until the fetch completes.
@@ -62,7 +63,7 @@ function RuntimeInfoBlock() {
       </div>
       {info.node && (
         <div className="normal-case text-[11px] tracking-normal text-white/70" title="The node serving this request">
-          Current Server: <span className="font-mono">{info.node}</span>
+          Current Server: <span className="font-mono"><NodeName name={info.node} /></span>
         </div>
       )}
       {info.branch && (

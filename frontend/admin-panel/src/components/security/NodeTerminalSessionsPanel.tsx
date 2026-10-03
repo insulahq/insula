@@ -12,6 +12,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2, RefreshCw, Terminal } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 interface NodeTerminalSession {
   readonly sessionId: string;
@@ -33,6 +35,7 @@ const QUERY_KEY = ['node-terminal-sessions'] as const;
 
 export default function NodeTerminalSessionsPanel() {
   const qc = useQueryClient();
+  const nodeLabel = useNodeLabel();
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: QUERY_KEY,
     queryFn: async (): Promise<ReadonlyArray<NodeTerminalSession>> => {
@@ -55,7 +58,7 @@ export default function NodeTerminalSessionsPanel() {
 
   const onTerminate = (s: NodeTerminalSession): void => {
     if (!confirm(
-      `Terminate terminal session for ${s.userEmail} on ${s.nodeName} (pod ${s.podName})?\n\nThis closes the session immediately; the operator may need to reopen if they were mid-task.`,
+      `Terminate terminal session for ${s.userEmail} on ${nodeLabel(s.nodeName)} (pod ${s.podName})?\n\nThis closes the session immediately; the operator may need to reopen if they were mid-task.`,
     )) return;
     terminate.mutate(s, {
       onError: (err) => alert(`Terminate failed: ${err instanceof Error ? err.message : String(err)}`),
@@ -116,7 +119,7 @@ export default function NodeTerminalSessionsPanel() {
                   className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"
                 >
                   <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">{s.userEmail}</td>
-                  <td className="py-2 pr-3 font-mono text-gray-700 dark:text-gray-300">{s.nodeName}</td>
+                  <td className="py-2 pr-3 font-mono text-gray-700 dark:text-gray-300"><NodeName name={s.nodeName} /></td>
                   <td className="py-2 pr-3 font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate" title={s.podName}>
                     {s.podName}
                   </td>

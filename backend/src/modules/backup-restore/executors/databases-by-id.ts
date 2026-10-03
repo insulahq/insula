@@ -65,7 +65,7 @@ import {
   importMongoArchiveFromPvcFile,
   type DbManagerContext,
 } from '../../deployments/db-manager.js';
-import { getReadyFileManagerPod } from '../../file-manager/service.js';
+import { withFileManagerLease } from '../../file-manager/lease.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
 import { buildFilesPathsJobSpec, resolveRestoreJobNode, waitForJob } from './files-paths.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
@@ -503,12 +503,15 @@ export async function execDatabasesByIdItem(args: {
     await setProgress(app, item, `predump snapshot fetch fell back to live PVC: ${(err as Error).message.slice(0, 180)}`);
   });
 
-  const summary = await restoreDatabasesForDeployments(
+  // One hold on the file manager for the whole item: listing the predumps and
+  // every import exec into it, and without a hold the idle loop scales an
+  // idle tenant's file manager down between (or during) those steps.
+  const summary = await withFileManagerLease(k8s, namespace, 'db-restore', () => restoreDatabasesForDeployments(
     targets,
     item.bundleId,
     deps,
     (msg) => setProgress(app, item, msg),
-  );
+  ));
 
   await setProgress(app, item, formatSummary(summary));
 
@@ -698,9 +701,8 @@ async function listPredumpFiles(
   namespace: string,
   _deploymentName: string,
 ): Promise<string[]> {
-  const fmPod = await getReadyFileManagerPod(k8s, namespace);
-  const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
-    ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']);
+  const res = await withFileManagerLease(k8s, namespace, 'db-restore-list', (fmPod) => execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
+    ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']));
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
     .map((p) => p.replace(/^\/data\//, ''));

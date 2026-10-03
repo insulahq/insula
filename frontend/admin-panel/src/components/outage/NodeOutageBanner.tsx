@@ -5,6 +5,7 @@ import { useOutageImpact } from '@/hooks/use-outage-impact';
 import AffectedTenantsModal from './AffectedTenantsModal';
 import TimeCell from '@/components/ui/TimeCell';
 import DegradedServiceHelp from './DegradedServiceHelp';
+import NodeList from '@/components/nodes/NodeList';
 
 /**
  * "A node is down" — on every admin page.
@@ -55,7 +56,7 @@ export default function NodeOutageBanner() {
               <>
                 {' '}Last recorded state, from{' '}
                 <TimeCell iso={impact.nodesAsOf} mode="age" />:{' '}
-                <strong>{impact.nodesDown.map((n) => n.name).join(', ')}</strong>
+                <strong><NodeList names={impact.nodesDown.map((n) => n.name)} /></strong>
                 {impact.nodesDown.length > 1 ? ' were' : ' was'} offline. That reading is
                 from the platform&rsquo;s own records, not the cluster, so it may have moved on.
               </>
@@ -100,7 +101,7 @@ export default function NodeOutageBanner() {
             <span>
               <strong>{plural ? 'Nodes offline' : 'Node offline'}</strong>
               {' — '}
-              <span className="font-mono font-medium">{names.join(', ')}</span>
+              <span className="font-mono font-medium"><NodeList names={names} /></span>
             </span>
           </div>
 

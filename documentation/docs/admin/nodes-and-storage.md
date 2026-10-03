@@ -33,6 +33,14 @@ subsystem problems). Each node card shows:
 
 The **Edit** button on a node card opens a modal where you set:
 
+- **Display name (alias)** — what the panel calls this node. Every page that
+  names a node — Monitoring, the dashboard, tenant placement and workloads,
+  mail placement and failover, node pickers, the outage banner, terminals —
+  and the text of notifications, dashboard alerts and task progress uses it
+  instead of the Kubernetes name. Hover a display name to see the Kubernetes
+  name. Typed confirmations, `kubectl` commands and links keep the Kubernetes
+  name, because that is what you type. Leave it empty to use the Kubernetes
+  name.
 - **Role** — *server* or *worker*. Demoting a server to worker is a
   destructive change and is gated accordingly.
 - **Host tenant workloads** — whether tenants can be scheduled here.

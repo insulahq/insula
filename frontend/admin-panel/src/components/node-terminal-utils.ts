@@ -25,3 +25,11 @@ export function titleCase(name: string): string {
   if (!name) return name;
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
+
+/**
+ * What a terminal calls its node: the operator's alias verbatim when one is
+ * set (they chose its casing), else the title-cased Kubernetes name.
+ */
+export function terminalNodeTitle(name: string, label: string): string {
+  return label && label !== name ? label : titleCase(name);
+}

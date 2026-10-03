@@ -1963,10 +1963,14 @@ export async function importSqlFromPvcFile(
   const importFileName = `_import_${Date.now()}${fileExt}`;
   const sqlFileName = `_import_${Date.now()}.sql`;
 
+  // Held for the whole import, including the catch's temp-file cleanup —
+  // released in the finally (file-manager/lease.ts).
+  let fmLease: import('../file-manager/lease.js').FileManagerLease | null = null;
   try {
     // Ensure file-manager is running and get a ready pod name
-    const { getReadyFileManagerPod } = await import('../file-manager/service.js');
-    const fmPodName = await getReadyFileManagerPod(ctx.k8s!, ctx.namespace);
+    const { acquireFileManagerLease } = await import('../file-manager/lease.js');
+    fmLease = await acquireFileManagerLease(ctx.k8s!, ctx.namespace, 'sql-import');
+    const fmPodName = fmLease.podName;
 
     // Step 1: Extract/decompress archives in the file-manager pod (has tar, unzip, gunzip).
     // Database pods (especially MySQL 8) lack these tools.
@@ -2164,6 +2168,8 @@ export async function importSqlFromPvcFile(
       return { success: false, error: `Import failed: ${message}. Check the SQL file for syntax errors.` };
     }
     return { success: false, error: message };
+  } finally {
+    await fmLease?.release();
   }
 }
 
@@ -2198,9 +2204,11 @@ export async function importMongoArchiveFromPvcFile(
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
   const tempName = `_import_${Date.now()}.archive.gz`;
 
+  let fmLease: import('../file-manager/lease.js').FileManagerLease | null = null;
   try {
-    const { getReadyFileManagerPod } = await import('../file-manager/service.js');
-    const fmPodName = await getReadyFileManagerPod(ctx.k8s!, ctx.namespace);
+    const { acquireFileManagerLease } = await import('../file-manager/lease.js');
+    fmLease = await acquireFileManagerLease(ctx.k8s!, ctx.namespace, 'mongo-import');
+    const fmPodName = fmLease.podName;
     const fmSrcPath = `/data/${cleanFilePath}`;
     const fmDestPath = `/data/${cleanSubPath}/${tempName}`;
     // Copy the archive into the DB's own mount so the mongo pod can read it
@@ -2233,6 +2241,8 @@ export async function importMongoArchiveFromPvcFile(
     }
     if (err instanceof ApiError) throw err;
     return { success: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    await fmLease?.release();
   }
 }
 
@@ -2344,12 +2354,11 @@ export async function exportDatabaseToPvc(
     return { pvcPath: inPlace, sizeBytes };
   }
 
-  const { getReadyFileManagerPod: getExportFmPod } = await import('../file-manager/service.js');
-  const exportFmPodName = await getExportFmPod(ctx.k8s!, ctx.namespace);
-  await execInPod(
+  const { withFileManagerLease } = await import('../file-manager/lease.js');
+  await withFileManagerLease(ctx.k8s!, ctx.namespace, 'sql-export', (exportFmPodName) => execInPod(
     ctx.kubeconfigPath, ctx.namespace, exportFmPodName, 'file-manager',
     ['sh', '-c', `mkdir -p /data/exports && mv ${shellEscape(`/data/${cleanSubPath}/${outputFileName}`)} ${shellEscape(`/data/exports/${outputFileName}`)}`],
-  );
+  ));
 
   const pvcPath = `/exports/${outputFileName}`;
   return { pvcPath, sizeBytes };

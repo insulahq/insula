@@ -495,7 +495,7 @@ function escapeRegex(s: string): string {
  * can scale it to 0 and back. Order: CNPG (label) → StatefulSet
  * (PVC name pattern) → Deployment (pod owner walk).
  */
-async function resolveConsumer(
+export async function resolveConsumer(
   k8s: K8sClients,
   namespace: string,
   pvcName: string,
@@ -545,21 +545,25 @@ async function resolveConsumer(
     /* fall through */
   }
 
+  // Deployment: the one whose POD TEMPLATE mounts the PVC. This used to walk a
+  // running pod → its ReplicaSet → the Deployment, but platform-api may not
+  // read ReplicaSets (RBAC), so the walk failed silently and every restore of
+  // a Deployment-backed volume (vmsingle, crowdsec) answered
+  // CONSUMER_UNRESOLVED. Reading the template needs only `list deployments`,
+  // and it also finds a Deployment that is currently scaled to 0.
   try {
-    const pods = await k8s.core.listNamespacedPod({ namespace }) as { items?: ReadonlyArray<{
-      metadata?: { ownerReferences?: ReadonlyArray<{ kind?: string; name?: string }> };
-      spec?: { volumes?: ReadonlyArray<{ persistentVolumeClaim?: { claimName?: string } }> };
+    const deps = await k8s.apps.listNamespacedDeployment({ namespace }) as { items?: ReadonlyArray<{
+      metadata?: { name?: string };
+      spec?: {
+        replicas?: number;
+        template?: { spec?: { volumes?: ReadonlyArray<{ persistentVolumeClaim?: { claimName?: string } }> } };
+      };
     }> };
-    for (const p of pods.items ?? []) {
-      if (!p.spec?.volumes?.some((v) => v.persistentVolumeClaim?.claimName === pvcName)) continue;
-      const owner = p.metadata?.ownerReferences?.[0];
-      if (owner?.kind === 'ReplicaSet' && owner.name) {
-        const rs = await k8s.apps.readNamespacedReplicaSet({ namespace, name: owner.name }) as { metadata?: { ownerReferences?: ReadonlyArray<{ kind?: string; name?: string }> } };
-        const rsOwner = rs.metadata?.ownerReferences?.[0];
-        if (rsOwner?.kind === 'Deployment' && rsOwner.name) {
-          const dep = await k8s.apps.readNamespacedDeployment({ namespace, name: rsOwner.name }) as { spec?: { replicas?: number } };
-          return { kind: 'Deployment', namespace, name: rsOwner.name, replicaField: 'replicas', originalCount: dep.spec?.replicas ?? 1 };
-        }
+    for (const d of deps.items ?? []) {
+      const name = d.metadata?.name;
+      if (!name) continue;
+      if (d.spec?.template?.spec?.volumes?.some((v) => v.persistentVolumeClaim?.claimName === pvcName)) {
+        return { kind: 'Deployment', namespace, name, replicaField: 'replicas', originalCount: d.spec?.replicas ?? 1 };
       }
     }
   } catch {

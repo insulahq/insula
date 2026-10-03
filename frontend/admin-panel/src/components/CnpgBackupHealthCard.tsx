@@ -208,7 +208,7 @@ function ClusterRow({
 
       {/* Phase 3 (2026-05-24): BackupListPanel extracted into a
           sibling section (SystemBackupListSection) rendered below
-          the health card by /backups/system?tab=backups. Per-row
+          the health card by /backups/system/backups. Per-row
           "Restore from this" still opens BarmanRestoreWizard with
           the source + targetTime pre-seeded. */}
     </div>

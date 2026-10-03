@@ -148,7 +148,7 @@ interface BackupConfigForWal {
  *
  * Phase 6 — replaces `loadActiveS3Target(targetConfigId)`.
  * Operators no longer pick a WAL target separately; the target IS the
- * SYSTEM shim binding chosen on /backups/system?tab=routing. This
+ * SYSTEM shim binding chosen on /backups/system/routing. This
  * unifies the two competing reconcilers (this one + the shim's
  * postgres-objectstore reconciler) so they no longer fight over
  * Cluster.spec.plugins[].parameters.barmanObjectName.
@@ -179,7 +179,7 @@ async function loadSystemShimBinding(
   const row = rows[0];
   if (!row) {
     throw new Error(
-      'No SYSTEM backup target bound — bind one on /backups/system?tab=routing before enabling WAL streaming',
+      'No SYSTEM backup target bound — bind one on /backups/system/routing before enabling WAL streaming',
     );
   }
   if (!row.enabled) {

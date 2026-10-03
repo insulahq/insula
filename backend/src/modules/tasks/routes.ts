@@ -22,6 +22,7 @@ import {
   taskSseEventSchema,
 } from '@insula/api-contracts';
 import * as service from './service.js';
+import { aliasTaskText, loadNodeLabels } from '../nodes/labels.js';
 
 interface JwtPayload {
   readonly sub: string;
@@ -51,12 +52,15 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
     // Admins also see platform-wide system tasks (e.g. an in-flight
     // platform.upgrade) — they have no single owner (user_id NULL).
     const isAdmin = payload.role === 'admin' || payload.role === 'super_admin';
-    const tasks = await service.snapshot(app.db, {
+    const rows = await service.snapshot(app.db, {
       userId: payload.sub,
       tenantId: payload.tenantId ?? null,
       includeSystem: isAdmin,
       since,
     });
+    // Task labels name nodes ("Migrate mail to …"): show the operator's alias.
+    const nodeLabels = await loadNodeLabels(app.db).catch(() => null);
+    const tasks = nodeLabels ? rows.map((t) => aliasTaskText(t, nodeLabels)) : rows;
 
     return success({
       tasks,
@@ -184,6 +188,9 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // Node aliases for the initial snapshot's words. Live events carry no
+    // text (ids, status, progress only), so they need none.
+    const nodeLabels = await loadNodeLabels(app.db).catch(() => null);
     try {
       pgTenant = await pool.connect();
       pgTenant.on('notification', (msg) => {
@@ -202,7 +209,7 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
       // Initial snapshot so the tenant doesn't need a separate poll on
       // open. Cap small to avoid a large opening payload.
       const initial = await service.snapshot(app.db, { userId, limit: 50 });
-      writeEvent('snapshot', JSON.stringify({ tasks: initial }));
+      writeEvent('snapshot', JSON.stringify({ tasks: nodeLabels ? initial.map((t) => aliasTaskText(t, nodeLabels)) : initial }));
     } catch (err) {
       request.log.warn({ err }, 'tasks-sse: setup failed, falling back to tenant poll');
       writeEvent('error', JSON.stringify({ reason: 'listen-failed' }));

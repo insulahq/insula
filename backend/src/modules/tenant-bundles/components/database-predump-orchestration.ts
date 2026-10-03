@@ -239,31 +239,20 @@ export function buildDatabaseDumpsSummary(
  * accumulation.
  */
 export async function deletePredumpsFromPvc(args: {
-  k8s: K8sClients;
   namespace: string;
+  /** A file-manager pod the caller holds a lease on (file-manager/lease.ts). */
+  fmPod: string;
   bundleId: string;
   kubeconfigPath?: string;
 }): Promise<void> {
-  const { getReadyFileManagerPod } = await import('../../file-manager/service.js');
-  let fmPod: string;
-  try {
-    fmPod = await getReadyFileManagerPod(args.k8s, args.namespace);
-  } catch (err) {
-    // No file-manager pod → leave the retention-window prune as the backstop.
-    console.warn(
-      `[bundle ${args.bundleId}] predump cleanup skipped in ${args.namespace}: `
-      + `file manager not ready (${(err as Error).message})`,
-    );
-    return;
-  }
   const safe = args.bundleId.replace(/[^A-Za-z0-9._-]/g, '_');
   try {
-    await execInPod(args.kubeconfigPath, args.namespace, fmPod, 'file-manager',
+    await execInPod(args.kubeconfigPath, args.namespace, args.fmPod, 'file-manager',
       ['sh', '-c', `find /data -type f -name 'predump-*-${safe}.*' -delete 2>/dev/null || true`]);
   } catch (err) {
     // Best-effort — the retention-window prune bounds accumulation regardless.
     console.warn(
-      `[bundle ${args.bundleId}] predump cleanup failed in ${args.namespace}/${fmPod}: ${(err as Error).message}`,
+      `[bundle ${args.bundleId}] predump cleanup failed in ${args.namespace}/${args.fmPod}: ${(err as Error).message}`,
     );
   }
 }

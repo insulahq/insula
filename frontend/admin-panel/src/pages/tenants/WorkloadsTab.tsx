@@ -6,6 +6,7 @@ import PaginationBar from '@/components/ui/PaginationBar';
 import { useAllDeployments } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import NodeName from '@/components/nodes/NodeName';
 
 export default function WorkloadsTab() {
   const navigate = useNavigate();
@@ -123,7 +124,7 @@ export default function WorkloadsTab() {
                         {wl.installedVersion ?? '—'}
                       </td>
                       <td className="hidden px-5 py-3.5 text-xs font-mono text-gray-600 dark:text-gray-400 xl:table-cell">
-                        {wl.currentNodeName ?? '—'}
+                        {wl.currentNodeName ? <NodeName name={wl.currentNodeName} /> : '—'}
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                         {wl.createdAt ? new Date(wl.createdAt).toLocaleDateString() : '—'}

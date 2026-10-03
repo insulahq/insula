@@ -31,6 +31,15 @@ Every bundle is split into four **components**:
 | `config` | The database rows the tenant owns (clients, users, domains, deployments, …) |
 | `secrets` | The tenant's TLS Secrets, encrypted |
 
+Before the `files` capture, each database deployment is dumped onto the
+tenant's volume, and any SQLite file is dumped next to it, so the snapshot
+holds a portable copy as well as the raw data files. The SQLite dump and the
+removal of the dumps after the capture run in the tenant's **file manager**:
+a bundle starts it if it is stopped, holds it so its idle shutdown cannot stop
+it mid-step, and stops it again when finished — straight after the SQLite step
+when there is nothing to remove. If the tenant opened the file manager in the
+meantime, it is left running and stops after its usual idle time.
+
 !!! note "`meta.json` is the commit marker"
     A bundle is only restorable once `meta.json` is written, which happens
     **last** and **only when every enabled component succeeded**. A bundle on
@@ -152,14 +161,15 @@ succeeded.
 To diagnose, open the bundle and look at the per-component status — anything
 other than `completed` is the culprit. The component's `lastError` starts with
 the Kubernetes reason the capture Job failed (for example `DeadlineExceeded`).
-When the Job's pod never ran, a `diagnosis:` part follows it: which pod, on
-which node, why it was waiting, the warning events that explain it, and — for
-the files capture — which node the pod was pinned to and why. A typical one:
+When the Job's pod never ran, a `diagnosis:` part follows it: for the files
+capture, first which node the pod was pinned to and on what evidence; then
+which pod, on which node, why it was waiting, and the warning events that
+explain it. A typical one:
 
 ```text
 files-component Job failed: DeadlineExceeded: Job was active longer than specified deadline;
-diagnosis: FailedAttachVolume: Multi-Attach error for volume "pvc-…" Volume is already used by
-pod(s) app-…; pinned to node node-a (mounted)
+diagnosis: pinned to node node-a (mounted); FailedAttachVolume: Multi-Attach error for volume
+"pvc-…" Volume is already used by pod(s) app-…
 ```
 
 That one means the capture was sent to a node the tenant's volume is not

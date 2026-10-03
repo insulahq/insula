@@ -39,6 +39,7 @@ function harness(opts: {
   migrationInFlight?: boolean;
   releaseMatches?: boolean;
   failUpdatesTransiently?: number;
+  selfNode?: string;
 }) {
   const settings = { ...baseSettings, ...opts.settings };
   const executed: string[] = [];
@@ -82,7 +83,7 @@ function harness(opts: {
     readPersistentVolume: vi.fn(),
   };
   const log = { warn: vi.fn(), info: vi.fn() };
-  const deps = { db, core, apps: {}, batch: {}, logger: log } as never;
+  const deps = { db, core, apps: {}, batch: {}, logger: log, selfNodeName: opts.selfNode ?? null } as never;
   return { deps, executed, updates, log, core };
 }
 
@@ -161,5 +162,32 @@ describe('dr-watcher — a failed failover hands back to degraded, across a DB o
     trigger.mockRejectedValue(new Error('Failed query: UPDATE mail_migration_runs'));
     await runDrWatcherTick(h.deps);
     expect(h.updates).toContainEqual({ mailDrState: 'degraded' });
+  });
+});
+
+// The replica on the node that died keeps running when only k3s stops: it
+// still reaches the database (and can win the claim) but not the Kubernetes
+// API. v2026.10.3-rc.4 drill: its attempt burned the full 300 s target wait.
+describe('dr-watcher — a replica on a NotReady node stays out of the failover', () => {
+  const due = { mailDrState: 'degraded', mailLastFailoverAt: new Date(Date.now() - 600_000) };
+
+  it('a replica running ON the failed mail node does not claim', async () => {
+    const h = harness({ settings: due, ready: { source: false, standby: true }, selfNode: 'source' });
+    await runDrWatcherTick(h.deps);
+    expect(trigger).not.toHaveBeenCalled();
+    expect(h.executed.some((t) => t.includes("'failing-over'"))).toBe(false);
+  });
+
+  it('a replica whose own node is NotReady does not claim', async () => {
+    const h = harness({ settings: due, ready: { source: false, standby: true, bastion: false }, selfNode: 'bastion' });
+    await runDrWatcherTick(h.deps);
+    expect(trigger).not.toHaveBeenCalled();
+  });
+
+  it('a replica on a healthy node claims and fails over as before', async () => {
+    const h = harness({ settings: due, ready: { source: false, standby: true, bastion: true }, selfNode: 'bastion' });
+    trigger.mockResolvedValue(undefined);
+    await runDrWatcherTick(h.deps);
+    expect(trigger).toHaveBeenCalledWith('standby', expect.anything());
   });
 });

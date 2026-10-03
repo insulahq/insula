@@ -8,6 +8,7 @@ import {
   useRestartCsiPlugin,
   type NodeHealthEntry,
 } from '@/hooks/use-node-health';
+import NodeName from '@/components/nodes/NodeName';
 
 type ActionKind =
   | 'clean-stale-pods'
@@ -112,7 +113,7 @@ export default function NodeRecoveryModal({ entry, onClose }: Props) {
         <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Recover node: <ConfirmToken value={entry.name} />
+              Recover node: <NodeName name={entry.name} />
             </h2>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               severity: <span className={
@@ -220,7 +221,7 @@ export default function NodeRecoveryModal({ entry, onClose }: Props) {
 
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-              Confirm: type the node name <span className="font-mono">{entry.name}</span>
+              Confirm: type the node name <ConfirmToken value={entry.name} />
             </label>
             <input
               value={confirmName}

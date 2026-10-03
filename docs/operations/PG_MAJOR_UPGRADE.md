@@ -10,7 +10,7 @@ This document is the only operator-facing surface for that pathway. There is no 
 - One-off logical export for offline investigation (load into pgAdmin, etc.)
 - Cross-environment migration (staging → laptop, etc.)
 
-Day-to-day backups + PITR remain on barman-cloud (admin panel: `/backups/system?tab=backups`).
+Day-to-day backups + PITR remain on barman-cloud (admin panel: `/backups/system/backups`).
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ The recipe will `pg_restore --clean --if-exists` — it WIPES the destination da
 
 ## What was removed
 
-- `/backups/system?tab=backups → System Databases` UI panel
+- `/backups/system/backups → System Databases` UI panel
 - `system_pg_dump_schedules` table (migration 0026)
 - Scheduler that polled `system_pg_dump_schedules` and dispatched recurring dump Jobs
 

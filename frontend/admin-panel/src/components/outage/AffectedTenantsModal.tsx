@@ -5,6 +5,8 @@ import type { ClusterOutageImpact, TenantHealthEntry } from '@insula/api-contrac
 import { RECOVERY_ACTIONS } from './recovery-actions';
 import TenantRecoveryWizard from './TenantRecoveryWizard';
 import DnsManualActionNotice from './DnsManualActionNotice';
+import NodeName from '@/components/nodes/NodeName';
+import NodeList from '@/components/nodes/NodeList';
 
 /**
  * Which tenants an outage is affecting, and what to do about each.
@@ -74,7 +76,7 @@ function TenantCard({ entry }: { readonly entry: TenantHealthEntry }) {
         )}
         <span className="ml-auto font-mono text-xs text-gray-500 dark:text-gray-400">
           {entry.storageTier === 'local' ? 'local tier' : 'HA tier'}
-          {entry.pinnedNode ? ` · pinned to ${entry.pinnedNode}` : ''}
+          {entry.pinnedNode ? <> · pinned to <NodeName name={entry.pinnedNode} /></> : ''}
         </span>
       </div>
 
@@ -150,7 +152,7 @@ export default function AffectedTenantsModal({ impact, onClose, onlyTenantId }: 
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {impact.nodesDown.length > 0
-                ? `${impact.nodesDown.map((n) => n.name).join(', ')} offline`
+                ? <><NodeList names={impact.nodesDown.map((n) => n.name)} /> offline</>
                 : 'No node is currently offline'}
               {' · '}
               {impact.downTenantCount} down, {impact.degradedTenantCount} degraded

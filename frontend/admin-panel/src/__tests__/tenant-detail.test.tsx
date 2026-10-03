@@ -104,7 +104,7 @@ function renderTenantDetail() {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/tenants/tenant-001']}>
         <Routes>
-          <Route path="tenants/:id" element={<TenantDetail />} />
+          <Route path="tenants/:id/:tab?" element={<TenantDetail />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

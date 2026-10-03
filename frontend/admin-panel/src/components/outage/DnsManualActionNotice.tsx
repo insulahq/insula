@@ -1,6 +1,8 @@
 import { Globe, Copy, Check } from 'lucide-react';
 import { useState } from 'react';
 import type { NodeDown } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
+import NodeList from '@/components/nodes/NodeList';
 
 interface Props {
   readonly nodesDown: readonly NodeDown[];
@@ -50,7 +52,7 @@ export default function DnsManualActionNotice({ nodesDown }: Props) {
         <div className="min-w-0 flex-1">
           <p className="font-medium text-orange-900 dark:text-orange-200">
             Check DNS for{' '}
-            {serving.map((n) => n.name).join(', ')}
+            <NodeList names={serving.map((n) => n.name)} />
           </p>
           <p className="mt-1 text-orange-800 dark:text-orange-300">
             The platform does not manage your DNS, so it cannot withdraw anything and cannot
@@ -62,7 +64,7 @@ export default function DnsManualActionNotice({ nodesDown }: Props) {
           <ul className="mt-2 space-y-0.5" data-testid="dns-stale-addresses">
             {serving.map((n) => (
               <li key={n.name} className="font-mono text-xs text-orange-900 dark:text-orange-200">
-                {n.name}: {n.ingressAddresses.join(', ')}
+                <NodeName name={n.name} />: {n.ingressAddresses.join(', ')}
                 {n.ingressMode === 'local' && (
                   <span className="ml-1 font-sans text-orange-700 dark:text-orange-400">
                     (served only its own routes)
