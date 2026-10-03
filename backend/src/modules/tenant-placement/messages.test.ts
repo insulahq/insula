@@ -21,14 +21,16 @@ describe('failoverMessage', () => {
   it('names the tenant, the volume, the time and the move off the primary node', () => {
     const m = failoverMessage([failover()]);
     expect(m.summary).toBe('Acme School');
-    expect(m.details).toBe('Acme School: volume tenant-acme-storage salvaged at 2026-10-02 05:09 UTC; '
-      + 'was on node-a, now on node-b — no longer on its primary node node-a.');
+    expect(m.details).toEqual(['Acme School: volume tenant-acme-storage salvaged at 2026-10-02 05:09 UTC; '
+      + 'was on node-a, now on node-b — no longer on its primary node node-a.']);
   });
 
   it('points at the node when every salvaged volume was on the same one', () => {
     const m = failoverMessage([failover(), failover({ id: 'f2', tenantId: 't2', tenantName: 'Bright Academy', nodesAfter: [] })]);
     expect(m.summary).toBe('2 tenants');
-    expect(m.details).toContain('now on nowhere yet (restarting).');
+    // One list item per tenant — never run together into a paragraph.
+    expect(m.details).toHaveLength(2);
+    expect(m.details[1]).toContain('now on nowhere yet (restarting).');
     expect(m.guidance).toMatch(/^Every salvaged volume was on the same node/);
   });
 
@@ -36,14 +38,15 @@ describe('failoverMessage', () => {
     const many = Array.from({ length: 13 }, (_, i) => failover({ id: `f${i}`, tenantId: `t${i}`, tenantName: `T${i}` }));
     const m = failoverMessage(many);
     expect(m.summary).toBe('13 tenants');
-    expect(m.details).toMatch(/…and 3 more\.$/);
+    expect(m.details).toHaveLength(11);
+    expect(m.details[10]).toBe('…and 3 more.');
   });
 });
 
 describe('misplacedMessage', () => {
   it('says where the tenant should be, where it is, and since when', () => {
     const m = misplacedMessage([placement()]);
-    expect(m.details).toBe('Acme School: primary node node-a, but running on node-b, data on node-b since 2026-10-02 05:10 UTC.');
+    expect(m.details).toEqual(['Acme School: primary node node-a, but running on node-b, data on node-b (seen since 2026-10-02 05:10 UTC).']);
     expect(m.guidance).toContain('Placement card');
   });
 });

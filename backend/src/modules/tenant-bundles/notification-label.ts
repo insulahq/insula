@@ -53,14 +53,27 @@ export function notificationErrorText(
   audience: NotificationAudience,
   maxLength = 500,
 ): string {
+  return notificationErrorItems(errors, bundleId, audience).join('; ').slice(0, maxLength);
+}
+
+/**
+ * The same cut, one entry per failed component — for a notification's `items`,
+ * which every channel renders as a list (one component per line), instead of
+ * running "files: …; mailboxes: …; data_export: …" into a paragraph.
+ */
+export function notificationErrorItems(
+  errors: readonly string[],
+  bundleId: string,
+  audience: NotificationAudience,
+  maxPerItem = 500,
+): string[] {
   const ownToken = new RegExp(`\\s*\\S*${escapeRegExp(bundleId)}\\S*`, 'g');
   const cut = audience === 'tenant' ? tenantVisibleText : operatorNotificationText;
   return errors
-    .map((e) => {
-      return cut(e)
-        .replace(ownToken, '')
-        .replace(EMBEDDED_UUID_RE, (_m, prefix: string, id: string) => `${prefix}${id.slice(0, 8)}…`);
-    })
-    .join('; ')
-    .slice(0, maxLength);
+    .map((e) => cut(e)
+      .replace(ownToken, '')
+      .replace(EMBEDDED_UUID_RE, (_m, prefix: string, id: string) => `${prefix}${id.slice(0, 8)}…`)
+      .trim()
+      .slice(0, maxPerItem))
+    .filter((e) => e.length > 0);
 }

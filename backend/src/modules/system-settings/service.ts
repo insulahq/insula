@@ -196,24 +196,27 @@ async function emitPsaReconcileNotification(
   const title = `Host-ports toggle flip: ${result.failed.length} of ${result.attempted} tenant namespace(s) NOT updated`;
   const message =
     `Tenant-namespace PodSecurity enforce label was updated to '${enforceLevel}' on ` +
-    `${result.succeeded}/${result.attempted} namespaces. ` +
-    `Failed: ${result.failed.slice(0, 5).join('; ')}` +
-    (result.failed.length > 5 ? ` (+${result.failed.length - 5} more — see platform-api logs)` : '') +
-    `. Affected tenants stay at the OLD enforce level until the next provisioning ` +
+    `${result.succeeded}/${result.attempted} namespaces. Not updated:`;
+  const consequence =
+    `Affected tenants stay at the OLD enforce level until the next provisioning ` +
     `touch (e.g. namespace-integrity repair or an explicit re-provision). On a host-ports ` +
     `ON cluster this means hostPort deploys to those tenants will be rejected by k8s ` +
     `admission. On an OFF cluster this means tenants in failed namespaces can still admit ` +
     `hostPort pods until catch-up converges.`;
   // Dispatched, not inserted: a row per admin with no category reached
   // no template, no email, no preference gate and no delivery audit.
+  // (It used to dispatch `objectLabel: 'event'` with an EMPTY detail — the
+  // message above was built and never sent.)
   {
     const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    const { cappedList } = await import('../notifications/list-items.js');
     await notifyAdminOperationalEvent(db, 'platform', {
       subsystem: 'System settings',
-      objectLabel: 'event',
-      detail: '',
+      objectLabel: title,
+      detail: message,
+      items: cappedList(result.failed, 10),
       severityLabel: 'warning',
-      recommendedAction: '',
+      recommendedAction: consequence,
     }, `system-settings:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
   }
 }

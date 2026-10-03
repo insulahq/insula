@@ -413,9 +413,14 @@ export async function checkTenantNamespaceIntegrity(
     const title = errors.length > 0
       ? `Namespace integrity issues for '${tenant.name}'`
       : `Namespace integrity repaired for '${tenant.name}'`;
+    // The individual resources go in `items` — one list entry each, on every channel.
     const message = errors.length > 0
-      ? `Auto-repair partially failed. Repaired: ${repaired.join(', ') || 'none'}. Errors: ${errors.join('; ')}`
-      : `Auto-repaired missing resources: ${repaired.join(', ')}`;
+      ? `Auto-repair partially failed: ${errors.length} resource(s) could not be repaired${repaired.length > 0 ? `, ${repaired.length} were` : ''}.`
+      : `Auto-repaired ${repaired.length} missing resource(s).`;
+    const items = [
+      ...errors.map((e) => `Not repaired — ${e}`),
+      ...repaired.map((r) => `Repaired — ${r}`),
+    ];
     // Dispatched, not inserted — one categorised event instead of a row per
     // admin written with no category, which reached no email and no audit.
     const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
@@ -423,6 +428,7 @@ export async function checkTenantNamespaceIntegrity(
       subsystem: 'Namespace integrity',
       objectLabel: tenant.name,
       detail: message,
+      items,
       severityLabel: errors.length > 0 ? 'partially failed' : 'repaired',
       recommendedAction: errors.length > 0
         ? 'Inspect the tenant namespace; auto-repair could not finish.'

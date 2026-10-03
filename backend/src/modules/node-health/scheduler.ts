@@ -382,7 +382,7 @@ async function fanoutNotification(
   prevSeverity: NodeHealthSeverity,
 ): Promise<void> {
   const title = titleFor(entry, prevSeverity);
-  const message = messageFor(entry);
+  const conditions = conditionsFor(entry);
   const type = entry.severity === 'critical' ? 'error'
     : entry.severity === 'warning' ? 'warning'
     : 'info';
@@ -407,7 +407,8 @@ async function fanoutNotification(
     await notifyAdminOperationalEvent(db, 'node', {
       subsystem: 'Node health',
       objectLabel: entry.name,
-      detail: `${title} ${message}`.trim(),
+      detail: conditions.length > 0 ? `${title}.` : `${title}. Node ${entry.name} OK.`,
+      items: conditions,
       severityLabel: entry.severity,
       recommendedAction: entry.severity === 'critical'
         ? 'Check the node in Cluster → Nodes.'
@@ -435,15 +436,15 @@ function titleFor(entry: NodeHealthEntry, prev: NodeHealthSeverity): string {
   return `Node ${entry.name} ${verb} at warning level`;
 }
 
-function messageFor(entry: NodeHealthEntry): string {
-  const parts: string[] = [];
-  if (!entry.ready) parts.push('NotReady');
-  if (entry.pressures.length > 0) parts.push(`pressure: ${entry.pressures.join(', ')}`);
-  if (entry.csiDriversMissing.length > 0) parts.push(`CSI missing: ${entry.csiDriversMissing.join(', ')}`);
-  if (entry.evictionsLastHour > 0) parts.push(`${entry.evictionsLastHour} pod evictions/h`);
-  if (entry.diskUsedPct !== null) parts.push(`disk: ${entry.diskUsedPct.toFixed(0)}%`);
-  if (parts.length === 0) return `Node ${entry.name} OK.`;
-  return `Node ${entry.name}: ${parts.join('; ')}.`;
+/** Each condition of the node, one list item apiece (rendered as a list on every channel). */
+export function conditionsFor(entry: NodeHealthEntry): string[] {
+  const items: string[] = [];
+  if (!entry.ready) items.push('NotReady');
+  for (const p of entry.pressures) items.push(`Pressure: ${p}`);
+  for (const d of entry.csiDriversMissing) items.push(`CSI driver missing: ${d}`);
+  if (entry.evictionsLastHour > 0) items.push(`${entry.evictionsLastHour} pod eviction(s) in the last hour`);
+  if (entry.diskUsedPct !== null) items.push(`Disk ${entry.diskUsedPct.toFixed(0)}% used`);
+  return items;
 }
 
 function pickEventTimestamp(e: RawEvent): Date | null {

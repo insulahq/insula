@@ -36,6 +36,7 @@ import { cronMatchesMinuteInZone } from '../../shared/cron-match.js';
 import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js';
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import type { FastifyInstance } from 'fastify';
+import { cappedList } from '../notifications/list-items.js';
 
 const TICK_INTERVAL_MS = 5 * 60 * 1000;
 /**
@@ -136,6 +137,7 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
   let ran = 0;
   let errors = 0;
   let firstError: string | null = null;
+  const failures: string[] = [];
   const { runOneScheduledBundle } = await import('./schedule.js') as {
     runOneScheduledBundle?: (app: FastifyInstance, tenantId: string, retentionDays: number) => Promise<void>;
   };
@@ -150,7 +152,9 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
         ran += 1;
       } catch (err) {
         errors += 1;
-        if (!firstError) firstError = err instanceof Error ? err.message : String(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!firstError) firstError = msg;
+        failures.push(`${t.name}: ${msg}`);
         app.log.error({ err, tenantId: t.id }, 'tenant-bundle global scheduler: bundle failed');
       }
     }
@@ -163,7 +167,10 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     try {
       await notifyAdminBackupFailed(app.db, {
         backupName: 'Scheduled tenant bundles',
-        errorMessage: `${errors}/${eligible.length} tenants failed (first error: ${firstError ?? 'unknown'})`,
+        // Name every tenant that failed, one list item each — "N/M failed
+        // (first error: …)" told the operator neither which nor why for the rest.
+        errorMessage: `${errors} of ${eligible.length} tenant bundle(s) failed${failures.length > 0 ? ':' : ` (${firstError ?? 'unknown'})`}`,
+        items: cappedList(failures),
       }, `tenant-bundle-wave:${fireAt.toISOString()}`);
     } catch (err) {
       app.log.error({ err }, 'tenant-bundle global scheduler: failure notification dispatch failed');

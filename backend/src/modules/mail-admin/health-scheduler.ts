@@ -59,17 +59,25 @@ export function componentDetail(key: string, component: unknown): string {
   if (!c || typeof c !== 'object') return '';
   const direct = typeof c.error === 'string' ? c.error : null;
   if (direct) return ` ${direct}`;
-  if (key === 'deliverability') {
-    // Name the failing sub-probes; that is what makes this one actionable
-    // (e.g. "certSanMatch" is the self-signed-cert case).
-    const failing: string[] = [];
-    for (const [k, v] of Object.entries(c)) {
-      const probe = v as Record<string, unknown> | null;
-      if (probe && typeof probe === 'object' && probe.severity === 'fail') failing.push(k);
-    }
-    if (failing.length > 0) return ` Failing probes: ${failing.join(', ')}.`;
-  }
+  // The failing sub-probes are named in `items` (componentProbes), one list
+  // entry each — not run into this sentence.
+  if (key === 'deliverability' && componentProbes(key, component).length > 0) return ' Failing probes:';
   return '';
+}
+
+/**
+ * The failing deliverability sub-probes, one list item each; that is what
+ * makes this alert actionable (e.g. "certSanMatch" is the self-signed-cert
+ * case). Warnings are not failures and are not named. Pure.
+ */
+export function componentProbes(key: string, component: unknown): string[] {
+  if (key !== 'deliverability' || !component || typeof component !== 'object') return [];
+  const failing: string[] = [];
+  for (const [k, v] of Object.entries(component as Record<string, unknown>)) {
+    const probe = v as Record<string, unknown> | null;
+    if (probe && typeof probe === 'object' && probe.severity === 'fail') failing.push(k);
+  }
+  return failing;
 }
 
 /** One mail-health pass. Never throws (fire-and-forget contract). */
@@ -167,6 +175,7 @@ export async function runMailHealthCheckOnce(
           component: label,
           mailHostname,
           detail: componentDetail(key, component),
+          items: componentProbes(key, component),
           panelUrl: '/monitoring/mail',
         },
         `mail-health:${key}:${bucket}`,

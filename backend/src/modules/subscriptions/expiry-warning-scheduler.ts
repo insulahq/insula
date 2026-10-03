@@ -117,15 +117,13 @@ export async function runExpiryWarningPass(
   if (expiring.length > 0) {
     try {
       const { notifyAdminSubscriptionsExpiring } = await import('../notifications/events.js');
+      const { cappedList } = await import('../notifications/list-items.js');
       await notifyAdminSubscriptionsExpiring(
         db,
         {
           tenantCount: String(expiring.length),
           horizonDays: String(Math.max(...windows)),
-          tenantList: expiring
-            .map((e) => `${e.name} (${e.daysOut}d, ${e.expiry})`)
-            .join('; ')
-            .slice(0, 2000),
+          tenantList: cappedList(expiring.map((e) => `${e.name} — expires ${e.expiry} (in ${e.daysOut} day${e.daysOut === 1 ? '' : 's'})`)),
           occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
         },
         `subscription-expiry-fleet:${new Date().toISOString().slice(0, 10)}`,

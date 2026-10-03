@@ -56,7 +56,7 @@ export async function notifyMemoryEvents(
     // within the hour is the designed rate limit, but a different kind (disk
     // pressure after a storage-limit eviction) is news and must get through.
     await notifyAdminNodeMemoryEvents(db, n.severity,
-      { nodeName: n.nodeName, headline: n.headline, summary: n.summary },
+      { nodeName: n.nodeName, headline: n.headline, summary: n.summary, advice: n.advice },
       `node-memory:${n.severity}:${n.nodeName}:${n.kinds.join('+')}:${hour}`);
   }
 
@@ -201,7 +201,10 @@ export function summarizeNodeEvents(
   nodeName: string;
   severity: 'critical' | 'warning';
   headline: string;
-  summary: string;
+  /** One list item per affected pod (and the node's own OOM). */
+  summary: string[];
+  /** What to do about it. */
+  advice: string;
   /** What the group contains ('system-oom', eviction causes), sorted — the dedupe dimension. */
   kinds: string[];
 }> {
@@ -238,13 +241,16 @@ export function summarizeNodeEvents(
       headlines.push(`${system ? 'SYSTEM' : 'Tenant'} pods evicted (${causes.map((c) => EVICTION_LABEL[c]).join(', ')})`);
     }
 
-    const parts: string[] = [];
+    // One list item per thing that happened: the node's own OOM, then each
+    // evicted pod by name — rendered as a list on every channel.
+    const items: string[] = [];
     if (g.systemOom > 0) {
-      parts.push(`kernel SystemOOM (${g.systemOom} event${g.systemOom === 1 ? '' : 's'}) - the node itself ran out of memory`);
+      items.push(`Kernel SystemOOM (${g.systemOom} event${g.systemOom === 1 ? '' : 's'}) — the node itself ran out of memory`);
     }
     for (const c of causes) {
       const evs = g.evictions.get(c) ?? [];
-      parts.push(`${evs.length} ${who} pod(s) evicted (${EVICTION_LABEL[c]}): ${joinNamed(evs.map((e) => describeEvicted(e, labelForNamespace)))}`);
+      for (const e of evs.slice(0, MAX_NAMED)) items.push(`${describeEvicted(e, labelForNamespace)} — evicted (${EVICTION_LABEL[c]})`);
+      if (evs.length > MAX_NAMED) items.push(`+${evs.length - MAX_NAMED} more ${who} pod(s) evicted (${EVICTION_LABEL[c]})`);
     }
 
     const advice: string[] = [];
@@ -256,7 +262,8 @@ export function summarizeNodeEvents(
       nodeName: g.nodeName,
       severity: g.severity,
       headline: headlines.join('; '),
-      summary: `${parts.join('; ')}. ${advice.join(' ')}`,
+      summary: items,
+      advice: advice.join(' '),
       kinds: [...(g.systemOom > 0 ? ['system-oom'] : []), ...causes].sort(),
     };
   });
@@ -273,8 +280,4 @@ function describeEvicted(
   return e.podName ? `${who} (pod ${e.podName})` : who;
 }
 
-/** Join named descriptions with a "+N more" tail when the list is long. */
-function joinNamed(descriptions: string[]): string {
-  if (descriptions.length <= MAX_NAMED) return descriptions.join('; ');
-  return `${descriptions.slice(0, MAX_NAMED).join('; ')}; +${descriptions.length - MAX_NAMED} more`;
-}
+

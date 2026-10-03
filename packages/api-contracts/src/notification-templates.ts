@@ -17,7 +17,13 @@ export type NotificationBodyFormat = typeof NOTIFICATION_BODY_FORMAT[number];
 
 export const notificationTemplateVariableSchema = z.object({
   name: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/),
-  type: z.enum(['string', 'number', 'boolean', 'date']),
+  /**
+   * `list` is several items — tenants, mailboxes, failed checks. The renderer
+   * formats it per channel: a `<ul>` in an email body, one `• item` line in a
+   * plaintext body (in-app, push), comma-joined in a subject. A template just
+   * writes `{{name}}`.
+   */
+  type: z.enum(['string', 'number', 'boolean', 'date', 'list']),
   required: z.boolean().optional(),
 });
 export type NotificationTemplateVariable = z.infer<typeof notificationTemplateVariableSchema>;
@@ -54,7 +60,7 @@ export const updateNotificationTemplateSchema = z.object({
 export type UpdateNotificationTemplateInput = z.infer<typeof updateNotificationTemplateSchema>;
 
 export const previewNotificationTemplateSchema = z.object({
-  variables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+  variables: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])),
   locale: z.string().optional(),
 });
 export type PreviewNotificationTemplateInput = z.infer<typeof previewNotificationTemplateSchema>;

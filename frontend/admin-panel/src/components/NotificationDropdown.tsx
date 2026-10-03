@@ -126,7 +126,7 @@ export default function NotificationDropdown() {
                       <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.title}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
+                        <p className="whitespace-pre-line text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
                         <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
                       </div>
                     </button>

@@ -87,10 +87,12 @@ describe('runExpiryWarningPass', () => {
     ]));
     await runExpiryWarningPass(db, { now: NOW });
     expect(adminDigestMock).toHaveBeenCalledTimes(1);
-    const payload = adminDigestMock.mock.calls[0][1] as Record<string, string>;
+    const payload = adminDigestMock.mock.calls[0][1] as { tenantCount: string; tenantList: string[] };
     expect(payload.tenantCount).toBe('2');
-    expect(payload.tenantList).toContain('Acme');
-    expect(payload.tenantList).toContain('Bravo');
+    // One list item per tenant, rendered as a list on every channel.
+    expect(payload.tenantList).toHaveLength(2);
+    expect(payload.tenantList.some((t) => t.startsWith('Acme — expires '))).toBe(true);
+    expect(payload.tenantList.some((t) => t.startsWith('Bravo — expires '))).toBe(true);
   });
 
   it('tells the operator nothing when no subscription is expiring', async () => {

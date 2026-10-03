@@ -52,10 +52,10 @@ describe('aliasNodeNames', () => {
 describe('aliasNodeNamesInVariables', () => {
   it('aliases descriptive text and leaves links and paths alone', () => {
     expect(aliasNodeNamesInVariables({
-      nodeName: 'sv1', detail: 'sv2 is back', count: 3,
+      nodeName: 'sv1', detail: 'sv2 is back', count: 3, details: ['acme on sv2', 'beta on sv1'],
       actionUrl: 'https://admin.example.test/cluster/nodes/sv1', nodePath: '/cluster/nodes/sv1', other: '/x/sv1',
     }, labels)).toEqual({
-      nodeName: 'Primary', detail: 'Secondary is back', count: 3,
+      nodeName: 'Primary', detail: 'Secondary is back', count: 3, details: ['acme on Secondary', 'beta on Primary'],
       actionUrl: 'https://admin.example.test/cluster/nodes/sv1', nodePath: '/cluster/nodes/sv1', other: '/x/sv1',
     });
   });
