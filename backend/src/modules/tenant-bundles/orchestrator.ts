@@ -68,7 +68,7 @@ import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../.
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
-import { CURRENT_REPO_LAYOUT, resolveBundleRepoLayout } from './repo-layout.js';
+import { CURRENT_REPO_LAYOUT, normaliseRepoLayout, resolveBundleRepoLayout } from './repo-layout.js';
 
 export interface OrchestratorDeps {
   readonly db: Database;
@@ -729,6 +729,12 @@ export async function runBundle(
     tenant: tenantMetaBlock,
     domainsSummary,
     deploymentsSummary,
+    // The cross-cluster import and DR re-create have the target but not this
+    // database: meta.json is the only place they can learn the layout from.
+    // Absent reads as per-component, so leaving it out sent every restore of
+    // a per-tenant bundle to the wrong repository ("repository does not
+    // exist").
+    repoLayout: normaliseRepoLayout(newJob.repoLayout),
   };
 
   if (status === 'completed') {

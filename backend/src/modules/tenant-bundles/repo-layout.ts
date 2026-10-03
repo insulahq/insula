@@ -16,6 +16,7 @@
  * absent. A wrong layout surfaces to an operator as "the backup is gone".
  */
 
+import type { BackupMetaV2 } from '@insula/api-contracts';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { backupComponents, backupJobs, tenantResticRepoState } from '../../db/schema.js';
@@ -64,6 +65,27 @@ export async function resolveBundleRepoLayout(
     .where(eq(backupJobs.id, bundleId))
     .limit(1);
   return normaliseRepoLayout(row?.repoLayout ?? null);
+}
+
+/**
+ * Resolve the layout for a bundle known only from its meta.json — the DR
+ * re-create and cross-cluster migration, where this database has no row for
+ * it yet and the row being registered must carry the right answer.
+ *
+ * `meta.repoLayout` is authoritative when present. Its ABSENCE is not proof of
+ * per-component: v2026.9.38 through v2026.10.3-rc.2 wrote per-tenant bundles
+ * without recording the field in meta.json. For those, ask the per-tenant
+ * repository whether it holds a snapshot of this bundle (`hasPerTenantSnapshots`,
+ * injected so the decision is testable without restic).
+ */
+export async function resolveForeignBundleRepoLayout(
+  meta: Pick<BackupMetaV2, 'repoLayout' | 'components'>,
+  hasPerTenantSnapshots: () => Promise<boolean>,
+): Promise<ResticRepoLayout> {
+  if (meta.repoLayout) return normaliseRepoLayout(meta.repoLayout);
+  // No restic component → no repository to point at; either answer is inert.
+  if (!meta.components.files && !meta.components.mailboxes) return DEFAULT_REPO_LAYOUT;
+  return (await hasPerTenantSnapshots()) ? 'per-tenant' : DEFAULT_REPO_LAYOUT;
 }
 
 /**

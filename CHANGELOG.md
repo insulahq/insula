@@ -71,6 +71,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Migrating a tenant to another cluster, or re-creating a deleted tenant from its backup, restores
+  its files and mail again.** Since v2026.9.38, tenant backups are stored in one repository per
+  tenant, but the backup's description file did not record that. The cluster receiving the tenant
+  therefore looked in the old per-component repository, and the restore failed with "repository
+  does not exist". New backups now record where their data lives. For backups that were already
+  taken, the receiving cluster checks which repository actually contains them.
+
 - **Restoring a tenant's mailboxes no longer fails once the platform's report mailboxes exist.** The
   platform adds `postmaster@` and `dmarc@` report mailboxes to every mail domain on its own. A tenant
   backup taken before they appeared could not be restored — the restore insisted on restoring them
