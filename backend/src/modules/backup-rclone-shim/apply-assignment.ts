@@ -65,7 +65,7 @@ import {
   type ShimReconcileClients,
   type ShimReconcileResult,
 } from './reconciler.js';
-import { SHIM_DAEMONSET_NAME, SHIM_NAMESPACE } from './service.js';
+import { CONFIG_HASH_ANNOTATION, SHIM_DAEMONSET_NAME, SHIM_NAMESPACE } from './service.js';
 
 // ---------------------------------------------------------------------------
 // Verify-ready
@@ -534,7 +534,8 @@ async function runShimAssignmentPipeline(
       // previous target. Reporting that as "succeeded" told the operator the
       // switch worked while the crashing node had no backup path at all
       // (v2026.10.3-rc.2 VM run: an unreachable S3 endpoint bound to SYSTEM).
-      const failing = await findFailingShimPods(k8sClients.core).catch(() => []);
+      const failing = await findFailingShimPods(k8sClients.core, await currentShimConfigHash(k8sClients.apps))
+        .catch(() => []);
       if (failing.length > 0) {
         throw new Error(describeFailingShim(args.className, failing));
       }
@@ -604,7 +605,7 @@ const FAILING_WAIT_REASONS = new Set([
 ]);
 
 interface ShimPodShape {
-  readonly metadata?: { readonly name?: string };
+  readonly metadata?: { readonly name?: string; readonly annotations?: Record<string, string> };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
     readonly containerStatuses?: ReadonlyArray<{
@@ -613,16 +614,39 @@ interface ShimPodShape {
   };
 }
 
-/** Shim pods whose container is stuck failing to start (crash loop, bad config, image). */
+/** The config-hash the shim DaemonSet's pod template currently carries (null if unknown). */
+export async function currentShimConfigHash(
+  apps: Pick<k8s.AppsV1Api, 'readNamespacedDaemonSet'>,
+): Promise<string | null> {
+  try {
+    const ds = (await apps.readNamespacedDaemonSet({
+      namespace: SHIM_NAMESPACE, name: SHIM_DAEMONSET_NAME,
+    } as unknown as Parameters<typeof apps.readNamespacedDaemonSet>[0])) as DaemonSetStatusShape;
+    return ds.spec?.template?.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Shim pods of the CURRENT template (`configHash`) whose container is stuck
+ * failing to start (crash loop, bad config, image). Pods of an older template
+ * are ignored: one crash-looping for an unrelated reason must not fail a
+ * switch whose own pods are merely slow. Without a hash nothing can be
+ * attributed to this switch, so nothing is reported.
+ */
 export async function findFailingShimPods(
   core: Pick<k8s.CoreV1Api, 'listNamespacedPod'>,
+  configHash: string | null,
 ): Promise<FailingShimPod[]> {
+  if (!configHash) return [];
   const res = (await core.listNamespacedPod({
     namespace: SHIM_NAMESPACE,
     labelSelector: `app=${SHIM_DAEMONSET_NAME}`,
   } as unknown as Parameters<typeof core.listNamespacedPod>[0])) as { items?: readonly ShimPodShape[] };
   const out: FailingShimPod[] = [];
   for (const pod of res.items ?? []) {
+    if (pod.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] !== configHash) continue;
     const waiting = (pod.status?.containerStatuses ?? [])
       .map((c) => c.state?.waiting?.reason)
       .find((r): r is string => !!r && FAILING_WAIT_REASONS.has(r));

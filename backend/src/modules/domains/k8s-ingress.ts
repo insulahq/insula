@@ -26,11 +26,10 @@
 import { createHash } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { longestMatchingDomain } from '@insula/api-contracts';
-import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } from '../../db/schema.js';
+import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers, tenants } from '../../db/schema.js';
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
-import { isNamespaceIngressSuspended } from '../tenant-lifecycle/ingress-suspend.js';
 import {
   ensureRedirectSinkService,
   REDIRECT_SINK_SERVICE_NAME,
@@ -219,12 +218,19 @@ export async function reconcileIngress(
   // ingress_routes, which knows nothing about suspension — so any reconcile
   // in the suspend window (a cert issuing, the bandwidth meter, the
   // verification cron, an admin edit) silently put the tenant's sites back
-  // online. The check was designed in from the start and documented in
-  // ingress-suspend.ts, but nothing ever called it. Changes made while
-  // suspended apply on resume: the resume hook drops the marker BEFORE its
-  // own reconcile.
-  if (await isNamespaceIngressSuspended(k8s, namespace)) {
-    console.warn(`[ingress-reconcile] ${namespace}: tenant ingress is suspended — skipping (changes apply on resume)`);
+  // online.
+  //
+  // Keyed on tenants.status — the lifecycle's source of truth — not on the
+  // marker: the status stamp (hook order 250) runs BEFORE ingress-suspend /
+  // ingress-resume / ingress-reconcile (300/310), so it is already
+  // 'suspended' before the marker goes on and already 'active' before resume
+  // starts. A resume that cleared only some markers therefore still heals:
+  // the ingress-reconcile hook (and any later reconcile) rebuilds the routes
+  // and the full replace drops the stale markers. Changes made while
+  // suspended apply on resume.
+  const [tenantRow] = await db.select({ status: tenants.status }).from(tenants).where(eq(tenants.id, tenantId));
+  if (tenantRow?.status === 'suspended') {
+    console.warn(`[ingress-reconcile] ${namespace}: tenant is suspended — skipping (changes apply on resume)`);
     return;
   }
 
