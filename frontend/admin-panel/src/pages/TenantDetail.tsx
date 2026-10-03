@@ -11,6 +11,7 @@ import TenantIssuesBanner from '@/components/tenants/TenantIssuesBanner';
 import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import type { TenantDeletedState } from '@/components/tenants/TenantDeletedBanner';
+import MigrateResultNote from '@/components/tenants/MigrateResultNote';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
 import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
@@ -131,11 +132,14 @@ export default function TenantDetail() {
   } | null>(null);
 
   const deleteTenant = useDeleteTenant();
-  const mountedRef = useRef(true);
+  // Which tenant this page shows NOW. The same page instance is reused when
+  // the route's :id changes, so "still mounted" alone does not mean "still on
+  // the tenant that was deleted".
+  const shownIdRef = useRef<string | undefined>(id);
   useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
+    shownIdRef.current = id;
+    return () => { shownIdRef.current = undefined; };
+  }, [id]);
   const updateTenant = useUpdateTenant(id ?? '');
   const impersonate = useLoginAsTenant();
   // Read once instead of casting `tenant` at four separate call sites.
@@ -146,6 +150,7 @@ export default function TenantDetail() {
 
   const handleDelete = async () => {
     if (!id) return;
+    const deletingId = id;
     try {
       // Open the modal optimistically so the operator sees a
       // "Dispatching deleted transition…" placeholder immediately.
@@ -165,8 +170,8 @@ export default function TenantDetail() {
       // no longer exists: the page turns into "Tenant not found" and takes
       // the progress modal with it. Go back to the list, which says what
       // happened (and links the per-step record, which outlives the tenant).
-      // Not if the operator already left this page while the delete ran.
-      if (!mountedRef.current) return;
+      // Not if the operator already left this tenant while the delete ran.
+      if (shownIdRef.current !== deletingId) return;
       setTxModal(null);
       setDeleteOpen(false);
       const state: TenantDeletedState = { deletedTenant: { name: tenant?.name ?? 'Unknown' } };
@@ -3116,11 +3121,7 @@ function PlacementCard({ tenantId, tenant }: {
         </button>
       </div>
 
-      {migrate.isSuccess && migrate.data && (
-        <p className="mt-2 text-xs text-green-600 dark:text-green-400">
-          Migrated — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
-        </p>
-      )}
+      {migrate.isSuccess && migrate.data && <MigrateResultNote result={migrate.data.data} />}
 
       {/* Where the tenant ACTUALLY is, against the pin chosen above. */}
       <PlacementStatusPanel tenantId={tenantId} />

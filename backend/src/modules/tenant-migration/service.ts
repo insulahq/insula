@@ -4,6 +4,8 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import type { MigrateToWorkerResult } from '@insula/api-contracts';
+import { startDataRelocation } from '../tenant-placement/relocate.js';
 
 // M6: minimal tenant migration between workers.
 //
@@ -16,11 +18,12 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 //      tenant's namespace so the scheduler re-evaluates with the
 //      new nodeSelector.
 //
+//   4. Move the data: a restarted pod re-attaches the volume on the new
+//      node and Longhorn's data locality copies it there; a volume nothing
+//      re-attaches (a stopped tenant) is attached on the new node by the
+//      platform until the copy is done (tenant-placement/relocate.ts).
+//
 // Not yet covered (out of M6 scope — future revisit):
-//   - PVC data migration across nodes. Longhorn with replicaCount=1
-//     stays on the original node; access from the new worker is
-//     cross-node block I/O (functional but slower). Real migration
-//     needs a snapshot+restore flow against the new node's disk.
 //   - DNS record updates. PowerDNS lives in a separate project
 //     (ADR-022); the admin runs the DNS update manually for now.
 //   - Progress tracking via provisioning_tasks. Current flow is
@@ -36,6 +39,9 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
  * SAME node because the pod template's nodeSelector is unchanged.
  */
 async function repinAndRestart(k8s: K8sClients, namespace: string, nodeName: string): Promise<number> {
+  // Every Deployment is re-pinned; only the RUNNING ones restart. A file
+  // manager idle at 0 replicas counted as "restarted", and a stopped tenant's
+  // Move back reported restarted workloads that would carry its data — none.
   let count = 0;
   const now = new Date().toISOString();
 
@@ -62,7 +68,7 @@ async function repinAndRestart(k8s: K8sClients, namespace: string, nodeName: str
       },
     } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
       STRATEGIC_MERGE_PATCH);
-    count += 1;
+    if ((deploy.spec?.replicas ?? 1) > 0) count += 1;
   }
   return count;
 }
@@ -71,12 +77,6 @@ export interface MigrateToWorkerInput {
   readonly nodeName: string;
 }
 
-export interface MigrateToWorkerResult {
-  readonly tenantId: string;
-  readonly previousWorker: string | null;
-  readonly currentWorker: string;
-  readonly deploymentsRestarted: number;
-}
 
 export async function migrateTenantToWorker(
   db: Database,
@@ -118,10 +118,13 @@ export async function migrateTenantToWorker(
     .set({ nodeName: input.nodeName, updatedAt: sql`NOW()` })
     .where(eq(tenants.id, tenantId));
 
+  const dataRelocation = await startDataRelocation(k8s, tenant.kubernetesNamespace, input.nodeName, tenant.storageTier ?? null);
+
   return {
     tenantId,
     previousWorker,
     currentWorker: input.nodeName,
     deploymentsRestarted,
+    dataRelocation,
   };
 }

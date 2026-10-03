@@ -163,6 +163,32 @@ function mockK8s(opts: {
 }
 
 describe('quiesce', () => {
+  it('first releases a data relocation holding the volume attached — before scaling anything down', async () => {
+    // A "Move back" of a stopped tenant attaches its volume through a Longhorn
+    // ticket; every storage operation behind quiesce needs it detached.
+    const m = mockK8s({ deployments: [{ name: 'wordpress', replicas: 1 }] });
+    const released: Array<{ name: string; scaledBefore: number }> = [];
+    const k8s = {
+      ...m.tenant,
+      custom: {
+        listNamespacedCustomObject: async (a: { plural: string }) => ({
+          items: a.plural === 'volumes'
+            ? [{ metadata: { name: 'pvc-1' }, status: { kubernetesStatus: { namespace: 'ns' } } }]
+            : a.plural === 'volumeattachments'
+              ? [{ metadata: { name: 'pvc-1' }, spec: { attachmentTickets: { 'insula-relocate': { nodeID: 'node-a' } } } }]
+              : [],
+        }),
+        patchNamespacedCustomObject: async (a: { name: string }) => {
+          released.push({ name: a.name, scaledBefore: scaleReplicaCalls.length });
+          return {};
+        },
+      },
+    } as unknown as K8sClients;
+    await quiesce(k8s, 'ns');
+    expect(released).toEqual([{ name: 'pvc-1', scaledBefore: 0 }]);
+    expect(scaleReplicaCalls.map((c) => c.name)).toEqual(['wordpress']);
+  });
+
   it('scales every running deployment to 0 and remembers prior replicas', async () => {
     const m = mockK8s({
       deployments: [

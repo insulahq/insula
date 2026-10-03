@@ -181,6 +181,10 @@ export async function applyDeleted(
   // Step 2: drop the k8s namespace. `tenants.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
   // indicate a seed bug upstream and should surface as an error.
+  // A pending data relocation holds the tenant's volume attached; release it
+  // first, or the PVC (and so the namespace) waits on it in Terminating.
+  const { releaseRelocationsInNamespace } = await import('../tenant-placement/relocate.js');
+  await releaseRelocationsInNamespace(ctx.k8s, namespace);
   try {
     await ctx.k8s.core.deleteNamespace({ name: namespace });
   } catch (err) {

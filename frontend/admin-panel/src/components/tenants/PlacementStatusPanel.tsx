@@ -7,6 +7,7 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
 import NodeName from '@/components/nodes/NodeName';
 import NodeList from '@/components/nodes/NodeList';
 import NodeText from '@/components/nodes/NodeText';
+import MigrateResultNote from './MigrateResultNote';
 
 function utc(iso: string | null): string {
   if (!iso) return '—';
@@ -81,12 +82,7 @@ export default function PlacementStatusPanel({ tenantId }: { readonly tenantId: 
           {(migrate.error as { message?: string }).message ?? 'The placement change failed.'}
         </p>
       )}
-      {migrate.isSuccess && migrate.data && (
-        <p className="mt-2 text-xs text-green-700 dark:text-green-400">
-          Re-pinned to <NodeName name={migrate.data.data.currentWorker} /> — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
-          The placement view updates within a minute.
-        </p>
-      )}
+      {migrate.isSuccess && migrate.data && <MigrateResultNote result={migrate.data.data} />}
 
       {failovers.length > 0 && <FailoverList failovers={failovers} />}
     </div>
