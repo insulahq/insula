@@ -175,22 +175,33 @@ except Exception: print("")')
 
 # ─── Cleanup (trap-protected) ───────────────────────────────────────────────
 TEST_TID=""
+# The SYSTEM binding found at start. Restored at exit: clearing it (what this
+# suite used to do) left the cluster with no WAL archiving and no system
+# backups after every run.
+ORIG_SYSTEM=""
 cleanup() {
   phase "Cleanup"
-  # Unassign SYSTEM + delete the test config via the API if we still have a token.
+  # Off the dead target + delete the test config via the API if we still have a token.
   if [[ -n "$TOKEN" ]]; then
     api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
     [[ -n "$TEST_TID" ]] && api DELETE "/api/v1/admin/backup-configs/$TEST_TID" >/dev/null 2>&1 || true
   fi
-  # Belt-and-braces: drop any leftover row + force the plugin off so the cluster
-  # can never be left archiving to a dead sink by a half-finished run.
-  dbq "DELETE FROM backup_target_assignments WHERE backup_class='system'" >/dev/null 2>&1 || true
   dbq "DELETE FROM backup_configurations WHERE name='$TEST_CONFIG_NAME'" >/dev/null 2>&1 || true
-  if plugin_present; then
-    kc patch cluster -n "$NS" "$CLUSTER" --type=merge -p '{"spec":{"plugins":[]}}' >/dev/null 2>&1 || true
+  if [[ -n "$ORIG_SYSTEM" && -n "$TOKEN" ]]; then
+    local rc
+    rc=$(hcode "$(api PUT /api/v1/admin/backup-rclone-shim/assignments/system "{\"targetId\":\"$ORIG_SYSTEM\",\"force\":true}")")
+    if [[ "$rc" == "200" ]]; then log "restored the SYSTEM binding → $ORIG_SYSTEM"
+    else log "WARNING: could not restore the SYSTEM binding ($rc) — rebind $ORIG_SYSTEM in Backups → Targets"; fi
+  else
+    # Targetless cluster: drop any leftover row + force the plugin off so the
+    # cluster can never be left archiving to a dead sink by a half-finished run.
+    dbq "DELETE FROM backup_target_assignments WHERE backup_class='system'" >/dev/null 2>&1 || true
+    if plugin_present; then
+      kc patch cluster -n "$NS" "$CLUSTER" --type=merge -p '{"spec":{"plugins":[]}}' >/dev/null 2>&1 || true
+    fi
   fi
   [[ -n "$PF_PID" ]] && kill "$PF_PID" 2>/dev/null || true
-  log "cleanup done (assignment cleared, test config removed, plugin off)"
+  log "cleanup done (test config removed, SYSTEM binding ${ORIG_SYSTEM:+restored}${ORIG_SYSTEM:-cleared})"
 }
 trap cleanup EXIT INT TERM
 
@@ -203,6 +214,20 @@ login || { fail "login failed (ADMIN_EMAIL=$ADMIN_EMAIL)"; exit 1; }
 ok "authenticated as $ADMIN_EMAIL"
 
 phase "Phase 1 — baseline (no target → no plugin → archiving healthy)"
+# The scenario needs a TARGETLESS cluster. Through the rclone shim, binding a
+# dead target on top of a live one does NOT fail archiving: the new shim pod
+# cannot open the target and crash-loops, the DaemonSet stops rolling, and the
+# other nodes keep shipping WAL to the previous target (verified on the VM tier;
+# the target switch itself now reports that failure). So unbind first, and put
+# the original binding back at exit.
+ORIG_SYSTEM=$(hbody "$(api GET /api/v1/admin/backup-rclone-shim/assignments)" | python3 -c 'import sys,json
+try: print(next((a.get("targetId") or "" for a in json.load(sys.stdin)["data"]["assignments"] if a["className"]=="system"), ""))
+except Exception: print("")')
+if [[ -n "$ORIG_SYSTEM" ]]; then
+  log "SYSTEM is bound to $ORIG_SYSTEM — unbinding for the targetless baseline (restored at exit)"
+  api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
+  for _ in $(seq 1 55); do plugin_present || break; sleep 6; done
+fi
 # Best-effort re-run reset for the notification ROW (the hard gate is the health
 # assessment below, which is dedupe-independent). The alert is rate-limited once /
 # 6h: consumeRateLimit counts notification_deliveries by category_id (the

@@ -310,7 +310,7 @@ fi
 #      that was driven by this run.
 #   2) hook_runs rows exist for those transitions and are all in
 #      state ∈ {ok, noop} (anything else means a registered hook failed).
-log "── Scenario 8: client_lifecycle_transitions + hook_runs ──"
+log "── Scenario 8: tenant_lifecycle_transitions + hook_runs ──"
 
 # Cluster name was renamed `postgres` → `system-db` in the
 # PG18 migration. Try the canonical name first and fall back to the
@@ -326,7 +326,7 @@ PSQL() {
 if [[ -z "$PG_POD" ]]; then
   fail "could not locate cnpg postgres pod for transitions probe"
 else
-  TRANSITIONS_JSON=$(PSQL "SELECT id, transition_kind, state FROM client_lifecycle_transitions WHERE tenant_id='$CID' ORDER BY started_at")
+  TRANSITIONS_JSON=$(PSQL "SELECT id, transition_kind, state FROM tenant_lifecycle_transitions WHERE tenant_id='$CID' ORDER BY started_at")
   KINDS=$(echo "$TRANSITIONS_JSON" | awk -F'|' '{print $2}' | sort -u | paste -sd,)
   ALL_TERMINAL=$(echo "$TRANSITIONS_JSON" | awk -F'|' 'NF>=3 && $3!="completed" && $3!="failed_partial" {bad++} END {print bad+0}')
   for want in suspended active archived; do
@@ -341,7 +341,7 @@ else
 
   # Hook_runs check — count rows per transition_id and assert all are
   # ok/noop. A failed/pending row indicates a registered hook regressed.
-  HOOK_RUNS=$(PSQL "SELECT t.transition_kind, h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$CID' ORDER BY t.started_at, h.hook_order")
+  HOOK_RUNS=$(PSQL "SELECT t.transition_kind, h.hook_name, h.state FROM tenant_lifecycle_transitions t JOIN tenant_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$CID' ORDER BY t.started_at, h.hook_order")
   if [[ -z "$HOOK_RUNS" ]]; then
     fail "no hook_runs rows for client $CID — Phase 3 hooks are not running"
   else
@@ -395,12 +395,12 @@ else
   # delete (lifecycle-collapse). Accept that and assert every row
   # reached a terminal state.
   for i in $(seq 1 30); do
-    PENDING=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" \
+    PENDING=$(PSQL "SELECT state FROM tenant_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" \
       | awk 'NF>0 && $1!="completed" && $1!="failed_partial" && $1!="failed_blocking" {n++} END {print n+0}')
     [[ "$PENDING" == "0" ]] && break
     sleep 2
   done
-  DEL_STATES=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" | tr '\n' ',')
+  DEL_STATES=$(PSQL "SELECT state FROM tenant_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted'" | tr '\n' ',')
   if [[ "$PENDING" == "0" ]]; then
     ok "every deleted transition reached a terminal state (states=$DEL_STATES)"
   else
@@ -410,7 +410,7 @@ else
   # Confirm hook_runs for the deleted transition(s) include the Phase 4
   # hooks. With no domains/backup_bundles attached, dns-zone-cleanup +
   # tenant-bundles-bundle-cleanup return noop — both states are acceptable.
-  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
+  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM tenant_lifecycle_transitions t JOIN tenant_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
   for hook in dns-zone-cleanup tenant-bundles-bundle-cleanup cluster-scoped-refs-cleanup; do
     if echo "$DEL_HOOKS" | grep -q "^$hook|"; then
       ok "hook_run row for $hook recorded"
@@ -420,7 +420,7 @@ else
   done
 
   # Phase A1: namespace must be persisted on the transition row.
-  DEL_NS_FROM_TX=$(PSQL "SELECT namespace FROM client_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted' LIMIT 1")
+  DEL_NS_FROM_TX=$(PSQL "SELECT namespace FROM tenant_lifecycle_transitions WHERE tenant_id='$DEL_CID' AND transition_kind='deleted' LIMIT 1")
   if [[ -n "$DEL_NS_FROM_TX" ]]; then
     ok "namespace persisted on transitions row: $DEL_NS_FROM_TX"
   else
@@ -432,7 +432,7 @@ else
   # returning retry on a fast-create-then-delete client) takes one
   # tick to drain. Wait up to 4 min before declaring failure.
   for i in $(seq 1 80); do
-    DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
+    DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM tenant_lifecycle_transitions t JOIN tenant_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.tenant_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
     BAD_HOOKS=$(echo "$DEL_HOOKS" | awk -F'|' 'NF>=2 && $2!="ok" && $2!="noop"')
     [[ -z "$BAD_HOOKS" ]] && break
     sleep 3
@@ -479,7 +479,7 @@ TX_COUNT=$(echo "$TX_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);
 # was archived then restored in Scenario 5 — assert there's at least
 # one transition row of kind=restored for it.
 log "── Scenario 11: explicit 'restored' transition row exists ──"
-RESTORED_COUNT=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE tenant_id='$CID' AND transition_kind='restored'")
+RESTORED_COUNT=$(PSQL "SELECT count(*) FROM tenant_lifecycle_transitions WHERE tenant_id='$CID' AND transition_kind='restored'")
 [[ "$RESTORED_COUNT" -ge 1 ]] \
   && ok "client has $RESTORED_COUNT restored transition row(s)" \
   || fail "no 'restored' transition row for $CID (Phase A1 wiring missing)"
@@ -503,7 +503,7 @@ if [[ ${#BULK_IDS[@]} -lt 2 ]]; then
 else
   ok "provisioned ${#BULK_IDS[@]} throwaway clients"
   IDS_JSON=$(printf '"%s",' "${BULK_IDS[@]}" | sed 's/,$//')
-  BULK_RESP=$(curl -sk --max-time 240 -X DELETE "$ADMIN_HOST/api/v1/admin/tenants/bulk" -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d "{\"client_ids\":[$IDS_JSON]}")
+  BULK_RESP=$(curl -sk --max-time 240 -X DELETE "$ADMIN_HOST/api/v1/admin/tenants/bulk" -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d "{\"tenant_ids\":[$IDS_JSON]}")
   BULK_OP_ID=$(echo "$BULK_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bulkOpId',''))" 2>/dev/null || echo "")
   [[ -n "$BULK_OP_ID" ]] \
     && ok "bulk DELETE returned bulkOpId=$BULK_OP_ID" \
@@ -515,7 +515,7 @@ else
   # kubectl exec → psql) that swallowed the JSONB literal in run #1.
   if [[ -n "$BULK_OP_ID" ]]; then
     for i in $(seq 1 30); do
-      MATCHED=$(PSQL "SELECT count(*) FROM client_lifecycle_transitions WHERE detail->>'bulkOpId' = '$BULK_OP_ID'")
+      MATCHED=$(PSQL "SELECT count(*) FROM tenant_lifecycle_transitions WHERE detail->>'bulkOpId' = '$BULK_OP_ID'")
       [[ "$MATCHED" -ge 2 ]] && break
       sleep 2
     done
