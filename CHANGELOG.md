@@ -71,6 +71,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **System snapshots: restoring a monitoring or CrowdSec volume works.** A restore first stops the
+  workload that uses the volume, and the platform looked that workload up in a way it lacks
+  permission for. Every restore of such a volume therefore failed with "Cannot resolve workload
+  mounting … manual restore required". The platform now finds the workload directly from its
+  definition. This also works when the workload is currently stopped.
+
 - **A fresh install no longer gives up on a healthy mail server.** Before declaring the mail server
   ready, bootstrap probes it from an admin-panel pod. It picked that pod once. If admin-panel was
   replaced while the probe was waiting, every later attempt went to a pod that no longer existed.

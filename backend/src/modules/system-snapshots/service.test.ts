@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   assertLonghornVolume,
+  resolveConsumer,
   listSystemPvcSnapshots,
   listSnapshotsForVolume,
   pruneVolumeSnapshots,
@@ -260,5 +261,68 @@ describe('volumes Longhorn cannot snapshot', () => {
     const { k8s, spies } = makeK8s({});
     spies.get.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { code: 403 }));
     await expect(assertLonghornVolume(k8s, 'pvc-db')).rejects.toThrow('forbidden');
+  });
+});
+
+// Which workload a restore must scale to 0 and back. The Deployment branch used
+// to walk pod → ReplicaSet → Deployment, and platform-api may not read
+// ReplicaSets, so every Deployment-backed system volume (vmsingle, crowdsec)
+// answered CONSUMER_UNRESOLVED (v2026.10.3-rc.4 VM run, system-snapshots 4c).
+describe('resolveConsumer', () => {
+  function k8sFor(opts: {
+    pvcLabels?: Record<string, string>;
+    sts?: unknown[];
+    deps?: unknown[];
+  }) {
+    const readRs = vi.fn(async () => { throw Object.assign(new Error('forbidden'), { code: 403 }); });
+    return {
+      k8s: {
+        core: {
+          readNamespacedPersistentVolumeClaim: vi.fn(async () => ({ metadata: { labels: opts.pvcLabels ?? {} } })),
+        },
+        apps: {
+          listNamespacedStatefulSet: vi.fn(async () => ({ items: opts.sts ?? [] })),
+          listNamespacedDeployment: vi.fn(async () => ({ items: opts.deps ?? [] })),
+          readNamespacedReplicaSet: readRs,
+        },
+        custom: { getNamespacedCustomObject: vi.fn(async () => ({ spec: { instances: 1 } })) },
+      } as unknown as K8sClients,
+      readRs,
+    };
+  }
+  const dep = (name: string, claim: string, replicas?: number) => ({
+    metadata: { name },
+    spec: { replicas, template: { spec: { volumes: [{ name: 'data', persistentVolumeClaim: { claimName: claim } }] } } },
+  });
+
+  it('finds the Deployment whose pod template mounts the PVC — without reading ReplicaSets', async () => {
+    const { k8s, readRs } = k8sFor({ deps: [dep('other', 'other-pvc', 1), dep('vmsingle', 'vmsingle-storage', 1)] });
+    await expect(resolveConsumer(k8s, 'monitoring', 'vmsingle-storage')).resolves.toEqual({
+      kind: 'Deployment', namespace: 'monitoring', name: 'vmsingle', replicaField: 'replicas', originalCount: 1,
+    });
+    expect(readRs).not.toHaveBeenCalled();
+  });
+
+  it('a Deployment scaled to 0 is still found, and restored to 0', async () => {
+    const { k8s } = k8sFor({ deps: [dep('crowdsec', 'crowdsec-data', 0)] });
+    await expect(resolveConsumer(k8s, 'crowdsec', 'crowdsec-data')).resolves.toMatchObject({ name: 'crowdsec', originalCount: 0 });
+  });
+
+  it('a StatefulSet volumeClaimTemplate match wins before Deployments are consulted', async () => {
+    const { k8s } = k8sFor({
+      sts: [{ metadata: { name: 'db' }, spec: { replicas: 2, volumeClaimTemplates: [{ metadata: { name: 'data' } }] } }],
+      deps: [dep('decoy', 'data-db-0', 1)],
+    });
+    await expect(resolveConsumer(k8s, 'ns', 'data-db-0')).resolves.toMatchObject({ kind: 'StatefulSet', name: 'db', originalCount: 2 });
+  });
+
+  it('a CNPG-labelled PVC resolves to its Cluster', async () => {
+    const { k8s } = k8sFor({ pvcLabels: { 'cnpg.io/cluster': 'system-db' } });
+    await expect(resolveConsumer(k8s, 'platform', 'system-db-1')).resolves.toMatchObject({ kind: 'CnpgCluster', name: 'system-db', replicaField: 'instances' });
+  });
+
+  it('nothing mounts the PVC → null (the route answers CONSUMER_UNRESOLVED)', async () => {
+    const { k8s } = k8sFor({ deps: [dep('other', 'other-pvc', 1)] });
+    await expect(resolveConsumer(k8s, 'ns', 'orphan-pvc')).resolves.toBeNull();
   });
 });
