@@ -129,6 +129,16 @@ describe('summariseWarningEvents', () => {
       .toEqual([`FailedCreate: Error creating: pods "${JOB}-…" is forbidden: exceeded quota: q, requested: pods=1`]);
   });
 
+  it('folds the event aggregator prefix, which a DEV quota block produced as a second copy', () => {
+    const combined = {
+      type: 'Warning', reason: 'FailedCreate', involvedObject: { kind: 'Job', name: JOB },
+      message: `(combined from similar events): Error creating: pods "${JOB}-ddddd" is forbidden: exceeded quota: q`,
+    };
+    const plain = { ...combined, message: `Error creating: pods "${JOB}-eeeee" is forbidden: exceeded quota: q` };
+    expect(summariseWarningEvents([plain, combined], JOB, new Set()))
+      .toEqual([`FailedCreate: Error creating: pods "${JOB}-…" is forbidden: exceeded quota: q`]);
+  });
+
   it('caps a long message', () => {
     const [line] = summariseWarningEvents([
       { type: 'Warning', reason: 'FailedMount', message: 'x'.repeat(1000), involvedObject: { kind: 'Pod', name: POD } },
