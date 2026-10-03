@@ -50,7 +50,7 @@ export default function DomainDetail() {
     return (
       <div className="py-20 text-center text-gray-500 dark:text-gray-400" data-testid="domain-not-found">
         <p>Domain not found.</p>
-        <Link to="/domains" className="mt-2 text-brand-500 hover:underline">Back to Domains</Link>
+        <Link to="/tenants/domains" className="mt-2 text-brand-500 hover:underline">Back to Domains</Link>
       </div>
     );
   }
@@ -65,7 +65,7 @@ export default function DomainDetail() {
     <div className="space-y-6" data-testid="domain-detail-page">
       <div className="flex items-center gap-3">
         <Link
-          to="/domains"
+          to="/tenants/domains"
           className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           data-testid="back-to-domains"
         >
@@ -389,16 +389,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
               {routes.map((route) => (
                 <tr key={route.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                   <td className="px-4 py-3">
-                    <Link
-                      to={`/tenants/${tenantId}/domains/${domainId}/routes/${route.id}`}
-                      className="flex items-center gap-2 group"
-                      data-testid={`route-link-${route.id}`}
-                    >
-                      <span className="font-medium text-brand-600 dark:text-brand-400 group-hover:underline">{route.hostname}</span>
+                    {/* Not a link: the admin panel has no route-detail page (the
+                        tenant panel's /domains/:id/routes/:id has no admin twin),
+                        and this row already edits the route's target inline. */}
+                    <div className="flex items-center gap-2" data-testid={`route-link-${route.id}`}>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{route.hostname}</span>
                       {route.isApex ? (
                         <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
                       ) : null}
-                    </Link>
+                    </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
                     {/* Plain ingress base domain as customer-facing CNAME target;

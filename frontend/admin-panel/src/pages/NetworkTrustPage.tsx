@@ -13,7 +13,7 @@
  * status writes (Synced / Failed / Claimed) live.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Network,
@@ -40,23 +40,13 @@ import {
 import type { TrustedRange, PendingPeer, FirewallBlacklistEntry } from '@insula/api-contracts';
 import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 import BootstrapCommandModal from '@/components/security/BootstrapCommandModal';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies' | 'blacklist';
-
-const VALID_TABS: ReadonlySet<TabId> = new Set(['trusted-ranges', 'pending-peers', 'trusted-proxies', 'blacklist']);
+type TabId = TabOf<'/security/network-trust'>;
 
 export default function NetworkTrustPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get('tab');
-  const activeTab: TabId = useMemo(() => {
-    if (requested && VALID_TABS.has(requested as TabId)) return requested as TabId;
-    return 'trusted-ranges';
-  }, [requested]);
-  const setActiveTab = (id: TabId): void => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', id);
-    setSearchParams(next, { replace: true });
-  };
+  const [activeTab, setActiveTab] = useTabParam('/security/network-trust');
 
   return (
     <div className="space-y-6">
@@ -712,7 +702,7 @@ function BlacklistTab() {
 
   const entries = list.data?.data?.data ?? [];
 
-  // Deep-link from the SSH Lockdown fail2ban modal: ?tab=blacklist&prefill=<ip>
+  // Deep-link from the SSH Lockdown fail2ban modal: /security/network-trust/blacklist?prefill=<ip>
   // opens the Add form with the IP pre-filled (operator still type-to-confirms).
   const prefill = searchParams.get('prefill');
   useEffect(() => {

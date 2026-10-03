@@ -72,6 +72,8 @@ export interface JobFailureDescription {
 const MAX_EVENT_LINES = 4;
 const MAX_EVENT_MESSAGE = 300;
 const MAX_TEXT = 1000;
+/** What the client-side event aggregator prefixes to a folded repeat. */
+const AGGREGATOR_PREFIX = /^\(combined from similar events\):\s*/;
 /** Reasons already carried by the Job condition. */
 const CONDITION_ECHOES = new Set(['DeadlineExceeded', 'BackoffLimitExceeded']);
 
@@ -151,7 +153,8 @@ function firstSeenMs(e: EventLite): number {
  * per reason: kubelet reports an unpullable image as three `Failed` events with
  * the same timestamps, and the one that names the image is not the latest.
  * Ties go to the longer, more specific message. A refused pod create is retried
- * under a new generated name each time, so those names are folded first —
+ * under a new generated name each time, so those names — and the event
+ * aggregator's "(combined from similar events)" prefix — are folded first;
  * otherwise one quota block fills every line. Pure.
  */
 export function summariseWarningEvents(
@@ -167,7 +170,7 @@ export function summariseWarningEvents(
     const ours = (obj?.kind === 'Pod' && podNames.has(obj.name ?? ''))
       || (obj?.kind === 'Job' && obj.name === jobName);
     if (!ours || CONDITION_ECHOES.has(e.reason)) continue;
-    const text = e.message.trim().replace(generated, `${jobName}-…`);
+    const text = e.message.trim().replace(AGGREGATOR_PREFIX, '').replace(generated, `${jobName}-…`);
     const key = `${e.reason}\u0000${text}`;
     const prev = distinct.get(key);
     if (!prev || firstSeenMs(e) < firstSeenMs(prev.e)) distinct.set(key, { e, text });
@@ -221,11 +224,13 @@ export async function describeJobFailure(
 }
 
 /**
- * "<reason>; diagnosis: <details>" — the details (plus any the caller adds,
- * such as where it pinned the pod) behind the operator-only marker. Pure.
+ * "<reason>; diagnosis: <details>" — the details behind the operator-only
+ * marker. The caller's own details (such as where it pinned the pod) come
+ * first: event text can be long, notifications are capped, and placement is
+ * the line that names a wrong-node failure. Pure.
  */
 export function formatJobFailure(d: JobFailureDescription, extraDetails: readonly string[]): string {
-  const details = [...d.details, ...extraDetails];
+  const details = [...extraDetails, ...d.details];
   if (details.length === 0) return d.reason;
   return clip(`${d.reason}${DIAGNOSIS_MARKER} ${details.join('; ')}`, MAX_TEXT);
 }

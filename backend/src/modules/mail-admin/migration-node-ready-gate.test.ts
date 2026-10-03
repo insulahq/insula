@@ -72,4 +72,41 @@ describe('waitForTargetNodeReady', () => {
     const core = { readNode } as unknown as AnyCore;
     expect(await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 5, pollMs: 5, log: SILENT })).toEqual({ ok: true });
   });
+
+  it('a replica that cannot reach the API gives up after N consecutive failed reads, not the full timeout', async () => {
+    // v2026.10.3-rc.4 drill: the replica on the stopped node held the DB claim
+    // and spent its whole 300 s here on "readNode failed: fetch failed".
+    const readNode = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const core = { readNode } as unknown as AnyCore;
+    const r = await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 60, pollMs: 1, maxConsecutiveApiFailures: 4, log: SILENT });
+    expect(r).toMatchObject({ ok: false });
+    expect((r as { reason: string }).reason).toMatch(/cannot reach the Kubernetes API \(4 consecutive/);
+    expect(readNode).toHaveBeenCalledTimes(4);
+  });
+
+  it('a successful read resets the failure count (a flaky API is not a dead one)', async () => {
+    const readNode = vi.fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValueOnce(node({ ready: false }))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue(node({ ready: true }));
+    const core = { readNode } as unknown as AnyCore;
+    expect(await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 5, pollMs: 1, maxConsecutiveApiFailures: 3, log: SILENT })).toEqual({ ok: true });
+  });
+
+  it('without an explicit limit (planned migration/failback) API errors are ridden out for the whole window', async () => {
+    const readNode = vi.fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue(node({ ready: true }));
+    const core = { readNode } as unknown as AnyCore;
+    expect(await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 5, pollMs: 1, log: SILENT })).toEqual({ ok: true });
+  });
 });

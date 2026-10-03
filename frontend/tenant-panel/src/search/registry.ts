@@ -24,11 +24,11 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
   { id: 'domains', label: 'Domains', group: 'Hosting', to: '/domains',
     keywords: ['websites', 'hostnames', 'dns', 'records', 'subdomains', 'ssl', 'routes'] },
 
-  { id: 'applications.installed', label: 'Installed Apps', group: 'Applications', to: '/applications?tab=installed',
+  { id: 'applications.installed', label: 'Installed Apps', group: 'Applications', to: '/applications/installed',
     keywords: ['deployments', 'running', 'my apps', 'services'] },
-  { id: 'applications.catalog', label: 'Application Catalog', group: 'Applications', to: '/applications?tab=catalog',
+  { id: 'applications.catalog', label: 'Application Catalog', group: 'Applications', to: '/applications/catalog',
     keywords: ['install', 'marketplace', 'templates', 'wordpress', 'nextcloud', 'available'] },
-  { id: 'applications.custom', label: 'Custom Containers', group: 'Applications', to: '/applications?tab=custom',
+  { id: 'applications.custom', label: 'Custom Containers', group: 'Applications', to: '/applications/custom',
     keywords: ['docker', 'image', 'compose', 'bring your own', 'byoi', 'registry'] },
 
   { id: 'database-manager', label: 'SQL Manager', group: 'Hosting', to: '/database-manager',
@@ -43,11 +43,11 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
   { id: 'snapshots', label: 'Snapshots', group: 'Data', to: '/snapshots',
     keywords: ['restore point', 'volume', 'rollback', 'point in time'] },
 
-  { id: 'email.mailboxes', label: 'Mailboxes', group: 'Email', to: '/email?tab=mailboxes',
+  { id: 'email.mailboxes', label: 'Mailboxes', group: 'Email', to: '/email/mailboxes',
     keywords: ['inbox', 'accounts', 'addresses', 'imap', 'smtp', 'webmail', 'quota'] },
-  { id: 'email.aliases', label: 'Mailing Lists', group: 'Email', to: '/email?tab=aliases',
+  { id: 'email.aliases', label: 'Mailing Lists', group: 'Email', to: '/email/aliases',
     keywords: ['alias', 'forwarding', 'distribution', 'group address'] },
-  { id: 'email.settings', label: 'Email Settings & DNS', group: 'Email', to: '/email?tab=settings',
+  { id: 'email.settings', label: 'Email Settings & DNS', group: 'Email', to: '/email/settings',
     keywords: ['spf', 'dkim', 'dmarc', 'mx', 'records', 'autodiscover', 'connection'] },
 
   { id: 'backups', label: 'Backups', group: 'Data', to: '/backups',
@@ -65,11 +65,11 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
   { id: 'private-workers', label: 'Private Workers', group: 'Access', to: '/private-workers',
     keywords: ['tunnel', 'remote', 'own server', 'connect', 'token', 'byo node'] },
 
-  { id: 'monitoring-traffic', label: 'Traffic', group: 'Account', to: '/monitoring?tab=traffic',
+  { id: 'monitoring-traffic', label: 'Traffic', group: 'Account', to: '/monitoring/traffic',
     keywords: ['traffic', 'bandwidth', 'egress', 'inbound', 'outbound', 'transfer', 'requests', 'latency', 'graph'] },
   // Kept findable under its old name: somebody searching "resource usage"
   // should land on the tab it became, not on nothing.
-  { id: 'resource-usage', label: 'Resource Usage', group: 'Account', to: '/monitoring?tab=resource-usage',
+  { id: 'resource-usage', label: 'Resource Usage', group: 'Account', to: '/monitoring/resource-usage',
     keywords: ['cpu', 'memory', 'ram', 'storage', 'disk', 'bandwidth', 'quota', 'limits', 'metrics', 'monitoring'] },
 
   { id: 'notifications', label: 'Notifications', group: 'Account', to: '/notifications',

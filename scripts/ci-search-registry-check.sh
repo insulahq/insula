@@ -55,7 +55,7 @@ const BTICK  = String.fromCharCode(96);
 const STATE_ONLY_ROUTES = new Set(["/backups/restore"]);
 
 /** Route wrappers that are not the page component. */
-const WRAPPERS = new Set(["ProtectedRoute", "LifecycleGate", "Suspense", "Navigate", "Route", "Fragment"]);
+const WRAPPERS = new Set(["ProtectedRoute", "LifecycleGate", "Suspense", "Navigate", "Route", "Fragment", "TabRoute"]);
 
 let problems = 0;
 const fail = (panel, msg, hint) => {
@@ -93,7 +93,10 @@ function parseRoutes(src) {
     }
 
     const segment = isIndex ? "" : (pathMatch ? pathMatch[1] : "");
-    const full = ("/" + [...stack, segment].filter(Boolean).join("/")).replace(/\/+/g, "/");
+    const fullRaw = ("/" + [...stack, segment].filter(Boolean).join("/")).replace(/\/+/g, "/");
+    // A tabbed page is declared as <page>/:tab? — the page itself is the
+    // route; its tabs come from routes/tabbed-pages.ts.
+    const full = fullRaw.replace(/\/:tab\?$/, "");
 
     if (pathMatch || isIndex) {
       routes.push({
@@ -112,16 +115,19 @@ function parseRoutes(src) {
   return routes;
 }
 
-/** Component name -> source file, from both lazy() and plain imports. */
-function parseComponentFiles(src, dir) {
-  const map = {};
-  const lazyRe = /const\s+([A-Za-z0-9_]+)\s*=\s*lazy\(\(\)\s*=>\s*import\(.@\/(.+?).\)\)/g;
-  const importRe = /^import\s+([A-Za-z0-9_]+)\s+from\s+.@\/(.+?).;$/gm;
-  for (const re of [lazyRe, importRe]) {
-    let m;
-    while ((m = re.exec(src)) !== null) map[m[1]] = `${dir}/src/${m[2]}.tsx`;
-  }
-  return map;
+/**
+ * routes/tabbed-pages.ts: page path -> its tabs. The one place a tab exists,
+ * so a registry tab is checked EXACTLY rather than by searching page source
+ * for a quoted id.
+ */
+function parseTabbedPages(src) {
+  const body = (src.match(/export const TABBED_PAGES = \{([\s\S]*?)\n\}/) || [])[1] || "";
+  const out = new Map();
+  const q = SQUOTE;
+  const entryRe = new RegExp(q + "(/[^" + q + "]*)" + q + ":\\s*\\[([\\s\\S]*?)\\]", "g");
+  const idRe = new RegExp(q + "([^" + q + "]+)" + q, "g");
+  for (const m of body.matchAll(entryRe)) out.set(m[1], [...m[2].matchAll(idRe)].map((t) => t[1]));
+  return out;
 }
 
 /** Registry entries: id + to, out of the object literals. */
@@ -133,37 +139,15 @@ function parseRegistry(src) {
   return entries;
 }
 
-/**
- * Files that could hold a page tab union: the page itself plus the local
- * components it imports directly.
- *
- * One level of indirection is needed and sufficient in practice: the backup
- * pages render a shared shell (SystemBackupsPage -> BackupClassPage) and the
- * tab ids live in the shell, so checking only the page named in App.tsx
- * would report a false failure on every backup entry.
- */
-function tabSearchFiles(pageFile, dir) {
-  const files = [pageFile];
-  if (!existsSync(pageFile)) return files;
-  const src = readFileSync(pageFile, "utf8");
-  for (const m of src.matchAll(/^import\s+[^;]*?from\s+.([^"]+?).;$/gm)) {
-    const spec = m[1];
-    let candidate = null;
-    if (spec.startsWith("@/")) candidate = `${dir}/src/${spec.slice(2)}.tsx`;
-    else if (spec.startsWith(".")) candidate = resolve(dirname(pageFile), spec) + ".tsx";
-    if (candidate && existsSync(candidate)) files.push(candidate);
-  }
-  return files;
-}
-
 for (const panel of PANELS) {
   const appPath = `${panel.dir}/src/App.tsx`;
   const regPath = `${panel.dir}/src/search/registry.ts`;
   if (!existsSync(regPath)) { fail(panel.name, `no search registry at ${regPath}`); continue; }
 
   const routes = parseRoutes(readFileSync(appPath, "utf8"));
-  const componentFiles = parseComponentFiles(readFileSync(appPath, "utf8"), panel.dir);
+  const tabbed = parseTabbedPages(readFileSync(`${panel.dir}/src/routes/tabbed-pages.ts`, "utf8"));
   const entries = parseRegistry(readFileSync(regPath, "utf8"));
+  if (tabbed.size === 0) fail(panel.name, "parsed no tabbed pages from routes/tabbed-pages.ts — the PARSER is broken");
 
   // Parser sanity first. Without this, a regex that stops matching makes every
   // check below pass over an empty set and the guard reports OK forever.
@@ -172,10 +156,21 @@ for (const panel of PANELS) {
 
   const routePaths = new Set(routes.map((r) => r.path));
 
-  // (1) Every registry target must be a real route.
+  /** The page an entry lands on, and the tab it names (path form or ?tab=). */
+  const target = (to) => {
+    const [pathOnly, qs] = to.split("?");
+    const queryTab = qs ? new URLSearchParams(qs).get("tab") : null;
+    if (routePaths.has(pathOnly)) return { page: pathOnly, tab: queryTab };
+    const cut = pathOnly.lastIndexOf("/");
+    const parent = pathOnly.slice(0, cut) || "/";
+    if (cut > 0 && tabbed.has(parent) && routePaths.has(parent)) return { page: parent, tab: pathOnly.slice(cut + 1) };
+    return { page: null, tab: queryTab };
+  };
+
+  // (1) Every registry target must be a real route (a tab path resolves through its page).
   for (const e of entries) {
     const pathOnly = e.to.split("?")[0];
-    if (!routePaths.has(pathOnly)) {
+    if (target(e.to).page === null) {
       fail(panel.name, `registry entry ${e.id} points at ${pathOnly}, which is not a route in App.tsx`,
         "The route was renamed or removed, or the entry has a typo. Search would navigate to Page Not Found.");
     }
@@ -184,7 +179,7 @@ for (const panel of PANELS) {
   // (2) Every reachable route must be findable.
   //     Skipped: parameterised routes (reached from a record hit, not typed),
   //     redirect-only routes, the catch-all, and /login.
-  const covered = new Set(entries.map((e) => e.to.split("?")[0]));
+  const covered = new Set(entries.map((e) => target(e.to).page).filter(Boolean));
   for (const r of routes) {
     if (r.path.includes(":") || r.path.includes("*")) continue;
     if (r.redirectsOnly || r.isLayout || r.path === "/login") continue;
@@ -195,28 +190,18 @@ for (const panel of PANELS) {
     }
   }
 
-  // (3) Every ?tab= must exist in the target page tab union.
+  // (3) Every tab an entry names must exist on its page, exactly as listed in
+  //     routes/tabbed-pages.ts. A renamed tab key would otherwise fall back to
+  //     the page default: search looks fine and lands on the wrong view.
   for (const e of entries) {
-    const [pathOnly, qs] = e.to.split("?");
-    if (!qs) continue;
-    const tab = new URLSearchParams(qs).get("tab");
-    if (!tab) continue;
-
-    const route = routes.find((r) => r.path === pathOnly);
-    const pageFile = route && route.component ? componentFiles[route.component] : null;
-    if (!pageFile) {
-      fail(panel.name, `entry ${e.id} uses ?tab=${tab} but the page component for ${pathOnly} could not be located`,
-        "The tab value cannot be verified, so a rename would go unnoticed. Check the App.tsx element/import shape.");
-      continue;
-    }
-    // Match the id as a QUOTED literal — tab unions and TABS arrays both
-    // spell it that way, and requiring quotes stops a substring of an
-    // unrelated identifier from passing as a match.
-    const needles = [SQUOTE, DQUOTE, BTICK].map((q) => q + tab + q);
-    const found = tabSearchFiles(pageFile, panel.dir)
-      .some((f) => { const s = readFileSync(f, "utf8"); return needles.some((n) => s.includes(n)); });
-    if (!found) {
-      fail(panel.name, `entry ${e.id} uses ?tab=${tab}, which does not appear in ${pageFile} or its direct imports`,
+    const t = target(e.to);
+    if (!t.page || !t.tab) continue;
+    const tabs = tabbed.get(t.page);
+    if (!tabs) {
+      fail(panel.name, `entry ${e.id} names tab ${t.tab} on ${t.page}, a page with no tabs`,
+        "The tab would be ignored. Point the entry at the page, or give the page tabs in routes/tabbed-pages.ts.");
+    } else if (!tabs.includes(t.tab)) {
+      fail(panel.name, `entry ${e.id} names tab ${t.tab}, which ${t.page} does not have (tabs: ${tabs.join(", ")})`,
         "A renamed tab key silently falls back to the page default — search looks fine and lands on the wrong view.");
     }
   }

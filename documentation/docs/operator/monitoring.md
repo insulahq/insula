@@ -37,8 +37,10 @@ you without opening this page — alerts notify, and the summary cards at the
 top of every tab carry Platform Status and Active Alerts. What traffic costs
 and where it went does not announce itself, so that is what the page opens
 on. SLOs and Active Alerts are one click away.
-Every tab is linkable — append `?tab=<name>` (for example
-`/monitoring?tab=active-alerts`) and that tab opens instead.
+Every tab has its own address — `/monitoring/active-alerts`,
+`/monitoring/slos` — so you can bookmark or share the exact view. Older links
+of the form `/monitoring?tab=active-alerts` still open the right tab, and a tab
+name that does not exist opens the page on its default tab instead of an error.
 
 The top summary cards (Platform Status, Active Alerts, Pod Usage) are quick
 read-outs; the **Health** tab carries the real checks.

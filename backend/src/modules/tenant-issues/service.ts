@@ -27,7 +27,10 @@ export interface TenantIssue {
   readonly objectLabel: string;
   /** One line a human can act on. */
   readonly detail: string;
-  /** Where in the panel this gets fixed. */
+  /**
+   * Where this gets fixed, in the ADMIN panel — issues render on the admin
+   * tenants list and tenant page, so the target is the tenant's own page/tab.
+   */
   readonly actionPath: string;
   /** When the condition was first observed, ISO. Null when not tracked. */
   readonly since: string | null;
@@ -79,7 +82,7 @@ async function mailboxQuotaIssues(db: Database): Promise<TenantIssue[]> {
     detail: r.threshold >= 100
       ? `Mailbox full (${r.used_mb}/${r.quota_mb} MB) — new mail is being rejected`
       : `Mailbox ${r.threshold}% full (${r.used_mb}/${r.quota_mb} MB)`,
-    actionPath: '/email',
+    actionPath: `/tenants/${r.tenant_id}/email`,
     since: r.first_seen_at,
   }));
 }
@@ -110,7 +113,7 @@ async function tenantRowIssues(db: Database, horizonDays: number): Promise<Tenan
         detail: days <= 0
           ? `Subscription expired on ${expiry.toISOString().slice(0, 10)}`
           : `Subscription expires in ${days} day(s), on ${expiry.toISOString().slice(0, 10)}`,
-        actionPath: '/settings',
+        actionPath: `/tenants/${r.id}`,
         since: null,
       });
     }
@@ -121,7 +124,7 @@ async function tenantRowIssues(db: Database, horizonDays: number): Promise<Tenan
         severity: 'critical',
         objectLabel: r.name,
         detail: 'Monthly bandwidth cap reached — traffic is being refused',
-        actionPath: '/settings',
+        actionPath: `/tenants/${r.id}`,
         since: null,
       });
     }

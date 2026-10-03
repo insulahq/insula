@@ -17,8 +17,6 @@
  * working; the label that operators see is "Sources".
  */
 
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { Bell } from 'lucide-react';
 import clsx from 'clsx';
 import CategoriesTable from '@/features/notifications/CategoriesTable';
@@ -27,8 +25,10 @@ import DeliveryLogTable from '@/features/notifications/DeliveryLogTable';
 import ProvidersTable from '@/features/notifications/ProvidersTable';
 import ProviderCoverageBanner from '@/features/notifications/ProviderCoverageBanner';
 import MasterSwitchCard from '@/features/notifications/MasterSwitchCard';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type TabId = 'categories' | 'providers' | 'templates' | 'deliveries';
+type TabId = TabOf<'/platform/notifications'>;
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly hint: string }> = [
   { id: 'categories', label: 'Sources', hint: 'What triggers a notification: per-event source + default channels + rate limit' },
@@ -37,20 +37,8 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly
   { id: 'deliveries', label: 'Delivery Log', hint: 'Per-channel delivery outcomes for audit + triage' },
 ];
 
-const VALID_TABS: ReadonlySet<TabId> = new Set<TabId>(['categories', 'providers', 'templates', 'deliveries']);
-
 export default function NotificationsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get('tab');
-  const activeTab: TabId = useMemo(() => {
-    if (requested && VALID_TABS.has(requested as TabId)) return requested as TabId;
-    return 'categories';
-  }, [requested]);
-  const setActiveTab = (id: TabId): void => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', id);
-    setSearchParams(next, { replace: true });
-  };
+  const [activeTab, setActiveTab] = useTabParam('/platform/notifications');
 
   return (
     <div className="space-y-6 p-6">

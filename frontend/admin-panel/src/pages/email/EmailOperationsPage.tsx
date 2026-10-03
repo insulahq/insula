@@ -6,8 +6,9 @@ import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
 import MailNodeStorageCards from '@/components/email/MailNodeStorageCards';
 import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type OpsTab = 'placement' | 'backups' | 'storage';
+type OpsTab = TabOf<'/email/operations'>;
 
 /**
  * Email → Operations.
@@ -16,10 +17,9 @@ type OpsTab = 'placement' | 'backups' | 'storage';
  * standby data freshness), point-in-time archive via `stalwart -e`, and
  * the per-PVC storage view.
  */
-const EMAIL_OPS_TAB_IDS: readonly OpsTab[] = ['placement', 'backups', 'storage'];
 
 export default function EmailOperationsPage() {
-  const [tab, setTab] = useTabParam<OpsTab>(EMAIL_OPS_TAB_IDS, 'placement');
+  const [tab, setTab] = useTabParam('/email/operations');
 
   return (
     <div className="space-y-6">
@@ -84,7 +84,7 @@ export default function EmailOperationsPage() {
                 </li>
                 <li>
                   <strong>Snapshots</strong> — restic CronJob of the mail PVC, configured under{' '}
-                  <a href="/backups/system?tab=object" className="font-medium underline">System Backups → Object Backups</a>.
+                  <a href="/backups/mail/routing" className="font-medium underline">Backups → Mail → Targets, Schedules &amp; Retention</a>.
                 </li>
                 <li>
                   <strong>Per-tenant bundles</strong> — mailbox-only capture via the engine picked in{' '}

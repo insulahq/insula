@@ -67,11 +67,11 @@ import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
 
-type TabKey = 'domains' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users' | 'sftp';
+type TabKey = TabOf<'/tenants/:id'>;
 
-const TENANT_DETAIL_TAB_IDS: readonly TabKey[] = ['domains', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users', 'sftp'];
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -83,7 +83,7 @@ export default function TenantDetail() {
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [activeTab, setActiveTab] = useTabParam<TabKey>(TENANT_DETAIL_TAB_IDS, 'domains');
+  const [activeTab, setActiveTab] = useTabParam('/tenants/:id');
   // notifications-system Phase 1: per-action toggle that lets the
   // operator suppress the tenant-facing notification dispatched by the
   // lifecycle hook registry. Default ON — operator must opt out
@@ -1624,7 +1624,7 @@ function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
         )}
       </div>
       <Link
-        to={`/backups/tenants?tab=backups&tenant=${tenantId}`}
+        to={`/backups/tenants/backups?tenant=${tenantId}`}
         className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
         data-testid="tenant-bundles-manage-link"
       >
@@ -1723,7 +1723,7 @@ function BackupsTab({ bundles, isLoading, error, tenantId }: {
             <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} mode="until" /> : '—'}</td>
             <td className="px-3 py-2 text-right">
               <Link
-                to={`/backups/tenants?tab=backups&tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}
+                to={`/backups/tenants/backups?tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}
                 className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
               >
                 Restore…

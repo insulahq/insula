@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.3-rc.4] - 2026-10-03
-
 ### BREAKING
 
 - **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
@@ -23,6 +21,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   command; update any automation that still uses it. A join refuses cluster-wide flags
   (`--domain`, `--env`, `--release-tag`, `--acme-*`, `--calico-*`, `--secrets-bundle`,
   `--backup-target-*`, `--skip-flux`, …) instead of silently applying them.
+
+### Changed
+
+- **Every tab has its own address.** Tabs are part of the URL path — `/monitoring/slos`,
+  `/tenants/<id>/backups`, `/email/aliases` — so any view can be bookmarked, shared or linked.
+  Older `?tab=` links keep working and are rewritten to the new form, and a tab that does not
+  exist opens the page on its default tab instead of "Page Not Found". The tenant Email page's
+  tabs are now linkable too.
 
 ### Added
 
@@ -73,11 +79,46 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Mail failover no longer loses five minutes to a cut-off platform replica.** When a mail
+  server's node stopped but its containers kept running, the platform replica on that node
+  could still pick up the failover. It could not reach the cluster, so it waited 300 seconds
+  before giving up and letting a healthy replica retry. Replicas on a node that is down, or
+  that cannot reach the cluster, now leave failover to the others. They also give up after
+  about 30 seconds of failed cluster calls instead of five minutes.
+
+- **System snapshots: restoring a monitoring or CrowdSec volume works.** A restore first stops the
+  workload that uses the volume, and the platform looked that workload up in a way it lacks
+  permission for. Every restore of such a volume therefore failed with "Cannot resolve workload
+  mounting … manual restore required". The platform now finds the workload directly from its
+  definition. This also works when the workload is currently stopped.
+
+- **Dashboard tiles, notifications and other links no longer lead to "Page Not Found" or the
+  wrong tab.** An audit of every link the panels render found many that went nowhere:
+  - the SLO warning tile opened `/monitoring/slo` (the tab is `slos`);
+  - the admin Certificates and Scheduled-tasks tiles, and the admin certificate alert, linked to
+    tenant-panel pages;
+  - the orphaned-volumes alert linked to `/settings/storage`;
+  - the "Check DNS records" notification linked to `/dns`;
+  - task-center links for system backups, Stalwart password rotation and cache purge led
+    nowhere, and a DNS verification started by a tenant opened an admin-only page;
+  - search results for applications opened a tenant tab that does not exist, and mailbox searches
+    and the tenant Email search entries ignored the tab they named;
+  - the web-defense tenant links, the Stalwart admin link in the DKIM dialog and a few others
+    were dead.
+  Every link is now checked against the route table and tab list of the panel that renders it,
+  so a dead link fails the build instead of reaching an operator or tenant.
 - **A fresh install no longer gives up on a healthy mail server.** Before declaring the mail server
   ready, bootstrap probes it from an admin-panel pod. It picked that pod once. If admin-panel was
   replaced while the probe was waiting, every later attempt went to a pod that no longer existed.
   After 10 minutes the install stopped with "refusing to bootstrap", although the mail server was
   fine. Bootstrap now picks a running pod on every attempt.
+- **Nightly backups no longer start every tenant's file manager twice, or have it stopped
+  mid-step.** Each bundle started the tenant's file manager to dump SQLite files; the idle
+  shutdown stopped it within a minute, often mid-dump, and the cleanup after the capture started
+  it again. The bundle now starts it once, holds it while it needs it, and stops it again when
+  done — right after the SQLite step for tenants with nothing to clean up. Database restores and
+  SQL Manager imports and exports hold it the same way, so the idle shutdown no longer stops it
+  under them either; one that cannot start is stopped again at once instead of being left pending.
 - **A tenant backup no longer fails because its capture pod was sent to the wrong node.** When a
   tenant's file manager was pinned to a node other than the one holding its volume, the nightly
   backup started the file manager, which could not mount the volume, and then pinned the files

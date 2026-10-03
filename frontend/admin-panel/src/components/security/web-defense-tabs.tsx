@@ -2021,13 +2021,13 @@ export function WafExclusionsTab() {
                   </td>
                   <td className="px-4 py-2 text-xs">
                     {/* B2 — tenant-owned rows show the tenant name as a
-                        link to /clients/:tenantId; admin-owned rows show
+                        link to /tenants/:tenantId; admin-owned rows show
                         a plain "admin" badge. tenantName is provided by
                         the admin LEFT JOIN; tenantId only is enough for
                         the link target. */}
                     {x.tenantId ? (
                       <a
-                        href={`/clients/${x.tenantId}`}
+                        href={`/tenants/${x.tenantId}`}
                         className="inline-flex items-center gap-1 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 px-2 py-0.5 text-[10px] hover:underline"
                         data-testid={`exclusion-tenant-${x.id}`}
                         title={`Tenant-scoped exclusion. Click to open ${x.tenantName ?? x.tenantId}.`}

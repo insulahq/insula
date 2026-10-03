@@ -50,7 +50,7 @@ describe('TrafficTile', () => {
 
   it('links to the Traffic tab', () => {
     renderTile(frame);
-    expect(screen.getByRole('link')).toHaveAttribute('href', '/monitoring?tab=traffic');
+    expect(screen.getByRole('link')).toHaveAttribute('href', '/monitoring/traffic');
   });
 
   it('survives a frame with gaps rather than charting them as zero', () => {

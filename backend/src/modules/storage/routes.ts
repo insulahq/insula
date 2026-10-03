@@ -54,7 +54,8 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
           scope: 'admin',
           userId,
           label: toSafeText(`Cache purge${parsed.data.dryRun ? ' (dry-run)' : ''}`),
-          target: { type: 'route', href: '/storage' },
+          // The image inventory and the purge button live on Monitoring → Storage.
+          target: { type: 'route', href: '/monitoring/storage' },
           details: { dryRun: parsed.data.dryRun },
         },
         () => purgeUnusedImages(k8s, parsed.data.dryRun),

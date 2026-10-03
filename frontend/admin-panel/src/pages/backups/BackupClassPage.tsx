@@ -17,14 +17,16 @@
  */
 
 import type { ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { Archive, Cloud, HardDrive } from 'lucide-react';
 import clsx from 'clsx';
 import type { LucideIcon } from 'lucide-react';
 import type { BackupShimClass } from '@insula/api-contracts';
 import BackupRoutingTab from './BackupRoutingTab';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type TabId = 'snapshots' | 'backups' | 'routing';
+type BackupClassRoute = '/backups/system' | '/backups/tenants' | '/backups/mail';
+type TabId = TabOf<BackupClassRoute>;
 
 interface TabSpec {
   readonly id: TabId;
@@ -37,6 +39,8 @@ const BACKUPS_TAB: TabSpec = { id: 'backups',   label: 'Backups',   icon: Archiv
 const ROUTING_TAB: TabSpec = { id: 'routing',   label: 'Targets, Schedules & Retention', icon: Cloud };
 
 export interface BackupClassPageProps {
+  /** The route this shell renders — its tabs live in routes/tabbed-pages.ts. */
+  readonly page: BackupClassRoute;
   readonly icon: LucideIcon;
   readonly title: string;
   readonly subtitle: string;
@@ -50,7 +54,7 @@ export interface BackupClassPageProps {
 }
 
 export default function BackupClassPage(props: BackupClassPageProps) {
-  const [params, setParams] = useSearchParams();
+  const [requested, setTab] = useTabParam(props.page);
   const testId = props.testIdPrefix ?? `backups-${props.shimClass}`;
   const HeaderIcon = props.icon;
 
@@ -65,9 +69,11 @@ export default function BackupClassPage(props: BackupClassPageProps) {
     ROUTING_TAB,
   ];
 
-  const raw = params.get('tab');
+  // The registry lists every tab the route CAN have; which ones render depends
+  // on the content the caller passed, so fall back to the first one shown.
+  // Keep each page's registry entry equal to the tabs it passes content for.
   const fallback: TabId = tabs[0]?.id ?? 'routing';
-  const tab: TabId = tabs.some((t) => t.id === raw) ? (raw as TabId) : fallback;
+  const tab: TabId = tabs.some((t) => t.id === requested) ? requested : fallback;
 
   return (
     <div className="space-y-6 p-6" data-testid={`${testId}-page`}>
@@ -96,15 +102,7 @@ export default function BackupClassPage(props: BackupClassPageProps) {
                 aria-selected={active}
                 aria-controls={`${testId}-pane-${t.id}`}
                 id={`${testId}-tab-${t.id}-btn`}
-                onClick={() =>
-                  setParams(
-                    (prev) => {
-                      prev.set('tab', t.id);
-                      return prev;
-                    },
-                    { replace: true },
-                  )
-                }
+                onClick={() => setTab(t.id)}
                 data-testid={`${testId}-tab-${t.id}`}
                 className={clsx(
                   'flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors',

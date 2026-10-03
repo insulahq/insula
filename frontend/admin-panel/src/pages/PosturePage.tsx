@@ -114,8 +114,9 @@ import type {
 } from '@insula/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
 import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events';
+type TabId = TabOf<'/security/posture'>;
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -129,10 +130,9 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'events', label: 'Security Events' },
 ];
 
-const POSTURE_TAB_IDS: readonly TabId[] = TABS.map((t) => t.id);
 
 export default function PosturePage() {
-  const [activeTab, setActiveTab] = useTabParam<TabId>(POSTURE_TAB_IDS, 'overview');
+  const [activeTab, setActiveTab] = useTabParam('/security/posture');
   const { data, isLoading, isError, error, refetch, isFetching } = useSecurityHardeningSnapshot();
   const refresh = useRefreshSecurityHardening();
 
@@ -1495,7 +1495,7 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
                     <td className="py-1.5 text-right text-gray-600 dark:text-gray-300">{b.banCount}</td>
                     <td className="py-1.5 text-right">
                       <Link
-                        to={`/security/network-trust?tab=blacklist&prefill=${encodeURIComponent(b.ip)}`}
+                        to={`/security/network-trust/blacklist?prefill=${encodeURIComponent(b.ip)}`}
                         className="text-xs text-red-600 hover:underline dark:text-red-400"
                         data-testid={`ban-permanently-${b.ip}`}
                       >

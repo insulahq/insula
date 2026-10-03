@@ -109,7 +109,7 @@ async function assertClusterEligible(
   });
   if (!hasBarman) {
     throw new CnpgBackupNowError(
-      `Cluster ${namespace}/${clusterName} has no enabled barman-cloud plugin — backups cannot run. Configure WAL Archive on /backups/system?tab=routing to attach the plugin.`,
+      `Cluster ${namespace}/${clusterName} has no enabled barman-cloud plugin — backups cannot run. Configure WAL Archive on /backups/system/routing to attach the plugin.`,
       409,
     );
   }
