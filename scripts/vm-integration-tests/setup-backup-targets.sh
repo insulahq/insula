@@ -59,4 +59,32 @@ for cls in system tenant mail; do
   R=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/$cls" "{\"targetId\":\"$TARGET_ID\",\"force\":false}")
   echo "  bind class '$cls' → HTTP $(code "$R")"
 done
+
+# 4) a CIFS target, created ENABLED but NOT bound. Real clusters back up to CIFS (S3 was retired
+#    there), so the CIFS read path is the one production depends on — and without a CIFS config
+#    integration-migration-cifs-e2e.sh SKIPs. That suite binds the tenant class to this target
+#    itself for its run and restores the S3 binding above on exit.
+if [[ -n "${BACKUP_CIFS_HOST:-}" && -n "${BACKUP_CIFS_USER:-}" && -n "${BACKUP_CIFS_PASSWORD:-}" ]]; then
+  CIFS_NAME="vmtier-services-cifs"
+  CIFS_ID=$(body "$LIST_RESP" | python3 -c '
+import json,sys
+try: print(next((c["id"] for c in json.load(sys.stdin).get("data",[]) if c.get("name")=="'"$CIFS_NAME"'"), ""))
+except Exception: print("")' 2>/dev/null)
+  if [[ -z "$CIFS_ID" ]]; then
+    # Built in python from the environment so a password with JSON metacharacters stays intact.
+    CIFS_BODY=$(CIFS_NAME="$CIFS_NAME" BACKUP_CIFS_HOST="$BACKUP_CIFS_HOST" BACKUP_CIFS_SHARE="${BACKUP_CIFS_SHARE:-}" \
+      BACKUP_CIFS_USER="$BACKUP_CIFS_USER" BACKUP_CIFS_PASSWORD="$BACKUP_CIFS_PASSWORD" python3 -c '
+import json,os
+print(json.dumps({"name": os.environ["CIFS_NAME"], "storage_type": "cifs",
+  "cifs_host": os.environ["BACKUP_CIFS_HOST"], "cifs_share": os.environ.get("BACKUP_CIFS_SHARE") or "backups",
+  "cifs_user": os.environ["BACKUP_CIFS_USER"], "cifs_password": os.environ["BACKUP_CIFS_PASSWORD"], "retention_days": 7}))')
+    C=$(api POST /api/v1/admin/backup-configs "$CIFS_BODY")
+    case "$(code "$C")" in
+      200|201) echo "  CIFS target $CIFS_NAME created (unbound; integration-migration-cifs binds it)" ;;
+      *) echo "  WARN: create CIFS backup-config → HTTP $(code "$C"): $(body "$C" | head -c 200)" >&2 ;;
+    esac
+  else
+    echo "  CIFS target $CIFS_NAME id=$CIFS_ID (reused, unbound)"
+  fi
+fi
 echo "  backup targets configured."
