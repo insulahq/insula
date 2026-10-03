@@ -25,6 +25,14 @@ import { compareK8sQuantities, formatGiBQuantity, parseK8sQuantity } from '../..
 
 const REQUIRED_NETPOLS = ['default-deny-ingress', 'allow-intra-namespace'] as const;
 
+/** What an operator reads for each finding in a notification. */
+const FINDING_LABEL: Readonly<Record<string, string>> = {
+  namespace_missing: 'the tenant namespace',
+  pvc_missing: 'the storage volume (PVC)',
+  resource_quota_missing: 'the resource quota',
+  network_policy_missing: `the network policies (${REQUIRED_NETPOLS.join(', ')})`,
+};
+
 async function exists(call: () => Promise<unknown>): Promise<boolean> {
   try {
     await call();
@@ -419,7 +427,7 @@ export async function checkTenantNamespaceIntegrity(
       : `Auto-repaired ${repaired.length} missing resource(s).`;
     const items = [
       ...errors.map((e) => `Not repaired — ${e}`),
-      ...repaired.map((r) => `Repaired — ${r}`),
+      ...repaired.map((r) => `Repaired — ${FINDING_LABEL[r] ?? r}`),
     ];
     // Dispatched, not inserted — one categorised event instead of a row per
     // admin written with no category, which reached no email and no audit.
