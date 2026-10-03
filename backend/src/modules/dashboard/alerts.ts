@@ -6,6 +6,8 @@ import { ALL_CATEGORIES } from '../notifications/categories/seed.js';
 // the rows they render — the whole point of both panels reading one table.
 import { GRACE_INTERVAL_SQL, isHealable, type HealReason } from '../storage-lifecycle/workload-health.js';
 import type { Database } from '../../db/index.js';
+import { aliasNodeNames, type NodeLabels } from '../nodes/labels.js';
+import type { Section } from './section.js';
 
 /**
  * The alert band, derived from notification categories.
@@ -102,7 +104,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       // problem, so the list is the right answer then.
       href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
         ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
-        : '/domains',
+        : '/tenants/domains',
       detail: [['Expiring within 14 days', String(cert.n)],
                ['Soonest', `${soonest} days`]],
       note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
@@ -273,7 +275,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       value: String(row.n),
       title: critical ? 'Monitoring rules firing' : 'Monitoring warnings',
       subtitle: row.subject && row.subject.length > 0 ? row.subject : 'see Monitoring → SLOs',
-      href: '/monitoring/slo',
+      href: '/monitoring/slos',
       detail: [['Firing', String(row.n)], ['Severity', row.severity]],
       note: null,
     }));
@@ -507,4 +509,30 @@ function cap(s: string): string {
 }
 function fmtGb(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
+/**
+ * Alert tiles name nodes in their text ("sv2 is down"); read the operator's
+ * alias instead. Only the words — `href` and `action` keep addressing the node
+ * Kubernetes knows. Pure.
+ */
+export function aliasAlertText(a: DashboardAlert, labels: NodeLabels): DashboardAlert {
+  const alias = (t: string): string => aliasNodeNames(t, labels);
+  return {
+    ...a,
+    title: alias(a.title),
+    subtitle: alias(a.subtitle),
+    value: alias(a.value),
+    detail: (a.detail ?? []).map(([k, v]) => [alias(k), alias(v)] as [string, string]),
+    note: a.note == null ? a.note : alias(a.note),
+  };
+}
+
+/** `aliasAlertText` over an alerts section; a failed label lookup leaves it as it was. */
+export function aliasAlertSection(
+  section: Section<DashboardAlert[]>,
+  labels: NodeLabels | null,
+): Section<DashboardAlert[]> {
+  if (!labels || !section.data) return section;
+  return { ...section, data: section.data.map((a) => aliasAlertText(a, labels)) };
 }

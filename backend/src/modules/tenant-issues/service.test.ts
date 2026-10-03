@@ -30,7 +30,9 @@ describe('listTenantIssues', () => {
     expect(t1[0].severity).toBe('critical');
     expect(t1[0].objectLabel).toBe('user@example.test');
     expect(t1[0].detail).toContain('rejected');
-    expect(t1[0].actionPath).toBe('/email');
+    // The admin panel renders issues, so the target is the tenant's Email tab
+    // there — `/email` exists only in the tenant panel.
+    expect(t1[0].actionPath).toBe('/tenants/t1/email');
   });
 
   it('reports an 80% mailbox as a warning, not a critical', async () => {

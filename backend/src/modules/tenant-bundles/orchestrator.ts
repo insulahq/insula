@@ -55,6 +55,8 @@ import {
   type PreDumpDeploymentResult,
 } from './components/database-predump-orchestration.js';
 import { runSqliteCapture } from './components/sqlite-predump.js';
+import { leaseBundleFileManager, predumpsNeedCleanup } from './components/bundle-file-manager.js';
+import { acquireFileManagerLease, type FileManagerLease } from '../file-manager/lease.js';
 import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
 import {
   buildResticRepoUri,
@@ -303,6 +305,9 @@ export async function runBundle(
         return;
       }
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'files', 'archive.tar.gz');
+      // The bundle's ONE hold on the tenant's file manager — see
+      // components/bundle-file-manager.ts. Released in the finally below.
+      let fmLease: FileManagerLease | null = null;
       try {
         // Reviewer #2: derive pvcName from the namespace already
         // resolved at line 153 — saves a redundant SELECT on `tenants`
@@ -337,16 +342,25 @@ export async function runBundle(
           // via the file-manager pod so their `.dump` also lands on the PVC
           // before the snapshot. Best-effort: a failure here never aborts the
           // bundle (the raw SQLite file is still captured by the files snapshot).
-          try {
-            sqliteDump = await runSqliteCapture({
-              k8s: deps.k8s,
-              namespace,
-              backupId: bundleId,
-              kubeconfigPath: deps.kubeconfigPath,
-            });
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
+          fmLease = await leaseBundleFileManager(deps.k8s, namespace, bundleId, acquireFileManagerLease);
+          if (fmLease) {
+            try {
+              sqliteDump = await runSqliteCapture({
+                namespace,
+                fmPod: fmLease.podName,
+                backupId: bundleId,
+                kubeconfigPath: deps.kubeconfigPath,
+              });
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
+            }
+            // Nothing on the PVC to clean up after the capture → hand the file
+            // manager back now instead of holding it through the capture.
+            if (!predumpsNeedCleanup(dbPredumpResults, sqliteDump)) {
+              await fmLease.release();
+              fmLease = null;
+            }
           }
         } catch (err) {
           // Non-fatal — log and proceed with the FS snapshot anyway. The DB
@@ -381,16 +395,18 @@ export async function runBundle(
         // retention window of full dumps). databases-by-id re-materialises them
         // from this snapshot on restore. Best-effort; the retention prune backs
         // it up. Only after the snapshot is confirmed (filesResult present).
-        try {
-          await deletePredumpsFromPvc({
-            k8s: deps.k8s,
-            namespace,
-            bundleId,
-            kubeconfigPath: deps.kubeconfigPath,
-          });
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn(`[bundle ${bundleId}] predump cleanup after snapshot failed: ${(err as Error).message}`);
+        if (fmLease) {
+          try {
+            await deletePredumpsFromPvc({
+              namespace,
+              fmPod: await fmLease.currentPod(),
+              bundleId,
+              kubeconfigPath: deps.kubeconfigPath,
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[bundle ${bundleId}] predump cleanup after snapshot failed: ${(err as Error).message}`);
+          }
         }
 
         // Persist tenant_restic_repo_state so the admin UI + retention
@@ -429,6 +445,8 @@ export async function runBundle(
           component: 'files',
           runAt: new Date(),
         }).catch(() => undefined);
+      } finally {
+        await fmLease?.release();
       }
     })());
   }

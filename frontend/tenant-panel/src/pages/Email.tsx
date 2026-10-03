@@ -62,6 +62,8 @@ import {
   type CreateLoginPasswordResult,
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
 // Lazy: a wall of static setup copy that most sessions never open.
 const EmailConnectionGuideModal = lazy(() => import('@/components/EmailConnectionGuideModal'));
@@ -75,11 +77,12 @@ const TlsTab = lazy(() => import('@/components/email/TlsTab'));
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type Tab = 'mailboxes' | 'aliases' | 'settings' | 'dmarc' | 'abuse' | 'tls';
+type Tab = TabOf<'/email'>;
 
 export default function Email() {
   const { tenantId } = useTenantContext();
-  const [tab, setTab] = useState<Tab>('mailboxes');
+  // In the URL (/email/aliases), so search and dashboard links reach a tab.
+  const [tab, setTab] = useTabParam('/email');
   const [guideOpen, setGuideOpen] = useState(false);
   const { data: domainsRes, isLoading: domainsLoading } = useEmailDomains(tenantId ?? undefined);
   const emailDomains = domainsRes?.data ?? [];

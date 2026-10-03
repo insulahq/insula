@@ -11,6 +11,7 @@ import {
 import type { OrphanedVolumeEntry, OrphanReason } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import NodeList from '@/components/nodes/NodeList';
 
 interface OrphanedVolumesModalProps {
   readonly onClose: () => void;
@@ -282,7 +283,7 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
                         </td>
                         <td className="py-2 pr-2 text-right tabular-nums">{formatBytes(o.sizeBytes)}</td>
                         <td className="py-2 pr-2 font-mono text-gray-500 dark:text-gray-400">
-                          {o.nodes.length > 0 ? o.nodes.join(', ') : <span className="italic">none</span>}
+                          {o.nodes.length > 0 ? <NodeList names={o.nodes} /> : <span className="italic">none</span>}
                         </td>
                         <td className="py-2 pr-2">
                           <ReasonBadge reason={o.reason} title={reasonInfo.explainer} />

@@ -4776,12 +4776,40 @@ for s in d.get('data', {}).get('snapshots', []):
 else:
     print('no')
 ")
+  local part_c_ok=1
   if [[ "$has_pre_migration" == "yes" ]]; then
     ok "PART C: a snapshot with tags ['pre-migration', 'run=${run_id}'] is in the restic list"
   else
     fail "PART C: no snapshot with tags ['pre-migration', 'run=${run_id}'] — UI badge will not render. (Mail BackupTarget may not be configured; check /backups/mail.)"
+    part_c_ok=0
+  fi
+
+  # ── Put mail back where PART B found it ──
+  # Leaving it on ${target_node} broke everything after this scenario that
+  # reaches mail by NAME: the VM tier's DNS is static (mail.<apex> → the first
+  # server) and the default exposure is activeNodeOnly, so later smoke gates and
+  # opt-in runs on the same cluster saw "connection refused" on every mail port.
+  log "PART B restore: migrating mail back ${target_node} → ${active_node}"
+  local back_resp back_id back_state=""
+  back_resp=$(api POST /admin/mail/migrate "{\"targetNode\":\"${active_node}\",\"confirm\":true}")
+  back_id=$(printf '%s' "$back_resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('runId',''))" 2>/dev/null)
+  if [[ -n "$back_id" ]]; then
+    local back_deadline=$((SECONDS + 600))
+    while (( SECONDS < back_deadline )); do
+      sleep 5
+      back_state=$(api GET "/admin/mail/migrate/${back_id}" 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('state',''))" 2>/dev/null)
+      case "$back_state" in done|failed|rolled-back) break ;; esac
+    done
+  fi
+  if [[ "$back_state" == "done" ]]; then
+    ok "PART B restore: mail back on ${active_node}"
+    _mail_allowlist_harness_ip force
+    _mail_wait_settled || return 1
+  else
+    fail "PART B restore: migrating mail back to ${active_node} ended state='${back_state}' (runId='${back_id}') — mail left on ${target_node}"
     return 1
   fi
+  [[ "$part_c_ok" == "1" ]] || return 1
 }
 
 # ─── scenario: platform-ops CLI (R18) ──────────────────────────────

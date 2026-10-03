@@ -6,8 +6,9 @@ import WebmailSettingsTab from '@/components/mail-settings/WebmailSettingsTab';
 import MailboxBackupEngineSection from '@/components/mail-settings/MailboxBackupEngineSection';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
 
-type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
+type SettingsTab = TabOf<'/email/settings'>;
 
 /**
  * Email → Settings.
@@ -18,10 +19,9 @@ type SettingsTab = 'mail' | 'webmail' | 'bundle-engine';
  * the upstream Stalwart web-admin UI for everything the platform
  * doesn't surface natively (advanced filters, log inspection, etc).
  */
-const EMAIL_SETTINGS_TAB_IDS: readonly SettingsTab[] = ['mail', 'webmail', 'bundle-engine'];
 
 export default function EmailSettingsPage() {
-  const [tab, setTab] = useTabParam<SettingsTab>(EMAIL_SETTINGS_TAB_IDS, 'mail');
+  const [tab, setTab] = useTabParam('/email/settings');
 
   return (
     <div className="space-y-6">

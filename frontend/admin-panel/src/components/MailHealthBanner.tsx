@@ -7,6 +7,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import MailHealthDetailsModal from './MailHealthDetailsModal';
+import NodeText from '@/components/nodes/NodeText';
 import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import type {
   MailHealthResponse,
@@ -96,7 +97,7 @@ export default function MailHealthBanner() {
                 {r.healthy ? 'Mail server: OK' : 'Mail server: DEGRADED'}
               </div>
               <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                {summaryLine(r)}
+                <NodeText text={summaryLine(r)} />
               </div>
             </div>
             <ChevronRight size={14} className="text-gray-400 shrink-0" />

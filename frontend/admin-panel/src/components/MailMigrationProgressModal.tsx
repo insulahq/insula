@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { X, ArrowRight, CheckCircle, XCircle, Loader2, Ban } from 'lucide-react';
 import { useMailMigrationStatus, useCancelMailMigration } from '@/hooks/use-mail-migration';
 import type { MailMigrationStatusResponse } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
 
 // Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
 // in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline
@@ -109,9 +110,9 @@ export default function MailMigrationProgressModal({ runId, onClose }: Props) {
         {status && (
           <>
             <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 font-mono">
-              <span>{status.sourceNode}</span>
+              <span><NodeName name={status.sourceNode} /></span>
               <ArrowRight size={14} className="shrink-0 text-gray-400" />
-              <span>{status.targetNode}</span>
+              <span><NodeName name={status.targetNode} /></span>
             </div>
 
             <MigrationStepList status={status} />

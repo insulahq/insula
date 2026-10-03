@@ -151,7 +151,7 @@ function ClusterCard({ cluster }: { readonly cluster: WalArchiveCluster }) {
         database&apos;s <strong>write-ahead log</strong> — the running record of every
         change — so a restore can replay forward to any moment, not just to the
         last full copy. Both go to the{' '}
-        <Link to="/backups/system?tab=routing" className="font-medium text-brand-600 hover:underline dark:text-brand-300">
+        <Link to="/backups/system/routing" className="font-medium text-brand-600 hover:underline dark:text-brand-300">
           bound system target
         </Link>{' '}
         and both are deleted once they pass the retention age.

@@ -3,6 +3,10 @@ import { AlertTriangle, CheckCircle2, HelpCircle, Loader2, MoveRight, Pin } from
 import type { TenantPlacement, TenantStorageFailover } from '@insula/api-contracts';
 import { useTenantPlacement } from '@/hooks/use-tenant-placement';
 import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
+import { useNodeLabel } from '@/hooks/use-node-labels';
+import NodeName from '@/components/nodes/NodeName';
+import NodeList from '@/components/nodes/NodeList';
+import NodeText from '@/components/nodes/NodeText';
 
 function utc(iso: string | null): string {
   if (!iso) return '—';
@@ -10,8 +14,8 @@ function utc(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
-function nodeList(nodes: readonly string[]): string {
-  return nodes.length > 0 ? nodes.join(', ') : '—';
+function Nodes({ names }: { readonly names: readonly string[] }) {
+  return names.length > 0 ? <NodeList names={names} /> : <>—</>;
 }
 
 type PendingAction = { readonly kind: 'move-back' | 'make-primary'; readonly node: string } | null;
@@ -79,7 +83,7 @@ export default function PlacementStatusPanel({ tenantId }: { readonly tenantId: 
       )}
       {migrate.isSuccess && migrate.data && (
         <p className="mt-2 text-xs text-green-700 dark:text-green-400">
-          Re-pinned to {migrate.data.data.currentWorker} — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
+          Re-pinned to <NodeName name={migrate.data.data.currentWorker} /> — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
           The placement view updates within a minute.
         </p>
       )}
@@ -106,17 +110,17 @@ function PlacementSummary({ placement }: { readonly placement: TenantPlacement |
         <dt className="font-medium text-gray-500 dark:text-gray-400">Running on</dt>
         <dd className={`mt-0.5 flex items-center gap-1 font-mono ${tone}`}>
           {!misplaced && placement.status === 'placed' && <CheckCircle2 size={12} className="text-green-600 dark:text-green-400" aria-hidden="true" />}
-          {nodeList(placement.workloadNodes.length > 0 ? placement.workloadNodes : placement.attachedNodes)}
+          <Nodes names={placement.workloadNodes.length > 0 ? placement.workloadNodes : placement.attachedNodes} />
         </dd>
       </div>
       <div>
         <dt className="font-medium text-gray-500 dark:text-gray-400">Data on</dt>
-        <dd className={`mt-0.5 font-mono ${tone}`}>{nodeList(placement.dataNodes)}</dd>
+        <dd className={`mt-0.5 font-mono ${tone}`}><Nodes names={placement.dataNodes} /></dd>
       </div>
       <div>
         <dt className="font-medium text-gray-500 dark:text-gray-400">Primary node</dt>
         <dd className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">
-          {placement.primaryNode ?? <span className="italic font-sans text-gray-500 dark:text-gray-400">none (auto)</span>}
+          {placement.primaryNode ? <NodeName name={placement.primaryNode} /> : <span className="italic font-sans text-gray-500 dark:text-gray-400">none (auto)</span>}
         </dd>
       </div>
     </dl>
@@ -138,6 +142,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
   const current = placement.actualNodes.length === 1 && placement.actualNodes[0] !== primary
     ? placement.actualNodes[0]!
     : null;
+  const nodeLabel = useNodeLabel();
 
   return (
     <div
@@ -147,10 +152,10 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
     >
       <p className="flex items-start gap-2 text-sm font-semibold text-red-900 dark:text-red-200">
         <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-        Not on its primary node {primary ?? ''}
+        Not on its primary node {primary ? nodeLabel(primary) : ''}
       </p>
       <p className="mt-1 text-xs text-red-800 dark:text-red-300">
-        {placement.reasons.join(', ')}{placement.misplacedSince ? ` — since ${utc(placement.misplacedSince)}` : ''}.
+        <NodeText text={placement.reasons.join(', ')} />{placement.misplacedSince ? ` — since ${utc(placement.misplacedSince)}` : ''}.
         Away from its primary node the tenant may do its disk I/O across the network, and the next
         restart or backup can move its data again.
       </p>
@@ -165,7 +170,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
               className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
               data-testid="placement-move-back"
             >
-              <MoveRight size={14} aria-hidden="true" /> Move back to {primary}
+              <MoveRight size={14} aria-hidden="true" /> Move back to {nodeLabel(primary)}
             </button>
           )}
           {current && (
@@ -176,7 +181,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
               className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100 disabled:opacity-50 dark:border-red-500/50 dark:bg-gray-800 dark:text-red-200 dark:hover:bg-gray-700"
               data-testid="placement-make-primary"
             >
-              <Pin size={14} aria-hidden="true" /> Make {current} the primary node
+              <Pin size={14} aria-hidden="true" /> Make {nodeLabel(current)} the primary node
             </button>
           )}
         </div>
@@ -186,8 +191,8 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
         <div className="mt-3 rounded-md border border-red-200 bg-white p-3 text-xs text-gray-800 dark:border-red-500/30 dark:bg-gray-900 dark:text-gray-200" data-testid="placement-confirm">
           <p>
             {pending.kind === 'move-back'
-              ? `Re-pins this tenant to ${pending.node} and restarts its workloads there. Longhorn then copies the tenant's data back to ${pending.node} — the tenant restarts now, and the copy takes as long as the volume is large.`
-              : `Makes ${pending.node} this tenant's primary node, where it already runs. Its workloads restart once to pick up the new pin; no data is copied.`}
+              ? `Re-pins this tenant to ${nodeLabel(pending.node)} and restarts its workloads there. Longhorn then copies the tenant's data back to ${nodeLabel(pending.node)} — the tenant restarts now, and the copy takes as long as the volume is large.`
+              : `Makes ${nodeLabel(pending.node)} this tenant's primary node, where it already runs. Its workloads restart once to pick up the new pin; no data is copied.`}
           </p>
           <div className="mt-2 flex gap-2">
             <button
@@ -198,7 +203,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
               data-testid="placement-confirm-button"
             >
               {busy && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
-              {pending.kind === 'move-back' ? `Move to ${pending.node}` : `Make ${pending.node} primary`}
+              {pending.kind === 'move-back' ? `Move to ${nodeLabel(pending.node)}` : `Make ${nodeLabel(pending.node)} primary`}
             </button>
             <button
               type="button"
@@ -224,8 +229,8 @@ function FailoverList({ failovers }: { readonly failovers: readonly TenantStorag
           <li key={f.id} className="text-xs text-gray-600 dark:text-gray-400">
             <span className="font-mono">{utc(f.remountRequestedAt)}</span>
             {' — '}volume {f.pvcName ?? f.volumeName} salvaged and remounted;
-            {' '}<span className="font-mono">{nodeList(f.nodesBefore)}</span>
-            {' → '}<span className="font-mono">{f.nodesAfter.length > 0 ? f.nodesAfter.join(', ') : 'restarting'}</span>
+            {' '}<span className="font-mono"><Nodes names={f.nodesBefore} /></span>
+            {' → '}<span className="font-mono">{f.nodesAfter.length > 0 ? <NodeList names={f.nodesAfter} /> : 'restarting'}</span>
           </li>
         ))}
       </ul>

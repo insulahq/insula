@@ -113,7 +113,7 @@ export default function OrphanedVolumesAlert({ namespace }: Props) {
           </ul>
 
           <Link
-            to="/settings/storage"
+            to="/cluster/storage"
             className="mt-2 inline-block text-xs font-medium text-amber-900 underline hover:opacity-80 dark:text-amber-200"
             data-testid="orphaned-volumes-alert-link"
           >

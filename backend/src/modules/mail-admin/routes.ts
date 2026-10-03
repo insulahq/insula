@@ -293,7 +293,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           scope: 'admin',
           userId: req.user.sub,
           label: toSafeText('Rotate Stalwart admin password'),
-          target: { type: 'route', href: '/settings/email-admin' },
+          target: { type: 'route', href: '/email/settings' },
         });
         taskId = started.id;
       } catch (taskErr) {

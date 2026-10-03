@@ -70,6 +70,7 @@ import { certDownloadRoutes } from './modules/cert-download/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { nodeRoutes } from './modules/nodes/routes.js';
+import { nodeLabelRoutes } from './modules/nodes/labels-routes.js';
 import { loadBalancerRoutes } from './modules/load-balancer/routes.js';
 import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
@@ -662,6 +663,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(nodeRoutes, { prefix: '/api/v1' });
+  await app.register(nodeLabelRoutes, { prefix: '/api/v1' });
   await app.register(loadBalancerRoutes, { prefix: '/api/v1' });
   await app.register(tenantMigrationRoutes, { prefix: '/api/v1' });
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });

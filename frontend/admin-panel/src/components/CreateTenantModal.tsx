@@ -9,6 +9,7 @@ import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usag
 import { useSystemSettings } from '@/hooks/use-system-settings';
 import { formatCurrency } from '@/lib/format-currency';
 import ProvisioningProgressModal from './ProvisioningProgressModal';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
  * Same "free / total" formatter as PlacementCard. Kept colocated rather
@@ -65,6 +66,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
   const { data: nodesData } = useClusterNodes();
+  const nodeLabel = useNodeLabel();
   const { data: usageData } = useWorkerUsageSummary();
   const usageByName = new Map((usageData?.data ?? []).map((u) => [u.name, u]));
   const createTenant = useCreateTenant();
@@ -474,7 +476,7 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
                   .filter((n) => n.canHostTenantWorkloads)
                   .map((n) => (
                     <option key={n.name} value={n.name}>
-                      {n.name}
+                      {nodeLabel(n.name)}
                       {formatAvailability(usageByName.get(n.name))}
                     </option>
                   ))}

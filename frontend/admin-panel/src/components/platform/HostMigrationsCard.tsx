@@ -2,6 +2,8 @@ import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Loader2, Externa
 import { useEffect, useId, useState } from 'react';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import type { HostMigrationNodeStatus, HostMigrationItem } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
+import NodeText from '@/components/nodes/NodeText';
 
 /**
  * Per-node host-migration state.
@@ -102,7 +104,7 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
       >
         {open ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
         <Server size={14} className="text-gray-500 dark:text-gray-400" />
-        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{node.node}</span>
+        <span className="text-sm font-medium text-gray-900 dark:text-gray-100"><NodeName name={node.node} /></span>
         {bad ? (
           <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
             {[
@@ -122,7 +124,8 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
         ) : (
           <span className="text-xs text-gray-500 dark:text-gray-400">
             {node.note
-              ?? `${node.appliedCount} applied${baselined ? ` (${baselined} baseline)` : ''}`
+              ? <NodeText text={node.note} />
+              : `${node.appliedCount} applied${baselined ? ` (${baselined} baseline)` : ''}`
                 + `${node.pendingCount ? ` · ${node.pendingCount} pending` : ''}`}
           </span>
         )}
@@ -138,7 +141,7 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
                   : 'py-1 text-xs text-gray-500 dark:text-gray-400'
               }
             >
-              {node.note}
+              <NodeText text={node.note} />
             </p>
           )}
           {stalled && node.remediation && node.remediation.length > 0 && (
@@ -151,7 +154,7 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
               data-testid="host-migrations-remediation"
             >
               <p className="mb-1 text-xs font-medium text-red-800 dark:text-red-200">
-                Fix this from a root shell on <span className="font-mono">{node.node}</span> — it
+                Fix this from a root shell on <span className="font-mono"><NodeName name={node.node} /></span> — it
                 cannot be repaired from the panel:
               </p>
               <pre className="overflow-x-auto whitespace-pre rounded bg-white/70 p-2 font-mono text-[11px] leading-relaxed text-gray-800 dark:bg-gray-900/50 dark:text-gray-200">
@@ -161,7 +164,7 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
           )}
           {node.reason && (
             <p className="py-1 text-xs text-red-600 dark:text-red-400" data-testid="host-migrations-reason">
-              This node refused the whole run: {node.reason}
+              This node refused the whole run: <NodeText text={node.reason} />
             </p>
           )}
           {interesting.length === 0 && !node.note && !node.reason && (

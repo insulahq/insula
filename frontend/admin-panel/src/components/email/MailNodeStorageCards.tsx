@@ -1,6 +1,7 @@
 import { HardDrive, AlertTriangle, Loader2, Activity, Snowflake } from 'lucide-react';
 import { useMailNodeStorage } from '@/hooks/use-mail-node-storage';
 import type { MailNodeStorage } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
 
 /**
  * Per-mail-node storage cards — replaces the legacy single MailStorageCard.
@@ -127,7 +128,7 @@ function NodeStorageCard({ node }: { readonly node: MailNodeStorage }) {
             />
           )}
           <code className="font-mono text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-            {node.nodeName}
+            <NodeName name={node.nodeName} />
           </code>
         </div>
         <div className="flex flex-wrap gap-1 shrink-0">

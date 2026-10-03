@@ -7,6 +7,8 @@ import { apiFetch } from '@/lib/api-client';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
  * Guided recovery for a degraded tenant.
@@ -35,6 +37,7 @@ export default function TenantRecoveryWizard({ entry, onClose }: Props) {
   const [typedName, setTypedName] = useState('');
   const queryClient = useQueryClient();
   const { data: nodesData } = useClusterNodes();
+  const nodeLabel = useNodeLabel();
 
   const canRepin = entry.findings.some((f) => f.kind === 'workloads_pinned_to_down_node');
   const needsRestore = entry.findings.some((f) => f.kind === 'volume_last_replica_on_down_node');
@@ -125,7 +128,7 @@ export default function TenantRecoveryWizard({ entry, onClose }: Props) {
                       >
                         <option value="">Automatic — let the scheduler choose</option>
                         {candidates.map((n) => (
-                          <option key={n.name} value={n.name}>{n.name}</option>
+                          <option key={n.name} value={n.name}>{nodeLabel(n.name)}</option>
                         ))}
                       </select>
                     </label>
@@ -191,8 +194,8 @@ export default function TenantRecoveryWizard({ entry, onClose }: Props) {
             <>
               <p className="text-sm text-gray-700 dark:text-gray-300">
                 {targetNode
-                  ? <>Move <strong>{entry.tenantName}</strong> from <code>{entry.pinnedNode}</code> to <code>{targetNode}</code>.</>
-                  : <>Clear <strong>{entry.tenantName}</strong>&rsquo;s pin on <code>{entry.pinnedNode}</code> and let the scheduler place it.</>}
+                  ? <>Move <strong>{entry.tenantName}</strong> from <code><NodeName name={entry.pinnedNode} /></code> to <code><NodeName name={targetNode} /></code>.</>
+                  : <>Clear <strong>{entry.tenantName}</strong>&rsquo;s pin on <code><NodeName name={entry.pinnedNode} /></code> and let the scheduler place it.</>}
               </p>
               <label className="block text-xs text-gray-600 dark:text-gray-400">
                 Reason (recorded in the audit log)

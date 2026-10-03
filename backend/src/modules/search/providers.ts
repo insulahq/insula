@@ -187,7 +187,7 @@ const deploymentProvider: SearchProvider = {
       subtitle: ctx.panel === 'admin'
         ? [r.tenantName, r.catalogName].filter(Boolean).join(' · ') || null
         : r.catalogName,
-      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}?tab=applications` : '/applications?tab=installed',
+      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}/deployments` : '/applications',
       badge: r.status,
     }));
   },
@@ -230,7 +230,7 @@ const mailboxProvider: SearchProvider = {
       type: 'mailbox' as const,
       title: r.fullAddress,
       subtitle: ctx.panel === 'admin' ? r.tenantName : r.displayName,
-      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}?tab=email` : '/email?tab=mailboxes',
+      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}/email` : '/email',
       badge: r.status,
     }));
   },
@@ -482,7 +482,7 @@ const catalogProvider: SearchProvider = {
       type: 'catalog_entry' as const,
       title: r.name,
       subtitle: r.code,
-      href: ctx.panel === 'admin' ? '/applications?tab=catalog' : '/applications?tab=catalog',
+      href: '/applications/catalog',
       badge: r.type,
     }));
   },

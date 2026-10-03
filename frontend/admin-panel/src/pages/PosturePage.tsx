@@ -114,8 +114,10 @@ import type {
 } from '@insula/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
 import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
+import NodeName from '@/components/nodes/NodeName';
 
-type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events';
+type TabId = TabOf<'/security/posture'>;
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -129,10 +131,9 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'events', label: 'Security Events' },
 ];
 
-const POSTURE_TAB_IDS: readonly TabId[] = TABS.map((t) => t.id);
 
 export default function PosturePage() {
-  const [activeTab, setActiveTab] = useTabParam<TabId>(POSTURE_TAB_IDS, 'overview');
+  const [activeTab, setActiveTab] = useTabParam('/security/posture');
   const { data, isLoading, isError, error, refetch, isFetching } = useSecurityHardeningSnapshot();
   const refresh = useRefreshSecurityHardening();
 
@@ -287,7 +288,7 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {snapshot.nodes.map((n) => (
               <tr key={n.name}>
-                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{n.name}</td>
+                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2"><SshBadge mode={n.ssh.restrictionMode} /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.mesh.provider === 'none' ? '—' : n.mesh.provider}</td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.hardening.cisFindings.filter((f) => !f.passing && f.severity === 'critical').length}</td>
@@ -498,7 +499,7 @@ function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {snapshot.nodes.map((n) => (
               <tr key={n.name}>
-                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{n.name}</td>
+                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2"><SshBadge mode={n.ssh.restrictionMode} /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.ssh.sshdFlags.port}</td>
                 <td className="px-4 py-2"><SshdFlagCell value={n.ssh.sshdFlags.permitRootLogin} good="no" /></td>
@@ -552,7 +553,7 @@ function MeshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {snapshot.nodes.map((n) => (
               <tr key={n.name}>
-                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{n.name}</td>
+                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.mesh.provider === 'none' ? <span className="text-gray-400">none detected</span> : n.mesh.provider}</td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.mesh.interfaceName ?? '—'}</td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{n.mesh.interfaceIp ?? '—'}</td>
@@ -681,7 +682,7 @@ function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {snapshot.firewall.publicPortsPerNode.map((p) => (
               <tr key={p.nodeName}>
-                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{p.nodeName}</td>
+                <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={p.nodeName} /></td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{p.tcp.join(', ') || '—'}</td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{p.udp.join(', ') || '—'}</td>
               </tr>
@@ -720,7 +721,7 @@ function HardeningTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
       {snapshot.nodes.map((n) => (
         <details key={n.name} open className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
           <summary className="px-4 py-3 cursor-pointer text-sm font-medium text-gray-900 dark:text-gray-100">
-            {n.name}
+            <NodeName name={n.name} />
             <span className="ml-2 text-xs text-gray-500">{n.hardening.osPretty} · kernel {n.hardening.kernelVersion}</span>
           </summary>
           <div className="px-4 pb-4 space-y-1">
@@ -1308,7 +1309,7 @@ function SshLockdownModal({ node, onClose }: { node: NodeSecuritySnapshot; onClo
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-gray-900 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Restrict SSH to mesh on {node.name}</h3>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Restrict SSH to mesh on <NodeName name={node.name} /></h3>
           <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4 text-sm">
@@ -1358,7 +1359,7 @@ function SshLockdownModal({ node, onClose }: { node: NodeSecuritySnapshot; onClo
               {canReveal && (
                 <div className="rounded-md border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs uppercase text-gray-600 dark:text-gray-400">Run on {node.name}</span>
+                    <span className="text-xs uppercase text-gray-600 dark:text-gray-400">Run on <NodeName name={node.name} /></span>
                     <button
                       type="button"
                       onClick={() => void navigator.clipboard.writeText(command)}
@@ -1463,7 +1464,7 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
       <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="fail2ban-modal">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
           <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            fail2ban bans on {node.name}
+            fail2ban bans on <NodeName name={node.name} />
             <span className="ml-2 text-xs font-normal text-gray-500">
               {f.bannedNowCount} active · {f.bansLast24h} in 24h · {f.bansTotal} all-time
             </span>
@@ -1495,7 +1496,7 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
                     <td className="py-1.5 text-right text-gray-600 dark:text-gray-300">{b.banCount}</td>
                     <td className="py-1.5 text-right">
                       <Link
-                        to={`/security/network-trust?tab=blacklist&prefill=${encodeURIComponent(b.ip)}`}
+                        to={`/security/network-trust/blacklist?prefill=${encodeURIComponent(b.ip)}`}
                         className="text-xs text-red-600 hover:underline dark:text-red-400"
                         data-testid={`ban-permanently-${b.ip}`}
                       >

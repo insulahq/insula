@@ -156,7 +156,7 @@ async function mirrorRunToTaskTracker(db: Database, runId: string): Promise<void
     scope: 'admin',
     userId: run.operatorUserId,
     label: toSafeText(`System backup (${run.kind})`),
-    target: { type: 'route', href: '/settings/system-backup' },
+    target: { type: 'route', href: '/backups/system' },
     progressPct: taskStatus === 'succeeded' ? 100 : null,
     details: { kind: run.kind },
   });

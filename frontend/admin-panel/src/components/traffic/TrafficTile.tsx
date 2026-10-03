@@ -54,7 +54,7 @@ export default function TrafficTile() {
 
   if (isLoading || !frame) {
     return (
-      <Tile title="Traffic" to="/monitoring?tab=traffic">
+      <Tile title="Traffic" to="/monitoring/traffic">
         <div className="h-[62px] animate-pulse rounded bg-gray-100 dark:bg-gray-700/40" />
       </Tile>
     );
@@ -90,7 +90,7 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
   const ceiling = Math.max(peak * 1.08, 1);
 
   return (
-    <Tile title="Traffic" to="/monitoring?tab=traffic">
+    <Tile title="Traffic" to="/monitoring/traffic">
       <div className="text-[22px] font-semibold leading-tight tracking-tight tabular-nums text-gray-900 dark:text-gray-100">
         {formatTrafficVolume(outTotal + inTotal, frame.unit)}
       </div>

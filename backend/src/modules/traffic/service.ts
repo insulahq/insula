@@ -32,6 +32,7 @@ import {
 import type { Database } from '../../db/index.js';
 import type { LiveRouteSource } from './live-ingress-routes.js';
 import { loadExactRouteNamer, type WarnLogger } from './route-naming.js';
+import { loadNodeLabels, nodeLabel, type NodeLabels } from '../nodes/labels.js';
 
 const DAY_MS = 86_400_000;
 
@@ -272,7 +273,9 @@ function displayNameFor(
   key: string,
   nsToName: ReadonlyMap<string, string>,
   nsToHosts: ReadonlyMap<string, readonly string[]> = new Map(),
+  nodeLabels: NodeLabels | null = null,
 ): string {
+  if (scope === 'node') return nodeLabels ? nodeLabel(key, nodeLabels) : key;
   if (scope === 'tenant') {
     const name = nsToName.get(key);
     if (name) return name;
@@ -443,9 +446,11 @@ export async function fetchTrafficFrame(
   const nsToHosts = req.scope === 'route'
     ? await tenantHosts(deps.db, [...namespacesSeen])
     : new Map<string, string[]>();
+  // A node row reads by its alias; unaliased (or unreadable) it keeps its name.
+  const nodeLabels = req.scope === 'node' ? await loadNodeLabels(deps.db).catch(() => null) : null;
   for (const s of collected) {
     if (s.kind !== 'subject') continue;
-    s.name = routeNamer?.name(s.name, nsToName) ?? displayNameFor(req.scope, s.name, nsToName, nsToHosts);
+    s.name = routeNamer?.name(s.name, nsToName) ?? displayNameFor(req.scope, s.name, nsToName, nsToHosts, nodeLabels);
   }
   // Both directions across a SUBJECT breakdown gives two series per subject.
   // Their keys differ but their names do not, so the table listed "SYSTEM"

@@ -1,6 +1,7 @@
 import { Terminal as TerminalIcon, X } from 'lucide-react';
 import { useTerminalSessions } from '@/stores/terminal-sessions';
-import { titleCase } from './node-terminal-utils';
+import { terminalNodeTitle } from './node-terminal-utils';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
  * Floating dock that surfaces minimized terminal sessions. Sits bottom-
@@ -22,6 +23,8 @@ export function BackgroundTerminalsDock() {
   const restore = useTerminalSessions((s) => s.restore);
   const terminate = useTerminalSessions((s) => s.terminate);
   const minimized = sessions.filter((sess) => sess.minimized);
+  const nodeLabel = useNodeLabel();
+  const shellName = (nodeName: string): string => terminalNodeTitle(nodeName, nodeLabel(nodeName));
 
   if (minimized.length === 0) return null;
 
@@ -39,13 +42,13 @@ export function BackgroundTerminalsDock() {
             type="button"
             onClick={() => restore(sess.id)}
             className="flex items-center gap-2.5 rounded-full px-4 py-1.5 hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-500"
-            aria-label={`Restore ${titleCase(sess.nodeName)} shell`}
-            title={`Restore ${titleCase(sess.nodeName)} shell`}
+            aria-label={`Restore ${shellName(sess.nodeName)} shell`}
+            title={`Restore ${shellName(sess.nodeName)} shell`}
             data-testid={`background-terminal-restore-${sess.nodeName}`}
           >
             <TerminalIcon size={16} className="text-zinc-400" aria-hidden="true" />
             <span className="text-sm font-medium">
-              <span className="font-mono">{titleCase(sess.nodeName)}</span>
+              <span className="font-mono">{shellName(sess.nodeName)}</span>
               <span className="ml-1.5 text-zinc-400">Shell</span>
             </span>
             {/* Status dot: green pulsing when live, red static when
@@ -66,8 +69,8 @@ export function BackgroundTerminalsDock() {
             type="button"
             onClick={(e) => { e.stopPropagation(); terminate(sess.id); }}
             className="rounded-full p-1.5 text-zinc-400 opacity-0 transition group-hover:opacity-100 hover:bg-red-700/40 hover:text-red-200 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-400"
-            aria-label={`Terminate ${titleCase(sess.nodeName)} shell`}
-            title={`Terminate ${titleCase(sess.nodeName)} shell`}
+            aria-label={`Terminate ${shellName(sess.nodeName)} shell`}
+            title={`Terminate ${shellName(sess.nodeName)} shell`}
             data-testid={`background-terminal-terminate-${sess.nodeName}`}
           >
             <X size={14} aria-hidden="true" />

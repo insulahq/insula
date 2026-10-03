@@ -375,7 +375,10 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     const image = getFileManagerImage();
 
     await ensureFileManagerRunning(k8s, namespace, image);
-    recordFileManagerAccess(namespace);
+    // Pass the client so the access reaches the Deployment annotation: without
+    // it only THIS replica's in-memory cache knew, and another replica's idle
+    // loop could scale the file manager down under an SFTP session.
+    recordFileManagerAccess(namespace, k8s);
 
     // Return the ACTUAL ready pod name. The file-manager is a Deployment, so its
     // pod is named file-manager-<hash> — the gateway must exec into that, not the

@@ -5,6 +5,7 @@ import {
   useUpdatePlatformStoragePolicy,
 } from '@/hooks/use-platform-storage-policy';
 import ApplyHaProgressModal from './ApplyHaProgressModal';
+import NodeList from '@/components/nodes/NodeList';
 
 // Display labels for the (wire-stable) tier values. Wire stays
 // `local`/`ha` everywhere — URL, DB, API. Only the human-facing string
@@ -166,7 +167,7 @@ export default function PlatformStoragePolicyCard() {
                     {v.replicaNodes.length === 0 ? (
                       <span className="text-gray-400">—</span>
                     ) : (
-                      <span className="font-mono">{v.replicaNodes.join(', ')}</span>
+                      <span className="font-mono"><NodeList names={v.replicaNodes} /></span>
                     )}
                     {drift && (
                       <span className="ml-2 inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" title="At least one replica is on a non-system server. Trigger Apply HA / Apply Local to migrate.">

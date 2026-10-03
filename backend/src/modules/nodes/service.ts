@@ -7,6 +7,7 @@ import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
+import { invalidateNodeLabels } from './labels.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -410,6 +411,8 @@ export async function updateNode(
     await db.update(clusterNodes)
       .set(dbPatch)
       .where(eq(clusterNodes.name, name));
+    // The alias is what every surface shows — make the next read see it.
+    if (patch.displayName !== undefined) invalidateNodeLabels();
   }
 
   // Re-read the node from k8s and upsert the DB so the response

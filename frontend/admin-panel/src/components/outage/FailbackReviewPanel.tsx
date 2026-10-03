@@ -6,6 +6,8 @@ import {
   type FailbackReviewItem,
 } from '@/hooks/use-failback-review';
 import FailbackRepinDialog from './FailbackRepinDialog';
+import NodeName from '@/components/nodes/NodeName';
+import NodeList from '@/components/nodes/NodeList';
 
 /**
  * "This node is back — these tenants are still somewhere else."
@@ -66,9 +68,8 @@ export default function FailbackReviewPanel() {
         <Undo2 size={16} className="mt-0.5 shrink-0 text-sky-600 dark:text-sky-400" aria-hidden="true" />
         <div className="text-sm text-sky-900 dark:text-sky-100">
           <strong>
-            {review.returnedNodes.length === 1
-              ? `${review.returnedNodes[0]} is back online.`
-              : `${review.returnedNodes.join(', ')} are back online.`}
+            <NodeList names={review.returnedNodes} />
+            {review.returnedNodes.length === 1 ? ' is back online.' : ' are back online.'}
           </strong>{' '}
           {review.items.length} tenant{review.items.length === 1 ? ' is' : 's are'} still
           placed elsewhere after the outage. Nothing moves back on its own — review each one.
@@ -81,9 +82,9 @@ export default function FailbackReviewPanel() {
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="font-medium text-slate-900 dark:text-slate-100">{item.tenantName}</span>
               <span className="flex items-center gap-1 text-xs text-slate-600 dark:text-slate-400">
-                {item.movedFromNode}
+                <NodeName name={item.movedFromNode} />
                 <ArrowRight size={12} aria-hidden="true" />
-                {item.currentNode ?? 'unpinned'}
+                {item.currentNode ? <NodeName name={item.currentNode} /> : 'unpinned'}
               </span>
               <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-700 dark:bg-slate-700 dark:text-slate-200">
                 {item.storageTier} tier

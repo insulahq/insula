@@ -28,6 +28,8 @@ import {
   AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
  * Where the disk went, for the Storage tile's hover card.
@@ -181,11 +183,11 @@ export default function Dashboard() {
             </span>
           ) : l.cluster.data.survivesSingleNodeLoss ? (
             <span className="text-gray-700 dark:text-gray-300">
-              <b>Survives losing any one node.</b> Worst case is {l.cluster.data.worstNode}.
+              <b>Survives losing any one node.</b> Worst case is <NodeName name={l.cluster.data.worstNode} />.
             </span>
           ) : (
             <span className="text-amber-800 dark:text-amber-200">
-              <b>Would not survive losing {l.cluster.data.worstNode}.</b> Its requests do not fit on the rest.
+              <b>Would not survive losing <NodeName name={l.cluster.data.worstNode} />.</b> Its requests do not fit on the rest.
             </span>
           )}
         </div>
@@ -271,6 +273,7 @@ function MiniTriad({ label, inUse: measured, committed, total, unit }: {
 
 
 function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: boolean }) {
+  const nodeLabel = useNodeLabel();
   if (loading) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
@@ -316,7 +319,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
               <span className={`h-2 w-2 shrink-0 rounded-full ${
                 sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : 'bg-green-500'
               }`} />
-              <b title={n.name} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{n.name}</b>
+              <b title={n.name} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{nodeLabel(n.name)}</b>
             </span>
             <span className="inline-flex w-fit items-center rounded-md border border-gray-300 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-600 dark:text-gray-400">
               {n.role}
@@ -492,9 +495,9 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
 
 function CertificatesTile({ summary }: { summary: Summary | undefined }) {
   const c = summary?.certificates.data;
-  if (!c) return <SectionFallback title="Certificates" to="/domains" section={summary?.certificates ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!c) return <SectionFallback title="Certificates" to="/tenants/domains" section={summary?.certificates ?? { state: 'stale', reason: null, observedAt: null }} />;
   return (
-    <MatrixTile title="Certificates" to="/domains" cells={[
+    <MatrixTile title="Certificates" to="/tenants/domains" cells={[
       { k: 'Issued', v: String(c.issued) },
       { k: 'Wildcards', v: String(c.wildcards), tone: 'ok' },
       { k: 'Nearest expiry', v: c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays}d`,
@@ -513,9 +516,9 @@ function CertificatesTile({ summary }: { summary: Summary | undefined }) {
 
 function ScheduledTasksTile({ summary }: { summary: Summary | undefined }) {
   const t = summary?.scheduledTasks.data;
-  if (!t) return <SectionFallback title="Scheduled" to="/platform/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!t) return <SectionFallback title="Scheduled" to="/tenants/cron-jobs" section={summary?.scheduledTasks ?? { state: 'stale', reason: null, observedAt: null }} />;
   return (
-    <MatrixTile title="Scheduled tasks" to="/platform/cron-jobs" cells={[
+    <MatrixTile title="Scheduled tasks" to="/tenants/cron-jobs" cells={[
       { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
       { k: 'Failed · 24h', v: String(t.failed24h), tone: t.failed24h > 0 ? 'warn' : 'ok' },
       { k: 'Enabled', v: String(t.enabled) },

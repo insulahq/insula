@@ -287,7 +287,7 @@ export async function getMailSnapshotStatus(
  *
  * added to fix the operator-visibility gap where
  * pre-migration snapshots were indistinguishable from the every-two-min
- * routine snapshots in /backups/mail?tab=backups.
+ * routine snapshots in /backups/mail/backups.
  */
 export interface SnapshotPurposeOptions {
   /** Single-token classifier — currently `pre-migration` is the only caller. */
@@ -525,7 +525,7 @@ export async function getMailSnapshotJobStatus(
  *     `snapshot-upload.sh` picks up and passes to `restic backup --tag`.
  *
  * The combination lets the UI surface a "pre-migration" badge in the
- * /backups/mail?tab=backups list (via restic tags) without parsing
+ * /backups/mail/backups list (via restic tags) without parsing
  * restic JSON in a hot path (label-based filtering on Job inventory
  * is enough for in-flight status).
  */

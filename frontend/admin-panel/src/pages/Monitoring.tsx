@@ -1,5 +1,4 @@
-import { useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle, XCircle, Server, Loader2, RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import StatCard from '@/components/ui/StatCard';
@@ -19,12 +18,11 @@ import NodeHealthPanel from '@/components/NodeHealthPanel';
 import SloTab from '@/components/SloTab';
 import TrafficTab from '@/components/traffic/TrafficTab';
 import MailTab from '@/components/monitoring/MailTab';
+import { useTabParam } from '@/hooks/use-tab-param';
+import type { TabOf } from '@/routes/tabbed-pages';
+import NodeName from '@/components/nodes/NodeName';
 
-type Tab = 'traffic' | 'active-alerts' | 'alert-history' | 'activity' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
-
-const VALID_TABS: ReadonlySet<Tab> = new Set([
-  'traffic', 'active-alerts', 'alert-history', 'activity', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
-]);
+type Tab = TabOf<'/monitoring'>;
 
 interface Alert {
   readonly id: string;
@@ -261,23 +259,9 @@ function HealthTab() {
 }
 
 export default function Monitoring() {
-  // URL-driven tab so /monitoring/health redirects (and direct
-  // links from other surfaces) can deep-link to the Health view.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get('tab');
-  const activeTab: Tab = useMemo(() => {
-    if (requested && VALID_TABS.has(requested as Tab)) return requested as Tab;
-    // Traffic is the landing view — operator decision. Opening Monitoring
-    // shows what the platform is doing; SLOs and Active Alerts are one click
-    // away for "is anything wrong". An explicit ?tab= still wins, so deep
-    // links from other surfaces are unaffected.
-    return 'traffic';
-  }, [requested]);
-  const setActiveTab = (key: Tab): void => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', key);
-    setSearchParams(next, { replace: true });
-  };
+  // URL-driven tab (/monitoring/<tab>) so other surfaces can deep-link to
+  // any view — see routes/tabbed-pages.ts.
+  const [activeTab, setActiveTab] = useTabParam('/monitoring');
 
   const pagination = useCursorPagination({ defaultLimit: 20 });
   const { data: statusData } = usePlatformStatus();
@@ -635,7 +619,7 @@ function PodsTab({
                     {pod.restarts === 0 && '0'}
                   </td>
                   <td className="hidden px-4 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">
-                    {pod.node ?? '—'}
+                    {pod.node ? <NodeName name={pod.node} /> : '—'}
                   </td>
                   <td className="hidden px-4 py-3 text-xs text-gray-500 dark:text-gray-400 xl:table-cell">
                     {pod.age ? formatTime(pod.age) : '—'}
