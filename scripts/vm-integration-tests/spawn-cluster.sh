@@ -101,6 +101,24 @@ PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 #   * digests are still verified end-to-end by containerd — a cache cannot serve
 #     tampered content. This is a bandwidth optimisation, never a trust boundary.
 VMTEST_REGISTRY_MIRROR="${VMTEST_REGISTRY_MIRROR:-}"
+# The k3s registries.yaml body — ONE definition for both writers: the cloud-init
+# seed of a fresh VM, and the reuse path (rebootstrap.sh), whose destroy-cluster.sh
+# `rm -rf /etc/rancher` deletes the file the seed wrote. Before the reuse writer
+# existed every rebootstrapped run silently pulled the full image set over the WAN
+# on every node — containerd falls back to upstream when no mirror is configured.
+registry_mirrors_yaml() {
+  cat <<YAML
+mirrors:
+  docker.io:
+    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_DOCKER:-4000}"]
+  ghcr.io:
+    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_GHCR:-4001}"]
+  quay.io:
+    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_QUAY:-4002}"]
+  registry.k8s.io:
+    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_K8S:-4003}"]
+YAML
+}
 REGISTRY_MIRROR_WRITE_FILES=""
 if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
   # PREFLIGHT the mirror before seeding it into every node.
@@ -120,19 +138,13 @@ if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
       exit 2
     fi
   done
+  # cloud-init write_files for a FRESH VM; the reuse path writes the same body
+  # over ssh (see below) because destroy-cluster.sh wipes /etc/rancher.
   REGISTRY_MIRROR_WRITE_FILES="write_files:
   - path: /etc/rancher/k3s/registries.yaml
     permissions: '0644'
     content: |
-      mirrors:
-        docker.io:
-          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_DOCKER:-4000}\"]
-        ghcr.io:
-          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_GHCR:-4001}\"]
-        quay.io:
-          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_QUAY:-4002}\"]
-        registry.k8s.io:
-          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_K8S:-4003}\"]
+$(registry_mirrors_yaml | sed 's/^/      /')
 "
   echo "  registry mirrors: ${VMTEST_REGISTRY_MIRROR} (docker=${VMTEST_MIRROR_PORT_DOCKER:-4000} ghcr=${VMTEST_MIRROR_PORT_GHCR:-4001} quay=${VMTEST_MIRROR_PORT_QUAY:-4002} k8s=${VMTEST_MIRROR_PORT_K8S:-4003})" >&2
 fi
@@ -357,6 +369,16 @@ if [[ "${VMTEST_REUSE:-0}" == "1" ]]; then
   echo "── reuse: wiping the platform from $(wc -l < "$_inv") node(s), keeping their OS ──" >&2
   "$REPO/scripts/destroy-cluster.sh" --inventory "$_inv" --ssh-key "$VMTEST_SSH_KEY" --confirm >&2 \
     || { echo "ABORT: destroy-cluster.sh failed on the reused nodes" >&2; exit 1; }
+  # destroy-cluster.sh removed /etc/rancher — and with it the registry mirrors the
+  # VM's cloud-init seed wrote. Put them back BEFORE k3s is installed (it reads
+  # registries.yaml only at start).
+  if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
+    while read -r _n _ip; do
+      registry_mirrors_yaml | _vssh "$_ip" "mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml" \
+        || { echo "ABORT: could not restore the registry mirrors on ${_n}" >&2; exit 1; }
+    done < "$_inv"
+    echo "  registry mirrors restored on the reused nodes (${VMTEST_REGISTRY_MIRROR})" >&2
+  fi
   rm -f "$_inv"
 fi
 # Point cert-manager at the run's Pebble (test ACME CA) so the platform's certs ISSUE
