@@ -108,9 +108,21 @@ if [[ -n "$NODE_IP" ]]; then
   [[ "$ST" == "422" ]] && ok "self-lockout refused (422)" || fail "node-IP ban returned $ST (want 422)"
   # Ensure NO CR was created for the node IP.
   NODE_NAME="cfb-$(echo "$NODE_IP" | sed 's/[^a-z0-9]/-/g')"
-  EXISTS=$(api_status GET "/admin/cluster/firewall-blacklist" >/dev/null; api_body GET /admin/cluster/firewall-blacklist \
-    | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['data'];print('yes' if any(e['cidr']=='$NODE_IP' for e in d) else 'no')" 2>/dev/null)
-  [[ "$EXISTS" == "no" ]] && ok "no CR created for node IP" || fail "a CR for the node IP leaked"
+  # An unreadable list is NOT a leak: a read that failed transiently (several
+  # calls land in the same second here) used to print nothing and be reported as
+  # "a CR for the node IP leaked" while the cluster held no such CR.
+  EXISTS="" LIST_BODY=""
+  for _try in 1 2 3 4 5; do
+    LIST_BODY=$(api_body GET /admin/cluster/firewall-blacklist)
+    EXISTS=$(printf '%s' "$LIST_BODY" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['data'];print('yes' if any(e['cidr']=='$NODE_IP' for e in d) else 'no')" 2>/dev/null)
+    [[ "$EXISTS" == "yes" || "$EXISTS" == "no" ]] && break
+    sleep 2
+  done
+  case "$EXISTS" in
+    no)  ok "no CR created for node IP" ;;
+    yes) fail "a CR for the node IP leaked" ;;
+    *)   fail "could not read the blacklist to check for a node-IP CR (last response: ${LIST_BODY:0:160})" ;;
+  esac
   # Phase 2b: a CIDR that CONTAINS the node IP must also be refused.
   NODE_OCTETS="${NODE_IP%.*}.0/24"
   log "Phase 2b: attempt to ban range $NODE_OCTETS containing the node IP"
