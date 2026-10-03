@@ -27,13 +27,13 @@
  */
 
 import type { BackupDatabaseDumps } from '@insula/api-contracts';
-import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 
 type DumpDeployment = BackupDatabaseDumps['deployments'][number];
 
 export interface SqliteCaptureArgs {
-  readonly k8s: K8sClients;
   readonly namespace: string;
+  /** A file-manager pod the caller holds a lease on (file-manager/lease.ts). */
+  readonly fmPod: string;
   readonly backupId: string;
   readonly kubeconfigPath?: string;
 }
@@ -100,30 +100,13 @@ export function buildSqliteCaptureScript(backupId: string): string {
 
 /**
  * Discover + logical-dump every SQLite file on the tenant PVC via the
- * file-manager pod. Returns a summary deployment entry (engine='sqlite') or
- * null when there is no file-manager pod / no SQLite files. Never throws — a
+ * file-manager pod the caller holds. Returns a summary deployment entry
+ * (engine='sqlite') or null when there are no SQLite files. Never throws — a
  * discovery failure is non-fatal (the raw-files floor still captures SQLite).
  */
 export async function runSqliteCapture(args: SqliteCaptureArgs): Promise<DumpDeployment | null> {
   const { execInPod } = await import('../../../shared/k8s-exec.js');
-  const { getReadyFileManagerPod } = await import('../../file-manager/service.js');
-
-  let fmPod: string;
-  try {
-    fmPod = await getReadyFileManagerPod(args.k8s, args.namespace);
-  } catch (err) {
-    // No file-manager pod → cannot discover SQLite files. Not a bundle failure;
-    // the raw-files snapshot still captures any SQLite file on the PVC. But say
-    // so: a file manager that cannot start usually means the tenant's volume
-    // is somewhere its pin does not allow, and this line was the only trace of
-    // that when a capture later failed on the same cause.
-    console.warn(
-      `[bundle ${args.backupId}] sqlite pre-dump skipped in ${args.namespace}: `
-      + `file manager not ready (${(err as Error).message})`,
-    );
-    return null;
-  }
-
+  const fmPod = args.fmPod;
   try {
     const res = await execInPod(
       args.kubeconfigPath, args.namespace, fmPod, 'file-manager',

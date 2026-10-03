@@ -55,6 +55,16 @@ describe('idleScaleDownDue', () => {
     expect(idleScaleDownDue(idleFileManager({ held: true }), 0, NOW)).toBeNull();
   });
 
+  /** ★ The nightly-backup bug: a lease holder is exec'ing into it. */
+  it('never scales down a file-manager a live lease holds, and resumes once the lease lapses', () => {
+    const leased = (expiresAt: number) => {
+      const d = idleFileManager();
+      return { ...d, metadata: { ...d.metadata, annotations: { ...d.metadata.annotations, 'fm-lease.insula.host/bundle-1a2b3c4d': String(expiresAt) } } };
+    };
+    expect(idleScaleDownDue(leased(NOW + 60_000), 0, NOW)).toBeNull();
+    expect(idleScaleDownDue(leased(NOW - 1), 0, NOW)).toBeGreaterThan(10 * 60 * 1000);
+  });
+
   it('leaves one already at zero alone', () => {
     expect(idleScaleDownDue(idleFileManager({ replicas: 0 }), 0, NOW)).toBeNull();
   });

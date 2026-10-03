@@ -31,6 +31,15 @@ Every bundle is split into four **components**:
 | `config` | The database rows the tenant owns (clients, users, domains, deployments, …) |
 | `secrets` | The tenant's TLS Secrets, encrypted |
 
+Before the `files` capture, each database deployment is dumped onto the
+tenant's volume, and any SQLite file is dumped next to it, so the snapshot
+holds a portable copy as well as the raw data files. The SQLite dump and the
+removal of the dumps after the capture run in the tenant's **file manager**:
+a bundle starts it if it is stopped, holds it so its idle shutdown cannot stop
+it mid-step, and stops it again when finished — straight after the SQLite step
+when there is nothing to remove. If the tenant opened the file manager in the
+meantime, it is left running and stops after its usual idle time.
+
 !!! note "`meta.json` is the commit marker"
     A bundle is only restorable once `meta.json` is written, which happens
     **last** and **only when every enabled component succeeded**. A bundle on

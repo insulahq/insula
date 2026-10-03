@@ -76,6 +76,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   replaced while the probe was waiting, every later attempt went to a pod that no longer existed.
   After 10 minutes the install stopped with "refusing to bootstrap", although the mail server was
   fine. Bootstrap now picks a running pod on every attempt.
+- **Nightly backups no longer start every tenant's file manager twice, or have it stopped
+  mid-step.** Each bundle started the tenant's file manager to dump SQLite files; the idle
+  shutdown stopped it within a minute, often mid-dump, and the cleanup after the capture started
+  it again. The bundle now starts it once, holds it while it needs it, and stops it again when
+  done — right after the SQLite step for tenants with nothing to clean up. Database restores and
+  SQL Manager imports and exports hold it the same way, so the idle shutdown no longer stops it
+  under them either; one that cannot start is stopped again at once instead of being left pending.
 - **A tenant backup no longer fails because its capture pod was sent to the wrong node.** When a
   tenant's file manager was pinned to a node other than the one holding its volume, the nightly
   backup started the file manager, which could not mount the volume, and then pinned the files
