@@ -21,6 +21,7 @@ import { useBulkRestartDeployments } from '@/hooks/use-deployments';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
+import NodeName from '@/components/nodes/NodeName';
 
 type Tab = TabOf<'/applications'>;
 
@@ -1318,7 +1319,7 @@ function InstalledTab() {
                           <StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} />
                         </td>
                         <td className="px-3 py-3 text-gray-700 dark:text-gray-300 text-xs font-mono">
-                          {d.currentNodeName ?? <span className="text-gray-400">—</span>}
+                          {d.currentNodeName ? <NodeName name={d.currentNodeName} /> : <span className="text-gray-400">—</span>}
                         </td>
                         <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.cpuRequest}</td>
                         <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.memoryRequest}</td>

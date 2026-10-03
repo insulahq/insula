@@ -88,6 +88,38 @@ describe('the cluster frame is the wire, and only the wire', () => {
   });
 });
 
+describe('a node row', () => {
+  it('is named by the node alias, and keeps its Kubernetes name as the key', async () => {
+    const nodeDb = {
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }),
+      }),
+      execute: () => Promise.resolve({ rows: [
+        { name: 'sv1.cluster.example.test', display_name: 'Primary', hostname: 'sv1' },
+        { name: 'sv2', display_name: null, hostname: 'sv2' },
+      ] }),
+    } as never;
+    const now = Math.floor(Date.now() / 1000);
+    vi.doMock('../monitoring/vm-client.js', () => ({
+      queryRange: () => Promise.resolve([
+        { labels: { node: 'sv1.cluster.example.test' }, points: [[now, 5]] },
+        { labels: { node: 'sv2' }, points: [[now, 3]] },
+      ]),
+      queryInstant: () => Promise.resolve([]),
+    }));
+    vi.resetModules();
+    const { fetchTrafficFrame: fresh } = await import('./service.js');
+    const frame = await fresh({
+      ...range, scope: 'node', metric: 'traffic', direction: 'out', backups: 'included',
+    }, { db: nodeDb });
+    const byName = new Map(frame.series.map((s) => [s.name, s.key]));
+    expect([...byName.keys()].sort()).toEqual(['Primary', 'sv2']);
+    expect(byName.get('Primary')).toContain('sv1.cluster.example.test');
+    vi.doUnmock('../monitoring/vm-client.js');
+    vi.resetModules();
+  });
+});
+
 describe('a namespace with no tenant record', () => {
   it('is named for what it is, not printed as somebody’s name', async () => {
     const orphanDb = {

@@ -61,6 +61,7 @@ import { getUserSettings } from '../preferences/service.js';
 import { isInQuietHours } from '../preferences/quiet-hours.js';
 import { consumeRateLimit } from '../rate-limit/service.js';
 import { enqueueDelivery } from '../queue/enqueue.js';
+import { aliasNodeNamesInVariables, loadNodeLabels } from '../../nodes/labels.js';
 import type {
   NotificationCategoryResponse,
   NotificationDeliveryStatus,
@@ -410,7 +411,15 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // passes `tenantLabel: tenantId` is not a rare mistake — it is what
   // `admin.email_quota_exceeded` shipped with, and every layer below rendered
   // it faithfully all the way into the operator's inbox.
-  const idResolved = await resolveIdVariables(db, rawEnvelopeVars);
+  const idsNamed = await resolveIdVariables(db, rawEnvelopeVars);
+  // Nodes read as their alias too: `sv2.cluster.example.test` is what the host
+  // was called at install, "Secondary" is what the operator named it. Done
+  // here, once, for every emitter — node names reach notifications as
+  // variables and inside free text alike. A lookup failure keeps the names.
+  const nodeLabels = await loadNodeLabels(db).catch(() => null);
+  const idResolved = nodeLabels
+    ? { ...idsNamed, vars: aliasNodeNamesInVariables(idsNamed.vars, nodeLabels) }
+    : idsNamed;
 
   // Links, resolved once per event. `resourceType`/`resourceId` are what make
   // a tenant-scoped admin alert deep-link to THAT tenant instead of the list.

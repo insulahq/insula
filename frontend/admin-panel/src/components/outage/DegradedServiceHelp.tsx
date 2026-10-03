@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { PlugZap, X } from 'lucide-react';
 import type { ClusterOutageImpact } from '@insula/api-contracts';
+import NodeList from '@/components/nodes/NodeList';
 
 interface Props {
   readonly services: ClusterOutageImpact['degradedServices'];
@@ -69,7 +70,7 @@ export default function DegradedServiceHelp({ services, nodesDown }: Props) {
             <p className="mt-3 text-sm text-gray-700 dark:text-gray-300">
               This service has no reachable instance while{' '}
               {nodeNames.length > 0
-                ? <strong>{nodeNames.join(', ')}</strong>
+                ? <strong><NodeList names={nodeNames} /></strong>
                 : 'a node'}{' '}
               {nodeNames.length > 1 ? 'are' : 'is'} offline.
             </p>

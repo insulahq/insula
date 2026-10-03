@@ -229,6 +229,20 @@ ssh root@<worker-ip> insula host-config status   # read-only converge report
 
 ## Common tasks
 
+### Give a node a display name
+
+A node's Kubernetes name is whatever the host was called when it was installed
+(`sv2.cluster.example.test`). Give it a display name under **Cluster → Nodes → Edit →
+Display name** and the admin panel uses that name everywhere it shows the node: Monitoring,
+the dashboard, tenant placement, mail placement, node pickers, the outage banner, terminals,
+and the text of notifications, dashboard alerts and task progress. Clear the field to go
+back to the Kubernetes name.
+
+The Kubernetes name is still one hover away on every display name, and it stays wherever
+you have to type or paste it: typed confirmations, `kubectl` commands shown in the panel,
+and links. All staff roles can read display names (`GET /api/v1/admin/node-labels`);
+only admins can change them.
+
 ### Drain a node for maintenance
 
 ```bash

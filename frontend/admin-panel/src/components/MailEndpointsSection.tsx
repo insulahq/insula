@@ -16,6 +16,8 @@ import type {
   MailHealthExposureNode,
   MailUntestedNode,
 } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
+import NodeText from '@/components/nodes/NodeText';
 
 interface MailEndpointsSectionProps {
   readonly endpoints: MailEndpointSet;
@@ -41,7 +43,7 @@ export default function MailEndpointsSection({ endpoints, exposure }: MailEndpoi
       <div className="text-xs text-gray-600 dark:text-gray-400">
         Port exposure <span className="font-mono text-gray-800 dark:text-gray-200">{endpoints.mode}</span>
         {' • '}active node{' '}
-        <span className="font-mono text-gray-800 dark:text-gray-200">{endpoints.activeNode ?? 'none'}</span>
+        <span className="font-mono text-gray-800 dark:text-gray-200">{endpoints.activeNode ? <NodeName name={endpoints.activeNode} /> : 'none'}</span>
         {endpoints.activeNodeSource && <> ({ACTIVE_SOURCE_LABEL[endpoints.activeNodeSource]})</>}
         {' • '}ports <span className="font-mono">{endpoints.ports.join(', ')}</span>
       </div>
@@ -91,7 +93,7 @@ function EndpointRow({ endpoint, exposure }: { readonly endpoint: MailEndpointNo
   const v6 = addressOf(endpoint, 'ipv6');
   return (
     <tr data-testid={`mail-endpoint-${endpoint.node}`}>
-      <td className="px-3 py-1.5 font-mono text-gray-800 dark:text-gray-200">{endpoint.node}</td>
+      <td className="px-3 py-1.5 font-mono text-gray-800 dark:text-gray-200"><NodeName name={endpoint.node} /></td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{roleLabel(endpoint.roles, endpoint.active)}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{EXPOSURE_LABEL[endpoint.exposure]}</td>
       <td className="px-3 py-1.5 font-mono text-gray-700 dark:text-gray-300">{v4 ?? <span className="text-gray-400 dark:text-gray-500">none</span>}</td>
@@ -114,7 +116,7 @@ function ExposureCell({ exposure }: { readonly exposure: MailHealthExposureNode 
   return (
     <span className="inline-flex items-start gap-1 text-red-700 dark:text-red-400">
       <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-      <span>{published}/{exposure.ports.length} published — {exposure.error}</span>
+      <span>{published}/{exposure.ports.length} published — <NodeText text={exposure.error} /></span>
     </span>
   );
 }
@@ -123,13 +125,13 @@ function UntestedRow({ node }: { readonly node: MailUntestedNode }) {
   const label = node.reason === 'standby' ? 'Not tested — standby' : 'Not tested — not in cluster';
   return (
     <tr className="bg-gray-50/60 dark:bg-gray-900/20" data-testid={`mail-untested-${node.node}`}>
-      <td className="px-3 py-1.5 font-mono text-gray-500 dark:text-gray-400">{node.node}</td>
+      <td className="px-3 py-1.5 font-mono text-gray-500 dark:text-gray-400"><NodeName name={node.node} /></td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{roleLabel(node.roles, false)}</td>
       <td colSpan={4} className="px-3 py-1.5 text-gray-500 dark:text-gray-400">
         <span className="inline-flex items-start gap-1">
           <MinusCircle size={12} className="mt-0.5 shrink-0" />
           <span>
-            <span className="font-medium text-gray-600 dark:text-gray-300">{label}.</span> {node.detail}
+            <span className="font-medium text-gray-600 dark:text-gray-300">{label}.</span> <NodeText text={node.detail} />
           </span>
         </span>
       </td>

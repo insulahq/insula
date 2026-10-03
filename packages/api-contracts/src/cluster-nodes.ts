@@ -77,6 +77,19 @@ export type ClusterNodeResponse = z.infer<typeof clusterNodeSchema>;
 // PATCH body — all fields optional. `force` bypasses the safety check
 // that refuses to demote a server node which currently hosts system
 // pods (the demotion would evict them). Use with care.
+/**
+ * What the panels call a node: its alias when set, else its Kubernetes name.
+ * `hostname` (kubernetes.io/hostname) is listed because some sources name a
+ * node by it instead. GET /api/v1/admin/node-labels — readable by every staff
+ * role, unlike the full node list.
+ */
+export const nodeLabelSchema = z.object({
+  name: z.string(),
+  hostname: z.string().nullable(),
+  label: z.string(),
+});
+export type NodeLabel = z.infer<typeof nodeLabelSchema>;
+
 export const updateClusterNodeSchema = z.object({
   /**
    * Operator-friendly alias shown in the UI in place of `name`. Pass

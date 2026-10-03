@@ -26,6 +26,8 @@ import { useMailStandbyReports } from '@/hooks/use-mail-standby-reports';
 import { useQueryClient } from '@tanstack/react-query';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
 import type { NodeCandidate, StandbyReport } from '@insula/api-contracts';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 type DrState = 'healthy' | 'degraded' | 'failing-over' | 'failed-over' | 'failing-back';
 
@@ -46,6 +48,7 @@ export default function MailDrCard() {
   const failback = useMailFailback();
   const migrate = useStartMailMigration();
   const qc = useQueryClient();
+  const nodeLabel = useNodeLabel();
 
   const [draft, setDraft] = useState<{
     primaryNode: string | null;
@@ -118,6 +121,8 @@ export default function MailDrCard() {
   }
 
   const current = query.data.data;
+  // Raw on purpose — see the `mail-dr-active-node` harness hook below.
+  const kubernetesActiveNode = current.activeNode;
   const candidates = current.candidateNodes;
   const drState = current.drState as DrState;
   const badge = DR_STATE_BADGE[drState] ?? DR_STATE_BADGE.healthy;
@@ -325,9 +330,10 @@ export default function MailDrCard() {
       )}
       {/* Keep activeNode as a data attribute for the harness without
           rendering it visibly — harness Phase G4 reads it via the
-          test-id to compare against `kubectl get pod`. */}
+          test-id to compare against `kubectl get pod`, so it carries the
+          Kubernetes name, never the alias. */}
       {current.activeNode && (
-        <span data-testid="mail-dr-active-node" className="sr-only">{current.activeNode}</span>
+        <span data-testid="mail-dr-active-node" className="sr-only">{kubernetesActiveNode}</span>
       )}
 
       {/* Drift banner (2026-05-28): operator changed primary but
@@ -345,8 +351,8 @@ export default function MailDrCard() {
                 Primary changed — mail still on old node
               </div>
               <div className="mt-0.5 text-xs text-amber-800 dark:text-amber-200">
-                Configured primary is <code className="font-mono">{current.drift.primaryNode}</code>{' '}
-                but Stalwart is still running on <code className="font-mono">{current.drift.activeNode}</code>.
+                Configured primary is <code className="font-mono"><NodeName name={current.drift.primaryNode} /></code>{' '}
+                but Stalwart is still running on <code className="font-mono"><NodeName name={current.drift.activeNode} /></code>.
                 Click below to migrate now, or use the "Move mail to…" control to schedule it.
               </div>
               <button
@@ -358,7 +364,7 @@ export default function MailDrCard() {
               >
                 {(movePending || persistingPlacement)
                   ? <Loader2 size={12} className="animate-spin" />
-                  : <ArrowRight size={12} />} Migrate now to {current.drift.primaryNode}
+                  : <ArrowRight size={12} />} Migrate now to <NodeName name={current.drift.primaryNode} />
               </button>
             </div>
           </div>
@@ -378,7 +384,7 @@ export default function MailDrCard() {
             <ShieldAlert size={16} className="text-red-700 dark:text-red-300 shrink-0 mt-0.5" />
             <div className="flex-1">
               <div className="font-medium text-red-900 dark:text-red-100">
-                Migration to {current.lastFailedMigration.targetNode} failed
+                Migration to <NodeName name={current.lastFailedMigration.targetNode} /> failed
               </div>
               <div className="mt-0.5 text-xs text-red-800 dark:text-red-200">
                 <div>
@@ -388,7 +394,7 @@ export default function MailDrCard() {
                   {current.lastFailedMigration.errorMessage}
                 </code>
                 <div className="mt-1">
-                  Your declared primary is still <code className="font-mono">{current.lastFailedMigration.targetNode}</code>.
+                  Your declared primary is still <code className="font-mono"><NodeName name={current.lastFailedMigration.targetNode} /></code>.
                   Retry the migration directly below — the swap now self-heals a stuck PVC delete — or
                   resolve any underlying issue first.
                 </div>
@@ -399,11 +405,11 @@ export default function MailDrCard() {
                 disabled={movePending}
                 className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 text-xs font-medium text-white"
                 data-testid="mail-dr-retry-migration"
-                title={`Re-run the migration to ${current.lastFailedMigration.targetNode}`}
+                title={`Re-run the migration to ${nodeLabel(current.lastFailedMigration.targetNode)}`}
               >
                 {movePending
                   ? <Loader2 size={12} className="animate-spin" />
-                  : <RefreshCw size={12} />} Retry migration to {current.lastFailedMigration.targetNode}
+                  : <RefreshCw size={12} />} Retry migration to <NodeName name={current.lastFailedMigration.targetNode} />
               </button>
             </div>
           </div>
@@ -580,7 +586,7 @@ export default function MailDrCard() {
                       value={c.hostname}
                       disabled={isCurrent}
                     >
-                      {c.hostname}{role} — {bytesToGiB(c.freeDiskBytes)} GiB free
+                      {nodeLabel(c.hostname)}{role} — {bytesToGiB(c.freeDiskBytes)} GiB free
                       {isCurrent ? ' (current)' : ''}
                     </option>
                   );
@@ -605,7 +611,7 @@ export default function MailDrCard() {
           {current.activeNode && current.primaryNode && current.activeNode !== current.primaryNode && (
             <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
               <Info size={12} className="shrink-0" />
-              Currently failed-over. Pick <code className="font-mono">{current.primaryNode}</code>{' '}
+              Currently failed-over. Pick <code className="font-mono"><NodeName name={current.primaryNode} /></code>{' '}
               to fail back — auto-failover policy never triggers fail-back on its own.
             </div>
           )}
@@ -699,11 +705,11 @@ export default function MailDrCard() {
                 <div className="mt-2 space-y-2 text-sm text-gray-700 dark:text-gray-300">
                   <p>
                     Mail is currently running on{' '}
-                    <code className="font-mono font-medium">{current.activeNode}</code>.
+                    <code className="font-mono font-medium"><NodeName name={current.activeNode} /></code>.
                     Primary is changing from{' '}
-                    <code className="font-mono font-medium">{primaryChangeModal.oldPrimary ?? '(unset)'}</code>{' '}
+                    <code className="font-mono font-medium">{primaryChangeModal.oldPrimary ? <NodeName name={primaryChangeModal.oldPrimary} /> : '(unset)'}</code>{' '}
                     to{' '}
-                    <code className="font-mono font-medium">{primaryChangeModal.newPrimary}</code>.
+                    <code className="font-mono font-medium"><NodeName name={primaryChangeModal.newPrimary} /></code>.
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     Pick how to handle the mail data + Stalwart pod move:
@@ -722,7 +728,7 @@ export default function MailDrCard() {
                   >
                     <div className="font-semibold">Move now</div>
                     <div className="text-xs opacity-90 mt-0.5">
-                      Save placement AND immediately migrate Stalwart + mail data to {primaryChangeModal.newPrimary}.
+                      Save placement AND immediately migrate Stalwart + mail data to <NodeName name={primaryChangeModal.newPrimary} />.
                       Mail downtime ~5-15 min while data syncs.
                     </div>
                   </button>
@@ -739,7 +745,7 @@ export default function MailDrCard() {
                     <div className="font-semibold">Move later</div>
                     <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                       Save the new primary now; a yellow banner will remind you to migrate when convenient.
-                      Stalwart stays on {current.activeNode} until you click "Migrate now".
+                      Stalwart stays on <NodeName name={current.activeNode} /> until you click "Migrate now".
                     </div>
                   </button>
                   <button
@@ -789,6 +795,7 @@ interface NodeDropdownProps {
   readonly disabledReason?: string;
 }
 function NodeDropdown({ label, description, value, candidates, disabledValues, onChange, testId, required = false, disabled = false, disabledReason }: NodeDropdownProps) {
+  const nodeLabel = useNodeLabel();
   return (
     <div className="flex items-start gap-3">
       <div className="w-20 shrink-0">
@@ -816,7 +823,7 @@ function NodeDropdown({ label, description, value, candidates, disabledValues, o
               value={c.hostname}
               disabled={disabledValues.includes(c.hostname)}
             >
-              {c.hostname} — {c.role} — {c.ready ? 'Ready' : 'NotReady'} — {bytesToGiB(c.freeDiskBytes)} GiB free
+              {nodeLabel(c.hostname)} — {c.role} — {c.ready ? 'Ready' : 'NotReady'} — {bytesToGiB(c.freeDiskBytes)} GiB free
             </option>
           ))}
         </select>
@@ -839,7 +846,7 @@ function CandidateRow({ candidate, active }: { readonly candidate: NodeCandidate
     <div className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-xs">
       <div className={`w-2 h-2 rounded-full shrink-0 ${candidate.ready ? 'bg-green-500' : 'bg-red-500'}`} />
       <code className="font-mono font-medium text-gray-900 dark:text-gray-100 flex-1">
-        {candidate.hostname}
+        <NodeName name={candidate.hostname} />
         {active && <span className="ml-1.5 text-brand-600 dark:text-brand-400">(active)</span>}
       </code>
       <span className="rounded bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:text-gray-300">
@@ -919,7 +926,7 @@ function StandbyRow({ report }: { readonly report: StandbyReport }) {
     >
       <div className={`w-2 h-2 rounded-full shrink-0 ${dotCls}`} />
       <code className="font-mono font-medium text-gray-900 dark:text-gray-100 flex-1 truncate">
-        {report.node}
+        <NodeName name={report.node} />
       </code>
       <span className="text-gray-500 dark:text-gray-400">{sizeMiB} MiB</span>
       <span className="text-gray-500 dark:text-gray-400">{report.fileCount} files</span>
@@ -984,9 +991,9 @@ function MailRecoverSection() {
             </p>
             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
               <dt className="text-red-700 dark:text-red-400">PVC bound on:</dt>
-              <dd className="font-mono text-red-900 dark:text-red-200">{data.pvcNode ?? '(none)'}</dd>
+              <dd className="font-mono text-red-900 dark:text-red-200">{data.pvcNode ? <NodeName name={data.pvcNode} /> : '(none)'}</dd>
               <dt className="text-red-700 dark:text-red-400">System expects active:</dt>
-              <dd className="font-mono text-red-900 dark:text-red-200">{data.expectedActiveNode ?? '(unset)'}</dd>
+              <dd className="font-mono text-red-900 dark:text-red-200">{data.expectedActiveNode ? <NodeName name={data.expectedActiveNode} /> : '(unset)'}</dd>
               <dt className="text-red-700 dark:text-red-400">Pod phase:</dt>
               <dd className="font-mono text-red-900 dark:text-red-200">{data.podPhase ?? '(no pod)'}</dd>
             </dl>
@@ -1040,6 +1047,7 @@ function RecoverModal({ defaultTarget, brokenNode, candidates, onClose, onStarte
 }) {
   const [target, setTarget] = useState(defaultTarget);
   const [typed, setTyped] = useState('');
+  const nodeLabel = useNodeLabel();
 
   const handleRun = async () => {
     try {
@@ -1096,7 +1104,7 @@ function RecoverModal({ defaultTarget, brokenNode, candidates, onClose, onStarte
                     : '';
                 return (
                   <option key={c.hostname} value={c.hostname}>
-                    {c.hostname} ({c.role}{suffix})
+                    {nodeLabel(c.hostname)} ({c.role}{suffix})
                   </option>
                 );
               })}

@@ -29,6 +29,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Older `?tab=` links keep working and are rewritten to the new form, and a tab that does not
   exist opens the page on its default tab instead of "Page Not Found". The tenant Email page's
   tabs are now linkable too.
+- **Nodes are called by the name you gave them, everywhere.** A node's display name (Nodes →
+  Edit) is now what every admin page shows — Monitoring, the dashboard, tenant placement and
+  workloads, mail placement and failover, node health, security posture, the outage banner,
+  terminals and every node picker — and what notifications, dashboard alerts and task progress
+  say. A node without a display name keeps its Kubernetes name. Hover a display name to see the
+  Kubernetes name; commands to copy, typed confirmations and links keep the Kubernetes name.
 
 ### Added
 

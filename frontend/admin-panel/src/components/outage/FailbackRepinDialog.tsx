@@ -6,6 +6,8 @@ import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import type { FailbackReviewItem } from '@/hooks/use-failback-review';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 interface Props {
   readonly item: FailbackReviewItem;
@@ -31,6 +33,7 @@ export default function FailbackRepinDialog({ item, onClose }: Props) {
   const [typedName, setTypedName] = useState('');
   const queryClient = useQueryClient();
   const { data: nodesData } = useClusterNodes();
+  const nodeLabel = useNodeLabel();
 
   const candidates = (nodesData?.data ?? []).filter(
     (n) => n.statusConditions?.find((c) => c.type === 'Ready')?.status === 'True',
@@ -64,7 +67,7 @@ export default function FailbackRepinDialog({ item, onClose }: Props) {
           Change placement — {item.tenantName}
         </h2>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Currently {item.currentNode ? `pinned to ${item.currentNode}` : 'unpinned'}. This moves the
+          Currently {item.currentNode ? <>pinned to <NodeName name={item.currentNode} /></> : 'unpinned'}. This moves the
           tenant&rsquo;s volume data, so it will take time proportional to the volume size and the
           tenant may be briefly unavailable.
         </p>
@@ -80,7 +83,7 @@ export default function FailbackRepinDialog({ item, onClose }: Props) {
             <option value="">Unpinned — let the scheduler place it</option>
             {candidates.map((n) => (
               <option key={n.name} value={n.name}>
-                {n.name}
+                {nodeLabel(n.name)}
                 {n.name === item.movedFromNode ? ' (original node, now back online)' : ''}
               </option>
             ))}

@@ -20,6 +20,7 @@ import TrafficTab from '@/components/traffic/TrafficTab';
 import MailTab from '@/components/monitoring/MailTab';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
+import NodeName from '@/components/nodes/NodeName';
 
 type Tab = TabOf<'/monitoring'>;
 
@@ -618,7 +619,7 @@ function PodsTab({
                     {pod.restarts === 0 && '0'}
                   </td>
                   <td className="hidden px-4 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">
-                    {pod.node ?? '—'}
+                    {pod.node ? <NodeName name={pod.node} /> : '—'}
                   </td>
                   <td className="hidden px-4 py-3 text-xs text-gray-500 dark:text-gray-400 xl:table-cell">
                     {pod.age ? formatTime(pod.age) : '—'}

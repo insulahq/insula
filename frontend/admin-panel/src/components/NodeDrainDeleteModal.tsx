@@ -14,6 +14,8 @@ import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usag
 import type { ClusterNodeResponse, DrainImpact } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import NodeName from '@/components/nodes/NodeName';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
  * Render "free / total" CPU + RAM + Disk for a worker option in the
@@ -75,6 +77,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const drain = useDrainNode(node.name);
   const del = useDeleteNode(node.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const nodeLabel = useNodeLabel();
 
   // tenantPlacement keyed by tenantId. Values: "" (auto, default),
   // "<targetNode>" (re-pin), or "stay" (refuse to move).
@@ -175,7 +178,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       >
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700">
           <h2 id="node-drain-modal-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            Drain &amp; remove node — <span className="font-mono">{node.name}</span>
+            Drain &amp; remove node — <span className="font-mono"><NodeName name={node.name} /></span>
           </h2>
           <button
             type="button"
@@ -269,7 +272,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                 </span>
                               </td>
                               <td className="py-1.5 pr-2 font-mono text-gray-600 dark:text-gray-400">
-                                {c.currentNodeName ?? <span className="italic text-gray-400">—</span>}
+                                {c.currentNodeName ? <NodeName name={c.currentNodeName} /> : <span className="italic text-gray-400">—</span>}
                               </td>
                               <td className="py-1.5 pr-2 text-right tabular-nums">{c.workloads.length}</td>
                               <td className="py-1.5 pr-2 text-right tabular-nums">
@@ -289,7 +292,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                   <option value="">Auto (clear pin)</option>
                                   {targetNodeOptions.map((n) => (
                                     <option key={n.name} value={n.name}>
-                                      {n.name}{formatNodeAvailability(n.usage)}
+                                      {nodeLabel(n.name)}{formatNodeAvailability(n.usage)}
                                     </option>
                                   ))}
                                 </select>

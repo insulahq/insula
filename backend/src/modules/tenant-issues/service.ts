@@ -16,6 +16,7 @@
  */
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
+import { aliasNodeNames, buildNodeLabels, loadNodeLabels, nodeLabel } from '../nodes/labels.js';
 
 export type IssueSeverity = 'warning' | 'critical';
 
@@ -157,15 +158,17 @@ async function placementIssues(db: Database): Promise<TenantIssue[]> {
       JOIN tenants t ON t.id = p.tenant_id
      WHERE p.status = 'misplaced'
   `);
+  // Nodes by the operator's alias, not the name they had at install.
+  const labels = await loadNodeLabels(db).catch(() => buildNodeLabels([]));
   return (res.rows ?? []).map((r) => {
-    const where = (r.actual_nodes ?? []).join(', ') || 'another node';
-    const why = (r.reasons ?? []).join(', ');
+    const where = (r.actual_nodes ?? []).map((n) => nodeLabel(n, labels)).join(', ') || 'another node';
+    const why = aliasNodeNames((r.reasons ?? []).join(', '), labels);
     return {
       tenantId: r.tenant_id,
       kind: 'placement_misplaced',
       severity: 'warning' as const,
       objectLabel: r.name,
-      detail: `Not on its primary node ${r.primary_node ?? '—'}: ${why || `on ${where}`}`,
+      detail: `Not on its primary node ${r.primary_node ? nodeLabel(r.primary_node, labels) : '—'}: ${why || `on ${where}`}`,
       actionPath: `/tenants/${r.tenant_id}`,
       since: r.misplaced_since ? new Date(r.misplaced_since).toISOString() : null,
     };

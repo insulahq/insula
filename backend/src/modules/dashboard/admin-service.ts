@@ -3,7 +3,8 @@ import type { AdminDashboardSummary, AdminDashboardLive, AdminNode } from '@insu
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
-import { buildAdminAlerts, rankAlerts } from './alerts.js';
+import { aliasAlertSection, buildAdminAlerts, rankAlerts } from './alerts.js';
+import { loadNodeLabels } from '../nodes/labels.js';
 import {
   buildVolumeAlert, buildOrphanedPodAlert, buildOrphanedVolumeAlert, loadTenantsByNamespace,
 } from './cluster-alerts.js';
@@ -125,9 +126,10 @@ export async function buildAdminSummary(
       }, { logger }),
     ]);
 
+  const nodeLabels = await loadNodeLabels(db).catch(() => null);
   return {
     generatedAt: new Date().toISOString(),
-    alerts, tenants, backups, certificates,
+    alerts: aliasAlertSection(alerts, nodeLabels), tenants, backups, certificates,
     // WAL health needs the cluster, so the fast endpoint reports it unknown
     // rather than pretending. The live endpoint fills it in.
     database: { state: 'stale', reason: 'read on the slow refresh', observedAt: null, data: null },
@@ -643,7 +645,7 @@ export async function buildAdminLive(
     mail,
     webDefence,
     // Surfaced alongside the fast band; the UI concatenates the two.
-    clusterAlerts,
+    clusterAlerts: aliasAlertSection(clusterAlerts, await loadNodeLabels(db).catch(() => null)),
   };
 }
 

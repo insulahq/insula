@@ -293,13 +293,15 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
   const stale = staleness(node.lastSeenAt);
   // Surface alias when present, but always keep the k8s identity visible.
   const headerName = node.displayName?.trim() ? node.displayName : node.name;
+  // A confirm names the node as the operator knows it, and as kubectl does.
+  const confirmName = headerName !== node.name ? `"${headerName}" (${node.name})` : `"${node.name}"`;
 
   const cpuPct = nodePct(node.cpuRequestsMillicores ?? null, node.cpuMillicores);
   const memPct = nodePct(node.memoryRequestsBytes ?? null, node.memoryBytes);
   const subsystemBad = isSubsystemUnhealthy(subsystem);
 
   const handleDelete = () => {
-    if (!confirm(`Delete node "${node.name}" from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
+    if (!confirm(`Delete node ${confirmName} from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
     setDeleteError(null);
     deleteNodeMutation.mutate(undefined, {
       onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Delete failed'),
@@ -311,7 +313,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
   // which the backend already handles idempotently (404 from k8s is
   // treated as "already gone" and only the DB row is removed).
   const handleRemoveOrphan = () => {
-    if (!confirm(`Remove orphan node "${node.name}" from the platform inventory? This DB row has no matching Kubernetes node — only the row will be deleted.`)) return;
+    if (!confirm(`Remove orphan node ${confirmName} from the platform inventory? This DB row has no matching Kubernetes node — only the row will be deleted.`)) return;
     setDeleteError(null);
     deleteNodeMutation.mutate(undefined, {
       onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Remove failed'),
