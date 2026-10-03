@@ -31,7 +31,9 @@ vi.mock('../notifications/service.js', () => ({
 }));
 
 import {
+  describeFailingShim,
   drainResultToStatus,
+  findFailingShimPods,
   resolveDrainTimeoutSeconds,
   sanitiseReconcileError,
   waitForShimReady,
@@ -361,5 +363,45 @@ describe('waitForShimReady', () => {
       onTick: () => { throw new Error('observer kaboom'); },
     });
     expect(r.ready).toBe(true);
+  });
+});
+
+// Binding a class to a target rclone cannot open crashes the NEW shim pod at
+// startup ("Failed to create file system for combined:"); the DaemonSet stops
+// rolling there and the switch used to finish as "succeeded" (v2026.10.3-rc.2
+// VM run, an unreachable S3 endpoint bound to SYSTEM).
+describe('failing shim pods after a target switch', () => {
+  const pod = (name: string, node: string, waiting?: string, running = false) => ({
+    metadata: { name },
+    spec: { nodeName: node },
+    status: { containerStatuses: [{ state: running ? { running: {} } : { waiting: { reason: waiting } } }] },
+  });
+  const core = (items: unknown[]) => ({ listNamespacedPod: vi.fn(async () => ({ items })) });
+
+  it('finds the crash-looping pod and its node, ignoring healthy and merely-starting pods', async () => {
+    const c = core([
+      pod('shim-a', 'node-1', undefined, true),
+      pod('shim-b', 'node-2', 'CrashLoopBackOff'),
+      pod('shim-c', 'node-3', 'ContainerCreating'),
+    ]);
+    await expect(findFailingShimPods(c as never)).resolves.toEqual([
+      { pod: 'shim-b', node: 'node-2', reason: 'CrashLoopBackOff' },
+    ]);
+    expect(c.listNamespacedPod).toHaveBeenCalledWith(expect.objectContaining({ labelSelector: 'app=backup-rclone-shim' }));
+  });
+
+  it('a slow but healthy rollout has no failing pods (the switch is not failed for being slow)', async () => {
+    await expect(findFailingShimPods(core([pod('shim-a', 'node-1', 'ContainerCreating')]) as never)).resolves.toEqual([]);
+  });
+
+  it('describes the failure with the class, the nodes and what to do', () => {
+    const msg = describeFailingShim('system', [
+      { pod: 'shim-b', node: 'node-2', reason: 'CrashLoopBackOff' },
+      { pod: 'shim-d', node: 'node-1', reason: 'CrashLoopBackOff' },
+    ]);
+    expect(msg).toContain('new system backup target did not come up');
+    expect(msg).toContain('node-1, node-2');
+    expect(msg).toContain('those nodes are not running');
+    expect(msg).toMatch(/bind the previous target again/);
   });
 });

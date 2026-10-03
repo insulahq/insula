@@ -71,6 +71,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Switching a backup class to a target that cannot be reached is now reported as failed.**
+  When a backup target could not be opened (wrong endpoint, bucket or credentials), the new backup
+  shim failed to start on the first node it reached. Its rollout stopped there, and the other nodes
+  kept using the previous target. The switch was still reported as "succeeded", while the node with
+  the failing shim had no working backups. The switch now fails and names the affected nodes.
+
 - **System snapshots: the mail volume no longer offers actions that cannot work.** The mail store
   lives on storage local to its node, which the snapshot system cannot snapshot. The mail volume
   is protected by the mail backup and its standby copy instead. "Take snapshot" on it used to fail
