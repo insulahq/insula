@@ -30,6 +30,7 @@ import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } f
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
+import { isNamespaceIngressSuspended } from '../tenant-lifecycle/ingress-suspend.js';
 import {
   ensureRedirectSinkService,
   REDIRECT_SINK_SERVICE_NAME,
@@ -212,6 +213,21 @@ export async function reconcileIngress(
   tenantId: string,
   namespace: string,
 ): Promise<void> {
+  // A suspended tenant's IngressRoutes carry the suspend redirect
+  // (tenant-lifecycle/ingress-suspend.ts: marker annotation + Middleware
+  // reference). Every write below is a full REPLACE built from
+  // ingress_routes, which knows nothing about suspension — so any reconcile
+  // in the suspend window (a cert issuing, the bandwidth meter, the
+  // verification cron, an admin edit) silently put the tenant's sites back
+  // online. The check was designed in from the start and documented in
+  // ingress-suspend.ts, but nothing ever called it. Changes made while
+  // suspended apply on resume: the resume hook drops the marker BEFORE its
+  // own reconcile.
+  if (await isNamespaceIngressSuspended(k8s, namespace)) {
+    console.warn(`[ingress-reconcile] ${namespace}: tenant ingress is suspended — skipping (changes apply on resume)`);
+    return;
+  }
+
   // Get all domains for this tenant
   const tenantDomains = await db.select().from(domains).where(eq(domains.tenantId, tenantId));
   const domainIds = tenantDomains.map(d => d.id);

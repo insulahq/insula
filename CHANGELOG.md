@@ -71,6 +71,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A suspended tenant's websites stay suspended.** Suspending a tenant sends its sites to the
+  "suspended" page. But any later rebuild of that tenant's web routes removed the redirect and put
+  the sites back online. Such rebuilds happen without an operator: a certificate being issued, the
+  bandwidth meter, the hourly domain-verification check. Route rebuilds now leave a suspended
+  tenant alone. Changes made while it is suspended take effect when it is resumed.
+
 - **A newly added domain gets its HTTPS certificate served reliably.** Right after a domain was
   verified, the platform could collide with the certificate manager while both updated the same
   certificate record. When that happened, the site was left on the web server's placeholder
