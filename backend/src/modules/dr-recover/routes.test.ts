@@ -36,7 +36,7 @@ interface MockBuilder {
   then: (resolve: (rows: Row[]) => void) => void;
 }
 
-function makeMockDb(queue: readonly Row[][]): { select: () => MockBuilder } {
+function makeMockDb(queue: readonly Row[][], executeRows: Row[] = []): { select: () => MockBuilder; execute: () => Promise<{ rows: Row[] }> } {
   const results = queue.map((r) => [...r]);
   const builder: MockBuilder = {
     from: () => builder,
@@ -45,7 +45,8 @@ function makeMockDb(queue: readonly Row[][]): { select: () => MockBuilder } {
     limit: () => builder,
     then: (resolve) => resolve(results.shift() ?? []),
   };
-  return { select: () => builder };
+  // Raw SQL (the newest surviving bundle of a deleted tenant) answers from its own list.
+  return { select: () => builder, execute: async () => ({ rows: executeRows }) };
 }
 
 interface RecordedCall {
@@ -59,6 +60,8 @@ interface RecordedCall {
 interface StubOptions {
   provisionStatus?: string; // provision/status task status (default 'completed')
   execStatus?: string; // execute terminal cart status (default 'done')
+  /** Rows the raw-SQL newest-bundle lookup answers with. */
+  executeRows?: Row[];
   provisionTriggerCode?: number; // POST provision statusCode (default 202)
 }
 
@@ -101,7 +104,7 @@ async function setupApp(queue: readonly Row[][], opts: StubOptions = {}) {
   const app = Fastify({ logger: false });
   app.setErrorHandler(errorHandler);
   await app.register(fastifyJwt, { secret: JWT_SECRET });
-  app.decorate('db', makeMockDb(queue) as unknown);
+  app.decorate('db', makeMockDb(queue, opts.executeRows) as unknown);
   app.decorate('config', { KUBECONFIG_PATH: undefined });
 
   const calls: RecordedCall[] = [];
@@ -484,6 +487,18 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       expect(res.statusCode).toBe(404);
       expect(JSON.parse(res.body).error.code).toBe('TENANT_NOT_FOUND');
       expect(vi.mocked(recreateTenantFromBundle)).not.toHaveBeenCalled();
+    });
+
+    it('a tenant deleted on THIS cluster recovers from its newest surviving bundle — no id to find', async () => {
+      vi.mocked(recreateTenantFromBundle).mockResolvedValue({ residualGaps: [] });
+      const { app, adminToken } = await setupApp([[], [BUNDLE], ALL_COMPONENTS], { executeRows: [{ id: BUNDLE.id }] });
+      await app.inject({
+        method: 'POST',
+        url: recoverUrl('gone-1'),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {}, // no bundleId
+      });
+      expect(vi.mocked(recreateTenantFromBundle)).toHaveBeenCalledWith(expect.anything(), 'gone-1', BUNDLE.id, expect.anything());
     });
 
     it('re-creates from the bundle then falls through to provision + restore + reconcile', async () => {

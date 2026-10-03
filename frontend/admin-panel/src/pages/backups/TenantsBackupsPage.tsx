@@ -49,6 +49,7 @@ import TimeCell from '@/components/ui/TimeCell';
 import SnapshotDataSize from '@/components/SnapshotDataSize';
 import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressModal';
 import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
+import DeletedTenantsCard from '@/components/backups/DeletedTenantsCard';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -1274,6 +1275,7 @@ export default function TenantsBackupsPage() {
         backupsTab={
           <div className="space-y-3">
             {errorBanner}
+            <DeletedTenantsCard />
             <div className="flex items-center justify-end">
               <button
                 type="button"

@@ -205,7 +205,12 @@ export type DrRecoverAllTarget = z.infer<typeof drRecoverAllTargetSchema>;
 export const drRecoverAllSkippedSchema = z.object({
   tenantId: z.string(),
   tenantName: z.string().nullable(),
-  reason: z.enum(['no_completed_bundle', 'namespace_present']),
+  /**
+   * `deleted`: deleted on purpose (a `deleted` lifecycle transition exists). Its
+   * bundles are retained so it CAN be recovered — one by one, from Recover
+   * Tenant — never swept back in by a fleet "recover all".
+   */
+  reason: z.enum(['no_completed_bundle', 'namespace_present', 'deleted']),
   /** Status of the newest bundle of ANY status — `partial`/`failed`/null. */
   latestBundleStatus: z.string().nullable(),
   latestBundleAt: z.string().nullable(),
@@ -294,3 +299,48 @@ export const drRecoverAllResponseSchema = z.object({
   encryptionKey: drEncryptionKeyPreflightSchema,
 });
 export type DrRecoverAllResponse = z.infer<typeof drRecoverAllResponseSchema>;
+
+/** One restorable bundle of a tenant, as the Recover Tenant screen lists it. */
+export const drRecoveryBundleSchema = z.object({
+  id: z.string(),
+  /** When the capture started — "taken at". */
+  createdAt: z.string(),
+  finishedAt: z.string().nullable(),
+  status: z.string(),
+  /** `scheduled`, `admin`, `tenant`, … — who or what took it. */
+  trigger: z.string(),
+  label: z.string().nullable(),
+  /** The captured data: the sum of the components' sizes (the bundle row itself is only a manifest). */
+  sizeBytes: z.number().nonnegative(),
+  components: z.array(z.object({ component: z.string(), sizeBytes: z.number().nonnegative() })),
+  expiresAt: z.string().nullable(),
+});
+export type DrRecoveryBundle = z.infer<typeof drRecoveryBundleSchema>;
+
+/**
+ * GET /admin/dr/tenants/:tenantId/recovery-info[?bundleId=] → what is being
+ * recovered: the tenant (from its row, or — once deleted — from its bundle's
+ * manifest) and every restorable bundle.
+ */
+export const drRecoveryInfoSchema = z.object({
+  tenantId: z.string(),
+  name: z.string(),
+  deleted: z.boolean(),
+  deletedAt: z.string().nullable(),
+  /** Where the tenant facts come from: its row, the bundle manifest, or nowhere readable. */
+  source: z.enum(['live', 'bundle', 'none']),
+  /** The bundle whose manifest supplied the facts (deleted tenants). */
+  infoFromBundleId: z.string().nullable(),
+  /** Why the facts are missing, when the manifest could not be read. */
+  infoError: z.string().nullable(),
+  status: z.string().nullable(),
+  planName: z.string().nullable(),
+  storageTier: z.string().nullable(),
+  primaryNode: z.string().nullable(),
+  namespace: z.string().nullable(),
+  /** Whether that namespace exists in the cluster now; null when it could not be checked. */
+  namespacePresent: z.boolean().nullable(),
+  resources: z.object({ cpuLimit: z.number(), memoryLimit: z.number(), storageLimit: z.number() }).nullable(),
+  bundles: z.array(drRecoveryBundleSchema),
+});
+export type DrRecoveryInfo = z.infer<typeof drRecoveryInfoSchema>;

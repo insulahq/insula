@@ -29,6 +29,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A deleted tenant can be found — and recovered — by name.** Its off-site bundles are kept
+  for the deleted-tenant window so it can come back, but nothing listed it: it has no tenant
+  row, and the recover picker read the newest 50 bundles across all tenants, so a deleted
+  tenant dropped out within a night or two (and showed as an unnamed "deleted tenant" when
+  it did appear). Now **Backups → Tenants** has a **Deleted tenants — still recoverable** card
+  (name, deleted date, bundles, recoverable until, **Recover…**), **Disaster Recovery →
+  Recover Tenant** has a searchable tenant picker, shows the tenant's plan, tier, node,
+  namespace and resources (from its bundle once deleted), lists every bundle with when it was
+  taken, by what, its contents and size (choose one with a click — no ids), and a searchable
+  target-node picker; the "Tenant
+  was deleted" banner says until when it can be recovered (or that it cannot), and a recover
+  of a deleted tenant uses its newest completed bundle when none is chosen. The tenant's name
+  is recorded on its delete so it is shown later; tenants deleted before this show the slug
+  of their namespace.
+- **Recover All no longer brings back tenants deleted on purpose.** It took every tenant
+  with a bundle — and a deleted tenant's bundles are now kept, so a fleet recover would have
+  re-created every tenant deleted within the retention window. They are skipped (reason
+  `deleted`) unless named explicitly; recover one with Recover Tenant.
+
 - **Deleting a tenant returns to the tenants list.** The page used to turn into "Tenant not
   found" the moment the delete finished. The list now says the tenant was deleted and links
   its per-step record (Platform → Lifecycle hooks). A delete that fails stays on the tenant and

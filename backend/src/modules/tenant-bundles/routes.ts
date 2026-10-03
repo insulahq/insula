@@ -298,6 +298,17 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/v1/admin/tenant-bundles/:id ──────────────────────────
+  // Every tenant that can still be restored from its bundles — DELETED ones
+  // included, by name. The bundle list above is paged newest-first across all
+  // tenants; a deleted tenant's bundles fall out of its first page within a
+  // night or two, and nothing else lists a tenant that has no row.
+  app.get('/admin/tenant-bundles/recoverable-tenants', {
+    schema: { tags: ['TenantBundles'], summary: 'Tenants recoverable from their bundles, deleted ones included', security: [{ bearerAuth: [] }] },
+  }, async () => {
+    const { listRecoverableTenants } = await import('./recoverable.js');
+    return success(await listRecoverableTenants(app.db));
+  });
+
   app.get('/admin/tenant-bundles/:id', {
     schema: { tags: ['TenantBundles'], summary: 'Get bundle detail', security: [{ bearerAuth: [] }] },
   }, async (request) => {

@@ -111,3 +111,19 @@ describe('RecoverAllTab — unrecoverable tenants', () => {
     expect(screen.getByText('config, files')).toBeTruthy();
   });
 });
+
+describe('RecoverAllTab — tenants deleted on purpose', () => {
+  it('does not call it an all-clear, and lists each with a way to recover it on its own', async () => {
+    const { MemoryRouter } = await import('react-router-dom');
+    preview.data = { data: { dryRun: true, scope: 'missing', total: 0, recovered: 0, failed: 0, targets: [],
+      skipped: [skipped({ tenantId: 'gone-1', tenantName: 'MOODLE ELEARNING', reason: 'deleted', latestBundleStatus: 'completed', latestBundleAt: '2026-10-03T01:36:57.662Z' })] } };
+    render(<MemoryRouter><RecoverAllTab /></MemoryRouter>);
+    // Not "every tenant with a bundle has a live namespace" — a deleted one has none.
+    expect(screen.queryByText(/every tenant with a bundle/i)).toBeNull();
+    expect(screen.getByText(/1 tenant\(s\) deleted on purpose are not recovered here/i)).toBeTruthy();
+    const table = screen.getByTestId('dr-deleted-skips');
+    expect(table.textContent).toContain('MOODLE ELEARNING');
+    expect(screen.getByRole('link', { name: 'Recover this tenant…' }).getAttribute('href'))
+      .toBe('/backups/disaster-recovery?section=recover&tenant=gone-1');
+  });
+});

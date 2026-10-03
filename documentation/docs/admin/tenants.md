@@ -224,7 +224,7 @@ current status:
 | suspended | **Reactivate** | Restores workloads to their pre-suspend replica counts, unpatches ingress, re-enables cron and the full mail configuration (mailboxes, aliases, forwarding, auto-reply). |
 | active / suspended | **Archive** | Takes a final snapshot, then deletes the volume, workloads, and mailboxes. The tenant row and snapshot are kept for the configured retention window — restorable. |
 | archived | **Restore** | Recreates the volume and restores data from the pre-archive snapshot. (Workloads are redeployed afterwards.) |
-| any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered, then removed automatically. |
+| any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered — see [Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant) — then removed automatically. |
 
 You can drive the same transitions from the **Status** dropdown in the
 Account Information card — it's the keyboard-friendly equivalent of the

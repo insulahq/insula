@@ -20,6 +20,7 @@ import { extractOperatorError } from '@/lib/extract-operator-error';
 import type {
   DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
 } from '@insula/api-contracts';
+import { Link } from 'react-router-dom';
 
 type Scope = 'missing' | 'all';
 
@@ -42,6 +43,8 @@ export default function RecoverAllTab() {
   // `namespace_present` under scope=missing is the feature working as asked;
   // only a missing/unusable bundle is something an operator must act on.
   const unrecoverable = skipped.filter((s) => s.reason === 'no_completed_bundle');
+  // Deleted on purpose: kept recoverable, but never swept back in by a fleet run.
+  const deletedSkips = skipped.filter((s) => s.reason === 'deleted');
   const results: readonly DrRecoverAllResult[] = recover.data?.data.results ?? [];
   const summary = recover.data?.data;
   // Read from the run when there is one: a run started from a stale preview
@@ -162,6 +165,10 @@ export default function RecoverAllTab() {
             <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
               Nothing can be recovered: {unrecoverable.length} tenant(s) have no completed bundle. See below.
             </p>
+          ) : deletedSkips.length > 0 ? (
+            <p className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+              No lost tenants to recover. {deletedSkips.length} tenant(s) deleted on purpose are not recovered here — see below.
+            </p>
           ) : (
             <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
               No lost tenants to recover — every tenant with a bundle {scope === 'missing' ? 'has a live namespace.' : 'is accounted for.'}
@@ -176,6 +183,7 @@ export default function RecoverAllTab() {
           the list is non-empty — including after a run, where "recovered 9/9"
           is true and still not the whole answer. */}
       {unrecoverable.length > 0 && <UnrecoverableTable rows={unrecoverable} />}
+      {deletedSkips.length > 0 && <DeletedSkipsTable rows={deletedSkips} />}
 
       {/* execution results */}
       {summary && (
@@ -322,6 +330,42 @@ function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
  * are not degraded targets, they are tenants the operation cannot help, and
  * mixing them in is how a "12 of 15" gets read as "12 of 12".
  */
+/**
+ * Tenants deleted on purpose. Their bundles are kept so each CAN come back —
+ * one at a time, from Recover Tenant — but a fleet recover never re-creates
+ * them, and saying nothing would read as "they do not exist".
+ */
+function DeletedSkipsTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700" data-testid="dr-deleted-skips">
+      <div className="bg-gray-50 px-3 py-2 text-sm font-medium text-gray-800 dark:bg-gray-900/50 dark:text-gray-200">
+        {rows.length} tenant(s) deleted on purpose — not recovered by Recover All
+      </div>
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          <tr><th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Newest bundle</th><th className="px-3 py-2" /></tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+          {rows.map((r) => (
+            <tr key={r.tenantId}>
+              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}</td>
+              <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{r.latestBundleAt ? `${r.latestBundleAt.slice(0, 16).replace('T', ' ')} UTC` : '—'}</td>
+              <td className="px-3 py-2 text-right">
+                <Link
+                  to={`/backups/disaster-recovery?section=recover&tenant=${encodeURIComponent(r.tenantId)}`}
+                  className="text-xs font-medium text-brand-600 underline hover:text-brand-700 dark:text-brand-400"
+                >
+                  Recover this tenant…
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700" data-testid="dr-unrecoverable">

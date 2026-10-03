@@ -174,7 +174,7 @@ export default function TenantDetail() {
       if (shownIdRef.current !== deletingId) return;
       setTxModal(null);
       setDeleteOpen(false);
-      const state: TenantDeletedState = { deletedTenant: { name: tenant?.name ?? 'Unknown' } };
+      const state: TenantDeletedState = { deletedTenant: { name: tenant?.name ?? 'Unknown', id: deletingId } };
       navigate('/tenants/list', { replace: true, state });
     } catch (err) {
       // Nothing was deleted: drop the "Dispatching…" modal and let the
