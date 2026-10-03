@@ -83,7 +83,7 @@ describe('podNamesFromJobEvents', () => {
 
 describe('summariseWarningEvents', () => {
   const multiAttach = 'Multi-Attach error for volume "pvc-1" Volume is already used by pod(s) app-1';
-  it('keeps one line per reason about the Job and its pods, oldest cause first', () => {
+  it('keeps one line per distinct event about the Job and its pods, oldest cause first', () => {
     expect(summariseWarningEvents([
       { type: 'Warning', reason: 'FailedMount', message: 'Unable to attach or mount volumes: timed out', involvedObject: { kind: 'Pod', name: POD }, lastTimestamp: '2026-01-01T00:10:00Z' },
       { type: 'Warning', reason: 'FailedAttachVolume', message: multiAttach, involvedObject: { kind: 'Pod', name: POD }, lastTimestamp: '2026-01-01T00:01:00Z' },
@@ -96,6 +96,37 @@ describe('summariseWarningEvents', () => {
       `FailedAttachVolume: ${multiAttach}`,
       'FailedMount: Unable to attach or mount volumes: timed out',
     ]);
+  });
+
+  it('keeps every distinct message of a reason — the informative one is not always the latest', () => {
+    // The events a DEV probe Job produced for an unpullable image: three
+    // `Failed` warnings with tied timestamps. Keeping one per reason kept
+    // "Error: ErrImagePull" and dropped the line that names the image.
+    const pulled = 'Failed to pull image "registry.example.test/x:nope": not found';
+    const ev = (message: string, first: string, last: string) => ({
+      type: 'Warning', reason: 'Failed', message, involvedObject: { kind: 'Pod', name: POD },
+      firstTimestamp: first, lastTimestamp: last,
+    });
+    expect(summariseWarningEvents([
+      ev('Error: ImagePullBackOff', '2026-01-01T00:00:30Z', '2026-01-01T00:00:59Z'),
+      ev(pulled, '2026-01-01T00:00:29Z', '2026-01-01T00:01:12Z'),
+      ev('Error: ErrImagePull', '2026-01-01T00:00:29Z', '2026-01-01T00:01:12Z'),
+    ], JOB, new Set([POD]))).toEqual([
+      `Failed: ${pulled}`,
+      'Failed: Error: ErrImagePull',
+      'Failed: Error: ImagePullBackOff',
+    ]);
+  });
+
+  it('treats retries that differ only in the generated pod name as one event', () => {
+    // The Job controller retries a refused pod create under a new random name
+    // each time; without normalising, one quota block fills every line.
+    const refused = (suffix: string) => ({
+      type: 'Warning', reason: 'FailedCreate', involvedObject: { kind: 'Job', name: JOB },
+      message: `Error creating: pods "${JOB}-${suffix}" is forbidden: exceeded quota: q, requested: pods=1`,
+    });
+    expect(summariseWarningEvents([refused('aaaaa'), refused('bbbbb'), refused('ccccc')], JOB, new Set()))
+      .toEqual([`FailedCreate: Error creating: pods "${JOB}-…" is forbidden: exceeded quota: q, requested: pods=1`]);
   });
 
   it('caps a long message', () => {

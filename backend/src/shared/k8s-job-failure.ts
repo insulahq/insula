@@ -51,6 +51,7 @@ export interface EventLite {
   readonly reason?: string;
   readonly message?: string;
   readonly involvedObject?: { readonly kind?: string; readonly name?: string };
+  readonly firstTimestamp?: Date | string;
   readonly lastTimestamp?: Date | string;
   readonly eventTime?: Date | string;
 }
@@ -68,11 +69,23 @@ export interface JobFailureDescription {
   readonly details: readonly string[];
 }
 
-const MAX_EVENT_LINES = 3;
+const MAX_EVENT_LINES = 4;
 const MAX_EVENT_MESSAGE = 300;
 const MAX_TEXT = 1000;
 /** Reasons already carried by the Job condition. */
 const CONDITION_ECHOES = new Set(['DeadlineExceeded', 'BackoffLimitExceeded']);
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Matches the pod names the Job controller generates: the Job name, cut to the
+ * 58 characters `generateName` keeps, plus five random characters.
+ */
+function generatedPodNameRe(jobName: string): RegExp {
+  return new RegExp(`${escapeRegExp(jobName.slice(0, 58))}-?[a-z0-9]{5}\\b`, 'g');
+}
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -125,36 +138,44 @@ export function podNamesFromJobEvents(events: readonly EventLite[], jobName: str
   return [...names];
 }
 
-function eventTimeMs(e: EventLite): number {
-  const t = e.lastTimestamp ?? e.eventTime;
+/** When the event was first seen (series events carry only eventTime). */
+function firstSeenMs(e: EventLite): number {
+  const t = e.firstTimestamp ?? e.eventTime ?? e.lastTimestamp;
   const ms = t instanceof Date ? t.getTime() : typeof t === 'string' ? Date.parse(t) : NaN;
   return Number.isFinite(ms) ? ms : 0;
 }
 
 /**
- * Warning events about the Job and its pods — one line per reason, ordered by
- * when that reason was last seen, earliest first (the first cause usually
- * explains the rest). Pure.
+ * Warning events about the Job and its pods — one line per distinct message,
+ * earliest first (the first cause usually explains the rest). Per MESSAGE, not
+ * per reason: kubelet reports an unpullable image as three `Failed` events with
+ * the same timestamps, and the one that names the image is not the latest.
+ * Ties go to the longer, more specific message. A refused pod create is retried
+ * under a new generated name each time, so those names are folded first —
+ * otherwise one quota block fills every line. Pure.
  */
 export function summariseWarningEvents(
   events: readonly EventLite[],
   jobName: string,
   podNames: ReadonlySet<string>,
 ): string[] {
-  const latest = new Map<string, EventLite>();
+  const generated = generatedPodNameRe(jobName);
+  const distinct = new Map<string, { readonly e: EventLite; readonly text: string }>();
   for (const e of events) {
     if (e.type !== 'Warning' || !e.reason || !e.message) continue;
     const obj = e.involvedObject;
     const ours = (obj?.kind === 'Pod' && podNames.has(obj.name ?? ''))
       || (obj?.kind === 'Job' && obj.name === jobName);
     if (!ours || CONDITION_ECHOES.has(e.reason)) continue;
-    const prev = latest.get(e.reason);
-    if (!prev || eventTimeMs(e) >= eventTimeMs(prev)) latest.set(e.reason, e);
+    const text = e.message.trim().replace(generated, `${jobName}-…`);
+    const key = `${e.reason}\u0000${text}`;
+    const prev = distinct.get(key);
+    if (!prev || firstSeenMs(e) < firstSeenMs(prev.e)) distinct.set(key, { e, text });
   }
-  return [...latest.values()]
-    .sort((a, b) => eventTimeMs(a) - eventTimeMs(b))
+  return [...distinct.values()]
+    .sort((a, b) => firstSeenMs(a.e) - firstSeenMs(b.e) || b.text.length - a.text.length)
     .slice(0, MAX_EVENT_LINES)
-    .map((e) => `${e.reason}: ${clip(e.message!.trim(), MAX_EVENT_MESSAGE)}`);
+    .map(({ e, text }) => `${e.reason}: ${clip(text, MAX_EVENT_MESSAGE)}`);
 }
 
 async function listOrEmpty(read: () => Promise<{ items?: unknown[] }>): Promise<unknown[]> {
