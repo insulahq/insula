@@ -150,7 +150,10 @@ buttons (below). Underneath are several cards and a tabbed resource view.
     - **Move back to &lt;primary&gt;** re-pins the tenant to its primary node
       and restarts its workloads there. Longhorn then copies the tenant's data
       back — the tenant restarts now, and the copy takes as long as the volume
-      is large.
+      is large. A tenant with nothing running (no app, file manager idle) has
+      no workload to carry its data, so the platform attaches its volume on the
+      primary node itself until the copy is done; the result line says
+      **Moving the data there now**, and the banner clears once it has.
     - **Make &lt;current node&gt; the primary node** accepts where it is: the
       workloads restart once on the same node to pick up the new pin, and no
       data is copied.
@@ -221,7 +224,7 @@ current status:
 | suspended | **Reactivate** | Restores workloads to their pre-suspend replica counts, unpatches ingress, re-enables cron and the full mail configuration (mailboxes, aliases, forwarding, auto-reply). |
 | active / suspended | **Archive** | Takes a final snapshot, then deletes the volume, workloads, and mailboxes. The tenant row and snapshot are kept for the configured retention window — restorable. |
 | archived | **Restore** | Recreates the volume and restores data from the pre-archive snapshot. (Workloads are redeployed afterwards.) |
-| any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, backup bundles, volumes, cluster-scoped refs). Irreversible. |
+| any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered, then removed automatically. |
 
 You can drive the same transitions from the **Status** dropdown in the
 Account Information card — it's the keyboard-friendly equivalent of the
@@ -231,7 +234,10 @@ buttons.
     **Archive** is the safe choice when a customer leaves but might come
     back — their data survives as a snapshot. **Delete** is permanent and
     triggers full cleanup. The Delete button opens a type-to-confirm
-    dialog.
+    dialog. Once the delete succeeds you are taken back to the tenants list,
+    which confirms it; **Review the deletion steps** there opens
+    **Platform → Lifecycle hooks**, where the per-step record outlives the
+    tenant. A delete that fails keeps you on the tenant and says why.
 
 ### Watching a transition: the progress modal
 

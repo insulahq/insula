@@ -183,8 +183,8 @@ that feature in the webmail UI.
 
 - **Placement & migration** — the mail-server placement and **disaster
   recovery** card: failover, failback, migrate to another node, and
-  standby data-freshness. Port exposure is tucked behind an "Advanced
-  (debugging only)" collapsible — the default (`allServerNodes`) is
+  standby data-freshness. Below it, the **Mail Port Exposure** card shows
+  how the mail ports are published — the default (`allServerNodes`) is
   correct for almost everyone.
 - **Backups** — the **mail archive** (Stalwart-native `stalwart -e` LZ4
   export — a whole-server point-in-time export, good for DR drills and

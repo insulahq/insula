@@ -12,6 +12,40 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Notifications about several things list them — one item each, on every channel.** A
+  notification naming several tenants, mailboxes, failed checks, volumes or pods now shows each
+  as its own list item: a bulleted list in the email, one `•` line per item in the in-app feed
+  and on the phone (ntfy). Before, they were run together into one paragraph ("Acme: … Beta: …
+  SYSTEM: …"). Covers tenant placement and storage failovers, expiring subscriptions, mailboxes
+  over quota, unread-notification escalations, top sending accounts, node memory events (one
+  item per evicted pod), namespace repairs, upgrade gates, mail data drift, failed DNS checks,
+  failed backup components, failing mail-health probes, storage-policy failures and node
+  conditions. Template authors get a `list` variable type that renders this way by itself;
+  your own edited templates keep working (a list still renders where `{{name}}` sits).
+- **Email → Operations: Mail Port Exposure is always shown** under the placement card instead
+  of behind an "Advanced (debugging only)" fold.
+
+### Fixed
+
+- **Deleting a tenant returns to the tenants list.** The page used to turn into "Tenant not
+  found" the moment the delete finished. The list now says the tenant was deleted and links
+  its per-step record (Platform → Lifecycle hooks). A delete that fails stays on the tenant and
+  shows why — it used to fail silently with the progress dialog stuck on "Dispatching…".
+- **"Move back" moves a stopped tenant's data.** For a tenant with nothing running it only
+  re-pinned the tenant and restarted zero workloads, so its data never moved and the tenant
+  stayed "Not on its primary node" however often it was pressed. The platform now attaches the
+  volume on the primary node itself until Longhorn has copied the data there, and the result
+  says so ("Moving the data there now") instead of "restarted 0 deployment(s)".
+- **Placement notifications say when the platform first saw a tenant away from its primary
+  node** ("seen since …") — not "since", which read as when the data moved.
+- **The host-ports PodSecurity notification is no longer empty** — it named the object "event"
+  with no detail; it now lists the namespaces that were not updated.
+- **A failed scheduled-bundle wave names every failed tenant**, not just "N/M failed (first
+  error: …)".
+- **Mail data-drift alerts arrive once**, not once per admin.
+
 ## [2026.10.3] - 2026-10-03
 
 ### BREAKING

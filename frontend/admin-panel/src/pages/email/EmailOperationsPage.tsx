@@ -59,17 +59,10 @@ export default function EmailOperationsPage() {
         {tab === 'placement' && (
           <div className="space-y-4">
             <MailDrCard />
-            {/* Port exposure as Advanced collapsible — allServerNodes is
-                the default since Phase 2. Toggle retained for debugging
-                single-node installs but rarely needed. */}
-            <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-              <summary className="cursor-pointer px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
-                Advanced — port exposure (debugging only)
-              </summary>
-              <div className="border-t border-gray-200 dark:border-gray-700 p-4">
-                <MailPortExposureCard />
-              </div>
-            </details>
+            {/* Always visible: which nodes publish the mail ports is part of
+                placement, and an operator should not have to know to open a
+                "debugging only" fold to see it (operator request). */}
+            <MailPortExposureCard />
           </div>
         )}
 
