@@ -4661,11 +4661,17 @@ scenario_mail_migration_fixes() {
   # Clean up the platform-fired Job so repeated runs stay tidy.
   ssh_cp "kubectl -n mail delete jobs -l stalwart-snapshot-trigger=manual --wait=false" >/dev/null 2>&1 || true
   # Put the operator's schedule toggle back (the scenario enabled it).
+  local _en_ok=1
   if [[ "${orig_enabled:-}" == "false" ]]; then
-    api_raw PATCH /admin/backups/schedules/mail '{"enabled":false}' >/dev/null 2>&1 \
-      || log "PART A: could not restore enabled=false on the mail schedule — set it back in Backups → Schedules"
+    local _en_code
+    _en_code=$(api_raw PATCH /admin/backups/schedules/mail '{"enabled":false}' 2>/dev/null | tail -1)
+    if [[ "$_en_code" != 2* ]]; then
+      _en_ok=0
+      log "PART A: restoring enabled=false returned HTTP ${_en_code:-none} — cleanup() retries it at exit"
+    fi
   fi
-  rm -f /tmp/integration.mail_schedule_restore
+  # Disarm cleanup()'s safety net only once the operator's state is really back.
+  [[ "$_en_ok" == "1" ]] && rm -f /tmp/integration.mail_schedule_restore
 
   # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──
   log "mail-migration-fixes: PART B — silent-loss guard does NOT brick a healthy migration"
