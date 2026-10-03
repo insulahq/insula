@@ -52,6 +52,7 @@
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
 | [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
+| [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 
 ---
 
@@ -2009,4 +2010,21 @@ actually leave:
 
 Ship 1 and 3 first if 2 slips: even an honest "unattributed" row beats a gap
 with no label.
+
+## R41 — Failover and restore guards left open by the v2026.10.3 cycle
+
+Found by review while fixing the v2026.10.3-rc.4 VM findings; deliberately not changed late in the
+release.
+
+- **A system-snapshot restore of a Flux-managed Deployment can lose a race with Flux.** The restore
+  scales the consuming Deployment (vmsingle, CrowdSec) to 0, reverts the Longhorn volume, then
+  scales back. A Flux drift reconcile (interval 5 min) landing inside that window re-applies the
+  replica count from git while the revert runs. `platform-storage-policy` already re-asserts its
+  own scaling against Flux in a loop; the restore does a one-shot scale. Fix: hold the
+  Deployment at 0 for the window (same re-assertion pattern), or suspend reconciliation of that
+  one object.
+- **The manual mail failover / failback / migrate routes do not apply the dr-watcher's
+  own-node guard.** A request served by a replica whose node lost k3s would run the state machine
+  without API access. Low risk: that pod is marked not-ready and leaves the Service endpoints, so
+  requests rarely reach it.
 

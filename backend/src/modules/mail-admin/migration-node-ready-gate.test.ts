@@ -95,4 +95,18 @@ describe('waitForTargetNodeReady', () => {
     const core = { readNode } as unknown as AnyCore;
     expect(await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 5, pollMs: 1, maxConsecutiveApiFailures: 3, log: SILENT })).toEqual({ ok: true });
   });
+
+  it('without an explicit limit (planned migration/failback) API errors are ridden out for the whole window', async () => {
+    const readNode = vi.fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue(node({ ready: true }));
+    const core = { readNode } as unknown as AnyCore;
+    expect(await waitForTargetNodeReady(core, 'staging3', { timeoutSeconds: 5, pollMs: 1, log: SILENT })).toEqual({ ok: true });
+  });
 });

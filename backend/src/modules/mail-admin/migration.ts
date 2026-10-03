@@ -551,7 +551,7 @@ export async function triggerRestoreBasedFailover(
       ...deps,
       kubeconfigPath: deps.kubeconfigPath,
       logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
-    } as MigrationDeps, undefined, { skipFreshSnapshot: true });
+    } as MigrationDeps, undefined, { skipFreshSnapshot: true, abortOnApiLoss: true });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Retried: if this write is lost the run stays 'running', which blocks
@@ -587,6 +587,15 @@ export async function triggerRestoreBasedFailover(
 // ── State machine internals ───────────────────────────────────────────────────
 
 export interface MigrationOptions {
+  /**
+   * Give up the target-node wait after a few consecutive failed API reads
+   * instead of the full timeout. Only the DR watcher's failover sets it: there
+   * the likely cause is THIS replica being cut off (its node lost k3s), and a
+   * healthy replica retries within a tick. A planned migration or failback
+   * keeps riding out a control-plane hiccup for the whole window.
+   */
+  readonly abortOnApiLoss?: boolean;
+
   /**
    * Skip step 2 (pre-migration restic backup). Used by:
    *   - DR caller — source is dead, can't snapshot anyway.
@@ -1016,7 +1025,11 @@ async function runMigrationStateMachine(
   // pinned this on the runs (pvc=Pending vol=<unbound>, NodeNotReady,
   // untolerated taint). Data-safe: nothing has been torn down yet, so a target that
   // never comes Ready fails the migration cleanly. No-op for an already-Ready target.
-  const nodeReady = await waitForTargetNodeReady(core, targetNode, { timeoutSeconds: 300, log });
+  const nodeReady = await waitForTargetNodeReady(core, targetNode, {
+    timeoutSeconds: 300,
+    log,
+    ...(opts.abortOnApiLoss ? { maxConsecutiveApiFailures: 6 } : {}),
+  });
   if (!nodeReady.ok) {
     await failRun(db, runId, nodeReady.reason, taskId);
     return;
@@ -2653,8 +2666,9 @@ export async function waitForTargetNodeReady(
   const pollMs = opts.pollMs ?? 5_000;
   // A node that is slow to come back still ANSWERS readNode (Ready=False);
   // only this replica losing the API makes every read fail. Waiting out the
-  // full timeout then only delays the retry by a healthy replica.
-  const maxApiFailures = opts.maxConsecutiveApiFailures ?? 6;
+  // full timeout then only delays the retry by a healthy replica — so the DR
+  // caller asks for an early exit. Default: none (ride out the whole window).
+  const maxApiFailures = opts.maxConsecutiveApiFailures ?? Number.POSITIVE_INFINITY;
   let apiFailures = 0;
   const RECOVERY_TAINTS = new Set(['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable']);
   const deadline = Date.now() + timeoutSeconds * 1000;
