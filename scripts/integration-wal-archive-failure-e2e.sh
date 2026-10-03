@@ -181,6 +181,10 @@ TEST_TID=""
 ORIG_SYSTEM=""
 cleanup() {
   phase "Cleanup"
+  # A long run (several CNPG restarts) can outlive the 30-min access token, and
+  # the SYSTEM-binding restore below must not silently 401.
+  local _prev_token="$TOKEN"
+  login >/dev/null 2>&1 || TOKEN="$_prev_token"
   # Off the dead target + delete the test config via the API if we still have a token.
   if [[ -n "$TOKEN" ]]; then
     api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true

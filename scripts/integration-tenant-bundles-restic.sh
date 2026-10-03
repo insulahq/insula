@@ -225,9 +225,11 @@ print(json.dumps({
   'enabled': True,
 }))
 ")" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else print(json.dumps(r))')
-  case "$EXISTING_CFG" in
-    *-*-*-*-*) CREATED_CFG="$EXISTING_CFG" ;;
-  esac
+  # Only a bare UUID is "the config this run created" — an error envelope can
+  # contain hyphenated ids too, and must never mark someone else's row for delete.
+  if [[ "$EXISTING_CFG" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    CREATED_CFG="$EXISTING_CFG"
+  fi
   fi
 fi
 echo "  config id: $EXISTING_CFG"

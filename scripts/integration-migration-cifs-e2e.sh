@@ -65,6 +65,12 @@ restore() {
 TEMP_CIFS_ID=""
 drop_temp_cifs() {
   [[ -z "$TEMP_CIFS_ID" ]] && return 0
+  # restore() is best-effort: if the tenant class is STILL on the temporary
+  # target, deleting it would strand the binding and break tenant backups.
+  if [[ "$(tenant_binding)" == "$TEMP_CIFS_ID" ]]; then
+    echo "  WARNING: tenant class still bound to temporary CIFS target $TEMP_CIFS_ID — NOT deleting it; rebind the tenant class, then remove it in Backups → Targets" >&2
+    return 0
+  fi
   local t code; t=$(tok)
   code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" -X DELETE "$API/admin/backup-configs/$TEMP_CIFS_ID" \
     -H "Authorization: Bearer $t" 2>/dev/null)
