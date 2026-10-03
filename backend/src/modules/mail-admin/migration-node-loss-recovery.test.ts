@@ -70,7 +70,7 @@ describe('notifyAdminsMailDataLoss (loud alert on availability cutover)', () => 
     return { db, inserted };
   }
 
-  it('inserts an error-level notification for every admin, linked to the migration run', async () => {
+  it('inserts an error-level notification for every admin, named by the dead node', async () => {
     const { db } = makeDb(['admin-1', 'admin-2']);
     await notifyAdminsMailDataLoss(db, 'run-xyz', 'staging1', '1 domain missing (ids: ce)');
 
@@ -82,8 +82,10 @@ describe('notifyAdminsMailDataLoss (loud alert on availability cutover)', () => 
     expect(subsystem).toBe('mail');
     const p = payload as Record<string, string>;
     expect(p.severityLabel.toLowerCase()).toContain('data loss');
-    expect(p.objectLabel).toContain('run-xyz');
+    // Named by the node. The run id is not a name: the dispatcher would have
+    // printed "(unnamed)" in its place.
     expect(p.objectLabel).toContain('staging1');
+    expect(p.objectLabel).not.toContain('run-xyz');
     expect(p.detail).toContain('1 domain missing (ids: ce)');
   });
 

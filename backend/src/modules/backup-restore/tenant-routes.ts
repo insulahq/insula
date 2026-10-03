@@ -63,6 +63,7 @@ import { createSnapshot, restoreSnapshot, waitForSnapshotReady } from '../tenant
 import { runBundle } from '../tenant-bundles/orchestrator.js';
 import { resolveShimBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { resolveDirectStoreForBundle } from './shared.js';
+import { tenantVisibleText } from '../../shared/operator-only-text.js';
 import { backupConfigurations, backupTargetAssignments, hostingPlans } from '../../db/schema.js';
 
 /**
@@ -74,14 +75,13 @@ import { backupConfigurations, backupTargetAssignments, hostingPlans } from '../
  *
  * Security review HIGH: pod logs tailed into `last_error`
  * by `waitForJob` can contain credential challenges, internal URLs
- * with tokens (curl error messages), or master-user identities.
- * Truncating at `; logs: ` is sufficient because the orchestrator
- * uses that exact prefix in mailboxes.ts.
+ * with tokens (curl error messages), or master-user identities; the
+ * Job-failure diagnosis names nodes, pods and raw Kubernetes events.
+ * Both sit behind the markers in shared/operator-only-text.ts, which
+ * every Job watcher uses — cut there, never at a hand-written index.
  */
 export function sanitizeTenantVisibleError(raw: string | null): string | null {
-  if (!raw) return raw;
-  const logsIdx = raw.indexOf('; logs:');
-  return logsIdx >= 0 ? raw.slice(0, logsIdx) : raw;
+  return raw ? tenantVisibleText(raw) : raw;
 }
 
 /**

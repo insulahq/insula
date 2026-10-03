@@ -35,6 +35,7 @@ import { restoreItems, restoreJobs, tenants, backupComponents, deployments, cata
 import { ApiError } from '../../../shared/errors.js';
 import { scaleDeploymentReplicas } from '../../../shared/scale-deployment.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
 import {
@@ -525,7 +526,7 @@ export async function waitForJob(
         const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
         if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
       } catch { /* ignore */ }
-      const msg = failed?.message ?? 'Job failed';
+      const msg = formatJobFailure(await describeJobFailure(k8s.core, namespace, jobName, status.conditions), []);
       throw new Error(`files-paths Job ${jobName} failed: ${msg}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {

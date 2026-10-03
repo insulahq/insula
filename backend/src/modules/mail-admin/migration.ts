@@ -862,7 +862,8 @@ export async function notifyAdminsMailDataLoss(
     const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
     await notifyAdminOperationalEvent(db, 'mail', {
       subsystem: 'Mail failover',
-      objectLabel: `run ${runId} (from dead node ${sourceNode})`,
+      // Named by its node: a run id is not a name the dispatcher can resolve.
+      objectLabel: `from dead node ${sourceNode}`,
       detail:
         `Mail failed over from the DEAD node ${sourceNode} to the freshest available backup, `
         + `but that backup was incomplete: ${reason}. Mail is UP, but data created just before the `
@@ -1935,7 +1936,7 @@ async function runMigrationStateMachine(
       const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
       await notifyAdminOperationalEvent(db, 'mail', {
         subsystem: 'Mail master-password rotation',
-        objectLabel: `run ${runId} (node ${targetNode})`,
+        objectLabel: `after migration to node ${targetNode}`,
         detail:
           `Mail migration to ${targetNode} succeeded, but the post-migration auto-rotate `
           + `of the Stalwart master password failed: ${errMsg.slice(0, 200)}. `

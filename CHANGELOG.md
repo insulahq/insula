@@ -76,6 +76,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   replaced while the probe was waiting, every later attempt went to a pod that no longer existed.
   After 10 minutes the install stopped with "refusing to bootstrap", although the mail server was
   fine. Bootstrap now picks a running pod on every attempt.
+- **A tenant backup no longer fails because its capture pod was sent to the wrong node.** When a
+  tenant's file manager was pinned to a node other than the one holding its volume, the nightly
+  backup started the file manager, which could not mount the volume, and then pinned the files
+  capture to that same node. The capture never started and the bundle ended `partial` after its
+  30-minute deadline. Backup, restore and file-manager pods now follow the node Longhorn reports
+  the volume attached to; a pod that is still pending no longer counts as evidence.
+- **A failed backup or restore Job now says why.** Instead of "Job failed", the error gives the
+  Kubernetes reason (for example "DeadlineExceeded") and, for operators, which pod never started,
+  on which node, and the warning events that explain it (such as a volume already attached
+  elsewhere). Tenants see only the reason. The SQLite pre-dump and the predump cleanup now log
+  when the file manager cannot be reached instead of skipping silently.
+- **Notifications no longer name things "(unnamed)".** A failed backup mailed operators "Tenant
+  backup: bkp-(unnamed)": the bundle id was used as its name. Backups are now named by when they
+  ran ("run of 2026-01-15 02:00 UTC") or their label. Restore-cart failures, mail failover and
+  master-password rotation alerts, lifecycle-hook failures and the legacy email greeting had the
+  same fault and are fixed too.
 
 - **Switching a backup class to a target that cannot be reached is now reported as failed.**
   When a backup target could not be opened (wrong endpoint, bucket or credentials), the new backup

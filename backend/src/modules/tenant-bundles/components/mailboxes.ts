@@ -67,6 +67,7 @@ import { sql, eq } from 'drizzle-orm';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../../db/index.js';
 import { tailJobLog, readJobLogTail } from '../../storage-lifecycle/job-log-tail.js';
+import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
 import { readJobToleratingEarlyAbsence, type JobReader } from '../../../shared/k8s-job-wait.js';
 import {
   getMailboxBackupEngine,
@@ -496,7 +497,8 @@ async function waitForJob(
         const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
         if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
       } catch { /* ignore */ }
-      throw new Error(`mailboxes-component Job ${jobName} failed: ${failed?.message ?? 'unknown'}${logTail}`);
+      const msg = formatJobFailure(await describeJobFailure(k8s.core, namespace, jobName, status.conditions), []);
+      throw new Error(`mailboxes-component Job ${jobName} failed: ${msg}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`mailboxes-component Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);

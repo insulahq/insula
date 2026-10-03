@@ -68,6 +68,7 @@ import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../.
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
+import { bundleNotificationLabel, notificationErrorText } from './notification-label.js';
 import { CURRENT_REPO_LAYOUT, normaliseRepoLayout, resolveBundleRepoLayout } from './repo-layout.js';
 
 export interface OrchestratorDeps {
@@ -182,6 +183,9 @@ export async function runBundle(
   const globalMaxInFlight = v2Settings?.globalMaxInFlight ?? 0;
 
   // Insert the backup_jobs row in `pending`.
+  const startedAt = new Date();
+  // What notifications call this bundle — never its id (see notification-label.ts).
+  const bundleLabel = bundleNotificationLabel({ label: input.label ?? null, startedAt });
   const newJob: NewBackupJob = {
     id: bundleId,
     tenantId: input.tenantId,
@@ -200,7 +204,7 @@ export async function runBundle(
     repoLayout: CURRENT_REPO_LAYOUT,
     retentionDays: input.retentionDays,
     expiresAt: input.retentionDays > 0 ? addDays(new Date(), input.retentionDays) : null,
-    startedAt: new Date(),
+    startedAt,
   };
   await deps.db.insert(backupJobs).values(newJob);
 
@@ -842,16 +846,13 @@ export async function runBundle(
     if (!isDataExport) {
       try {
         const niceSize = `${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured`;
-        // Strip operator-only `; logs: <pod-stderr>` suffix per
-        // error string. The route-layer sanitizer at
-        // tenant-routes.ts:sanitizeTenantVisibleError applies the
-        // same rule to API responses — we mirror it here so
-        // notification bodies stay safe.
-        const stripLogs = (s: string): string => {
-          const i = s.indexOf('; logs:');
-          return i >= 0 ? s.slice(0, i) : s;
-        };
-        const errSlice = errors.map(stripLogs).join('; ').slice(0, 500);
+        // Cut per audience: a tenant gets the headline (the same cut
+        // tenant-routes.ts:sanitizeTenantVisibleError applies to the API),
+        // an operator also gets the diagnosis — never the pod logs. Both drop
+        // the Job/pod names carrying the bundle id, which the dispatcher would
+        // otherwise render as "(unnamed)".
+        const errTenant = notificationErrorText(errors, bundleId, 'tenant');
+        const errOperator = notificationErrorText(errors, bundleId, 'operator');
         const initiatorLabel =
           input.initiator === 'system' ? 'Scheduled' :
           input.initiator === 'tenant' ? 'On-demand' :
@@ -873,9 +874,9 @@ export async function runBundle(
             const { notifyTenantBackupEvent } = await import('../notifications/events.js');
             await notifyTenantBackupEvent(deps.db, input.tenantId, {
               subsystem: `${initiatorLabel} backup`,
-              objectLabel: bundleId,
+              objectLabel: bundleLabel,
               detail: failed
-                ? `The backup did not complete fully: ${errSlice}.`
+                ? `The backup did not complete fully: ${errTenant}.`
                 : `The backup completed (${niceSize}).`,
               severityLabel: failed ? 'failed' : 'completed',
               recommendedAction: failed ? 'Re-run the backup from the Backups page.' : '',
@@ -893,8 +894,8 @@ export async function runBundle(
             const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
             await notifyAdminOperationalEvent(deps.db, 'database', {
               subsystem: 'Tenant backup',
-              objectLabel: `${bundleId} (tenant ${input.tenantId})`,
-              detail: `${initiatorLabel} bundle did not complete: ${errSlice}.`,
+              objectLabel: `${bundleLabel} (tenant ${input.tenantId})`,
+              detail: `${initiatorLabel} bundle did not complete: ${errOperator}.`,
               severityLabel: 'failed',
               recommendedAction: 'Inspect the bundle on the tenant\'s Backups tab.',
             }, `tenant-bundle-failed:${bundleId}`);
@@ -928,17 +929,12 @@ export async function runBundle(
       });
       if (failed) {
         try {
-          // Strip `; logs: <pod-stderr>` suffix per error string
-          // (matches the orchestrator-side fan-out sanitizer above).
-          const stripLogs = (s: string): string => {
-            const i = s.indexOf('; logs:');
-            return i >= 0 ? s.slice(0, i) : s;
-          };
-          const safeErrText = errors.map(stripLogs).join('; ').slice(0, 4096);
+          // Same reader wording as the fan-out above.
+          const safeErrText = notificationErrorText(errors, bundleId, 'tenant', 4096);
           const { notifyTenantBackupEvent } = await import('../notifications/events.js');
           await notifyTenantBackupEvent(deps.db, input.tenantId, {
             subsystem: 'Backup bundle',
-            objectLabel: bundleId,
+            objectLabel: bundleLabel,
             detail: `The bundle failed: ${safeErrText || 'unknown error'}`,
             severityLabel: 'failed',
             recommendedAction: 'Re-run the backup from the Backups page.',

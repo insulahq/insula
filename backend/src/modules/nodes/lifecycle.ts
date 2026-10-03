@@ -28,6 +28,7 @@
  * failure can never cause a transition to be re-detected and re-sent.
  */
 import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { formatUtcMinute } from '../../shared/format-utc.js';
 import type { Database } from '../../db/index.js';
 import { clusterNodes } from '../../db/schema.js';
 import type { ObservedNode } from './service.js';
@@ -189,10 +190,8 @@ export async function claimDepartures(
   return announce;
 }
 
-/** "YYYY-MM-DD HH:MM UTC" — minute precision, always UTC. */
-export function formatUtcMinute(d: Date): string {
-  return `${d.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
-}
+/** Re-exported: callers imported it from here before it moved to `shared/`. */
+export { formatUtcMinute };
 
 /** Public addresses as recorded on an inventory row. */
 export function inventoryAddresses(row: Pick<InventoryEntry, 'publicIp' | 'publicIpv6'>): string {
