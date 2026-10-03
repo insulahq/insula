@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import ApplyCpuLimitsPanel from '@/components/ApplyCpuLimitsPanel';
 import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
 import { useParams, Link, useNavigate } from 'react-router-dom';
@@ -10,6 +10,7 @@ import NamespaceIntegrityBanner from '@/components/NamespaceIntegrityBanner';
 import TenantIssuesBanner from '@/components/tenants/TenantIssuesBanner';
 import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
+import type { TenantDeletedState } from '@/components/tenants/TenantDeletedBanner';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import RetainedVolumesCard from '@/components/RetainedVolumesCard';
 import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
@@ -130,6 +131,11 @@ export default function TenantDetail() {
   } | null>(null);
 
   const deleteTenant = useDeleteTenant();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const updateTenant = useUpdateTenant(id ?? '');
   const impersonate = useLoginAsTenant();
   // Read once instead of casting `tenant` at four separate call sites.
@@ -153,16 +159,23 @@ export default function TenantDetail() {
       // call sites. Backend should accept either query or body until
       // the hook signature is extended.
       const idWithQuery = notifyTenant ? id : `${id}?suppressTenantNotification=true`;
-      const res = await deleteTenant.mutateAsync(idWithQuery);
-      // Latch onto the exact transition id the backend dispatched so
-      // the modal can stop guessing and show hook_runs sub-second.
-      const transitionId = res?.data?.transitionId ?? null;
-      if (transitionId) {
-        setTxModal((prev) => prev ? { ...prev, transitionId } : prev);
-      }
-      // Don't navigate immediately — let the operator close the modal.
-    } catch {
-      // error stays visible in dialog
+      await deleteTenant.mutateAsync(idWithQuery);
+      // The DELETE answers once the tenant is gone — hooks dispatched,
+      // namespace deleted, row dropped. Staying would refetch a tenant that
+      // no longer exists: the page turns into "Tenant not found" and takes
+      // the progress modal with it. Go back to the list, which says what
+      // happened (and links the per-step record, which outlives the tenant).
+      // Not if the operator already left this page while the delete ran.
+      if (!mountedRef.current) return;
+      setTxModal(null);
+      setDeleteOpen(false);
+      const state: TenantDeletedState = { deletedTenant: { name: tenant?.name ?? 'Unknown' } };
+      navigate('/tenants/list', { replace: true, state });
+    } catch (err) {
+      // Nothing was deleted: drop the "Dispatching…" modal and let the
+      // confirm dialog (which awaits this) show why.
+      setTxModal(null);
+      throw err;
     }
   };
 

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import TenantDetail from '../pages/TenantDetail';
+import TenantDeletedBanner from '@/components/tenants/TenantDeletedBanner';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
@@ -655,5 +656,65 @@ describe('TenantDetail — CPU tier override (ADR-062)', () => {
       expect(patch).toBeDefined();
       expect(JSON.parse(patch!.body ?? '{}')).toHaveProperty('cpu_burst_cores_override');
     });
+  });
+});
+
+describe('TenantDetail delete', () => {
+  // The DELETE answers once the tenant is gone; every later read of it 404s.
+  function setupDelete(outcome: 'ok' | 'fail') {
+    let deleted = false;
+    mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
+      if (init?.method === 'DELETE' && path.startsWith('/api/v1/tenants/tenant-001')) {
+        if (outcome === 'fail') return Promise.reject(new Error('Namespace deletion is blocked'));
+        deleted = true;
+        return Promise.resolve({ data: { transitionId: 'tx-1' } });
+      }
+      if (deleted && path.match(/\/tenants\/tenant-001$/)) return Promise.reject(new Error('Tenant not found'));
+      if (path.match(/\/tenants\/tenant-001$/)) return Promise.resolve(MOCK_CLIENT);
+      return Promise.resolve({ data: [] });
+    });
+  }
+
+  function renderWithList() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/tenants/tenant-001']}>
+          <Routes>
+            <Route path="tenants/:id/:tab?" element={<TenantDetail />} />
+            <Route path="tenants/list" element={<TenantDeletedBanner />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  async function confirmDelete() {
+    await waitFor(() => expect(screen.getByTestId('tenant-actions-button')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('tenant-actions-button'));
+    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.click(screen.getByTestId('delete-confirm-button'));
+  }
+
+  beforeEach(() => vi.resetAllMocks());
+
+  it('goes back to the tenants list, which says the tenant was deleted', async () => {
+    setupDelete('ok');
+    renderWithList();
+    await confirmDelete();
+    const banner = await screen.findByTestId('tenant-deleted-banner');
+    expect(banner).toHaveTextContent('Tenant Acme Corp was deleted.');
+    expect(screen.queryByText('Tenant not found')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('transition-progress-modal')).not.toBeInTheDocument();
+  });
+
+  it('stays on the tenant and shows why when the delete fails', async () => {
+    setupDelete('fail');
+    renderWithList();
+    await confirmDelete();
+    expect(await screen.findByText('Namespace deletion is blocked')).toBeInTheDocument();
+    expect(screen.queryByTestId('tenant-deleted-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('transition-progress-modal')).not.toBeInTheDocument();
+    expect(screen.getByTestId('delete-confirm-dialog')).toBeInTheDocument();
   });
 });
