@@ -11,18 +11,27 @@
  * because their nightly backup pods were scheduled there.
  *
  * Order, first hit wins:
- *   1. attached — the node of a Running/Pending pod that mounts the PVC. An
- *                 RWO volume is attached there; any other node cannot mount it.
- *   2. replica  — a node holding a healthy Longhorn replica. The tenant's
+ *   1. attached — the node Longhorn reports the volume ATTACHED to. An RWO
+ *                 volume can be mounted there and nowhere else, so this is the
+ *                 storage layer's own answer, not an inference from pods.
+ *   2. mounted  — the node of a Running, not-terminating pod that mounts the
+ *                 PVC; used when the Longhorn Volume could not be read. Running
+ *                 means its volumes are mounted. A PENDING pod is not evidence:
+ *                 it can be bound to a node the volume will never attach to.
+ *                 That is what failed a production backup — a file manager
+ *                 pinned to the wrong node sat Pending on Multi-Attach, listed
+ *                 before the app pods, and the capture Job was pinned beside it
+ *                 until its deadline expired.
+ *   3. replica  — a node holding a healthy Longhorn replica. The tenant's
  *                 primary node when it is one of them, else the first by name
  *                 (deterministic; every replica node holds the data).
- *   3. pin      — the tenant's primary node (`tenants.node_name`), when
+ *   4. pin      — the tenant's primary node (`tenants.node_name`), when
  *                 Longhorn could not be read.
  * Null when none is known: the caller leaves the pod unpinned, as before.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
-export type DataNodeSource = 'attached' | 'replica' | 'pin';
+export type DataNodeSource = 'attached' | 'mounted' | 'replica' | 'pin';
 
 export interface DataNodeChoice {
   readonly node: string | null;
@@ -30,7 +39,10 @@ export interface DataNodeChoice {
 }
 
 export interface DataNodeInputs {
+  /** Where Longhorn has the volume attached. */
   readonly attachedNode: string | null;
+  /** Where a Running pod mounts the PVC. */
+  readonly mountedNode: string | null;
   readonly replicaNodes: readonly string[];
   readonly pinNode: string | null;
 }
@@ -45,6 +57,7 @@ export function isNodeName(value: unknown): value is string {
 /** Pure — see the module header for the order. */
 export function chooseDataNode(input: DataNodeInputs): DataNodeChoice {
   if (isNodeName(input.attachedNode)) return { node: input.attachedNode, source: 'attached' };
+  if (isNodeName(input.mountedNode)) return { node: input.mountedNode, source: 'mounted' };
   const replicas = [...new Set(input.replicaNodes.filter(isNodeName))].sort();
   if (replicas.length > 0) {
     const preferred = input.pinNode && replicas.includes(input.pinNode) ? input.pinNode : replicas[0]!;
@@ -63,21 +76,51 @@ interface PodLike {
   };
 }
 
-/** Node of a Running/Pending, not-terminating pod that mounts `pvcName`, or null. */
-export async function findNodeAttachingPvc(
+/** Node of a Running, not-terminating pod that mounts `pvcName`, or null. */
+export async function findNodeMountingPvc(
   k8s: Pick<K8sClients, 'core'>,
   namespace: string,
   pvcName: string,
 ): Promise<string | null> {
   const res = await k8s.core.listNamespacedPod({ namespace });
   for (const pod of (res.items ?? []) as PodLike[]) {
-    const phase = pod.status?.phase;
-    if (phase !== 'Running' && phase !== 'Pending') continue;
+    if (pod.status?.phase !== 'Running') continue;
     if (pod.metadata?.deletionTimestamp) continue;
     const mounts = (pod.spec?.volumes ?? []).some((v) => v.persistentVolumeClaim?.claimName === pvcName);
     if (mounts && isNodeName(pod.spec?.nodeName)) return pod.spec!.nodeName!;
   }
   return null;
+}
+
+interface VolumeLike {
+  readonly status?: { readonly state?: string; readonly currentNodeID?: string };
+}
+
+/**
+ * The node a Longhorn Volume is attached to, or null. Pure.
+ *
+ * Only `attached` counts: a detached volume keeps an empty `currentNodeID`, and
+ * an `attaching` one cannot be mounted anywhere yet.
+ */
+export function attachedNodeOf(volume: VolumeLike): string | null {
+  if (volume.status?.state !== 'attached') return null;
+  const node = volume.status.currentNodeID;
+  return isNodeName(node) ? node : null;
+}
+
+/** The node the Longhorn volume `volumeName` is attached to, or null. */
+export async function readVolumeAttachedNode(
+  k8s: Pick<K8sClients, 'custom'>,
+  volumeName: string,
+): Promise<string | null> {
+  const volume = await k8s.custom.getNamespacedCustomObject({
+    group: 'longhorn.io',
+    version: 'v1beta2',
+    namespace: 'longhorn-system',
+    plural: 'volumes',
+    name: volumeName,
+  } as unknown as Parameters<K8sClients['custom']['getNamespacedCustomObject']>[0]);
+  return attachedNodeOf(volume as VolumeLike);
 }
 
 interface ReplicaLike {
@@ -150,23 +193,41 @@ export async function resolveTenantDataNode(
   k8s: Pick<K8sClients, 'core' | 'custom'>,
   opts: ResolveDataNodeOptions,
 ): Promise<DataNodeChoice> {
-  let attachedNode: string | null = null;
+  const where = `${opts.namespace}/${opts.pvcName}`;
+  let volumeName: string | null = null;
   try {
-    attachedNode = await findNodeAttachingPvc(k8s, opts.namespace, opts.pvcName);
+    volumeName = await readPvcVolumeName(k8s, opts.namespace, opts.pvcName);
+  } catch (err) {
+    opts.logger?.warn(`data node: PVC lookup for ${where} failed (${(err as Error).message})`);
+  }
+
+  if (volumeName) {
+    try {
+      const attachedNode = await readVolumeAttachedNode(k8s, volumeName);
+      if (attachedNode) return { node: attachedNode, source: 'attached' };
+    } catch (err) {
+      opts.logger?.warn(`data node: Longhorn volume lookup for ${where} failed (${(err as Error).message})`);
+    }
+  }
+
+  let mountedNode: string | null = null;
+  try {
+    mountedNode = await findNodeMountingPvc(k8s, opts.namespace, opts.pvcName);
   } catch (err) {
     opts.logger?.warn(`data node: pod lookup in ${opts.namespace} failed (${(err as Error).message})`);
   }
-  if (attachedNode) return { node: attachedNode, source: 'attached' };
+  if (mountedNode) return { node: mountedNode, source: 'mounted' };
 
   let replicaNodes: string[] = [];
-  try {
-    const volumeName = await readPvcVolumeName(k8s, opts.namespace, opts.pvcName);
-    if (volumeName) replicaNodes = await readVolumeReplicaNodes(k8s, volumeName);
-  } catch (err) {
-    opts.logger?.warn(`data node: Longhorn replica lookup for ${opts.namespace}/${opts.pvcName} failed (${(err as Error).message})`);
+  if (volumeName) {
+    try {
+      replicaNodes = await readVolumeReplicaNodes(k8s, volumeName);
+    } catch (err) {
+      opts.logger?.warn(`data node: Longhorn replica lookup for ${where} failed (${(err as Error).message})`);
+    }
   }
   if (opts.unambiguousOnly && replicaNodes.length > 1 && !(opts.pinNode && replicaNodes.includes(opts.pinNode))) {
     return { node: null, source: null };
   }
-  return chooseDataNode({ attachedNode: null, replicaNodes, pinNode: opts.pinNode });
+  return chooseDataNode({ attachedNode: null, mountedNode: null, replicaNodes, pinNode: opts.pinNode });
 }

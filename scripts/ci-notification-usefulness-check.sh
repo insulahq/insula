@@ -34,6 +34,8 @@
 #   WHEN   found 25 categories with no timestamp on first run.
 #   NO ID  flagged a comment that QUOTED the offending line (comments are now
 #          stripped) — and the real `userName: userId` before it was removed.
+#          Its call-site arm (every backend module, not just events.ts) found
+#          ten ids passed as labels in five modules on its first run.
 #   LINK   fails when a STATIC_PATHS entry is deleted.
 #   WHO    fails for 11 categories when the subject variables are stripped out
 #          of the templates. Its FIRST draft was vacuous: `greeting` was in the
@@ -340,6 +342,44 @@ const files = readdirSync(backendSrc, { recursive: true, encoding: "utf8" })
 const stripComments = (src) => src
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+// NO ID, at the CALL SITE. The two NO ID arms above read events.ts only, but
+// most labels are built by the CALLERS of the notify* helpers, in every module.
+// `objectLabel: bundleId` mailed operators "Tenant backup: bkp-(unnamed)" — the
+// dispatcher names an id only when it is a tenant, user, mailbox or domain, and
+// prints its placeholder for anything else — and no arm could see the line.
+// Its first run found ten across five modules.
+//
+// Keys are the subject variables (SUBJECT_VARS) plus the greeting `userName`.
+// A BARE id is never a label, whatever its kind: the legacy email channel
+// rendered `userName: ctx.notification.userId` with no id resolution at all.
+// Inside a template literal, an id the dispatcher CAN name (tenantId, userId,
+// mailboxId, domainId) may appear: "(tenant ${input.tenantId})" renders the
+// tenant name.
+{
+  const keys = [...SUBJECT_VARS, "userName"].join("|");
+  const RESOLVABLE = /(?:^|\.)(?:tenant|user|mailbox|domain)Id$/i;
+  const isId = (expr) => /^[A-Za-z_$][\w$.]*$/.test(expr.trim()) && /(?:^|\.)\w*[iI]d$/.test(expr.trim());
+  const isUnnameableId = (expr) => isId(expr) && !RESOLVABLE.test(expr.trim());
+  for (const file of files) {
+    if (file.endsWith("notifications/events.ts")) continue; // the arms above
+    let code;
+    try { code = stripComments(readFileSync(file, "utf8")); } catch { continue; }
+    const rel = file.slice(backendSrc.length + 1);
+    for (const m of code.matchAll(new RegExp(`\\b(${keys})\\s*:\\s*([A-Za-z_$][\\w$.]*)\\s*[,}\\n]`, "g"))) {
+      if (isId(m[2])) {
+        failures.push(`${rel}: \`${m[1]}: ${m[2]}\` passes an id where a human label is expected (NO ID)`);
+      }
+    }
+    for (const m of code.matchAll(new RegExp(`\\b(${keys})\\s*:\\s*\`([^\`]*)\``, "g"))) {
+      for (const interp of m[2].matchAll(/\$\{([^}]*)\}/g)) {
+        if (isUnnameableId(interp[1])) {
+          failures.push(`${rel}: \`${m[1]}\` is built from an id (\`${interp[1].trim()}\`) where a human label is expected (NO ID)`);
+        }
+      }
+    }
+  }
+}
 
 // Patterns for ids that are ASSEMBLED — `admin.slo_alert_${severity}` never
 // appears literally. A stricter test would report live notifications as

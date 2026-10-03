@@ -328,7 +328,8 @@ async function notifyHookPermanentFailure(
   const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
   await notifyAdminOperationalEvent(db, 'platform', {
     subsystem: 'Tenant lifecycle hook',
-    objectLabel: `${hookName} (tenant ${parent.tenantId}, transition ${parent.id})`,
+    // The transition id is not a name — its kind is what an operator reads.
+    objectLabel: `${hookName} (tenant ${parent.tenantId}, ${parent.transitionKind} transition)`,
     detail: `${title} ${detail}`,
     severityLabel: 'permanently failed',
     recommendedAction: 'Operator action required — inspect the hook run and re-drive the transition.',

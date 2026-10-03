@@ -248,15 +248,23 @@ export async function deletePredumpsFromPvc(args: {
   let fmPod: string;
   try {
     fmPod = await getReadyFileManagerPod(args.k8s, args.namespace);
-  } catch {
-    return; // no file-manager pod → leave the prune as the backstop
+  } catch (err) {
+    // No file-manager pod → leave the retention-window prune as the backstop.
+    console.warn(
+      `[bundle ${args.bundleId}] predump cleanup skipped in ${args.namespace}: `
+      + `file manager not ready (${(err as Error).message})`,
+    );
+    return;
   }
   const safe = args.bundleId.replace(/[^A-Za-z0-9._-]/g, '_');
   try {
     await execInPod(args.kubeconfigPath, args.namespace, fmPod, 'file-manager',
       ['sh', '-c', `find /data -type f -name 'predump-*-${safe}.*' -delete 2>/dev/null || true`]);
-  } catch {
-    /* best-effort — the retention-window prune bounds accumulation regardless */
+  } catch (err) {
+    // Best-effort — the retention-window prune bounds accumulation regardless.
+    console.warn(
+      `[bundle ${args.bundleId}] predump cleanup failed in ${args.namespace}/${fmPod}: ${(err as Error).message}`,
+    );
   }
 }
 

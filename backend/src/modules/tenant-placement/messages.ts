@@ -3,6 +3,7 @@
  * reads at 07:00 is pinned by tests rather than discovered in an inbox.
  */
 import type { AdminTenantPlacementPayload } from '../notifications/events.js';
+import { formatUtcMinute } from '../../shared/format-utc.js';
 import type { StoredFailover, StoredPlacement } from './store.js';
 
 /** At most this many tenants are spelled out; the rest are counted. */
@@ -12,9 +13,6 @@ function nodes(list: readonly string[]): string {
   return list.length > 0 ? list.join(', ') : 'nowhere yet (restarting)';
 }
 
-function utc(d: Date): string {
-  return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
 
 function summaryOf(names: readonly string[]): string {
   const unique = [...new Set(names)];
@@ -37,7 +35,7 @@ export function failoverMessage(events: readonly NamedFailover[]): AdminTenantPl
     const moved = e.primaryNode && e.nodesAfter.length > 0 && e.nodesAfter.some((n) => n !== e.primaryNode)
       ? ` — no longer on its primary node ${e.primaryNode}`
       : '';
-    return `${e.tenantName}: volume ${e.pvcName ?? e.volumeName} salvaged at ${utc(e.remountRequestedAt)}; `
+    return `${e.tenantName}: volume ${e.pvcName ?? e.volumeName} salvaged at ${formatUtcMinute(e.remountRequestedAt)}; `
       + `was on ${nodes(e.nodesBefore)}, now on ${nodes(e.nodesAfter)}${moved}.`;
   });
   const sameNode = new Set(events.flatMap((e) => e.nodesBefore)).size === 1 && events.length > 1;
@@ -58,7 +56,7 @@ export interface NamedPlacement extends StoredPlacement {
 export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTenantPlacementPayload {
   const lines = placements.map((p) => {
     const why = p.reasons.length > 0 ? p.reasons.join(', ') : `on ${nodes(p.actualNodes)}`;
-    const since = p.misplacedSince ? ` since ${utc(p.misplacedSince)}` : '';
+    const since = p.misplacedSince ? ` since ${formatUtcMinute(p.misplacedSince)}` : '';
     return `${p.tenantName}: primary node ${p.primaryNode ?? '—'}, but ${why}${since}.`;
   });
   return {

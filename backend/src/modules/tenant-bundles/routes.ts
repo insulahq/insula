@@ -26,6 +26,7 @@ import { decrypt } from '../oidc/crypto.js';
 import { decryptSecretsPayload } from './components/secrets.js';
 import { CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES } from './components/config.js';
 import { BUNDLE_COMPONENTS, ownerOfTable } from './component-registry.js';
+import { bundleNotificationLabel, notificationErrorText } from './notification-label.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { gunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
@@ -456,6 +457,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       //     a real error. Without this the row stays at `running`
       // indefinitely(caught E2E: 32-min hang).
       let reservedBundleId: string | null = null;
+      // Within a second of the row's started_at — what a reader recognises the
+      // bundle by if the async failure path has to notify (never its id).
+      const acceptedAt = new Date();
       const reserved = new Promise<string>((resolve) => {
         runBundle(orchDeps, {
           ...orchInput,
@@ -513,8 +517,8 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
                 const { notifyTenantBackupEvent } = await import('./../notifications/events.js');
                 await notifyTenantBackupEvent(app.db, orchInput.tenantId, {
                   subsystem: 'Backup bundle',
-                  objectLabel: reservedBundleId,
-                  detail: `The bundle aborted: ${operatorMsg}`,
+                  objectLabel: bundleNotificationLabel({ label: orchInput.label ?? null, startedAt: acceptedAt }),
+                  detail: `The bundle aborted: ${notificationErrorText([operatorMsg], reservedBundleId, 'tenant', 2000)}`,
                   severityLabel: 'failed',
                   recommendedAction: 'Re-run the backup from the Backups page.',
                 }, `bundle-failed:${reservedBundleId}`);

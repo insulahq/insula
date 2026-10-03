@@ -59,6 +59,7 @@ import {
   wireSecretOwnerRef,
 } from '../tenant-bundles/components/files.js';
 import { tailJobLog } from './job-log-tail.js';
+import { describeJobFailure, formatJobFailure } from '../../shared/k8s-job-failure.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
 import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
 
@@ -528,7 +529,7 @@ async function waitForJob(
     if (failed || (status.failed ?? 0) > 0) {
       let tail = '';
       try { tail = (await tailJobLog(k8s, namespace, jobName, { tailLines: 20, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-      const reason = failed?.message ?? 'Job failed';
+      const reason = formatJobFailure(await describeJobFailure(k8s.core, namespace, jobName, status.conditions), []);
       throw new Error(`pre-resize restore Job ${jobName} failed: ${reason}${tail ? ` — ${tail}` : ''}`);
     }
     if (Date.now() - start > timeoutMs) {

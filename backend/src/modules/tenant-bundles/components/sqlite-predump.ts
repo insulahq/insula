@@ -111,9 +111,16 @@ export async function runSqliteCapture(args: SqliteCaptureArgs): Promise<DumpDep
   let fmPod: string;
   try {
     fmPod = await getReadyFileManagerPod(args.k8s, args.namespace);
-  } catch {
-    // No file-manager pod → cannot discover SQLite files. Not an error; the
-    // raw-files snapshot still captures any SQLite file on the PVC.
+  } catch (err) {
+    // No file-manager pod → cannot discover SQLite files. Not a bundle failure;
+    // the raw-files snapshot still captures any SQLite file on the PVC. But say
+    // so: a file manager that cannot start usually means the tenant's volume
+    // is somewhere its pin does not allow, and this line was the only trace of
+    // that when a capture later failed on the same cause.
+    console.warn(
+      `[bundle ${args.backupId}] sqlite pre-dump skipped in ${args.namespace}: `
+      + `file manager not ready (${(err as Error).message})`,
+    );
     return null;
   }
 
@@ -123,7 +130,10 @@ export async function runSqliteCapture(args: SqliteCaptureArgs): Promise<DumpDep
       ['sh', '-c', buildSqliteCaptureScript(args.backupId)],
     );
     return parseSqliteDumpOutput(res.stdout);
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[bundle ${args.backupId}] sqlite pre-dump failed in ${args.namespace}/${fmPod}: ${(err as Error).message}`,
+    );
     return null;
   }
 }
