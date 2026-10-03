@@ -224,11 +224,13 @@ export async function describeJobFailure(
 }
 
 /**
- * "<reason>; diagnosis: <details>" — the details (plus any the caller adds,
- * such as where it pinned the pod) behind the operator-only marker. Pure.
+ * "<reason>; diagnosis: <details>" — the details behind the operator-only
+ * marker. The caller's own details (such as where it pinned the pod) come
+ * first: event text can be long, notifications are capped, and placement is
+ * the line that names a wrong-node failure. Pure.
  */
 export function formatJobFailure(d: JobFailureDescription, extraDetails: readonly string[]): string {
-  const details = [...d.details, ...extraDetails];
+  const details = [...extraDetails, ...d.details];
   if (details.length === 0) return d.reason;
   return clip(`${d.reason}${DIAGNOSIS_MARKER} ${details.join('; ')}`, MAX_TEXT);
 }

@@ -152,14 +152,15 @@ succeeded.
 To diagnose, open the bundle and look at the per-component status — anything
 other than `completed` is the culprit. The component's `lastError` starts with
 the Kubernetes reason the capture Job failed (for example `DeadlineExceeded`).
-When the Job's pod never ran, a `diagnosis:` part follows it: which pod, on
-which node, why it was waiting, the warning events that explain it, and — for
-the files capture — which node the pod was pinned to and why. A typical one:
+When the Job's pod never ran, a `diagnosis:` part follows it: for the files
+capture, first which node the pod was pinned to and on what evidence; then
+which pod, on which node, why it was waiting, and the warning events that
+explain it. A typical one:
 
 ```text
 files-component Job failed: DeadlineExceeded: Job was active longer than specified deadline;
-diagnosis: FailedAttachVolume: Multi-Attach error for volume "pvc-…" Volume is already used by
-pod(s) app-…; pinned to node node-a (mounted)
+diagnosis: pinned to node node-a (mounted); FailedAttachVolume: Multi-Attach error for volume
+"pvc-…" Volume is already used by pod(s) app-…
 ```
 
 That one means the capture was sent to a node the tenant's volume is not

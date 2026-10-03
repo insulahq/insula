@@ -27,9 +27,10 @@ describe('notificationErrorText', () => {
   // The shape files.ts:waitForJob throws for the production failure.
   const CAPTURE_ERR = `files: files-component Job bk-files-${BUNDLE} failed: `
     + 'DeadlineExceeded: Job was active longer than specified deadline'
-    + `; diagnosis: pod bk-files-${BUNDLE}-abcde on node node-a never started (ContainerCreating); `
+    + '; diagnosis: pinned to node node-a (mounted); '
+    + `pod bk-files-${BUNDLE}-abcde on node node-a never started (ContainerCreating); `
     + 'FailedAttachVolume: Multi-Attach error for volume "vol-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" '
-    + 'Volume is already used by pod(s) app-1; pinned to node node-a (mounted)'
+    + 'Volume is already used by pod(s) app-1'
     + '; logs: restic stderr';
 
   it('gives a tenant the headline only — no node, pod, event text or logs', () => {
@@ -43,9 +44,8 @@ describe('notificationErrorText', () => {
     const text = notificationErrorText([CAPTURE_ERR], BUNDLE, 'operator');
     expect(text).toBe(
       'files: files-component Job failed: DeadlineExceeded: Job was active longer than specified deadline'
-      + '; diagnosis: pod on node node-a never started (ContainerCreating); '
-      + 'FailedAttachVolume: Multi-Attach error for volume "vol-aaaaaaaa…" Volume is already used by pod(s) app-1; '
-      + 'pinned to node node-a (mounted)',
+      + '; diagnosis: pinned to node node-a (mounted); pod on node node-a never started (ContainerCreating); '
+      + 'FailedAttachVolume: Multi-Attach error for volume "vol-aaaaaaaa…" Volume is already used by pod(s) app-1',
     );
     expect(text).not.toContain('restic stderr');
     expect(findIds(text)).toEqual([]);

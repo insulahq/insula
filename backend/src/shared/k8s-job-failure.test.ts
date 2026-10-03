@@ -210,7 +210,10 @@ describe('formatJobFailure', () => {
       { reason: 'DeadlineExceeded: x', details: [`pod ${POD} on node node-a never started`] },
       ['pinned to node node-a (mounted)'],
     );
-    expect(text).toBe(`DeadlineExceeded: x; diagnosis: pod ${POD} on node node-a never started; pinned to node node-a (mounted)`);
+    // The caller's detail (where it pinned the pod) leads: event text can be
+    // long, notifications are capped, and placement is the line that names a
+    // wrong-node failure.
+    expect(text).toBe(`DeadlineExceeded: x; diagnosis: pinned to node node-a (mounted); pod ${POD} on node node-a never started`);
     expect(tenantVisibleText(text)).toBe('DeadlineExceeded: x');
   });
 
