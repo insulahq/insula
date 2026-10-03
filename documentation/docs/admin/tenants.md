@@ -147,13 +147,23 @@ buttons (below). Underneath are several cards and a tabbed resource view.
   actually runs and keeps its data right now (checked every minute). When
   those differ, a red **Not on its primary node** banner says what is
   elsewhere and since when, with two ways out:
-    - **Move back to &lt;primary&gt;** re-pins the tenant to its primary node
-      and restarts its workloads there. Longhorn then copies the tenant's data
-      back — the tenant restarts now, and the copy takes as long as the volume
-      is large. A tenant with nothing running (no app, file manager idle) has
-      no workload to carry its data, so the platform attaches its volume on the
-      primary node itself until the copy is done; the result line says
-      **Moving the data there now**, and the banner clears once it has.
+    - **Move back to &lt;primary&gt;** moves the tenant to its primary node.
+      A **running** tenant is stopped first: its workloads scale to 0, the
+      platform waits until its volume has detached from the node it ran on,
+      re-pins it and starts it on the primary node — usually about a minute of
+      downtime. This runs as a storage operation: its progress opens right
+      away (and stays in the Task Tracker), other storage operations wait for
+      it, and a failure starts the tenant again — on the old node if it had not
+      been re-pinned yet. Longhorn then copies the data back in the
+      background; the copy takes as long as the volume is large. (Re-pinning a
+      running tenant without stopping it let Longhorn detach the volume under
+      its still-running pods.) The move is refused — *the tenant's volume is in
+      use* — while a backup or restore Job uses the volume or a platform task
+      holds the file manager; try again once it has finished. A tenant with
+      nothing running (no app, file manager idle) has no workload to carry its
+      data, so the platform attaches its volume on the primary node itself
+      until the copy is done; the result line says **Moving the data there
+      now**, and the banner clears once it has.
     - **Make &lt;current node&gt; the primary node** accepts where it is: the
       workloads restart once on the same node to pick up the new pin, and no
       data is copied.

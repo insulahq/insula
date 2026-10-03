@@ -89,5 +89,12 @@ export const migrateToWorkerResultSchema = z.object({
     /** Set when the volumes could not be read or attached; the re-pin itself still happened. */
     error: z.string().nullable(),
   }),
+  /**
+   * Set when the tenant was running on another node: a background storage
+   * operation stops it, waits for its volume to detach, re-pins it and starts it
+   * on the target (GET /admin/storage/operations/:id). `dataRelocation` is then
+   * empty — the operation starts the copy once the volume has detached.
+   */
+  moveOperationId: z.string().nullable(),
 });
 export type MigrateToWorkerResult = z.infer<typeof migrateToWorkerResultSchema>;

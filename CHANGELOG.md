@@ -29,6 +29,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Move back no longer pulls the disk out from under a running tenant.** Re-pinning a running
+  tenant rolled its pods onto the target node while the old ones still held the volume, and
+  Longhorn detached it under the tenant's remaining pods (seen on production: the device went
+  offline mid-write and the filesystem shut down; about a minute of downtime). A running tenant
+  is now stopped, its volume left to detach cleanly, re-pinned and started on the target — a
+  storage operation with live progress — and the data copies across in the background. The move
+  waits while a backup or restore Job is using the volume.
+
 - **A deleted tenant can be found — and recovered — by name.** Its off-site bundles are kept
   for the deleted-tenant window so it can come back, but nothing listed it: it has no tenant
   row, and the recover picker read the newest 50 bundles across all tenants, so a deleted

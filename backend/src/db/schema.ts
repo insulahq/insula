@@ -69,6 +69,9 @@ export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   // quiesce-watchdog Leg B does not fire mid-heal, and so Leg A can recover the
   // tenant if the process dies partway through.
   'autoheal',
+  // 0144: "Move back" of a running tenant — stop it, let the volume detach,
+  // re-pin, start it on the target (tenant-migration/stop-move-start.ts).
+  'relocate',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
   'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled', 'pre-restore',

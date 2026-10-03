@@ -19,7 +19,7 @@ export interface StorageSnapshot {
 export interface StorageOperation {
   readonly id: string;
   readonly tenantId: string;
-  readonly opType: 'snapshot' | 'resize' | 'suspend' | 'resume' | 'archive' | 'restore' | 'fsck';
+  readonly opType: 'snapshot' | 'resize' | 'suspend' | 'resume' | 'archive' | 'restore' | 'fsck' | 'autoheal' | 'relocate';
   readonly state: 'idle' | 'snapshotting' | 'quiescing' | 'replacing' | 'restoring' | 'unquiescing' | 'failed';
   readonly progressPct: number;
   readonly progressMessage: string | null;
