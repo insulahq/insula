@@ -29,6 +29,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Apply HA no longer reports "failed" over components a cluster does not run.** Dex and
+  oauth2-proxy ship only with test and staging installs, so on production every Apply HA
+  listed both as failed (404), marked the whole run failed and stopped tracking convergence —
+  while the cluster converged fine. They now show as **not installed here**. A failed run's
+  convergence panel says it is the state when the apply stopped instead of looking live and
+  stuck. A volume nothing mounts (the retained CrowdSec SQLite store) counts as done once its
+  replica count is set, instead of holding the run "mid-rebuild" for ten minutes.
+
 - **Route changes say what they are doing, and removing one says how it ended.** Removing an
   ingress route waits on the DNS server; when that server did not answer, the page sat still for
   most of a minute and a second click only got "not found". The Routing tab (admin and tenant

@@ -18,7 +18,7 @@ panel offers **Apply HA**, and one action scales everything that matters.
 |---|---|---|
 | Longhorn volumes (metrics, CrowdSec) | 1 replica | 3 replicas, spread across nodes |
 | PostgreSQL (CNPG cluster) | 1 instance | 3 instances, synchronous replication |
-| Stateless Deployments (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) | 1 replica | 3 replicas, one per node (topology spread) |
+| Stateless Deployments (admin-panel, tenant-panel, platform-api; oauth2-proxy and dex where installed) | 1 replica | 3 replicas, one per node (topology spread) |
 | Background operators (cert-manager, Flux, CNPG operator **and its backup plugin**) | 1 | 2 — a leader and a warm standby |
 
 What Apply HA does **not** touch, because it is already covered or handled
@@ -26,8 +26,10 @@ differently:
 
 - **etcd** — already a 3-server quorum once you have three servers.
 - **Traefik ingress** — already runs on every node.
-- **The mail server** — stays single-replica; failover is handled separately
-  (see [Mail HA](#mail-ha) below).
+- **The mail server and Bulwark webmail** — stay single-replica on the mail
+  node, because both use the mail stack's local volume, which only one node can
+  mount at a time. Failover is handled separately (see [Mail HA](#mail-ha)
+  below).
 - **Per-tenant workloads** — these have their own storage tier and are not
   changed by Apply HA. What that means when a node dies is covered in
   [Nodes & cluster → When a node goes offline](nodes-and-cluster.md#when-a-node-goes-offline).
@@ -61,7 +63,14 @@ the cluster is still in Local mode. Grow to three servers first
 4. A progress modal reports each resource as it scales. **Partial results are
    shown, not hidden:** if one Longhorn volume fails to patch while the rest
    succeed, you see exactly which one and why, and you can re-click Apply HA
-   after the underlying issue clears.
+   after the underlying issue clears. A component this cluster does not run —
+   Dex and oauth2-proxy ship only with test and staging installs — shows as
+   **not installed here**, not as a failure. When a patch does fail, the modal
+   shows the cluster state at the moment the apply stopped; re-click Apply HA
+   once the cause is fixed to watch it converge.
+5. A volume that nothing currently mounts (the retained CrowdSec SQLite store,
+   for example) counts as done once its replica count is set: Longhorn builds
+   the extra copies the next time the volume is attached.
 
 Every Apply HA / Revert writes an audit-log row with the full before/after and
 per-resource result.

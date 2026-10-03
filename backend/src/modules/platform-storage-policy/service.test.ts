@@ -610,3 +610,58 @@ describe('detectDeploymentReplicaDrift — scheduler trigger for deployment drif
     expect(await detectDeploymentReplicaDrift(k8s, 'ha', 3)).toBe(false);
   });
 });
+
+describe('patchDeploymentsToReplicaCount — a Deployment this environment does not run', () => {
+  it('reports a missing (404) Deployment as not installed, not as a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const replace = vi.fn(async () => ({}));
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async ({ name }: { name: string }) => {
+          if (name === 'dex') throw Object.assign(new Error('deployments.apps "dex" not found'), { code: 404 });
+          return { metadata: { name, annotations: {} }, spec: { replicas: 1 } };
+        }),
+        replaceNamespacedDeploymentScale: replace,
+      },
+    } as unknown as K8sClients;
+
+    const results = await patchDeploymentsToReplicaCount(k8s, [
+      { namespace: 'platform', name: 'platform-api' },
+      { namespace: 'platform', name: 'dex', optional: true },
+    ], 3);
+
+    expect(results).toEqual([
+      { namespace: 'platform', name: 'platform-api', previousReplicas: 1, newReplicas: 3, patched: true, error: null },
+      { namespace: 'platform', name: 'dex', previousReplicas: 0, newReplicas: 0, patched: false, error: null, notInstalled: true },
+    ]);
+    expect(replace).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing REQUIRED Deployment is still a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async () => { throw Object.assign(new Error('deployments.apps "barman-cloud" not found'), { code: 404 }); }),
+        replaceNamespacedDeploymentScale: vi.fn(),
+      },
+    } as unknown as K8sClients;
+
+    const [r] = await patchDeploymentsToReplicaCount(k8s, [{ namespace: 'cnpg-system', name: 'barman-cloud' }], 2);
+    expect(r?.error).toContain('not found');
+    expect(r?.notInstalled).toBeUndefined();
+  });
+
+  it('still reports any other read error as a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async () => { throw Object.assign(new Error('forbidden'), { code: 403 }); }),
+        replaceNamespacedDeploymentScale: vi.fn(),
+      },
+    } as unknown as K8sClients;
+
+    const [r] = await patchDeploymentsToReplicaCount(k8s, [{ namespace: 'platform', name: 'platform-api' }], 3);
+    expect(r?.error).toBe('forbidden');
+    expect(r?.notInstalled).toBeUndefined();
+  });
+});

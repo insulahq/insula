@@ -30,7 +30,7 @@ import { platformStorageApplyRuns } from '../../db/schema.js';
 import { readClusterState } from './service.js';
 import * as tasks from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
-import type { ApplyPolicyOutcome } from './service.js';
+import type { ApplyPolicyOutcome, VolumeFact } from './service.js';
 
 export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'capacity_blocked';
 
@@ -129,6 +129,80 @@ export async function updateConvergence(
 }
 
 /**
+ * Whether a platform volume has reached what an apply can make of it. Pure.
+ *
+ * Its replica count matches, every copy is on a system node, and Longhorn
+ * reports it healthy — or it is an ORPHAN: detached and used by nothing.
+ * Longhorn builds replicas only while a volume is attached, so for an orphan
+ * the replica COUNT is all an apply can set; waiting for healthy held a run
+ * "mid-rebuild" for the full 10 minutes over the retained crowdsec-data store.
+ *
+ * `inUse` (see `pvcsInUse`) keeps the shortcut off every volume a workload
+ * still names — a pod restart detaches metrics or mail storage for seconds,
+ * and a single sample in that window must not end the run as succeeded. CNPG
+ * volumes never take it: CNPG runs its pods itself and every instance is
+ * meant to be running.
+ */
+export function volumeAtDesiredState(
+  v: Pick<VolumeFact, 'currentReplicas' | 'desiredReplicas' | 'hasOffSystemReplica' | 'healthy' | 'phase' | 'kind'>,
+  inUse: boolean,
+): boolean {
+  if (v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica) return false;
+  if (v.healthy) return true;
+  return v.kind !== 'cnpg' && v.phase === 'detached' && !inUse;
+}
+
+interface PodSpecLike {
+  readonly volumes?: ReadonlyArray<{ readonly persistentVolumeClaim?: { readonly claimName?: string } }>;
+}
+
+function claimsOf(spec: PodSpecLike | undefined): string[] {
+  return (spec?.volumes ?? []).flatMap((v) => (v.persistentVolumeClaim?.claimName ? [v.persistentVolumeClaim.claimName] : []));
+}
+
+/**
+ * Which PVCs a workload uses or will use again: named by a Deployment or
+ * StatefulSet template (directly, or through a volumeClaimTemplate whose PVCs
+ * are `<template>-<statefulset>-<n>`), or mounted by a pod that is not
+ * finished. Templates outlive pod restarts, so a volume detached for a
+ * restart still counts. Null when any lookup failed: callers then treat
+ * every volume as in use.
+ */
+export async function pvcsInUse(
+  k8s: K8sClients,
+  namespaces: readonly string[],
+): Promise<((namespace: string, pvcName: string) => boolean) | null> {
+  const claims = new Set<string>();
+  const prefixes: string[] = [];
+  try {
+    for (const namespace of namespaces) {
+      const [deps, sets, pods] = await Promise.all([
+        k8s.apps.listNamespacedDeployment({ namespace }),
+        k8s.apps.listNamespacedStatefulSet({ namespace }),
+        k8s.core.listNamespacedPod({ namespace }),
+      ]);
+      for (const d of deps.items ?? []) for (const c of claimsOf(d.spec?.template?.spec)) claims.add(`${namespace}/${c}`);
+      for (const st of sets.items ?? []) {
+        for (const c of claimsOf(st.spec?.template?.spec)) claims.add(`${namespace}/${c}`);
+        for (const t of st.spec?.volumeClaimTemplates ?? []) {
+          if (t.metadata?.name && st.metadata?.name) prefixes.push(`${namespace}/${t.metadata.name}-${st.metadata.name}-`);
+        }
+      }
+      for (const p of pods.items ?? []) {
+        if (p.status?.phase === 'Succeeded' || p.status?.phase === 'Failed') continue;
+        for (const c of claimsOf(p.spec)) claims.add(`${namespace}/${c}`);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return (namespace, pvcName) => {
+    const key = `${namespace}/${pvcName}`;
+    return claims.has(key) || prefixes.some((p) => key.startsWith(p));
+  };
+}
+
+/**
  * Compute the current convergence snapshot. Reads cluster state
  * (volumes from readClusterState which already does the diff), CNPG
  * cluster instance status, and deployment readyReplicas. Returns a
@@ -144,8 +218,9 @@ export async function computeConvergence(
 
   let volumesConverged = 0;
   let volumesOffSystem = 0;
+  const inUse = await pvcsInUse(k8s, [...new Set(state.volumes.map((v) => v.namespace))]);
   for (const v of state.volumes) {
-    if (v.currentReplicas === v.desiredReplicas && !v.hasOffSystemReplica && v.healthy) {
+    if (volumeAtDesiredState(v, inUse ? inUse(v.namespace, v.pvcName) : true)) {
       volumesConverged++;
     } else {
       stuckResources.push({

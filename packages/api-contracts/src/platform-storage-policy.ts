@@ -77,6 +77,8 @@ export const applyPlatformStoragePolicyResponseSchema = z.object({
     newReplicas: z.number().int().nonnegative(),
     patched: z.boolean(),
     error: z.string().nullable(),
+    /** Not deployed in this environment (Dex and oauth2-proxy outside dev/staging) — not a failure. */
+    notInstalled: z.boolean().optional(),
   })),
   cnpgClusters: z.array(z.object({
     namespace: z.string(),

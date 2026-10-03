@@ -124,3 +124,80 @@ describe('finishRun — task-center mirror', () => {
     await expect(finishRun(db, 'run-5', 'succeeded', makeConv())).resolves.toBeUndefined();
   });
 });
+
+describe('volumeAtDesiredState', () => {
+  const base = { currentReplicas: 3, desiredReplicas: 3, hasOffSystemReplica: false, healthy: true, phase: 'attached', kind: 'statefulset' as const };
+  const orphan = { ...base, healthy: false, phase: 'detached' };
+
+  it('an attached volume converges once it is healthy at the desired count', async () => {
+    const { volumeAtDesiredState } = await import('./runs.js');
+    expect(volumeAtDesiredState(base, true)).toBe(true);
+    expect(volumeAtDesiredState({ ...base, healthy: false }, true)).toBe(false);
+  });
+
+  it('an ORPHAN — detached and used by nothing — converges at the desired count', async () => {
+    const { volumeAtDesiredState } = await import('./runs.js');
+    expect(volumeAtDesiredState(orphan, false)).toBe(true);
+  });
+
+  it('a volume a workload still uses is not converged while detached — a pod restart is not done', async () => {
+    const { volumeAtDesiredState } = await import('./runs.js');
+    expect(volumeAtDesiredState(orphan, true)).toBe(false);
+  });
+
+  it('a CNPG volume never takes the shortcut, even unreferenced', async () => {
+    const { volumeAtDesiredState } = await import('./runs.js');
+    expect(volumeAtDesiredState({ ...orphan, kind: 'cnpg' as const }, false)).toBe(false);
+  });
+
+  it('an orphan at the wrong count, or with a copy off the system nodes, has not converged', async () => {
+    const { volumeAtDesiredState } = await import('./runs.js');
+    expect(volumeAtDesiredState({ ...orphan, currentReplicas: 1 }, false)).toBe(false);
+    expect(volumeAtDesiredState({ ...orphan, hasOffSystemReplica: true }, false)).toBe(false);
+  });
+});
+
+describe('pvcsInUse', () => {
+  const claim = (name: string) => ({ volumes: [{ name: 'data', persistentVolumeClaim: { claimName: name } }] });
+  const k8s = (over: { failPods?: boolean } = {}) => ({
+    apps: {
+      listNamespacedDeployment: async ({ namespace }: { namespace: string }) => ({
+        items: namespace === 'monitoring' ? [{ spec: { template: { spec: claim('vmsingle-storage') } } }] : [{ spec: { template: { spec: {} } } }],
+      }),
+      listNamespacedStatefulSet: async ({ namespace }: { namespace: string }) => ({
+        items: namespace === 'mail'
+          ? [{ metadata: { name: 'stalwart-mail' }, spec: { template: { spec: {} }, volumeClaimTemplates: [{ metadata: { name: 'data' } }] } }]
+          : [],
+      }),
+    },
+    core: {
+      listNamespacedPod: async ({ namespace }: { namespace: string }) => {
+        if (over.failPods) throw new Error('apiserver down');
+        return {
+          items: namespace === 'crowdsec'
+            ? [{ status: { phase: 'Succeeded' }, spec: claim('crowdsec-data') }, { status: { phase: 'Running' }, spec: claim('scratch') }]
+            : [],
+        };
+      },
+    },
+  }) as never;
+
+  it('a template outlives a pod restart: a Deployment or StatefulSet that names the PVC keeps it in use', async () => {
+    const { pvcsInUse } = await import('./runs.js');
+    const inUse = await pvcsInUse(k8s(), ['monitoring', 'mail', 'crowdsec']);
+    expect(inUse?.('monitoring', 'vmsingle-storage')).toBe(true);
+    expect(inUse?.('mail', 'data-stalwart-mail-0')).toBe(true);
+    expect(inUse?.('crowdsec', 'scratch')).toBe(true);
+  });
+
+  it('a PVC only a finished pod mounted, and no template names, is not in use', async () => {
+    const { pvcsInUse } = await import('./runs.js');
+    const inUse = await pvcsInUse(k8s(), ['crowdsec']);
+    expect(inUse?.('crowdsec', 'crowdsec-data')).toBe(false);
+  });
+
+  it('a failed lookup answers null — callers then treat every volume as in use', async () => {
+    const { pvcsInUse } = await import('./runs.js');
+    expect(await pvcsInUse(k8s({ failPods: true }), ['crowdsec'])).toBeNull();
+  });
+});
