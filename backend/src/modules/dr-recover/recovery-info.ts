@@ -64,17 +64,23 @@ async function listBundles(app: FastifyInstance, tenantId: string): Promise<DrRe
   return (res.rows ?? []).map(toRecoveryBundle);
 }
 
-async function namespaceExists(app: FastifyInstance, namespace: string | null): Promise<boolean | null> {
-  if (!namespace) return null;
+/** Whether the namespace exists — and whether Kubernetes is still deleting it. */
+async function namespaceState(app: FastifyInstance, namespace: string | null): Promise<{ present: boolean | null; terminating: boolean }> {
+  if (!namespace) return { present: null, terminating: false };
   try {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-    await createK8sClients(kubeconfigPath).core.readNamespace({ name: namespace });
-    return true;
+    const ns = await createK8sClients(kubeconfigPath).core.readNamespace({ name: namespace }) as { status?: { phase?: string } };
+    return { present: true, terminating: ns.status?.phase === 'Terminating' };
   } catch (err) {
     const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
-    return code === 404 ? false : null;
+    return { present: code === 404 ? false : null, terminating: false };
   }
+}
+
+async function namespaceFacts(app: FastifyInstance, namespace: string | null): Promise<{ namespacePresent: boolean | null; namespaceTerminating: boolean }> {
+  const s = await namespaceState(app, namespace);
+  return { namespacePresent: s.present, namespaceTerminating: s.terminating };
 }
 
 async function planName(app: FastifyInstance, planId: string | null): Promise<string | null> {
@@ -105,7 +111,7 @@ export async function getRecoveryInfo(
       storageTier: live.storageTier ?? null,
       primaryNode: live.nodeName ?? null,
       namespace: live.kubernetesNamespace,
-      namespacePresent: await namespaceExists(app, live.kubernetesNamespace),
+      ...await namespaceFacts(app, live.kubernetesNamespace),
       resources: null,
       bundles,
     };
@@ -131,6 +137,7 @@ export async function getRecoveryInfo(
     primaryNode: null,
     namespace: null,
     namespacePresent: null,
+    namespaceTerminating: false,
     resources: null,
     bundles,
   };
@@ -160,7 +167,7 @@ export async function getRecoveryInfo(
       storageTier: t.storageTier,
       primaryNode: t.nodeName,
       namespace: t.kubernetesNamespace,
-      namespacePresent: await namespaceExists(app, t.kubernetesNamespace),
+      ...await namespaceFacts(app, t.kubernetesNamespace),
       resources: t.effectiveResources
         ? { cpuLimit: t.effectiveResources.cpuLimit, memoryLimit: t.effectiveResources.memoryLimit, storageLimit: t.effectiveResources.storageLimit }
         : null,

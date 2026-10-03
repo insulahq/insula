@@ -340,6 +340,8 @@ export const drRecoveryInfoSchema = z.object({
   namespace: z.string().nullable(),
   /** Whether that namespace exists in the cluster now; null when it could not be checked. */
   namespacePresent: z.boolean().nullable(),
+  /** It exists but Kubernetes is still deleting it (right after a tenant delete). */
+  namespaceTerminating: z.boolean(),
   resources: z.object({ cpuLimit: z.number(), memoryLimit: z.number(), storageLimit: z.number() }).nullable(),
   bundles: z.array(drRecoveryBundleSchema),
 });

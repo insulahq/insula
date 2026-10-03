@@ -52,7 +52,8 @@ export function TenantFacts({ info, loading }: { readonly info: DrRecoveryInfo |
             ? (
               <span className="inline-flex items-center gap-1.5">
                 <span className="font-mono text-xs">{info.namespace}</span>
-                {info.namespacePresent === true && <span className="inline-flex items-center gap-0.5 text-xs text-green-700 dark:text-green-400"><CheckCircle2 size={12} /> exists</span>}
+                {info.namespacePresent === true && info.namespaceTerminating && <span className="inline-flex items-center gap-0.5 text-xs text-amber-700 dark:text-amber-400"><Loader2 size={12} className="animate-spin" /> being deleted</span>}
+                {info.namespacePresent === true && !info.namespaceTerminating && <span className="inline-flex items-center gap-0.5 text-xs text-green-700 dark:text-green-400"><CheckCircle2 size={12} /> exists</span>}
                 {info.namespacePresent === false && <span className="inline-flex items-center gap-0.5 text-xs text-amber-700 dark:text-amber-400"><XCircle size={12} /> missing</span>}
               </span>
             )

@@ -27,7 +27,7 @@ const MOODLE_INFO = {
   tenantId: MOODLE.tenantId, name: 'MOODLE ELEARNING', deleted: true, deletedAt: MOODLE.deletedAt,
   source: 'bundle', infoFromBundleId: 'bkp-79a722d1', infoError: null, status: 'active',
   planName: 'Business', storageTier: 'local', primaryNode: 'sv1',
-  namespace: 'tenant-moodle-elearning-362f3d17', namespacePresent: false,
+  namespace: 'tenant-moodle-elearning-362f3d17', namespacePresent: false, namespaceTerminating: false,
   resources: { cpuLimit: 2, memoryLimit: 4, storageLimit: 20 },
   bundles: [
     { id: 'bkp-79a722d1', createdAt: '2026-10-03T01:36:57.662Z', finishedAt: null, status: 'completed', trigger: 'scheduled', label: null,
