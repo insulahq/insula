@@ -71,6 +71,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A fresh install no longer gives up on a healthy mail server.** Before declaring the mail server
+  ready, bootstrap probes it from an admin-panel pod. It picked that pod once. If admin-panel was
+  replaced while the probe was waiting, every later attempt went to a pod that no longer existed.
+  After 10 minutes the install stopped with "refusing to bootstrap", although the mail server was
+  fine. Bootstrap now picks a running pod on every attempt.
+
 - **Switching a backup class to a target that cannot be reached is now reported as failed.**
   When a backup target could not be opened (wrong endpoint, bucket or credentials), the new backup
   shim failed to start on the first node it reached. Its rollout stopped there, and the other nodes

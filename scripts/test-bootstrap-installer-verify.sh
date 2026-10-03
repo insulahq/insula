@@ -43,7 +43,11 @@ for fn in _fvs_fail fetch_verified_script; do
   grep -q "^${fn}()" "$WORK/f.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 
-URL="https://get.k3s.io"
+# The URL bootstrap.sh actually fetches: the installer at the PINNED k3s tag.
+# get.k3s.io serves master's install.sh and drifts on every upstream publish —
+# comparing the pin against it reported a stale pin while bootstrap was fine.
+K3S_VERSION_PIN=$(grep -E '^K3S_VERSION=' "$BOOTSTRAP" | cut -d'"' -f2)
+URL="https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION_PIN}/install.sh"
 PINNED=$(grep -E '^K3S_INSTALLER_SHA256=' "$BOOTSTRAP" | cut -d'"' -f2)
 
 echo "fetch_verified_script — failure must not contaminate the payload channel"
