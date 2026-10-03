@@ -221,6 +221,81 @@ describe('ensureDomainCertificate', () => {
     expect(call.body.metadata?.resourceVersion).toBe('12345');
   });
 
+  it('leaves an existing Certificate alone when it already carries the desired spec + labels', async () => {
+    // Every reconcile re-applies the same cert. A no-op PUT is one more
+    // chance to lose the race with cert-manager, which writes to a
+    // Certificate it has just picked up.
+    selectResults = [[domain], [tenant]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      const desired = (k8s._createCustom as ReturnType<typeof vi.fn>).mock.calls[0][0].body as {
+        metadata: { labels: Record<string, string> };
+        spec: Record<string, unknown>;
+      };
+      return {
+        metadata: { resourceVersion: '7', labels: { ...desired.metadata.labels, 'added-by': 'someone-else' } },
+        spec: { ...desired.spec, privateKey: { rotationPolicy: 'Always' } }, // a field we never set
+        status: { conditions: [{ type: 'Ready', status: 'False' }] },
+      };
+    });
+
+    const result = await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+    expect(result.skipped).toBe(false);
+    expect(result.secretName).toBeTruthy();
+    expect(k8s._replaceCustom).not.toHaveBeenCalled();
+  });
+
+  it('re-reads and retries when cert-manager writes between our GET and PUT (409 on replace)', async () => {
+    // v2026.10.3-rc.2 VM run: this 409 escaped, the ingress reconcile built the
+    // tenant IngressRoute without tls.secretName and Traefik served its
+    // default certificate for the host.
+    selectResults = [[domain], [tenant]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+    let rv = 10;
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      metadata: { resourceVersion: String(rv++) },
+      spec: { dnsNames: ['stale.example.com'] },
+    }));
+    (k8s._replaceCustom as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(Object.assign(new Error('the object has been modified'), { statusCode: 409 }))
+      .mockResolvedValueOnce({});
+
+    const result = await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+    expect(result.skipped).toBe(false);
+    expect(k8s._getCustom).toHaveBeenCalledTimes(2);
+    expect(k8s._replaceCustom).toHaveBeenCalledTimes(2);
+    const second = (k8s._replaceCustom as ReturnType<typeof vi.fn>).mock.calls[1][0] as {
+      body: { metadata?: { resourceVersion?: string } };
+    };
+    expect(second.body.metadata?.resourceVersion).toBe('11'); // the FRESH version
+  });
+
+  it('gives up after a bounded number of lost races', async () => {
+    selectResults = [[domain], [tenant]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { resourceVersion: '1' }, spec: {} });
+    (k8s._replaceCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('the object has been modified'), { statusCode: 409 }),
+    );
+
+    await expect(
+      service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger()),
+    ).rejects.toMatchObject({ code: 'CERT_PROVISIONING_FAILED' });
+    expect(k8s._replaceCustom).toHaveBeenCalledTimes(4);
+  });
+
   it('falls back to create if the existing Certificate disappears between 409 and GET', async () => {
     // Race: cert-manager (or an admin) deletes the CR after our create
     // returned 409 but before our GET — don't throw, just accept it's gone
@@ -295,6 +370,40 @@ describe('ensureDomainCertificate', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // deleteDomainCertificate
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe('certificateAlreadyMatches', () => {
+  const desired = {
+    metadata: { name: 'c', labels: { 'app.kubernetes.io/managed-by': 'insula' } },
+    spec: { secretName: 's', dnsNames: ['a.example.test'], issuerRef: { name: 'i', kind: 'ClusterIssuer' } },
+  };
+  const same = {
+    metadata: { resourceVersion: '1', labels: { 'app.kubernetes.io/managed-by': 'insula' } },
+    spec: { secretName: 's', dnsNames: ['a.example.test'], issuerRef: { name: 'i', kind: 'ClusterIssuer' } },
+  };
+
+  it('matches when every field we set is already there', () => {
+    expect(service.certificateAlreadyMatches(same, desired)).toBe(true);
+  });
+  it('ignores fields and labels we do not set', () => {
+    expect(service.certificateAlreadyMatches({
+      metadata: { ...same.metadata, labels: { ...same.metadata.labels, other: 'x' } },
+      spec: { ...same.spec, privateKey: { rotationPolicy: 'Always' } },
+    }, desired)).toBe(true);
+  });
+  it('a changed dnsNames list is a mismatch (wildcard ↔ per-host must propagate)', () => {
+    expect(service.certificateAlreadyMatches({ ...same, spec: { ...same.spec, dnsNames: ['a.example.test', '*.example.test'] } }, desired)).toBe(false);
+  });
+  it('a changed issuer is a mismatch (nested compare)', () => {
+    expect(service.certificateAlreadyMatches({ ...same, spec: { ...same.spec, issuerRef: { name: 'other', kind: 'ClusterIssuer' } } }, desired)).toBe(false);
+  });
+  it('a missing or different label is a mismatch', () => {
+    expect(service.certificateAlreadyMatches({ ...same, metadata: { resourceVersion: '1' } }, desired)).toBe(false);
+    expect(service.certificateAlreadyMatches({ ...same, metadata: { labels: { 'app.kubernetes.io/managed-by': 'x' } } }, desired)).toBe(false);
+  });
+  it('an object with no spec at all is a mismatch', () => {
+    expect(service.certificateAlreadyMatches({}, desired)).toBe(false);
+  });
+});
 
 describe('deleteDomainCertificate', () => {
   it('deletes Certificate CR + TLS Secret for the wildcard name', async () => {

@@ -216,7 +216,13 @@ export async function listTenantMailboxAddresses(db: Database, tenantId: string)
   // Drizzle property name in migration 0000), unlike the snake_case
   // columns around it — a bare mailbox_type here is a 42703 at runtime.
   const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { full_address: string }[] }> };
-  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE tenant_id = ${tenantId} AND "mailboxType" != 'send_only' ORDER BY full_address`);
+  // Platform-managed report-intake boxes (postmaster@ / dmarc@, re-created by
+  // the 5-min mail self-heal) are excluded too: they are the platform's
+  // plumbing, not the tenant's mail, and the restore of "all" enumerates
+  // through this same function — a bundle captured before the self-heal
+  // created postmaster@ could otherwise never be restored (no snapshot for an
+  // address the restore insisted on).
+  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE tenant_id = ${tenantId} AND "mailboxType" != 'send_only' AND platform_managed = false ORDER BY full_address`);
   return r.rows.map((row) => row.full_address);
 }
 

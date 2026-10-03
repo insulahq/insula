@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import { systemSettings } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { ApiError } from '../../shared/errors.js';
 import {
   assertSnapshotRevertable,
   revertVolumeToSnapshot,
@@ -65,6 +66,8 @@ export interface SystemPvcSnapshotSummary {
   readonly cnpgCluster: { readonly namespace: string; readonly name: string } | null;
   /** Pod role per CNPG: 'primary', 'replica', or null when unknown. */
   readonly cnpgRole: 'primary' | 'replica' | null;
+  /** False when no Longhorn volume backs the PVC (see the api-contracts field). */
+  readonly snapshotCapable: boolean;
 }
 
 export interface SystemSnapshotEntry {
@@ -199,7 +202,7 @@ export async function listSystemPvcSnapshots(
     )),
     k8s.custom.listNamespacedCustomObject({
       group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes',
-    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhVolume[] }>,
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [], failed: true })) as Promise<{ items?: readonly RawLhVolume[]; failed?: boolean }>,
     k8s.custom.listNamespacedCustomObject({
       group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhSnapshot[] }>,
@@ -282,6 +285,9 @@ export async function listSystemPvcSnapshots(
         degraded: vol?.status?.robustness === 'degraded',
         cnpgCluster,
         cnpgRole,
+        // Unknown when the Longhorn LIST itself failed: keep the actions
+        // rather than hiding them on every row during an API blip.
+        snapshotCapable: volResp.failed === true || vol !== undefined,
       });
     }
   }
@@ -419,6 +425,33 @@ export async function pruneVolumeSnapshots(
     }
   }
   return { deleted, kept };
+}
+
+/**
+ * Refuse a snapshot action on a PVC with no Longhorn volume behind it.
+ *
+ * The mail store sits on node-local `local-path` storage. Asked to snapshot
+ * it, Longhorn's admission webhook answered "failed to get volume", which
+ * reached the operator as a 500 "Rejected by an admission webhook" with
+ * advice about degraded volumes — none of it true.
+ */
+export async function assertLonghornVolume(k8s: K8sClients, volumeName: string): Promise<void> {
+  try {
+    await k8s.custom.getNamespacedCustomObject({
+      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]);
+  } catch (err) {
+    const status = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) throw err;
+    throw new ApiError(
+      'VOLUME_NOT_SNAPSHOTTABLE',
+      `Volume '${volumeName}' is not a Longhorn volume, so it cannot be snapshotted or reverted here.`,
+      409,
+      { volume: volumeName },
+      'This volume lives on node-local storage. Mail data is protected by the mail backup (Backups → Mail) and the standby copy, not by Longhorn snapshots.',
+    );
+  }
 }
 
 export async function takeSnapshot(

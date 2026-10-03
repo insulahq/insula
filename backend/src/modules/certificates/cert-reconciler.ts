@@ -88,7 +88,7 @@ async function recordCertificateState(
   db: Database,
   d: DomainRow,
   health: CertificateHealth,
-): Promise<void> {
+): Promise<{ readonly firstIssued: boolean }> {
   const [existing] = await db
     .select({
       id: sslCertificates.id,
@@ -202,6 +202,8 @@ async function recordCertificateState(
       `cert-fallback:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`,
     );
   }
+
+  return { firstIssued: health.state === 'issued' && !everIssued };
 }
 
 // ─── K8s error helpers ──────────────────────────────────────────────────────
@@ -365,6 +367,13 @@ export interface CertReconcileResult {
    * reconciler is in no position to give.
    */
   readonly unreachable: { readonly reason: string; readonly unchecked: number } | null;
+  /** Tenants whose ingress was re-reconciled because a certificate first issued. */
+  readonly ingressRefreshed: number;
+}
+
+export interface CertReconcileDeps {
+  /** Test seam; production uses domains/k8s-ingress.ts reconcileIngress. */
+  readonly reconcileIngress?: (db: Database, k8s: K8sClients, tenantId: string, namespace: string) => Promise<void>;
 }
 
 /**
@@ -428,6 +437,7 @@ async function selfHealNamespace(
 export async function reconcileCertificateStatuses(
   db: Database,
   k8s: K8sClients,
+  deps: CertReconcileDeps = {},
 ): Promise<CertReconcileResult> {
   // Get all domains with auto-TLS enabled, joined with their tenant's namespace
   const domainsWithTenants = await db
@@ -449,6 +459,9 @@ export async function reconcileCertificateStatuses(
   // One Certificate list per namespace, not per domain — a tenant with
   // twenty domains would otherwise issue twenty identical LISTs.
   const certsByNamespace = new Map<string, readonly CertificateHealth[]>();
+  // Tenant → namespace whose IngressRoute must be rebuilt: a certificate went
+  // from never-issued to issued this tick.
+  const ingressToRefresh = new Map<string, string>();
 
   for (const d of domainsWithTenants) {
     if (!d.namespace) continue;
@@ -487,7 +500,8 @@ export async function reconcileCertificateStatuses(
         d.domainName,
       );
       if (health) {
-        await recordCertificateState(db, d, health);
+        const { firstIssued } = await recordCertificateState(db, d, health);
+        if (firstIssued) ingressToRefresh.set(d.tenantId, d.namespace);
       }
     } catch (err) {
       errors.push(`${d.domainName}: status read failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -630,5 +644,41 @@ export async function reconcileCertificateStatuses(
 
   await reportSweepAvailability(db, unreachable, new Date());
 
-  return { checked, synced, healedChallenges, errors, unreachable };
+  const ingressRefreshed = await refreshIngressForNewCertificates(db, k8s, ingressToRefresh, errors, deps);
+
+  return { checked, synced, healedChallenges, errors, unreachable, ingressRefreshed };
+}
+
+/**
+ * Rebuild the tenant IngressRoute once a domain's certificate first issues.
+ *
+ * A route built before its certificate existed (domain still unverified, a
+ * lost cert-manager write race, an API blip mid-reconcile) carries no
+ * `tls.secretName`, and Traefik serves its default certificate for the host.
+ * The certificate going Ready changes nothing by itself, and the paths that
+ * re-reconcile after verification only help when THEIR reconcile succeeds.
+ * This is the one place that sees issuance happen, so it closes the gap for
+ * every cause — within one 60 s tick. Edge-triggered on the first issuance,
+ * so a steady state costs nothing.
+ */
+async function refreshIngressForNewCertificates(
+  db: Database,
+  k8s: K8sClients,
+  tenants: ReadonlyMap<string, string>,
+  errors: string[],
+  deps: CertReconcileDeps,
+): Promise<number> {
+  if (tenants.size === 0) return 0;
+  const reconcile = deps.reconcileIngress
+    ?? (await import('../domains/k8s-ingress.js')).reconcileIngress;
+  let refreshed = 0;
+  for (const [tenantId, namespace] of tenants) {
+    try {
+      await reconcile(db, k8s, tenantId, namespace);
+      refreshed++;
+    } catch (err) {
+      errors.push(`ingress refresh after first issuance (${namespace}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return refreshed;
 }

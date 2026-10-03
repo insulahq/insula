@@ -613,6 +613,34 @@ _mail_wait_settled() {
   done
 }
 
+# Probe candidates for <hostname>: the node running the live Stalwart pod
+# FIRST (it serves the mail ports directly, with no proxy hop), then the
+# DNS-resolved mail IPs as ordered fallbacks. The live node must be included:
+# after a mail move (DR failover, planned migration) the VM tier's static DNS
+# still names the old node, and in activeNodeOnly exposure only the active
+# node answers. Re-read it on every round — a rename or migration rolls the pod.
+#
+# ORDER MATTERS — put the active Stalwart node FIRST.
+#
+# This used to `sort -u` the merged list, which sorts numerically and threw
+# away the very priority the stalwart_ip candidate exists to express. On a
+# 4-node cluster the haproxy node 10.98.x.23 sorts ahead of the active node
+# 10.98.x.98, so the sweep returned a haproxy front-end — precisely the node
+# this helper's own comment calls out as prone to accept-then-drop while its
+# Stalwart backend is mid-roll. The cert/banner probes then hit that node and
+# reported "no SMTP 220 banner" against a perfectly healthy mail server
+# (staging-all mail_tls 25/465/587, full run).
+#
+# The active node serves the port DIRECTLY with no proxy hop, so prefer it
+# and keep the DNS-resolved nodes as ordered fallbacks. Reachability THROUGH
+# haproxy is integration-mail-external-reachability.sh's job; these probes
+# are about what the mail server presents.
+_mail_probe_candidates() {
+  local hostname="$1" stalwart_ip
+  stalwart_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
+  printf '%s\n%s\n' "$stalwart_ip" "$(_resolve_mail_ips "$hostname")" | grep -vE '^$' | awk '!seen[$0]++'
+}
+
 _resolve_serving_mail_host() {
   if [[ -n "${MAIL_HOST:-}" ]]; then
     echo "$MAIL_HOST"
@@ -620,27 +648,7 @@ _resolve_serving_mail_host() {
   fi
   local mailhost; mailhost=$(_resolve_mail_hostname)
   local candidates
-  candidates=$(_resolve_mail_ips "$mailhost")
-  local stalwart_ip
-  stalwart_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
-  if [[ -n "$stalwart_ip" ]]; then
-    # ORDER MATTERS — put the active Stalwart node FIRST.
-    #
-    # This used to `sort -u` the merged list, which sorts numerically and threw
-    # away the very priority the stalwart_ip candidate exists to express. On a
-    # 4-node cluster the haproxy node 10.98.x.23 sorts ahead of the active node
-    # 10.98.x.98, so the sweep returned a haproxy front-end — precisely the node
-    # this helper's own comment calls out as prone to accept-then-drop while its
-    # Stalwart backend is mid-roll. The cert/banner probes then hit that node and
-    # reported "no SMTP 220 banner" against a perfectly healthy mail server
-    # (staging-all mail_tls 25/465/587, full run).
-    #
-    # The active node serves the port DIRECTLY with no proxy hop, so prefer it
-    # and keep the DNS-resolved nodes as ordered fallbacks. Reachability THROUGH
-    # haproxy is integration-mail-external-reachability.sh's job; these probes
-    # are about what the mail server presents.
-    candidates=$(printf '%s\n%s\n' "$stalwart_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
-  fi
+  candidates=$(_mail_probe_candidates "$mailhost")
   local _try ip
   for _try in 1 2 3 4 5 6; do
     while IFS= read -r ip; do
@@ -3414,6 +3422,18 @@ cleanup() {
     fi
     rm -f /tmp/integration.mail_hostname_restore
   fi
+  # Undo PART A's probe cadence + enable when the scenario returned before
+  # its own restore (marker written just before its first PATCH).
+  if [[ -f /tmp/integration.mail_schedule_restore ]]; then
+    local rest_sched; rest_sched=$(cat /tmp/integration.mail_schedule_restore 2>/dev/null || true)
+    if [[ -n "$rest_sched" ]]; then
+      log "cleanup: restoring the mail backup schedule (${rest_sched})"
+      _cl_status=$(api_raw PATCH "/admin/backups/schedules/mail" "$rest_sched" 2>/dev/null | tail -1)
+      [[ "$_cl_status" == 2* ]] \
+        || log "cleanup: WARNING — mail schedule restore returned HTTP ${_cl_status:-none}; set it back in Backups → Schedules (${rest_sched})"
+    fi
+    rm -f /tmp/integration.mail_schedule_restore
+  fi
   # Token cache written by _remint_token — a bearer token on tmpfs must not
   # outlive the run. Removed LAST: the api_raw() calls above need it to pick
   # up the freshest token (deleting it first re-created the very stale-token
@@ -4326,14 +4346,16 @@ except Exception as e:
   # and flakes. Instead resolve the full mail-IP set ONCE and probe
   # EVERY node each round, passing as soon as one answers with the new
   # hostname; remember that healthy IP for the cert-SAN poll below.
-  local mail_ips; mail_ips=$(_resolve_mail_ips "$test_host")
+  local mail_ips; mail_ips=$(_mail_probe_candidates "$test_host")
   if [[ -z "$mail_ips" ]]; then
     fail "hostname: no mail-serving IPs resolvable for ${test_host} — cannot probe SMTP banner"
   fi
   local attempt=0 banner_host="" banner_ip=""
   while [[ $attempt -lt 40 && -n "$mail_ips" ]]; do
     sleep 3
-    local ip b
+    local ip b _cands
+    _cands=$(_mail_probe_candidates "$test_host")
+    [[ -n "$_cands" ]] && mail_ips="$_cands"
     while IFS= read -r ip; do
       [[ -z "$ip" ]] && continue
       # The 465 banner is read FROM THE WORKSTATION via openssl implicit-TLS.
@@ -4486,12 +4508,30 @@ scenario_mail_migration_fixes() {
   local orig_db_sched
   orig_db_sched=$(api GET /admin/backups/schedules/mail \
     | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('cronExpression') or '')" 2>/dev/null)
-  log "PART A: live schedule=${orig_sched} db cadence=${orig_db_sched:-<default>}"
+  # The mail schedule is seeded DISABLED (0011; an operator opts in) and binding
+  # a target does not enable it — the firing engine and NATIVE unsuspend both
+  # honour the toggle. On a fresh cluster this scenario therefore failed both
+  # firing asserts while the engine worked as designed. Enable it for the
+  # scenario and put the operator's setting back at the end.
+  local orig_enabled
+  orig_enabled=$(api GET /admin/backups/schedules/mail \
+    | python3 -c "import json,sys;print(str((json.load(sys.stdin).get('data') or {}).get('enabled')).lower())" 2>/dev/null)
+  log "PART A: live schedule=${orig_sched} db cadence=${orig_db_sched:-<default>} enabled=${orig_enabled:-?}"
+  if [[ "$orig_enabled" != "true" && "$orig_enabled" != "false" ]]; then
+    # Without it there is no way to put the operator's toggle back.
+    fail "PART A: cannot read the mail schedule's enabled flag (got '${orig_enabled}') — not touching it"
+    return 1
+  fi
+  # Every early `return 1` below skips the explicit restore at the end of
+  # PART A. Leave cleanup() (EXIT trap) what it needs to undo the probe
+  # cadence AND the enable, so a single failed assert cannot leave tenant mail
+  # backups switched on — and firing every 2 min — on an operator's cluster.
+  printf '{"cronExpression":"*/30 * * * *","enabled":%s}' "$orig_enabled" > /tmp/integration.mail_schedule_restore
 
   # */2: fires within ≤2 min — keeps the platform-fire wait short.
   local probe_sched='*/2 * * * *'
   local patch_resp patch_status gate_ok
-  patch_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\"}" 2>&1)
+  patch_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\",\"enabled\":true}" 2>&1)
   patch_status=$(printf '%s' "$patch_resp" | tail -1)
   if [[ "$patch_status" != "200" ]]; then
     fail "PART A: PATCH /admin/backups/schedules/mail returned ${patch_status}"
@@ -4583,7 +4623,7 @@ scenario_mail_migration_fixes() {
   local restore_expr="*/30 * * * *"
   local _restore_ok=0 _restore_try _restore_resp _restore_code
   for _restore_try in 1 2 3; do
-    _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" 2>&1)
+    _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\",\"enabled\":true}" 2>&1)
     _restore_code=$(printf '%s' "$_restore_resp" | tail -1)
     [[ "$_restore_code" == "200" ]] && { _restore_ok=1; break; }
     log "PART A: restore PATCH attempt ${_restore_try} returned '${_restore_code}' — retrying in 5s"
@@ -4620,6 +4660,18 @@ scenario_mail_migration_fixes() {
   fi
   # Clean up the platform-fired Job so repeated runs stay tidy.
   ssh_cp "kubectl -n mail delete jobs -l stalwart-snapshot-trigger=manual --wait=false" >/dev/null 2>&1 || true
+  # Put the operator's schedule toggle back (the scenario enabled it).
+  local _en_ok=1
+  if [[ "${orig_enabled:-}" == "false" ]]; then
+    local _en_code
+    _en_code=$(api_raw PATCH /admin/backups/schedules/mail '{"enabled":false}' 2>/dev/null | tail -1)
+    if [[ "$_en_code" != 2* ]]; then
+      _en_ok=0
+      log "PART A: restoring enabled=false returned HTTP ${_en_code:-none} — cleanup() retries it at exit"
+    fi
+  fi
+  # Disarm cleanup()'s safety net only once the operator's state is really back.
+  [[ "$_en_ok" == "1" ]] && rm -f /tmp/integration.mail_schedule_restore
 
   # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──
   log "mail-migration-fixes: PART B — silent-loss guard does NOT brick a healthy migration"

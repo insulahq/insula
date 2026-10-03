@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.3-rc.2] - 2026-10-02
-
 ### BREAKING
 
 - **`bootstrap.sh` now decides CREATE vs JOIN from its flags alone.** Create the first server of a
@@ -72,6 +70,47 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   never 0. The sizes are read with one storage-system query per page load.
 
 ### Fixed
+
+- **Switching a backup class to a target that cannot be reached is now reported as failed.**
+  When a backup target could not be opened (wrong endpoint, bucket or credentials), the new backup
+  shim failed to start on the first node it reached. Its rollout stopped there, and the other nodes
+  kept using the previous target. The switch was still reported as "succeeded", while the node with
+  the failing shim had no working backups. The switch now fails and names the affected nodes.
+
+- **System snapshots: the mail volume no longer offers actions that cannot work.** The mail store
+  lives on storage local to its node, which the snapshot system cannot snapshot. The mail volume
+  is protected by the mail backup and its standby copy instead. "Take snapshot" on it used to fail
+  with a misleading "rejected by an admission webhook" error. The page now explains this instead of
+  offering the action, and the API refuses with a clear message.
+- **System snapshots: editing a volume's snapshot schedule works again.** The snapshot dialog kept
+  re-rendering in a loop, which used CPU in the browser and reset the schedule fields while the
+  operator was typing in them.
+
+- **A suspended tenant's websites stay suspended.** Suspending a tenant sends its sites to the
+  "suspended" page. But any later rebuild of that tenant's web routes removed the redirect and put
+  the sites back online. Such rebuilds happen without an operator: a certificate being issued, the
+  bandwidth meter, the hourly domain-verification check. Route rebuilds now leave a suspended
+  tenant alone. Changes made while it is suspended take effect when it is resumed.
+
+- **A newly added domain gets its HTTPS certificate served reliably.** Right after a domain was
+  verified, the platform could collide with the certificate manager while both updated the same
+  certificate record. When that happened, the site was left on the web server's placeholder
+  certificate, and browsers showed a warning until some unrelated change to the tenant. The
+  platform now retries that update. It also rebuilds the tenant's web routes, within a minute,
+  whenever a domain's certificate is issued for the first time.
+
+- **Migrating a tenant to another cluster, or re-creating a deleted tenant from its backup, restores
+  its files and mail again.** Since v2026.9.38, tenant backups are stored in one repository per
+  tenant, but the backup's description file did not record that. The cluster receiving the tenant
+  therefore looked in the old per-component repository, and the restore failed with "repository
+  does not exist". New backups now record where their data lives. For backups that were already
+  taken, the receiving cluster checks which repository actually contains them.
+
+- **Restoring a tenant's mailboxes no longer fails once the platform's report mailboxes exist.** The
+  platform adds `postmaster@` and `dmarc@` report mailboxes to every mail domain on its own. A tenant
+  backup taken before they appeared could not be restored — the restore insisted on restoring them
+  too, found nothing in the backup and failed the whole restore. Backups and restores now cover
+  only the tenant's own mailboxes.
 
 - **Out-of-memory alerts now say what actually happened.** A tenant container OOM-killed at its
   memory limit used to reach admins titled "Tenant evictions (memory pressure)" — nothing had been

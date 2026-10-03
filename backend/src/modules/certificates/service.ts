@@ -25,6 +25,8 @@
  * secrets are namespace-scoped).
  */
 
+import { isDeepStrictEqual } from 'node:util';
+
 import { eq } from 'drizzle-orm';
 import {
   certCoversHostname,
@@ -215,6 +217,17 @@ function isK8s409(err: unknown): boolean {
  * object was deleted in the narrow window between the 409 and the GET, we
  * retry the create instead of erroring.
  *
+ * Two more things make the replace path safe against cert-manager, which
+ * writes to a Certificate it has just picked up (status, revision):
+ *   - an object that already carries the desired spec and labels is left
+ *     alone — the common case (every reconcile re-applies the same cert), and
+ *     a no-op PUT is just one more chance to lose the race;
+ *   - a replace that loses the race (409 on the PUT) re-reads and retries.
+ * Losing it used to throw, the ingress reconcile caught it and built the
+ * tenant IngressRoute with NO tls.secretName, and nothing revisited it:
+ * Traefik served its default certificate for the host (v2026.10.3-rc.2 VM
+ * run, staging-all https).
+ *
  * Returns when the apply succeeded. Throws any other underlying k8s error
  * so callers can wrap it into their own ApiError with context.
  */
@@ -238,42 +251,76 @@ async function applyCertificateCR(
   }
 
   // 409 — object exists. Read it so we can PUT with the right resourceVersion.
-  let existing: { metadata?: { resourceVersion?: string } } | null = null;
-  try {
-    existing = await k8s.custom.getNamespacedCustomObject({
-      group: 'cert-manager.io',
-      version: 'v1',
-      namespace,
-      plural: 'certificates',
-      name: certName,
-    }) as { metadata?: { resourceVersion?: string } };
-  } catch (getErr) {
-    if (!isK8s404(getErr)) throw getErr;
-    // Vanished between our create and get — retry the create. If this one
-    // also 409s, cert-manager is racing us and we let the caller retry.
-    await k8s.custom.createNamespacedCustomObject({
-      group: 'cert-manager.io',
-      version: 'v1',
-      namespace,
-      plural: 'certificates',
-      body,
-    });
-    return;
+  for (let attempt = 1; ; attempt++) {
+    let existing: ExistingCertificate;
+    try {
+      existing = await k8s.custom.getNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        namespace,
+        plural: 'certificates',
+        name: certName,
+      }) as ExistingCertificate;
+    } catch (getErr) {
+      if (!isK8s404(getErr)) throw getErr;
+      // Vanished between our create and get — retry the create. If this one
+      // also 409s, cert-manager is racing us and we let the caller retry.
+      await k8s.custom.createNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        namespace,
+        plural: 'certificates',
+        body,
+      });
+      return;
+    }
+
+    if (certificateAlreadyMatches(existing, body)) return;
+
+    const rv = existing.metadata?.resourceVersion;
+    const bodyWithRv = rv
+      ? { ...body, metadata: { ...(body.metadata as object | undefined ?? {}), resourceVersion: rv } }
+      : body;
+
+    try {
+      await k8s.custom.replaceNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        namespace,
+        plural: 'certificates',
+        name: certName,
+        body: bodyWithRv,
+      });
+      return;
+    } catch (err) {
+      // Someone (cert-manager) wrote between our GET and PUT: re-read, retry.
+      if (!isK8s409(err) || attempt >= CERTIFICATE_REPLACE_ATTEMPTS) throw err;
+    }
   }
+}
 
-  const rv = existing.metadata?.resourceVersion;
-  const bodyWithRv = rv
-    ? { ...body, metadata: { ...(body.metadata as object | undefined ?? {}), resourceVersion: rv } }
-    : body;
+const CERTIFICATE_REPLACE_ATTEMPTS = 4;
 
-  await k8s.custom.replaceNamespacedCustomObject({
-    group: 'cert-manager.io',
-    version: 'v1',
-    namespace,
-    plural: 'certificates',
-    name: certName,
-    body: bodyWithRv,
-  });
+interface ExistingCertificate {
+  readonly metadata?: { readonly resourceVersion?: string; readonly labels?: Record<string, string> };
+  readonly spec?: Record<string, unknown>;
+}
+
+/**
+ * True when `existing` already carries every spec field and label `desired`
+ * sets. Compares only what we set: fields cert-manager or the API server add
+ * are not ours to fight over.
+ */
+export function certificateAlreadyMatches(
+  existing: ExistingCertificate,
+  desired: Record<string, unknown>,
+): boolean {
+  const desiredSpec = (desired.spec ?? {}) as Record<string, unknown>;
+  const desiredLabels = ((desired.metadata as { labels?: Record<string, string> } | undefined)?.labels) ?? {};
+  const spec = existing.spec ?? {};
+  const labels = existing.metadata?.labels ?? {};
+  return Object.entries(desiredSpec).every(([k, v]) => isDeepStrictEqual(spec[k], v))
+    && Object.entries(desiredLabels).every(([k, v]) => labels[k] === v);
 }
 
 // ─── Certificate CR builder ───────────────────────────────────────────────
