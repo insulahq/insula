@@ -94,7 +94,19 @@ if ! [ -x "$RESTIC" ]; then RESTIC="$(command -v restic 2>/dev/null || true)"; f
 
 WORK="$(mktemp -d -p "${TMPDIR:-/var/tmp}" restic-itest-XXXXXX)"
 echo "workdir: $WORK"
-trap 'rm -rf "$WORK"' EXIT
+# A backup config THIS run created. Removed at exit: left behind, it is a second
+# enabled, writable target, and tenant-import target auto-selection refuses to
+# guess between two ("several are configured") — breaking later import suites
+# in the same run. A pre-existing integration-test-s3 is left alone.
+CREATED_CFG=""
+cleanup_restic_itest() {
+  rm -rf "$WORK"
+  if [ -n "$CREATED_CFG" ]; then
+    apij -X DELETE "$API_BASE/api/v1/admin/backup-configs/$CREATED_CFG" >/dev/null 2>&1 \
+      || echo "  WARN: could not delete test backup config $CREATED_CFG — remove it in Backups → Targets" >&2
+  fi
+}
+trap cleanup_restic_itest EXIT
 
 # ── Read S3 + SFTP creds ────────────────────────────────────────────────────
 # Two credential sources, env FIRST. The harness tiers that already export
@@ -213,6 +225,11 @@ print(json.dumps({
   'enabled': True,
 }))
 ")" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else print(json.dumps(r))')
+  # Only a bare UUID is "the config this run created" — an error envelope can
+  # contain hyphenated ids too, and must never mark someone else's row for delete.
+  if [[ "$EXISTING_CFG" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    CREATED_CFG="$EXISTING_CFG"
+  fi
   fi
 fi
 echo "  config id: $EXISTING_CFG"

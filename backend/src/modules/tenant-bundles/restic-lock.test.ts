@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isResticLockError } from './restic-driver.js';
+import { isResticLockError, isResticRepoMissingError } from './restic-driver.js';
 
 /**
  * Lock-vs-broken classification.
@@ -33,5 +33,31 @@ describe('isResticLockError', () => {
 
   it('treats success as not-a-lock', () => {
     expect(isResticLockError(0, '')).toBe(false);
+  });
+});
+
+/**
+ * "No repository here" vs every other failure. The DR layout probe reads the
+ * first as "this bundle predates the per-tenant merge"; reading a wrong
+ * password or an unreachable shim the same way would point the restore at the
+ * wrong repository.
+ */
+describe('isResticRepoMissingError', () => {
+  it('recognises the missing-repository message restic prints (exit 10)', () => {
+    expect(isResticRepoMissingError(new Error(
+      'restic snapshots exited 10: Fatal: repository does not exist: unable to open config file: Stat: The specified key does not exist.',
+    ))).toBe(true);
+  });
+
+  it('does not treat a wrong password as a missing repository', () => {
+    expect(isResticRepoMissingError(new Error('restic snapshots exited 12: Fatal: wrong password or no key found'))).toBe(false);
+  });
+
+  it('does not treat an unreachable backend as a missing repository', () => {
+    expect(isResticRepoMissingError(new Error('restic snapshots exited 1: Fatal: unable to open repository: dial tcp: connection refused'))).toBe(false);
+  });
+
+  it('accepts a non-Error throw', () => {
+    expect(isResticRepoMissingError('repository does not exist')).toBe(true);
   });
 });

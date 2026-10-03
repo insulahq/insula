@@ -3,16 +3,20 @@
 #
 # Covers:
 #   1. List system PVCs, assert CNPG cluster grouping (system-db replicas
-#      have cnpgCluster set, Stalwart has cnpgCluster=null).
+#      have cnpgCluster set, the mail store has cnpgCluster=null).
 #   2. Take a manual snapshot on the platform/system-db primary's PVC,
 #      assert it appears in the per-volume listing.
-#   3. Membership guard: try to delete a tenant snapshot via the system
+#   3. Membership guard: try to delete a system-db snapshot via the mail
 #      route — must return 409 SNAPSHOT_VOLUME_MISMATCH.
-#   4. Full restore lifecycle on the system-db primary: take snapshot,
-#      flip a marker row in the DB, restore, assert marker gone.
-#      Restore goes through the orchestrator: scale down → wait detach →
-#      Longhorn snapshotRevert → scale back → wait attach. Worst case
-#      ~5 min wall-clock.
+#   4a. CNPG restore is refused 422 (CNPG has its own PITR).
+#   4b. The mail store (node-local local-path storage, no Longhorn volume)
+#      is listed snapshotCapable=false and a snapshot of it is refused 409
+#      VOLUME_NOT_SNAPSHOTTABLE.
+#   4c. Full restore lifecycle on a Longhorn-backed, non-CNPG system PVC
+#      (monitoring first): snapshot, write a marker into the volume through
+#      its consumer pod, restore, assert the marker is gone. Restore goes
+#      through the orchestrator: scale down → wait detach → Longhorn
+#      snapshotRevert → scale back → wait attach. Worst case ~5 min.
 #   5. Phase B reconciler: assert primary's PVC has the
 #      `recurring-job-group.longhorn.io/default=enabled` label and
 #      replicas don't.
@@ -131,57 +135,105 @@ fi
 # Clean up marker snapshot
 curl_admin -X DELETE "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots/$CNPG_MARKER" >/dev/null
 
-log "4b) Full restore lifecycle on the Stalwart (StatefulSet) PVC"
-MAIL_NS=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; m=[i for i in d["items"] if i["namespace"]=="mail"][0]; print(m["namespace"])')
-MAIL_PVC=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; m=[i for i in d["items"] if i["namespace"]=="mail"][0]; print(m["pvcName"])')
-echo "  consumer: StatefulSet/stalwart-mail  pvc=$MAIL_NS/$MAIL_PVC vol=$MAIL_VOL"
+log "4b) The mail store is not a Longhorn volume — snapshot actions are refused cleanly"
+# The mail store lives on node-local `local-path` storage (protected by the
+# mail backup + standby copy). Snapshotting it used to surface as a 500
+# "Rejected by an admission webhook" with advice about degraded volumes.
+MAIL_CAPABLE=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; print([str(i.get("snapshotCapable", True)).lower() for i in d["items"] if i["namespace"]=="mail"][0])')
+[[ "$MAIL_CAPABLE" == "false" ]] && pass "mail volume listed as snapshotCapable=false" \
+  || fail "mail volume listed as snapshotCapable=$MAIL_CAPABLE (expected false — it has no Longhorn volume)"
+HTTP=$(curl -sS -k -o /tmp/take.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots" -d '{"label":"e2e-refuse"}' --max-time 30)
+if [[ "$HTTP" == "409" ]] && grep -q VOLUME_NOT_SNAPSHOTTABLE /tmp/take.json; then
+  pass "snapshot of the mail volume refused 409 VOLUME_NOT_SNAPSHOTTABLE"
+else
+  cat /tmp/take.json; fail "expected 409 VOLUME_NOT_SNAPSHOTTABLE for the mail volume, got $HTTP"
+fi
 
-# Take a marker snapshot NOW
-curl_admin -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots" \
-  -H 'Content-Type: application/json' -d '{"label":"e2e-restore"}' -o /tmp/marker.json
-MARKER=$(python3 -c 'import json; print(json.load(open("/tmp/marker.json"))["data"]["snapshotName"])')
-echo "  marker snapshot: $MARKER"
-sleep 8
+log "4c) Full restore lifecycle on a Longhorn-backed, non-CNPG system PVC"
+# Run a shell inside a pod. $KUBECTL is ssh-wrapped and ssh JOINS its args
+# into one remote command line, so an unquoted `sh -c '... > file'` ran the
+# redirect on the node's host shell — the old Stalwart marker never reached
+# the volume. Quote the whole remote command.
+kexec_sh() { # <ns> <pod> <script>
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_HOST" \
+    "kubectl exec -n $1 $2 -- sh -c $(printf '%q' "$3")"
+}
+# "<ns> <pvc> <volume>" for each candidate, monitoring first (the cheapest to
+# roll back on a test cluster).
+CANDIDATES=$(python3 -c '
+import json
+d = json.load(open("/tmp/sys-snaps.json"))["data"]["items"]
+rows = [i for i in d if i.get("cnpgCluster") is None and i.get("snapshotCapable", True) and i["namespace"] != "mail"]
+rows.sort(key=lambda i: (i["namespace"] != "monitoring", i["namespace"]))
+for i in rows: print(i["namespace"], i["pvcName"], i["longhornVolumeName"])')
+T_NS="" T_PVC="" T_VOL="" T_POD="" T_PATH=""
+while read -r ns pvc vol; do
+  [[ -z "$ns" ]] && continue
+  # The running pod that mounts this PVC, and where.
+  read -r pod path < <($KUBECTL get pods -n "$ns" -o json 2>/dev/null | python3 -c '
+import json, sys
+pvc = sys.argv[1]
+for p in json.load(sys.stdin)["items"]:
+    if p.get("status", {}).get("phase") != "Running": continue
+    vols = {v["name"] for v in p["spec"].get("volumes", []) if v.get("persistentVolumeClaim", {}).get("claimName") == pvc}
+    for c in p["spec"]["containers"]:
+        for m in c.get("volumeMounts", []):
+            if m["name"] in vols and not m.get("readOnly"):
+                print(p["metadata"]["name"], m["mountPath"]); sys.exit(0)' "$pvc")
+  [[ -z "${pod:-}" ]] && { echo "  $ns/$pvc: no running consumer pod — next"; continue; }
+  if kexec_sh "$ns" "$pod" "echo pre > '$path/e2e-restore-probe.txt' && rm -f '$path/e2e-restore-probe.txt'" >/dev/null 2>&1; then
+    T_NS=$ns T_PVC=$pvc T_VOL=$vol T_POD=$pod T_PATH=$path; break
+  fi
+  echo "  $ns/$pvc: consumer $pod has no shell or cannot write $path — next"
+done <<< "$CANDIDATES"
+if [[ -z "$T_VOL" ]]; then
+  echo "  SKIP 4c: no Longhorn-backed non-CNPG system PVC with a writable shell consumer on this cluster"
+else
+  echo "  target: $T_NS/$T_PVC vol=$T_VOL consumer=$T_POD mount=$T_PATH"
+  curl_admin -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$T_VOL/snapshots" \
+    -H 'Content-Type: application/json' -d '{"label":"e2e-restore"}' -o /tmp/marker.json
+  MARKER=$(python3 -c 'import json; print((json.load(open("/tmp/marker.json")).get("data") or {}).get("snapshotName",""))')
+  [[ -n "$MARKER" ]] || { cat /tmp/marker.json; fail "manual snapshot of $T_VOL returned no snapshotName"; }
+  pass "marker snapshot $MARKER taken"
+  sleep 8
+  # Written AFTER the snapshot: a real revert must take it away.
+  kexec_sh "$T_NS" "$T_POD" "echo post-snapshot > '$T_PATH/e2e-restore-marker.txt'" \
+    && pass "post-snapshot marker written into the volume" \
+    || fail "could not write the post-snapshot marker into $T_PATH"
 
-# Drop a marker file inside the volume. Stalwart's UID may not have
-# write permission on the volume root, so use a kubectl debug pod
-# running as root to write into the same PVC mount.
-echo "  writing post-snapshot marker file via root debug pod…"
-$KUBECTL debug -n mail stalwart-mail-0 --image=busybox:1.36 --quiet --as=system:serviceaccount:mail:default --target=stalwart-mail -- sh -c 'echo "post-snapshot-marker-$$" > /opt/stalwart/e2e-restore-marker.txt 2>/dev/null && cat /opt/stalwart/e2e-restore-marker.txt 2>/dev/null || echo "FAILED-debug-pod-no-mount-share"' 2>&1 | tail -3 || true
-# Fallback: cordon-friendlier — write directly via kubectl exec with explicit root context.
-$KUBECTL exec -n mail stalwart-mail-0 --container=stalwart-mail -- /bin/sh -c 'cd /opt/stalwart && echo "marker-$$" > e2e-restore-marker.txt 2>&1; ls -la /opt/stalwart/e2e-restore-marker.txt 2>&1' 2>&1 | tail -3 || true
-
-# Issue restore
-echo "  POST restore (this takes 2-5 min)…"
-HTTP=$(curl -sS -k -o /tmp/restore.json -w '%{http_code}' \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots/$MARKER/restore" \
-  --max-time 480 \
-  -d "{\"pvcNamespace\":\"$MAIL_NS\",\"pvcName\":\"$MAIL_PVC\"}")
-echo "  HTTP=$HTTP"
-cat /tmp/restore.json | python3 -m json.tool 2>/dev/null | head -40 || cat /tmp/restore.json
-
-if [[ "$HTTP" = "200" ]]; then
+  echo "  POST restore (this takes 2-5 min)…"
+  HTTP=$(curl -sS -k -o /tmp/restore.json -w '%{http_code}' \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$T_VOL/snapshots/$MARKER/restore" \
+    --max-time 480 \
+    -d "{\"pvcNamespace\":\"$T_NS\",\"pvcName\":\"$T_PVC\"}")
+  echo "  HTTP=$HTTP"
+  python3 -m json.tool < /tmp/restore.json 2>/dev/null | head -40 || cat /tmp/restore.json
+  [[ "$HTTP" == "200" ]] || fail "restore returned HTTP $HTTP"
   STEPS=$(python3 -c 'import json; d=json.load(open("/tmp/restore.json"))["data"]; print(",".join(s["step"] for s in d["steps"] if s["ok"]))')
   echo "  steps OK: $STEPS"
   pass "restore lifecycle returned 200 with full step trace"
 
-  echo "  waiting for stalwart pod to recover…"
-  for _ in {1..30}; do
-    if $KUBECTL get pod -n mail stalwart-mail-0 -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
-      sleep 5
-      break
-    fi
+  # The consumer was scaled to 0 and back: find its NEW pod.
+  NEW_POD=""
+  for _ in $(seq 1 30); do
+    read -r NEW_POD _ < <($KUBECTL get pods -n "$T_NS" -o json 2>/dev/null | python3 -c '
+import json, sys
+pvc = sys.argv[1]
+for p in json.load(sys.stdin)["items"]:
+    if p.get("status", {}).get("phase") != "Running" or p["metadata"].get("deletionTimestamp"): continue
+    if any(v.get("persistentVolumeClaim", {}).get("claimName") == pvc for v in p["spec"].get("volumes", [])):
+        print(p["metadata"]["name"], "x"); sys.exit(0)' "$T_PVC")
+    [[ -n "${NEW_POD:-}" ]] && break
     sleep 10
   done
-  if $KUBECTL exec -n mail stalwart-mail-0 -- test -f /opt/stalwart/e2e-restore-marker.txt 2>/dev/null; then
-    echo "  WARN: marker file still present — restore may not have rolled back"
-  else
-    pass "marker file absent after restore — rollback verified"
+  [[ -n "${NEW_POD:-}" ]] || fail "no running consumer pod for $T_NS/$T_PVC after restore"
+  if kexec_sh "$T_NS" "$NEW_POD" "test -f '$T_PATH/e2e-restore-marker.txt'" >/dev/null 2>&1; then
+    fail "post-snapshot marker still present after restore — the volume was not reverted"
   fi
-else
-  cat /tmp/restore.json
-  fail "restore returned HTTP $HTTP"
+  pass "post-snapshot marker gone after restore — revert verified (consumer $NEW_POD)"
+  curl_admin -X DELETE "$ADMIN_HOST/api/v1/admin/system-snapshots/$T_VOL/snapshots/$MARKER" >/dev/null || true
 fi
 
 log "5) Phase B: only primary's PVC carries the recurring-jobs label"

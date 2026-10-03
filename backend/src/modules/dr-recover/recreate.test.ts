@@ -142,6 +142,7 @@ describe('recreateTenantFromBundle', () => {
     const result = await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
       targetNode: 'worker-2',
       resolveStore: inject(makeStore(meta)),
+      hasPerTenantSnapshots: async () => false,
     });
 
     // createTenant is called with the preserved id + namespace + mapped fields.
@@ -203,6 +204,7 @@ describe('recreateTenantFromBundle', () => {
     await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
       targetNode: 'worker-2',
       resolveStore: inject(makeStore(metaV3)),
+      hasPerTenantSnapshots: async () => true,
     });
 
     const rows = inserts[1].values as Array<Record<string, unknown>>;
@@ -255,6 +257,60 @@ describe('recreateTenantFromBundle', () => {
     await expect(
       recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, { resolveStore: inject(makeStore('throws')) }),
     ).rejects.toMatchObject({ code: 'DR_BUNDLE_NOT_FOUND', status: 404 });
+  });
+});
+
+describe('recreateTenantFromBundle — restic repository layout (ADR-061)', () => {
+  // The registered row decides which repository every restore executor opens.
+  // v2026.10.3-rc.2 VM run: a per-tenant bundle registered with no layout read
+  // as per-component, and the migration restore failed with "repository does
+  // not exist" at restic-files/<id> while the data sat in restic/<id>.
+  function setup() {
+    vi.mocked(createTenant).mockResolvedValue({
+      id: TENANT_ID, kubernetesNamespace: NAMESPACE, status: 'pending',
+    } as unknown as Awaited<ReturnType<typeof createTenant>>);
+    return makeApp([[{ id: PLAN_ID }], [{ id: REGION_ID }]]);
+  }
+
+  it('stamps the layout meta.json records, without probing', async () => {
+    const { app, inserts } = setup();
+    const probe = vi.fn(async () => false);
+    await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
+      resolveStore: inject(makeStore(makeMeta({ repoLayout: 'per-tenant' }))),
+      hasPerTenantSnapshots: probe,
+    });
+    expect((inserts[0].values as Row).repoLayout).toBe('per-tenant');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('meta.json without a layout + a per-tenant snapshot of THIS bundle → per-tenant', async () => {
+    const { app, inserts } = setup();
+    const probe = vi.fn(async () => true);
+    await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
+      resolveStore: inject(makeStore(makeMeta())),
+      hasPerTenantSnapshots: probe,
+    });
+    expect(probe).toHaveBeenCalledWith(app, TENANT_ID, BUNDLE_ID);
+    expect((inserts[0].values as Row).repoLayout).toBe('per-tenant');
+  });
+
+  it('meta.json without a layout + no per-tenant snapshot → per-component', async () => {
+    const { app, inserts } = setup();
+    await recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
+      resolveStore: inject(makeStore(makeMeta())),
+      hasPerTenantSnapshots: async () => false,
+    });
+    expect((inserts[0].values as Row).repoLayout).toBe('per-component');
+  });
+
+  it('a failed probe aborts BEFORE the tenant row or the bundle index exist', async () => {
+    const { app, inserts } = setup();
+    await expect(recreateTenantFromBundle(app, TENANT_ID, BUNDLE_ID, {
+      resolveStore: inject(makeStore(makeMeta())),
+      hasPerTenantSnapshots: async () => { throw new Error('wrong password or no key found'); },
+    })).rejects.toThrow(/wrong password/);
+    expect(createTenant).not.toHaveBeenCalled();
+    expect(inserts).toHaveLength(0);
   });
 });
 

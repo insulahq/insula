@@ -59,7 +59,29 @@ restore() {
   for _ in $(seq 1 24); do [[ "$(tenant_binding)" == "$ORIG_BINDING" ]] && { echo "  restored." >&2; return 0; }; sleep 5; done
   echo "  WARNING: tenant binding not confirmed back to $ORIG_BINDING — CHECK MANUALLY" >&2
 }
-trap restore EXIT INT TERM
+# A CIFS target this run created for itself (see below). Removed on exit so the
+# cluster never keeps a second enabled, writable target: tenant-import target
+# auto-selection refuses to guess between two ("several are configured").
+TEMP_CIFS_ID=""
+drop_temp_cifs() {
+  [[ -z "$TEMP_CIFS_ID" ]] && return 0
+  # restore() is best-effort: if the tenant class is STILL on the temporary
+  # target, deleting it would strand the binding and break tenant backups.
+  if [[ "$(tenant_binding)" == "$TEMP_CIFS_ID" ]]; then
+    echo "  WARNING: tenant class still bound to temporary CIFS target $TEMP_CIFS_ID — NOT deleting it; rebind the tenant class, then remove it in Backups → Targets" >&2
+    return 0
+  fi
+  local t code; t=$(tok)
+  code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" -X DELETE "$API/admin/backup-configs/$TEMP_CIFS_ID" \
+    -H "Authorization: Bearer $t" 2>/dev/null)
+  if [[ "$code" =~ ^20 ]]; then echo "  temporary CIFS target $TEMP_CIFS_ID removed." >&2; return 0; fi
+  # Could not delete (e.g. now referenced): at least take it out of auto-selection.
+  code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" -X PATCH "$API/admin/backup-configs/$TEMP_CIFS_ID" \
+    -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -d '{"enabled":false}' 2>/dev/null)
+  echo "  WARNING: temporary CIFS target $TEMP_CIFS_ID not deleted; disabled it (HTTP $code) — remove it in Backups → Targets" >&2
+}
+finish() { restore; drop_temp_cifs; }
+trap finish EXIT INT TERM
 
 echo "── resolve a CIFS target for the migration source ──"
 TOK=$(tok); [[ -z "$TOK" ]] && { echo "ERROR: login failed" >&2; exit 2; }
@@ -70,7 +92,22 @@ import sys,json
 for c in json.load(sys.stdin).get("data",[]):
     if c.get("storageType")=="cifs" and (c.get("enabled") in (1,True,"1")): print(c["id"]); break')
 fi
-[[ -z "$CIFS_ID" || "$CIFS_ID" == null ]] && { echo "  SKIP (77): no enabled CIFS backup target on this cluster (set CIFS_TEST_TARGET_ID to force)" >&2; exit 77; }
+# No CIFS target, but the harness hands us a CIFS share (the VM tier exports
+# BACKUP_CIFS_*): create a temporary target for this run only. Real clusters
+# back up to CIFS, so this is the read path production depends on.
+if [[ ( -z "$CIFS_ID" || "$CIFS_ID" == null ) && -n "${BACKUP_CIFS_HOST:-}" && -n "${BACKUP_CIFS_USER:-}" && -n "${BACKUP_CIFS_PASSWORD:-}" ]]; then
+  _body=$(CIFS_NAME="e2e-migration-cifs-$(date +%s)" python3 -c '
+import json,os
+print(json.dumps({"name": os.environ["CIFS_NAME"], "storage_type": "cifs",
+  "cifs_host": os.environ["BACKUP_CIFS_HOST"], "cifs_share": os.environ.get("BACKUP_CIFS_SHARE") or "backups",
+  "cifs_user": os.environ["BACKUP_CIFS_USER"], "cifs_password": os.environ["BACKUP_CIFS_PASSWORD"], "retention_days": 7}))')
+  _resp=$(curl -sS -m 30 -X POST "$API/admin/backup-configs" -H "Authorization: Bearer $TOK" \
+    -H 'Content-Type: application/json' -d "$_body" 2>/dev/null)
+  CIFS_ID=$(printf '%s' "$_resp" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("data") or {}).get("id",""))' 2>/dev/null)
+  [[ -n "$CIFS_ID" ]] && TEMP_CIFS_ID="$CIFS_ID" && echo "  created temporary CIFS target $CIFS_ID on ${BACKUP_CIFS_HOST}"
+  [[ -z "$CIFS_ID" ]] && { echo "  ✗ could not create a CIFS target from BACKUP_CIFS_*: $(printf '%s' "$_resp" | head -c 200)" >&2; exit 1; }
+fi
+[[ -z "$CIFS_ID" || "$CIFS_ID" == null ]] && { echo "  SKIP (77): no enabled CIFS backup target on this cluster (set CIFS_TEST_TARGET_ID, or BACKUP_CIFS_HOST/USER/PASSWORD to create one)" >&2; exit 77; }
 echo "  CIFS source target = $CIFS_ID"
 
 ORIG_BINDING="$(tenant_binding)"

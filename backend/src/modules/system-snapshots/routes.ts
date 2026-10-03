@@ -6,6 +6,7 @@ import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
+  assertLonghornVolume,
   listSystemPvcSnapshots,
   listSnapshotsForVolume,
   takeSnapshot,
@@ -119,6 +120,7 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
     const body = (request.body ?? {}) as { label?: string };
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
+    await assertLonghornVolume(k8s, volumeName);
     const result = await takeSnapshot(k8s, volumeName, body.label);
     return success(result);
   });
@@ -212,6 +214,7 @@ export async function systemSnapshotsRoutes(app: FastifyInstance): Promise<void>
     validateName(pvcName, 'pvcName');
     const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kc);
+    await assertLonghornVolume(k8s, volumeName);
     try {
       const result = await revertSnapshot(k8s, pvcNamespace, pvcName, volumeName, snapshotName);
       return success(result);

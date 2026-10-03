@@ -65,7 +65,7 @@ import {
   type ShimReconcileClients,
   type ShimReconcileResult,
 } from './reconciler.js';
-import { SHIM_DAEMONSET_NAME, SHIM_NAMESPACE } from './service.js';
+import { CONFIG_HASH_ANNOTATION, SHIM_DAEMONSET_NAME, SHIM_NAMESPACE } from './service.js';
 
 // ---------------------------------------------------------------------------
 // Verify-ready
@@ -528,6 +528,17 @@ async function runShimAssignmentPipeline(
         { verify },
         'backup-rclone-shim apply: DaemonSet did not settle within verify timeout',
       );
+      // A rollout that is merely slow is fine. One whose new pods CRASH is
+      // not: rclone refuses to start when it cannot open the new target, the
+      // DaemonSet stops rolling at that pod, and the other nodes keep the
+      // previous target. Reporting that as "succeeded" told the operator the
+      // switch worked while the crashing node had no backup path at all
+      // (v2026.10.3-rc.2 VM run: an unreachable S3 endpoint bound to SYSTEM).
+      const failing = await findFailingShimPods(k8sClients.core, await currentShimConfigHash(k8sClients.apps))
+        .catch(() => []);
+      if (failing.length > 0) {
+        throw new Error(describeFailingShim(args.className, failing));
+      }
     }
 
     await tasks.progress(db, taskId, {
@@ -581,6 +592,79 @@ async function runShimAssignmentPipeline(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** A shim pod whose container is not starting. */
+export interface FailingShimPod {
+  readonly pod: string;
+  readonly node: string;
+  readonly reason: string;
+}
+
+const FAILING_WAIT_REASONS = new Set([
+  'CrashLoopBackOff', 'CreateContainerConfigError', 'ImagePullBackOff', 'ErrImagePull', 'RunContainerError',
+]);
+
+interface ShimPodShape {
+  readonly metadata?: { readonly name?: string; readonly annotations?: Record<string, string> };
+  readonly spec?: { readonly nodeName?: string };
+  readonly status?: {
+    readonly containerStatuses?: ReadonlyArray<{
+      readonly state?: { readonly waiting?: { readonly reason?: string } };
+    }>;
+  };
+}
+
+/** The config-hash the shim DaemonSet's pod template currently carries (null if unknown). */
+export async function currentShimConfigHash(
+  apps: Pick<k8s.AppsV1Api, 'readNamespacedDaemonSet'>,
+): Promise<string | null> {
+  try {
+    const ds = (await apps.readNamespacedDaemonSet({
+      namespace: SHIM_NAMESPACE, name: SHIM_DAEMONSET_NAME,
+    } as unknown as Parameters<typeof apps.readNamespacedDaemonSet>[0])) as DaemonSetStatusShape;
+    return ds.spec?.template?.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Shim pods of the CURRENT template (`configHash`) whose container is stuck
+ * failing to start (crash loop, bad config, image). Pods of an older template
+ * are ignored: one crash-looping for an unrelated reason must not fail a
+ * switch whose own pods are merely slow. Without a hash nothing can be
+ * attributed to this switch, so nothing is reported.
+ */
+export async function findFailingShimPods(
+  core: Pick<k8s.CoreV1Api, 'listNamespacedPod'>,
+  configHash: string | null,
+): Promise<FailingShimPod[]> {
+  if (!configHash) return [];
+  const res = (await core.listNamespacedPod({
+    namespace: SHIM_NAMESPACE,
+    labelSelector: `app=${SHIM_DAEMONSET_NAME}`,
+  } as unknown as Parameters<typeof core.listNamespacedPod>[0])) as { items?: readonly ShimPodShape[] };
+  const out: FailingShimPod[] = [];
+  for (const pod of res.items ?? []) {
+    if (pod.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] !== configHash) continue;
+    const waiting = (pod.status?.containerStatuses ?? [])
+      .map((c) => c.state?.waiting?.reason)
+      .find((r): r is string => !!r && FAILING_WAIT_REASONS.has(r));
+    if (waiting) {
+      out.push({ pod: pod.metadata?.name ?? '?', node: pod.spec?.nodeName ?? '?', reason: waiting });
+    }
+  }
+  return out;
+}
+
+/** Operator-facing explanation of a target switch whose shim pods will not start. */
+export function describeFailingShim(className: string, failing: readonly FailingShimPod[]): string {
+  const nodes = [...new Set(failing.map((f) => f.node))].sort().join(', ');
+  const reasons = [...new Set(failing.map((f) => f.reason))].sort().join(', ');
+  return `The new ${className} backup target did not come up: the backup shim is failing to start on ${nodes} (${reasons}). `
+    + `Backups from ${failing.length === 1 ? 'that node' : 'those nodes'} are not running; nodes that have not rolled yet still use the previous target. `
+    + 'Usually the target is unreachable, or its endpoint, bucket or credentials are wrong — check the target and test it, or bind the previous target again.';
+}
 
 /**
  * Strip secret-shaped fragments from a reconciler error before it

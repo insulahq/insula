@@ -182,7 +182,10 @@ except Exception:
 " 2>/dev/null)
 
 if [[ -z "$WORKER_NODE" || "${TENANT_NODE_COUNT:-0}" -lt 2 ]]; then
-  log "── multi-node drain path SKIPPED (need ≥2 tenant-capable workers; have ${TENANT_NODE_COUNT:-0}) ──"
+  # Two separate conditions: the drain target must be a role=worker node (servers are not
+  # drained here), and somewhere must remain to reschedule onto. Say which one failed — an
+  # all-server cluster used to read "need ≥2 tenant-capable workers; have 3".
+  log "── multi-node drain path SKIPPED (need a schedulable role=worker node to drain: ${WORKER_NODE:-none}; and ≥2 tenant-capable nodes: have ${TENANT_NODE_COUNT:-0}) ──"
   log "── exercising single-node guard probe instead ──"
 
   # Even on a single-node cluster, drain-impact + drain endpoints MUST

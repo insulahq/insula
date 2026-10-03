@@ -42,6 +42,8 @@ import {
 } from '../../db/schema.js';
 import type { BackupComponentName, BackupMetaV2, CreateTenantInput } from '@insula/api-contracts';
 import { storeKindToTargetKind, type BackupStore } from '../tenant-bundles/bundle-store.js';
+import { resolveForeignBundleRepoLayout } from '../tenant-bundles/repo-layout.js';
+import { bundleHasPerTenantSnapshots } from './repo-layout-probe.js';
 
 /**
  * Residual manual steps the recover route CANNOT close on its own after a
@@ -82,6 +84,12 @@ export interface RecreateOptions {
    * Production callers omit it and get {@link resolveTenantClassBundleStore}.
    */
   readonly resolveStore?: (app: FastifyInstance) => Promise<ResolvedBundleStore>;
+  /**
+   * Test seam for the per-tenant repository probe used when the bundle's
+   * meta.json predates `repoLayout`. Production callers omit it and get
+   * {@link bundleHasPerTenantSnapshots}.
+   */
+  readonly hasPerTenantSnapshots?: (app: FastifyInstance, tenantId: string, bundleId: string) => Promise<boolean>;
 }
 
 /**
@@ -212,6 +220,14 @@ export async function recreateTenantFromBundle(
     );
   }
 
+  // ── 3b. Which restic repository holds this bundle (ADR-061). Resolved
+  //        BEFORE the tenant row exists so a failed probe leaves nothing
+  //        half-created. Left unset, the registered row read as per-component
+  //        and every restore of a per-tenant bundle looked in
+  //        `restic-files/<id>` — "repository does not exist". ──────────────
+  const probe = opts.hasPerTenantSnapshots ?? bundleHasPerTenantSnapshots;
+  const repoLayout = await resolveForeignBundleRepoLayout(meta, () => probe(app, tenantId, bundleId));
+
   // ── 4. Re-create the tenant row, PRESERVING the original id + namespace ──
   const createInput: CreateTenantInput = {
     name: t.name,
@@ -268,6 +284,7 @@ export async function recreateTenantFromBundle(
     label: meta.label,
     description: meta.description,
     sizeBytes: 0,
+    repoLayout,
     retentionDays: meta.retentionDays,
     expiresAt: null,
     startedAt: now,

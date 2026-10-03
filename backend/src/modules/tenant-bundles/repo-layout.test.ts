@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   layoutFromRepoUri,
   normaliseRepoLayout,
   resolveBundleRepoLayout,
+  resolveForeignBundleRepoLayout,
   CURRENT_REPO_LAYOUT,
   ALL_REPO_LAYOUTS,
 } from './repo-layout.js';
@@ -50,6 +51,55 @@ describe('resolveBundleRepoLayout', () => {
   it('returns the historical split for a pre-migration row', async () => {
     await expect(resolveBundleRepoLayout(dbReturning([{ repoLayout: null }]), 'bkp-old'))
       .resolves.toBe('per-component');
+  });
+});
+
+describe('resolveForeignBundleRepoLayout', () => {
+  // A bundle known only from its meta.json (DR re-create, cross-cluster
+  // migration): the row registered for it must carry the layout its snapshots
+  // were written to, or the restore opens the other repository.
+  const restic = { files: { sizeBytes: 1, fileCount: 1, sha256: 'a'.repeat(64) } } as never;
+
+  it('trusts meta.repoLayout and never probes', async () => {
+    const probe = vi.fn(async () => false);
+    await expect(resolveForeignBundleRepoLayout({ repoLayout: 'per-tenant', components: restic }, probe))
+      .resolves.toBe('per-tenant');
+    await expect(resolveForeignBundleRepoLayout({ repoLayout: 'per-component', components: restic }, probe))
+      .resolves.toBe('per-component');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('without meta.repoLayout, a per-tenant snapshot of the bundle means per-tenant', async () => {
+    // v2026.9.38 – v2026.10.3-rc.2 wrote per-tenant bundles with no
+    // repoLayout in meta.json. Reading absence as per-component sent the
+    // v2026.10.3-rc.2 VM migration restore to restic-files/<id>.
+    await expect(resolveForeignBundleRepoLayout({ components: restic }, async () => true))
+      .resolves.toBe('per-tenant');
+  });
+
+  it('without meta.repoLayout and no per-tenant snapshot, it is the historical split', async () => {
+    await expect(resolveForeignBundleRepoLayout({ components: restic }, async () => false))
+      .resolves.toBe('per-component');
+  });
+
+  it('mailboxes alone also count as restic data worth probing for', async () => {
+    const probe = vi.fn(async () => true);
+    const mail = { mailboxes: { sizeBytes: 1, mailboxCount: 1, addresses: [] } } as never;
+    await expect(resolveForeignBundleRepoLayout({ components: mail }, probe)).resolves.toBe('per-tenant');
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bundle with no restic component does not probe', async () => {
+    const probe = vi.fn(async () => true);
+    const configOnly = { config: { sizeBytes: 1, rowCount: 1 } } as never;
+    await expect(resolveForeignBundleRepoLayout({ components: configOnly }, probe)).resolves.toBe('per-component');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('a probe failure propagates — it is never read as an answer', async () => {
+    await expect(resolveForeignBundleRepoLayout({ components: restic }, async () => {
+      throw new Error('wrong password or no key found');
+    })).rejects.toThrow(/wrong password/);
   });
 });
 

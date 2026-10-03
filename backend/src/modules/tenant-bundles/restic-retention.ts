@@ -75,6 +75,7 @@ import {
 import {
   buildResticRepoUri,
   deriveResticPassword,
+  isResticRepoMissingError,
   listResticSnapshots,
   runResticForget,
   runResticPrune,
@@ -434,8 +435,7 @@ export async function runResticRetentionSweep(
         // target so the shim no longer fronts the upstream holding it. That is
         // an expected steady state on older installs, not a fault: reporting it
         // as an error every 6 hours would train operators to ignore the count.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/repository does not exist|unable to open config file/i.test(msg)) {
+        if (isResticRepoMissingError(err)) {
           // Deliberately NOT stamped as reclaimed. An unreachable repo is not a
           // reclaimed one — the data may be intact on a target this cluster no
           // longer fronts, and purging those bundle rows would destroy the only

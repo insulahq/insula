@@ -1297,6 +1297,15 @@ export async function runResticStats(args: RunResticStatsArgs): Promise<ResticSt
   }
 }
 
+/**
+ * A restic failure that means "there is no repository at this URI" (exit 10),
+ * as opposed to a wrong password, an unreachable backend or a corrupt repo.
+ */
+export function isResticRepoMissingError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /repository does not exist|unable to open config file/i.test(msg);
+}
+
 /** A restic failure that means "the repo is locked", not "the repo is broken". */
 export function isResticLockError(exitCode: number, stderr: string): boolean {
   // restic >= 0.17 exits 11 for "failed to lock repository". Older builds in the
