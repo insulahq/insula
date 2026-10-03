@@ -2641,10 +2641,21 @@ export async function ensureTargetPvcProvisions(
 export async function waitForTargetNodeReady(
   core: CoreV1Api,
   targetNode: string,
-  opts: { timeoutSeconds?: number; pollMs?: number; log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void } },
+  opts: {
+    timeoutSeconds?: number;
+    pollMs?: number;
+    /** Consecutive failed API reads after which this replica gives up early. */
+    maxConsecutiveApiFailures?: number;
+    log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void };
+  },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const timeoutSeconds = opts.timeoutSeconds ?? 300;
   const pollMs = opts.pollMs ?? 5_000;
+  // A node that is slow to come back still ANSWERS readNode (Ready=False);
+  // only this replica losing the API makes every read fail. Waiting out the
+  // full timeout then only delays the retry by a healthy replica.
+  const maxApiFailures = opts.maxConsecutiveApiFailures ?? 6;
+  let apiFailures = 0;
   const RECOVERY_TAINTS = new Set(['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable']);
   const deadline = Date.now() + timeoutSeconds * 1000;
   let last = 'not yet polled';
@@ -2655,6 +2666,7 @@ export async function waitForTargetNodeReady(
         status?: { conditions?: Array<{ type?: string; status?: string }> };
         spec?: { taints?: Array<{ key?: string; effect?: string }> };
       };
+      apiFailures = 0;
       const ready = (node.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
       const blocking = (node.spec?.taints ?? []).filter((t) => t.key && RECOVERY_TAINTS.has(t.key));
       if (ready && blocking.length === 0) {
@@ -2673,6 +2685,13 @@ export async function waitForTargetNodeReady(
       }
     } catch (err) {
       last = `readNode failed: ${err instanceof Error ? err.message : String(err)}`;
+      apiFailures++;
+      if (apiFailures >= maxApiFailures) {
+        return {
+          ok: false,
+          reason: `this replica cannot reach the Kubernetes API (${apiFailures} consecutive failed reads of node ${targetNode}; last: ${last}) — giving up early so a healthy replica can retry`,
+        };
+      }
     }
     await new Promise((r) => setTimeout(r, pollMs));
   }

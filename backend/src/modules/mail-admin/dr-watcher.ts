@@ -45,6 +45,8 @@ export interface DrWatcherDeps {
   readonly kubeconfigPath?: string;
   readonly tickMs?: number;
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
+  /** The node this replica runs on (downward API NODE_NAME); injectable for tests. */
+  readonly selfNodeName?: string | null;
 }
 
 /** Default tick: 30s — fast enough to detect node loss within a minute. */
@@ -169,6 +171,23 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       if (!targetNode) {
         const detail = skipped.length ? ` (skipped: ${skipped.join(', ')})` : '';
         log.warn(`No viable secondary/tertiary node for auto-failover${detail}. Set a Ready node in placement.`);
+        return;
+      }
+
+      // A replica on a node that is itself NotReady must not take the
+      // failover. Stopping k3s on a node (or k3s exiting on its own) leaves
+      // its containers running: that replica still reaches the database and
+      // can win the claim below, but its Kubernetes API calls fail — the
+      // v2026.10.3-rc.4 drill's first attempt spent its full 300 s target
+      // wait on "readNode failed: fetch failed" before a healthy replica
+      // retried. isNodeReady() also reads an API error as not-ready, so a
+      // replica that cannot reach the API at all stays out too.
+      const selfNode = deps.selfNodeName === undefined ? (process.env.NODE_NAME ?? null) : deps.selfNodeName;
+      if (selfNode && (selfNode === activeNode || !(await isNodeReady(core, selfNode)))) {
+        log.warn(
+          `This replica runs on ${selfNode}, which is ${selfNode === activeNode ? 'the failed mail node' : 'NotReady or unreadable'} — `
+          + 'leaving the failover to a replica on a healthy node',
+        );
         return;
       }
 

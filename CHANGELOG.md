@@ -79,6 +79,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Mail failover no longer loses five minutes to a cut-off platform replica.** When a mail
+  server's node stopped but its containers kept running, the platform replica on that node
+  could still pick up the failover. It could not reach the cluster, so it waited 300 seconds
+  before giving up and letting a healthy replica retry. Replicas on a node that is down, or
+  that cannot reach the cluster, now leave failover to the others. They also give up after
+  about 30 seconds of failed cluster calls instead of five minutes.
+
 - **System snapshots: restoring a monitoring or CrowdSec volume works.** A restore first stops the
   workload that uses the volume, and the platform looked that workload up in a way it lacks
   permission for. Every restore of such a volume therefore failed with "Cannot resolve workload
