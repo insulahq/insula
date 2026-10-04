@@ -196,7 +196,7 @@ describe('resolveRecoverAllTargets — a tenant deleted on purpose', () => {
       distinctTenantIds: ['gone'],
       completedBundleByTenant: { gone: { id: 'bkp-1', createdAt: new Date('2026-10-03T01:00:00Z'), finishedAt: null } },
       latestBundleByTenant: { gone: { status: 'completed', createdAt: new Date('2026-10-03T01:00:00Z') } },
-      deletedByTenant: { gone: { detail: { tenantName: 'MOODLE ELEARNING' }, namespace: 'tenant-moodle-elearning-362f3d17', at: new Date('2026-10-03T17:00:00Z') } },
+      deletedByTenant: { gone: { detail: { tenantName: 'ACME LEARNING' }, namespace: 'tenant-example-0a1b2c3d', at: new Date('2026-10-03T17:00:00Z') } },
     });
     (db as unknown as { __setTenant: (id: string) => void }).__setTenant('gone');
     return { db: db as unknown as FastifyInstance['db'], app: { db } as unknown as FastifyInstance };
@@ -206,7 +206,7 @@ describe('resolveRecoverAllTargets — a tenant deleted on purpose', () => {
     const { app } = fixture();
     const r = await resolveRecoverAllTargets(app, { scope: 'missing' }, new Set(), now);
     expect(r.targets).toEqual([]);
-    expect(r.skipped).toEqual([expect.objectContaining({ tenantId: 'gone', tenantName: 'MOODLE ELEARNING', reason: 'deleted' })]);
+    expect(r.skipped).toEqual([expect.objectContaining({ tenantId: 'gone', tenantName: 'ACME LEARNING', reason: 'deleted' })]);
   });
 
   it('is recovered when the operator names it', async () => {

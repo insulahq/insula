@@ -21,7 +21,7 @@ import { bundleIsLive } from './bundle-hold.js';
 import type { RecoverableTenant } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 
-/** `tenant-moodle-elearning-362f3d17` → `moodle-elearning`. Pure. */
+/** `tenant-example-0a1b2c3d` → `example`. Pure. */
 export function slugFromNamespace(namespace: string | null): string | null {
   if (!namespace) return null;
   const m = /^tenant-(.+)-[0-9a-f]{8}$/.exec(namespace);

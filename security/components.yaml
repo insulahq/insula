@@ -514,7 +514,7 @@ components:
     # re-verified. Bumping librocksdb-sys on its own is never correct.
     tracks:
       component: stalwart
-      # Re-verified 2026-10-04 for the v0.16.20 -> v0.16.24 bump by diffing
+      # Re-verified for the v0.16.20 -> v0.16.24 bump by diffing
       # Stalwart's OWN Cargo.lock at both tags: librocksdb-sys 0.17.3+10.4.2 is
       # identical across them, so this binary still links the same C++ rocksdb
       # as the store it opens. Do NOT move this field without re-running that

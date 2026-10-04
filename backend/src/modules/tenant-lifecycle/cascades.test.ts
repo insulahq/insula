@@ -42,9 +42,9 @@ beforeEach(() => { runTransition.mockClear(); order.length = 0; });
 
 describe('applyDeleted', () => {
   it('records the tenant\'s name on its delete transition', async () => {
-    await applyDeleted(ctx([{ name: 'MOODLE ELEARNING' }]), 't-1', 'tenant-moodle-elearning-362f3d17');
+    await applyDeleted(ctx([{ name: 'ACME LEARNING' }]), 't-1', 'tenant-example-0a1b2c3d');
     expect(runTransition).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
-      transition: 'deleted', detail: { tenantName: 'MOODLE ELEARNING' },
+      transition: 'deleted', detail: { tenantName: 'ACME LEARNING' },
     }));
   });
 

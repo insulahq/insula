@@ -18,16 +18,16 @@ const { default: DeletedTenantsCard } = await import('@/components/backups/Delet
 const { default: TenantRecoverTab } = await import('@/components/system-backup/TenantRecoverTab');
 const { default: TenantDeletedBanner } = await import('@/components/tenants/TenantDeletedBanner');
 
-const MOODLE: RecoverableTenant = {
-  tenantId: '1c25c626-5a77-4009-929e-682bc37244c8', name: 'MOODLE ELEARNING', deleted: true,
+const GONE: RecoverableTenant = {
+  tenantId: '11111111-2222-4333-8444-555555555555', name: 'ACME LEARNING', deleted: true,
   deletedAt: '2026-10-03T17:00:17.498Z', bundleCount: 14, newestBundleAt: '2026-10-03T01:36:57.662Z',
   newestCompletedBundleId: 'bkp-79a722d1', keptUntil: '2026-11-02T17:00:00.000Z',
 };
-const MOODLE_INFO = {
-  tenantId: MOODLE.tenantId, name: 'MOODLE ELEARNING', deleted: true, deletedAt: MOODLE.deletedAt,
+const GONE_INFO = {
+  tenantId: GONE.tenantId, name: 'ACME LEARNING', deleted: true, deletedAt: GONE.deletedAt,
   source: 'bundle', infoFromBundleId: 'bkp-79a722d1', infoError: null, status: 'active',
   planName: 'Business', storageTier: 'local', primaryNode: 'sv1',
-  namespace: 'tenant-moodle-elearning-362f3d17', namespacePresent: false, namespaceTerminating: false,
+  namespace: 'tenant-example-0a1b2c3d', namespacePresent: false, namespaceTerminating: false,
   resources: { cpuLimit: 2, memoryLimit: 4, storageLimit: 20 },
   bundles: [
     { id: 'bkp-79a722d1', createdAt: '2026-10-03T01:36:57.662Z', finishedAt: null, status: 'completed', trigger: 'scheduled', label: null,
@@ -47,7 +47,7 @@ function api(recoverable: RecoverableTenant[]) {
   fetchMock.mockImplementation(async (raw: unknown) => {
     const url = typeof raw === 'string' ? raw : '';
     if (url === '/api/v1/admin/tenant-bundles/recoverable-tenants') return { data: recoverable };
-    if (url.startsWith(`/api/v1/admin/dr/tenants/${MOODLE.tenantId}/recovery-info`)) return { data: MOODLE_INFO };
+    if (url.startsWith(`/api/v1/admin/dr/tenants/${GONE.tenantId}/recovery-info`)) return { data: GONE_INFO };
     if (url === '/api/v1/admin/nodes') {
       return { data: [{ name: 'sv1', role: 'server', canHostTenantWorkloads: true, statusConditions: [{ type: 'Ready', status: 'True' }] }] };
     }
@@ -76,14 +76,14 @@ beforeEach(() => fetchMock.mockReset());
 
 describe('Backups → Tenants: deleted tenants card', () => {
   it('lists each deleted tenant by name, with how long it stays recoverable and a Recover link', async () => {
-    api([MOODLE, ACME]);
+    api([GONE, ACME]);
     renderAt('/backups/tenants', <DeletedTenantsCard />);
-    const row = await screen.findByTestId(`deleted-tenant-${MOODLE.tenantId}`);
-    expect(row).toHaveTextContent('MOODLE ELEARNING');
+    const row = await screen.findByTestId(`deleted-tenant-${GONE.tenantId}`);
+    expect(row).toHaveTextContent('ACME LEARNING');
     expect(row).toHaveTextContent('2026-10-03');
     expect(row).toHaveTextContent('2026-11-02');
-    expect(screen.getByTestId(`recover-deleted-${MOODLE.tenantId}`))
-      .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${MOODLE.tenantId}`);
+    expect(screen.getByTestId(`recover-deleted-${GONE.tenantId}`))
+      .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${GONE.tenantId}`);
     // Live tenants are not "deleted tenants".
     expect(screen.queryByText('Acme')).not.toBeInTheDocument();
   });
@@ -98,14 +98,14 @@ describe('Backups → Tenants: deleted tenants card', () => {
 
 describe('DR → Recover Tenant', () => {
   it('opens on the deleted tenant from the link — named, with what it was and its bundles by date and size', async () => {
-    api([MOODLE, ACME]);
-    renderAt(`/backups/disaster-recovery?section=recover&tenant=${MOODLE.tenantId}`, <TenantRecoverTab />);
+    api([GONE, ACME]);
+    renderAt(`/backups/disaster-recovery?section=recover&tenant=${GONE.tenantId}`, <TenantRecoverTab />);
     const picker = await screen.findByTestId('dr-recover-tenant-picker');
-    await waitFor(() => expect(picker).toHaveTextContent('MOODLE ELEARNING'));
+    await waitFor(() => expect(picker).toHaveTextContent('ACME LEARNING'));
     const facts = await screen.findByTestId('dr-recover-facts');
     expect(facts).toHaveTextContent('deleted 2026-10-03');
     expect(facts).toHaveTextContent('Business');
-    expect(facts).toHaveTextContent('tenant-moodle-elearning-362f3d17');
+    expect(facts).toHaveTextContent('tenant-example-0a1b2c3d');
     expect(facts).toHaveTextContent('missing');
     const bundles = screen.getByTestId('dr-recover-bundles');
     expect(bundles).toHaveTextContent('2026-10-03 01:36 UTC');
@@ -121,23 +121,23 @@ describe('DR → Recover Tenant', () => {
   });
 
   it('finds a tenant by typing', async () => {
-    api([MOODLE, ACME]);
+    api([GONE, ACME]);
     renderAt('/backups/disaster-recovery?section=recover', <TenantRecoverTab />);
     fireEvent.click(await screen.findByRole('button', { name: /Search tenants|Tenant/ }));
-    fireEvent.change(await screen.findByPlaceholderText('Search tenants…'), { target: { value: 'moodle' } });
+    fireEvent.change(await screen.findByPlaceholderText('Search tenants…'), { target: { value: 'learning' } });
     const options = await within(await screen.findByRole('listbox')).findAllByRole('option');
-    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('MOODLE ELEARNING')]);
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('ACME LEARNING')]);
   });
 });
 
 describe('the "Tenant was deleted" banner', () => {
   it('says the tenant can still be recovered, until when, and links there', async () => {
-    api([MOODLE]);
-    renderAt('/tenants/list', <TenantDeletedBanner />, { deletedTenant: { name: 'MOODLE ELEARNING', id: MOODLE.tenantId } });
+    api([GONE]);
+    renderAt('/tenants/list', <TenantDeletedBanner />, { deletedTenant: { name: 'ACME LEARNING', id: GONE.tenantId } });
     const line = await screen.findByTestId('tenant-deleted-recoverable');
     expect(line).toHaveTextContent('kept until 2026-11-02');
     expect(screen.getByRole('link', { name: 'Recover…' }))
-      .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${MOODLE.tenantId}`);
+      .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${GONE.tenantId}`);
   });
 
   it('says plainly when there is nothing to recover from', async () => {
