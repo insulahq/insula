@@ -49,13 +49,13 @@ describe('applyDeleted', () => {
   });
 
   it('still deletes when the name cannot be read', async () => {
-    const id = await applyDeleted(ctx(new Error('db down')), 't-1', 'tenant-x-12345678');
+    const id = await applyDeleted(ctx(new Error('db down')), 't-1', 'tenant-example-0a1b2c3d');
     expect(id).toBe('tx-1');
     expect(order).toContain('deleteNamespace');
   });
 
   it('releases a pending data relocation before deleting the namespace', async () => {
-    await applyDeleted(ctx([{ name: 'Acme' }]), 't-1', 'tenant-acme-12345678');
+    await applyDeleted(ctx([{ name: 'Acme' }]), 't-1', 'tenant-example-0a1b2c3d');
     expect(order).toEqual(['release', 'deleteNamespace']);
   });
 });
