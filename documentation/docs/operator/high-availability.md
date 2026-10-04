@@ -19,7 +19,9 @@ panel offers **Apply HA**, and one action scales everything that matters.
 | Longhorn volumes (metrics, CrowdSec) | 1 replica | 3 replicas, spread across nodes |
 | PostgreSQL (CNPG cluster) | 1 instance | 3 instances, synchronous replication |
 | Stateless Deployments (admin-panel, tenant-panel, platform-api; oauth2-proxy and dex where installed) | 1 replica | 3 replicas, one per node (topology spread) |
-| Background operators (cert-manager, Flux, CNPG operator **and its backup plugin**) | 1 | 2 — a leader and a warm standby |
+| Background operators (cert-manager, Flux, CNPG operator) | 1 | 2 — a leader and a warm standby |
+| CNPG backup plugin | 1 | 2, both serving |
+| Flux source-controller | 1 | 1 — see below |
 
 What Apply HA does **not** touch, because it is already covered or handled
 differently:
@@ -38,7 +40,23 @@ differently:
     The CNPG operator will not reconcile the database — including promoting a
     new primary — if it cannot reach its backup plugin. Running the operator
     with two replicas while the plugin had only one meant a single node loss
-    could still take the database offline. Both now scale together.
+    could still take the database offline. Both now scale together. Both
+    plugin replicas serve at once (the platform turns the plugin's leader
+    election off), so neither sits at *1/2 Ready* waiting for a takeover.
+
+!!! note "Why Flux's source-controller stays at one replica"
+    source-controller keeps the git and Helm artifacts it fetched on its own
+    pod's disk and serves them only from the leader, so a second replica would
+    only be a standby that never becomes Ready. If its node is lost, Kubernetes
+    restarts it on another node. Your workloads keep running in the meantime;
+    only new changes from git wait for it.
+
+**Scheduled jobs in the management API run once, not once per replica.** With
+three platform-api replicas, each background job (backup retention, bandwidth
+metering, subscription expiry, app auto-updates, domain verification, …) is
+claimed by one replica at a time. When that replica goes away the claim
+passes to another: within seconds on a normal rollout, and within one to two
+run intervals if a replica crashes.
 
 ## When to enable it
 

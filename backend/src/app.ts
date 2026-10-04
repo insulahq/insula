@@ -185,6 +185,7 @@ import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
+import { withSchedulerLease } from './shared/scheduler-lease.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
@@ -1409,7 +1410,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         try {
           mailK8s = createK8sClients(process.env.KUBECONFIG_PATH);
         } catch { /* local dev without kubeconfig — webhook ensure skips the pod roll */ }
-        const run = () => {
+        const runSelfHeal = () => {
           reconcileStalwartSendLimits(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'send-limit periodic reconcile failed');
           });
@@ -1475,6 +1476,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           evaluateMailThresholds(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'mail threshold evaluation failed');
           });
+        };
+        // One replica self-heals: the webhook is looked up then created, and a
+        // drifted object rolls the Stalwart pod — once per replica otherwise.
+        // Sticky, so the per-process "force update" state stays with it.
+        const run = () => {
+          withSchedulerLease(app.db, 'mail-self-heal', 5 * 60_000 * 1.5, async () => { runSelfHeal(); })
+            .catch((err: unknown) => app.log.warn({ err }, 'mail self-heal: lease failed'));
         };
         const bootKick = setTimeout(run, 30_000);
         bootKick.unref();
@@ -1776,9 +1784,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           } catch {
             return; // no cluster access (local dev) — nothing to remediate
           }
-          const report = await remediateMultihostDeployments(
+          // One boot sweep per rollout: every replica boots and each redeployed
+          // every unremediated instance. The first booting replica claims the
+          // sweep for 30 min; the others skip it.
+          const leased = await withSchedulerLease(app.db, 'multihost-remediation-boot', 30 * 60_000, () => remediateMultihostDeployments(
             app.db, k8sForRemediation, redeployWithCurrentConfig as never, app.log as never,
-          );
+          ));
+          if (!leased.ran) return;
+          const report = leased.value;
           if (report.remediated.length > 0 || report.failed.length > 0) {
             app.log.warn({ ...report }, 'multihost: isolation remediation sweep finished');
           } else if (report.scanned > 0 && report.notFound.length === report.scanned) {
@@ -2774,7 +2787,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // Daily unused-image prune — steady-state hygiene below the
         // pressure thresholds (watcher 75%, kubelet GC 85%). See
         // storage/image-prune-scheduler.ts.
-        const dailyImagePrune = startDailyImagePrune(watcherK8s, app.log);
+        const dailyImagePrune = startDailyImagePrune(watcherK8s, app.log, app.db);
         app.addHook('onClose', () => dailyImagePrune.stop());
 
         const gcReconciler = startKubeletGcReconciler(app.db, watcherK8s, app.log);

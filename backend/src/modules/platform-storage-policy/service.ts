@@ -119,6 +119,13 @@ export interface ManagedDeployment {
   readonly namespace: string;
   readonly name: string;
   readonly optional?: boolean;
+  /** Never scaled above this, whatever the tier asks for. */
+  readonly maxReplicas?: number;
+}
+
+/** The replica count a tier's `desired` means for one Deployment. Pure. */
+export function replicasFor(d: ManagedDeployment, desired: number): number {
+  return d.maxReplicas !== undefined ? Math.min(desired, d.maxReplicas) : desired;
 }
 
 // Single-server (local) installs default to 1 replica per stateless
@@ -151,11 +158,17 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
 // on the next tick (≤5 min). One-replica window during that interval —
 // acceptable for an operator workload (no user-visible blip; leader
 // keeps working).
-export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
   { namespace: 'cert-manager', name: 'cert-manager' },
   { namespace: 'cert-manager', name: 'cert-manager-cainjector' },
   { namespace: 'cert-manager', name: 'cert-manager-webhook' },
-  { namespace: 'flux-system', name: 'source-controller' },
+  // Pinned to ONE. source-controller keeps its artifacts on the pod's own disk
+  // and serves them only from the leader (Flux does not support scaling it):
+  // a second replica was a standby stuck at 0/1 Ready with a readiness Warning
+  // every 10 s, and on takeover it would start with no artifacts anyway. On a
+  // node loss Kubernetes reschedules it; workloads keep running meanwhile —
+  // only new git changes wait.
+  { namespace: 'flux-system', name: 'source-controller', maxReplicas: 1 },
   { namespace: 'flux-system', name: 'kustomize-controller' },
   { namespace: 'flux-system', name: 'helm-controller' },
   { namespace: 'flux-system', name: 'notification-controller' },
@@ -171,10 +184,11 @@ export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: 
   // ~6.5 min — until Kubernetes' 300 s not-ready eviction moved the pod.
   //
   // Scaling the operator without scaling its plugin is not HA: a reachable
-  // operator that cannot load its plugin does not reconcile. The plugin
-  // already runs with --leader-elect, so it belongs in this tier.
-  // k8s/base/cnpg-system/ strips the vendored `replicas: 1` and adds the
-  // topologySpread + PDB this scaling depends on.
+  // operator that cannot load its plugin does not reconcile. Unlike the rest
+  // of this tier its two replicas are BOTH active, not leader + standby:
+  // k8s/base/cnpg-system/ turns its leader election off (upstream serves the
+  // plugin only from the leader, so a standby was never Ready), strips the
+  // vendored `replicas: 1`, and adds the topologySpread + PDB.
   { namespace: 'cnpg-system', name: 'barman-cloud' },
 ];
 
@@ -776,10 +790,11 @@ export async function patchDeploymentsToReplicaCount(
         });
         continue;
       }
-      if (previousReplicas === desired) {
+      const want = replicasFor(d, desired);
+      if (previousReplicas === want) {
         results.push({
           namespace: d.namespace, name: d.name,
-          previousReplicas, newReplicas: desired,
+          previousReplicas, newReplicas: want,
           patched: false, error: null,
         });
         continue;
@@ -788,18 +803,18 @@ export async function patchDeploymentsToReplicaCount(
         namespace: d.namespace, name: d.name,
         body: {
           metadata: { name: d.name, namespace: d.namespace },
-          spec: { replicas: desired },
+          spec: { replicas: want },
         },
       } as unknown as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
       results.push({
         namespace: d.namespace, name: d.name,
-        previousReplicas, newReplicas: desired,
+        previousReplicas, newReplicas: want,
         patched: true, error: null,
       });
     } catch (err) {
       results.push({
         namespace: d.namespace, name: d.name,
-        previousReplicas, newReplicas: desired,
+        previousReplicas, newReplicas: replicasFor(d, desired),
         patched: false,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -859,7 +874,7 @@ export async function detectDeploymentReplicaDrift(
   tier: 'local' | 'ha',
   readyServerCount: number,
 ): Promise<boolean> {
-  const groups: ReadonlyArray<{ deployments: ReadonlyArray<{ namespace: string; name: string }>; desired: number }> = [
+  const groups: ReadonlyArray<{ deployments: ReadonlyArray<ManagedDeployment>; desired: number }> = [
     { deployments: STATELESS_DEPLOYMENTS, desired: deploymentReplicasForSystemTier(tier, readyServerCount) },
     { deployments: LEADER_ELECT_DEPLOYMENTS, desired: leaderElectReplicasForSystemTier(tier, readyServerCount) },
   ];
@@ -869,7 +884,7 @@ export async function detectDeploymentReplicaDrift(
         const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
         const annotations = live.metadata?.annotations ?? {};
         if (annotations[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') continue;
-        if ((live.spec?.replicas ?? 0) !== desired) return true;
+        if ((live.spec?.replicas ?? 0) !== replicasFor(d, desired)) return true;
       } catch (err) {
         const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
         if (status !== 404) {

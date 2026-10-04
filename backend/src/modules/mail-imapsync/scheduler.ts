@@ -6,6 +6,7 @@
  * if NODE_ENV is 'test'.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import { reconcileImapSyncJobs } from './reconciler.js';
@@ -45,7 +46,14 @@ export function startImapSyncReconciler(
   console.log('[mail-imapsync-scheduler] Starting reconciler');
 
   let tickCount = 0;
+  // One replica reconciles: status rows are written without a condition and
+  // the "migration finished" notice has no dedupe key, so every replica would
+  // send it.
   const runCycle = async () => {
+    await withSchedulerLease(db, 'mail-imapsync-reconciler', DEFAULT_INTERVAL_SECONDS * 1000 * 3, runCycleOnce)
+      .catch((err: unknown) => console.warn('[mail-imapsync-scheduler] lease error:', err instanceof Error ? err.message : String(err)));
+  };
+  const runCycleOnce = async () => {
     try {
       const result = await reconcileImapSyncJobs(db, k8s);
       if (result.finished > 0) {

@@ -1693,8 +1693,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
       ?? process.env.KUBECONFIG_PATH;
-    const { runResticRetentionSweep } = await import('./restic-retention.js');
-    return success(await runResticRetentionSweep({
+    const { runResticRetentionSweep, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS } = await import('./restic-retention.js');
+    const { withSchedulerLease } = await import('../../shared/scheduler-lease.js');
+    const sweep = () => runResticRetentionSweep({
       db: app.db,
       k8s: createK8sClients(kubeconfigPath),
       secretsKeyHex,
@@ -1704,7 +1705,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       ...(body.force !== undefined ? { force: body.force } : {}),
       ...(body.maxRepos !== undefined ? { maxRepos: body.maxRepos } : {}),
       ...(body.maxPrunes !== undefined ? { maxPrunes: body.maxPrunes } : {}),
-    }));
+    });
+    // A dry run changes nothing and may overlap; a real one takes the same run
+    // lock as the scheduled sweep rather than fighting it for restic's lock.
+    if (body.dryRun) return success(await sweep());
+    const run = await withSchedulerLease(app.db, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS, sweep, { release: true, log: app.log });
+    if (!run.ran) {
+      throw new ApiError('RETENTION_SWEEP_RUNNING', 'A restic retention sweep is already running; try again when it has finished', 409);
+    }
+    return success(run.value);
   });
 
   // ── DELETE /api/v1/admin/tenant-bundles/:id ───────────────────────

@@ -28,6 +28,7 @@ import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
@@ -289,7 +290,12 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
 export function startRetentionScheduler(app: FastifyInstance, intervalMs = 5 * 60 * 1000): NodeJS.Timeout {
   const tick = async () => {
     try {
-      const r = await runRetentionSweep(app);
+      // One replica sweeps: the expiry pass reads its candidates, deletes them
+      // on the remote, then marks them — two replicas deleted the same bundle
+      // and the loser logged a remote-delete failure for an object already gone.
+      const leased = await withSchedulerLease(app.db, 'bundle-retention', intervalMs * 1.5, () => runRetentionSweep(app), { log: app.log });
+      if (!leased.ran) return;
+      const r = leased.value;
       if (r.expiredDeleted > 0 || r.stuckMarkedFailed > 0 || r.expiredFailed > 0 || r.inFlightReaped > 0) {
         app.log.info({ ...r }, 'tenant-backup retention: sweep complete');
       }

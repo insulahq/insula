@@ -1,3 +1,4 @@
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -156,6 +157,18 @@ export function startStorageLifecycleScheduler(
    */
   const runLifecycle = async () => {
     if (stopped) return;
+    // One replica archives and deletes: the idle check and the claim are
+    // separate steps, so two replicas could start two archives of one tenant,
+    // or delete it twice. The reschedule below runs whether or not this
+    // replica held the lease.
+    try {
+      await withSchedulerLease(db, 'storage-auto-archive', LIFECYCLE_INTERVAL_MS * 1.5, runLifecycleOnce);
+    } catch (err) {
+      console.error('[tenant-lifecycle] auto-op lease failed:', (err as Error).message);
+    }
+    if (!stopped) lifecycleTimer = setTimeout(runLifecycle, LIFECYCLE_INTERVAL_MS);
+  };
+  const runLifecycleOnce = async (): Promise<void> => {
     try {
       const settings = await loadLifecycleSettings(db);
       // No legacy ctx needed here — auto-archive builds its own
@@ -232,7 +245,6 @@ export function startStorageLifecycleScheduler(
     } catch (err) {
       console.error('[tenant-lifecycle] auto-op cycle failed:', (err as Error).message);
     }
-    if (!stopped) lifecycleTimer = setTimeout(runLifecycle, LIFECYCLE_INTERVAL_MS);
   };
 
   // Issue 1 fix: namespace integrity sweep. Repairs missing PVC / RQ /

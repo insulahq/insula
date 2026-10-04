@@ -37,6 +37,7 @@
  * from the same IP will re-trigger).
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import crypto from 'node:crypto';
 import { and, desc, gt, inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -443,8 +444,10 @@ export async function runOnce(deps: SchedulerDeps): Promise<void> {
 
 export function startCrowdsecAutobanScheduler(deps: SchedulerDeps): NodeJS.Timeout {
   deps.log.info({}, 'crowdsec-autoban: scheduler starting');
+  // One replica bans: the WAF watermark is read and saved without a condition,
+  // so two replicas would ban — and escalate — the same offenders twice.
   const run = () => {
-    runOnce(deps).catch((err) => {
+    withSchedulerLease(deps.db, 'crowdsec-autoban', TICK_INTERVAL_MS * 3, () => runOnce(deps)).catch((err) => {
       // Surface the underlying Postgres cause when Drizzle wraps the
       // query — the bare `err.message` for query errors is just
       // "Failed query: <sql>\nparams: ..." which hides the actual

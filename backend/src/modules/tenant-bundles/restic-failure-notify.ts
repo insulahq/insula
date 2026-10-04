@@ -19,7 +19,8 @@
  * reported — the run really did fail — but it leads with the recovery.
  */
 import { ResticCommandError } from './restic-driver.js';
-import { notifyAdminBackupFailed } from '../notifications/events.js';
+import { notifyAdminBackupFailed, notifyAdminOperationalEvent } from '../notifications/events.js';
+import { BACKUP_RETENTION_RESOURCE } from '../notifications/action-path.js';
 import type { Database } from '../../db/index.js';
 
 /** Enough stderr to diagnose, not enough to fill an inbox. */
@@ -53,6 +54,28 @@ export function describeResticFailure(
   return { backupName: ctx.scope, errorMessage };
 }
 
+/** forget/prune: retention housekeeping on a repository, not a backup run. */
+export function isRetentionOperation(operation: string): boolean {
+  return operation === 'forget' || operation === 'prune';
+}
+
+/** The operational-event wording for a failed retention step. Pure. */
+export function describeRetentionFailure(
+  ctx: ResticFailureContext,
+  errorMessage: string,
+  lockCleared: boolean,
+): { subsystem: string; objectLabel: string; detail: string; severityLabel: string; recommendedAction: string } {
+  return {
+    subsystem: 'Backup retention',
+    objectLabel: `restic ${ctx.operation} failed for ${ctx.scope}`,
+    detail: `${errorMessage} No backup failed: this was the clean-up of old snapshots, and the next retention sweep tries it again.`,
+    severityLabel: 'warning',
+    recommendedAction: lockCleared
+      ? 'Nothing — the stale lock was cleared; the next sweep retries.'
+      : 'If it fails again on the next sweeps, check the backup target and the repository.',
+  };
+}
+
 /**
  * Report a restic failure, or do nothing if it is not one.
  *
@@ -72,11 +95,14 @@ export async function notifyResticFailure(
     // Keyed on the scope AND the exit code: a repo failing the same way every
     // sweep should not re-notify, but a NEW failure mode on the same repo is
     // genuinely new information.
-    await notifyAdminBackupFailed(
-      db,
-      { backupName, errorMessage },
-      `restic-${ctx.operation}:${ctx.dedupeScope}:${err.exitCode}`,
-    );
+    const dedupeKey = `restic-${ctx.operation}:${ctx.dedupeScope}:${err.exitCode}`;
+    if (isRetentionOperation(ctx.operation)) {
+      // Not a backup: the clean-up of old snapshots. Reporting it as "Backup
+      // failed" sent an operator to a tenant whose backup had completed.
+      await notifyAdminOperationalEvent(db, 'storage', describeRetentionFailure(ctx, errorMessage, err.lockCleared), dedupeKey, BACKUP_RETENTION_RESOURCE);
+      return;
+    }
+    await notifyAdminBackupFailed(db, { backupName, errorMessage }, dedupeKey);
   } catch (notifyErr) {
     log?.warn({ err: notifyErr, scope: ctx.scope }, 'restic failure notification failed');
   }

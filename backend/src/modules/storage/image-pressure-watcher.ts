@@ -15,6 +15,7 @@
  * written for all admin users.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { inArray } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -222,7 +223,9 @@ export function startImagePressureWatcher(
       return;
     }
     ticking = true;
-    tick(db, k8s, log)
+    // One replica purges: the overlap guard above is per process, and every
+    // replica would start its own purge pod on each pressured node.
+    withSchedulerLease(db, 'image-pressure-watcher', WATCHER_INTERVAL_MS * 3, () => tick(db, k8s, log))
       .catch(err => {
         log.warn({ err }, '[pressure-watcher] tick failed');
       })

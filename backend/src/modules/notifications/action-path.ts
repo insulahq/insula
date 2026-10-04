@@ -142,6 +142,9 @@ const STATIC_PATHS: Record<string, string> = {
 /** `resourceType` of a principal-sync drift alert (`admin.mail_event`). */
 export const MAIL_DRIFT_RESOURCE = 'mail_drift';
 
+/** `resourceType` of a backup-retention (restic forget/prune) alert (`admin.storage_event`). */
+export const BACKUP_RETENTION_RESOURCE = 'backup_retention';
+
 /**
  * Categories that report on several subsystems, where the emitter names WHICH
  * one with `resourceType`: category → resourceType → page.
@@ -153,6 +156,9 @@ export const MAIL_DRIFT_RESOURCE = 'mail_drift';
  */
 export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   'admin.mail_event': { [MAIL_DRIFT_RESOURCE]: '/email/drift' },
+  // Backup retention (restic forget/prune) is storage housekeeping, but the
+  // operator acts on it from Backups, not from the cluster storage page.
+  'admin.storage_event': { [BACKUP_RETENTION_RESOURCE]: '/backups' },
 };
 
 export function notificationActionPath(input: ActionPathInput): string | null {

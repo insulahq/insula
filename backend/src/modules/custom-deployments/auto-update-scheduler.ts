@@ -25,6 +25,7 @@
 //     in the service layer, but checking here avoids a pointless registry call
 //     and a confusing error per tick.
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { deployments, tenants } from '../../db/schema.js';
@@ -266,7 +267,11 @@ export function startAutoUpdateScheduler(
 ): () => void {
   const intervalMs = opts.intervalMs ?? 3_600_000;
   const runOnce = (): void => {
-    runAutoUpdateOnce({ db, k8s, log, encryptionKey: opts.encryptionKey })
+    // One replica updates: during the readiness wait a second replica would
+    // roll the same deployment again, and one could roll back what the other
+    // declares a success.
+    withSchedulerLease(db, 'custom-deployment-auto-update', intervalMs * 1.5,
+      () => runAutoUpdateOnce({ db, k8s, log, encryptionKey: opts.encryptionKey }))
       .catch((err: unknown) => log.warn({ err }, 'auto-update: pass failed'));
   };
   const bootKick = setTimeout(runOnce, 300_000);

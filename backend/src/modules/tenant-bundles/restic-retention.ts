@@ -63,6 +63,7 @@
  * recovered on the next tick.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
@@ -893,6 +894,11 @@ export async function purgeFullyReclaimedBundles(
  * every replica, an immediate tick would have all of them hit the backup
  * target simultaneously.
  */
+/** Run lock shared by the scheduled and the manual sweep: one sweep at a time, cluster-wide. */
+export const RESTIC_SWEEP_RUN_LOCK = 'restic-retention-run';
+/** Renewed while a sweep runs; only matters if the replica running it dies. */
+export const RESTIC_SWEEP_RUN_TTL_MS = 30 * 60_000;
+
 export function startResticRetentionScheduler(
   app: {
     db: Database;
@@ -919,12 +925,18 @@ export function startResticRetentionScheduler(
       const kubeconfigPath = (app.config?.KUBECONFIG_PATH as string | undefined)
         ?? process.env.KUBECONFIG_PATH;
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-      const res = await runResticRetentionSweep({
-        db: app.db,
-        k8s: createK8sClients(kubeconfigPath),
-        secretsKeyHex,
-        logger: app.log,
-      });
+      // One replica owns the schedule; the run lock also keeps a manual sweep
+      // (POST …/restic-retention) off the same repositories. Two concurrent
+      // sweeps collide on restic's exclusive lock and the loser pages an admin.
+      const scheduled = await withSchedulerLease(app.db, 'restic-retention', intervalMs * 1.5, () =>
+        withSchedulerLease(app.db, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS, () => runResticRetentionSweep({
+          db: app.db,
+          k8s: createK8sClients(kubeconfigPath),
+          secretsKeyHex,
+          logger: app.log,
+        }), { release: true, log: app.log }), { log: app.log });
+      if (!scheduled.ran || !scheduled.value.ran) return;
+      const res = scheduled.value.value;
       if (res.snapshotsForgotten > 0 || res.prunesRun > 0 || res.errors > 0) {
         app.log.info(
           {

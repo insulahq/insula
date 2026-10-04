@@ -29,6 +29,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **With HA on, background jobs in the management API run once instead of once per replica.**
+  Apply HA runs three platform-api replicas, and every scheduled job ran on each of them. Two
+  backup-retention sweeps pruned the same restic repository at once, the second failed on
+  restic's lock, and a tenant was reported **Backup failed** although its backup had
+  succeeded. The same applied to bandwidth metering, subscription expiry, app auto-updates,
+  lifecycle-hook retries, storage auto-archive, notification digests and re-sends, mail
+  self-heal and IMAP sync, domain verification, expired-backup clean-up, CrowdSec auto-ban and
+  image pruning. Each job
+  is now claimed by one replica at a time. When that replica stops, another takes over: right
+  away on a rollout, and within one to two run intervals after a crash. A manual retention sweep
+  started while one is already running returns `409 RETENTION_SWEEP_RUNNING`.
+
+- **A failed clean-up of old backup snapshots is no longer reported as "Backup failed".** A
+  restic `forget`/`prune` failure is now a *Backup retention* warning saying that no backup
+  failed and the next sweep retries, and it links to **Backups**.
+
+- **HA no longer leaves two operators at "1/2 Ready" with a stream of readiness warnings.**
+  Both replicas of the CNPG backup plugin now serve, so either one answers the database
+  operator. Flux's source-controller stays at one replica, because Flux serves its artifacts
+  from a single pod. Before, each had a standby that never became Ready and logged a warning
+  every 10 seconds.
+
 - **Apply HA no longer reports "failed" over components a cluster does not run.** Dex and
   oauth2-proxy ship only with test and staging installs, so on production every Apply HA
   listed both as failed (404), marked the whole run failed and stopped tracking convergence —
