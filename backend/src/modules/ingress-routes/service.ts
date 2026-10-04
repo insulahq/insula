@@ -17,7 +17,8 @@ import {
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { clearOrphanedSiteFolder } from './detach.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, rowsPublishingSameValue, type DnsSyncOutcome } from '../dns-records/service.js';
+import { isUnreachableFailure } from '../../shared/fetch-error.js';
+import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import { capabilityOf } from '../multihost/reconciler.js';
@@ -793,32 +794,48 @@ export async function updateRoute(
   return updated;
 }
 
-export async function deleteRoute(db: Database, routeId: string) {
+/** Hostnames whose DNS records a route deletion could not withdraw, and why. */
+export interface RouteDnsLeftovers {
+  readonly hostnames: readonly string[];
+  /** Operator detail (server, address, transport error) — never for a tenant. */
+  readonly reason: string;
+}
+
+/**
+ * Delete a route and withdraw the DNS records it was published under.
+ *
+ * The route is gone either way: DNS cleanup never blocks the deletion. What
+ * could not be withdrawn is returned rather than only logged, so the caller can
+ * say so — a route reported "removed" whose name still resolves is the
+ * operator's problem to know about.
+ */
+export async function deleteRoute(db: Database, routeId: string): Promise<{ dnsLeftovers: RouteDnsLeftovers | null }> {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
     throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found`, 404);
   }
   await db.delete(ingressRoutes).where(eq(ingressRoutes.id, routeId));
 
-  // Auto-delete DNS records that were provisioned for this route — kept when
-  // another route still serves the name (see autoDeleteRouteDns).
-  try {
-    await autoDeleteRouteDns(db, route.domainId, route.hostname);
-  } catch (err) {
-    // Non-blocking — DNS cleanup failure shouldn't block route deletion
-    console.warn(`[ingress-dns] DNS cleanup for '${route.hostname}' failed:`, err instanceof Error ? err.message : String(err));
-  }
-
-  // Also delete the companion DNS record if www redirect was active
+  // The route's own name, and the www companion when a www redirect was on.
+  // Each keeps its records while another route still serves it.
   const companionHostname = getWwwCompanionHostname(route.hostname, route.wwwRedirect);
-  if (companionHostname) {
+  const names = companionHostname ? [route.hostname, companionHostname] : [route.hostname];
+  const failed: string[] = [];
+  const reasons = new Set<string>();
+  for (const hostname of names) {
+    let cleanup: RouteDnsCleanup;
     try {
-      await autoDeleteRouteDns(db, route.domainId, companionHostname);
+      cleanup = await autoDeleteRouteDns(db, route.domainId, hostname);
     } catch (err) {
-      // Non-blocking
-      console.warn(`[ingress-dns] DNS cleanup for '${companionHostname}' failed:`, err instanceof Error ? err.message : String(err));
+      cleanup = { status: 'failed', reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (cleanup.status === 'failed') {
+      console.warn(`[ingress-dns] DNS cleanup for '${hostname}' failed: ${cleanup.reason}`);
+      failed.push(hostname);
+      reasons.add(cleanup.reason);
     }
   }
+  return { dnsLeftovers: failed.length > 0 ? { hostnames: failed, reason: [...reasons].join('; ') } : null };
 }
 
 export async function listRoutesForDomain(db: Database, domainId: string) {
@@ -912,22 +929,41 @@ export async function routesStillServingHostname(
     .map((r) => r.id);
 }
 
+/** What became of a hostname's DNS records when its last route went. */
+export type RouteDnsCleanup =
+  /** Withdrawn upstream and from dns_records. */
+  | { readonly status: 'removed' }
+  /** Another route still serves the name: its records stay. */
+  | { readonly status: 'kept' }
+  /** The platform does not publish this domain's records. */
+  | { readonly status: 'not-managed' }
+  /** Some are still published; their dns_records rows stay so they can be deleted later. */
+  | { readonly status: 'failed'; readonly reason: string };
+
 /**
  * Remove DNS records that were auto-provisioned when the route was created.
  *
- * For primary-mode domains this deletes the A/AAAA records from both the
- * external DNS provider and the local dns_records table — unless another
- * route still serves the name, in which case they are that route's records
- * too and stay.
+ * For primary-mode domains this deletes the A/AAAA records from the external
+ * DNS provider, then from the local dns_records table — unless another route
+ * still serves the name, in which case they are that route's records too and
+ * stay.
+ *
+ * Upstream first, local row second — as a DNS record delete does: a row is
+ * only dropped once its value is gone upstream. A value the server did not
+ * withdraw keeps its row, so it stays listed under DNS Records and can be
+ * deleted there once the server answers, instead of resolving with nothing in
+ * the panel to show for it. Once the server is found unreachable, the
+ * remaining values are not tried: each would wait out the same connect
+ * timeout (four values took 42 s on a server whose packets were dropped).
  */
 export async function autoDeleteRouteDns(
   db: Database,
   domainId: string,
   hostname: string,
-): Promise<void> {
+): Promise<RouteDnsCleanup> {
   // 1. Check if domain is primary mode
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
-  if (!domain || domain.dnsMode !== 'primary') return;
+  if (!domain || domain.dnsMode !== 'primary') return { status: 'not-managed' };
 
   // Deleting `/api` on example.test must not take `/` on example.test offline.
   const stillServing = await routesStillServingHostname(db, domainId, hostname);
@@ -935,7 +971,7 @@ export async function autoDeleteRouteDns(
     console.info(
       `[ingress-dns] Keeping DNS for '${hostname}' — still served by route(s) ${stillServing.join(', ')}`,
     );
-    return;
+    return { status: 'kept' };
   }
 
   // 2. Determine the record name relative to the domain. `relativeRecordName`
@@ -962,33 +998,51 @@ export async function autoDeleteRouteDns(
   for (const rec of addressRows) {
     if (rec.recordValue) values.set(`${rec.recordType}|${rec.recordValue}`, { type: rec.recordType as 'A' | 'AAAA', content: rec.recordValue });
   }
-  for (const value of values.values()) {
-    await syncRecordToProviders(db, domain.domainName, 'delete', {
+  const withdrawn = new Set<string>();
+  const reasons = new Set<string>();
+  let unreachable = false;
+  for (const [key, value] of values) {
+    if (unreachable) continue;
+    const outcome = await syncRecordToProviders(db, domain.domainName, 'delete', {
       type: value.type,
       name: recordName,
       content: value.content,
       id: 'auto',
     }, domainId);
+    if (outcome.status === 'failed') {
+      reasons.add(describeSyncFailure(outcome));
+      unreachable = outcome.errors.every((e) => isUnreachableFailure(e.message));
+      continue;
+    }
+    // Published (withdrawn) or skipped (nothing upstream for the platform to
+    // change): either way the local row no longer stands for a live record.
+    withdrawn.add(key);
   }
 
-  // 4. Remove the matching rows from the local dns_records table
+  // 4. Remove the local rows whose values are gone upstream.
   for (const rec of addressRows) {
+    if (rec.recordValue && !withdrawn.has(`${rec.recordType}|${rec.recordValue}`)) continue;
     await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
   }
+
+  if (reasons.size === 0) return { status: 'removed' };
+  const left = values.size - withdrawn.size;
+  return {
+    status: 'failed',
+    reason: `${left} of ${values.size} record(s) for '${hostname}' are still published — ${[...reasons].join('; ')}`,
+  };
 }
 
 /**
- * Re-provision the DNS records for every ingress route on a PRIMARY domain.
+ * Bring every route name of a PRIMARY domain to the current ingress servers.
  *
- * The apex A/AAAA set is a snapshot of the ingress addresses at the moment a
- * route was created. Add an ingress-capable node and every existing tenant
- * apex keeps pointing at the old set — traffic never reaches the new node, and
- * nothing in the product said so. Subdomains ride the `<slug>.ingress.<apex>`
- * CNAME chain and are unaffected, which is exactly why that chain exists; the
- * apex cannot use it (RFC 1034 forbids a CNAME at a zone apex).
- *
- * Replaces only rows this subsystem owns (managed_by = 'ingress-route'): a
- * hand-made record is the operator's and is never touched.
+ * Route A/AAAA records are copies of the ingress addresses taken when each
+ * route was created. Add a server and every name keeps pointing at the old
+ * set (the new server gets no visitors); remove one, or disable its ingress,
+ * and its address stays published (visitors are sent to a server that no
+ * longer answers). This adds what is missing and removes what is stale, read
+ * from the DNS server itself, across the apex, subdomains, wildcards and www
+ * companions. Addresses the platform cannot attribute are left alone.
  *
  * cname-mode domains are refused rather than silently no-oped — the platform
  * has no authority over that zone, and "succeeded, changed nothing" is the
@@ -998,81 +1052,23 @@ export async function refreshRouteDnsForDomain(
   db: Database,
   domainId: string,
 ): Promise<RefreshRouteDnsResult> {
-  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
-  if (!domain) throw new ApiError('NOT_FOUND', 'Domain not found', 404);
-  if (domain.dnsMode !== 'primary') {
-    throw new ApiError(
-      'DNS_MODE_NOT_PRIMARY',
-      `Refreshing route DNS needs primary mode; '${domain.domainName}' is in ${domain.dnsMode} mode, `
-      + `where the platform does not control the zone.`,
-      409,
-    );
-  }
+  // The same per-domain reconcile the DNS drift repair runs (dns-apex-drift/
+  // reconcile.ts): every route name gets one record per ingress server —
+  // missing addresses ADDED, addresses of removed / ingress-disabled servers
+  // REMOVED, addresses the platform cannot attribute left alone. Dynamic
+  // imports: that module imports this one.
+  const { loadIngressInventory } = await import('../dns-apex-drift/inventory.js');
+  const { reconcileDomainRouteDns } = await import('../dns-apex-drift/reconcile.js');
+  const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+  let k8s = null;
+  try { k8s = createK8sClients(process.env.KUBECONFIG_PATH); } catch { k8s = null; }
 
-  const routes = await db
-    .select({ hostname: ingressRoutes.hostname, wwwRedirect: ingressRoutes.wwwRedirect })
-    .from(ingressRoutes)
-    .where(eq(ingressRoutes.domainId, domainId));
-  // A route's www companion (add-www / remove-www) carries its own address
-  // records. Refreshing only the route's hostname left `www.<apex>` — usually
-  // the name that actually serves the site — on the old ingress addresses.
-  const hostnames = Array.from(new Set(routes.flatMap((r) => {
-    const companion = getWwwCompanionHostname(r.hostname, r.wwwRedirect);
-    return companion ? [r.hostname, companion] : [r.hostname];
-  })));
-
-  const failures: Array<{ hostname: string; detail: string }> = [];
-  let created = 0;
-  let removed = 0;
-
-  // Values the re-provision below writes again. Withdrawing one of those first
-  // only opens a window in which the name does not resolve.
-  const settings = await getIngressSettings(db);
-  const reprovisioned = new Set([
-    ...parseIngressIps(settings.ingressDefaultIpv4).map((ip) => `A|${ip}`),
-    ...parseIngressIps(settings.ingressDefaultIpv6).map((ip) => `AAAA|${ip}`),
-  ]);
-
-  for (const hostname of hostnames) {
-    // Drop the rows we own for this hostname first, so a record pointing at a
-    // decommissioned node actually disappears instead of accumulating
-    // alongside the new set.
-    const recordName = isApexHostname(hostname, domain.domainName)
-      ? '@'
-      : relativeRecordName(hostname, domain.domainName);
-
-    try {
-      const stale = await deleteManagedRecords(db, 'ingress-route', domainId, recordName);
-      for (const rec of stale) {
-        removed++;
-        if (reprovisioned.has(`${rec.recordType}|${rec.recordValue}`)) continue;
-        // A hand-made row for the same value is still the operator's record.
-        const shared = await rowsPublishingSameValue(db, domain.domainName, { domainId, recordType: rec.recordType, recordName: rec.recordName }, rec);
-        if (shared.length > 0) continue;
-        const withdrawn = await syncRecordToProviders(db, domain.domainName, 'delete', {
-          type: rec.recordType,
-          name: rec.recordName ?? '',
-          content: rec.recordValue ?? '',
-          id: 'auto',
-        }, domainId);
-        // The row is already gone; a value the server kept is still answering.
-        if (withdrawn.status === 'failed') {
-          failures.push({
-            hostname,
-            detail: `${rec.recordType} ${rec.recordValue} is still published: ${describeSyncFailure(withdrawn)}`,
-          });
-        }
-      }
-      const before = created;
-      await autoProvisionRouteDns(db, domainId, hostname);
-      created = before + 1;
-    } catch (err) {
-      failures.push({
-        hostname,
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  return { hostnames: hostnames.length, created, removed, failures };
+  const inventory = await loadIngressInventory(db, k8s);
+  const { plan, result } = await reconcileDomainRouteDns(db, domainId, inventory);
+  return {
+    hostnames: plan.hostnames.length,
+    created: result.added.length,
+    removed: result.removed.length,
+    failures: result.failures,
+  };
 }

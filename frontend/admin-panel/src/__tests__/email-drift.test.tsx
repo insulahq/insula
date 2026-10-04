@@ -82,8 +82,21 @@ describe('EmailDriftPage', () => {
   it('shows the explainer when there IS active drift', async () => {
     mockDrift([DRIFT_ITEM]);
     renderPage();
-    expect(await screen.findByText(/What this means/i)).toBeTruthy();
+    const explainer = (await screen.findByText(/What this means/i)).parentElement as HTMLElement;
+    expect(explainer).toHaveTextContent(
+      'What this means. The principals-sync reconciler found platform DB rows whose Stalwart entries no longer exist. '
+      + 'This page exists to surface drifting items and give you a controlled path to remediate in addition to the '
+      + 'automatic remediation efforts.',
+    );
+    expect(explainer).not.toHaveTextContent('silent-loss');
     expect(screen.queryByText(/No active drift detected/i)).toBeNull();
+  });
+
+  it('labels the history with the window it keeps', async () => {
+    mockDrift([DRIFT_ITEM, { ...DRIFT_ITEM, id: 'drift-2', resolvedAt: '2026-10-01T00:00:00.000Z', resolvedVia: 'dismissed' }]);
+    renderPage();
+    expect(await screen.findByText('Resolved History (last 30 days)')).toBeTruthy();
+    expect(screen.getByTestId('mail-drift-resolved-count')).toHaveTextContent('1');
   });
 
   /**

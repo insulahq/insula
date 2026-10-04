@@ -44,14 +44,15 @@ const SUBJECT_LABEL: Record<NotificationChannelId, string> = {
 
 function buildSampleVars(
   schema: ReadonlyArray<NotificationTemplateVariable> | null,
-): Record<string, string | number | boolean> {
+): Record<string, string | number | boolean | string[]> {
   if (!schema) return {};
-  const out: Record<string, string | number | boolean> = {};
+  const out: Record<string, string | number | boolean | string[]> = {};
   for (const v of schema) {
     if (v.type === 'string') out[v.name] = `sample-${v.name}`;
     else if (v.type === 'number') out[v.name] = 42;
     else if (v.type === 'boolean') out[v.name] = true;
     else if (v.type === 'date') out[v.name] = new Date().toISOString();
+    else if (v.type === 'list') out[v.name] = [`sample ${v.name} item 1`, `sample ${v.name} item 2`];
   }
   return out;
 }

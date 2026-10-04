@@ -23,16 +23,16 @@ Let's Encrypt) and a `WC` marker for wildcard certs. Hover it for the full
 status, issuer, type, and expiry.
 
 **Bulk actions:** tick rows to reveal **Verify Selected** (re-runs DNS
-verification), **Refresh Route DNS** (rewrites each domain's ingress
-`A`/`AAAA` records from the current ingress addresses — use it after adding or
-removing an ingress node) and **Delete Selected** (removes the domains and their
+verification), **Refresh Route DNS** (brings each domain's route `A`/`AAAA`
+records to the current ingress servers — the same repair as
+[Apex DNS drift](#apex-dns-drift)) and **Delete Selected** (removes the domains and their
 DNS records). Each asks for confirmation, then opens a progress dialog that works
 through the domains one at a time and reports each one:
 
 - **Verify** — *Verified* with the number of checks that passed, or *Not
   verified* with each failing check listed.
-- **Refresh Route DNS** — how many hostnames the domain has, how many were
-  refreshed and how many stale records were removed. A hostname that could not
+- **Refresh Route DNS** — how many hostnames the domain has, how many address
+  records were added and how many stale ones were removed. A hostname that could not
   be refreshed fails the domain and is listed by name. Domains that are not in
   **Primary** DNS mode are *skipped*, because the platform does not control
   their zone.
@@ -110,6 +110,16 @@ route by entering the hostname; you can leave it unassigned and bind a
 deployment later from the per-route dropdown. The table also shows the
 CNAME target and TLS state per route. A route with no deployment is
 skipped by the ingress reconciler until you bind one.
+
+**Removing a route** asks for a second click (**Remove**). While a route is
+added, changed or removed, a status line above the table says what the
+platform is doing — removing waits on the DNS server, which usually takes a
+few seconds but can take up to a minute when the server is slow to answer.
+Afterwards it says **Removed …**, or — when the DNS server could not withdraw
+the route's records — that they are still published and why (the server and
+its error). Those records then stay listed on the **DNS Records** tab; delete
+them there once the server answers. A server that cannot be reached at all is
+tried once per hostname, not once per record.
 
 **Application root and document root (multi-host apps).** When a route points
 at a deployment with multi-host serving turned on, two folder buttons appear
@@ -297,6 +307,51 @@ servers it holds.
     with the mesh VPN and identity provider the platform can also consume. Add
     it here as a PowerDNS provider group once it is up. Any other
     PowerDNS-compatible or BIND9 setup works exactly the same way.
+
+## Apex DNS drift
+
+Every route of a domain whose DNS the platform hosts (**Primary** mode) — the
+apex, subdomains, wildcards and their `www` — points straight at the ingress
+servers: one `A`/`AAAA` record per server that serves ingress. Those records are
+written when the route is created, so they **drift** whenever the servers change:
+
+- **A server is added** (or its ingress is enabled): its address is missing, so
+  it receives no visitors.
+- **A server is removed**, or its ingress is disabled or it is made private:
+  its address is still published, so some visitors are sent to a server that no
+  longer answers.
+- **A server's address changes**: both at once.
+
+The platform scans for this every hour, and **Platform Settings → DNS
+Providers** shows a banner when it finds drift. The admin **Dashboard** shows an
+**Apex DNS drift** tile too, which opens the same report.
+
+The report lists every server with its addresses and whether it serves
+ingress, then each drifting domain with exactly what the repair will do at each
+route name. Each address is shown with the server it belongs to:
+
+- **+** an address that will be **added**,
+- **−** an address that will be **removed**, with the reason (server removed,
+  ingress disabled, …),
+- **kept** addresses are the platform's own but stay on purpose: those of a
+  server that is only *not ready* right now (a reboot must not cost it its DNS —
+  once the server is removed they become removable), and those you published
+  with a record you created yourself on the domain's DNS page,
+- addresses the platform cannot attribute to one of its servers — pointing
+  somewhere else entirely — are listed as **left alone**.
+
+The repair never removes a kept or left-alone address. It adds the new
+addresses at a name before removing the old ones, and if adding fails there it
+keeps the old addresses at that name, so a name is never left pointing nowhere.
+
+**Refresh** rescans now. Tick domains and **Fix selected**, or **Fix all
+domains**; a progress dialog works through them and ends with the list of
+records added and removed per domain. Nothing changes until you apply the
+repair. **Refresh Route DNS** on a domain runs the same repair for that one
+domain.
+
+The platform remembers which address belonged to which server even after the
+server is removed, so its leftover records can still be recognised and removed.
 
 ## Upstream DNS (which resolver the platform uses)
 

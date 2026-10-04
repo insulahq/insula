@@ -143,8 +143,7 @@ async function notifyUpgradeStuck(db: Database, state: PostflightState): Promise
   const title = `Platform upgrade to ${state.pendingVersion ?? 'a new version'} is not converging`;
   const message =
     `Post-flight has failed ${state.consecutiveFailures} consecutive checks` +
-    (failing.length > 0 ? ` — unresolved: ${failing.join(', ')}.` : '.') +
-    ' Consider rolling back from Platform → Upgrades.';
+    (failing.length > 0 ? '; still failing:' : '.');
   // Dispatched, not inserted. One categorised event replaces a row per admin
   // written with no category — which reached no template, no email, no
   // preference gate and no audit, for the signal that says roll the upgrade
@@ -153,7 +152,8 @@ async function notifyUpgradeStuck(db: Database, state: PostflightState): Promise
   await notifyAdminOperationalEvent(db, 'platform', {
     subsystem: 'Platform upgrade',
     objectLabel: state.pendingVersion ?? 'pending version',
-    detail: `${title} ${message}`.trim(),
+    detail: `${title}. ${message}`.trim(),
+    items: failing,
     severityLabel: 'not converging',
     recommendedAction: 'Consider rolling back from Platform → Upgrades.',
   }, `upgrade-stuck:${state.pendingVersion ?? 'unknown'}:${new Date().toISOString().slice(0, 13)}`)

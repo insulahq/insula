@@ -53,6 +53,7 @@
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
 | [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
+| [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 
 ---
 
@@ -2028,3 +2029,37 @@ release.
   without API access. Low risk: that pod is marked not-ready and leaves the Service endpoints, so
   requests rarely reach it.
 
+## R42 — Retire Roundcube
+
+Bulwark is the platform's webmail: the fresh-install default, JMAP-native, and
+the only engine with contacts, calendar and files. Roundcube stays selectable as
+an alternative while it is retired — operator decision 2026-10-04: **do not
+remove it yet**.
+
+### Done (2026-10-04)
+
+- Admin → Email → Webmail lists Bulwark first as **Recommended** and Roundcube
+  as **Legacy** ("security updates only; new webmail features land in
+  Bulwark"); the settings form falls back to Bulwark, matching
+  `getDefaultWebmailEngine`.
+- UI, operator notifications, the `platform-ops mail` CLI and `bootstrap.sh`
+  log lines say "the webmail" wherever they meant webmail in general. Roundcube
+  is named only where something is specific to it (its own database, its
+  per-tenant `webmail.<clientdomain>` URL, the features it lacks).
+
+### Remaining, when the operator decides to remove it
+
+1. Confirm no cluster has `default_webmail_engine = roundcube`; the removal
+   release refuses to apply (upgrade gate) while one does.
+2. Decide what the per-tenant `webmail.<clientdomain>` addresses serve once
+   Roundcube is gone (map today's engine routing in `webmail-router` and
+   `email-domains/` first), then delete the Roundcube Deployment, Service,
+   IngressRoutes and ConfigMaps, and the Roundcube side of `webmail-router`,
+   `webmail-feature-css` and the JWT minting in `mailboxes/service.ts`.
+3. A host-migration drops the `roundcube` database and role from `system-db`
+   (snapshot first) and renames `/etc/platform/roundcube-credentials` —
+   it also holds the Bulwark and master-user values, so the file is renamed,
+   not deleted, and every reader updated in the same release.
+4. Remove `ROUNDCUBEMAIL_*` keys from `mail-secrets`, the `roundcube` entry in
+   `security/components.yaml`, and the engine selector itself (keeping the
+   setting readable so an old value cannot crash the settings page).

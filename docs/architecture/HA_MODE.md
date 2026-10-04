@@ -10,7 +10,9 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 | CNPG **instance** PVCs | ≤2 replicas | **1** replica each | ✓ |
 | Postgres CNPG `Cluster` `spec.instances` | 1 | 3 (sync replication) | ✓ (replicas removed; primary keeps data) |
 | `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 1 replica | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
-| Leader-elect operators: cert-manager (×3), Flux (×4), sealed-secrets, snapshot-controller, `cnpg-cloudnative-pg`, **`barman-cloud`** | 1 | 2 (leader + warm standby) | ✓ |
+| Leader-elect operators: cert-manager (×3), Flux kustomize/helm/notification-controller, sealed-secrets, snapshot-controller, `cnpg-cloudnative-pg` | 1 | 2 (leader + warm standby) | ✓ |
+| **`barman-cloud`** (CNPG backup plugin) | 1 | 2, **both active** (leader election off) | ✓ |
+| Flux `source-controller` | 1 | **1** (`maxReplicas: 1`) | — |
 
 > **CNPG instance PVCs go DOWN in HA, not up.** Postgres streaming replication
 > already keeps three copies; giving each instance PVC three Longhorn replicas
@@ -24,6 +26,38 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 > died and took the platform database and the whole management API down for
 > ~6.5 minutes, clearing only when Kubernetes' 300s eviction moved the pod.
 > Scaling an operator without its plugin is not HA.
+>
+> Its two replicas both serve. Upstream registers the CNPG-I gRPC server as a
+> leader-only runnable, so under `--leader-elect` the second replica never
+> opened `:9090` — permanently 0/1 Ready with a readiness-probe Warning every
+> 10 s. `k8s/base/cnpg-system/kustomization.yaml` sets `--leader-elect=false`
+> (guarded by a JSON6902 `test` op): the gRPC hooks are request/response and
+> the one controller (ObjectStore → Role rules) converges to the same state
+> from either replica.
+
+> **Flux `source-controller` is pinned to one replica.** It stores fetched
+> artifacts on the pod's own disk and serves them only from the leader; Flux
+> does not support scaling it. A standby was 0/1 Ready forever and would start
+> with no artifacts on takeover. On node loss Kubernetes reschedules it;
+> applied workloads keep running, only new git changes wait.
+
+### platform-api scheduled jobs (scheduler lease)
+
+Every in-process `setInterval` scheduler starts on every platform-api replica.
+A job that must not run concurrently claims a sticky lease in
+`platform_settings` (`scheduler-lease:<job>` → `{"holder","until"}`) via
+`withSchedulerLease` (`backend/src/shared/scheduler-lease.ts`): the holder keeps
+running every tick, the others skip, and a lapsed lease (ttl ≈ 1.5× the
+interval, DB `now()` only) is taken over by the next replica to tick. Long runs
+renew it; `release: true` turns it into a run lock (the restic retention sweep
+uses both: a sticky schedule owner plus a run lock shared with the manual
+"Run sweep" button, which returns `409 RETENTION_SWEEP_RUNNING` while one is in
+flight). Graceful shutdown releases every lease the process holds, so a rollout
+does not stall 6- and 24-hour jobs for a full ttl — except the lease of a job
+still running in that process, which expires as after a crash, so the job is
+not started a second time beside itself. The covered jobs are listed
+in `scheduler-lease-coverage.test.ts`; the nightly bundle scheduler is already
+safe through its `last_fired_at` compare-and-set.
 
 What `Apply HA` does NOT do:
 - Per-tenant client workloads (separate per-tenant storage tier — see

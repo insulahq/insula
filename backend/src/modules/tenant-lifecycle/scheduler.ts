@@ -19,6 +19,7 @@
  *   - Best-effort: a failure in the scheduler tick must not stop
  *     the next tick.
  */
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, isNotNull, lt, lte } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -352,7 +353,11 @@ export function startLifecycleHookRetryScheduler(
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const r = await runRetryTick(db, k8s);
+      // One replica retries: two replicas read the same failed rows and run
+      // the same hook (DNS, storage, cleanup) twice. Sticky, so the hook
+      // breakers — kept in this process — stay with the replica doing the work.
+      const leased = await withSchedulerLease(db, 'lifecycle-hook-retry', TICK_INTERVAL_MS * 1.5, () => runRetryTick(db, k8s));
+      const r = leased.ran ? leased.value : { attempted: 0, succeeded: 0, retried: 0, permanentlyFailed: 0, skippedBreaker: 0 };
       if (r.attempted > 0) {
         console.log(
           `[lifecycle-retry] tick: ${r.succeeded} ok, ${r.retried} re-queued, ${r.permanentlyFailed} permanent, ${r.skippedBreaker} skipped (breaker)`,

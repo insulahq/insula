@@ -165,14 +165,15 @@ describe('checkQuotaThresholds — the operator view', () => {
 
     expect(r.overQuota).toBe(2);
     expect(fleetMock).toHaveBeenCalledTimes(1);
-    const payload = (fleetMock.mock.calls[0] as unknown[])[1] as Record<string, string>;
+    const payload = (fleetMock.mock.calls[0] as unknown[])[1] as { mailboxCount: string; tenantCount: string; mailboxList: string[] };
     expect(payload.mailboxCount).toBe('2');
     expect(payload.tenantCount).toBe('2');
-    // The whole point: the operator can see WHICH mailbox and WHICH tenant.
-    expect(payload.mailboxList).toContain('a@example.test');
-    expect(payload.mailboxList).toContain('Example Ltd');
-    expect(payload.mailboxList).toContain('b@example.test');
-    expect(payload.mailboxList).toContain('Other Ltd');
+    // The whole point: the operator can see WHICH mailbox and WHICH tenant —
+    // one list item per mailbox, rendered as a list on every channel.
+    expect(payload.mailboxList).toEqual([
+      'a@example.test (Example Ltd, 1000/1000 MB)',
+      'b@example.test (Other Ltd, 1000/1000 MB)',
+    ]);
   });
 
   it('dedupes the fleet notification per UTC day', async () => {

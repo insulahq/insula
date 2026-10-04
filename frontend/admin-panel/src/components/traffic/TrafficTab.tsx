@@ -21,7 +21,7 @@ import {
 } from './combined-line';
 import TrafficStats from './TrafficStats';
 import TrafficSummaryTable from './TrafficSummaryTable';
-import TrafficPicker from './TrafficPicker';
+import TrafficPicker from '@/components/ui/SearchablePicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
 import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
 

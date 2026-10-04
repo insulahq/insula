@@ -38,6 +38,8 @@ import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
+import { cappedList } from '../notifications/list-items.js';
+import { aliasIsLive } from '../mailbox-aliases/alias-live.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
@@ -265,8 +267,8 @@ async function syncPrincipals(params: {
           expectedStalwartId: '',
           platformRowId: MASTER_DRIFT_ROW_ID,
           notes:
-            'Webmail master user is missing from Stalwart — Bulwark/Roundcube '
-            + 'login + impersonation are broken for ALL mailboxes until it is '
+            'Webmail master user is missing from Stalwart — webmail sign-in '
+            + '("Open webmail") is broken for ALL mailboxes until it is '
             + 'recreated. Auto-heal re-asserts it from mail-secrets on this cycle; '
             + 'if that is disabled/failing, remediate: POST '
             + '/api/v1/admin/mail/rotate-webmail-master (super_admin). No tenant '
@@ -295,8 +297,8 @@ async function syncPrincipals(params: {
                 notes:
                   `Webmail master user "${masterFqdn}" EXISTS in Stalwart but its `
                   + `password no longer authenticates (HTTP ${probe.status}) — mail-secrets `
-                  + 'and Stalwart have drifted apart, so Bulwark/Roundcube login + '
-                  + 'impersonation are broken for ALL mailboxes. Auto-heal re-asserts the '
+                  + 'and Stalwart have drifted apart, so webmail sign-in ("Open webmail") '
+                  + 'is broken for ALL mailboxes. Auto-heal re-asserts the '
                   + 'mail-secrets password onto Stalwart on this cycle; if that is '
                   + 'disabled/failing, remediate: POST /api/v1/admin/mail/rotate-webmail-master '
                   + '(super_admin). No tenant data is affected.',
@@ -514,6 +516,7 @@ async function syncPrincipals(params: {
         id: mailboxes.id,
         fullAddress: mailboxes.fullAddress,
         stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+        status: mailboxes.status,
       })
       .from(mailboxes);
 
@@ -538,8 +541,15 @@ async function syncPrincipals(params: {
         .filter((m) => stalwartMailboxByEmail.has(m.fullAddress.toLowerCase()))
         .map((m) => m.id),
     );
+    const mailboxActive = new Map(aliasMailboxes.map((m) => [m.id, m.status === 'active']));
     for (const a of aliasRows) {
-      if (a.enabled !== 1) continue; // a disabled row records intent, not a live address
+      // Expected on the server only when the alias push would put it there
+      // (`aliasIsLive`, the rule desiredAliasesForMailbox pushes by): a disabled
+      // row, or any alias of a disabled mailbox — every mailbox of a SUSPENDED
+      // tenant, whose aliases the suspend hook turns off on purpose — records
+      // intent, not a live address. Checking the row alone reported a
+      // suspended tenant's abuse@/dmarc@ as drift minutes after the suspend.
+      if (!aliasIsLive(mailboxActive.get(a.mailboxId) ?? false, a.enabled)) continue;
       if (!liveMailboxIds.has(a.mailboxId)) {
         // The parent mailbox itself is not in Stalwart. That IS the drift, and
         // it is already reported as kind='mailbox' — reporting the alias too
@@ -649,6 +659,15 @@ async function syncPrincipals(params: {
   try {
     const insertFailures: string[] = [];
     const newItems = await reconcileDriftItems(db, driftThisTick, insertFailures);
+    // Resolved History keeps RESOLVED_DRIFT_RETENTION_DAYS; older rows go here,
+    // once per tick. A failure only delays the reap — never the drift check.
+    try {
+      const { reapResolvedDriftItems } = await import('../mail-drift/retention.js');
+      const reaped = await reapResolvedDriftItems(db);
+      if (reaped > 0) log.info({ reaped }, 'mail-drift: reaped resolved items past the retention window');
+    } catch (err) {
+      log.warn({ err }, 'mail-drift: reaping resolved items failed');
+    }
     if (insertFailures.length > 0) {
       // Surfaced, not swallowed. A row the database refuses means the detector
       // and the schema disagree about what a drift kind is — exactly the
@@ -785,11 +804,21 @@ async function reconcileDriftItems(
 }
 
 /**
- * Fan out one notification per super_admin/admin when NEW drift items
- * appear this tick. One summary notification per detection cycle, not
+ * Tell the admins (one admin-scoped dispatch reaches all of them) when NEW
+ * drift items appear this tick. One summary notification per detection cycle, not
  * per-item — so an operator who's been ignoring a 5-item drift for
  * weeks doesn't get 5 new notifications every 5 min.
  */
+const DRIFT_KIND_LABEL: Readonly<Record<string, string>> = {
+  'mailbox': 'Mailbox missing in Stalwart',
+  'domain': 'Domain missing in Stalwart',
+  'master-user': 'Webmail master user missing',
+  'orphan-domain': 'Orphan Stalwart domain',
+  'orphan-list': 'Orphan mailing list',
+  'alias': 'Alias missing in Stalwart',
+  'orphan-alias': 'Orphan Stalwart alias',
+};
+
 async function emitDriftNotification(
   db: Database,
   newItems: ReadonlyArray<DriftTickItem>,
@@ -807,21 +836,21 @@ async function emitDriftNotification(
   // The master-user is a platform-wide outage (ALL webmail login/impersonation
   // broken), so it gets its own urgent, single-action notification rather than
   // being folded into the per-mailbox/domain drift summary.
+  // The drifted objects themselves go in `items`: one list entry each, on
+  // every channel — never run together into the prose.
+  const items = cappedList(newItems.map((i) => `${DRIFT_KIND_LABEL[i.kind] ?? i.kind}: ${i.expectedName}`));
   let title: string;
   let message: string;
+  let action: string;
   if (masterItem) {
     title = 'Webmail master user missing — ALL webmail login/impersonation is broken';
     message =
-      `The Stalwart master user (${masterItem.expectedName}) — which Bulwark + `
-      + `Roundcube authenticate as to open every tenant mailbox — is missing from `
+      `The Stalwart master user (${masterItem.expectedName}) — which the webmail `
+      + `authenticates as to open every tenant mailbox — is missing from `
       + `Stalwart. Until it is recreated, NO mailbox can log into webmail or be `
-      + `impersonated (other mail functions are unaffected).\n\n`
-      + `Remediate: Admin UI → Email → Data Drift → "Recreate webmail master", or `
-      + `POST /api/v1/admin/mail/rotate-webmail-master (super_admin). No tenant `
-      + `mail data is affected.`;
-    if (mailboxCount > 0 || domainCount > 0) {
-      message += `\n\n(Also new this cycle: ${mailboxCount} mailbox + ${domainCount} domain drift item(s).)`;
-    }
+      + `impersonated (other mail functions are unaffected). No tenant mail data is affected.`;
+    action = 'Admin UI → Email → Data Drift → "Recreate webmail master", or '
+      + 'POST /api/v1/admin/mail/rotate-webmail-master (super_admin).';
   } else {
     const orphanDomainCount = newItems.filter((i) => i.kind === 'orphan-domain').length;
     const orphanListCount = newItems.filter((i) => i.kind === 'orphan-list').length;
@@ -831,36 +860,37 @@ async function emitDriftNotification(
     if (orphanDomainCount > 0) parts.push(`${orphanDomainCount} orphan Stalwart Domain${orphanDomainCount === 1 ? '' : 's'}`);
     if (orphanListCount > 0) parts.push(`${orphanListCount} orphan mailing list${orphanListCount === 1 ? '' : 's'}`);
     const summary = parts.join(' + ') || `${newItems.length} item(s)`;
-    const sample = newItems.slice(0, 3).map((i) => i.expectedName).join(', ');
-    const more = newItems.length > 3 ? ` (+${newItems.length - 3} more)` : '';
     title = `Mail data drift detected: ${summary}`;
     message =
-      `The principals-sync reconciler found drift between the platform DB and ` +
-      `Stalwart: platform rows referencing Stalwart entries that no longer ` +
-      `exist, and/or Stalwart-side objects (domains, mailing lists) no ` +
-      `platform row owns.\n\n` +
-      `New drift this cycle: ${sample}${more}\n\n` +
-      `Inspect via Admin UI → Email → Data Drift. Missing entries offer a ` +
-      `snapshot restore (preserves DKIM + mailbox contents) or an empty ` +
-      `recreate (last resort); orphan entries offer operator-confirmed ` +
-      `deletion from Stalwart.`;
+      `The principals-sync reconciler found drift between the platform DB and `
+      + `Stalwart: platform rows referencing Stalwart entries that no longer `
+      + `exist, and/or Stalwart-side objects (domains, mailing lists) no `
+      + `platform row owns. New this cycle:`;
+    action = 'Inspect via Admin UI → Email → Data Drift. Missing entries offer a '
+      + 'snapshot restore (preserves DKIM + mailbox contents) or an empty '
+      + 'recreate (last resort); orphan entries offer operator-confirmed '
+      + 'deletion from Stalwart.';
   }
 
-  for (const a of admins) {
-    try {
-      // Dispatched, not inserted: the raw row carried no category, so it
-      // reached no template, no email, no preference gate and no audit.
-      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
-      await notifyAdminOperationalEvent(db, 'mail', {
-        subsystem: 'Mail principal sync',
-        objectLabel: title,
-        detail: message,
-        severityLabel: 'warning',
-        recommendedAction: '',
-      }, `principals:${new Date().toISOString().slice(0, 13)}`)
-        .catch(() => { /* notification failure must not break the caller */ });
-    } catch (err) {
-      log.warn({ err, userId: a.id }, 'mail-drift: failed to write admin notification');
-    }
+  // ONE dispatch: an admin-scoped event already reaches every admin. This
+  // used to sit in a loop over the admins — the same event, the same dedupe
+  // key, dispatched once per admin.
+  try {
+    // Dispatched, not inserted: the raw row carried no category, so it
+    // reached no template, no email, no preference gate and no audit.
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    const { MAIL_DRIFT_RESOURCE } = await import('../notifications/action-path.js');
+    // Named as drift so it opens Email → Data Drift, not the mail category's
+    // generic Operations page.
+    await notifyAdminOperationalEvent(db, 'mail', {
+      subsystem: 'Mail principal sync',
+      objectLabel: title,
+      detail: message,
+      items,
+      severityLabel: 'warning',
+      recommendedAction: action,
+    }, `principals:${new Date().toISOString().slice(0, 13)}`, MAIL_DRIFT_RESOURCE);
+  } catch (err) {
+    log.warn({ err }, 'mail-drift: failed to dispatch the admin notification');
   }
 }

@@ -135,19 +135,30 @@ export function AdminMailboxLoginPasswordsModal({
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {rows.map((r) => (
                   <tr key={r.id}>
-                    <td className="py-2.5 font-medium text-gray-900 dark:text-gray-100">{r.label || <span className="italic text-gray-400">(no label)</span>}</td>
+                    <td className="py-2.5 font-medium text-gray-900 dark:text-gray-100">
+                      {r.label || <span className="italic text-gray-400 dark:text-gray-500">(no label)</span>}
+                      {r.kind === 'webmail_session' && (
+                        <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
+                          Opened with “Open webmail” — ends by itself
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—'}</td>
-                    <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">{r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : 'never'}</td>
+                    <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">
+                      {r.expiresAt
+                        ? (r.kind === 'webmail_session' ? new Date(r.expiresAt).toLocaleString() : new Date(r.expiresAt).toLocaleDateString())
+                        : 'never'}
+                    </td>
                     <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">{r.allowedIps.length > 0 ? r.allowedIps.join(', ') : '—'}</td>
                     <td className="py-2.5 text-right">
                       {revokeId === r.id ? (
                         <span className="inline-flex gap-1">
-                          <button type="button" disabled={revoke.isPending} onClick={() => revoke.mutate(r.id, { onSuccess: () => setRevokeId(null) })} className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">Revoke</button>
+                          <button type="button" disabled={revoke.isPending} onClick={() => revoke.mutate(r.id, { onSuccess: () => setRevokeId(null) })} className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">{r.kind === 'webmail_session' ? 'Sign out' : 'Revoke'}</button>
                           <button type="button" onClick={() => setRevokeId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-600 dark:text-gray-400">Cancel</button>
                         </span>
                       ) : (
                         <button type="button" onClick={() => setRevokeId(r.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30">
-                          <Trash2 size={11} /> Revoke
+                          <Trash2 size={11} /> {r.kind === 'webmail_session' ? 'Sign out' : 'Revoke'}
                         </button>
                       )}
                     </td>

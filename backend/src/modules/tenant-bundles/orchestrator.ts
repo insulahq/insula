@@ -70,7 +70,7 @@ import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../.
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
-import { bundleNotificationLabel, notificationErrorText } from './notification-label.js';
+import { bundleNotificationLabel, notificationErrorItems } from './notification-label.js';
 import { CURRENT_REPO_LAYOUT, normaliseRepoLayout, resolveBundleRepoLayout } from './repo-layout.js';
 
 export interface OrchestratorDeps {
@@ -869,8 +869,8 @@ export async function runBundle(
         // an operator also gets the diagnosis — never the pod logs. Both drop
         // the Job/pod names carrying the bundle id, which the dispatcher would
         // otherwise render as "(unnamed)".
-        const errTenant = notificationErrorText(errors, bundleId, 'tenant');
-        const errOperator = notificationErrorText(errors, bundleId, 'operator');
+        const errTenant = notificationErrorItems(errors, bundleId, 'tenant');
+        const errOperator = notificationErrorItems(errors, bundleId, 'operator');
         const initiatorLabel =
           input.initiator === 'system' ? 'Scheduled' :
           input.initiator === 'tenant' ? 'On-demand' :
@@ -894,8 +894,9 @@ export async function runBundle(
               subsystem: `${initiatorLabel} backup`,
               objectLabel: bundleLabel,
               detail: failed
-                ? `The backup did not complete fully: ${errTenant}.`
+                ? 'The backup did not complete fully:'
                 : `The backup completed (${niceSize}).`,
+              items: failed ? errTenant : [],
               severityLabel: failed ? 'failed' : 'completed',
               recommendedAction: failed ? 'Re-run the backup from the Backups page.' : '',
             }, `bundle-${failed ? 'failed' : 'done'}:${bundleId}`);
@@ -913,7 +914,8 @@ export async function runBundle(
             await notifyAdminOperationalEvent(deps.db, 'database', {
               subsystem: 'Tenant backup',
               objectLabel: `${bundleLabel} (tenant ${input.tenantId})`,
-              detail: `${initiatorLabel} bundle did not complete: ${errOperator}.`,
+              detail: `${initiatorLabel} bundle did not complete:`,
+              items: errOperator,
               severityLabel: 'failed',
               recommendedAction: 'Inspect the bundle on the tenant\'s Backups tab.',
             }, `tenant-bundle-failed:${bundleId}`);
@@ -948,12 +950,13 @@ export async function runBundle(
       if (failed) {
         try {
           // Same reader wording as the fan-out above.
-          const safeErrText = notificationErrorText(errors, bundleId, 'tenant', 4096);
+          const safeErrItems = notificationErrorItems(errors, bundleId, 'tenant');
           const { notifyTenantBackupEvent } = await import('../notifications/events.js');
           await notifyTenantBackupEvent(deps.db, input.tenantId, {
             subsystem: 'Backup bundle',
             objectLabel: bundleLabel,
-            detail: `The bundle failed: ${safeErrText || 'unknown error'}`,
+            detail: 'The bundle failed:',
+            items: safeErrItems.length > 0 ? safeErrItems : ['unknown error'],
             severityLabel: 'failed',
             recommendedAction: 'Re-run the backup from the Backups page.',
           }, `bundle-failed-trigger:${bundleId}`);

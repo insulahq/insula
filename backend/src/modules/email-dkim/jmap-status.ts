@@ -207,7 +207,8 @@ export async function emailDkimStatusRoutes(app: FastifyInstance): Promise<void>
       return success(empty);
     }
 
-    // Fetch the JMAP session to resolve accountId
+    // A failure to READ is reported as one, never as "not yet available":
+    // that message hid a wrong lookup on every domain until someone asked why.
     let accountId: string;
     try {
       const session = await getJmapSession();
@@ -215,9 +216,12 @@ export async function emailDkimStatusRoutes(app: FastifyInstance): Promise<void>
         session.primaryAccounts['urn:ietf:params:jmap:principals'] ??
         Object.keys(session.accounts)[0] ??
         'admin';
-    } catch {
-      // Stalwart unreachable — return graceful empty rather than 500
-      return success(empty);
+    } catch (err) {
+      throw new ApiError(
+        'STALWART_UNREACHABLE',
+        `Could not reach the mail server to read this domain's DKIM records: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+      );
     }
 
     let zoneFile: string | null;
@@ -226,8 +230,12 @@ export async function emailDkimStatusRoutes(app: FastifyInstance): Promise<void>
         accountId,
         domainPrincipalId: emailDomain.stalwartDomainId,
       });
-    } catch {
-      zoneFile = null;
+    } catch (err) {
+      throw new ApiError(
+        'DKIM_STATUS_UNAVAILABLE',
+        `The mail server did not return this domain's DNS zone: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+      );
     }
 
     if (!zoneFile) {

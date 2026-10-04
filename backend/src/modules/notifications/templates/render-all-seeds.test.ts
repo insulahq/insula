@@ -45,7 +45,9 @@ function asTemplate(t: (typeof ALL_SEED_TEMPLATES)[number]): NotificationTemplat
 /** Every declared variable, filled with something recognisable. */
 function fullPayload(t: (typeof ALL_SEED_TEMPLATES)[number]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const v of t.variablesSchema ?? []) out[v.name] = `«${v.name}»`;
+  for (const v of t.variablesSchema ?? []) {
+    out[v.name] = v.type === 'list' ? [`«${v.name}» 1`, `«${v.name}» 2`] : `«${v.name}»`;
+  }
   return out;
 }
 

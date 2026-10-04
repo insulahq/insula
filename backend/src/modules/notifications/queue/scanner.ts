@@ -13,6 +13,7 @@
  * Bounded: at most 100 rows per pass to keep the scan window small
  * even after a long pg-boss outage. Subsequent passes catch the rest.
  */
+import { withSchedulerLease } from '../../../shared/scheduler-lease.js';
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { notificationDeliveries } from '../../../db/schema.js';
 import { enqueueDelivery, enqueueNtfyDelivery } from './enqueue.js';
@@ -110,7 +111,11 @@ export function startReenqueueScheduler(
   const SCAN_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
   const timer = setInterval(async () => {
     try {
-      const r = await reenqueueStuckDeliveries(db);
+      // One replica scans: its per-minute singleton key does not dedupe two
+      // replicas' scans, so a stuck delivery could be enqueued — and sent — twice.
+      const leased = await withSchedulerLease(db, 'notification-reenqueue-scan', SCAN_INTERVAL_MS * 1.5, () => reenqueueStuckDeliveries(db));
+      if (!leased.ran) return;
+      const r = leased.value;
       if (r.scanned > 0) {
         log?.info('[notifications] re-enqueue scan', {
           scanned: r.scanned, reenqueued: r.reenqueued, failed: r.failed,

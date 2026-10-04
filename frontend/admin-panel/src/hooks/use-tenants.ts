@@ -76,6 +76,8 @@ export function useDeleteTenant() {
       apiFetch<{ data: { transitionId: string | null } }>(`/api/v1/tenants/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenants'] });
+      // It is now a DELETED tenant with retained bundles — recoverable, by name.
+      queryClient.invalidateQueries({ queryKey: ['recoverable-tenants'] });
     },
   });
 }

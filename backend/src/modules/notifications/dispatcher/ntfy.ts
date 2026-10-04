@@ -32,6 +32,9 @@ export interface NtfyEmitInput {
   readonly eventId: string;
   readonly category: NotificationCategoryResponse;
   readonly tenantId: string | null;
+  /** What the event is about — the same pair the bell row is stamped with. */
+  readonly resourceType: string | null;
+  readonly resourceId: string | null;
   readonly variables: Record<string, unknown>;
   readonly dedupeKey: string | undefined;
   readonly hashSalt: string;
@@ -103,10 +106,13 @@ export async function emitNtfyForEvent(db: Database, input: NtfyEmitInput): Prom
     .select({ adminPanelUrl: systemSettings.adminPanelUrl })
     .from(systemSettings)
     .limit(1);
+  // The event's own resource, not one re-derived from the tenant: an admin
+  // alert about a node, an SLO or mail drift has no tenant, and re-deriving
+  // sent its phone tap to the category's generic page.
   const actionPath = notificationActionPath({
     categoryId: category.id,
-    resourceType: input.tenantId ? 'tenant' : null,
-    resourceId: input.tenantId,
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
   });
   const clickUrl = settings?.adminPanelUrl && actionPath
     ? `${settings.adminPanelUrl.replace(/\/+$/, '')}${actionPath}`

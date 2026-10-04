@@ -109,6 +109,7 @@ export async function notifyTenantDkimRotated(
       + 'Mail keeps flowing throughout — receivers pick up the new key from DNS.',
     severityLabel: 'replaced',
     recommendedAction: 'Nothing to do — the platform manages this key for you.',
+    items: [],
   }, tenantId);
 }
 
@@ -238,6 +239,7 @@ export async function notifyTenantEmailBootstrapped(
     detail: 'Email hosting is now active for this domain.',
     severityLabel: 'enabled',
     recommendedAction: 'Create mailboxes and configure DNS from the tenant panel Mail page.',
+    items: [],
   }, tenantId);
 }
 
@@ -524,13 +526,15 @@ export async function notifyAdminCertRecovered(
 export interface AdminBackupFailedPayload {
   readonly backupName: string;
   readonly errorMessage?: string;
+  /** What failed, one per entry (e.g. each tenant of a wave). Rendered as a list on every channel. */
+  readonly items?: readonly string[];
 }
 export async function notifyAdminBackupFailed(
   db: Database,
   payload: AdminBackupFailedPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, { ...payload, items: payload.items ?? [] }, undefined, { dedupeKey });
 }
 
 export interface AdminBackupTargetUnreachablePayload {
@@ -836,8 +840,8 @@ export async function notifyAdminNodeRemoved(
 export interface AdminTenantPlacementPayload {
   /** One tenant's name, or "N tenants". */
   readonly summary: string;
-  /** One sentence per tenant: what happened, where it was, where it is. */
-  readonly details: string;
+  /** One item per tenant: what happened, where it was, where it is. Rendered as a list. */
+  readonly details: readonly string[];
   /** What to do about it. */
   readonly guidance: string;
 }
@@ -879,8 +883,10 @@ export interface AdminNodeMemoryEventPayload {
    * than the body (it used to say "memory pressure" for container OOM kills).
    */
   readonly headline: string;
-  /** Human summary naming each affected pod, plus what to do. */
-  readonly summary: string;
+  /** One item per affected pod (and the node's own OOM). Rendered as a list. */
+  readonly summary: readonly string[];
+  /** What to do about it. */
+  readonly advice: string;
 }
 /**
  * Node memory events: kernel SystemOOM and kubelet evictions. SystemOOM or a
@@ -964,7 +970,8 @@ export async function notifyAdminSloAlertResolved(
 export interface AdminSubscriptionsExpiringPayload {
   readonly tenantCount: string;
   readonly horizonDays: string;
-  readonly tenantList: string;
+  /** Rendered as a list on every channel. */
+  readonly tenantList: readonly string[];
   readonly occurredAt: string;
 }
 /**
@@ -1053,7 +1060,8 @@ export interface AdminEmailQuotaPayload {
   readonly percent: string;
   readonly occurredAt: string;
   /** The accounts that actually sent — "a@x (48), b@x (5)". */
-  readonly topSenders: string;
+  /** Rendered as a list on every channel. */
+  readonly topSenders: readonly string[];
 }
 /**
  * A tenant saturated its sending limit.
@@ -1129,7 +1137,8 @@ export async function notifyMailboxQuotaThreshold(
 export interface EscalationPayload {
   readonly count: string;
   readonly ageHours: string;
-  readonly summary: string;
+  /** One item per unread title. Rendered as a list on every channel. */
+  readonly summary: readonly string[];
 }
 /**
  * Action notifications that went unread past the deadline.
@@ -1181,6 +1190,17 @@ export interface OperationalEventPayload {
   readonly severityLabel: string;
   /** What the reader should do. Empty string when genuinely nothing. */
   readonly recommendedAction: string;
+  /**
+   * The individual things `detail` is about — failed checks, volumes, gates —
+   * one per entry. Rendered as a list on every channel; never join them into
+   * `detail`.
+   */
+  readonly items?: readonly string[];
+}
+
+/** The templates always reference `{{items}}`; an event about one thing passes none. */
+function withItems(payload: OperationalEventPayload): OperationalEventPayload & { readonly items: readonly string[] } {
+  return { ...payload, items: payload.items ?? [] };
 }
 
 const OPERATIONAL_CATEGORY = {
@@ -1194,14 +1214,19 @@ const OPERATIONAL_CATEGORY = {
 
 export type OperationalSubsystem = keyof typeof OPERATIONAL_CATEGORY;
 
-/** Operator-facing subsystem event. */
+/**
+ * Operator-facing subsystem event. `resourceType` names what the event is
+ * about when the subsystem's category covers several things — it picks the
+ * page the notification opens (action-path.ts `RESOURCE_PATHS`).
+ */
 export async function notifyAdminOperationalEvent(
   db: Database,
   subsystem: OperationalSubsystem,
   payload: OperationalEventPayload,
   dedupeKey?: string,
+  resourceType?: string,
 ): Promise<void> {
-  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, OPERATIONAL_CATEGORY[subsystem], { kind: 'admin' }, withItems(payload), undefined, { dedupeKey, resourceType });
 }
 
 /** Tenant-facing domain-verification state. */
@@ -1211,7 +1236,7 @@ export async function notifyTenantDomainVerification(
   payload: OperationalEventPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'tenant.domain_verification', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+  await dispatchSafe(db, 'tenant.domain_verification', { kind: 'tenant', tenantId }, withItems(payload), tenantId, { dedupeKey });
 }
 
 /** Tenant-facing backup/restore outcome. */
@@ -1221,7 +1246,7 @@ export async function notifyTenantBackupEvent(
   payload: OperationalEventPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'tenant.backup_event', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+  await dispatchSafe(db, 'tenant.backup_event', { kind: 'tenant', tenantId }, withItems(payload), tenantId, { dedupeKey });
 }
 
 export interface AdminClusterCapacityPayload {
@@ -1284,7 +1309,8 @@ export interface AdminMailboxQuotaFleetPayload {
   readonly mailboxCount: string;
   readonly tenantCount: string;
   /** Every affected mailbox with its tenant and contact, already formatted. */
-  readonly mailboxList: string;
+  /** Rendered as a list on every channel. */
+  readonly mailboxList: readonly string[];
   readonly occurredAt: string;
 }
 /**
@@ -1336,7 +1362,8 @@ export interface TenantEmailQuotaPayload {
   readonly used: string;
   readonly limit: string;
   /** Which of the tenant's own accounts sent — they need this to find it. */
-  readonly topSenders: string;
+  /** Rendered as a list on every channel. */
+  readonly topSenders: readonly string[];
 }
 /** 80% crossing — the mail-events threshold evaluator owns dedupe. */
 export async function notifyTenantEmailQuotaWarning(
@@ -1452,6 +1479,8 @@ export interface AdminMailHealthDegradedPayload {
    * rather than as a dangling separator.
    */
   readonly detail?: string;
+  /** The failing sub-probes, one per entry. Rendered as a list on every channel. */
+  readonly items: readonly string[];
   readonly panelUrl?: string;
 }
 /**

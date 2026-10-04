@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.20"
+    pinned: "v0.16.24"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
@@ -164,7 +164,7 @@ components:
     name: oauth2-proxy (admin-UI auth gate)
     tier: "0"
     kind: image
-    pinned: "v7.15.3"
+    pinned: "v7.15.5"
     pin_source: k8s/base/oauth2-proxy/deployment.yaml
     pin_check: true
     repos: [oauth2-proxy/oauth2-proxy]
@@ -273,7 +273,7 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d"
+    pinned: "sha256:31bb0f105d784a6ca953625e14b65a1d1dc3e7a96ba1a17643d472f40324227d"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
@@ -286,7 +286,7 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:65a14c31e1a4897855aeec89b6af231f6de87d88b95d6cc6f83002766f650938"
+    pinned: "sha256:cced4c7d40c21ec138b3622be13cadd2bbe7467eacd17029340b8650d7237ecf"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
@@ -514,12 +514,12 @@ components:
     # re-verified. Bumping librocksdb-sys on its own is never correct.
     tracks:
       component: stalwart
-      # Re-verified 2026-09-04 for the v0.16.16 -> v0.16.20 bump by diffing
-      # Stalwart's OWN Cargo.lock at both tags: librocksdb-sys 0.17.3+10.4.2 and
-      # rocksdb 0.24.0 are identical across them, so this binary still links the
-      # same C++ rocksdb as the store it opens. Do NOT move this field without
-      # re-running that comparison — the number agreeing is the whole point.
-      verified_against: "v0.16.20"
+      # Re-verified for the v0.16.20 -> v0.16.24 bump by diffing
+      # Stalwart's OWN Cargo.lock at both tags: librocksdb-sys 0.17.3+10.4.2 is
+      # identical across them, so this binary still links the same C++ rocksdb
+      # as the store it opens. Do NOT move this field without re-running that
+      # comparison — the number agreeing is the whole point.
+      verified_against: "v0.16.24"
       crate: librocksdb-sys
       crate_version: "0.17.3+10.4.2"
     owner: platform

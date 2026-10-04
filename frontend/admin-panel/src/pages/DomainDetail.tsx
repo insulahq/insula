@@ -22,6 +22,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 import CertDownloadCard from '@/components/CertDownloadCard';
 import ErrorPanel from '@/components/ErrorPanel';
+import RouteOperationStatus, { type RouteOperation, type RouteRemovalResult } from '@/components/routes/RouteOperationStatus';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const INPUT_CLASS =
@@ -275,9 +276,32 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
 
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<RouteRemovalResult | null>(null);
+  const hostnameOf = (routeId: string | undefined) => routes.find((r) => r.id === routeId)?.hostname ?? 'the route';
+
+  // What the server is working on right now. A removal waits on the DNS
+  // server and can take most of a minute; without this nothing on the page
+  // moved, and a second click only earned a 404.
+  const pending: RouteOperation | null =
+    deleteRoute.isPending ? { kind: 'remove', hostname: hostnameOf(deleteRoute.variables) }
+    : createRoute.isPending && createRoute.variables ? { kind: 'add', hostname: createRoute.variables.hostname }
+    : updateRoute.isPending ? { kind: 'update', hostname: hostnameOf(updateRoute.variables?.routeId) }
+    : null;
+
+  const handleDeleteRoute = (routeId: string) => {
+    const hostname = hostnameOf(routeId);
+    setRemoval(null);
+    deleteRoute.mutate(routeId, {
+      onSuccess: (res) => setRemoval({ hostname, dnsWarning: res?.data?.dnsWarning ?? null }),
+      onSettled: () => setConfirmDeleteId(null),
+    });
+  };
+
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
     if (!newHostname) return;
+    setRemoval(null);
     createRoute.mutate(
       {
         hostname: newHostname,
@@ -293,6 +317,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   };
 
   const handleAssignDeployment = (routeId: string, deploymentId: string | null) => {
+    setRemoval(null);
     updateRoute.mutate({ routeId, deployment_id: deploymentId });
   };
 
@@ -362,6 +387,8 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
         )}
       </div>
 
+      <RouteOperationStatus pending={pending} removal={removal} />
+
       {/* Existing Routes */}
       {isLoading ? (
         <div className="flex items-center gap-2 py-4">
@@ -386,8 +413,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {routes.map((route) => (
-                <tr key={route.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+              {routes.map((route) => {
+                const removingThis = deleteRoute.isPending && deleteRoute.variables === route.id;
+                const updatingThis = updateRoute.isPending && updateRoute.variables?.routeId === route.id;
+                return (
+                <tr
+                  key={route.id}
+                  className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50', removingThis && 'opacity-60')}
+                  aria-busy={removingThis || updatingThis}
+                >
                   <td className="px-4 py-3">
                     {/* Not a link: the admin panel has no route-detail page (the
                         tenant panel's /domains/:id/routes/:id has no admin twin),
@@ -405,17 +439,26 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                     {ingressBaseDomain || route.ingressCname}
                   </td>
                   <td className="px-4 py-3">
-                    <select
-                      value={route.deploymentId ?? ''}
-                      onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
-                      className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none"
-                      data-testid={`route-deployment-${route.id}`}
-                    >
-                      <option value="">Not assigned</option>
-                      {deployments.map((d) => (
-                        <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={route.deploymentId ?? ''}
+                        onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
+                        // One update at a time: the mutation tracks only the latest
+                        // call, so a second row changed mid-flight would hide the
+                        // first one's spinner while its request is still running.
+                        disabled={removingThis || updateRoute.isPending}
+                        className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none disabled:opacity-60"
+                        data-testid={`route-deployment-${route.id}`}
+                      >
+                        <option value="">Not assigned</option>
+                        {deployments.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
+                        ))}
+                      </select>
+                      {updatingThis && (
+                        <Loader2 size={14} className="animate-spin text-brand-500" aria-label="Updating route" data-testid={`route-updating-${route.id}`} />
+                      )}
+                    </div>
                     {/* Site folder — only for a deployment serving several
                         hostnames. Without this an admin could bind a route to a
                         multi-host app and have no way to say which folder it
@@ -495,17 +538,47 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                     <StatusBadge status={route.status as 'active' | 'pending' | 'error'} />
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => deleteRoute.mutate(route.id)}
-                      className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-                      title="Delete route"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {removingThis ? (
+                      <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400" data-testid={`route-removing-${route.id}`}>
+                        <Loader2 size={14} className="animate-spin" aria-hidden="true" /> Removing…
+                      </span>
+                    ) : confirmDeleteId === route.id ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRoute(route.id)}
+                          disabled={deleteRoute.isPending}
+                          className="rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
+                          data-testid={`route-delete-confirm-${route.id}`}
+                        >
+                          Remove
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="rounded-md border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                          data-testid={`route-delete-cancel-${route.id}`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(route.id)}
+                        disabled={deleteRoute.isPending}
+                        className="rounded-md p-1 text-gray-400 hover:text-red-500 disabled:opacity-40 dark:hover:text-red-400"
+                        title="Delete route"
+                        aria-label={`Delete route ${route.hostname}`}
+                        data-testid={`route-delete-${route.id}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -605,6 +678,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           severity="error"
           compact
           testId="route-update-error"
+        />
+      )}
+
+      {deleteRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(deleteRoute.error)}
+          severity="error"
+          compact
+          testId="route-delete-error"
         />
       )}
     </div>

@@ -27,12 +27,13 @@ vi.mock('./service.js', () => ({
   listRoutesForDomain: vi.fn().mockResolvedValue([mockRoute]),
   createRoute: vi.fn().mockResolvedValue(mockRoute),
   updateRoute: vi.fn().mockResolvedValue({ ...mockRoute, tlsMode: 'strict' }),
-  deleteRoute: vi.fn().mockResolvedValue(undefined),
+  deleteRoute: vi.fn().mockResolvedValue({ dnsLeftovers: null }),
   getIngressSettings: vi.fn().mockResolvedValue(mockIngressSettings),
   updateIngressSettings: vi.fn().mockResolvedValue({ ...mockIngressSettings, ingressBaseDomain: 'new.example.com' }),
 }));
 
 const { ingressRouteRoutes } = await import('./routes.js');
+const { deleteRoute } = await import('./service.js');
 
 describe('ingress-routes routes', () => {
   let app: FastifyInstance;
@@ -110,13 +111,48 @@ describe('ingress-routes routes', () => {
 
   // --- DELETE route ---
 
-  it('DELETE route should return 204', async () => {
+  it('DELETE route returns no DNS warning when its records were withdrawn', async () => {
     const res = await app.inject({
       method: 'DELETE',
       url: '/api/v1/tenants/tenant-1/domains/dom-1/routes/route-1',
       headers: { authorization: `Bearer ${adminToken}` },
     });
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toEqual({ dnsWarning: null });
+  });
+
+  const leftovers = {
+    dnsLeftovers: {
+      hostnames: ['app.example.com'],
+      reason: "2 of 2 record(s) for 'app.example.com' are still published — timed out connecting to 100.64.0.9:8081",
+    },
+  };
+
+  it('DELETE route tells an admin why its DNS records are still published', async () => {
+    vi.mocked(deleteRoute).mockResolvedValueOnce(leftovers);
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes/route-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.dnsWarning).toContain('timed out connecting to 100.64.0.9:8081');
+  });
+
+  it('DELETE route tells a tenant the records are still published, without the DNS server address', async () => {
+    vi.mocked(deleteRoute).mockResolvedValueOnce(leftovers);
+    const tenantToken = app.jwt.sign({
+      sub: 'user-1', role: 'tenant_admin', panel: 'tenant', tenantId: 'tenant-1', iat: Math.floor(Date.now() / 1000),
+    });
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/tenants/tenant-1/domains/dom-1/routes/route-1',
+      headers: { authorization: `Bearer ${tenantToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const warning = res.json().data.dnsWarning as string;
+    expect(warning).toContain("the DNS records for 'app.example.com' are still published");
+    expect(warning).not.toContain('100.64.0.9');
   });
 
   // --- Admin ingress settings ---

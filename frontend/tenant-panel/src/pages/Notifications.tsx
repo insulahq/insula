@@ -298,7 +298,7 @@ function NotificationRow({
             </span>
           )}
         </div>
-        <p className="mt-0.5 text-sm text-gray-600 dark:text-gray-400">{notification.message}</p>
+        <p className="mt-0.5 whitespace-pre-line text-sm text-gray-600 dark:text-gray-400">{notification.message}</p>
         <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
           {formatRelativeTime(notification.createdAt)}
           {notification.resourceType && (

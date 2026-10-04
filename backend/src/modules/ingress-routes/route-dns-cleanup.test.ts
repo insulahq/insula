@@ -8,10 +8,15 @@ let staleRows: Array<{ id: string; recordType: string; recordName: string | null
 let sharedValues = new Set<string>();
 
 let refusedValue: string | null = null;
+let unreachable = false;
+const TIMED_OUT = 'timed out connecting to ns1.example.test:8081 — the packets are being dropped rather than refused, which usually means a firewall or a missing route';
 
 vi.mock('../dns-records/service.js', () => ({
   syncRecordToProviders: vi.fn(async (_db, _zone, action, record) => {
     if (action === 'delete') deletes.push(`${record.type} ${record.name} ${record.content}`);
+    if (action === 'delete' && unreachable) {
+      return { status: 'failed', errors: [{ server: 'ns1', message: TIMED_OUT }] };
+    }
     if (action === 'delete' && record.content === refusedValue) {
       return { status: 'failed', errors: [{ server: 'ns1', message: 'PowerDNS API error: 500' }] };
     }
@@ -26,7 +31,7 @@ vi.mock('../dns-records/service.js', () => ({
   describeSyncFailure: vi.fn((o: { errors: Array<{ message: string }> }) => o.errors[0].message),
 }));
 
-import { autoDeleteRouteDns, deleteRoute, refreshRouteDnsForDomain } from './service.js';
+import { autoDeleteRouteDns, deleteRoute } from './service.js';
 import { updateRedirectSettings } from './settings-service.js';
 import { domains, dnsRecords, ingressRoutes, platformSettings } from '../../db/schema.js';
 
@@ -96,6 +101,7 @@ beforeEach(() => {
   staleRows = [];
   sharedValues = new Set();
   refusedValue = null;
+  unreachable = false;
 });
 
 describe('autoDeleteRouteDns', () => {
@@ -110,10 +116,86 @@ describe('autoDeleteRouteDns', () => {
       ],
     });
 
-    await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
+    const cleanup = await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
 
     expect(deletes.sort()).toEqual(['A shop 198.51.100.7', 'A shop 203.0.113.1']);
     expect(deletedRows).toHaveBeenCalledTimes(2); // the two A rows, never the TXT
+    expect(cleanup).toEqual({ status: 'removed' });
+  });
+
+  const twoAddresses = [
+    { id: 'r1', recordType: 'A', recordName: 'shop', recordValue: '203.0.113.1' },
+    { id: 'r2', recordType: 'AAAA', recordName: 'shop', recordValue: '2001:db8::1' },
+  ];
+
+  it('keeps the row of a value the server would not withdraw, and says so', async () => {
+    refusedValue = '2001:db8::1';
+    const { db, deletedRows } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1', ingress_default_ipv6: '2001:db8::1' },
+      records: twoAddresses,
+    });
+
+    const cleanup = await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
+
+    expect(deletes.sort()).toEqual(['A shop 203.0.113.1', 'AAAA shop 2001:db8::1']);
+    // Only the withdrawn A row goes; the AAAA row stays listed so it can be deleted later.
+    expect(deletedRows).toHaveBeenCalledTimes(1);
+    expect(cleanup).toEqual({
+      status: 'failed',
+      reason: "1 of 2 record(s) for 'shop.example.test' are still published — PowerDNS API error: 500",
+    });
+  });
+
+  it('stops at a server that cannot be reached instead of waiting out its timeout once per value', async () => {
+    unreachable = true;
+    const { db, deletedRows } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1', ingress_default_ipv6: '2001:db8::1' },
+      records: twoAddresses,
+    });
+
+    const cleanup = await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
+
+    expect(deletes).toHaveLength(1);
+    expect(deletedRows).not.toHaveBeenCalled();
+    expect(cleanup).toEqual({
+      status: 'failed',
+      reason: `2 of 2 record(s) for 'shop.example.test' are still published — ${TIMED_OUT}`,
+    });
+  });
+
+  it('a server that answers with an error is still asked about the other values', async () => {
+    refusedValue = '203.0.113.1';
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1', ingress_default_ipv6: '2001:db8::1' },
+      records: twoAddresses,
+    });
+
+    await autoDeleteRouteDns(db, 'd1', 'shop.example.test');
+
+    expect(deletes.sort()).toEqual(['A shop 203.0.113.1', 'AAAA shop 2001:db8::1']);
+  });
+});
+
+describe('deleteRoute reports DNS it could not withdraw', () => {
+  const routeFixture = (extra: Partial<RouteFixture> = {}): RouteFixture =>
+    ({ id: 'apex', domainId: 'd1', hostname: 'example.test', path: '/', wwwRedirect: 'none', ...extra });
+
+  it('returns no leftovers when everything was withdrawn', async () => {
+    const { db } = fakeDb({ settings: { ingress_default_ipv4: '203.0.113.1' }, routes: [routeFixture()] });
+    expect(await deleteRoute(db, 'apex')).toEqual({ dnsLeftovers: null });
+  });
+
+  it('names the route and its www companion when the server is unreachable', async () => {
+    unreachable = true;
+    const { db } = fakeDb({
+      settings: { ingress_default_ipv4: '203.0.113.1' },
+      routes: [routeFixture({ wwwRedirect: 'add-www' })],
+    });
+
+    const { dnsLeftovers } = await deleteRoute(db, 'apex');
+
+    expect(dnsLeftovers?.hostnames).toEqual(['example.test', 'www.example.test']);
+    expect(dnsLeftovers?.reason).toContain('timed out connecting to ns1.example.test:8081');
   });
 });
 
@@ -213,53 +295,5 @@ describe('a name another route still serves keeps its DNS', () => {
   });
 });
 
-describe('refreshRouteDnsForDomain', () => {
-  it('re-provisions the current set and withdraws only addresses that are gone and unshared', async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1,203.0.113.2' },
-      routes: [{ hostname: 'example.test' }],
-    });
-    staleRows = [
-      { id: 's1', recordType: 'A', recordName: '@', recordValue: '203.0.113.1' }, // still current
-      { id: 's2', recordType: 'A', recordName: '@', recordValue: '198.51.100.7' }, // node gone
-      { id: 's3', recordType: 'A', recordName: '@', recordValue: '198.51.100.8' }, // gone, but a hand-made row holds it
-    ];
-    sharedValues = new Set(['198.51.100.8']);
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(deletes).toEqual(['A @ 198.51.100.7']);
-    expect(provisions).toEqual(['A @ 203.0.113.1', 'A @ 203.0.113.2']);
-    expect(result).toMatchObject({ hostnames: 1, removed: 3, failures: [] });
-  });
-
-  it('reports a stale address the server would not withdraw instead of counting it gone', async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1' },
-      routes: [{ hostname: 'example.test' }],
-    });
-    staleRows = [{ id: 's1', recordType: 'A', recordName: '@', recordValue: '198.51.100.7' }];
-    refusedValue = '198.51.100.7';
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(result.failures).toEqual([
-      { hostname: 'example.test', detail: 'A 198.51.100.7 is still published: PowerDNS API error: 500' },
-    ]);
-  });
-
-  it("refreshes a route's www companion too — the name that usually serves the site", async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1,203.0.113.2' },
-      routes: [{ hostname: 'example.test', wwwRedirect: 'add-www' } as never],
-    });
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(provisions).toEqual([
-      'A @ 203.0.113.1', 'A @ 203.0.113.2',
-      'A www 203.0.113.1', 'A www 203.0.113.2',
-    ]);
-    expect(result).toMatchObject({ hostnames: 2, failures: [] });
-  });
-});
+// refreshRouteDnsForDomain is the shared route-DNS reconcile now — covered in
+// dns-apex-drift/detector.test.ts and route-dns.integration.test.ts.

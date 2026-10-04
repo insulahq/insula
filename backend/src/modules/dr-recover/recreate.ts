@@ -8,9 +8,11 @@
  * EXISTING provision + restore-cart flow can then run unchanged.
  *
  * Why re-create is even possible without a local row:
- *   - A hard-deleted tenant cascade-drops its `backup_jobs` row (FK
- *     `onDelete: cascade`), so the only handle left is the operator-supplied
- *     bundleId + the cluster's assigned tenant-class backup target.
+ *   - A tenant deleted on THIS cluster keeps its `backup_jobs` rows (loose FK
+ *     since migration 0070; bundles are retained for the deleted-tenant
+ *     window), so the recover route resolves its newest completed bundle. On a
+ *     cluster that never had the tenant there are no rows, and the handle is
+ *     the operator-supplied bundleId + the assigned tenant-class target.
  *   - `BackupStore.open(bundleId)` + `getMeta()` resolve a bundle WITHOUT any
  *     local tenant/backup_jobs row — the bundle prefix is keyed on bundleId.
  *   - meta.json v2 carries a `tenant` account block (name, plan, region, node,

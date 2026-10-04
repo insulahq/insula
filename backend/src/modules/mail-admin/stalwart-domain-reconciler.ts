@@ -41,6 +41,7 @@
  * scheduled tick only exists to catch external drift.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 
 import { eq } from 'drizzle-orm';
@@ -397,8 +398,16 @@ export function startStalwartDomainReconciler(
   deps: StalwartDomainReconcilerDeps,
 ): () => void {
   const tickMs = deps.tickMs ?? STALWART_DOMAIN_RECONCILER_TICK_MS;
-  void runStalwartDomainReconcilerTick(deps); // one tick immediately
-  const timer = setInterval(() => void runStalwartDomainReconcilerTick(deps), tickMs);
+  // One replica reconciles. The forced-ACME-order backoff is per process, so
+  // three replicas could place three times MAX_FORCE_ATTEMPTS orders against
+  // Let's Encrypt's per-domain weekly limit; the sticky lease keeps the
+  // backoff with the one replica that places them.
+  const tick = (): void => {
+    void withSchedulerLease(deps.db, 'stalwart-domain-reconciler', tickMs * 1.5, () => runStalwartDomainReconcilerTick(deps))
+      .catch(() => undefined); // the tick never throws; a lease read failure skips this tick
+  };
+  tick(); // one tick immediately
+  const timer = setInterval(tick, tickMs);
   return () => clearInterval(timer);
 }
 

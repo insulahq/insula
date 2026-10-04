@@ -10,6 +10,7 @@ import type { Database } from '../../db/index.js';
 import * as schema from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // Platform StatefulSets whose volumes this policy controls. Add to the
 // list when a new system StatefulSet ships with a PVC.
@@ -94,12 +95,15 @@ export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: nu
 // rollout lands one pod per server (DoNotSchedule — see HA_TOPOLOGY_SPREAD).
 // List is exhaustive — these are every platform-namespace Deployment whose
 // loss would degrade admin/tenant panel function.
-const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+// `optional`: shipped only by some overlays — Dex and oauth2-proxy are the
+// dev/staging test IdP and never run in production. A missing optional
+// Deployment is "not installed"; a missing required one is still a failure.
+const STATELESS_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
   { namespace: 'platform', name: 'admin-panel' },
   { namespace: 'platform', name: 'tenant-panel' },
   { namespace: 'platform', name: 'platform-api' },
-  { namespace: 'platform', name: 'oauth2-proxy' },
-  { namespace: 'platform', name: 'dex' },
+  { namespace: 'platform', name: 'oauth2-proxy', optional: true },
+  { namespace: 'platform', name: 'dex', optional: true },
   // Cut 3: mail data-plane services follow the same
   // HA scaling policy as the platform stateless tier.
   // NOTE: stalwart-mail was removed from this list when the DataStore
@@ -110,6 +114,20 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   // Roundcube is stateless (sessions in system-db Postgres).
   { namespace: 'mail', name: 'roundcube' },
 ];
+/** A Deployment a tier scales. `optional` ones may be absent from an environment. */
+export interface ManagedDeployment {
+  readonly namespace: string;
+  readonly name: string;
+  readonly optional?: boolean;
+  /** Never scaled above this, whatever the tier asks for. */
+  readonly maxReplicas?: number;
+}
+
+/** The replica count a tier's `desired` means for one Deployment. Pure. */
+export function replicasFor(d: ManagedDeployment, desired: number): number {
+  return d.maxReplicas !== undefined ? Math.min(desired, d.maxReplicas) : desired;
+}
+
 // Single-server (local) installs default to 1 replica per stateless
 // service. HA scales to min(readyServerCount, MAX_HA_REPLICAS=3) so a
 // 3-server cluster gets 1 pod per server (the "all servers same state"
@@ -140,11 +158,17 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
 // on the next tick (≤5 min). One-replica window during that interval —
 // acceptable for an operator workload (no user-visible blip; leader
 // keeps working).
-export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
   { namespace: 'cert-manager', name: 'cert-manager' },
   { namespace: 'cert-manager', name: 'cert-manager-cainjector' },
   { namespace: 'cert-manager', name: 'cert-manager-webhook' },
-  { namespace: 'flux-system', name: 'source-controller' },
+  // Pinned to ONE. source-controller keeps its artifacts on the pod's own disk
+  // and serves them only from the leader (Flux does not support scaling it):
+  // a second replica was a standby stuck at 0/1 Ready with a readiness Warning
+  // every 10 s, and on takeover it would start with no artifacts anyway. On a
+  // node loss Kubernetes reschedules it; workloads keep running meanwhile —
+  // only new git changes wait.
+  { namespace: 'flux-system', name: 'source-controller', maxReplicas: 1 },
   { namespace: 'flux-system', name: 'kustomize-controller' },
   { namespace: 'flux-system', name: 'helm-controller' },
   { namespace: 'flux-system', name: 'notification-controller' },
@@ -160,10 +184,11 @@ export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: 
   // ~6.5 min — until Kubernetes' 300 s not-ready eviction moved the pod.
   //
   // Scaling the operator without scaling its plugin is not HA: a reachable
-  // operator that cannot load its plugin does not reconcile. The plugin
-  // already runs with --leader-elect, so it belongs in this tier.
-  // k8s/base/cnpg-system/ strips the vendored `replicas: 1` and adds the
-  // topologySpread + PDB this scaling depends on.
+  // operator that cannot load its plugin does not reconcile. Unlike the rest
+  // of this tier its two replicas are BOTH active, not leader + standby:
+  // k8s/base/cnpg-system/ turns its leader election off (upstream serves the
+  // plugin only from the leader, so a standby was never Ready), strips the
+  // vendored `replicas: 1`, and adds the topologySpread + PDB.
   { namespace: 'cnpg-system', name: 'barman-cloud' },
 ];
 
@@ -539,6 +564,12 @@ export type DeploymentPatchResult = {
   newReplicas: number;
   patched: boolean;
   error: string | null;
+  /**
+   * The Deployment does not exist in this environment — not a failure. The
+   * tier lists name components only some environments run: Dex and
+   * oauth2-proxy ship in the dev/staging overlays and never in production.
+   */
+  notInstalled?: boolean;
 };
 
 export type CnpgClusterPatchResult = {
@@ -717,16 +748,33 @@ async function readLiveNodeSelectors(
 // stays scaled down between policy reconciles.
 export const WEBMAIL_ENGINE_DISABLED_ANNOTATION = 'insula.host/webmail-engine-disabled';
 
-async function patchDeploymentsToReplicaCount(
+export async function patchDeploymentsToReplicaCount(
   k8s: K8sClients,
-  deployments: ReadonlyArray<{ namespace: string; name: string }>,
+  deployments: ReadonlyArray<ManagedDeployment>,
   desired: number,
 ): Promise<DeploymentPatchResult[]> {
   const results: DeploymentPatchResult[] = [];
   for (const d of deployments) {
     let previousReplicas = 0;
     try {
-      const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
+      let live: Awaited<ReturnType<typeof k8s.apps.readNamespacedDeployment>>;
+      try {
+        live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
+      } catch (err) {
+        // Absent here, not broken: production never runs Dex or oauth2-proxy,
+        // and every HA apply there reported both as FAILED, turning a clean
+        // apply into "Apply failed" and stopping its progress tracking.
+        // Only for a component this environment may legitimately lack — a
+        // missing required one (the CNPG backup plugin, a Flux controller)
+        // is still reported as the failure it is.
+        if (!d.optional || !isNotFound(err)) throw err;
+        results.push({
+          namespace: d.namespace, name: d.name,
+          previousReplicas: 0, newReplicas: 0,
+          patched: false, error: null, notInstalled: true,
+        });
+        continue;
+      }
       previousReplicas = live.spec?.replicas ?? 0;
       // Honor the webmail-engine-disabled gate. The webmail-router
       // reconciler stamps this annotation on the engine that the
@@ -742,10 +790,11 @@ async function patchDeploymentsToReplicaCount(
         });
         continue;
       }
-      if (previousReplicas === desired) {
+      const want = replicasFor(d, desired);
+      if (previousReplicas === want) {
         results.push({
           namespace: d.namespace, name: d.name,
-          previousReplicas, newReplicas: desired,
+          previousReplicas, newReplicas: want,
           patched: false, error: null,
         });
         continue;
@@ -754,18 +803,18 @@ async function patchDeploymentsToReplicaCount(
         namespace: d.namespace, name: d.name,
         body: {
           metadata: { name: d.name, namespace: d.namespace },
-          spec: { replicas: desired },
+          spec: { replicas: want },
         },
       } as unknown as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
       results.push({
         namespace: d.namespace, name: d.name,
-        previousReplicas, newReplicas: desired,
+        previousReplicas, newReplicas: want,
         patched: true, error: null,
       });
     } catch (err) {
       results.push({
         namespace: d.namespace, name: d.name,
-        previousReplicas, newReplicas: desired,
+        previousReplicas, newReplicas: replicasFor(d, desired),
         patched: false,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -825,7 +874,7 @@ export async function detectDeploymentReplicaDrift(
   tier: 'local' | 'ha',
   readyServerCount: number,
 ): Promise<boolean> {
-  const groups: ReadonlyArray<{ deployments: ReadonlyArray<{ namespace: string; name: string }>; desired: number }> = [
+  const groups: ReadonlyArray<{ deployments: ReadonlyArray<ManagedDeployment>; desired: number }> = [
     { deployments: STATELESS_DEPLOYMENTS, desired: deploymentReplicasForSystemTier(tier, readyServerCount) },
     { deployments: LEADER_ELECT_DEPLOYMENTS, desired: leaderElectReplicasForSystemTier(tier, readyServerCount) },
   ];
@@ -835,7 +884,7 @@ export async function detectDeploymentReplicaDrift(
         const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
         const annotations = live.metadata?.annotations ?? {};
         if (annotations[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') continue;
-        if ((live.spec?.replicas ?? 0) !== desired) return true;
+        if ((live.spec?.replicas ?? 0) !== replicasFor(d, desired)) return true;
       } catch (err) {
         const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
         if (status !== 404) {

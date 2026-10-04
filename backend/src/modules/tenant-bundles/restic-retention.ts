@@ -63,6 +63,7 @@
  * recovered on the next tick.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
@@ -87,6 +88,7 @@ import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
 import { layoutsWithLiveBundles, repoLayoutForStateRow } from './repo-layout.js';
+import { bundleIsLive } from './bundle-hold.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export type RepoSkipReason =
@@ -385,9 +387,11 @@ export async function runResticRetentionSweep(
     try {
       // Keep-set: snapshots belonging to bundles that are still live. A bundle
       // is live when it completed (fully or partially) AND has not passed its
-      // expires_at. Note this keys off expires_at directly rather than
-      // status='expired', so the reconciler agrees with the expiry sweep even
-      // when it has not run yet.
+      // expires_at — or is HELD past it (suspended tenant, a live tenant's
+      // newest restore point; bundle-hold.ts). Keyed off the same predicate as
+      // the expiry sweep rather than status='expired', so the reconciler agrees
+      // with it even when it has not run yet — and never forgets the snapshots
+      // of a bundle the sweep is deliberately keeping.
       //
       // The component filter is dropped for a MERGED repository, because that
       // repository holds every component's snapshots. Filtering it to one
@@ -401,8 +405,7 @@ export async function runResticRetentionSweep(
         JOIN backup_jobs bj ON bj.id = bc.backup_job_id
         WHERE bj.tenant_id = ${tenantId}
           ${layout === 'per-tenant' ? sql`` : sql`AND bc.component::text = ${component}`}
-          AND bj.status IN ('completed','partial')
-          AND (bj.expires_at IS NULL OR bj.expires_at > ${now()})
+          AND ${bundleIsLive('bj', now())}
       `) as unknown as { rows: Array<{ snapshot_id: string | null; bundle_id: string }> };
 
       const keepSnapshotIds = new Set<string>();
@@ -893,6 +896,11 @@ export async function purgeFullyReclaimedBundles(
  * every replica, an immediate tick would have all of them hit the backup
  * target simultaneously.
  */
+/** Run lock shared by the scheduled and the manual sweep: one sweep at a time, cluster-wide. */
+export const RESTIC_SWEEP_RUN_LOCK = 'restic-retention-run';
+/** Renewed while a sweep runs; only matters if the replica running it dies. */
+export const RESTIC_SWEEP_RUN_TTL_MS = 30 * 60_000;
+
 export function startResticRetentionScheduler(
   app: {
     db: Database;
@@ -919,12 +927,18 @@ export function startResticRetentionScheduler(
       const kubeconfigPath = (app.config?.KUBECONFIG_PATH as string | undefined)
         ?? process.env.KUBECONFIG_PATH;
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-      const res = await runResticRetentionSweep({
-        db: app.db,
-        k8s: createK8sClients(kubeconfigPath),
-        secretsKeyHex,
-        logger: app.log,
-      });
+      // One replica owns the schedule; the run lock also keeps a manual sweep
+      // (POST …/restic-retention) off the same repositories. Two concurrent
+      // sweeps collide on restic's exclusive lock and the loser pages an admin.
+      const scheduled = await withSchedulerLease(app.db, 'restic-retention', intervalMs * 1.5, () =>
+        withSchedulerLease(app.db, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS, () => runResticRetentionSweep({
+          db: app.db,
+          k8s: createK8sClients(kubeconfigPath),
+          secretsKeyHex,
+          logger: app.log,
+        }), { release: true, log: app.log }), { log: app.log });
+      if (!scheduled.ran || !scheduled.value.ran) return;
+      const res = scheduled.value.value;
       if (res.snapshotsForgotten > 0 || res.prunesRun > 0 || res.errors > 0) {
         app.log.info(
           {

@@ -21,6 +21,7 @@
  * reaper is Phase 2.)
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { eq } from 'drizzle-orm';
 import { tenants, platformSettings } from '../../db/schema.js';
 import { queryInstant } from '../monitoring/vm-client.js';
@@ -280,8 +281,10 @@ export function startBandwidthMeter(
   const runOnce = (): void => {
     // Accumulate usage, then evaluate 80/90/100% thresholds (BW-3) + flip the
     // cap flag (BW-4) — independent so a threshold error can't skip metering.
-    meterBandwidthOnce(db, logger)
-      .then(() => evaluateBandwidthThresholds(db, logger))
+    // One replica meters: passes on two replicas read the same last-run mark
+    // and bill the window twice.
+    withSchedulerLease(db, 'bandwidth-meter', intervalMs * 1.5, () => meterBandwidthOnce(db, logger)
+      .then(() => evaluateBandwidthThresholds(db, logger)))
       .catch((err: unknown) => {
         logger.warn?.({ err }, 'bandwidth-meter: pass failed');
       });

@@ -5,6 +5,7 @@ import {
   STORAGE_QUIESCED_ANNOTATION,
   STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
 } from '../../shared/scale-deployment.js';
+import { releaseRelocationsInNamespace } from '../tenant-placement/relocate.js';
 
 // Deployment scaling goes through scaleDeploymentReplicas (raw /scale patch) —
 // the typed SDK `patchNamespacedDeployment` serializer DROPS `replicas: 0`,
@@ -129,6 +130,11 @@ export async function quiesce(
   // The caller passes `(snap) => persistQuiesceSnapshot(db, opId, snap)`.
   persist?: (snap: QuiesceSnapshot) => Promise<void>,
 ): Promise<QuiesceSnapshot> {
+  // A data relocation (a "Move back" of a stopped tenant) holds the volume
+  // attached through a Longhorn ticket; every caller here needs it detached.
+  // The storage operation wins — the copy stops where it is.
+  await releaseRelocationsInNamespace(k8s, namespace);
+
   // ── PHASE 1: capture current state (read-only, NO mutation) ──
   // Capture every Deployment in the tenant namespace — tenant namespaces are
   // single-tenant dedicated, and every Deployment there (`platform.io/managed`

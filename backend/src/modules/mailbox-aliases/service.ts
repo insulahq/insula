@@ -28,6 +28,7 @@ import {
   type DesiredAccountAlias,
 } from '../stalwart-jmap/account-aliases.js';
 import type { Database } from '../../db/index.js';
+import { aliasIsLive } from './alias-live.js';
 import type { CreateMailboxAliasInput, UpdateMailboxAliasInput } from '@insula/api-contracts';
 
 const log = mailLogger().child({ module: 'mailbox-aliases' });
@@ -137,7 +138,7 @@ export async function desiredAliasesForMailbox(
   return rows.map((r) => ({
     localPart: r.localPart,
     stalwartDomainId,
-    enabled: mailboxActive && r.enabled === 1,
+    enabled: aliasIsLive(mailboxActive, r.enabled),
   }));
 }
 

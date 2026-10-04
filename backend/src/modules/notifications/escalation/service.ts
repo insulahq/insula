@@ -29,6 +29,7 @@ import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { notifications } from '../../../db/schema.js';
 import { categoryMeta } from '../routing/effective-channels.js';
 import type { Database } from '../../../db/index.js';
+import { cappedList } from '../list-items.js';
 
 /** How long an action may sit unread before the operator is told. */
 export const ESCALATE_AFTER_HOURS = 48;
@@ -131,7 +132,7 @@ export async function markEscalated(
  * Grouping also keeps the 2000-char cap from silently eating distinct entries:
  * repeated titles were consuming the budget that unique ones needed.
  */
-export function describeCandidates(candidates: readonly EscalationCandidate[]): string {
+export function describeCandidates(candidates: readonly EscalationCandidate[]): string[] {
   const byTitle = new Map<string, { n: number; oldest: Date }>();
   for (const c of candidates) {
     const seen = byTitle.get(c.title);
@@ -143,14 +144,14 @@ export function describeCandidates(candidates: readonly EscalationCandidate[]): 
     }
   }
   // Most-repeated first: the loudest unhandled thing is the one to act on.
-  return [...byTitle.entries()]
+  const lines = [...byTitle.entries()]
     .sort((a, b) => b[1].n - a[1].n)
     .map(([title, { n, oldest }]) => {
       const day = oldest.toISOString().slice(0, 10);
       return n === 1
         ? `${title} (unread since ${day})`
         : `${title} x${n} (oldest unread since ${day})`;
-    })
-    .join('; ')
-    .slice(0, 2000);
+    });
+  // One list item per title (rendered as a list on every channel), capped by count.
+  return cappedList(lines);
 }

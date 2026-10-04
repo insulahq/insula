@@ -10,6 +10,7 @@
  * — the window is measured from the oldest queued item, so a coarser tick would
  * add up to its own period of latency on top of the window the user chose.
  */
+import { withSchedulerLease } from '../../../shared/scheduler-lease.js';
 import { eq, inArray } from 'drizzle-orm';
 import { users, userNotificationSettings } from '../../../db/schema.js';
 import { safeTick } from '../../../shared/safe-tick.js';
@@ -25,9 +26,12 @@ import type { Database } from '../../../db/index.js';
 const TICK_MS = 15 * 60 * 1000;
 
 export function startDigestScheduler(db: Database): NodeJS.Timeout {
-  safeTick('notification-digest', () => runOnce(db));
+  // One replica flushes: a digest is sent before its items are marked, so two
+  // replicas flushing together send it twice.
+  const tick = () => withSchedulerLease(db, 'notification-digest', TICK_MS * 1.5, () => runOnce(db));
+  safeTick('notification-digest', tick);
   const timer = setInterval(() => {
-    safeTick('notification-digest', () => runOnce(db));
+    safeTick('notification-digest', tick);
   }, TICK_MS);
   if (typeof timer.unref === 'function') timer.unref();
   return timer;

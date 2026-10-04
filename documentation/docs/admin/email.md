@@ -159,8 +159,8 @@ just changes which backend serves it.
 
 | Engine | Notes |
 |--------|-------|
-| **Bulwark** *(default)* | A modern JMAP-native client; supports master-user impersonation so a tenant admin can open any of their mailboxes SSO-style. |
-| **Roundcube** | The classic, widely-known webmail, for teams that prefer it. |
+| **Bulwark** *(default, recommended)* | The platform's webmail: a modern JMAP-native client with mail, contacts, calendar and files. "Open Webmail" signs users straight into their mailbox. |
+| **Roundcube** *(legacy)* | The classic IMAP webmail, kept as an alternative while it is retired. It receives security updates only; new webmail features land in Bulwark, and it has no calendar or files. |
 
 Switching engines triggers a rollout (tracked in the Task Center).
 
@@ -183,8 +183,8 @@ that feature in the webmail UI.
 
 - **Placement & migration** — the mail-server placement and **disaster
   recovery** card: failover, failback, migrate to another node, and
-  standby data-freshness. Port exposure is tucked behind an "Advanced
-  (debugging only)" collapsible — the default (`allServerNodes`) is
+  standby data-freshness. Below it, the **Mail Port Exposure** card shows
+  how the mail ports are published — the default (`allServerNodes`) is
   correct for almost everyone.
 - **Backups** — the **mail archive** (Stalwart-native `stalwart -e` LZ4
   export — a whole-server point-in-time export, good for DR drills and
@@ -269,7 +269,15 @@ is a live forwarding address nobody manages). The page explains each drift
 item and offers remediation: dismiss, recreate the missing Stalwart entry
 empty, or — for orphans — a type-to-confirm **delete from Stalwart**.
 Detection runs continuously (the reconciler sweeps every few minutes and
-alerts admins on new items).
+alerts admins on new items — the alert opens this page).
+
+Resolved items stay under **Resolved History (last 30 days)** and are deleted
+once they were resolved more than 30 days ago.
+
+A **suspended** tenant's mailbox aliases are not drift: suspending a tenant
+turns every alias off on the mail server on purpose and keeps the alias rows
+for reactivation, so they are only expected on the server while the mailbox is
+active.
 
 !!! warning "Recreating empty loses messages"
     "Recreate empty" rebuilds the missing Stalwart entry with no data — a

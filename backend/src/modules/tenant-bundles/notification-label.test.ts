@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { findIds } from '../notifications/dispatcher/envelope.js';
-import { bundleNotificationLabel, notificationErrorText } from './notification-label.js';
+import { bundleNotificationLabel, notificationErrorItems, notificationErrorText } from './notification-label.js';
 
 const BUNDLE = 'bkp-11111111-2222-4333-8444-555555555555';
 const TENANT = '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
@@ -60,5 +60,14 @@ describe('notificationErrorText', () => {
     expect(notificationErrorText(['files: boom; logs: secret stderr', 'mailboxes: bang; diagnosis: node-a'], BUNDLE, 'tenant'))
       .toBe('files: boom; mailboxes: bang');
     expect(notificationErrorText(['x'.repeat(2000)], BUNDLE, 'operator', 500)).toHaveLength(500);
+  });
+});
+
+describe('notificationErrorItems', () => {
+  it('one entry per failed component, each through the same cut', () => {
+    expect(notificationErrorItems(['files: boom; logs: secret stderr', 'mailboxes: bang; diagnosis: node-a'], BUNDLE, 'tenant'))
+      .toEqual(['files: boom', 'mailboxes: bang']);
+    expect(notificationErrorItems(['mailboxes: bang; diagnosis: node-a'], BUNDLE, 'operator'))
+      .toEqual(['mailboxes: bang; diagnosis: node-a']);
   });
 });

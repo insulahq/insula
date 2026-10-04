@@ -7,6 +7,7 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
 import NodeName from '@/components/nodes/NodeName';
 import NodeList from '@/components/nodes/NodeList';
 import NodeText from '@/components/nodes/NodeText';
+import MigrateResultNote from './MigrateResultNote';
 
 function utc(iso: string | null): string {
   if (!iso) return '—';
@@ -25,10 +26,11 @@ type PendingAction = { readonly kind: 'move-back' | 'make-primary'; readonly nod
  * on and keeps its data on, against its primary node — and, when those
  * differ, a red banner with the two ways out:
  *
- *   Move back to <primary>      re-pins and restarts the workloads on the
- *                               primary node; Longhorn then copies the data
- *                               back (the tenant restarts, and the copy takes
- *                               as long as the volume is big).
+ *   Move back to <primary>      a running tenant is stopped, its volume
+ *                               released by the node it ran on, and started
+ *                               on the primary node; Longhorn then copies the
+ *                               data back (about a minute down, and the copy
+ *                               takes as long as the volume is big).
  *   Make <current> the primary  accepts where it is: re-pins to the current
  *                               node, so the next restart stays there.
  *
@@ -81,12 +83,7 @@ export default function PlacementStatusPanel({ tenantId }: { readonly tenantId: 
           {(migrate.error as { message?: string }).message ?? 'The placement change failed.'}
         </p>
       )}
-      {migrate.isSuccess && migrate.data && (
-        <p className="mt-2 text-xs text-green-700 dark:text-green-400">
-          Re-pinned to <NodeName name={migrate.data.data.currentWorker} /> — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
-          The placement view updates within a minute.
-        </p>
-      )}
+      {migrate.isSuccess && migrate.data && <MigrateResultNote result={migrate.data.data} />}
 
       {failovers.length > 0 && <FailoverList failovers={failovers} />}
     </div>
@@ -191,7 +188,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
         <div className="mt-3 rounded-md border border-red-200 bg-white p-3 text-xs text-gray-800 dark:border-red-500/30 dark:bg-gray-900 dark:text-gray-200" data-testid="placement-confirm">
           <p>
             {pending.kind === 'move-back'
-              ? `Re-pins this tenant to ${nodeLabel(pending.node)} and restarts its workloads there. Longhorn then copies the tenant's data back to ${nodeLabel(pending.node)} — the tenant restarts now, and the copy takes as long as the volume is large.`
+              ? `Moves this tenant to ${nodeLabel(pending.node)}. If it is running, it is stopped first, its volume is released by the node it runs on, and it starts again on ${nodeLabel(pending.node)} — usually about a minute of downtime. Longhorn then copies the tenant's data to ${nodeLabel(pending.node)} in the background; the copy takes as long as the volume is large.`
               : `Makes ${nodeLabel(pending.node)} this tenant's primary node, where it already runs. Its workloads restart once to pick up the new pin; no data is copied.`}
           </p>
           <div className="mt-2 flex gap-2">

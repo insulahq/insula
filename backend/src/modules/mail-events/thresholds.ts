@@ -124,7 +124,7 @@ async function topSendersFor(
   db: Database,
   tenantId: string,
   window: 'hour' | 'day',
-): Promise<string | null> {
+): Promise<string[] | null> {
   const since = window === 'hour'
     ? sql`date_trunc('hour', NOW())`
     : sql`date_trunc('day', NOW())`;
@@ -143,7 +143,7 @@ async function topSendersFor(
       .orderBy(sql`2 DESC`)
       .limit(5);
     if (rows.length === 0) return null;
-    return rows.map((r) => `${r.sender} (${r.sent})`).join(', ');
+    return rows.map((r) => `${r.sender} (${r.sent} sent)`);
   } catch {
     // An attribution we cannot read must not stop the alert that needs it.
     return null;
@@ -231,7 +231,7 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
           percent: String(Math.floor((highestNew.used / highestNew.limit) * 100)),
           used: String(highestNew.used),
           limit: String(highestNew.limit),
-          topSenders: senders ?? 'no per-sender attribution recorded yet',
+          topSenders: senders ?? ['no per-sender attribution recorded yet'],
         };
         if (highestNew.threshold >= 100) {
           await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload);

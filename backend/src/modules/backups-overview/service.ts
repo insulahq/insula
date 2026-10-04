@@ -107,15 +107,24 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
   const secondsSinceMail = mailLastRun
     ? Math.max(0, Math.floor((Date.now() - mailLastRun.getTime()) / 1000))
     : null;
-  // Mail considered healthy when last run is < 5 minutes old (2-min
-  // schedule + 3-min jitter window). Matches the existing health
-  // banner threshold.
-  const mailHealthy = secondsSinceMail !== null && secondsSinceMail < 300;
 
-  // Mail enabled flag from backup_schedules.
-  const [mailSched] = await db.select({ enabled: backupSchedules.enabled })
+  // Mail enabled flag + cadence from backup_schedules.
+  const [mailSched] = await db.select({ enabled: backupSchedules.enabled, cron: backupSchedules.cronExpression })
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'mail'));
+
+  // Healthy = on its OWN schedule, judged like the dashboard card and the
+  // freshness alerts. A fixed "< 5 minutes" assumed a 2-minute schedule the
+  // snapshot no longer runs on (default every 30 min, often hourly), so mail
+  // read unhealthy almost all of the time.
+  const { classHealth, platformTimeZone } = await import('../dashboard/backup-classes.js');
+  const mailHealthy = classHealth({
+    target: mailTargetName,
+    lastSuccessAt: mailStats.runAt ?? null,
+    schedule: { enabled: mailSched?.enabled ?? false, cron: mailSched?.cron ?? null },
+    zone: await platformTimeZone(db),
+    now: new Date(),
+  }).healthy;
 
   // Schedule states for the page's schedule strip.
   const schedRows = await db.select().from(backupSchedules);
@@ -202,6 +211,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       t.id AS tenant_id,
       t.name AS tenant_name,
       t.is_system AS is_system,
+      t.status AS tenant_status,
       p.name AS plan_name,
       t.include_in_scheduled_bundles AS include_override,
       p.include_in_scheduled_bundles AS plan_include,
@@ -277,6 +287,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     tenant_id: string;
     tenant_name: string;
     is_system: boolean;
+    tenant_status: string;
     plan_name: string | null;
     include_override: boolean | null;
     plan_include: boolean | null;
@@ -309,6 +320,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       isSystem: r.is_system,
       planName: r.plan_name,
       includedInScheduledBundles: r.resolved_include === true,
+      backupsPaused: r.tenant_status === 'suspended',
       scheduledBundlesOverride: r.include_override === null
         ? 'inherit'
         : r.include_override
@@ -340,9 +352,10 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
   const kpi = {
     totalTenants: rowsOut.length,
     includedTenants: rowsOut.filter((r) => r.includedInScheduledBundles).length,
-    // "Overdue" = included AND no bundle in last 36h.
+    // "Overdue" = included AND no bundle in last 36h. A suspended tenant's
+    // backups are paused, so it is not overdue.
     overdueTenants: rowsOut.filter((r) => {
-      if (!r.includedInScheduledBundles) return false;
+      if (!r.includedInScheduledBundles || r.backupsPaused) return false;
       if (!r.lastBundleAt) return true;
       return Date.now() - new Date(r.lastBundleAt).getTime() > 36 * 3600 * 1000;
     }).length,

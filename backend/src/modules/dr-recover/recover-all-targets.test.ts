@@ -32,6 +32,7 @@ function makeDb(opts: {
   completedBundleByTenant?: Record<string, { id: string; createdAt: Date; finishedAt: Date | null }>;
   latestBundleByTenant?: Record<string, { status: string; createdAt: Date }>;
   componentsByBundle?: Record<string, string[]>;
+  deletedByTenant?: Record<string, { detail: Record<string, unknown> | null; namespace: string | null; at: Date }>;
 }): FastifyInstance['db'] {
   const build = (rows: Row[]) => {
     const b: Record<string, unknown> = {};
@@ -44,6 +45,10 @@ function makeDb(opts: {
     selectDistinct: () => build((opts.distinctTenantIds ?? []).map((tenantId) => ({ tenantId }))),
     select: (cols?: Record<string, unknown>) => {
       const keys = Object.keys(cols ?? {});
+      if (keys.includes('detail') && keys.includes('namespace')) {
+        const d = tenantCursor ? opts.deletedByTenant?.[tenantCursor] : undefined;
+        return build(d ? [d] : []);
+      }
       if (keys.includes('name') && keys.includes('ns')) {
         const t = tenantCursor ? opts.tenantsById?.[tenantCursor] : undefined;
         return build(t ? [{ name: t.name, ns: t.ns }] : []);
@@ -181,5 +186,32 @@ describe('resolveRecoverAllTargets', () => {
     });
     const { targets } = await resolveOne(db, 't-7', 'all', new Set());
     expect(targets[0].bundleAgeDays).toBe(0);
+  });
+});
+
+describe('resolveRecoverAllTargets — a tenant deleted on purpose', () => {
+  const now = new Date('2026-10-03T20:00:00Z');
+  const fixture = () => {
+    const db = makeDb({
+      distinctTenantIds: ['gone'],
+      completedBundleByTenant: { gone: { id: 'bkp-1', createdAt: new Date('2026-10-03T01:00:00Z'), finishedAt: null } },
+      latestBundleByTenant: { gone: { status: 'completed', createdAt: new Date('2026-10-03T01:00:00Z') } },
+      deletedByTenant: { gone: { detail: { tenantName: 'ACME LEARNING' }, namespace: 'tenant-example-0a1b2c3d', at: new Date('2026-10-03T17:00:00Z') } },
+    });
+    (db as unknown as { __setTenant: (id: string) => void }).__setTenant('gone');
+    return { db: db as unknown as FastifyInstance['db'], app: { db } as unknown as FastifyInstance };
+  };
+
+  it('is not swept back in by a fleet recover-all — its bundles survive the delete', async () => {
+    const { app } = fixture();
+    const r = await resolveRecoverAllTargets(app, { scope: 'missing' }, new Set(), now);
+    expect(r.targets).toEqual([]);
+    expect(r.skipped).toEqual([expect.objectContaining({ tenantId: 'gone', tenantName: 'ACME LEARNING', reason: 'deleted' })]);
+  });
+
+  it('is recovered when the operator names it', async () => {
+    const { app } = fixture();
+    const r = await resolveRecoverAllTargets(app, { tenantIds: ['gone'], scope: 'missing' }, new Set(), now);
+    expect(r.targets.map((t) => t.tenantId)).toEqual(['gone']);
   });
 });

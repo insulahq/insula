@@ -22,6 +22,11 @@ vi.mock('drizzle-orm', () => ({
 // moment a query was added anywhere earlier in the pass — which is exactly
 // what happened when alias drift landed: every later index shifted by two and
 // ten unrelated tests failed.
+// The drift alert's dispatch, captured: which page it opens is decided by the
+// resource it names.
+const notifyOps = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../notifications/events.js', () => ({ notifyAdminOperationalEvent: notifyOps }));
+
 vi.mock('../../db/schema.js', () => ({
   mailboxes: {
     __table: 'mailboxes',
@@ -140,10 +145,12 @@ const { createPrincipalsSyncScheduler } = await import('./principals-sync.js');
  * We track how many times `from()` has been called to return the right data.
  */
 function createMockDb(
-  mailboxRows: Array<{ id: string; fullAddress: string; stalwartPrincipalId: string | null }> = [],
+  // `status` defaults to 'active': a mailbox is active unless a test says otherwise.
+  mailboxInput: Array<{ id: string; fullAddress: string; stalwartPrincipalId: string | null; status?: string }> = [],
   emailDomainRows: Array<{ id: string; domainId: string; stalwartDomainId: string | null; domainName: string }> = [],
   aliasRows: Array<{ id: string; fullAddress: string; enabled: number; mailboxId: string }> = [],
 ) {
+  const mailboxRows = mailboxInput.map((r) => ({ status: 'active', ...r }));
   const updateWhere = vi.fn().mockResolvedValue(undefined);
   const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
   const updateFn = vi.fn().mockReturnValue({ set: updateSet });
@@ -158,7 +165,9 @@ function createMockDb(
       table?.__table === 'mailboxes' ? mailboxRows
         : table?.__table === 'emailDomains' ? emailDomainRows
           : table?.__table === 'mailboxAliases' ? aliasRows
-            : [];
+            // An admin to tell: without one the drift alert is not sent at all.
+            : table?.__table === 'users' ? [{ id: 'admin-1' }]
+              : [];
     // Every shape the reconciler uses: awaited directly, `.where(...)`,
     // `.where(...).limit(n)`, or `.innerJoin(...)`. Returning the SAME rows
     // through each of them keeps the fake honest about what it was asked.
@@ -382,6 +391,50 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
 
     expect(inserts(db, 'alias')).toHaveLength(0);
+  });
+
+  it("does not report a SUSPENDED tenant's aliases — the suspend turned them off on purpose", async () => {
+    // Suspending sets the tenant's mailboxes `disabled` and pushes every alias
+    // off, keeping the rows enabled for reactivation. The principal stays.
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'postmaster', emails: ['postmaster@example.com'] },
+    ]));
+
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'postmaster@example.com', stalwartPrincipalId: 'sp-1', status: 'disabled' }],
+      [],
+      [
+        { id: 'al-1', fullAddress: 'abuse@example.com', enabled: 1, mailboxId: 'mb-1' },
+        { id: 'al-2', fullAddress: 'dmarc@example.com', enabled: 1, mailboxId: 'mb-1' },
+      ],
+    );
+    const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    expect(inserts(db, 'alias')).toHaveLength(0);
+    expect(inserts(db, 'orphan-alias')).toHaveLength(0);
+  });
+
+  it('opens the Data Drift page: the alert names mail drift as what it is about', async () => {
+    notifyOps.mockClear();
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-1', type: 'individual', name: 'alice', emails: ['alice@example.com'] },
+    ]));
+    const db = createMockDb(
+      [{ id: 'mb-1', fullAddress: 'alice@example.com', stalwartPrincipalId: 'sp-1' }],
+      [],
+      [{ id: 'al-1', fullAddress: 'sales@example.com', enabled: 1, mailboxId: 'mb-1' }],
+    );
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    const [, subsystem, , , resourceType] = notifyOps.mock.calls[0] as unknown as [unknown, string, unknown, string, string];
+    expect(subsystem).toBe('mail');
+    expect(resourceType).toBe('mail_drift');
+    const { notificationActionPath } = await import('../notifications/action-path.js');
+    expect(notificationActionPath({ categoryId: 'admin.mail_event', resourceType, resourceId: null })).toBe('/email/drift');
   });
 
   it('flags an address live on OUR mailbox that no row claims as orphan-alias', async () => {

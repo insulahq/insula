@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const jmapCalls = vi.hoisted(() => ({
   getJmapSession: vi.fn(),
-  destroyPrincipal: vi.fn(),
+  destroyDomain: vi.fn(),
 }));
 const dkimCalls = vi.hoisted(() => ({
   removeAllDkimSignaturesForDomain: vi.fn(),
@@ -52,7 +52,7 @@ describe('deleteOrphanDomain', () => {
     jmapCalls.getJmapSession.mockResolvedValue({
       primaryAccounts: { 'urn:ietf:params:jmap:principals': 'd333333' },
     });
-    jmapCalls.destroyPrincipal.mockResolvedValue(undefined);
+    jmapCalls.destroyDomain.mockResolvedValue(undefined);
     dkimCalls.removeAllDkimSignaturesForDomain.mockResolvedValue({ destroyed: ['k1', 'k2'], failed: [] });
   });
 
@@ -62,12 +62,12 @@ describe('deleteOrphanDomain', () => {
     expect(dkimCalls.removeAllDkimSignaturesForDomain).toHaveBeenCalledWith(
       expect.objectContaining({ stalwartDomainId: 'o' }),
     );
-    expect(jmapCalls.destroyPrincipal).toHaveBeenCalledWith(
+    expect(jmapCalls.destroyDomain).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'o' }),
     );
     // DKIM strictly before Domain — Stalwart rejects linked destroys.
     expect(dkimCalls.removeAllDkimSignaturesForDomain.mock.invocationCallOrder[0])
-      .toBeLessThan(jmapCalls.destroyPrincipal.mock.invocationCallOrder[0]);
+      .toBeLessThan(jmapCalls.destroyDomain.mock.invocationCallOrder[0]);
     expect(r.dkimSignaturesDeleted).toBe(2);
     expect(r.item.resolvedVia).toBe('deleted');
   });
@@ -76,7 +76,7 @@ describe('deleteOrphanDomain', () => {
     const db = buildDbStub(ORPHAN_ITEM);
     await expect(deleteOrphanDomain(db, ORPHAN_ITEM.id, 'wrong.example.test'))
       .rejects.toMatchObject({ code: 'CONFIRM_NAME_MISMATCH' });
-    expect(jmapCalls.destroyPrincipal).not.toHaveBeenCalled();
+    expect(jmapCalls.destroyDomain).not.toHaveBeenCalled();
     expect(dkimCalls.removeAllDkimSignaturesForDomain).not.toHaveBeenCalled();
   });
 
@@ -87,7 +87,7 @@ describe('deleteOrphanDomain', () => {
   });
 
   it('surfaces ORPHAN_HAS_PRINCIPALS when Stalwart refuses a linked destroy (PITR false orphan)', async () => {
-    jmapCalls.destroyPrincipal.mockRejectedValue(
+    jmapCalls.destroyDomain.mockRejectedValue(
       new Error("Failed to destroy principal 'o': objectIsLinked"),
     );
     const db = buildDbStub(ORPHAN_ITEM);

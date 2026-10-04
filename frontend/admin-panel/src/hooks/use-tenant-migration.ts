@@ -1,13 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import type { MigrateToWorkerResult } from '@insula/api-contracts';
 
 interface MigrateResult {
-  readonly data: {
-    readonly tenantId: string;
-    readonly previousWorker: string | null;
-    readonly currentWorker: string;
-    readonly deploymentsRestarted: number;
-  };
+  readonly data: MigrateToWorkerResult;
 }
 
 export function useMigrateTenantToWorker(tenantId: string) {

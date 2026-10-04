@@ -110,6 +110,13 @@ anything**. Clearing the list turns forwarding off.
 Click the green **Webmail** button on any mailbox row. The platform signs you
 straight into that mailbox's webmail in a new tab — no separate password prompt.
 
+A webmail session opened this way lasts up to **8 hours**, then asks you to
+open it again from the panel. While it is open it appears in the mailbox's
+**Login passwords** list as **Webmail session**, with the time it ends.
+**Sign out** there ends that session; signing out in the webmail removes the
+entry too. No password of yours is involved — the session cannot be used for
+anything but that one webmail tab.
+
 ## Mailing lists
 
 A **mailing list** (previously called "Aliases & Forwarding") is an address

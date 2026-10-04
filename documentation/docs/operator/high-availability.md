@@ -18,16 +18,20 @@ panel offers **Apply HA**, and one action scales everything that matters.
 |---|---|---|
 | Longhorn volumes (metrics, CrowdSec) | 1 replica | 3 replicas, spread across nodes |
 | PostgreSQL (CNPG cluster) | 1 instance | 3 instances, synchronous replication |
-| Stateless Deployments (admin-panel, tenant-panel, platform-api, oauth2-proxy, dex) | 1 replica | 3 replicas, one per node (topology spread) |
-| Background operators (cert-manager, Flux, CNPG operator **and its backup plugin**) | 1 | 2 — a leader and a warm standby |
+| Stateless Deployments (admin-panel, tenant-panel, platform-api; oauth2-proxy and dex where installed) | 1 replica | 3 replicas, one per node (topology spread) |
+| Background operators (cert-manager, Flux, CNPG operator) | 1 | 2 — a leader and a warm standby |
+| CNPG backup plugin | 1 | 2, both serving |
+| Flux source-controller | 1 | 1 — see below |
 
 What Apply HA does **not** touch, because it is already covered or handled
 differently:
 
 - **etcd** — already a 3-server quorum once you have three servers.
 - **Traefik ingress** — already runs on every node.
-- **The mail server** — stays single-replica; failover is handled separately
-  (see [Mail HA](#mail-ha) below).
+- **The mail server and Bulwark webmail** — stay single-replica on the mail
+  node, because both use the mail stack's local volume, which only one node can
+  mount at a time. Failover is handled separately (see [Mail HA](#mail-ha)
+  below).
 - **Per-tenant workloads** — these have their own storage tier and are not
   changed by Apply HA. What that means when a node dies is covered in
   [Nodes & cluster → When a node goes offline](nodes-and-cluster.md#when-a-node-goes-offline).
@@ -36,7 +40,23 @@ differently:
     The CNPG operator will not reconcile the database — including promoting a
     new primary — if it cannot reach its backup plugin. Running the operator
     with two replicas while the plugin had only one meant a single node loss
-    could still take the database offline. Both now scale together.
+    could still take the database offline. Both now scale together. Both
+    plugin replicas serve at once (the platform turns the plugin's leader
+    election off), so neither sits at *1/2 Ready* waiting for a takeover.
+
+!!! note "Why Flux's source-controller stays at one replica"
+    source-controller keeps the git and Helm artifacts it fetched on its own
+    pod's disk and serves them only from the leader, so a second replica would
+    only be a standby that never becomes Ready. If its node is lost, Kubernetes
+    restarts it on another node. Your workloads keep running in the meantime;
+    only new changes from git wait for it.
+
+**Scheduled jobs in the management API run once, not once per replica.** With
+three platform-api replicas, each background job (backup retention, bandwidth
+metering, subscription expiry, app auto-updates, domain verification, …) is
+claimed by one replica at a time. When that replica goes away the claim
+passes to another: within seconds on a normal rollout, and within one to two
+run intervals if a replica crashes.
 
 ## When to enable it
 
@@ -61,7 +81,14 @@ the cluster is still in Local mode. Grow to three servers first
 4. A progress modal reports each resource as it scales. **Partial results are
    shown, not hidden:** if one Longhorn volume fails to patch while the rest
    succeed, you see exactly which one and why, and you can re-click Apply HA
-   after the underlying issue clears.
+   after the underlying issue clears. A component this cluster does not run —
+   Dex and oauth2-proxy ship only with test and staging installs — shows as
+   **not installed here**, not as a failure. When a patch does fail, the modal
+   shows the cluster state at the moment the apply stopped; re-click Apply HA
+   once the cause is fixed to watch it converge.
+5. A volume that nothing currently mounts (the retained CrowdSec SQLite store,
+   for example) counts as done once its replica count is set: Longhorn builds
+   the extra copies the next time the volume is attached.
 
 Every Apply HA / Revert writes an audit-log row with the full before/after and
 per-resource result.

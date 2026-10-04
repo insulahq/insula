@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dedupeBucket, componentDetail } from './health-scheduler.js';
+import { dedupeBucket, componentDetail, componentProbes } from './health-scheduler.js';
 
 // The scheduler's value is entirely in its POLICY: which failures alert, how
 // often, and what the operator is told. Those are the parts that turn a useful
@@ -56,12 +56,10 @@ describe('componentDetail — what the operator is actually told', () => {
       smtpBanner: { severity: 'fail' },
       ipv6Dns: { severity: 'warning' },
     };
-    const d = componentDetail('deliverability', deliverability);
-    expect(d).toContain('certSanMatch');
-    expect(d).toContain('smtpBanner');
-    // Warnings are not failures and must not be named as such.
-    expect(d).not.toContain('ipv6Dns');
-    expect(d).not.toContain('forwardDns');
+    expect(componentDetail('deliverability', deliverability)).toBe(' Failing probes:');
+    // One list item per failing probe. Warnings are not failures and must not
+    // be named as such.
+    expect(componentProbes('deliverability', deliverability)).toEqual(['certSanMatch', 'smtpBanner']);
   });
 
   it('returns empty (not "undefined") when there is nothing to add', () => {

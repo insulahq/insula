@@ -80,6 +80,23 @@ The cluster-wide **Secrets bundle** lives on the
   it per tenant (*Inherit plan* / *Always include* / *Exclude from
   schedule*).
 
+    !!! note "Backups pause while a tenant is suspended"
+        A **suspended** tenant shows **paused — suspended** in the
+        Scheduled inclusion panel. While it stays suspended:
+
+        - the daily bundle run skips it, and **Backup now** (here and in
+          the tenant's own panel) is refused;
+        - **Bundle all eligible tenants** leaves it out;
+        - its existing backups are **kept**: retention neither expires nor
+          deletes them, however long the suspension lasts.
+
+        Nothing goes unprotected meanwhile: a suspended tenant's sites are
+        offline, its mailboxes refuse sign-ins and incoming mail, so its data
+        does not change, and the platform's mail backup keeps covering its
+        mailboxes. On **Reactivate** the daily run picks the tenant up again.
+        Until its first new bundle completes, its newest existing bundle is
+        kept, even if that bundle is past its retention date.
+
     ??? info "Backups load when you open a tenant"
         The page itself loads only the tenant list — every tenant, with
         its backup count and repository size. No backup is fetched until
@@ -309,9 +326,19 @@ release it once you've verified the restored data.
 
 ## Disaster Recovery
 
-**Backups → Disaster Recovery** is the full-cluster recovery surface, in
-three sections:
+**Backups → Disaster Recovery** is the full-cluster recovery surface:
 
+- **Recover Tenant** — re-create one tenant from its off-site bundle: after
+  cluster loss, or after it was **deleted**. Search for the tenant by name
+  (deleted tenants are marked *DELETED* with the date and how long their
+  bundles are kept). The screen shows what you are about to restore — plan,
+  storage tier, primary node, namespace (and whether it still exists),
+  resources — and lists every bundle with when it was taken, by what, what it
+  holds and its size; the newest completed one is chosen, any other is a
+  click. Pick a **target node** (searchable) or leave it automatic.
+- **Recover All** — restore every tenant whose namespace is missing, after a
+  cluster rebuild. Tenants **deleted on purpose are skipped** (listed as
+  *deleted*) — recover one of those with **Recover Tenant**.
 - **Secrets Bundle** — an age-encrypted bundle of everything you'd need to
   rebuild the platform, with a coverage view of what's included.
 - **DR Drill** — the operator-driven drill runbook plus a log of past
@@ -327,6 +354,24 @@ three sections:
 
 The deep operator runbooks for these live in the
 [Operator guide](../operator/system-backups-dr.md).
+
+### Recovering a deleted tenant
+
+Deleting a tenant keeps its off-site bundles for the **deleted-tenant retention
+window** (**Platform → Limits**, default 30 days) — so it can be brought back
+until they expire. A deleted tenant is in no tenant list any more; find it here:
+
+1. **Backups → Tenants → Backups**: the **Deleted tenants — still recoverable**
+   card lists each one by name, with the date it was deleted and the date its
+   bundles expire. (Right after a delete, the tenants list banner says the same
+   and links straight there.)
+2. **Recover…** opens **Disaster Recovery → Recover Tenant** with the tenant
+   selected. Check what it was (plan, node, namespace), choose a bundle by its
+   date — or keep the newest — and run it.
+
+The tenant is re-created with its **original id and namespace**, then its
+configuration, files and mailboxes are restored. A tenant that never had a
+completed bundle cannot be recovered.
 
 ## Exporting a bundle
 

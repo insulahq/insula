@@ -90,9 +90,13 @@ const ADDRESS_VALUE = /^(https?:\/\/|\/)/;
  */
 export function aliasNodeNamesInVariables(vars: Readonly<Record<string, unknown>>, labels: NodeLabels): Record<string, unknown> {
   if (labels.aliases.size === 0) return { ...vars };
+  const alias = (k: string, v: string): string => (ADDRESS_KEY.test(k) || ADDRESS_VALUE.test(v) ? v : aliasNodeNames(v, labels));
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => [
     k,
-    typeof v === 'string' && !ADDRESS_KEY.test(k) && !ADDRESS_VALUE.test(v) ? aliasNodeNames(v, labels) : v,
+    typeof v === 'string' ? alias(k, v)
+      // A list variable (several items) is text item by item.
+      : Array.isArray(v) && v.every((x) => typeof x === 'string') ? v.map((x: string) => alias(k, x))
+        : v,
   ]));
 }
 

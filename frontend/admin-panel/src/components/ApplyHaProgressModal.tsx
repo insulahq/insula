@@ -37,6 +37,8 @@ interface PatchResult {
   readonly newInstances?: number;
   readonly patched: boolean;
   readonly error: string | null;
+  /** Not deployed in this environment (Dex / oauth2-proxy outside dev and staging) — not a failure. */
+  readonly notInstalled?: boolean;
 }
 
 interface PatchOutcome {
@@ -170,7 +172,11 @@ export default function ApplyHaProgressModal({ runId, onClose }: Props) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  Cluster convergence
+                  {/* A failed apply records one snapshot and stops watching — say so,
+                      or a frozen "mid-rebuild" list reads as live and stuck. */}
+                  {status === 'failed' || status === 'capacity_blocked'
+                    ? `Cluster state when the apply stopped (after ${Math.round((conv.elapsedMs ?? 0) / 1000)}s)`
+                    : 'Cluster convergence'}
                 </h3>
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   {totalConverged} of {totalResources} resources at desired state
@@ -199,12 +205,15 @@ export default function ApplyHaProgressModal({ runId, onClose }: Props) {
                     className="cursor-pointer text-xs font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
                     onClick={() => setShowDetails((s) => !s)}
                   >
-                    {conv.stuckResources.length} resource{conv.stuckResources.length === 1 ? '' : 's'} still mid-rebuild
+                    {conv.stuckResources.length} resource{conv.stuckResources.length === 1 ? '' : 's'}{' '}
+                    {status === 'failed' || status === 'capacity_blocked' ? 'not yet at desired state then' : 'still mid-rebuild'}
                   </summary>
                   <ul className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-400 max-h-40 overflow-y-auto">
                     {conv.stuckResources.map((r, i) => (
                       <li key={i} className="flex items-center gap-2">
-                        <Loader2 size={10} className="animate-spin text-blue-500" />
+                        {status === 'running'
+                          ? <Loader2 size={10} className="animate-spin text-blue-500" />
+                          : <span className="size-2.5 rounded-full bg-gray-300 dark:bg-gray-600" />}
                         <span className="font-mono">{r.kind}/{r.name}</span>
                         <span>—</span>
                         <span>{r.observed}/{r.desired}</span>
@@ -277,13 +286,14 @@ function PatchSummary({ outcome }: { outcome: PatchOutcome | null }) {
         if (items.length === 0) return null;
         const ok = items.filter((i) => i.patched).length;
         const errored = items.filter((i) => i.error).length;
-        const noop = items.length - ok - errored;
+        const absent = items.filter((i) => i.notInstalled).length;
+        const noop = items.length - ok - errored - absent;
         return (
           <div key={title}>
             <div className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">
               {title}{' '}
               <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
-                — {ok} patched, {noop} no-op, {errored} failed
+                — {ok} patched, {noop} no-op, {errored} failed{absent > 0 ? `, ${absent} not installed` : ''}
               </span>
             </div>
             <ul className="space-y-1 text-xs">
@@ -299,9 +309,12 @@ function PatchSummary({ outcome }: { outcome: PatchOutcome | null }) {
                     ) : (
                       <span className="size-3 rounded-full bg-gray-300 dark:bg-gray-600" />
                     )}
-                    <span className="font-mono text-gray-700 dark:text-gray-300">
+                    <span className={it.notInstalled ? 'font-mono text-gray-400 dark:text-gray-500' : 'font-mono text-gray-700 dark:text-gray-300'}>
                       {ns}/{id}
                     </span>
+                    {it.notInstalled && (
+                      <span className="text-gray-500 dark:text-gray-400" data-testid="apply-ha-not-installed">— not installed here</span>
+                    )}
                     {it.error && (
                       <span className="text-red-700 dark:text-red-400 truncate">— {it.error}</span>
                     )}

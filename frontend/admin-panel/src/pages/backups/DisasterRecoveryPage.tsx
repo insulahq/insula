@@ -23,6 +23,7 @@
  */
 
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   LifeBuoy,
   ShieldCheck,
@@ -58,9 +59,20 @@ function isSection(v: string | null): v is Section {
 }
 
 export default function DisasterRecoveryPage() {
-  const url = new URL(typeof window !== 'undefined' ? window.location.href : 'http://x/');
-  const initial = url.searchParams.get('section');
-  const [section, setSection] = useState<Section>(isSection(initial) ? initial : 'recover');
+  // The section lives in the URL (?section=), so a link INTO another section —
+  // Recover All naming a deleted tenant to recover on its own — switches to it.
+  const [params, setParams] = useSearchParams();
+  const raw = params.get('section');
+  const section: Section = isSection(raw) ? raw : 'recover';
+  const setSection = (s: Section): void => {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('section', s);
+      // A tenant preselected for Recover Tenant means nothing to another section.
+      if (s !== 'recover') next.delete('tenant');
+      return next;
+    }, { replace: true });
+  };
 
   return (
     <div className="space-y-6 p-6">

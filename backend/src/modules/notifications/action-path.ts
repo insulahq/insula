@@ -139,6 +139,28 @@ const STATIC_PATHS: Record<string, string> = {
   'account.sub_account_added': '/users',
 };
 
+/** `resourceType` of a principal-sync drift alert (`admin.mail_event`). */
+export const MAIL_DRIFT_RESOURCE = 'mail_drift';
+
+/** `resourceType` of a backup-retention (restic forget/prune) alert (`admin.storage_event`). */
+export const BACKUP_RETENTION_RESOURCE = 'backup_retention';
+
+/**
+ * Categories that report on several subsystems, where the emitter names WHICH
+ * one with `resourceType`: category → resourceType → page.
+ *
+ * `admin.mail_event` carries both mail migrations and principal-sync drift.
+ * Without this, the drift alert opened Email → Operations — a page that shows
+ * no drift at all — and did so again after an earlier fix, because the category
+ * alone cannot tell the two apart.
+ */
+export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  'admin.mail_event': { [MAIL_DRIFT_RESOURCE]: '/email/drift' },
+  // Backup retention (restic forget/prune) is storage housekeeping, but the
+  // operator acts on it from Backups, not from the cluster storage page.
+  'admin.storage_event': { [BACKUP_RETENTION_RESOURCE]: '/backups' },
+};
+
 export function notificationActionPath(input: ActionPathInput): string | null {
   const { categoryId, resourceType, resourceId } = input;
   if (!categoryId) return null;
@@ -147,5 +169,6 @@ export function notificationActionPath(input: ActionPathInput): string | null {
     return resourceType === 'tenant' && resourceId ? `/tenants/${resourceId}` : '/tenants';
   }
 
-  return STATIC_PATHS[categoryId] ?? null;
+  const byResource = resourceType ? RESOURCE_PATHS[categoryId]?.[resourceType] : undefined;
+  return byResource ?? STATIC_PATHS[categoryId] ?? null;
 }

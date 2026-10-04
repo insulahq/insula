@@ -527,3 +527,26 @@ export const bundleCoverageResponseSchema = z.object({
   }),
 });
 export type BundleCoverageResponse = z.infer<typeof bundleCoverageResponseSchema>;
+
+/**
+ * A tenant that can be restored from its off-site bundles — including one that
+ * has been DELETED: its bundles are kept for the deleted-tenant retention
+ * window, and this is how an operator still finds it by name.
+ * GET /api/v1/admin/tenant-bundles/recoverable-tenants → data: RecoverableTenant[]
+ */
+export const recoverableTenantSchema = z.object({
+  tenantId: z.string(),
+  /** The tenant's name; for a deleted tenant the name it had (or its namespace slug for older deletes). */
+  name: z.string(),
+  deleted: z.boolean(),
+  /** When it was deleted; null for a live tenant or when unknown. */
+  deletedAt: z.string().nullable(),
+  /** Restorable bundles (completed or partial, not expired). */
+  bundleCount: z.number().int().nonnegative(),
+  newestBundleAt: z.string(),
+  /** The newest COMPLETED bundle — what a recover uses when none is chosen. Null if only partial ones remain. */
+  newestCompletedBundleId: z.string().nullable(),
+  /** When the last restorable bundle expires; null when at least one is kept with no expiry. */
+  keptUntil: z.string().nullable(),
+});
+export type RecoverableTenant = z.infer<typeof recoverableTenantSchema>;

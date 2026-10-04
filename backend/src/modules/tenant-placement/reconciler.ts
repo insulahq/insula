@@ -15,6 +15,7 @@
  */
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { finishDataRelocations } from './relocate.js';
 import { tenants } from '../../db/schema.js';
 import { safeTick } from '../../shared/safe-tick.js';
 import { collectFacts, type CollectedFacts } from '../tenant-health/collect.js';
@@ -61,6 +62,7 @@ export interface PlacementTickResult {
   readonly failoversNotified: number;
   readonly misplacedNotified: number;
   readonly repairStarted: boolean;
+  readonly relocationsReleased: number;
 }
 
 let repairRunning = false;
@@ -120,12 +122,31 @@ export async function runPlacementTick(deps: PlacementDeps): Promise<PlacementTi
   // 4. One-shot pin repair, only from a complete read.
   const repairStarted = facts.readError ? false : await maybeStartPinRepair(deps, placements, now);
 
+  // 5. Release data relocations whose copy is done (or out of time). Judged
+  //    from this tick's replica read — never from a failed one.
+  const relocationsReleased = facts.readError?.includes('longhorn')
+    ? 0
+    : await finishDataRelocations(deps.k8s, facts.replicas, now)
+      .then((released) => {
+        for (const r of released) {
+          const line = `[tenant-placement] relocation of ${r.volumeName} to ${r.node} released`;
+          if (r.verdict === 'done') log.info(`${line}: data now local`);
+          else log.warn(`${line}: gave up after the time limit, data left where it is`);
+        }
+        return released.length;
+      })
+      .catch((err: unknown) => {
+        log.warn('[tenant-placement] could not check data relocations:', err);
+        return 0;
+      });
+
   return {
     placements,
     newFailovers: inserted.length,
     failoversNotified: fresh.length,
     misplacedNotified: claimed.length,
     repairStarted,
+    relocationsReleased,
   };
 }
 

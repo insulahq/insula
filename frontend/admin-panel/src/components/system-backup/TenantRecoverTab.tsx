@@ -14,7 +14,8 @@
  * manual steps the recover route could not close on its own).
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { LifeBuoy, Loader2, RotateCcw, ShieldAlert, ArrowRight } from 'lucide-react';
 import type {
   DrRecoverComponent,
@@ -26,12 +27,17 @@ import type {
 } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { useBundles } from '@/hooks/use-backup-bundles';
 import {
+  useRecoverableTenants,
+  useRecoveryInfo,
   useRecoverTenantFromBundle,
   useLiveRestoreCart,
   isTerminalCartStatus,
 } from '@/hooks/use-dr-recover';
+import SearchablePicker from '@/components/ui/SearchablePicker';
+import { BundleChooser, TenantFacts } from './RecoverTenantPickers';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 // ── Static option data ────────────────────────────────────────────────
 
@@ -85,28 +91,32 @@ function reconcileBadgeClass(kind: 'ok' | 'bad' | 'muted'): string {
 // ── Component ─────────────────────────────────────────────────────────
 
 export default function TenantRecoverTab() {
-  const [tenantId, setTenantId] = useState('');
+  // Deep link from Backups → Tenants / the "Tenant was deleted" banner.
+  const [params] = useSearchParams();
+  const [tenantId, setTenantId] = useState(params.get('tenant') ?? '');
   // Recovery is driven by NAME, not by a UUID an operator has to find and
-  // paste. The candidate list comes from the bundles themselves, so a tenant
-  // that has already been DELETED locally — the case cold restore exists for —
-  // is still offered, by the name its bundle recorded.
+  // paste. The candidates are every tenant with restorable bundles — a tenant
+  // that has already been DELETED (the case this tab exists for) included,
+  // by the name it had, for as long as its bundles are kept.
   const [manualTenantId, setManualTenantId] = useState(false);
-  const bundlesQuery = useBundles();
-  const tenantChoices = (() => {
-    const byId = new Map<string, { id: string; name: string; bundles: number }>();
-    const raw = bundlesQuery.data as { data?: ReadonlyArray<{ tenantId: string; tenantName: string | null }> } | undefined;
-    const rows = Array.isArray(raw?.data) ? raw.data : [];
-    for (const b of rows) {
-      const prev = byId.get(b.tenantId);
-      byId.set(b.tenantId, {
-        id: b.tenantId,
-        name: b.tenantName ?? prev?.name ?? '',
-        bundles: (prev?.bundles ?? 0) + 1,
-      });
-    }
-    return [...byId.values()].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
-  })();
+  const recoverable = useRecoverableTenants();
+  const tenantChoices = recoverable.data?.data ?? [];
+  // '' = the newest completed bundle — what the recover uses when none is chosen.
   const [bundleId, setBundleId] = useState('');
+  // A different tenant means a different bundle list: never carry one over.
+  // (Not while typing ids for a foreign target — those are entered together.)
+  useEffect(() => { if (!manualTenantId) setBundleId(''); }, [tenantId, manualTenantId]);
+  const infoQuery = useRecoveryInfo(manualTenantId ? '' : tenantId, bundleId);
+  const info = infoQuery.data?.data ?? null;
+  const nodesQuery = useClusterNodes();
+  const nodeLabel = useNodeLabel();
+  const nodeOptions = (nodesQuery.data?.data ?? [])
+    .filter((n) => n.canHostTenantWorkloads)
+    .map((n) => ({
+      key: n.name,
+      label: nodeLabel(n.name),
+      meta: `${n.role}${n.statusConditions?.find((c) => c.type === 'Ready')?.status === 'True' ? '' : ' · NotReady'}${nodeLabel(n.name) !== n.name ? ` · ${n.name}` : ''}`,
+    }));
   const [targetNode, setTargetNode] = useState('');
   const [components, setComponents] = useState<ReadonlySet<DrRecoverComponent>>(
     new Set<DrRecoverComponent>(['config', 'files', 'mailboxes']),
@@ -172,77 +182,91 @@ export default function TenantRecoverTab() {
 
       {/* ── Recover form ─────────────────────────────────────────────── */}
       <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Tenant <span className="text-red-600 dark:text-red-400">*</span>
-            </span>
-            {manualTenantId || tenantChoices.length === 0 ? (
-              <input
-                type="text"
-                value={tenantId}
-                onChange={(e) => setTenantId(e.target.value)}
-                placeholder="tenant UUID"
+        <div className="space-y-4">
+          {manualTenantId ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Tenant ID <span className="text-red-600 dark:text-red-400">*</span>
+                </span>
+                <input
+                  type="text"
+                  value={tenantId}
+                  onChange={(e) => setTenantId(e.target.value)}
+                  placeholder="tenant UUID"
+                  disabled={recover.isPending}
+                  data-testid="dr-recover-tenant-id"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Bundle ID</span>
+                <input
+                  type="text"
+                  value={bundleId}
+                  onChange={(e) => setBundleId(e.target.value)}
+                  placeholder="the bundle on the foreign target"
+                  disabled={recover.isPending}
+                  data-testid="dr-recover-bundle-id"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
+                />
+              </label>
+            </div>
+          ) : (
+            <div data-testid="dr-recover-tenant-picker">
+              <SearchablePicker
+                id="dr-recover-tenant"
+                label="Tenant"
+                value={tenantId || null}
+                placeholder="Search tenants…"
+                loading={recoverable.isLoading}
                 disabled={recover.isPending}
-                data-testid="dr-recover-tenant-id"
-                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
+                options={tenantChoices.map((t) => ({
+                  key: t.tenantId,
+                  label: t.name,
+                  meta: `${t.deleted ? `DELETED${t.deletedAt ? ` ${t.deletedAt.slice(0, 10)}` : ''} · ` : ''}${t.bundleCount} bundle${t.bundleCount === 1 ? '' : 's'}${t.keptUntil ? ` · until ${t.keptUntil.slice(0, 10)}` : ''}`,
+                }))}
+                onChange={(k) => setTenantId(k ?? '')}
               />
-            ) : (
-              <select
-                value={tenantId}
-                onChange={(e) => setTenantId(e.target.value)}
-                disabled={recover.isPending}
-                data-testid="dr-recover-tenant-id"
-                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
-              >
-                <option value="">Select a tenant…</option>
-                {tenantChoices.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name || 'deleted tenant'} — {t.bundles} bundle{t.bundles === 1 ? '' : 's'}
-                  </option>
-                ))}
-              </select>
-            )}
-            <button
-              type="button"
-              onClick={() => setManualTenantId((v) => !v)}
-              className="mt-1 cursor-pointer text-xs text-gray-500 underline hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-            >
-              {manualTenantId
-                ? 'Pick from the tenants that have bundles'
-                : 'Enter a tenant ID instead (bundle on a foreign target)'}
-            </button>
-          </label>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => { setManualTenantId((v) => !v); setTenantId(''); setBundleId(''); }}
+            className="cursor-pointer text-xs text-gray-500 underline hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            {manualTenantId
+              ? 'Pick from the tenants that have bundles'
+              : 'Enter a tenant ID instead (bundle on a foreign target)'}
+          </button>
 
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Bundle ID <span className="text-gray-400 dark:text-gray-500">(optional)</span>
-            </span>
-            <input
-              type="text"
-              value={bundleId}
-              onChange={(e) => setBundleId(e.target.value)}
-              placeholder="empty = newest completed bundle"
-              disabled={recover.isPending}
-              data-testid="dr-recover-bundle-id"
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
-            />
-          </label>
+          {!manualTenantId && tenantId && (
+            <>
+              <TenantFacts info={info} loading={infoQuery.isLoading} />
+              <div>
+                <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Bundle</span>
+                {info
+                  ? <BundleChooser bundles={info.bundles} value={bundleId} onChange={setBundleId} disabled={recover.isPending} />
+                  : infoQuery.isError && (
+                    <ErrorPanel error={extractOperatorError(infoQuery.error)} severity="error" testId="dr-recover-info-error" />
+                  )}
+              </div>
+            </>
+          )}
 
-          <label className="block sm:col-span-2">
-            <span className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Target node <span className="text-gray-400 dark:text-gray-500">(optional — pin recovered resources to a node)</span>
-            </span>
-            <input
-              type="text"
-              value={targetNode}
-              onChange={(e) => setTargetNode(e.target.value)}
-              placeholder="empty = auto-placement"
+          <div data-testid="dr-recover-target-node">
+            <SearchablePicker
+              id="dr-recover-node"
+              label="Target node"
+              value={targetNode || null}
+              placeholder="Search nodes…"
+              allLabel="Automatic — the tenant's primary node, else the scheduler"
+              loading={nodesQuery.isLoading}
               disabled={recover.isPending}
-              data-testid="dr-recover-target-node"
-              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
+              options={nodeOptions}
+              onChange={(k) => setTargetNode(k ?? '')}
             />
-          </label>
+          </div>
         </div>
 
         {/* Components */}

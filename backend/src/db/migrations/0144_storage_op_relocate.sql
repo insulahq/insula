@@ -1,0 +1,19 @@
+-- "Move back" of a RUNNING tenant is a storage operation.
+--
+-- Re-pinning a running tenant's Deployments rolled its pods onto the target
+-- node while the old pods still held the RWO volume on the source. Longhorn
+-- then deleted the source node's attachment as soon as one old pod was gone,
+-- under the tenant's other pods: on production the device went offline
+-- mid-write and XFS shut the filesystem down.
+--
+-- The move now stops the tenant, waits for the volume to detach, re-pins it
+-- and starts it on the target (tenant-migration/stop-move-start.ts) — the same
+-- quiesce cycle a resize or an auto-heal runs, so it is recorded the same way:
+-- mustBeIdle keeps other storage operations off the volume meanwhile,
+-- quiesce-watchdog Leg A restores the workloads if the process dies mid-move,
+-- and the Task Tracker chip shows it.
+--
+-- ADD VALUE IF NOT EXISTS is idempotent, so this is replay-safe. The value is
+-- deliberately not USED here — Postgres forbids using a new enum label in the
+-- transaction that adds it.
+ALTER TYPE storage_operation_type ADD VALUE IF NOT EXISTS 'relocate';

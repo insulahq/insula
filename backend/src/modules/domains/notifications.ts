@@ -100,16 +100,10 @@ export async function notifyDomainRegression(
 
   const failedChecks = result.checks.filter((c) => c.status === 'fail');
   const lastVerifiedStr = formatRelativeTime(domain.verifiedAt);
-  const checkDetails = failedChecks.map((c) => `• ${c.detail}`).join('\n');
-
-  const message = [
-    `The domain ${domain.domainName} was previously verified (${lastVerifiedStr}) but DNS verification has now failed.`,
-    '',
-    'Failed checks:',
-    checkDetails,
-    '',
-    'Please check your DNS settings and click "Verify DNS" in the control panel once you have updated them.',
-  ].join('\n');
+  // Each failed check is its own list item (`items`): bullets typed into the
+  // text survived only in plaintext — the email ran them into one paragraph.
+  const message = `The domain ${domain.domainName} was previously verified (${lastVerifiedStr}) `
+    + 'but DNS verification has now failed. Failed checks:';
 
   // Dispatched, not inserted. The TODO below used to read "email dispatch" —
   // that is what the categorised path provides, along with the preference
@@ -121,6 +115,7 @@ export async function notifyDomainRegression(
     subsystem: 'Domain verification',
     objectLabel: domain.domainName,
     detail: message,
+    items: failedChecks.map((c) => c.detail),
     severityLabel: 'failed',
     recommendedAction: 'Check your DNS settings, then click "Verify DNS" in the control panel.',
   }, `domain-verify-failed:${domain.id}:${new Date().toISOString().slice(0, 10)}`);

@@ -278,7 +278,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d
+          image: ghcr.io/bulwarkmail/webmail@sha256:31bb0f105d784a6ca953625e14b65a1d1dc3e7a96ba1a17643d472f40324227d
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -318,7 +318,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.9.2 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.12.0 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -333,7 +333,22 @@ spec:
           # check ran before fetch() opened its socket, so a hostname could
           # rebind to loopback/RFC-1918/metadata in between and return up to
           # 10MB of the internal response). Do not roll back past it.
-          image: ghcr.io/bulwarkmail/webmail@sha256:0e8d1339277033b6569a76c6f8192396e6edd66fd917d64d9ed505e8b81dac6d
+          #
+          # 1.10.0-1.12.0 close a further run of advisories, two of them
+          # critical (identity cookies minted without checking credentials;
+          # same-site cross-origin writes to the JMAP passthrough). Since
+          # 1.11.1 /api/auth/impersonate no longer seals the master password
+          # into the session cookie: it creates an app password on the target
+          # mailbox ("Support session <jti>", 8 h `expiresAt`, revoked on
+          # sign-out) and hands the browser only that. The tenant's login
+          # password list labels these as webmail sessions
+          # (login-passwords/service.ts). Do not roll back past 1.11.2 (1.11.1
+          # itself does not start).
+          #
+          # Digest provenance: `gh attestation verify oci://…@<digest> --owner
+          # bulwarkmail` — SLSA v1, built by the upstream release workflow
+          # from tag 1.12.0.
+          image: ghcr.io/bulwarkmail/webmail@sha256:31bb0f105d784a6ca953625e14b65a1d1dc3e7a96ba1a17643d472f40324227d
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

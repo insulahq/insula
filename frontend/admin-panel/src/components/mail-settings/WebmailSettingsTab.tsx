@@ -11,33 +11,44 @@ type WebmailEngine = 'roundcube' | 'bulwark';
 interface EngineMeta {
   readonly key: WebmailEngine;
   readonly label: string;
+  readonly badge: { readonly text: string; readonly className: string };
   readonly tagline: string;
   readonly bullets: ReadonlyArray<string>;
   readonly docsHref: string;
 }
 
+// Bulwark is the platform's webmail. Roundcube stays selectable as an
+// alternative while it is retired — new webmail features land in Bulwark only.
 const ENGINES: ReadonlyArray<EngineMeta> = [
-  {
-    key: 'roundcube',
-    label: 'Roundcube',
-    tagline: 'PHP IMAP webmail. Battle-tested across the platform since v1.',
-    bullets: [
-      'IMAP/SMTP under the hood — works against Stalwart out of the box.',
-      'Per-tenant subdomain (webmail.<clientdomain>) with its own TLS cert.',
-      'Plugin ecosystem — sieve filters, Bongo CalDAV, ManageSieve.',
-    ],
-    docsHref: 'https://roundcube.net/',
-  },
   {
     key: 'bulwark',
     label: 'Bulwark',
+    badge: {
+      text: 'Recommended',
+      className: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    },
     tagline: 'Modern JMAP-native client purpose-built for Stalwart (ADR-039).',
     bullets: [
       'Speaks JMAP directly — lower latency, no IMAP→JMAP translation.',
+      'Mail, contacts, calendar and files in one client.',
       'Reuses the same webmail.<apex> URL — no extra DNS or cert work.',
-      'Master-user impersonation lets tenant_admin open any mailbox SSO-style.',
     ],
     docsHref: 'https://bulwarkmail.org/',
+  },
+  {
+    key: 'roundcube',
+    label: 'Roundcube',
+    badge: {
+      text: 'Legacy',
+      className: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+    },
+    tagline: 'PHP IMAP webmail, kept as an alternative while it is being retired.',
+    bullets: [
+      'Receives security updates only; new webmail features land in Bulwark.',
+      'IMAP/SMTP under the hood — no calendar or files.',
+      'Per-tenant subdomain (webmail.<clientdomain>) with its own TLS cert.',
+    ],
+    docsHref: 'https://roundcube.net/',
   },
 ];
 
@@ -55,7 +66,7 @@ export default function WebmailSettingsTab() {
   const settings = response?.data;
 
   const [defaultWebmailUrl, setDefaultWebmailUrl] = useState('');
-  const [engine, setEngine] = useState<WebmailEngine>('roundcube');
+  const [engine, setEngine] = useState<WebmailEngine>('bulwark');
   // webmail feature-visibility toggles. Default to hidden
   // (false) on a fresh install so the OOTB experience is mail-only.
   // Stalwart's DAV endpoints stay reachable — DAV clients keep working.
@@ -74,7 +85,7 @@ export default function WebmailSettingsTab() {
   useEffect(() => {
     if (!settings) return;
     setDefaultWebmailUrl(settings.defaultWebmailUrl ?? '');
-    setEngine(settings.defaultWebmailEngine ?? 'roundcube');
+    setEngine(settings.defaultWebmailEngine ?? 'bulwark');
     setShowContacts(settings.webmailShowContacts ?? false);
     setShowCalendar(settings.webmailShowCalendar ?? false);
     setShowFiles(settings.webmailShowFiles ?? false);
@@ -83,7 +94,7 @@ export default function WebmailSettingsTab() {
   const urlChanged =
     defaultWebmailUrl.trim().length > 0
     && defaultWebmailUrl !== (settings?.defaultWebmailUrl ?? '');
-  const engineChanged = engine !== (settings?.defaultWebmailEngine ?? 'roundcube');
+  const engineChanged = engine !== (settings?.defaultWebmailEngine ?? 'bulwark');
   const contactsChanged = showContacts !== (settings?.webmailShowContacts ?? false);
   const calendarChanged = showCalendar !== (settings?.webmailShowCalendar ?? false);
   const filesChanged = showFiles !== (settings?.webmailShowFiles ?? false);
@@ -162,8 +173,8 @@ export default function WebmailSettingsTab() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Pick the webmail tenant every mailbox lands in when a customer
-        clicks &ldquo;Open Webmail&rdquo;. Both engines share the same{' '}
+        Pick the webmail every mailbox opens in when a customer clicks
+        &ldquo;Open Webmail&rdquo;. Both engines share the same{' '}
         <code>webmail.&lt;apex&gt;</code> hostname &mdash; flipping the
         engine switches which backend serves that URL. Only one engine is
         active at a time.
@@ -196,8 +207,16 @@ export default function WebmailSettingsTab() {
                 data-testid={`webmail-engine-${meta.key}`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-gray-900 dark:text-gray-100">
-                    {meta.label}
+                  <span className="inline-flex items-center gap-2">
+                    <span className="font-semibold text-gray-900 dark:text-gray-100">
+                      {meta.label}
+                    </span>
+                    <span
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${meta.badge.className}`}
+                      data-testid={`webmail-engine-badge-${meta.key}`}
+                    >
+                      {meta.badge.text}
+                    </span>
                   </span>
                   {isActive && (
                     <span className="inline-flex items-center rounded-md bg-brand-500 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white">
@@ -246,11 +265,11 @@ export default function WebmailSettingsTab() {
           spellCheck={false}
         />
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Used as the SSO login URL for both engines (Roundcube falls back
-          to per-tenant <code>webmail.&lt;clientdomain&gt;</code> when the
-          tenant&apos;s domain hosts its own webmail). The platform&apos;s
-          webmail IngressRoute is reconciled to point at whichever engine
-          is active.
+          The address &ldquo;Open Webmail&rdquo; signs users in at. The
+          platform&apos;s webmail route is pointed at whichever engine is
+          active. (With Roundcube active, a tenant domain that hosts its own
+          webmail at <code>webmail.&lt;clientdomain&gt;</code> uses that
+          address instead.)
         </p>
       </div>
 
@@ -277,21 +296,21 @@ export default function WebmailSettingsTab() {
             {
               key: 'contacts' as const,
               label: 'Contacts',
-              hint: 'Address book tab in Bulwark + Roundcube.',
+              hint: 'Address book tab in the webmail.',
               value: showContacts,
               setValue: setShowContacts,
             },
             {
               key: 'calendar' as const,
               label: 'Calendar',
-              hint: 'Calendar tab in Bulwark. Roundcube ships no calendar plugin.',
+              hint: 'Calendar tab in the webmail (not available in Roundcube).',
               value: showCalendar,
               setValue: setShowCalendar,
             },
             {
               key: 'files' as const,
               label: 'Files',
-              hint: 'WebDAV files tab in Bulwark. Roundcube has no files feature.',
+              hint: 'Files tab in the webmail (not available in Roundcube).',
               value: showFiles,
               setValue: setShowFiles,
             },
