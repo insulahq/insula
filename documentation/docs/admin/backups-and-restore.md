@@ -80,6 +80,23 @@ The cluster-wide **Secrets bundle** lives on the
   it per tenant (*Inherit plan* / *Always include* / *Exclude from
   schedule*).
 
+    !!! note "Backups pause while a tenant is suspended"
+        A **suspended** tenant shows **paused — suspended** in the
+        Scheduled inclusion panel. While it stays suspended:
+
+        - the daily bundle run skips it, and **Backup now** (here and in
+          the tenant's own panel) is refused;
+        - **Bundle all eligible tenants** leaves it out;
+        - its existing backups are **kept**: retention neither expires nor
+          deletes them, however long the suspension lasts.
+
+        Nothing goes unprotected meanwhile: a suspended tenant's sites are
+        offline, its mailboxes refuse sign-ins and incoming mail, so its data
+        does not change, and the platform's mail backup keeps covering its
+        mailboxes. On **Reactivate** the daily run picks the tenant up again.
+        Until its first new bundle completes, its newest existing bundle is
+        kept, even if that bundle is past its retention date.
+
     ??? info "Backups load when you open a tenant"
         The page itself loads only the tenant list — every tenant, with
         its backup count and repository size. No backup is fetched until

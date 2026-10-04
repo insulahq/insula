@@ -14,6 +14,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { eq, sql } from 'drizzle-orm';
+import { bundleIsLive } from '../tenant-bundles/bundle-hold.js';
 import type { DrRecoveryBundle, DrRecoveryInfo } from '@insula/api-contracts';
 import { hostingPlans, tenants } from '../../db/schema.js';
 
@@ -47,7 +48,7 @@ export function toRecoveryBundle(r: BundleRow): DrRecoveryBundle {
   };
 }
 
-/** The tenant's restorable bundles (completed or partial, not expired), newest first. */
+/** The tenant's restorable bundles (completed or partial, unexpired or held — bundle-hold.ts), newest first. */
 async function listBundles(app: FastifyInstance, tenantId: string): Promise<DrRecoveryBundle[]> {
   const res = await app.db.execute(sql`
     SELECT b.id, b.created_at, b.finished_at, b.status, b.initiator, b.system_trigger, b.label, b.expires_at,
@@ -56,8 +57,7 @@ async function listBundles(app: FastifyInstance, tenantId: string): Promise<DrRe
                      WHERE backup_job_id = b.id GROUP BY component) c) AS components
       FROM backup_jobs b
      WHERE b.tenant_id = ${tenantId}
-       AND b.status IN ('completed', 'partial')
-       AND (b.expires_at IS NULL OR b.expires_at > now())
+       AND ${bundleIsLive('b')}
      ORDER BY b.created_at DESC, b.id DESC
      LIMIT 200
   `) as unknown as { rows?: BundleRow[] };

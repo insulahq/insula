@@ -74,6 +74,11 @@ export const tenantBackupOverviewRowSchema = z.object({
   planName: z.string().nullable(),
   /** Resolved include flag (override OR plan-default). */
   includedInScheduledBundles: z.boolean(),
+  /**
+   * TRUE while the tenant is suspended: no scheduled or manual bundles, and
+   * retention keeps its existing ones (backend tenant-bundles/suspension.ts).
+   */
+  backupsPaused: z.boolean(),
   /** Three-state representation of the override column. */
   scheduledBundlesOverride: z.enum(['inherit', 'on', 'off']),
   /** Tenant-PVC snapshot stats (class=tenant_snapshot). */

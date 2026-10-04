@@ -5,6 +5,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success, paginated } from '../../shared/response.js';
 import { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
+import { assertTenantBackupsAllowed } from './suspension.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { filesSnapshotReachable } from '../backup-restore/browse-files-restic.js';
 import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans } from '../../db/schema.js';
@@ -374,6 +375,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // Resolve tenant + plan retention.
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
     if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
+    assertTenantBackupsAllowed(tenant);
 
     // Plan-bound retention. hosting_plans.max_backup_retention_days
     // is the upper bound the operator may request for a tenant on

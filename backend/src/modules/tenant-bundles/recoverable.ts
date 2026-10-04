@@ -17,6 +17,7 @@
  * recorded — the slug of the namespace the transition kept.
  */
 import { sql } from 'drizzle-orm';
+import { bundleIsLive } from './bundle-hold.js';
 import type { RecoverableTenant } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 
@@ -72,8 +73,7 @@ export async function listRecoverableTenants(db: Database): Promise<RecoverableT
              max(expires_at)                                                       AS kept_until,
              bool_or(expires_at IS NULL)                                           AS keep_forever
         FROM backup_jobs
-       WHERE status IN ('completed', 'partial')
-         AND (expires_at IS NULL OR expires_at > now())
+       WHERE ${bundleIsLive('backup_jobs')}
        GROUP BY tenant_id
     )
     SELECT b.*, t.name AS live_name,
@@ -101,7 +101,7 @@ export async function newestRecoverableBundleId(db: Database, tenantId: string):
   const res = await db.execute(sql`
     SELECT id FROM backup_jobs
      WHERE tenant_id = ${tenantId} AND status = 'completed'
-       AND (expires_at IS NULL OR expires_at > now())
+       AND ${bundleIsLive('backup_jobs')}
      ORDER BY created_at DESC, id DESC
      LIMIT 1
   `) as unknown as { rows?: Array<{ id: string }> };

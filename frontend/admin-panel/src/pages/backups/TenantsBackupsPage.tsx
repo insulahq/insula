@@ -814,12 +814,16 @@ function BackupsTab(p: BackupsTabProps) {
                         <span className="font-mono text-[11px]">{r.tenantName}</span>
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
-                            r.includedInScheduledBundles
+                            r.backupsPaused
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+                              : r.includedInScheduledBundles
                               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
                               : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
                           }`}
+                          title={r.backupsPaused ? 'Backups are paused while this tenant is suspended; its existing backups are kept' : undefined}
+                          data-testid={`inclusion-state-${r.tenantId}`}
                         >
-                          {r.includedInScheduledBundles ? 'included' : 'excluded'}
+                          {r.backupsPaused ? 'paused — suspended' : r.includedInScheduledBundles ? 'included' : 'excluded'}
                         </span>
                       </span>
                       <span className="inline-flex items-center gap-1.5">
@@ -830,10 +834,12 @@ function BackupsTab(p: BackupsTabProps) {
                         <button
                           type="button"
                           onClick={() => p.onBundle(r.tenantId)}
-                          disabled={p.tenantPendingBundle === r.tenantId || !p.tenantTargetBound}
+                          disabled={p.tenantPendingBundle === r.tenantId || !p.tenantTargetBound || r.backupsPaused}
                           className="inline-flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
                           data-testid={`inclusion-bundle-now-${r.tenantId}`}
-                          title={p.tenantTargetBound ? 'Create a bundle for this tenant now' : 'Bind a target on tab (c) first'}
+                          title={r.backupsPaused
+                            ? 'Backups are paused while this tenant is suspended — reactivate it to back it up'
+                            : p.tenantTargetBound ? 'Create a bundle for this tenant now' : 'Bind a target on tab (c) first'}
                         >
                           {p.tenantPendingBundle === r.tenantId
                             ? <Loader2 size={10} className="animate-spin" />
@@ -1143,7 +1149,7 @@ export default function TenantsBackupsPage() {
   };
 
   const eligibleForBundle = (rollupData?.data?.rows ?? [])
-    .filter((r) => r.includedInScheduledBundles)
+    .filter((r) => r.includedInScheduledBundles && !r.backupsPaused)
     .map((r) => r.tenantId);
   const allTenantIds = tenantOptions.map((t) => t.id);
 

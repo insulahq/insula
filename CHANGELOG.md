@@ -58,6 +58,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A suspended tenant no longer fails its backup every night.** Suspension blocks every sign-in
+  on the tenant's mailboxes, including the backup's own login, so the first nightly run after a
+  suspension ended `partial` with a "Tenant backup … did not complete" alert, and every night
+  after would have done the same. Backups now pause while a tenant is suspended:
+  - the nightly run skips it;
+  - **Backup now** is refused with a clear message;
+  - the Tenant Backups page marks it **paused — suspended**, and "Bundle all eligible tenants"
+    leaves it out;
+  - retention keeps its existing backups, however long the suspension lasts.
+
+  Nothing goes unprotected meanwhile: a suspended tenant's data does not change, and the platform
+  mail backup still covers its mailboxes. After reactivation, a tenant keeps its newest backup
+  until a new one completes, even if that backup is past its retention date.
+
 - **With HA on, background jobs in the management API run once instead of once per replica.**
   Apply HA runs three platform-api replicas, and every scheduled job ran on each of them. Two
   backup-retention sweeps pruned the same restic repository at once, the second failed on

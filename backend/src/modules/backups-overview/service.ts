@@ -202,6 +202,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       t.id AS tenant_id,
       t.name AS tenant_name,
       t.is_system AS is_system,
+      t.status AS tenant_status,
       p.name AS plan_name,
       t.include_in_scheduled_bundles AS include_override,
       p.include_in_scheduled_bundles AS plan_include,
@@ -277,6 +278,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     tenant_id: string;
     tenant_name: string;
     is_system: boolean;
+    tenant_status: string;
     plan_name: string | null;
     include_override: boolean | null;
     plan_include: boolean | null;
@@ -309,6 +311,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       isSystem: r.is_system,
       planName: r.plan_name,
       includedInScheduledBundles: r.resolved_include === true,
+      backupsPaused: r.tenant_status === 'suspended',
       scheduledBundlesOverride: r.include_override === null
         ? 'inherit'
         : r.include_override
@@ -340,9 +343,10 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
   const kpi = {
     totalTenants: rowsOut.length,
     includedTenants: rowsOut.filter((r) => r.includedInScheduledBundles).length,
-    // "Overdue" = included AND no bundle in last 36h.
+    // "Overdue" = included AND no bundle in last 36h. A suspended tenant's
+    // backups are paused, so it is not overdue.
     overdueTenants: rowsOut.filter((r) => {
-      if (!r.includedInScheduledBundles) return false;
+      if (!r.includedInScheduledBundles || r.backupsPaused) return false;
       if (!r.lastBundleAt) return true;
       return Date.now() - new Date(r.lastBundleAt).getTime() > 36 * 3600 * 1000;
     }).length,
