@@ -217,6 +217,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **A failed scheduled-bundle wave names every failed tenant**, not just "N/M failed (first
   error: …)".
 - **Mail data-drift alerts arrive once**, not once per admin.
+- **Recover Tenant says a namespace is "being deleted"** right after a tenant delete, while
+  Kubernetes is still removing it, instead of saying it "exists".
+- **The namespace-repair notification names what it repaired in words** ("the resource quota"),
+  not internal codes ("resource_quota_missing").
 
 ## [2026.10.3] - 2026-10-03
 
