@@ -71,7 +71,7 @@ function section<T extends z.ZodTypeAny>(data: T) {
  * `href` stays populated alongside it as the fallback — a surface that does not
  * implement the action still has somewhere to go.
  */
-export const dashboardAlertActionSchema = z.enum(['orphaned-volumes']);
+export const dashboardAlertActionSchema = z.enum(['orphaned-volumes', 'dns-drift']);
 export type DashboardAlertAction = z.infer<typeof dashboardAlertActionSchema>;
 
 export const dashboardAlertSchema = z.object({

@@ -22,6 +22,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { AdminNode, DashboardAlert, DashboardAlertAction } from '@insula/api-contracts';
 import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
+import DnsDriftFlow from '@/components/DnsDriftFlow';
 import LegacyCpuNotice from '@/components/LegacyCpuNotice';
 import { useConsoleSummary, useConsoleLive } from '@/hooks/use-operator-console';
 import {
@@ -228,6 +229,7 @@ export default function Dashboard() {
         )}
       </div>
 
+      {openAction === 'dns-drift' && <DnsDriftFlow onClose={() => setOpenAction(null)} />}
       {openAction === 'orphaned-volumes' && (
         <OrphanedVolumesModal onClose={() => setOpenAction(null)} />
       )}

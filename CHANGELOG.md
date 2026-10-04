@@ -36,6 +36,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Apex DNS drift now repairs added AND removed servers, on every route name, and shows on the
+  dashboard.**
+  - **What is checked.** The scan covers every route name of a primary-mode domain: the apex,
+    subdomains, wildcards and www. Before, it checked only the apex.
+  - **What the repair does.** It reads the records from the DNS server and adds the address of
+    every server that serves ingress. It removes the addresses of servers that were removed, had
+    their ingress disabled, or were made private. An address that changed is replaced. It never
+    removes the address of a server that is only not ready (a reboot), an address published by a
+    hand-made record, or one it cannot attribute to its servers; these are listed as kept or left
+    alone. If adding the new address at a name fails, the old one stays there.
+  - **What the report shows.** It names the server behind every address, with the reason for each
+    removal.
+  - **New in the dialog.** It explains what is checked and why, and has a **Refresh** button that
+    rescans. Its progress dialog ends with the exact list of records added and removed per
+    domain.
+  - **Same repair everywhere.** **Refresh Route DNS** runs the same repair for one domain.
+  - **Dashboard tile.** A new **Apex DNS drift** tile on the admin dashboard opens the dialog
+    directly.
+  - **Removed servers are remembered.** The platform keeps which address belonged to which server
+    after the server is removed, so its leftover records are still recognised.
+
 - **Roundcube is now the legacy webmail; Bulwark is the recommended one.** Admin → Email →
   Webmail lists Bulwark first as **Recommended** and Roundcube as **Legacy**: Roundcube stays
   selectable but receives security updates only, and new webmail features land in Bulwark.

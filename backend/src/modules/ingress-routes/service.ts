@@ -18,7 +18,7 @@ import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, cata
 import { clearOrphanedSiteFolder } from './detach.js';
 import { ApiError } from '../../shared/errors.js';
 import { isUnreachableFailure } from '../../shared/fetch-error.js';
-import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, rowsPublishingSameValue, type DnsSyncOutcome } from '../dns-records/service.js';
+import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import { capabilityOf } from '../multihost/reconciler.js';
@@ -1034,17 +1034,15 @@ export async function autoDeleteRouteDns(
 }
 
 /**
- * Re-provision the DNS records for every ingress route on a PRIMARY domain.
+ * Bring every route name of a PRIMARY domain to the current ingress servers.
  *
- * The apex A/AAAA set is a snapshot of the ingress addresses at the moment a
- * route was created. Add an ingress-capable node and every existing tenant
- * apex keeps pointing at the old set — traffic never reaches the new node, and
- * nothing in the product said so. Subdomains ride the `<slug>.ingress.<apex>`
- * CNAME chain and are unaffected, which is exactly why that chain exists; the
- * apex cannot use it (RFC 1034 forbids a CNAME at a zone apex).
- *
- * Replaces only rows this subsystem owns (managed_by = 'ingress-route'): a
- * hand-made record is the operator's and is never touched.
+ * Route A/AAAA records are copies of the ingress addresses taken when each
+ * route was created. Add a server and every name keeps pointing at the old
+ * set (the new server gets no visitors); remove one, or disable its ingress,
+ * and its address stays published (visitors are sent to a server that no
+ * longer answers). This adds what is missing and removes what is stale, read
+ * from the DNS server itself, across the apex, subdomains, wildcards and www
+ * companions. Addresses the platform cannot attribute are left alone.
  *
  * cname-mode domains are refused rather than silently no-oped — the platform
  * has no authority over that zone, and "succeeded, changed nothing" is the
@@ -1054,81 +1052,23 @@ export async function refreshRouteDnsForDomain(
   db: Database,
   domainId: string,
 ): Promise<RefreshRouteDnsResult> {
-  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
-  if (!domain) throw new ApiError('NOT_FOUND', 'Domain not found', 404);
-  if (domain.dnsMode !== 'primary') {
-    throw new ApiError(
-      'DNS_MODE_NOT_PRIMARY',
-      `Refreshing route DNS needs primary mode; '${domain.domainName}' is in ${domain.dnsMode} mode, `
-      + `where the platform does not control the zone.`,
-      409,
-    );
-  }
+  // The same per-domain reconcile the DNS drift repair runs (dns-apex-drift/
+  // reconcile.ts): every route name gets one record per ingress server —
+  // missing addresses ADDED, addresses of removed / ingress-disabled servers
+  // REMOVED, addresses the platform cannot attribute left alone. Dynamic
+  // imports: that module imports this one.
+  const { loadIngressInventory } = await import('../dns-apex-drift/inventory.js');
+  const { reconcileDomainRouteDns } = await import('../dns-apex-drift/reconcile.js');
+  const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+  let k8s = null;
+  try { k8s = createK8sClients(process.env.KUBECONFIG_PATH); } catch { k8s = null; }
 
-  const routes = await db
-    .select({ hostname: ingressRoutes.hostname, wwwRedirect: ingressRoutes.wwwRedirect })
-    .from(ingressRoutes)
-    .where(eq(ingressRoutes.domainId, domainId));
-  // A route's www companion (add-www / remove-www) carries its own address
-  // records. Refreshing only the route's hostname left `www.<apex>` — usually
-  // the name that actually serves the site — on the old ingress addresses.
-  const hostnames = Array.from(new Set(routes.flatMap((r) => {
-    const companion = getWwwCompanionHostname(r.hostname, r.wwwRedirect);
-    return companion ? [r.hostname, companion] : [r.hostname];
-  })));
-
-  const failures: Array<{ hostname: string; detail: string }> = [];
-  let created = 0;
-  let removed = 0;
-
-  // Values the re-provision below writes again. Withdrawing one of those first
-  // only opens a window in which the name does not resolve.
-  const settings = await getIngressSettings(db);
-  const reprovisioned = new Set([
-    ...parseIngressIps(settings.ingressDefaultIpv4).map((ip) => `A|${ip}`),
-    ...parseIngressIps(settings.ingressDefaultIpv6).map((ip) => `AAAA|${ip}`),
-  ]);
-
-  for (const hostname of hostnames) {
-    // Drop the rows we own for this hostname first, so a record pointing at a
-    // decommissioned node actually disappears instead of accumulating
-    // alongside the new set.
-    const recordName = isApexHostname(hostname, domain.domainName)
-      ? '@'
-      : relativeRecordName(hostname, domain.domainName);
-
-    try {
-      const stale = await deleteManagedRecords(db, 'ingress-route', domainId, recordName);
-      for (const rec of stale) {
-        removed++;
-        if (reprovisioned.has(`${rec.recordType}|${rec.recordValue}`)) continue;
-        // A hand-made row for the same value is still the operator's record.
-        const shared = await rowsPublishingSameValue(db, domain.domainName, { domainId, recordType: rec.recordType, recordName: rec.recordName }, rec);
-        if (shared.length > 0) continue;
-        const withdrawn = await syncRecordToProviders(db, domain.domainName, 'delete', {
-          type: rec.recordType,
-          name: rec.recordName ?? '',
-          content: rec.recordValue ?? '',
-          id: 'auto',
-        }, domainId);
-        // The row is already gone; a value the server kept is still answering.
-        if (withdrawn.status === 'failed') {
-          failures.push({
-            hostname,
-            detail: `${rec.recordType} ${rec.recordValue} is still published: ${describeSyncFailure(withdrawn)}`,
-          });
-        }
-      }
-      const before = created;
-      await autoProvisionRouteDns(db, domainId, hostname);
-      created = before + 1;
-    } catch (err) {
-      failures.push({
-        hostname,
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  return { hostnames: hostnames.length, created, removed, failures };
+  const inventory = await loadIngressInventory(db, k8s);
+  const { plan, result } = await reconcileDomainRouteDns(db, domainId, inventory);
+  return {
+    hostnames: plan.hostnames.length,
+    created: result.added.length,
+    removed: result.removed.length,
+    failures: result.failures,
+  };
 }

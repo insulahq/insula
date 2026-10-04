@@ -1,10 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import type { RouteDnsDomainResult } from '@insula/api-contracts';
+import { DriftRecordLine } from '@/components/dns-drift/DriftRecordLine';
+import { DNS_APEX_DRIFT_QUERY_KEY } from '@/hooks/use-dns-apex-drift';
 import { X, Loader2, CheckCircle2, AlertTriangle, Circle } from 'lucide-react';
 import { useTaskCenter } from '@/hooks/use-task-center';
 import type { TaskRow } from '@insula/api-contracts';
 
 /**
- * Progress modal for an additive apex-DNS repair.
+ * Progress and results of a route ("apex") DNS repair.
  *
  * Reads state from `useTaskCenter()` (already polled every 3 s while anything
  * is running) and filters to this task. Also reachable by clicking the
@@ -15,7 +19,8 @@ import type { TaskRow } from '@insula/api-contracts';
  * The per-domain checklist comes from `details.steps[]`, written by the
  * backend as each domain is processed. A failed domain keeps its `note` (the
  * provider's error) so a partial run says exactly which zone refused and why,
- * rather than a single opaque "failed".
+ * rather than a single opaque "failed". `details.results[]` lists, per domain,
+ * every address added and removed with the server it belongs to.
  */
 
 interface Props {
@@ -45,8 +50,21 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
     onClose();
   };
 
-  const steps = (task?.details as { steps?: ProgressStep[] } | undefined)?.steps ?? [];
+  const details = task?.details as { steps?: ProgressStep[]; results?: RouteDnsDomainResult[] } | undefined;
+  const steps = details?.steps ?? [];
+  const results = details?.results ?? [];
   const isTerminal = task?.status === 'succeeded' || task?.status === 'failed';
+  const added = results.reduce((n, r) => n + r.added.length, 0);
+  const removed = results.reduce((n, r) => n + r.removed.length, 0);
+
+  // The backend rescans when the repair ends; pick that report up, and the
+  // domains' DNS record lists the repair changed.
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!isTerminal) return;
+    void qc.invalidateQueries({ queryKey: DNS_APEX_DRIFT_QUERY_KEY });
+    void qc.invalidateQueries({ queryKey: ['dns-records'] });
+  }, [isTerminal, qc]);
 
   return (
     <div
@@ -58,7 +76,7 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
       onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
     >
       <div
-        className="w-full max-w-lg rounded-xl bg-white shadow-xl dark:bg-gray-800"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl dark:bg-gray-800"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
@@ -66,7 +84,7 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
             id="dns-apex-drift-task-title"
             className="text-base font-semibold text-gray-900 dark:text-gray-100"
           >
-            {task?.label ?? 'Repair apex DNS records'}
+            {task?.label ?? 'Repair route DNS records'}
           </h3>
           <button
             type="button"
@@ -79,7 +97,7 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
           </button>
         </div>
 
-        <div className="space-y-4 px-5 py-4">
+        <div className="space-y-4 overflow-y-auto px-5 py-4">
           {isLoading && !task && (
             <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
               <Loader2 size={14} className="animate-spin" /> Loading task state…
@@ -132,6 +150,30 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
                 </ul>
               )}
 
+              {results.some((r) => r.added.length + r.removed.length + r.failures.length > 0) && (
+                <section data-testid="dns-apex-drift-task-results">
+                  <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Changes</h4>
+                  <ul className="space-y-2">
+                    {results.map((r) => (
+                      <li key={r.domainId} className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700" data-testid={`dns-apex-drift-result-${r.domainName}`}>
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{r.domainName}</div>
+                        <ul className="mt-1 space-y-0.5">
+                          {r.added.map((c) => (
+                            <DriftRecordLine key={`+${c.hostname}${c.type}${c.content}`} kind="add" type={c.type} content={`${c.content} at ${c.hostname}`} servers={c.servers} testId="dns-apex-drift-result-added" />
+                          ))}
+                          {r.removed.map((c) => (
+                            <DriftRecordLine key={`-${c.hostname}${c.type}${c.content}`} kind="remove" type={c.type} content={`${c.content} at ${c.hostname}`} servers={c.servers} reason={c.reason} testId="dns-apex-drift-result-removed" />
+                          ))}
+                        </ul>
+                        {r.failures.map((f) => (
+                          <p key={`${f.hostname}${f.detail}`} className="mt-1 text-xs text-red-600 dark:text-red-400">{f.hostname}: {f.detail}</p>
+                        ))}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
               {isTerminal && task.errorMessage && (
                 <div className="flex items-start gap-2.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
                   <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -141,7 +183,7 @@ export default function DnsApexDriftTaskModal({ taskId, onClose }: Props) {
 
               {task.status === 'succeeded' && (
                 <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
-                  <CheckCircle2 size={14} /> Repair complete. Nothing was removed.
+                  <CheckCircle2 size={14} /> Repair complete: {added} record{added === 1 ? '' : 's'} added, {removed} removed.
                 </div>
               )}
             </>

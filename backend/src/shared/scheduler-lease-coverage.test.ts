@@ -31,6 +31,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string }> = [
   { file: 'modules/storage/image-prune-scheduler.ts', job: 'daily-image-prune' },
   { file: 'modules/crowdsec-autoban/scheduler.ts', job: 'crowdsec-autoban' },
   { file: 'modules/domains/verification-cron.ts', job: 'domain-verification' },
+  { file: 'modules/dns-apex-drift/scheduler.ts', job: 'dns-route-drift-scan' },
 ];
 
 describe('scheduled jobs that must run on one replica', () => {

@@ -31,7 +31,7 @@ vi.mock('../dns-records/service.js', () => ({
   describeSyncFailure: vi.fn((o: { errors: Array<{ message: string }> }) => o.errors[0].message),
 }));
 
-import { autoDeleteRouteDns, deleteRoute, refreshRouteDnsForDomain } from './service.js';
+import { autoDeleteRouteDns, deleteRoute } from './service.js';
 import { updateRedirectSettings } from './settings-service.js';
 import { domains, dnsRecords, ingressRoutes, platformSettings } from '../../db/schema.js';
 
@@ -295,53 +295,5 @@ describe('a name another route still serves keeps its DNS', () => {
   });
 });
 
-describe('refreshRouteDnsForDomain', () => {
-  it('re-provisions the current set and withdraws only addresses that are gone and unshared', async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1,203.0.113.2' },
-      routes: [{ hostname: 'example.test' }],
-    });
-    staleRows = [
-      { id: 's1', recordType: 'A', recordName: '@', recordValue: '203.0.113.1' }, // still current
-      { id: 's2', recordType: 'A', recordName: '@', recordValue: '198.51.100.7' }, // node gone
-      { id: 's3', recordType: 'A', recordName: '@', recordValue: '198.51.100.8' }, // gone, but a hand-made row holds it
-    ];
-    sharedValues = new Set(['198.51.100.8']);
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(deletes).toEqual(['A @ 198.51.100.7']);
-    expect(provisions).toEqual(['A @ 203.0.113.1', 'A @ 203.0.113.2']);
-    expect(result).toMatchObject({ hostnames: 1, removed: 3, failures: [] });
-  });
-
-  it('reports a stale address the server would not withdraw instead of counting it gone', async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1' },
-      routes: [{ hostname: 'example.test' }],
-    });
-    staleRows = [{ id: 's1', recordType: 'A', recordName: '@', recordValue: '198.51.100.7' }];
-    refusedValue = '198.51.100.7';
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(result.failures).toEqual([
-      { hostname: 'example.test', detail: 'A 198.51.100.7 is still published: PowerDNS API error: 500' },
-    ]);
-  });
-
-  it("refreshes a route's www companion too — the name that usually serves the site", async () => {
-    const { db } = fakeDb({
-      settings: { ingress_default_ipv4: '203.0.113.1,203.0.113.2' },
-      routes: [{ hostname: 'example.test', wwwRedirect: 'add-www' } as never],
-    });
-
-    const result = await refreshRouteDnsForDomain(db, 'd1');
-
-    expect(provisions).toEqual([
-      'A @ 203.0.113.1', 'A @ 203.0.113.2',
-      'A www 203.0.113.1', 'A www 203.0.113.2',
-    ]);
-    expect(result).toMatchObject({ hostnames: 2, failures: [] });
-  });
-});
+// refreshRouteDnsForDomain is the shared route-DNS reconcile now — covered in
+// dns-apex-drift/detector.test.ts and route-dns.integration.test.ts.

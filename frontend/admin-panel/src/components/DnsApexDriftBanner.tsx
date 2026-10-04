@@ -11,13 +11,13 @@ interface DnsApexDriftBannerProps {
  *
  * Shown for three distinct conditions, which must not be collapsed into one
  * message:
- *   - drift  — apex records are missing; repair is available
+ *   - drift  — route records are missing or stale; repair is available
  *   - error  — zones could not be read, so drift cannot be ruled out
  *   - scanError — the scan could not run at all (no ingress IPs configured)
  *
- * Silent when the last scan was clean. "Unmanaged" records alone never raise
- * the banner: an extra apex address is usually deliberate (a CDN origin), and
- * an additive repair never removes it — it is information, not a problem.
+ * Silent when the last scan was clean. Foreign and held records alone never
+ * raise the banner: an extra address is usually deliberate (a CDN origin) and
+ * the repair never removes either — information, not a problem.
  */
 export default function DnsApexDriftBanner({ report, onReview }: DnsApexDriftBannerProps) {
   if (!report) return null;
@@ -56,8 +56,8 @@ export default function DnsApexDriftBanner({ report, onReview }: DnsApexDriftBan
       <div className="flex-1 text-sm">
         {hasDrift && (
           <p className="font-semibold">
-            {report.driftCount} domain{report.driftCount === 1 ? '' : 's'} missing apex ingress
-            records
+            {report.driftCount} domain{report.driftCount === 1 ? '' : 's'} with route DNS that no longer
+            matches the ingress servers
           </p>
         )}
         {!hasDrift && hasErrors && (
@@ -68,8 +68,8 @@ export default function DnsApexDriftBanner({ report, onReview }: DnsApexDriftBan
         <p className="mt-1">
           {hasDrift && (
             <>
-              Their apex A/AAAA records don&apos;t include every ingress address, so traffic
-              won&apos;t reach the newer nodes.{' '}
+              {report.missingCount > 0 && <>{report.missingCount} address record{report.missingCount === 1 ? ' is' : 's are'} missing, so new servers get no visitors. </>}
+              {report.staleCount > 0 && <>{report.staleCount} still point{report.staleCount === 1 ? 's' : ''} at servers that were removed or no longer serve ingress. </>}
             </>
           )}
           {hasErrors && (
@@ -78,7 +78,7 @@ export default function DnsApexDriftBanner({ report, onReview }: DnsApexDriftBan
               drift there is unknown.{' '}
             </>
           )}
-          Nothing has been changed — repair is additive and only runs when you apply it.
+          Nothing changes until you apply the repair.
         </p>
         <button
           type="button"

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
-import { selectIngressNodeAddresses, type NodeLike } from './discovery.js';
+import { selectIngressNodeAddresses, nodeExternalAddresses, type NodeLike } from './discovery.js';
+import { rememberAddresses } from './address-history.js';
 import { safeTick } from '../../shared/safe-tick.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
@@ -53,7 +54,30 @@ export async function reconcileIngressAddresses(
   k8s: K8sClients,
 ): Promise<ReconcileResult> {
   const res = (await k8s.core.listNode()) as unknown as { items?: NodeLike[] };
-  const discovered = selectIngressNodeAddresses(res.items ?? []);
+  return reconcileIngressAddressesFromNodes(db, res.items ?? []);
+}
+
+/**
+ * The reconcile for an already-listed node set — shared with the DNS drift
+ * scan, which needs the same list to attribute addresses to servers.
+ */
+export async function reconcileIngressAddressesFromNodes(
+  db: Database,
+  nodes: readonly NodeLike[],
+): Promise<ReconcileResult> {
+  // Every address any node advertises, whoever it belongs to and whether or
+  // not it serves ingress today — once a server is removed this is the only
+  // record of which IP was its (address-history.ts).
+  await rememberAddresses(db, nodes.flatMap((n) => {
+    const name = n.metadata?.name ?? null;
+    const { ipv4, ipv6 } = nodeExternalAddresses(n);
+    return [
+      ...ipv4.map((address) => ({ type: 'A' as const, address, server: name })),
+      ...ipv6.map((address) => ({ type: 'AAAA' as const, address, server: name })),
+    ];
+  })).catch((err) => console.warn('[ingress-nodes] address history not updated:', (err as Error).message));
+
+  const discovered = selectIngressNodeAddresses(nodes);
 
   // Refuse to publish an empty set. A transient API read that returns nothing
   // (or a cluster mid-upgrade with every node briefly NotReady) would
