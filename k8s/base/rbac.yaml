@@ -299,6 +299,10 @@ rules:
   #   spec.attachmentTickets["platform-fsck"] = { id, type:
   #   'longhorn-api', nodeID, parameters: {disableFrontend:'false'} }
   # …and clears it on completion via merge-patch with null.
+  # Data relocation (tenant-placement/relocate.ts) uses the same mechanism:
+  # an `insula-relocate` ticket attaches a stopped tenant's volume on its
+  # primary node so data locality moves the copy there; the placement
+  # reconciler lists the attachments and clears the ticket when it is done.
   - apiGroups: ["longhorn.io"]
     resources: ["volumeattachments"]
     verbs: ["get", "list", "patch"]

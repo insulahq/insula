@@ -19,10 +19,11 @@ function summaryOf(names: readonly string[]): string {
   return unique.length === 1 ? unique[0]! : `${unique.length} tenants`;
 }
 
-function listed(lines: readonly string[]): string {
-  const shown = lines.slice(0, MAX_LISTED).join(' ');
+/** One list item per tenant (rendered as a list on every channel), the overflow counted. */
+function listed(lines: readonly string[]): string[] {
+  const shown = lines.slice(0, MAX_LISTED);
   const rest = lines.length - MAX_LISTED;
-  return rest > 0 ? `${shown} …and ${rest} more.` : shown;
+  return rest > 0 ? [...shown, `…and ${rest} more.`] : shown;
 }
 
 export interface NamedFailover extends StoredFailover {
@@ -56,7 +57,8 @@ export interface NamedPlacement extends StoredPlacement {
 export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTenantPlacementPayload {
   const lines = placements.map((p) => {
     const why = p.reasons.length > 0 ? p.reasons.join(', ') : `on ${nodes(p.actualNodes)}`;
-    const since = p.misplacedSince ? ` since ${formatUtcMinute(p.misplacedSince)}` : '';
+    // When the reconciler first SAW it — not when the data moved, which it cannot know.
+    const since = p.misplacedSince ? ` (seen since ${formatUtcMinute(p.misplacedSince)})` : '';
     return `${p.tenantName}: primary node ${p.primaryNode ?? '—'}, but ${why}${since}.`;
   });
   return {

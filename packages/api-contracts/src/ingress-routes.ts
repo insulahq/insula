@@ -333,9 +333,23 @@ export const updateIngressSettingsSchema = z.object({
     .optional(),
 });
 
+/**
+ * DELETE /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId → data
+ *
+ * The route is always removed. `dnsWarning` is set when some of its DNS
+ * records could not be withdrawn from the DNS server: they are still
+ * published, and stay listed under the domain's DNS Records so they can be
+ * deleted there once the server answers. Worded for whoever asked — server
+ * names and addresses only reach the admin panel.
+ */
+export const deleteIngressRouteResultSchema = z.object({
+  dnsWarning: z.string().nullable(),
+});
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type IngressRouteResponse = z.infer<typeof ingressRouteResponseSchema>;
+export type DeleteIngressRouteResult = z.infer<typeof deleteIngressRouteResultSchema>;
 export type CreateIngressRouteInput = z.infer<typeof createIngressRouteSchema>;
 export type UpdateIngressRouteInput = z.infer<typeof updateIngressRouteSchema>;
 export type UpdateRedirectSettingsInput = z.infer<typeof updateRedirectSettingsSchema>;

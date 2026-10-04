@@ -12,6 +12,216 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Bulwark webmail 1.9.2 → 1.12.0.** Fixes a run of upstream advisories, two of them critical:
+  Bulwark issued sign-in cookies without checking the credentials, and a page on a sibling
+  subdomain could act in the webmail as the signed-in user. Others: script running from crafted
+  HTML or SVG mail, header injection in read receipts, and remote content slipping past the
+  blocker. "Open webmail" sessions now end after **8 hours** and no longer carry the mail server's
+  master password in a cookie. Each open session appears in the mailbox's **Login passwords**
+  list as **Webmail session**, with the time it ends and a **Sign out** button. Webmail users
+  are signed out once when the update rolls out.
+- **Roundcube 1.7.2 → 1.7.4.** Fixes a zero-click stored XSS in attachments, several header
+  injections, an IMAP command injection, SSRF bypasses in the CSS proxy, and remote-content
+  blocker bypasses.
+- **oauth2-proxy v7.15.3 → v7.15.5** (test and staging installs only). Fixes two critical
+  authentication bypasses.
+- **Stalwart v0.16.20 → v0.16.24.** Bug fixes only, no migration. Of note: cleartext IMAP on
+  port 143 now refuses sign-in until the client switches to TLS (STARTTLS). Mail apps already
+  do, and the platform's own mailbox import switches to STARTTLS by itself. Also: a crafted push
+  URL could make the server sign a token for another push service; `Email/set` could store a
+  message with IMAP UID 0, hiding it from IMAP clients; idle keep-alive connections were never
+  closed.
+
+### Changed
+
+- **Apex DNS drift now repairs added AND removed servers, on every route name, and shows on the
+  dashboard.**
+  - **What is checked.** The scan covers every route name of a primary-mode domain: the apex,
+    subdomains, wildcards and www. Before, it checked only the apex.
+  - **What the repair does.** It reads the records from the DNS server and adds the address of
+    every server that serves ingress. It removes the addresses of servers that were removed, had
+    their ingress disabled, or were made private. An address that changed is replaced. It never
+    removes the address of a server that is only not ready (a reboot), an address published by a
+    hand-made record, or one it cannot attribute to its servers; these are listed as kept or left
+    alone. If adding the new address at a name fails, the old one stays there.
+  - **What the report shows.** It names the server behind every address, with the reason for each
+    removal.
+  - **New in the dialog.** It explains what is checked and why, and has a **Refresh** button that
+    rescans. Its progress dialog ends with the exact list of records added and removed per
+    domain.
+  - **Same repair everywhere.** **Refresh Route DNS** runs the same repair for one domain.
+  - **Dashboard tile.** A new **Apex DNS drift** tile on the admin dashboard opens the dialog
+    directly.
+  - **Removed servers are remembered.** The platform keeps which address belonged to which server
+    after the server is removed, so its leftover records are still recognised.
+
+- **Roundcube is now the legacy webmail; Bulwark is the recommended one.** Admin → Email →
+  Webmail lists Bulwark first as **Recommended** and Roundcube as **Legacy**: Roundcube stays
+  selectable but receives security updates only, and new webmail features land in Bulwark.
+  Admin texts, notifications, the `platform-ops mail` command and bootstrap output now say "the
+  webmail" instead of naming Roundcube wherever they meant webmail in general. Nothing is removed
+  yet; the steps are tracked as roadmap item R42.
+
+- **Notifications about several things list them — one item each, on every channel.** A
+  notification naming several tenants, mailboxes, failed checks, volumes or pods now shows each
+  as its own list item: a bulleted list in the email, one `•` line per item in the in-app feed
+  and on the phone (ntfy). Before, they were run together into one paragraph ("Acme: … Beta: …
+  SYSTEM: …"). Covers tenant placement and storage failovers, expiring subscriptions, mailboxes
+  over quota, unread-notification escalations, top sending accounts, node memory events (one
+  item per evicted pod), namespace repairs, upgrade gates, mail data drift, failed DNS checks,
+  failed backup components, failing mail-health probes, storage-policy failures and node
+  conditions. Template authors get a `list` variable type that renders this way by itself;
+  your own edited templates keep working (a list still renders where `{{name}}` sits).
+- **Email → Operations: Mail Port Exposure is always shown** under the placement card instead
+  of behind an "Advanced (debugging only)" fold.
+
+### Fixed
+
+- **The dashboard's Backups & DR card shows the real last backup and size for every class.**
+  - **SYSTEM.** It showed a months-old manual export as "the last system backup" and that
+    export's few hundred KB as the size. It now shows the platform database's newest completed
+    base backup. The size covers everything the system target holds: database base backups and
+    WAL, etcd snapshots and DR bundles, measured hourly.
+  - **MAIL.** It showed the mailbox part of tenant bundles and no size. It now shows the mail
+    store's own snapshot repository, with its last snapshot and size.
+  - **TENANT.** The size was the data the last snapshot processed. It is now what the tenant
+    repositories actually store.
+  - **Health.** Each class is judged against its own schedule, the same way the freshness alerts
+    judge it. A class whose scheduled backups are switched off is never shown as healthy, however
+    recent its last backup. A size that misses part of the target is shown as a minimum (≥).
+    The mail status on the Backups pages no longer reads unhealthy because of an old two-minute
+    assumption.
+
+- **Removing a domain's email could delete an unrelated mailbox; the DKIM status showed "Zone file
+  not yet available" for every domain.** The mail server numbers mailbox accounts and domains
+  separately, so the same id names one of each. On a live install every domain id is also some
+  account's id. The platform looked ids up as accounts first and as domains only if no account
+  matched. As a result:
+  - The **DKIM status** read the mailbox account instead of the domain. Every domain showed "Zone
+    file not yet available".
+  - **Disabling email on a domain, deleting an email-enabled domain, deleting a tenant with email**
+    and **Data Drift → Delete orphan domain** deleted the mailbox that shared the domain's id —
+    possibly another tenant's — and left the domain behind.
+
+  Domains are now always read and deleted as domains, and mailboxes only as mailboxes. If the DKIM
+  status cannot be read, it now shows the actual error instead of "not yet available".
+
+- **A suspended tenant no longer fails its backup every night.** Suspension blocks every sign-in
+  on the tenant's mailboxes, including the backup's own login, so the first nightly run after a
+  suspension ended `partial` with a "Tenant backup … did not complete" alert, and every night
+  after would have done the same. Backups now pause while a tenant is suspended:
+  - the nightly run skips it;
+  - **Backup now** is refused with a clear message;
+  - the Tenant Backups page marks it **paused — suspended**, and "Bundle all eligible tenants"
+    leaves it out;
+  - retention keeps its existing backups, however long the suspension lasts.
+
+  Nothing goes unprotected meanwhile: a suspended tenant's data does not change, and the platform
+  mail backup still covers its mailboxes. After reactivation, a tenant keeps its newest backup
+  until a new one completes, even if that backup is past its retention date.
+
+- **With HA on, background jobs in the management API run once instead of once per replica.**
+  Apply HA runs three platform-api replicas, and every scheduled job ran on each of them. Two
+  backup-retention sweeps pruned the same restic repository at once, the second failed on
+  restic's lock, and a tenant was reported **Backup failed** although its backup had
+  succeeded. The same applied to bandwidth metering, subscription expiry, app auto-updates,
+  lifecycle-hook retries, storage auto-archive, notification digests and re-sends, mail
+  self-heal and IMAP sync, domain verification, expired-backup clean-up, CrowdSec auto-ban and
+  image pruning. Each job
+  is now claimed by one replica at a time. When that replica stops, another takes over: right
+  away on a rollout, and within one to two run intervals after a crash. A manual retention sweep
+  started while one is already running returns `409 RETENTION_SWEEP_RUNNING`.
+
+- **A failed clean-up of old backup snapshots is no longer reported as "Backup failed".** A
+  restic `forget`/`prune` failure is now a *Backup retention* warning saying that no backup
+  failed and the next sweep retries, and it links to **Backups**.
+
+- **HA no longer leaves two operators at "1/2 Ready" with a stream of readiness warnings.**
+  Both replicas of the CNPG backup plugin now serve, so either one answers the database
+  operator. Flux's source-controller stays at one replica, because Flux serves its artifacts
+  from a single pod. Before, each had a standby that never became Ready and logged a warning
+  every 10 seconds.
+
+- **Apply HA no longer reports "failed" over components a cluster does not run.** Dex and
+  oauth2-proxy ship only with test and staging installs, so on production every Apply HA
+  listed both as failed (404), marked the whole run failed and stopped tracking convergence —
+  while the cluster converged fine. They now show as **not installed here**. A failed run's
+  convergence panel says it is the state when the apply stopped instead of looking live and
+  stuck. A volume nothing mounts (the retained CrowdSec SQLite store) counts as done once its
+  replica count is set, instead of holding the run "mid-rebuild" for ten minutes.
+
+- **Route changes say what they are doing, and removing one says how it ended.** Removing an
+  ingress route waits on the DNS server; when that server did not answer, the page sat still for
+  most of a minute and a second click only got "not found". The Routing tab (admin and tenant
+  panel) now shows a spinner and a sentence while a route is added, changed or removed, the row
+  being removed says **Removing…**, and afterwards **Removed …** — or that its DNS records are
+  still published (admins also see the server and its error). Those records stay listed under
+  DNS Records so they can be deleted there; before, they vanished from the panel while still
+  resolving. A DNS server that cannot be reached is tried once, not once per record (42 s → about
+  10 s). The admin panel asks before removing a route.
+- **Mail data drift alerts open Email → Data Drift again, and a suspended tenant's aliases are not
+  drift.** The drift alert shares its notification category with mail migrations, so it opened
+  Email → Operations, which shows no drift; it now says it is about drift and opens the Data Drift
+  page — in the panel, the email button and the phone (ntfy) alike. Suspending a tenant turns its
+  mailbox aliases off on the mail server on purpose; the drift check flagged them (abuse@, dmarc@)
+  minutes after a suspend. It now expects an alias on the server only while its mailbox is active,
+  by the same rule the alias push uses. On the phone (ntfy), a sending-limit alert about one
+  tenant now opens that tenant instead of the tenants list.
+- **Data Drift keeps resolved items for 30 days.** The section is now **Resolved History (last 30
+  days)**, and resolved items older than that are deleted. Active items are listed in full: a shared
+  100-row limit with the history could hide older active ones. The page's explanation no longer
+  blames a long-fixed failover bug for every drift item.
+
+- **Move back no longer pulls the disk out from under a running tenant.** Re-pinning a running
+  tenant rolled its pods onto the target node while the old ones still held the volume, and
+  Longhorn detached it under the tenant's remaining pods (seen on production: the device went
+  offline mid-write and the filesystem shut down; about a minute of downtime). A running tenant
+  is now stopped, its volume left to detach cleanly, re-pinned and started on the target — a
+  storage operation with live progress — and the data copies across in the background. The move
+  waits while a backup or restore Job is using the volume.
+
+- **A deleted tenant can be found — and recovered — by name.** Its off-site bundles are kept
+  for the deleted-tenant window so it can come back, but nothing listed it: it has no tenant
+  row, and the recover picker read the newest 50 bundles across all tenants, so a deleted
+  tenant dropped out within a night or two (and showed as an unnamed "deleted tenant" when
+  it did appear). Now **Backups → Tenants** has a **Deleted tenants — still recoverable** card
+  (name, deleted date, bundles, recoverable until, **Recover…**), **Disaster Recovery →
+  Recover Tenant** has a searchable tenant picker, shows the tenant's plan, tier, node,
+  namespace and resources (from its bundle once deleted), lists every bundle with when it was
+  taken, by what, its contents and size (choose one with a click — no ids), and a searchable
+  target-node picker; the "Tenant
+  was deleted" banner says until when it can be recovered (or that it cannot), and a recover
+  of a deleted tenant uses its newest completed bundle when none is chosen. The tenant's name
+  is recorded on its delete so it is shown later; tenants deleted before this show the slug
+  of their namespace.
+- **Recover All no longer brings back tenants deleted on purpose.** It took every tenant
+  with a bundle — and a deleted tenant's bundles are now kept, so a fleet recover would have
+  re-created every tenant deleted within the retention window. They are skipped (reason
+  `deleted`) unless named explicitly; recover one with Recover Tenant.
+
+- **Deleting a tenant returns to the tenants list.** The page used to turn into "Tenant not
+  found" the moment the delete finished. The list now says the tenant was deleted and links
+  its per-step record (Platform → Lifecycle hooks). A delete that fails stays on the tenant and
+  shows why — it used to fail silently with the progress dialog stuck on "Dispatching…".
+- **"Move back" moves a stopped tenant's data.** For a tenant with nothing running it only
+  re-pinned the tenant and restarted zero workloads, so its data never moved and the tenant
+  stayed "Not on its primary node" however often it was pressed. The platform now attaches the
+  volume on the primary node itself until Longhorn has copied the data there, and the result
+  says so ("Moving the data there now") instead of "restarted 0 deployment(s)".
+- **Placement notifications say when the platform first saw a tenant away from its primary
+  node** ("seen since …") — not "since", which read as when the data moved.
+- **The host-ports PodSecurity notification is no longer empty** — it named the object "event"
+  with no detail; it now lists the namespaces that were not updated.
+- **A failed scheduled-bundle wave names every failed tenant**, not just "N/M failed (first
+  error: …)".
+- **Mail data-drift alerts arrive once**, not once per admin.
+- **Recover Tenant says a namespace is "being deleted"** right after a tenant delete, while
+  Kubernetes is still removing it, instead of saying it "exists".
+- **The namespace-repair notification names what it repaired in words** ("the resource quota"),
+  not internal codes ("resource_quota_missing").
+
 ## [2026.10.3] - 2026-10-03
 
 ### BREAKING

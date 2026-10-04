@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { IngressRouteResponse, UpdateIngressRouteInput } from '@insula/api-contracts';
+import type { DeleteIngressRouteResult, IngressRouteResponse, UpdateIngressRouteInput } from '@insula/api-contracts';
 
 interface RouteListResponse {
   readonly data: readonly IngressRouteResponse[];
@@ -60,8 +60,10 @@ export function useDeleteIngressRoute(tenantId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
+    // `data.dnsWarning` says when the route is gone but some of its DNS
+    // records are still published. Undefined from a server that answers 204.
     mutationFn: (routeId: string) =>
-      apiFetch<void>(
+      apiFetch<{ data: DeleteIngressRouteResult } | undefined>(
         `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'DELETE' },
       ),

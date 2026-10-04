@@ -71,9 +71,9 @@ spec:
           # Pinned by sha256 digest so a same-tag re-push can't silently
           # change the running image. Bump this when an upstream release
           # fixes a CVE or ships a feature we want. Get the digest:
-          #   docker pull roundcube/roundcubemail:1.7.2-fpm-alpine
-          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.7.2-fpm-alpine
-          image: roundcube/roundcubemail@sha256:65a14c31e1a4897855aeec89b6af231f6de87d88b95d6cc6f83002766f650938
+          #   docker pull roundcube/roundcubemail:1.7.4-fpm-alpine
+          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.7.4-fpm-alpine
+          image: roundcube/roundcubemail@sha256:cced4c7d40c21ec138b3622be13cadd2bbe7467eacd17029340b8650d7237ecf
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

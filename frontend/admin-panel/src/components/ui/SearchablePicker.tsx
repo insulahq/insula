@@ -1,11 +1,10 @@
 /**
- * A searchable picker for a traffic scope or subject.
+ * A searchable picker: type to filter, each entry with right-aligned
+ * secondary text (a metric, a status, a count).
  *
- * Generic rather than tenant-specific (`ui/SearchableTenantSelect` already
- * covers that case) because the same control lists nodes, tenants, pods and
- * routes. Entries carry the metric they are being ranked by, so the list is a
- * ranking — you can see which tenant is the busiest before choosing one,
- * rather than picking blind from an alphabetical list.
+ * Born for the Traffic tab (nodes, tenants, pods, routes ranked by the metric
+ * on screen); also the Recover Tenant tenant and target-node pickers. Search
+ * matches the label and the secondary text.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -19,7 +18,7 @@ export interface PickerOption {
   readonly meta?: string;
 }
 
-export interface TrafficPickerProps {
+export interface SearchablePickerProps {
   readonly id: string;
   readonly label: string;
   readonly value: string | null;
@@ -32,9 +31,9 @@ export interface TrafficPickerProps {
   readonly disabled?: boolean;
 }
 
-export default function TrafficPicker({
+export default function SearchablePicker({
   id, label, value, options, onChange, placeholder = 'Search…', allLabel, loading, disabled,
-}: TrafficPickerProps) {
+}: SearchablePickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const boxRef = useRef<HTMLDivElement>(null);
@@ -57,7 +56,7 @@ export default function TrafficPicker({
     // Filter on the TYPED query only. Filtering on the displayed value means
     // that once something is selected the list collapses to one entry and the
     // control looks broken.
-    return q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+    return q ? options.filter((o) => o.label.toLowerCase().includes(q) || (o.meta ?? '').toLowerCase().includes(q)) : options;
   }, [options, query]);
 
   const display = selected?.label ?? (allLabel ?? placeholder);

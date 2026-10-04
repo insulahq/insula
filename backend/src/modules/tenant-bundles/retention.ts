@@ -22,12 +22,14 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and, lt, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
+import { heldPastExpiry } from './bundle-hold.js';
 import { backupJobs, backupConfigurations, backupSchedules } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
@@ -112,6 +114,10 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
        WHERE b.id = r.id
          AND r.rn > ${keepLast}
          AND (b.expires_at IS NULL OR b.expires_at > ${now})
+         -- Backups pause while a tenant is suspended (suspension.ts).
+         AND NOT EXISTS (
+           SELECT 1 FROM tenants t WHERE t.id = b.tenant_id AND t.status = 'suspended'
+         )
          -- Never pull a bundle out from under a restore that is still open.
          -- The cart holds the bundle id; deleting it mid-flight would fail the
          -- restore with a missing-artifact error the operator cannot act on.
@@ -139,6 +145,10 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
   // Cap at 50 per tick — a backlog catches up over multiple ticks
   // without overwhelming the target. Shares `now` with pass 0 so a bundle
   // marked there is picked up in this same tick.
+  //
+  // A bundle HELD past expires_at (suspended tenant; a live tenant's newest
+  // restore point) is skipped — bundle-hold.ts is the one definition, shared
+  // with the restic reconciler so the two never disagree about what is kept.
   const expiredCandidates = await app.db
     .select({ id: backupJobs.id, targetConfigId: backupJobs.targetConfigId })
     .from(backupJobs)
@@ -146,6 +156,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
       and(
         lt(backupJobs.expiresAt, now),
         sql`${backupJobs.status} IN ('completed','partial','failed')`,
+        sql`NOT ${heldPastExpiry('backup_jobs')}`,
       ),
     )
     .limit(50);
@@ -289,7 +300,12 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
 export function startRetentionScheduler(app: FastifyInstance, intervalMs = 5 * 60 * 1000): NodeJS.Timeout {
   const tick = async () => {
     try {
-      const r = await runRetentionSweep(app);
+      // One replica sweeps: the expiry pass reads its candidates, deletes them
+      // on the remote, then marks them — two replicas deleted the same bundle
+      // and the loser logged a remote-delete failure for an object already gone.
+      const leased = await withSchedulerLease(app.db, 'bundle-retention', intervalMs * 1.5, () => runRetentionSweep(app), { log: app.log });
+      if (!leased.ran) return;
+      const r = leased.value;
       if (r.expiredDeleted > 0 || r.stuckMarkedFailed > 0 || r.expiredFailed > 0 || r.inFlightReaped > 0) {
         app.log.info({ ...r }, 'tenant-backup retention: sweep complete');
       }

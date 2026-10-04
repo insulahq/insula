@@ -16,6 +16,7 @@
  * Last-writer-wins on system_settings.last_known_platform_ips is acceptable.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, isNotNull, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
 import { getPlatformResolver } from '../dns-resolver/service.js';
 import type { FastifyBaseLogger } from 'fastify';
@@ -315,6 +316,15 @@ export interface VerificationCronHandle {
   stop: () => void;
 }
 
+/**
+ * One replica verifies: domain status is read then written, and a regression
+ * notice has no dedupe key, so every replica would flip the same domain and
+ * tell the tenant about it.
+ */
+function leasedTick(db: Database, log: FastifyBaseLogger): Promise<unknown> {
+  return withSchedulerLease(db, 'domain-verification', CRON_INTERVAL_MS * 1.5, () => tick(db, log));
+}
+
 export async function startVerificationCron(
   db: Database,
   log: FastifyBaseLogger,
@@ -346,7 +356,7 @@ export async function startVerificationCron(
         log.info('[verify-cron] firing initial tick — uncached unverified domains found');
         if (!ticking) {
           ticking = true;
-          tick(db, log)
+          leasedTick(db, log)
             .catch((err) => log.warn({ err }, '[verify-cron] initial tick failed'))
             .finally(() => { ticking = false; });
         }
@@ -363,7 +373,7 @@ export async function startVerificationCron(
       return;
     }
     ticking = true;
-    tick(db, log)
+    leasedTick(db, log)
       .catch((err) => log.warn({ err }, '[verify-cron] tick failed'))
       .finally(() => { ticking = false; });
   }, CRON_INTERVAL_MS);

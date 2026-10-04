@@ -64,8 +64,8 @@ describe('login-passwords/service: listLoginPasswords', () => {
     const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
     expect(jmap.appPasswordGet).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'b' }));
     expect(out).toEqual([
-      { id: 'a1', label: 'iPhone', createdAt: '2026-05-01T00:00:00Z', expiresAt: null, allowedIps: [] },
-      { id: 'a2', label: 'SMTP', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2026-09-01T00:00:00Z', allowedIps: ['203.0.113.4/32'] },
+      { id: 'a1', label: 'iPhone', kind: 'login', createdAt: '2026-05-01T00:00:00Z', expiresAt: null, allowedIps: [] },
+      { id: 'a2', label: 'SMTP', kind: 'login', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2026-09-01T00:00:00Z', allowedIps: ['203.0.113.4/32'] },
     ]);
     expect(JSON.stringify(out)).not.toContain('secret');
   });
@@ -73,7 +73,40 @@ describe('login-passwords/service: listLoginPasswords', () => {
   it('tolerates a missing description (empty label)', async () => {
     jmap.appPasswordGet.mockResolvedValue([{ id: 'a1' }]);
     const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
-    expect(out[0]).toEqual({ id: 'a1', label: '', createdAt: null, expiresAt: null, allowedIps: [] });
+    expect(out[0]).toEqual({ id: 'a1', label: '', kind: 'login', createdAt: null, expiresAt: null, allowedIps: [] });
+  });
+
+  // Bulwark >= 1.11.1 signs a panel "Open webmail" in with an app password it
+  // creates on the mailbox, named after the token's jti. Shown raw, a tenant
+  // reads "Support session 3f2a…" as someone from support having opened it.
+  it('labels a webmail session created by "Open webmail"', async () => {
+    jmap.appPasswordGet.mockResolvedValue([
+      { id: 'w1', description: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: {} },
+    ]);
+    const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
+    expect(out[0]).toEqual({
+      id: 'w1', label: 'Webmail session', kind: 'webmail_session',
+      createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [],
+    });
+  });
+
+  it('refuses to create a login password named like a webmail session', async () => {
+    const { createLoginPasswordSchema } = await import('@insula/api-contracts');
+    const r = createLoginPasswordSchema.safeParse({ label: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c' });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.path).toEqual(['label']);
+    expect(r.error?.issues[0]?.message).toMatch(/reserved for webmail sessions/);
+    expect(createLoginPasswordSchema.safeParse({ label: 'Support session laptop' }).success).toBe(true);
+  });
+
+  it.each([
+    ['a tenant label that only starts the same way', 'Support session laptop'],
+    ['a jti-shaped suffix with more text after it', 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c (old)'],
+    ['different wording', 'support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c'],
+  ])('keeps %s as an ordinary login password', async (_why, description) => {
+    jmap.appPasswordGet.mockResolvedValue([{ id: 'x', description }]);
+    const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
+    expect(out[0]).toMatchObject({ label: description, kind: 'login' });
   });
 });
 

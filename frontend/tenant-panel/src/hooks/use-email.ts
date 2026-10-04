@@ -267,21 +267,8 @@ export function useDeleteMailbox(tenantId: string) {
 // server-generated and shown ONCE in the create response; the list never
 // carries it.
 
-export interface LoginPassword {
-  readonly id: string;
-  readonly label: string;
-  readonly createdAt: string | null;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
-
-export interface CreateLoginPasswordResult {
-  readonly id: string;
-  readonly label: string;
-  readonly secret: string;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
+export type { LoginPassword, CreateLoginPasswordResult } from '@insula/api-contracts';
+import type { LoginPassword, CreateLoginPasswordResult } from '@insula/api-contracts';
 
 /** Wire shape from @insula/api-contracts. */
 type CreateLoginPasswordInput = CreateLoginPasswordRequest;
@@ -426,9 +413,8 @@ export function useDeleteMailboxAlias(tenantId: string) {
 export interface WebmailTokenInput {
   mailboxId: string;
   /**
-   * Optional engine override. When unset the backend uses its current
-   * default (roundcube today; Phase 10 ADR-039 introduces a
-   * platform-config flag to flip the default to bulwark).
+   * Optional engine override. When unset the backend uses the platform's
+   * default engine (Bulwark unless an operator chose Roundcube).
    */
   engine?: 'roundcube' | 'bulwark';
 }

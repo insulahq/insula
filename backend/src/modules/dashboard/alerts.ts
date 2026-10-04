@@ -281,7 +281,41 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
     }));
   }
 
+  const dnsDrift = await buildDnsDriftAlert(db);
+  if (dnsDrift) out.push(dnsDrift);
+
   return rankAlerts(out);
+}
+
+/**
+ * Route ("apex") DNS drift — from the stored scan, so the dashboard never
+ * reads a DNS provider. Opens the drift modal directly (action), with the DNS
+ * page as the fallback.
+ */
+export async function buildDnsDriftAlert(db: Database): Promise<DashboardAlert | null> {
+  const { getLastReport } = await import('../dns-apex-drift/service.js');
+  const report = await getLastReport(db).catch(() => null);
+  if (!report || report.scanError) return null;
+  if (report.driftCount === 0 && report.errorCount === 0) return null;
+  const n = report.driftCount;
+  return alert({
+    categoryId: 'admin.platform_event',
+    severity: 'warning',
+    value: String(n > 0 ? n : report.errorCount),
+    title: n > 0 ? 'Apex DNS drift' : 'DNS zones unreadable',
+    subtitle: n > 0
+      ? `${report.missingCount} to add · ${report.staleCount} to remove`
+      : `${report.errorCount} zone${report.errorCount === 1 ? '' : 's'} could not be checked`,
+    action: 'dns-drift',
+    href: '/platform/dns',
+    detail: [
+      ['Domains drifting', String(n)],
+      ['Records missing', String(report.missingCount)],
+      ['Records stale', String(report.staleCount)],
+      ...(report.errorCount > 0 ? [['Zones unreadable', String(report.errorCount)] as [string, string]] : []),
+    ],
+    note: 'Route DNS no longer matches the ingress servers: an added server gets no traffic, and visitors are still sent to removed or disabled ones.',
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────

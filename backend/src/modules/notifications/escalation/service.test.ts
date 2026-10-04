@@ -79,8 +79,9 @@ describe('findEscalationCandidates', () => {
 describe('describeCandidates', () => {
   it('names each notification and how long it has been sitting', () => {
     const s = describeCandidates([row('mailbox.quota_threshold') as never]);
-    expect(s).toContain('mailbox.quota_threshold title');
-    expect(s).toMatch(/unread since \d{4}-\d{2}-\d{2}/);
+    expect(s).toHaveLength(1);
+    expect(s[0]).toContain('mailbox.quota_threshold title');
+    expect(s[0]).toMatch(/unread since \d{4}-\d{2}-\d{2}/);
   });
 
   it('collapses repeated titles into one counted line', () => {
@@ -93,10 +94,7 @@ describe('describeCandidates', () => {
       createdAt: new Date(Date.UTC(2026, 7, 9 + i)),
     }));
     const s = describeCandidates(dup as never);
-    expect(s).toContain('Ingress p95 latency x6');
-    // the OLDEST occurrence is the one quoted, not whichever came back first
-    expect(s).toContain('oldest unread since 2026-08-09');
-    expect(s.match(/Ingress p95 latency/g)).toHaveLength(1);
+    expect(s).toEqual(['Ingress p95 latency x6 (oldest unread since 2026-08-09)']);
   });
 
   it('orders the most-repeated first', () => {
@@ -105,14 +103,17 @@ describe('describeCandidates', () => {
       { ...row('mailbox.quota_threshold'), id: 'b', title: 'Twice' },
       { ...row('mailbox.quota_threshold'), id: 'c', title: 'Twice' },
     ];
-    expect(describeCandidates(mixed as never).indexOf('Twice'))
-      .toBeLessThan(describeCandidates(mixed as never).indexOf('Once'));
+    const s = describeCandidates(mixed as never);
+    expect(s[0]).toMatch(/^Twice x2/);
+    expect(s[1]).toMatch(/^Once/);
   });
 
-  it('caps the summary so one bad day cannot produce an unbounded body', () => {
+  it('caps the list by count, so one bad day cannot produce an unbounded body', () => {
     const many = Array.from({ length: 500 }, (_, i) => ({
       ...row('mailbox.quota_threshold'), id: `n${i}`, title: `Notification number ${i}`,
     }));
-    expect(describeCandidates(many as never).length).toBeLessThanOrEqual(2000);
+    const s = describeCandidates(many as never);
+    expect(s).toHaveLength(26);
+    expect(s[25]).toBe('…and 475 more.');
   });
 });

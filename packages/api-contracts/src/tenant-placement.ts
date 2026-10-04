@@ -62,3 +62,39 @@ export type TenantPlacementDetail = z.infer<typeof tenantPlacementDetailSchema>;
 
 export const tenantPlacementDetailResponseSchema = z.object({ data: tenantPlacementDetailSchema });
 export type TenantPlacementDetailResponse = z.infer<typeof tenantPlacementDetailResponseSchema>;
+
+/**
+ * Why a volume's data was not moved by a migrate-to-worker:
+ * - `already-local`: a copy already sits on the target node;
+ * - `in-use`: the volume is attached — the restarted workload re-attaches it
+ *   on the target and Longhorn's data locality moves the copy itself;
+ * - `ha-tier`: replicated across nodes by design, nothing to move.
+ */
+export const dataRelocationSkipReasonEnum = z.enum(['already-local', 'in-use', 'ha-tier']);
+export type DataRelocationSkipReason = z.infer<typeof dataRelocationSkipReasonEnum>;
+
+/** POST /admin/tenants/:id/migrate-to-worker → data */
+export const migrateToWorkerResultSchema = z.object({
+  tenantId: z.string(),
+  previousWorker: z.string().nullable(),
+  currentWorker: z.string(),
+  deploymentsRestarted: z.number().int().nonnegative(),
+  /**
+   * Detached volumes the platform attached on the target node so their data
+   * moves there; the placement reconciler releases them once it has.
+   */
+  dataRelocation: z.object({
+    started: z.array(z.string()),
+    skipped: z.array(z.object({ volumeName: z.string(), reason: dataRelocationSkipReasonEnum })),
+    /** Set when the volumes could not be read or attached; the re-pin itself still happened. */
+    error: z.string().nullable(),
+  }),
+  /**
+   * Set when the tenant was running on another node: a background storage
+   * operation stops it, waits for its volume to detach, re-pins it and starts it
+   * on the target (GET /admin/storage/operations/:id). `dataRelocation` is then
+   * empty — the operation starts the copy once the volume has detached.
+   */
+  moveOperationId: z.string().nullable(),
+});
+export type MigrateToWorkerResult = z.infer<typeof migrateToWorkerResultSchema>;

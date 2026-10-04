@@ -79,10 +79,12 @@ async function dispatchTransition(
   transition: Transition,
   fromStatus: string | null,
   toStatus: string,
+  detail?: Record<string, unknown>,
 ): Promise<string | null> {
   try {
     const result = await runTransition(ctx.db, ctx.k8s, {
       tenantId, namespace, transition, fromStatus, toStatus,
+      ...(detail ? { detail } : {}),
       triggeredByUserId: ctx.triggeredByUserId ?? null,
       parentTaskId: ctx.parentTaskId ?? null,
       suppressTenantNotification: ctx.suppressTenantNotification === true,
@@ -176,11 +178,29 @@ export async function applyDeleted(
   namespace: string,
 ): Promise<string | null> {
   // Step 1: dispatch hooks while domains/backup_jobs rows still exist.
-  const transitionId = await dispatchTransition(ctx, tenantId, namespace, 'deleted', null, 'deleted');
+  //
+  // The transition row outlives the tenant (no FK), and so do its off-site
+  // bundles (retained for the deleted-tenant window). It is the only place
+  // left that can say WHO a deleted tenant was — the recover screens list
+  // deleted tenants by this name. Read before anything is dropped.
+  // A convenience: a failed read must never block the delete.
+  let goneName: string | null = null;
+  try {
+    const [gone] = await ctx.db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    goneName = gone?.name ?? null;
+  } catch { /* named by its namespace slug later */ }
+  const transitionId = await dispatchTransition(
+    ctx, tenantId, namespace, 'deleted', null, 'deleted',
+    goneName ? { tenantName: goneName } : undefined,
+  );
 
   // Step 2: drop the k8s namespace. `tenants.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
   // indicate a seed bug upstream and should surface as an error.
+  // A pending data relocation holds the tenant's volume attached; release it
+  // first, or the PVC (and so the namespace) waits on it in Terminating.
+  const { releaseRelocationsInNamespace } = await import('../tenant-placement/relocate.js');
+  await releaseRelocationsInNamespace(ctx.k8s, namespace);
   try {
     await ctx.k8s.core.deleteNamespace({ name: namespace });
   } catch (err) {

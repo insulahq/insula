@@ -230,7 +230,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'tenantCount', type: 'string', required: false },
       { name: 'horizonDays', type: 'string', required: false },
-      { name: 'tenantList', type: 'string', required: false },
+      { name: 'tenantList', type: 'list', required: false },
       { name: 'occurredAt', type: 'string', required: false },
     ],
   },
@@ -245,7 +245,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'tenantCount', type: 'string', required: false },
       { name: 'horizonDays', type: 'string', required: false },
-      { name: 'tenantList', type: 'string', required: false },
+      { name: 'tenantList', type: 'list', required: false },
       { name: 'occurredAt', type: 'string', required: false },
     ],
   },
@@ -257,7 +257,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}}',
-      '{{objectLabel}} on {{tenantName}} — {{severityLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}} on {{tenantName}} — {{severityLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -267,6 +267,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -274,7 +275,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -283,6 +284,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
 
@@ -466,7 +468,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'count', type: 'string', required: false },
       { name: 'ageHours', type: 'string', required: false },
-      { name: 'summary', type: 'string', required: false },
+      { name: 'summary', type: 'list', required: false },
     ],
   },
   {
@@ -480,7 +482,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'count', type: 'string', required: false },
       { name: 'ageHours', type: 'string', required: false },
-      { name: 'summary', type: 'string', required: false },
+      { name: 'summary', type: 'list', required: false },
     ],
   },
 
@@ -547,7 +549,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -557,6 +559,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -564,7 +567,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -573,6 +576,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -582,7 +586,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -592,6 +596,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -599,7 +604,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -608,6 +613,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -617,7 +623,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -627,6 +633,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -634,7 +641,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -643,6 +650,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -652,7 +660,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -662,6 +670,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -669,7 +678,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -678,6 +687,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -687,7 +697,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -697,6 +707,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -704,7 +715,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -713,6 +724,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -722,7 +734,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -732,6 +744,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -739,7 +752,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -748,6 +761,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -757,7 +771,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -767,6 +781,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -774,7 +789,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -783,6 +798,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -792,7 +808,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
     bodyTemplate: emailMjml(
       '{{subsystem}} — {{severityLabel}}',
-      '{{objectLabel}}: {{detail}} As of {{occurredAt}}. {{recommendedAction}}',
+      '{{objectLabel}}: {{detail}} {{items}} As of {{occurredAt}}. {{recommendedAction}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -802,6 +818,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -809,7 +826,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{subsystem}}: {{objectLabel}}',
-    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}. {{recommendedAction}}',
+    bodyTemplate: '{{detail}} ({{objectLabel}}, {{severityLabel}}) as of {{occurredAt}}.{{items}}\n{{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -818,6 +835,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'detail', type: 'string', required: false },
       { name: 'severityLabel', type: 'string', required: false },
       { name: 'recommendedAction', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
 
@@ -1055,7 +1073,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
   {
@@ -1063,7 +1081,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
-    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
+    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1073,7 +1091,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: false },
       { name: 'percent', type: 'string', required: false },
       { name: 'occurredAt', type: 'string', required: false },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
 
@@ -1172,7 +1190,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'mailboxCount', type: 'string', required: false },
       { name: 'tenantCount', type: 'string', required: false },
-      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'mailboxList', type: 'list', required: false },
       { name: 'occurredAt', type: 'string', required: false },
     ],
   },
@@ -1187,7 +1205,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'mailboxCount', type: 'string', required: false },
       { name: 'tenantCount', type: 'string', required: false },
-      { name: 'mailboxList', type: 'string', required: false },
+      { name: 'mailboxList', type: 'list', required: false },
       { name: 'occurredAt', type: 'string', required: false },
     ],
   },
@@ -1425,7 +1443,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
   {
@@ -1433,7 +1451,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending at {{percent}}% of the {{window}} limit',
-    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1441,7 +1459,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
   {
@@ -1464,7 +1482,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
   {
@@ -1472,7 +1490,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are deferred. Sending accounts: {{topSenders}}.',
+    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are deferred. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1480,7 +1498,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
       { name: 'percent', type: 'string', required: false },
-      { name: 'topSenders', type: 'string', required: false },
+      { name: 'topSenders', type: 'list', required: false },
     ],
   },
 
@@ -1689,13 +1707,14 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Backup failed: {{backupName}}',
     bodyTemplate: emailMjml(
       'Backup failed',
-      'Backup "{{backupName}}" failed: {{errorMessage}}',
+      'Backup "{{backupName}}" failed: {{errorMessage}} {{items}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'backupName', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
     ],
   },
   {
@@ -1703,10 +1722,11 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Backup failed: {{backupName}}',
-    bodyTemplate: 'Backup "{{backupName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
+    bodyTemplate: 'Backup "{{backupName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}{{items}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
       ...COMMON_VARS,
       { name: 'backupName', type: 'string', required: true },
     ],
@@ -1862,7 +1882,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         ...COMMON_VARS,
         { name: 'nodeName', type: 'string', required: true },
         { name: 'headline', type: 'string', required: true },
-        { name: 'summary', type: 'string', required: true },
+        { name: 'summary', type: 'list', required: true },
+        { name: 'advice', type: 'string', required: true },
       ];
       return [
         {
@@ -1870,7 +1891,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
           channel: 'email',
           locale: 'en',
           subjectTemplate: '{{headline}} on {{nodeName}}',
-          bodyTemplate: emailMjml('{{headline}}', 'Node {{nodeName}}: {{summary}}'),
+          bodyTemplate: emailMjml('{{headline}}', 'Node {{nodeName}}: {{summary}} {{advice}}'),
           bodyFormat: 'mjml',
           variablesSchema: vars,
         },
@@ -1879,7 +1900,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
           channel: 'in_app',
           locale: 'en',
           subjectTemplate: '{{headline}}',
-          bodyTemplate: 'Node {{nodeName}}: {{summary}}',
+          bodyTemplate: 'Node {{nodeName}}: {{summary}}\n{{advice}}',
           bodyFormat: 'plaintext',
           variablesSchema: vars,
         },
@@ -2310,7 +2331,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '[MAIL] Health check failing: {{component}}',
     bodyTemplate: emailMjml(
       'Mail health degraded: {{component}}',
-      'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} '
+      'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} {{items}} '
       + 'Mail delivery is likely affected. Open Monitoring → Mail for the full component '
       + 'breakdown and per-probe remediation.',
       'Open mail monitoring',
@@ -2325,6 +2346,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       // do conditionals, so an absent detail must render as nothing at all
       // rather than as a stray separator.
       { name: 'detail', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
       { name: 'panelUrl', type: 'string', required: false },
     ],
   },
@@ -2333,7 +2355,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '[MAIL] {{component}} check failing',
-    bodyTemplate: 'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} '
+    bodyTemplate: 'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}}{{items}}\n'
       + 'Mail delivery is likely affected — see Monitoring → Mail.',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -2341,6 +2363,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'component', type: 'string', required: true },
       { name: 'mailHostname', type: 'string', required: true },
       { name: 'detail', type: 'string', required: false },
+      { name: 'items', type: 'list', required: false },
       { name: 'panelUrl', type: 'string', required: false },
     ],
   },
@@ -2591,7 +2614,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     const placementVars: readonly NotificationTemplateVariable[] = [
       ...COMMON_VARS,
       { name: 'summary', type: 'string', required: true },
-      { name: 'details', type: 'string', required: true },
+      { name: 'details', type: 'list', required: true },
       { name: 'guidance', type: 'string', required: true },
     ];
     return [
@@ -2614,7 +2637,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         channel: 'in_app',
         locale: 'en',
         subjectTemplate: '[STORAGE] Storage failover: {{summary}}',
-        bodyTemplate: '{{details}} {{guidance}}',
+        bodyTemplate: '{{details}}\n{{guidance}}',
         bodyFormat: 'plaintext',
         variablesSchema: placementVars,
       },
@@ -2635,7 +2658,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         channel: 'in_app',
         locale: 'en',
         subjectTemplate: '[PLACEMENT] Not on its primary node: {{summary}}',
-        bodyTemplate: '{{details}} {{guidance}}',
+        bodyTemplate: '{{details}}\n{{guidance}}',
         bodyFormat: 'plaintext',
         variablesSchema: placementVars,
       },

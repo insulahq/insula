@@ -99,3 +99,27 @@ export function selectIngressNodeAddresses(
     nodeNames: nodeNames.sort(),
   };
 }
+
+/** Every ExternalIP a node advertises, eligible or not — for address history. */
+export function nodeExternalAddresses(node: NodeLike): { ipv4: string[]; ipv6: string[] } {
+  const ipv4: string[] = [];
+  const ipv6: string[] = [];
+  for (const a of node.status?.addresses ?? []) {
+    if (a.type !== 'ExternalIP' || typeof a.address !== 'string') continue;
+    const addr = a.address.trim();
+    if (!addr) continue;
+    if (isIpv4(addr)) ipv4.push(addr);
+    else if (addr.includes(':')) ipv6.push(addr.toLowerCase());
+  }
+  return { ipv4, ipv6 };
+}
+
+/** Why a node does or does not publish ingress, before any operator override. */
+export function nodeIngressState(node: NodeLike): 'ingress' | 'ingress-disabled' | 'private' | 'not-ready' | 'no-public-ip' {
+  const labels = node.metadata?.labels ?? {};
+  if (labels[INGRESS_MODE_LABEL] === 'none') return 'ingress-disabled';
+  if (labels[EXPOSURE_LABEL] === 'private') return 'private';
+  if (!isReady(node)) return 'not-ready';
+  const { ipv4, ipv6 } = nodeExternalAddresses(node);
+  return ipv4.length + ipv6.length === 0 ? 'no-public-ip' : 'ingress';
+}

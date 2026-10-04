@@ -66,6 +66,9 @@ ALLOW_LIST=(
   # backup_schedules.subsystem = 'tenant_bundle' to get keep-last-N.
   # A subsystem name, not a routing key.
   "backend/src/modules/tenant-bundles/retention.ts"
+  # Dashboard Backups & DR card: reads backup_schedules.subsystem =
+  # 'tenant_bundle' for the tenant class's cadence. A subsystem name.
+  "backend/src/modules/dashboard/backup-classes.ts"
   "packages/api-contracts/src/backup-schedules.ts"
   # Frontend: `tenant_bundle` is a valid subsystem prop on the
   # schedule UI components. They never write it back to

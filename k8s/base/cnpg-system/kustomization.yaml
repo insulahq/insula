@@ -48,6 +48,28 @@ patches:
     patch: |-
       - op: remove
         path: /spec/replicas
+  # Both replicas SERVE (no leader election). Upstream registers the CNPG-I
+  # gRPC server as a leader-only runnable, so with --leader-elect the second
+  # replica was a standby that never opened :9090: permanently 0/1 Ready and a
+  # readiness-probe Warning every 10 s, while adding nothing until a ~15 s
+  # lease takeover. Everything the plugin runs is safe on two replicas at
+  # once — the gRPC hooks answer the CNPG operator's requests, and the one
+  # controller (ObjectStore → Role rules) converges to the same desired state —
+  # so both serve, both are Ready, and losing one node loses nothing: the
+  # Service routes to the survivor. `test` fails the build if an upstream bump
+  # moves the flag, instead of silently patching some other argument.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: barman-cloud
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/5
+        value: --leader-elect
+      - op: replace
+        path: /spec/template/spec/containers/0/args/5
+        value: --leader-elect=false
 
 # SECURITY NOTE (review HIGH #2, R-X6):
 #

@@ -13,10 +13,21 @@ import { z } from 'zod';
  * live from Stalwart over JMAP.
  */
 
+/**
+ * The description Bulwark gives the app password behind an "Open webmail"
+ * session: `Support session <jti>`, the jti being the UUID platform-api put in
+ * the webmail token. Lists show a match as a self-expiring webmail session —
+ * so no one may give a real, standing credential this name, or it would pass
+ * a review of the mailbox's login passwords as "ends by itself".
+ */
+export const WEBMAIL_SESSION_LABEL_PATTERN =
+  /^Support session [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 // A label is required: it's the only way an operator can tell which
 // credential to revoke later (the secret is never shown again).
 export const createLoginPasswordSchema = z.object({
-  label: z.string().trim().min(1, 'Label is required').max(64),
+  label: z.string().trim().min(1, 'Label is required').max(64)
+    .refine((v) => !WEBMAIL_SESSION_LABEL_PATTERN.test(v), 'This label is reserved for webmail sessions — choose another'),
   /** ISO-8601 date/datetime; omitted/null = never expires. */
   expiresAt: z.string().datetime().nullish(),
   /**
@@ -44,10 +55,22 @@ export type CreateLoginPasswordInput = z.infer<typeof createLoginPasswordSchema>
 export type CreateLoginPasswordRequest = z.input<typeof createLoginPasswordSchema>;
 
 
+/**
+ * What a login password is for:
+ *   login            — one the tenant or an admin created for a device/app;
+ *   webmail_session  — created by the webmail (Bulwark) when someone opens
+ *                      this mailbox through the panel's "Open webmail". It
+ *                      expires on its own (8 h) and is deleted on sign-out;
+ *                      revoking it signs that webmail session out.
+ */
+export const LOGIN_PASSWORD_KINDS = ['login', 'webmail_session'] as const;
+export type LoginPasswordKind = (typeof LOGIN_PASSWORD_KINDS)[number];
+
 /** Metadata for one login password — the secret is NEVER in this shape. */
 export const loginPasswordSchema = z.object({
   id: z.string(),
   label: z.string(),
+  kind: z.enum(LOGIN_PASSWORD_KINDS),
   createdAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
   /** IP/CIDR allow-list; empty array = unrestricted. */

@@ -147,7 +147,7 @@ export default function StalwartAdminPanel() {
           type="button"
           onClick={() => setConfirmWebmailRotate(true)}
           data-testid="stalwart-rotate-webmail-master"
-          title="Rotate the master IMAP credential Roundcube uses for SSO"
+          title="Rotate the master credential the webmail uses to sign users in"
           className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/30 dark:border-amber-700 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 shadow-sm hover:bg-amber-100 dark:hover:bg-amber-900/50"
         >
           <Mail size={14} /> Rotate webmail master password
@@ -459,8 +459,8 @@ function RotateWebmailMasterConfirmModal({
               Rotate webmail master password?
             </h3>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-              The <strong>master IMAP credential</strong> Roundcube uses to log into
-              tenant mailboxes on the operator&apos;s behalf is rotated in three
+              The <strong>master credential</strong> the webmail uses to open
+              tenant mailboxes for &ldquo;Open Webmail&rdquo; is rotated in three
               steps:
             </p>
             <ul className="mt-2 ml-5 list-disc text-sm text-gray-600 dark:text-gray-400 space-y-1">
@@ -473,8 +473,9 @@ function RotateWebmailMasterConfirmModal({
                 is patched.
               </li>
               <li>
-                Roundcube is rolling-restarted (~30 s) so its env var picks up the
-                new value. <strong>Active webmail sessions stay live.</strong>
+                The webmail restarts (~30 s) to pick up the new value: Roundcube
+                is restarted directly, Bulwark by the cluster&apos;s Reloader when
+                the secret changes. <strong>Active webmail sessions stay live.</strong>
               </li>
             </ul>
             <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
@@ -557,8 +558,8 @@ function WebmailMasterRevealCard({ username, password, onDismiss }: WebmailMaste
       </div>
       <p className="text-xs text-amber-800 dark:text-amber-200">
         The cleartext is not stored anywhere reachable from this UI. Copy it now
-        if you need it for an external password vault. Roundcube already has the
-        new value (env var injected; pod is rolling).
+        if you need it for an external password vault. The webmail picks up the
+        new value as it restarts (~30 s).
       </p>
       <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-900 p-3 space-y-2">
         <CopyableField label="Username" value={username} testId="webmail-master-username" />

@@ -28,6 +28,7 @@ import {
 } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { assertTenantBackupsAllowed } from '../tenant-bundles/suspension.js';
 import {
   restoreJobs,
   restoreItems,
@@ -651,6 +652,7 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     if (tenant.status === 'archived') {
       throw new ApiError('VALIDATION_ERROR', 'Cannot back up an archived tenant', 400);
     }
+    assertTenantBackupsAllowed(tenant);
 
     // Resolve the platform's `tenant`-class backup target. The new
     // `backup_target_assignments` model binds a backup_configurations

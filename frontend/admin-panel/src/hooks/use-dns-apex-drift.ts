@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
   DnsApexDriftReport,
+  FixDnsApexDriftInput,
   FixDnsApexDriftResponse,
 } from '@insula/api-contracts';
 
 /**
- * Apex DNS drift.
+ * Route ("apex") DNS drift.
  *
  * The report read is cheap (a stored document) and safe to poll — it never
  * touches a DNS provider. The scan is the expensive one: it walks every
@@ -32,7 +33,7 @@ export function useDnsApexDriftReport() {
   });
 }
 
-/** Run a scan now. Read-only — never repairs. */
+/** Run a scan now. Never changes DNS — it only refreshes the report. */
 export function useScanDnsApexDrift() {
   const qc = useQueryClient();
   return useMutation({
@@ -46,19 +47,15 @@ export function useScanDnsApexDrift() {
   });
 }
 
-export interface FixDriftVars {
-  readonly domainIds?: readonly string[];
-  readonly all?: boolean;
-}
-
 /**
- * Start an additive repair. Resolves with the task id — the caller opens the
- * progress modal; the work itself runs server-side under the task center.
+ * Start a repair (adds missing, removes stale route records). Resolves with
+ * the task id — the caller opens the progress modal; the work runs server-side
+ * under the task center.
  */
 export function useFixDnsApexDrift() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: FixDriftVars) =>
+    mutationFn: (vars: FixDnsApexDriftInput) =>
       apiFetch<FixDnsApexDriftResponse>('/api/v1/admin/dns/apex-drift/fix', {
         method: 'POST',
         body: JSON.stringify(

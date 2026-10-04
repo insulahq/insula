@@ -972,11 +972,9 @@ export async function getAccessibleMailboxes(
 
 interface GenerateWebmailTokenOptions {
   /**
-   * Webmail engine to mint a token for. Defaults to `roundcube` to
-   * preserve the historical behaviour for all callers that haven't
-   * been updated yet. Phase 10 of the Bulwark integration roadmap
-   * (ADR-039) wires `platform_config.default_webmail_engine` to flip
-   * the default for new tenants.
+   * Webmail engine to mint a token for. Unset → the platform's
+   * `default_webmail_engine` (`getDefaultWebmailEngine`: Bulwark unless an
+   * operator chose Roundcube).
    *
    * Bulwark tokens carry `iss`/`jti`/`tenant_id`/`actor_user_id` and
    * are verified by Bulwark's own `/api/auth/impersonate` route
@@ -1181,6 +1179,7 @@ export async function generateWebmailToken(
 
   let token: string;
   let webmailUrl: string;
+  let jti: string | null = null;
 
   // Resolve the webmail base URL. Both engines share the same URL —
   // webmail.<apex> serves whichever engine is currently active (the
@@ -1224,7 +1223,7 @@ export async function generateWebmailToken(
     // spellings. A change that dropped the prefix broke
     // impersonation (route 404'd because the creds were undefined) —
     // see k8s/base/bulwark/deployment.yaml for the full history.
-    const jti = crypto.randomUUID();
+    jti = crypto.randomUUID();
     token = signWebmailJwt(
       {
         iss: 'platform-api/webmail',
@@ -1274,6 +1273,10 @@ export async function generateWebmailToken(
         engine,
         mailbox: mailbox.fullAddress,
         token_ttl_seconds: 30,
+        // Bulwark names the session's app password `Support session <jti>`,
+        // so this ties a session in the mailbox's login-password list to
+        // the person who opened it.
+        ...(jti ? { jti } : {}),
       },
     });
   } catch (err) {

@@ -1661,27 +1661,14 @@ export async function principalGet(params: {
     };
   }
 
-  // Specific IDs — try x:Account first; anything in notFound retry on x:Domain.
+  // Specific IDs are ACCOUNT ids. Stalwart numbers accounts and domains in
+  // separate sequences, so the same id names an account AND a domain (on a
+  // running install every domain id collides with an account id). Falling back
+  // from x:Account to x:Domain on notFound therefore returned the colliding
+  // account for every domain id. Domains are read with domainGet().
   const accountResp = await accountGet({ accountId, ids, properties, baseUrl, env });
-  const stillMissing = accountResp.notFound;
-  let domainList: StalwartPrincipal[] = [];
-  let trulyNotFound: readonly string[] = [];
-  if (stillMissing.length > 0) {
-    const domainResp = await domainGet({
-      accountId,
-      ids: stillMissing,
-      properties,
-      baseUrl,
-      env,
-    });
-    domainList = domainResp.list.map(_domainToPrincipal);
-    trulyNotFound = domainResp.notFound;
-  }
-  // This branch has no domain list of its own (domains are fetched only for
-  // IDs the account namespace did not recognise), so resolve the join with one
-  // extra call — and only when an account actually has aliases to resolve.
-  // Dropping them instead would hand the caller an account whose alias
-  // addresses silently vanished, which is the bug this whole change fixes.
+  // Alias addresses need the domain names; fetch them only when an account
+  // actually has aliases to resolve.
   const needsDomains = accountResp.list.some((a) => _stalwartList(a.aliases).length > 0);
   let domainNameById: ReadonlyMap<string, string> | undefined;
   if (needsDomains) {
@@ -1691,11 +1678,8 @@ export async function principalGet(params: {
   return {
     accountId,
     state: accountResp.state,
-    list: [
-      ...accountResp.list.map((a) => _accountToPrincipal(a, domainNameById)),
-      ...domainList,
-    ],
-    notFound: trulyNotFound,
+    list: accountResp.list.map((a) => _accountToPrincipal(a, domainNameById)),
+    notFound: accountResp.notFound,
   };
 }
 
@@ -1719,8 +1703,12 @@ export async function principalGetOne(params: {
 /**
  * `principalSet` (legacy compatibility shim) — dispatches each
  * `create` entry to x:Account/set or x:Domain/set based on the
- * `type` field, and `update` / `destroy` IDs are sent to x:Account
- * first with x:Domain as the fallback.
+ * `type` field. `update` / `destroy` IDs are ACCOUNT ids and go to
+ * x:Account only: account and domain ids are separate sequences that
+ * collide, so the old "x:Account first, x:Domain on notFound" fallback
+ * destroyed the mailbox that shared a domain's id when asked to destroy
+ * the domain — and sent a stale account id's patch to a domain. Domains
+ * are changed with domainSet() / destroyDomain().
  *
  * The Stalwart 0.16 server doesn't support a unified `Principal/set`
  * method — it expects calls split per principal kind. This shim
@@ -1775,11 +1763,10 @@ export async function principalSet<T extends Partial<StalwartPrincipal>>(params:
     }
   }
 
-  // Updates / destroys: dispatch by trying x:Account first.
+  // Updates / destroys are ACCOUNT ids — x:Account only (see above).
   const updates = request.update ?? {};
   const destroys = request.destroy ?? [];
 
-  // Run x:Account/set with the account-side slices.
   const accountResp = await accountSet({
     accountId,
     request: {
@@ -1792,91 +1779,26 @@ export async function principalSet<T extends Partial<StalwartPrincipal>>(params:
     env,
   });
 
-  // Anything not-{updated|destroyed} on x:Account because of `notFound`
-  // → retry on x:Domain. Stalwart's `notUpdated` / `notDestroyed`
-  // payloads include `type: 'notFound'` for IDs in the wrong namespace.
-  const domainUpdates: Record<string, Record<string, unknown>> = {};
-  for (const [id, err] of Object.entries(accountResp.notUpdated ?? {})) {
-    if (err.type === 'notFound' && updates[id]) {
-      domainUpdates[id] = updates[id] as Record<string, unknown>;
-    }
-  }
-  const domainDestroys: string[] = [];
-  for (const [id, err] of Object.entries(accountResp.notDestroyed ?? {})) {
-    if (err.type === 'notFound') domainDestroys.push(id);
-  }
-
-  if (
-    Object.keys(domainCreates).length === 0 &&
-    Object.keys(domainUpdates).length === 0 &&
-    domainDestroys.length === 0
-  ) {
-    // Pure-account operation; map the response directly.
-    return {
-      accountId: accountResp.accountId,
-      oldState: accountResp.oldState,
-      newState: accountResp.newState,
-      created: accountResp.created
-        ? Object.fromEntries(
-            Object.entries(accountResp.created).map(([k, v]) => [k, _accountToPrincipal(v)]),
-          )
-        : null,
-      updated: accountResp.updated as Record<string, StalwartPrincipal | null> | null,
-      destroyed: accountResp.destroyed,
-      notCreated: accountResp.notCreated,
-      notUpdated: accountResp.notUpdated,
-      notDestroyed: accountResp.notDestroyed,
-    };
-  }
-
-  const domainResp = await domainSet({
-    accountId,
-    request: {
-      ...(Object.keys(domainCreates).length > 0 ? { create: domainCreates } : {}),
-      ...(Object.keys(domainUpdates).length > 0 ? { update: domainUpdates } : {}),
-      ...(domainDestroys.length > 0 ? { destroy: domainDestroys } : {}),
-      ifInState: request.ifInState,
-    },
-    baseUrl,
-    env,
-  });
-
-  // Merge the two responses. Account-side notUpdated/notDestroyed
-  // entries that were resolved on x:Domain are removed from the
-  // notFound bucket.
-  const mergedNotUpdated: Record<string, JmapSetError> = { ...(accountResp.notUpdated ?? {}) };
-  for (const id of Object.keys(domainUpdates)) {
-    if (domainResp.updated && id in domainResp.updated) delete mergedNotUpdated[id];
-    if (domainResp.notUpdated && id in domainResp.notUpdated) {
-      mergedNotUpdated[id] = domainResp.notUpdated[id];
-    }
-  }
-  const mergedNotDestroyed: Record<string, JmapSetError> = { ...(accountResp.notDestroyed ?? {}) };
-  for (const id of domainDestroys) {
-    if (domainResp.destroyed?.includes(id)) delete mergedNotDestroyed[id];
-    if (domainResp.notDestroyed && id in domainResp.notDestroyed) {
-      mergedNotDestroyed[id] = domainResp.notDestroyed[id];
-    }
-  }
+  const domainResp = Object.keys(domainCreates).length > 0
+    ? await domainSet({ accountId, request: { create: domainCreates, ifInState: request.ifInState }, baseUrl, env })
+    : null;
 
   const created: Record<string, StalwartPrincipal> = {};
-  if (accountResp.created) {
-    for (const [k, v] of Object.entries(accountResp.created)) created[k] = _accountToPrincipal(v);
-  }
-  if (domainResp.created) {
-    for (const [k, v] of Object.entries(domainResp.created)) created[k] = _domainToPrincipal(v);
-  }
+  for (const [k, v] of Object.entries(accountResp.created ?? {})) created[k] = _accountToPrincipal(v);
+  for (const [k, v] of Object.entries(domainResp?.created ?? {})) created[k] = _domainToPrincipal(v);
 
   return {
-    accountId,
+    accountId: accountResp.accountId,
     oldState: accountResp.oldState,
-    newState: `${accountResp.newState}|${domainResp.newState}`,
+    newState: domainResp ? `${accountResp.newState}|${domainResp.newState}` : accountResp.newState,
     created: Object.keys(created).length > 0 ? created : null,
-    updated: { ...(accountResp.updated as object | null ?? {}), ...(domainResp.updated as object | null ?? {}) } as Record<string, StalwartPrincipal | null> | null,
-    destroyed: [...(accountResp.destroyed ?? []), ...(domainResp.destroyed ?? [])],
-    notCreated: { ...(accountResp.notCreated ?? {}), ...(domainResp.notCreated ?? {}) },
-    notUpdated: Object.keys(mergedNotUpdated).length > 0 ? mergedNotUpdated : null,
-    notDestroyed: Object.keys(mergedNotDestroyed).length > 0 ? mergedNotDestroyed : null,
+    updated: accountResp.updated as Record<string, StalwartPrincipal | null> | null,
+    destroyed: accountResp.destroyed,
+    notCreated: domainResp
+      ? { ...(accountResp.notCreated ?? {}), ...(domainResp.notCreated ?? {}) }
+      : accountResp.notCreated,
+    notUpdated: accountResp.notUpdated,
+    notDestroyed: accountResp.notDestroyed,
   };
 }
 
@@ -2004,10 +1926,11 @@ export async function updatePrincipal(params: {
 }
 
 /**
- * Destroy a principal (mailbox or domain) by ID.
+ * Destroy an ACCOUNT (mailbox) by id. Never pass a domain id: account and
+ * domain ids collide, and this would destroy the mailbox that shares it —
+ * use {@link destroyDomain}.
  *
- * Throws `JmapError` if the server refuses (e.g. domain still has
- * active mailboxes).
+ * Throws `JmapError` if the server refuses.
  */
 export async function destroyPrincipal(params: {
   accountId: JmapAccountId;
@@ -2029,6 +1952,29 @@ export async function destroyPrincipal(params: {
   if (notDestroyed) {
     throw new JmapError(
       `Failed to destroy principal '${id}': ${notDestroyed.description ?? notDestroyed.type}`,
+      notDestroyed.type,
+      notDestroyed,
+    );
+  }
+}
+
+/**
+ * Destroy a DOMAIN by id (x:Domain/set). Throws `JmapError` if the server
+ * refuses — typically `objectIsLinked` while accounts, lists or DKIM keys
+ * still reference it.
+ */
+export async function destroyDomain(params: {
+  accountId: JmapAccountId;
+  id: string;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const { accountId, id, baseUrl, env } = params;
+  const result = await domainSet({ accountId, request: { destroy: [id] }, baseUrl, env });
+  const notDestroyed = result.notDestroyed?.[id];
+  if (notDestroyed) {
+    throw new JmapError(
+      `Failed to destroy domain '${id}': ${notDestroyed.description ?? notDestroyed.type}`,
       notDestroyed.type,
       notDestroyed,
     );
@@ -2101,13 +2047,19 @@ export async function getDomainDnsZoneFile(params: {
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<string | null> {
-  const principal = await principalGetOne({
-    ...params,
-    id: params.domainPrincipalId,
-    properties: ['id', 'name', 'type', 'dnsZoneFile'],
+  // x:Domain directly: through the account-first principal shims a domain id
+  // returned the account that shares it, which has no zone file — every
+  // domain read as "zone file not yet available".
+  const res = await domainGet({
+    accountId: params.accountId,
+    ids: [params.domainPrincipalId],
+    properties: ['id', 'name', 'dnsZoneFile'],
+    baseUrl: params.baseUrl,
+    env: params.env,
   });
-  if (!principal) return null;
-  return principal.dnsZoneFile ?? null;
+  const domain = res.list.find((d) => d.id === params.domainPrincipalId);
+  const zone = (domain as { dnsZoneFile?: unknown } | undefined)?.dnsZoneFile;
+  return typeof zone === 'string' && zone.length > 0 ? zone : null;
 }
 
 /**

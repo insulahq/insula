@@ -104,9 +104,11 @@ export function HoverCard({ title, rows, note }: {
       <dl className="flex flex-col gap-1">
         {rows.map(([k, v]) => (
           // Label and value stay on one line; the LABEL is the half that gives
-          // way, because a truncated number is a wrong number.
+          // way, because a truncated number is a wrong number. It keeps a third
+          // of the row, though: a sentence-long value (a health reason) wraps
+          // instead of squeezing its label to nothing.
           <div key={k} className="flex flex-nowrap items-baseline justify-between gap-3">
-            <dt title={k} className="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-400">{k}</dt>
+            <dt title={k} className="min-w-[33%] flex-1 truncate text-xs text-gray-600 dark:text-gray-400">{k}</dt>
             <dd className="min-w-0 shrink break-words text-right font-mono text-xs tabular-nums text-gray-900 dark:text-gray-100">{v}</dd>
           </div>
         ))}

@@ -7,6 +7,7 @@ import { runAutoUpgradePass } from './modules/deployments/auto-upgrade-cron.js';
 import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
 import { persistInstalledVersion } from './modules/platform-updates/service.js';
+import { releaseAllSchedulerLeases, withSchedulerLease } from './shared/scheduler-lease.js';
 
 const config = loadConfig();
 const db = getDb(config.DATABASE_URL);
@@ -26,6 +27,9 @@ const shutdown = async () => {
   if (autoUpgradeTimer) clearInterval(autoUpgradeTimer);
   if (acmeWebhook) await acmeWebhook.close().catch(() => {});
   await app.close();
+  // Hand scheduled jobs to the remaining replicas now, not after their ttl
+  // (a job still running here keeps its lease until it expires).
+  await releaseAllSchedulerLeases(db).catch(() => 0);
   await closeDb();
   process.exit(0);
 };
@@ -200,9 +204,15 @@ const startupK8s = (() => {
 
 // Check for expired subscriptions every hour
 const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;
+// One replica suspends: replicas that read the same expired tenant each ran
+// the suspend cascade (hooks, notices) for it.
+const suspendExpired = async (): Promise<number> => {
+  const leased = await withSchedulerLease(db, 'subscription-expiry', EXPIRY_CHECK_INTERVAL * 1.5, () => suspendExpiredTenants(db));
+  return leased.ran ? leased.value : 0;
+};
 expiryCheckTimer = setInterval(async () => {
   try {
-    const count = await suspendExpiredTenants(db);
+    const count = await suspendExpired();
     if (count > 0) {
       app.log.info(`Auto-suspended ${count} tenant(s) with expired subscriptions`);
     }
@@ -212,7 +222,7 @@ expiryCheckTimer = setInterval(async () => {
 }, EXPIRY_CHECK_INTERVAL);
 
 // Run immediately on startup
-suspendExpiredTenants(db).catch((err) => {
+suspendExpired().catch((err) => {
   app.log.error({ err }, 'Failed initial expired subscription check');
 });
 
@@ -231,7 +241,11 @@ const getAutoUpgradeK8s = () => {
 };
 autoUpgradeTimer = setInterval(async () => {
   try {
-    const result = await runAutoUpgradePass(db, getAutoUpgradeK8s());
+    // One replica upgrades: two passes would upgrade the same deployment at once.
+    const leased = await withSchedulerLease(db, 'deployment-auto-upgrade', AUTO_UPGRADE_INTERVAL * 1.5,
+      () => runAutoUpgradePass(db, getAutoUpgradeK8s()));
+    if (!leased.ran) return;
+    const result = leased.value;
     if (result.upgraded > 0 || result.failed > 0) {
       app.log.info(
         `[auto-upgrade] attempted=${result.attempted} upgraded=${result.upgraded} skipped=${result.skipped} failed=${result.failed}`,

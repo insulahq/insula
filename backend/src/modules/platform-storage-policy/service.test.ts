@@ -605,8 +605,108 @@ describe('detectDeploymentReplicaDrift — scheduler trigger for deployment drif
     const statelessNames = ['admin-panel', 'tenant-panel', 'platform-api', 'oauth2-proxy', 'dex', 'roundcube'];
     const overrides: Record<string, { replicas: number }> = {};
     for (const n of statelessNames) overrides[n] = { replicas: 3 };
+    overrides['source-controller'] = { replicas: 1 }; // pinned to one
     // everything else (the leader-elect operators) defaults to 2
     const k8s = makeAppsMock({ defaultReplicas: 2, overrides });
     expect(await detectDeploymentReplicaDrift(k8s, 'ha', 3)).toBe(false);
+  });
+
+  it('a second source-controller in HA is drift — the reconciler takes it back to one', async () => {
+    const { detectDeploymentReplicaDrift } = await import('./service.js');
+    const overrides: Record<string, { replicas: number }> = {};
+    for (const n of ['admin-panel', 'tenant-panel', 'platform-api', 'oauth2-proxy', 'dex', 'roundcube']) {
+      overrides[n] = { replicas: 3 };
+    }
+    const k8s = makeAppsMock({ defaultReplicas: 2, overrides }); // source-controller at 2
+    expect(await detectDeploymentReplicaDrift(k8s, 'ha', 3)).toBe(true);
+  });
+});
+
+describe('replicasFor — a Deployment that must not scale with its tier', () => {
+  it('caps at maxReplicas and otherwise follows the tier', async () => {
+    const { replicasFor } = await import('./service.js');
+    expect(replicasFor({ namespace: 'n', name: 'a', maxReplicas: 1 }, 2)).toBe(1);
+    expect(replicasFor({ namespace: 'n', name: 'a', maxReplicas: 1 }, 1)).toBe(1);
+    expect(replicasFor({ namespace: 'n', name: 'b' }, 2)).toBe(2);
+  });
+
+  it('Flux source-controller stays at one replica in HA; the backup plugin scales', async () => {
+    const { LEADER_ELECT_DEPLOYMENTS, replicasFor } = await import('./service.js');
+    const byName = new Map(LEADER_ELECT_DEPLOYMENTS.map((d) => [d.name, d]));
+    expect(replicasFor(byName.get('source-controller')!, 2)).toBe(1);
+    expect(replicasFor(byName.get('barman-cloud')!, 2)).toBe(2);
+    expect(replicasFor(byName.get('kustomize-controller')!, 2)).toBe(2);
+  });
+
+  it('Apply HA scales source-controller to one, never two', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const replace = vi.fn(async () => ({}));
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async ({ name }: { name: string }) => (
+          { metadata: { name, annotations: {} }, spec: { replicas: 2 } })),
+        replaceNamespacedDeploymentScale: replace,
+      },
+    } as unknown as K8sClients;
+    const results = await patchDeploymentsToReplicaCount(k8s, [
+      { namespace: 'flux-system', name: 'source-controller', maxReplicas: 1 },
+    ], 2);
+    expect(results).toEqual([expect.objectContaining({ name: 'source-controller', previousReplicas: 2, newReplicas: 1, patched: true })]);
+    expect(replace).toHaveBeenCalledWith(expect.objectContaining({ name: 'source-controller', body: expect.objectContaining({ spec: { replicas: 1 } }) }));
+  });
+});
+
+describe('patchDeploymentsToReplicaCount — a Deployment this environment does not run', () => {
+  it('reports a missing (404) Deployment as not installed, not as a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const replace = vi.fn(async () => ({}));
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async ({ name }: { name: string }) => {
+          if (name === 'dex') throw Object.assign(new Error('deployments.apps "dex" not found'), { code: 404 });
+          return { metadata: { name, annotations: {} }, spec: { replicas: 1 } };
+        }),
+        replaceNamespacedDeploymentScale: replace,
+      },
+    } as unknown as K8sClients;
+
+    const results = await patchDeploymentsToReplicaCount(k8s, [
+      { namespace: 'platform', name: 'platform-api' },
+      { namespace: 'platform', name: 'dex', optional: true },
+    ], 3);
+
+    expect(results).toEqual([
+      { namespace: 'platform', name: 'platform-api', previousReplicas: 1, newReplicas: 3, patched: true, error: null },
+      { namespace: 'platform', name: 'dex', previousReplicas: 0, newReplicas: 0, patched: false, error: null, notInstalled: true },
+    ]);
+    expect(replace).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing REQUIRED Deployment is still a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async () => { throw Object.assign(new Error('deployments.apps "barman-cloud" not found'), { code: 404 }); }),
+        replaceNamespacedDeploymentScale: vi.fn(),
+      },
+    } as unknown as K8sClients;
+
+    const [r] = await patchDeploymentsToReplicaCount(k8s, [{ namespace: 'cnpg-system', name: 'barman-cloud' }], 2);
+    expect(r?.error).toContain('not found');
+    expect(r?.notInstalled).toBeUndefined();
+  });
+
+  it('still reports any other read error as a failure', async () => {
+    const { patchDeploymentsToReplicaCount } = await import('./service.js');
+    const k8s = {
+      apps: {
+        readNamespacedDeployment: vi.fn(async () => { throw Object.assign(new Error('forbidden'), { code: 403 }); }),
+        replaceNamespacedDeploymentScale: vi.fn(),
+      },
+    } as unknown as K8sClients;
+
+    const [r] = await patchDeploymentsToReplicaCount(k8s, [{ namespace: 'platform', name: 'platform-api' }], 3);
+    expect(r?.error).toBe('forbidden');
+    expect(r?.notInstalled).toBeUndefined();
   });
 });

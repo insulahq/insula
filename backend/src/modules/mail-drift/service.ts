@@ -2,9 +2,8 @@
  * Mail drift surface — operator-facing service.
  *
  * The principals-sync reconciler detects when platform DB rows reference
- * Stalwart entries that no longer exist (typically caused by a failed
- * mail-stack failover prior to the silent-loss fix). This
- * module exposes the drift list and two remediation actions: dismiss
+ * Stalwart entries that no longer exist, or Stalwart carries objects no
+ * platform row owns. This module exposes the drift list and two remediation actions: dismiss
  * (accepted loss) and recreate-empty (last-resort destructive action).
  *
  * The third remediation — restore-from-snapshot — is intentionally NOT
@@ -17,27 +16,43 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { mailDriftItems, emailDomains, mailboxes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { MailDriftItem, MailDriftKind } from '@insula/api-contracts';
 import { mailLogger } from '../../shared/mail-logger.js';
+import { RESOLVED_DRIFT_RETENTION_DAYS } from './retention.js';
 
 const log = mailLogger().child({ module: 'mail-drift' });
 
-/** Default page size for the operator list view. */
-const LIST_LIMIT = 100;
+/** Most resolved items the Resolved History lists. */
+const RESOLVED_LIST_LIMIT = 100;
 
+/**
+ * Every active item, then the items resolved within the retention window,
+ * newest resolution first. One shared limit across both used to let a burst of
+ * recent resolutions push older ACTIVE items off the page.
+ */
 export async function listDriftItems(db: Database): Promise<{
   items: MailDriftItem[];
   hasActive: boolean;
 }> {
-  const rows = await db
+  const active = await db
     .select()
     .from(mailDriftItems)
-    .orderBy(desc(mailDriftItems.firstDetectedAt))
-    .limit(LIST_LIMIT);
+    .where(isNull(mailDriftItems.resolvedAt))
+    .orderBy(desc(mailDriftItems.firstDetectedAt));
+  const resolved = await db
+    .select()
+    .from(mailDriftItems)
+    .where(and(
+      isNotNull(mailDriftItems.resolvedAt),
+      gte(mailDriftItems.resolvedAt, sql`now() - make_interval(days => ${RESOLVED_DRIFT_RETENTION_DAYS})`),
+    ))
+    .orderBy(desc(mailDriftItems.resolvedAt))
+    .limit(RESOLVED_LIST_LIMIT);
+  const rows = [...active, ...resolved];
 
   const items: MailDriftItem[] = rows.map((r) => ({
     id: r.id,
@@ -647,7 +662,7 @@ export async function deleteOrphanDomain(
     throw new ApiError('DRIFT_ITEM_INVALID', 'orphan-domain item carries no Stalwart id', 409);
   }
 
-  const { getJmapSession, destroyPrincipal } = await import('../stalwart-jmap/client.js');
+  const { getJmapSession, destroyDomain } = await import('../stalwart-jmap/client.js');
   const { removeAllDkimSignaturesForDomain } = await import('../email-dkim/cleanup.js');
   const baseUrl = process.env.STALWART_MGMT_URL;
   const session = await getJmapSession(baseUrl, process.env);
@@ -682,7 +697,9 @@ export async function deleteOrphanDomain(
   }
 
   try {
-    await destroyPrincipal({ accountId, id: stalwartDomainId, baseUrl });
+    // x:Domain explicitly: this id also names some mailbox ACCOUNT, and the
+    // account-first principal shim destroyed that mailbox instead.
+    await destroyDomain({ accountId, id: stalwartDomainId, baseUrl });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/objectIsLinked|linked/i.test(msg)) {

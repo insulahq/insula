@@ -29,6 +29,8 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { usePlatformUrls, resolveStalwartAdminUrl } from '@/hooks/use-platform-urls';
 import { config } from '@/lib/runtime-config';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -223,7 +225,7 @@ function DkimStatusModal({
   readonly domain: EmailDomainRow;
   readonly onClose: () => void;
 }) {
-  const { data: statusRes, isLoading } = useDkimStatus(d.id);
+  const { data: statusRes, isLoading, error: statusError } = useDkimStatus(d.id);
   const status = statusRes?.data;
   // The Stalwart web admin is on its own subdomain — sub-path embedding does
   // not work (see StalwartAdminPanel). `/__stalwart/` was a dead link.
@@ -270,11 +272,13 @@ function DkimStatusModal({
             </div>
           )}
 
-          {!isLoading && !status?.zoneFileAvailable && (
+          {!isLoading && statusError && (
+            <ErrorPanel error={extractOperatorError(statusError)} testId="dkim-status-error" />
+          )}
+
+          {!isLoading && !statusError && status && !status.zoneFileAvailable && (
             <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
-              {status
-                ? 'Zone file not yet available — Stalwart may still be provisioning this domain.'
-                : 'Could not reach Stalwart. Check that the mail pod is running.'}
+              Zone file not yet available — Stalwart may still be provisioning this domain.
             </div>
           )}
 

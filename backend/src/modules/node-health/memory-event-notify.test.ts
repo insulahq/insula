@@ -180,14 +180,14 @@ describe('summarizeNodeEvents — evictions and node OOMs only', () => {
       [evicted('d1', 'The node was low on resource: ephemeral-storage. Threshold quantity: 10%. ')], [], NOW));
     expect(s.headline).toBe('Tenant pods evicted (node disk pressure)');
     expect(s.headline).not.toMatch(/memory/i);
-    expect(s.summary).toContain('low on disk');
+    expect(s.advice).toContain('low on disk');
   });
 
   it("a pod over its own storage limit is an eviction, but says the node is fine", () => {
     const [s] = summarizeNodeEvents(normalizeMemoryEvents(
       [evicted('s1', 'Pod ephemeral local storage usage exceeds the total limit of containers 1Mi. ')], [], NOW));
     expect(s.headline).toBe('Tenant pods evicted (pod ephemeral-storage limit exceeded)');
-    expect(s.summary).toContain('the node itself is fine');
+    expect(s.advice).toContain('the node itself is fine');
   });
 
   it('lists mixed causes and names tenants, pods and "+N more"', () => {
@@ -198,10 +198,15 @@ describe('summarizeNodeEvents — evictions and node OOMs only', () => {
     const [s] = summarizeNodeEvents(events, (ns) => (ns === 'tenant-acme' ? 'Acme Corp' : undefined));
     expect(s.severity).toBe('warning');
     expect(s.headline).toBe('Tenant pods evicted (node memory pressure, node disk pressure)');
-    expect(s.summary).toContain('5 tenant pod(s) evicted (node memory pressure): tenant "Acme Corp" (pod web-m0)');
-    expect(s.summary).toContain('+2 more');
-    expect(s.summary).toContain('1 tenant pod(s) evicted (node disk pressure)');
-    expect(s.summary).toContain('Monitoring -> Node health -> Memory events');
+    // One list item per evicted pod, the overflow counted per cause.
+    expect(s.summary).toEqual([
+      'tenant "Acme Corp" (pod web-m0) — evicted (node memory pressure)',
+      'tenant "Acme Corp" (pod web-m1) — evicted (node memory pressure)',
+      'tenant "Acme Corp" (pod web-m2) — evicted (node memory pressure)',
+      '+2 more tenant pod(s) evicted (node memory pressure)',
+      'tenant "Acme Corp" (pod web-d1) — evicted (node disk pressure)',
+    ]);
+    expect(s.advice).toContain('Monitoring -> Node health -> Memory events');
   });
 
   it('a kernel SystemOOM and a SYSTEM eviction are critical, worded as what they are', () => {
@@ -213,7 +218,10 @@ describe('summarizeNodeEvents — evictions and node OOMs only', () => {
     const [s] = summarizeNodeEvents(events);
     expect(s.severity).toBe('critical');
     expect(s.headline).toBe('Node ran out of memory (kernel OOM killer); SYSTEM pods evicted (node memory pressure)');
-    expect(s.summary).toContain('platform (pod platform-api-x)');
-    expect(s.summary).toContain('investigate node memory now');
+    expect(s.summary).toEqual([
+      'Kernel SystemOOM (1 event) — the node itself ran out of memory',
+      'platform (pod platform-api-x) — evicted (node memory pressure)',
+    ]);
+    expect(s.advice).toContain('investigate node memory now');
   });
 });

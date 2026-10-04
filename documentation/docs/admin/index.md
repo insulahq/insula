@@ -203,7 +203,7 @@ names are truncated rather than pushing the layout sideways.
 | **Tenants & workloads** | Tenant count by state, and how many workloads are running, pending or failing. |
 | **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. |
 | **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. |
-| **Backups & DR** | The three backup classes — system, tenant and mail — each with its target, last run and age. |
+| **Backups & DR** | The three backup classes, each with when it last succeeded, how much it stores at its target, and whether it is on schedule. **System** is the platform database's base backups and WAL, the etcd snapshots and the DR bundles; its size is measured hourly. **Tenant** is the tenant repositories. **Mail** is the whole mail store's snapshot repository. Hover for the target and, when a class is amber, why. |
 | **Certificates** | What is issued, what renews soon, and anything that failed to renew. |
 | **Cron & platform jobs** | Scheduled work, and anything that has not run when it should have. |
 | **Platform** | Running version, available upgrades, and recent changes. |

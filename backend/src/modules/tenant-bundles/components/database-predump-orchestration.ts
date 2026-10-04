@@ -15,6 +15,7 @@
  */
 
 import { eq, and, sql } from 'drizzle-orm';
+import { heldPastExpiry } from '../bundle-hold.js';
 import type { Database } from '../../../db/index.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { deployments, catalogEntries } from '../../../db/schema.js';
@@ -91,7 +92,7 @@ export async function runPreCaptureDatabaseDumps(
       SELECT bool_or(expires_at IS NULL) AS has_infinite,
              COALESCE(max(retention_days) FILTER (WHERE expires_at IS NOT NULL), 0) AS maxret
       FROM backup_jobs
-      WHERE tenant_id = ${args.tenantId} AND (expires_at IS NULL OR expires_at > now())`);
+      WHERE tenant_id = ${args.tenantId} AND (expires_at IS NULL OR expires_at > now() OR ${heldPastExpiry('backup_jobs')})`);
     const r = res.rows?.[0];
     if (r && !r.has_infinite && Number(r.maxret) > 0) {
       pruneOlderThanDays = Number(r.maxret) + 7; // +7d buffer so a still-restorable predump is never pruned

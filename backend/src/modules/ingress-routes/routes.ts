@@ -32,6 +32,8 @@ import {
   changeDirUserPassword,
 } from './protected-dirs-service.js';
 import { deleteProtectedDirIngress } from './annotation-sync.js';
+import { routeDnsWarning } from './dns-warning.js';
+import type { DeleteIngressRouteResult } from '@insula/api-contracts';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -208,11 +210,14 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       summary: 'Delete an ingress route',
       security: [{ bearerAuth: [] }],
     },
-  }, async (request, reply) => {
+  }, async (request) => {
     const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
-    await deleteRoute(app.db, routeId);
+    const { dnsLeftovers } = await deleteRoute(app.db, routeId);
     await triggerReconcile(tenantId);
-    reply.status(204).send();
+    const result: DeleteIngressRouteResult = {
+      dnsWarning: dnsLeftovers ? routeDnsWarning(dnsLeftovers, request.user?.panel === 'admin') : null,
+    };
+    return success(result);
   });
 
   // ─── Route-level Settings ─────────────────────────────────────────────────

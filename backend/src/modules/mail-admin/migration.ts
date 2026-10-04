@@ -1940,7 +1940,7 @@ async function runMigrationStateMachine(
     const errMsg = err instanceof Error ? err.message : String(err);
     log.warn(
       `[migration] auto-rotate post-migration FAILED for targetNode=${targetNode} — ` +
-      'migration itself succeeded but Bulwark + Roundcube + tenant-bundle Jobs are still using ' +
+      'migration itself succeeded but the webmail and tenant-bundle Jobs are still using ' +
       'the old Stalwart master password. RECOMMENDED: rotate manually via Admin → Email → ' +
       '"Rotate webmail master password". Error:',
       err,
@@ -1953,7 +1953,7 @@ async function runMigrationStateMachine(
         detail:
           `Mail migration to ${targetNode} succeeded, but the post-migration auto-rotate `
           + `of the Stalwart master password failed: ${errMsg.slice(0, 200)}. `
-          + 'Bulwark, Roundcube and tenant-bundle Jobs may be using a stale password.',
+          + 'The webmail and tenant-bundle Jobs may be using a stale password.',
         severityLabel: 'rotation failed',
         recommendedAction: 'Rotate manually via Admin → Email → "Rotate webmail master password".',
       }, `mail-rotate-failed:${runId}`).catch(() => undefined);

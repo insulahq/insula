@@ -5,6 +5,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success, paginated } from '../../shared/response.js';
 import { MAX_PAGE_LIMIT } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
+import { assertTenantBackupsAllowed } from './suspension.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { filesSnapshotReachable } from '../backup-restore/browse-files-restic.js';
 import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans } from '../../db/schema.js';
@@ -298,6 +299,17 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/v1/admin/tenant-bundles/:id ──────────────────────────
+  // Every tenant that can still be restored from its bundles — DELETED ones
+  // included, by name. The bundle list above is paged newest-first across all
+  // tenants; a deleted tenant's bundles fall out of its first page within a
+  // night or two, and nothing else lists a tenant that has no row.
+  app.get('/admin/tenant-bundles/recoverable-tenants', {
+    schema: { tags: ['TenantBundles'], summary: 'Tenants recoverable from their bundles, deleted ones included', security: [{ bearerAuth: [] }] },
+  }, async () => {
+    const { listRecoverableTenants } = await import('./recoverable.js');
+    return success(await listRecoverableTenants(app.db));
+  });
+
   app.get('/admin/tenant-bundles/:id', {
     schema: { tags: ['TenantBundles'], summary: 'Get bundle detail', security: [{ bearerAuth: [] }] },
   }, async (request) => {
@@ -363,6 +375,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // Resolve tenant + plan retention.
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
     if (!tenant) throw new ApiError('NOT_FOUND', 'Tenant not found', 404);
+    assertTenantBackupsAllowed(tenant);
 
     // Plan-bound retention. hosting_plans.max_backup_retention_days
     // is the upper bound the operator may request for a tenant on
@@ -1682,8 +1695,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
       ?? process.env.KUBECONFIG_PATH;
-    const { runResticRetentionSweep } = await import('./restic-retention.js');
-    return success(await runResticRetentionSweep({
+    const { runResticRetentionSweep, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS } = await import('./restic-retention.js');
+    const { withSchedulerLease } = await import('../../shared/scheduler-lease.js');
+    const sweep = () => runResticRetentionSweep({
       db: app.db,
       k8s: createK8sClients(kubeconfigPath),
       secretsKeyHex,
@@ -1693,7 +1707,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       ...(body.force !== undefined ? { force: body.force } : {}),
       ...(body.maxRepos !== undefined ? { maxRepos: body.maxRepos } : {}),
       ...(body.maxPrunes !== undefined ? { maxPrunes: body.maxPrunes } : {}),
-    }));
+    });
+    // A dry run changes nothing and may overlap; a real one takes the same run
+    // lock as the scheduled sweep rather than fighting it for restic's lock.
+    if (body.dryRun) return success(await sweep());
+    const run = await withSchedulerLease(app.db, RESTIC_SWEEP_RUN_LOCK, RESTIC_SWEEP_RUN_TTL_MS, sweep, { release: true, log: app.log });
+    if (!run.ran) {
+      throw new ApiError('RETENTION_SWEEP_RUNNING', 'A restic retention sweep is already running; try again when it has finished', 409);
+    }
+    return success(run.value);
   });
 
   // ── DELETE /api/v1/admin/tenant-bundles/:id ───────────────────────

@@ -25,7 +25,7 @@ import { and, eq, desc } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError, missingToken } from '../../shared/errors.js';
-import { tenants, backupJobs, backupComponents } from '../../db/schema.js';
+import { tenants, backupJobs, backupComponents, tenantLifecycleTransitions } from '../../db/schema.js';
 import {
   drRecoverRequestSchema,
   drRecoverAllRequestSchema,
@@ -165,6 +165,23 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
+  // What a Recover Tenant would restore: the tenant (from its row, or its
+  // bundle's manifest once deleted) and every restorable bundle — so the
+  // operator chooses by date and contents, never by an id.
+  app.get('/admin/dr/tenants/:tenantId/recovery-info', {
+    schema: {
+      tags: ['Restore'],
+      summary: 'The tenant and bundles a Recover Tenant would restore',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['tenantId'], properties: { tenantId: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { bundleId } = request.query as { bundleId?: string };
+    const { getRecoveryInfo } = await import('./recovery-info.js');
+    return success(await getRecoveryInfo(app, tenantId, { bundleId: bundleId || undefined }));
+  });
+
   app.post('/admin/dr/tenants/:tenantId/recover', {
     schema: {
       tags: ['Restore'],
@@ -187,7 +204,7 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
         400,
       );
     }
-    const input = parsed.data;
+    let input = parsed.data;
 
     // The caller's Bearer is forwarded into every injected sub-request. The
     // `authenticate` hook already guaranteed it exists; this narrows the type
@@ -206,10 +223,16 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     if (!tenant) {
       if (!input.bundleId) {
-        // Re-create needs an explicit bundle: with no local tenant AND no
-        // local backup_jobs rows (cascade-dropped on delete), there is no
-        // "newest bundle" to resolve — the operator must name the off-site
-        // bundle to recover from.
+        // A tenant deleted on THIS cluster keeps its backup_jobs rows (loose
+        // FK; bundles are retained for the deleted-tenant window), so its
+        // newest completed bundle is known — recover from it, as for a live
+        // tenant. Only a tenant this cluster never had (a cross-cluster copy)
+        // has no rows, and then the operator must name the bundle.
+        const { newestRecoverableBundleId } = await import('../tenant-bundles/recoverable.js');
+        const newest = await newestRecoverableBundleId(app.db, tenantId);
+        if (newest) input = { ...input, bundleId: newest };
+      }
+      if (!input.bundleId) {
         throw new ApiError(
           'TENANT_NOT_FOUND',
           `Tenant '${tenantId}' not found; DR re-create requires an explicit bundleId to recover from`,
@@ -567,11 +590,14 @@ async function listClusterNamespaces(kubeconfigPath?: string): Promise<Set<strin
 
 /**
  * Resolve the tenants a batch recover should target. Candidates are the
- * explicit `tenantIds`, else every tenant with a completed bundle (a
- * hard-deleted tenant's backup_jobs rows are cascade-dropped, so this naturally
- * scopes to the S3 "platform DB restored, namespaces lost" set). Each candidate
+ * explicit `tenantIds`, else every tenant with a bundle. Each candidate
  * resolves to its NEWEST completed bundle; `scope: 'missing'` drops tenants
  * whose namespace still exists (never restores over a live tenant).
+ *
+ * A tenant DELETED on purpose is not a candidate unless named: its backup_jobs
+ * rows survive the delete (loose FK, retained bundles), and this used to rely
+ * on them being cascade-dropped — so a fleet "recover all" would have quietly
+ * re-created every tenant deleted within the retention window.
  */
 /**
  * Resolve which tenants a batch recover would act on — AND which it would pass
@@ -608,10 +634,35 @@ export async function resolveRecoverAllTargets(
   const targets: DrRecoverAllTarget[] = [];
   const skipped: DrRecoverAllSkipped[] = [];
 
+  const named = Boolean(input.tenantIds && input.tenantIds.length > 0);
   for (const tenantId of candidateIds) {
     const [t] = await app.db.select({ name: tenants.name, ns: tenants.kubernetesNamespace })
       .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    const tenantName = t?.name ?? null;
+    let tenantName: string | null = t?.name ?? null;
+
+    if (!t && !named) {
+      const [del] = await app.db
+        .select({ detail: tenantLifecycleTransitions.detail, namespace: tenantLifecycleTransitions.namespace, at: tenantLifecycleTransitions.startedAt })
+        .from(tenantLifecycleTransitions)
+        .where(and(eq(tenantLifecycleTransitions.tenantId, tenantId), eq(tenantLifecycleTransitions.transitionKind, 'deleted')))
+        .orderBy(desc(tenantLifecycleTransitions.startedAt))
+        .limit(1);
+      if (del) {
+        const { slugFromNamespace } = await import('../tenant-bundles/recoverable.js');
+        tenantName = (del.detail as { tenantName?: string } | null)?.tenantName ?? slugFromNamespace(del.namespace) ?? null;
+        const [latest] = await app.db.select({ status: backupJobs.status, createdAt: backupJobs.createdAt })
+          .from(backupJobs).where(eq(backupJobs.tenantId, tenantId))
+          .orderBy(desc(backupJobs.createdAt)).limit(1);
+        skipped.push({
+          tenantId,
+          tenantName,
+          reason: 'deleted',
+          latestBundleStatus: latest?.status ?? null,
+          latestBundleAt: latest?.createdAt ? new Date(latest.createdAt).toISOString() : null,
+        });
+        continue;
+      }
+    }
 
     const [bundle] = await app.db.select({
       id: backupJobs.id,

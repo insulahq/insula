@@ -115,7 +115,7 @@ async function markTenantState(
 
 /** Merge the pre-quiesce replica snapshot into the op's params jsonb so a
  *  force-cancel can restore the workloads it scaled to 0. */
-async function persistQuiesceSnapshot(db: Database, opId: string, snap: QuiesceSnapshot): Promise<void> {
+export async function persistQuiesceSnapshot(db: Database, opId: string, snap: QuiesceSnapshot): Promise<void> {
   const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
   const params = (op?.params as Record<string, unknown> | null) ?? {};
   await db.update(storageOperations).set({ params: { ...params, quiesceSnapshot: snap } }).where(eq(storageOperations.id, opId));
@@ -201,7 +201,8 @@ async function persistRestoreTimeline(db: Database, opId: string, timeline: Step
   }
 }
 
-async function updateOp(
+/** Write an op row's progress and mirror it to the Task Tracker chip. */
+export async function updateOp(
   db: Database,
   opId: string,
   patch: Partial<typeof storageOperations.$inferInsert>,

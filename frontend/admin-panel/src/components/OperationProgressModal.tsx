@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import clsx from 'clsx';
 import { apiFetch } from '@/lib/api-client';
+import NodeText from '@/components/nodes/NodeText';
 
 /**
  * Shared progress modal for lifecycle & storage operations.
@@ -156,13 +157,13 @@ export default function OperationProgressModal({ operationId, title, onClose, on
               </div>
 
               {op.progressMessage && (
-                <p className="text-sm text-gray-600 dark:text-gray-300">{op.progressMessage}</p>
+                <p className="text-sm text-gray-600 dark:text-gray-300"><NodeText text={op.progressMessage} /></p>
               )}
 
               {op.lastError && (
                 <div className="rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm" data-testid="operation-progress-last-error">
                   <p className="font-medium text-red-800 dark:text-red-200">Operation failed</p>
-                  <p className="mt-1 text-xs text-red-700 dark:text-red-300 whitespace-pre-wrap">{op.lastError}</p>
+                  <p className="mt-1 text-xs text-red-700 dark:text-red-300 whitespace-pre-wrap"><NodeText text={op.lastError} /></p>
                 </div>
               )}
 

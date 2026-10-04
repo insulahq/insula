@@ -20,6 +20,7 @@
 import Handlebars from 'handlebars';
 // mjml v5 has an async signature. We call it via `await` below.
 import mjml2html from 'mjml';
+import { hasListVariable, prepareListVariables } from './list-vars.js';
 import { LRUCache } from 'lru-cache';
 import type {
   NotificationTemplateResponse,
@@ -111,8 +112,14 @@ function runHandlebars(
   let body: string;
   try {
     const { subject: subjectFn, body: bodyFn } = compile(template);
-    if (subjectFn) subject = subjectFn(variables);
-    body = bodyFn(variables);
+    // A list variable renders as a list where it lands: one line in a subject,
+    // `<ul>` in an HTML body, `• item` lines in a plaintext one (list-vars.ts).
+    if (subjectFn) subject = subjectFn(prepareListVariables(variables, 'subject'));
+    const html = template.bodyFormat === 'mjml' || template.bodyFormat === 'html';
+    body = bodyFn(prepareListVariables(variables, html ? 'html' : 'text'));
+    // A list opens and closes on a line break; a plaintext body must not.
+    // Only then — an operator's own whitespace in other bodies is theirs.
+    if (!html && hasListVariable(variables)) body = body.trim();
   } catch (err) {
     throw new ApiError(
       'TEMPLATE_RENDER_ERROR',

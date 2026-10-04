@@ -19,6 +19,8 @@ import type {
   DrRecoverResponse,
   DrRecoverAllRequestInput,
   DrRecoverAllResponse,
+  DrRecoveryInfo,
+  RecoverableTenant,
   RestoreJobDetail,
   RestoreJobStatus,
 } from '@insula/api-contracts';
@@ -110,5 +112,39 @@ export function useLiveRestoreCart(cartId: string | null) {
       return 2_000;
     },
     retry: false,
+  });
+}
+
+/**
+ * Every tenant that can be restored from its bundles — DELETED ones included,
+ * by name, with how long their bundles are kept. GET
+ * /admin/tenant-bundles/recoverable-tenants reads backup_jobs per tenant, so a
+ * deleted tenant is listed for as long as its bundles exist (the bundle list
+ * is paged newest-first across all tenants and loses it within a night or two).
+ */
+export function useRecoverableTenants() {
+  return useQuery({
+    queryKey: ['recoverable-tenants'],
+    queryFn: () => apiFetch<{ data: RecoverableTenant[] }>('/api/v1/admin/tenant-bundles/recoverable-tenants'),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * What a Recover Tenant would restore: the tenant (its row, or — deleted — its
+ * bundle's manifest) and every restorable bundle with when it was taken and
+ * what it holds. `bundleId` picks the manifest a deleted tenant is read from.
+ */
+export function useRecoveryInfo(tenantId: string, bundleId: string) {
+  const qs = bundleId ? `?bundleId=${encodeURIComponent(bundleId)}` : '';
+  return useQuery({
+    queryKey: ['dr-recovery-info', tenantId, bundleId],
+    queryFn: () => apiFetch<{ data: DrRecoveryInfo }>(`/api/v1/admin/dr/tenants/${encodeURIComponent(tenantId)}/recovery-info${qs}`),
+    enabled: tenantId.length > 0,
+    staleTime: 30_000,
+    // Choosing another bundle re-reads a deleted tenant's facts from it; keep
+    // the current answer on screen meanwhile (the bundle table would otherwise
+    // vanish under the click) — but never another tenant's.
+    placeholderData: (prev) => (prev?.data.tenantId === tenantId ? prev : undefined),
   });
 }

@@ -98,6 +98,26 @@ SMTP-accepting service.
 You can have multiple providers configured at once; only the one with
 `isDefault = true` is used unless a Source overrides it (Phase 5).
 
+## Lists — several items in one notification
+
+A notification about several things (tenants, mailboxes, failed checks, …)
+shows each as its own item, on every channel. An emitter passes the items as a
+`string[]`, declared `type: 'list'` in the template's variables, and the
+renderer formats it for where it lands (`templates/list-vars.ts`):
+
+| Where | Rendered as |
+|-------|-------------|
+| Email body (MJML/HTML) | an escaped `<ul>` with one `<li>` per item |
+| In-app and ntfy body (plaintext) | one `• item` line per item |
+| Subject | comma-joined — a subject is one line |
+
+A template only writes `{{name}}`; no loops or helpers. Never join items into
+a sentence in the emitter — that is what ran "Acme: … Beta: … SYSTEM: …" into
+one paragraph. Long lists are capped by count (`notifications/list-items.ts`
+`cappedList`, "…and N more."), never by characters. Operational events carry
+their items in an `items` variable next to `detail`. The in-app feed keeps the
+line breaks (`whitespace-pre-line`).
+
 ## Per-Source provider routing (Phase 5)
 
 Each Source can override the default email provider via the

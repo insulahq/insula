@@ -39,6 +39,7 @@ import {
   notifyAdminMailboxQuotaFleet,
 } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { cappedList } from '../notifications/list-items.js';
 
 /**
  * 99 is the last point at which the owner can still act. 100 is the incident.
@@ -174,15 +175,13 @@ export async function checkQuotaThresholds(
   // nothing is over quota.
   if (overQuota.length > 0) {
     const tenants = new Set(overQuota.map((r) => r.tenant_id));
-    const list = overQuota
-      .map((r) => `${r.full_address} (${r.tenant_name}, ${r.used_mb}/${r.quota_mb} MB)`)
-      .join('; ');
+    const list = cappedList(overQuota.map((r) => `${r.full_address} (${r.tenant_name}, ${r.used_mb}/${r.quota_mb} MB)`));
     await notifyAdminMailboxQuotaFleet(
       db,
       {
         mailboxCount: String(overQuota.length),
         tenantCount: String(tenants.size),
-        mailboxList: list.slice(0, 2000),
+        mailboxList: list,
         occurredAt,
       },
       `mailbox-quota-fleet:${now.toISOString().slice(0, 10)}`,

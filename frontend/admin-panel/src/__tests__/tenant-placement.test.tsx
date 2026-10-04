@@ -85,12 +85,14 @@ describe('PlacementStatusPanel (tenant detail)', () => {
     expect(screen.getByTestId('placement-make-primary')).toHaveTextContent('Make node-b the primary node');
   });
 
-  it('asks before moving back, says the data will be copied, then re-pins to the primary', async () => {
+  it('asks before moving back, says a running tenant is stopped first and the data copied, then moves it', async () => {
     withPlacement(full(misplacedSummary));
     render(<PlacementStatusPanel tenantId="t1" />);
     fireEvent.click(screen.getByTestId('placement-move-back'));
     expect(hooks.migrate.mutateAsync).not.toHaveBeenCalled();
-    expect(screen.getByTestId('placement-confirm')).toHaveTextContent('Longhorn then copies the tenant\'s data back to node-a');
+    const confirm = screen.getByTestId('placement-confirm');
+    expect(confirm).toHaveTextContent('If it is running, it is stopped first');
+    expect(confirm).toHaveTextContent('Longhorn then copies the tenant\'s data to node-a');
     fireEvent.click(screen.getByTestId('placement-confirm-button'));
     await waitFor(() => expect(hooks.migrate.mutateAsync).toHaveBeenCalledWith('node-a'));
   });

@@ -66,6 +66,7 @@ const ENVELOPE_ORDER: readonly string[] = [
 function scalar(v: unknown): string | null {
   if (v === null || v === undefined) return null;
   if (typeof v === 'string') return v.length > 0 ? v : null;
+  if (Array.isArray(v) && v.every((x) => typeof x === 'string')) return v.length > 0 ? v.join('; ') : null;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   return null;
 }

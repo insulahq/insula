@@ -43,6 +43,8 @@ const mockDbSelect = vi.fn().mockReturnValue({
 const mockDb = {
   insert: mockDbInsert,
   select: mockDbSelect,
+  // The scheduler lease's claim: this replica holds it.
+  execute: vi.fn().mockResolvedValue({ rows: [{ setting_key: 'scheduler-lease:image-pressure-watcher' }] }),
 } as unknown as import('../../db/index.js').Database;
 
 vi.mock('../../db/schema.js', () => ({

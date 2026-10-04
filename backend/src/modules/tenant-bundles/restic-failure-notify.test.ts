@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeResticFailure } from './restic-failure-notify.js';
+import { describeResticFailure, describeRetentionFailure, isRetentionOperation } from './restic-failure-notify.js';
 import { ResticCommandError } from './restic-driver.js';
 
 const ctx = { operation: 'forget', scope: 'tenant acme / files', dedupeScope: 'acme:files' };
@@ -29,5 +29,22 @@ describe('describeResticFailure', () => {
   it('truncates stderr so one failure cannot fill an inbox', () => {
     const err = new ResticCommandError('restic prune', 2, 'x'.repeat(5000));
     expect(describeResticFailure(ctx, err).errorMessage.length).toBeLessThan(700);
+  });
+});
+
+describe('retention failures are not backup failures', () => {
+  it('forget and prune are retention; backup and repo init are not', () => {
+    expect(isRetentionOperation('forget')).toBe(true);
+    expect(isRetentionOperation('prune')).toBe(true);
+    expect(isRetentionOperation('backup')).toBe(false);
+    expect(isRetentionOperation('repo init')).toBe(false);
+  });
+
+  it('says no backup failed and names the step', () => {
+    const out = describeRetentionFailure({ operation: 'prune', scope: 'tenant acme / files', dedupeScope: 'x' }, 'restic prune exited 11.', false);
+    expect(out.subsystem).toBe('Backup retention');
+    expect(out.objectLabel).toBe('restic prune failed for tenant acme / files');
+    expect(out.detail).toContain('No backup failed');
+    expect(out.detail).not.toMatch(/^Backup failed/);
   });
 });

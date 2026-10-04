@@ -13,6 +13,7 @@ import { getClusterFailoverHeadroom } from './failover-headroom.js';
 import { startRun, recordPatchOutcome, watchConvergence, type RunStatus } from './runs.js';
 import * as tasks from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
+import { cappedList } from '../notifications/list-items.js';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -292,15 +293,15 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
         : isInsufficientStorage
           ? `Platform storage Apply ${updated.systemTier} blocked — insufficient capacity`
           : `Platform storage Apply ${updated.systemTier} completed with ${failed.length} failure(s)`;
+      // Tallies in `detail`; each failure is its own list item (`items`).
       const lines: string[] = [];
       lines.push(`Volumes: ${outcome.volumes.filter((v) => v.patched).length} patched, ${outcome.volumes.filter((v) => !v.patched && !v.error).length} no-op, ${outcome.volumes.filter((v) => v.error).length} failed.`);
       lines.push(`Deployments: ${outcome.deployments.filter((d) => d.patched).length} patched, ${outcome.deployments.filter((d) => !d.patched && !d.error).length} no-op, ${outcome.deployments.filter((d) => d.error).length} failed.`);
       lines.push(`CNPG clusters: ${outcome.cnpgClusters.filter((c) => c.patched).length} patched, ${outcome.cnpgClusters.filter((c) => !c.patched && !c.error).length} no-op, ${outcome.cnpgClusters.filter((c) => c.error).length} failed.`);
-      for (const f of failed.slice(0, 5)) {
-        if ('volumeName' in f) lines.push(`  ✗ vol ${f.volumeName}: ${f.error}`);
-        else if ('previousInstances' in f) lines.push(`  ✗ cluster ${f.namespace}/${f.name}: ${f.error}`);
-        else lines.push(`  ✗ deploy ${f.namespace}/${f.name}: ${f.error}`);
-      }
+      const failures = cappedList(failed.map((f) => (
+        'volumeName' in f ? `Volume ${f.volumeName}: ${f.error}`
+          : 'previousInstances' in f ? `CNPG cluster ${f.namespace}/${f.name}: ${f.error}`
+            : `Deployment ${f.namespace}/${f.name}: ${f.error}`)), 10);
       // Dispatched, not inserted: a row per admin with no category reached no
       // template, no email, no preference gate and no delivery audit.
       const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
@@ -308,6 +309,7 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
         subsystem: 'Storage policy',
         objectLabel: title,
         detail: lines.join(' '),
+        items: failures,
         severityLabel: failed.length === 0 ? 'applied' : (isInsufficientStorage ? 'insufficient storage' : 'partial'),
         recommendedAction: failed.length === 0 ? '' : 'Review the failures above in Settings → Storage.',
       }, `storage-policy:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);
@@ -477,7 +479,8 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
       await notifyAdminOperationalEvent(app.db, 'storage', {
         subsystem: 'Stuck namespace force-cleared',
         objectLabel: namespace,
-        detail: `super_admin force-cleared a Terminating namespace stuck for ${Math.round(ageMs / 60_000)} min. Steps: ${opLog.join(' / ')}.`,
+        detail: `super_admin force-cleared a Terminating namespace stuck for ${Math.round(ageMs / 60_000)} min. Steps:`,
+        items: opLog,
         severityLabel: 'force-cleared',
         recommendedAction: '',
       }, `stuck-ns:${namespace}:${new Date().toISOString().slice(0, 13)}`).catch(() => undefined);

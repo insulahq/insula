@@ -18,10 +18,11 @@
  *        JOIN hosting_plans p ON p.id = t.plan_id
  *        WHERE COALESCE(t.include_in_scheduled_bundles,
  *                       p.include_in_scheduled_bundles) = TRUE
- *          AND t.status != 'archived'
+ *          AND t.status NOT IN ('archived', 'suspended')
  *      (SYSTEM tenant participates — no is_system filter. 'archived'
  *      is the terminal state in `tenant_status` — the enum has no
- *      'deleted' value; a regression test pins this.)
+ *      'deleted' value; a regression test pins this. Backups pause while
+ *      a tenant is suspended — see suspension.ts.)
  *   6. For each tenant, call runOneScheduledBundle from schedule.ts.
  *   7. Per-tenant failures are counted AND surfaced as an
  *      admin.backup_failed notification — a wave that fails for every
@@ -36,6 +37,7 @@ import { cronMatchesMinuteInZone } from '../../shared/cron-match.js';
 import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js';
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import type { FastifyInstance } from 'fastify';
+import { cappedList } from '../notifications/list-items.js';
 
 const TICK_INTERVAL_MS = 5 * 60 * 1000;
 /**
@@ -70,6 +72,25 @@ interface TickResult {
   readonly tenantsConsidered: number;
   readonly tenantsRan: number;
   readonly errors: number;
+}
+
+/**
+ * The tenants a nightly wave bundles. SYSTEM (is_system=TRUE) participates.
+ * Archived tenants are gone; suspended ones have their backups paused
+ * (suspension.ts) — bundling them could only fail the mailbox capture.
+ */
+export async function selectWaveTenants(
+  db: FastifyInstance['db'],
+): Promise<ReadonlyArray<{ readonly id: string; readonly name: string }>> {
+  return db
+    .select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .innerJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
+    .where(sql`
+      ${tenants.status} NOT IN ('archived', 'suspended')
+      AND COALESCE(${tenants.includeInScheduledBundlesOverride},
+                   ${hostingPlans.includeInScheduledBundles}) = TRUE
+    `);
 }
 
 export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new Date()): Promise<TickResult> {
@@ -117,16 +138,7 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     return { fired: false, tenantsConsidered: 0, tenantsRan: 0, errors: 0 };
   }
 
-  // Iterate eligible tenants. SYSTEM tenant is_system=TRUE participates.
-  const eligible = await app.db
-    .select({ id: tenants.id, name: tenants.name })
-    .from(tenants)
-    .innerJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
-    .where(sql`
-      ${tenants.status} != 'archived'
-      AND COALESCE(${tenants.includeInScheduledBundlesOverride},
-                   ${hostingPlans.includeInScheduledBundles}) = TRUE
-    `);
+  const eligible = await selectWaveTenants(app.db);
 
   app.log.info(
     { count: eligible.length, cron: schedule.cronExpression, fireAt: fireAt.toISOString() },
@@ -136,6 +148,7 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
   let ran = 0;
   let errors = 0;
   let firstError: string | null = null;
+  const failures: string[] = [];
   const { runOneScheduledBundle } = await import('./schedule.js') as {
     runOneScheduledBundle?: (app: FastifyInstance, tenantId: string, retentionDays: number) => Promise<void>;
   };
@@ -150,7 +163,9 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
         ran += 1;
       } catch (err) {
         errors += 1;
-        if (!firstError) firstError = err instanceof Error ? err.message : String(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!firstError) firstError = msg;
+        failures.push(`${t.name}: ${msg}`);
         app.log.error({ err, tenantId: t.id }, 'tenant-bundle global scheduler: bundle failed');
       }
     }
@@ -163,7 +178,10 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     try {
       await notifyAdminBackupFailed(app.db, {
         backupName: 'Scheduled tenant bundles',
-        errorMessage: `${errors}/${eligible.length} tenants failed (first error: ${firstError ?? 'unknown'})`,
+        // Name every tenant that failed, one list item each — "N/M failed
+        // (first error: …)" told the operator neither which nor why for the rest.
+        errorMessage: `${errors} of ${eligible.length} tenant bundle(s) failed${failures.length > 0 ? ':' : ` (${firstError ?? 'unknown'})`}`,
+        items: cappedList(failures),
       }, `tenant-bundle-wave:${fireAt.toISOString()}`);
     } catch (err) {
       app.log.error({ err }, 'tenant-bundle global scheduler: failure notification dispatch failed');

@@ -23,7 +23,7 @@ describe('namespace-tier', () => {
   it('classifies real tenant namespaces as tenants', () => {
     // Shapes minted by tenants/service.ts:generateNamespace() and the fixed
     // SYSTEM-tenant namespace from system-tenant/slug.ts.
-    for (const ns of ['tenant-acme-1234abcd', 'tenant-system', 'tenant-h-roland-physiotherapy-eac6852d']) {
+    for (const ns of ['tenant-example-0a1b2c3d', 'tenant-system']) {
       expect(isTenantNamespace(ns), `${ns} must be a tenant`).toBe(true);
       expect(isSystemNamespace(ns), `${ns} must not be SYSTEM`).toBe(false);
     }

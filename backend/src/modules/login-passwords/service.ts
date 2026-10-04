@@ -28,6 +28,7 @@ import type {
   CreateLoginPasswordResult,
   LoginPassword,
 } from '@insula/api-contracts';
+import { WEBMAIL_SESSION_LABEL_PATTERN } from '@insula/api-contracts';
 
 export class LoginPasswordError extends Error {
   constructor(message: string, readonly code: string, readonly status: number) {
@@ -84,10 +85,16 @@ async function resolveMailbox(
 }
 
 /** Map a Stalwart AppPassword row to the platform's metadata shape. */
-function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
+/** Exported for unit tests. */
+export function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
+  // Bulwark (1.11.1+) signs "Open webmail" in with an app password it creates
+  // on the mailbox. The create schema refuses this name, so only Bulwark can
+  // have given it.
+  const webmailSession = WEBMAIL_SESSION_LABEL_PATTERN.test(row.description ?? '');
   return {
     id: row.id,
-    label: row.description ?? '',
+    label: webmailSession ? 'Webmail session' : row.description ?? '',
+    kind: webmailSession ? 'webmail_session' : 'login',
     createdAt: row.createdAt ?? null,
     expiresAt: row.expiresAt ?? null,
     allowedIps: Object.keys(row.allowedIps ?? {}),

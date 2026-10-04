@@ -140,9 +140,9 @@ export type WebmailEngine = z.infer<typeof webmailEngineSchema>;
 export const webmailTokenRequestSchema = z.object({
   mailbox_id: z.string().uuid(),
   /**
-   * Engine to mint the token for. Defaults to `roundcube` for
-   * backwards compatibility with the existing tenant-panel button.
-   * Bulwark tokens carry additional claims (`iss`, `jti`,
+   * Engine to mint the token for. Omitted (the tenant-panel button) →
+   * the platform's `default_webmail_engine`, which is Bulwark unless an
+   * operator chose Roundcube. Bulwark tokens carry additional claims (`iss`, `jti`,
    * `tenant_id`, `actor_user_id`) and resolve to a different URL
    * shape — see ADR-039.
    */

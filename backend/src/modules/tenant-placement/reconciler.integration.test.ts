@@ -123,10 +123,13 @@ describe.skipIf(!url)('placement reconciler tick (real Postgres)', () => {
     const r1 = await tick('2026-10-02T05:10:30Z');
     expect(r1.newFailovers).toBe(2);
     expect(notify.failover).toHaveBeenCalledTimes(1);
-    const [, payload, tenantId] = notify.failover.mock.calls[0] as unknown as [unknown, { summary: string; details: string }, string | undefined];
+    const [, payload, tenantId] = notify.failover.mock.calls[0] as unknown as [unknown, { summary: string; details: string[] }, string | undefined];
     expect(payload.summary).toBe('2 tenants');
-    expect(payload.details).toContain('Acme School: volume tenant-acme-storage salvaged at 2026-10-02 05:09 UTC');
-    expect(payload.details).toContain('no longer on its primary node node-a');
+    // One list item per tenant.
+    expect(payload.details).toHaveLength(2);
+    const acme = payload.details.find((d) => d.startsWith('Acme School:')) ?? '';
+    expect(acme).toContain('Acme School: volume tenant-acme-storage salvaged at 2026-10-02 05:09 UTC');
+    expect(acme).toContain('no longer on its primary node node-a');
     expect(tenantId).toBeUndefined();
 
     // Longhorn keeps remountRequestedAt on the volume: every later tick sees it.

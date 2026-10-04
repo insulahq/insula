@@ -50,7 +50,7 @@ describe('alert category guard', () => {
       'admin.cert_expiring', 'admin.cluster_storage_capacity',
       'admin.mailbox_quota_fleet', 'admin.tenant_resource_saturation_warning',
       'admin.tenant_resource_saturation_critical', 'admin.slo_alert_critical',
-      'admin.slo_alert_warning', 'admin.node_event',
+      'admin.slo_alert_warning', 'admin.node_event', 'admin.platform_event',
       'tenant.resource_saturation_warning', 'tenant.resource_saturation_critical',
       'mailbox.quota_threshold', 'mailbox.quota_exceeded',
       'tenant.bandwidth_warning', 'tenant.bandwidth_exceeded',

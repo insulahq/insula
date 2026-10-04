@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
+import type { CreateImapSyncJobRequest, CreateLoginPasswordRequest, CreateLoginPasswordResult, LoginPassword } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Email Domains ───
@@ -450,21 +450,8 @@ export function useCancelImapSyncJob(tenantId: string) {
 // Backed by /admin/mailboxes/:mailboxId/login-passwords (ADR-049). The
 // secret is server-generated, shown ONCE in the create response.
 
-export interface AdminLoginPassword {
-  readonly id: string;
-  readonly label: string;
-  readonly createdAt: string | null;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
-
-export interface AdminCreateLoginPasswordResult {
-  readonly id: string;
-  readonly label: string;
-  readonly secret: string;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
+export type AdminLoginPassword = LoginPassword;
+export type AdminCreateLoginPasswordResult = CreateLoginPasswordResult;
 
 /** Wire shape from @insula/api-contracts. */
 type AdminCreateLoginPasswordInput = CreateLoginPasswordRequest;

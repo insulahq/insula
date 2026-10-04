@@ -30,6 +30,7 @@ import * as k8s from '@kubernetes/client-node';
 import { notifications } from '../../db/schema.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { readBackupHealth, type ClusterBackupHealth, type BackupRecord } from './service.js';
+import { recordSystemLastSuccess } from '../system-backup/footprint-store.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
 
@@ -87,6 +88,10 @@ export async function runTick(
     log.warn('readBackupHealth failed', err);
     return;
   }
+
+  // The dashboard's SYSTEM "last backup" reads this — it may not touch k8s.
+  await recordSystemLastSuccess(db, snapshot)
+    .catch((err: unknown) => log.warn('recording the last system backup failed', err));
 
   // Collect failures across all clusters in one batch so we hit the
   // notifications table once for the dedup query.

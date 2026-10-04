@@ -15,6 +15,7 @@ import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
 import { useLoginAsTenant } from '@/hooks/use-impersonate';
 import ErrorPanel from '@/components/ErrorPanel';
+import TenantDeletedBanner from '@/components/tenants/TenantDeletedBanner';
 import type { OperatorError } from '@insula/api-contracts';
 import { useBulkRun } from '@/hooks/use-bulk-run';
 import { runTenantBulkItem, useInvalidateTenantQueries, type TenantBulkAction } from '@/hooks/use-bulk-tenants';
@@ -133,6 +134,7 @@ export default function TenantsListTab() {
 
   return (
     <div className="space-y-6">
+      <TenantDeletedBanner />
       {loginError && (
         <ErrorPanel
           error={loginError}
