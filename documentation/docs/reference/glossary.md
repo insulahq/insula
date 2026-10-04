@@ -25,7 +25,7 @@ verified: 2026.6.7
 | **Restore cart** | The shopping-cart UI for granular restore: pick individual files, mailboxes, or databases across backups, then execute once |
 | **DR bundle** | The encrypted whole-platform recovery bundle (secrets, configuration, recovery pointers) for cold restore onto fresh hardware |
 | **platform-ops** | The signed on-node CLI for upgrades, migrations, diagnostics, and disaster recovery — works with the platform down ([reference](cli.md)) |
-| **Webmail engine** | The webmail app served to users: Roundcube (classic) or Bulwark (JMAP-native); selectable platform-wide |
+| **Webmail engine** | The webmail app served to users: Bulwark (JMAP-native, the default) or Roundcube (legacy alternative); selectable platform-wide |
 | **Passkey** | Phishing-resistant WebAuthn credential usable for sign-in or as second factor |
 | **Step-up authentication** | A fresh credential check required just before sensitive actions (e.g. opening a node terminal) |
 | **SYSTEM tenant** | The built-in tenant that owns the platform's own hostnames and transactional mailboxes; cannot be suspended or deleted |

@@ -7551,9 +7551,9 @@ ROUNDCUBE_DB_PASSWORD=${rc_db_pw}
 ROUNDCUBE_STALWART_MASTER_PASSWORD=${rc_master_pw}
 RCEOF
     chmod 600 /etc/platform/roundcube-credentials
-    log "Roundcube credentials persisted to /etc/platform/roundcube-credentials."
-    log "NOTE: Roundcube PG database + role must be created via"
-    log "      create_roundcube_db() (run after platform CNPG cluster is Ready)."
+    log "Webmail credentials persisted to /etc/platform/roundcube-credentials."
+    log "NOTE: the database of the alternative webmail engine (Roundcube) is created"
+    log "      by create_roundcube_db() once the platform CNPG cluster is Ready."
     log "      Stalwart master user must be provisioned via JMAP (run after"
     log "      Stalwart pod is Ready); see docs/operations/STALWART_DEPLOYMENT.md."
   fi
@@ -8218,7 +8218,7 @@ set_default_archive_timeout() {
 
 create_roundcube_db() {
   log ""
-  log "── Roundcube DB provisioning ──"
+  log "── Alternative webmail engine (Roundcube) database ──"
 
   if ! kctl get secret -n mail mail-secrets &>/dev/null 2>&1; then
     log "  mail-secrets not found — skipping (mail stack not deployed)."
@@ -8374,7 +8374,7 @@ DBISOSQL
 #   - stalwart-mail Deployment is not Ready
 provision_stalwart_master_user() {
   log ""
-  log "── Stalwart master user (Roundcube SSO impersonator) ──"
+  log "── Stalwart master user (webmail sign-in) ──"
 
   if ! kctl get secret -n mail mail-secrets &>/dev/null 2>&1; then
     log "  mail-secrets not found — skipping (mail/webmail not deployed)."
@@ -8465,7 +8465,7 @@ spec:
 
       MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
       AUTH="admin:\${recoveryPassword}"
-      MASTER_DESC='Hosting Platform master user — DO NOT DELETE. Used by webmail SSO + IMAP/SMTP master-auth proxy. Removing this account breaks Roundcube auto-login and tenant mailbox proxying.'
+      MASTER_DESC='Hosting Platform master user — DO NOT DELETE. Used by webmail SSO + IMAP/SMTP master-auth proxy. Removing this account breaks webmail sign-in and tenant mailbox proxying.'
 
       # Wait up to 60s for stalwart-mgmt to be reachable (see comment
       # in configure_stalwart_full — same retry pattern).
@@ -8579,7 +8579,7 @@ EOF
   done
 
   if [[ "$(kctl get pod -n mail "$job_name" -o jsonpath='{.status.phase}' 2>/dev/null)" == "Succeeded" ]]; then
-    log "  Master user provisioned (Roundcube SSO ready)."
+    log "  Master user provisioned (webmail sign-in ready)."
   else
     warn "  Master-user provision Pod did not complete cleanly. Logs:"
     print_pod_logs "$(capture_pod_logs mail "$job_name" 'stalwart master-user' | tail -20)"

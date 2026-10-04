@@ -19,7 +19,7 @@ async function rotateMaster(args: string[], deps: Deps): Promise<number> {
   const j = r.json as { rotatedAt?: string; principalDomain?: string };
   deps.out(`Rotated the webmail master password for master@${j.principalDomain ?? 'mail.<apex>'}.`);
   if (j.rotatedAt) deps.out(`  rotated at: ${j.rotatedAt}`);
-  deps.out('  (Roundcube was rolled; the new password is stored in mail-secrets, not shown.)');
+  deps.out('  (The webmail restarts to load it; the new password is stored in mail-secrets, not shown.)');
   return 0;
 }
 

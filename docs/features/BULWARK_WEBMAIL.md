@@ -64,8 +64,8 @@ holds that. Consequences for the platform:
 ## TL;DR for operators
 
 - New tenants default to whichever engine `platform_config.default_webmail_engine`
-  points at. Bootstrap default is `roundcube`. Super-admin flips it to
-  `bulwark` via the webmail-settings endpoint when ready.
+  points at. Unset means **Bulwark** (`getDefaultWebmailEngine`). Roundcube is
+  a legacy alternative being retired — see ROADMAP R42.
 - Existing tenants keep their current webmail until they delete their
   email domain and re-enable it under the new default.
 - Roundcube and Bulwark share Stalwart's master-user account

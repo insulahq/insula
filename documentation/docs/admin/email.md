@@ -159,8 +159,8 @@ just changes which backend serves it.
 
 | Engine | Notes |
 |--------|-------|
-| **Bulwark** *(default)* | A modern JMAP-native client; supports master-user impersonation so a tenant admin can open any of their mailboxes SSO-style. |
-| **Roundcube** | The classic, widely-known webmail, for teams that prefer it. |
+| **Bulwark** *(default, recommended)* | The platform's webmail: a modern JMAP-native client with mail, contacts, calendar and files. "Open Webmail" signs users straight into their mailbox. |
+| **Roundcube** *(legacy)* | The classic IMAP webmail, kept as an alternative while it is retired. It receives security updates only; new webmail features land in Bulwark, and it has no calendar or files. |
 
 Switching engines triggers a rollout (tracked in the Task Center).
 

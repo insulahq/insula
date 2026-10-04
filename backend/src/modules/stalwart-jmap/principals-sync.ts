@@ -267,8 +267,8 @@ async function syncPrincipals(params: {
           expectedStalwartId: '',
           platformRowId: MASTER_DRIFT_ROW_ID,
           notes:
-            'Webmail master user is missing from Stalwart — Bulwark/Roundcube '
-            + 'login + impersonation are broken for ALL mailboxes until it is '
+            'Webmail master user is missing from Stalwart — webmail sign-in '
+            + '("Open webmail") is broken for ALL mailboxes until it is '
             + 'recreated. Auto-heal re-asserts it from mail-secrets on this cycle; '
             + 'if that is disabled/failing, remediate: POST '
             + '/api/v1/admin/mail/rotate-webmail-master (super_admin). No tenant '
@@ -297,8 +297,8 @@ async function syncPrincipals(params: {
                 notes:
                   `Webmail master user "${masterFqdn}" EXISTS in Stalwart but its `
                   + `password no longer authenticates (HTTP ${probe.status}) — mail-secrets `
-                  + 'and Stalwart have drifted apart, so Bulwark/Roundcube login + '
-                  + 'impersonation are broken for ALL mailboxes. Auto-heal re-asserts the '
+                  + 'and Stalwart have drifted apart, so webmail sign-in ("Open webmail") '
+                  + 'is broken for ALL mailboxes. Auto-heal re-asserts the '
                   + 'mail-secrets password onto Stalwart on this cycle; if that is '
                   + 'disabled/failing, remediate: POST /api/v1/admin/mail/rotate-webmail-master '
                   + '(super_admin). No tenant data is affected.',
@@ -845,8 +845,8 @@ async function emitDriftNotification(
   if (masterItem) {
     title = 'Webmail master user missing — ALL webmail login/impersonation is broken';
     message =
-      `The Stalwart master user (${masterItem.expectedName}) — which Bulwark + `
-      + `Roundcube authenticate as to open every tenant mailbox — is missing from `
+      `The Stalwart master user (${masterItem.expectedName}) — which the webmail `
+      + `authenticates as to open every tenant mailbox — is missing from `
       + `Stalwart. Until it is recreated, NO mailbox can log into webmail or be `
       + `impersonated (other mail functions are unaffected). No tenant mail data is affected.`;
     action = 'Admin UI → Email → Data Drift → "Recreate webmail master", or '

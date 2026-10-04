@@ -36,6 +36,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Roundcube is now the legacy webmail; Bulwark is the recommended one.** Admin → Email →
+  Webmail lists Bulwark first as **Recommended** and Roundcube as **Legacy**: Roundcube stays
+  selectable but receives security updates only, and new webmail features land in Bulwark.
+  Admin texts, notifications, the `platform-ops mail` command and bootstrap output now say "the
+  webmail" instead of naming Roundcube wherever they meant webmail in general. Nothing is removed
+  yet; the steps are tracked as roadmap item R42.
+
 - **Notifications about several things list them — one item each, on every channel.** A
   notification naming several tenants, mailboxes, failed checks, volumes or pods now shows each
   as its own list item: a bulleted list in the email, one `•` line per item in the in-app feed

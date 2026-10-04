@@ -58,9 +58,9 @@ Tenants and their users read mail in a browser. Two webmail engines are
 available:
 
 - **Bulwark** — a modern JMAP-native client, and the **default** on a fresh
-  install.
-- **Roundcube** — the classic, battle-tested webmail, available as an
-  alternative.
+  install. This is the platform's webmail going forward.
+- **Roundcube** — the classic IMAP webmail, kept as a legacy alternative while
+  it is retired: security updates only, no new features.
 
 A platform-wide selector chooses which engine serves webmail; both can coexist.
 Webmail is reachable at `webmail.<domain>` (auto-provisioned) and at a
