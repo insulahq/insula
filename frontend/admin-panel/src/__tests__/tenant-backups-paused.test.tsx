@@ -56,6 +56,9 @@ describe('a suspended tenant on the Tenant Backups page', () => {
     expect(screen.getByTestId(`inclusion-state-${ACTIVE}`)).toHaveTextContent('included');
     expect(screen.getByTestId(`inclusion-bundle-now-${SUSPENDED}`)).toBeDisabled();
     expect(screen.getByTestId(`inclusion-bundle-now-${ACTIVE}`)).toBeEnabled();
+    // Not counted as in tonight's run.
+    expect(screen.getByTestId('tenant-inclusion-summary').querySelector('summary'))
+      .toHaveTextContent('Scheduled inclusion: 1/2 tenants in the daily backup cron (1 paused — suspended)');
   });
 
   it('"Bundle all eligible tenants" leaves it out', async () => {

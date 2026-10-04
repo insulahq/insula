@@ -786,8 +786,11 @@ function BackupsTab(p: BackupsTabProps) {
           with per-tenant override), editable in place. */}
       {(() => {
         const total = p.rollupRows.length;
-        const included = p.rollupRows.filter((r) => r.includedInScheduledBundles).length;
-        const excludedCount = total - included;
+        // A suspended tenant's backups are paused: it is not in tonight's run
+        // even when its plan includes it.
+        const pausedCount = p.rollupRows.filter((r) => r.backupsPaused).length;
+        const included = p.rollupRows.filter((r) => r.includedInScheduledBundles && !r.backupsPaused).length;
+        const excludedCount = total - included - pausedCount;
         if (total === 0) return null;
         const sortedRollup = [...p.rollupRows]
           .sort((a, b) => a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
@@ -798,7 +801,10 @@ function BackupsTab(p: BackupsTabProps) {
           >
             <summary className="cursor-pointer font-medium text-gray-700 dark:text-gray-300">
               Scheduled inclusion: {included}/{total} tenants in the daily backup cron
-              {excludedCount > 0 && ` (${excludedCount} excluded)`}
+              {(excludedCount > 0 || pausedCount > 0) && ` (${[
+                excludedCount > 0 ? `${excludedCount} excluded` : null,
+                pausedCount > 0 ? `${pausedCount} paused — suspended` : null,
+              ].filter(Boolean).join(', ')})`}
             </summary>
             <div className="mt-2 space-y-1 text-gray-600 dark:text-gray-400">
               <ul className="divide-y divide-gray-200 dark:divide-gray-700">
