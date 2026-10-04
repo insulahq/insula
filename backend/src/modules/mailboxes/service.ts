@@ -1181,6 +1181,7 @@ export async function generateWebmailToken(
 
   let token: string;
   let webmailUrl: string;
+  let jti: string | null = null;
 
   // Resolve the webmail base URL. Both engines share the same URL —
   // webmail.<apex> serves whichever engine is currently active (the
@@ -1224,7 +1225,7 @@ export async function generateWebmailToken(
     // spellings. A change that dropped the prefix broke
     // impersonation (route 404'd because the creds were undefined) —
     // see k8s/base/bulwark/deployment.yaml for the full history.
-    const jti = crypto.randomUUID();
+    jti = crypto.randomUUID();
     token = signWebmailJwt(
       {
         iss: 'platform-api/webmail',
@@ -1274,6 +1275,10 @@ export async function generateWebmailToken(
         engine,
         mailbox: mailbox.fullAddress,
         token_ttl_seconds: 30,
+        // Bulwark names the session's app password `Support session <jti>`,
+        // so this ties a session in the mailbox's login-password list to
+        // the person who opened it.
+        ...(jti ? { jti } : {}),
       },
     });
   } catch (err) {

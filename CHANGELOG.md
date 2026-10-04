@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Bulwark webmail 1.9.2 → 1.12.0.** Fixes a run of upstream advisories, two of them critical:
+  Bulwark issued sign-in cookies without checking the credentials, and a page on a sibling
+  subdomain could act in the webmail as the signed-in user. Others: script running from crafted
+  HTML or SVG mail, header injection in read receipts, and remote content slipping past the
+  blocker. "Open webmail" sessions now end after **8 hours** and no longer carry the mail server's
+  master password in a cookie. Each open session appears in the mailbox's **Login passwords**
+  list as **Webmail session**, with the time it ends and a **Sign out** button. Webmail users
+  are signed out once when the update rolls out.
+- **Roundcube 1.7.2 → 1.7.4.** Fixes a zero-click stored XSS in attachments, several header
+  injections, an IMAP command injection, SSRF bypasses in the CSS proxy, and remote-content
+  blocker bypasses.
+- **oauth2-proxy v7.15.3 → v7.15.5** (test and staging installs only). Fixes two critical
+  authentication bypasses.
+- **Stalwart v0.16.20 → v0.16.24.** Bug fixes only, no migration. Of note: cleartext IMAP on
+  port 143 now refuses sign-in until the client switches to TLS (STARTTLS). Mail apps already
+  do, and the platform's own mailbox import switches to STARTTLS by itself. Also: a crafted push
+  URL could make the server sign a token for another push service; `Email/set` could store a
+  message with IMAP UID 0, hiding it from IMAP clients; idle keep-alive connections were never
+  closed.
+
 ### Changed
 
 - **Notifications about several things list them — one item each, on every channel.** A

@@ -267,21 +267,8 @@ export function useDeleteMailbox(tenantId: string) {
 // server-generated and shown ONCE in the create response; the list never
 // carries it.
 
-export interface LoginPassword {
-  readonly id: string;
-  readonly label: string;
-  readonly createdAt: string | null;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
-
-export interface CreateLoginPasswordResult {
-  readonly id: string;
-  readonly label: string;
-  readonly secret: string;
-  readonly expiresAt: string | null;
-  readonly allowedIps: readonly string[];
-}
+export type { LoginPassword, CreateLoginPasswordResult } from '@insula/api-contracts';
+import type { LoginPassword, CreateLoginPasswordResult } from '@insula/api-contracts';
 
 /** Wire shape from @insula/api-contracts. */
 type CreateLoginPasswordInput = CreateLoginPasswordRequest;

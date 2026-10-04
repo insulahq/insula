@@ -40,6 +40,27 @@ IngressRoute now targets the `bulwark` Service directly.
 - Master-user credentials — same Stalwart account, same shared
   `STALWART_MASTER_PASSWORD` reused from Roundcube
 
+## Since 1.11.1: an app password per webmail session
+
+`/api/auth/impersonate` no longer seals the Stalwart master password into the
+session cookie. It uses the master credential once, server-side, to create an
+app password on the target mailbox (JMAP `x:AppPassword/set`, description
+`Support session <jti>`, `expiresAt` now + 8 h), and the browser only ever
+holds that. Consequences for the platform:
+
+- An "Open webmail" session ends after **8 hours**; sessions minted by a
+  pre-1.11.1 image were signed out once on the upgrade.
+- The session's app password shows in the mailbox's login-password list.
+  `login-passwords/service.ts` recognises `Support session <uuid>` (the uuid is
+  the `jti` platform-api put in the token) and returns it as
+  `kind: 'webmail_session'`, labelled **Webmail session**; the panels offer
+  **Sign out** for it. The `mail.webmail_impersonate` audit row records the
+  `jti`, so a session in the list can be traced to whoever opened it.
+- Revoking a login password, or `x:AppPassword/set` destroy, ends that webmail
+  session; changing the mailbox password does not touch app passwords.
+- A used impersonation link is refused after a Bulwark restart (the replay
+  store is in memory) — harmless, the link lives 30 s.
+
 ## TL;DR for operators
 
 - New tenants default to whichever engine `platform_config.default_webmail_engine`
