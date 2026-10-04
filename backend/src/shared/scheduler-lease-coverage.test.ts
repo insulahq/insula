@@ -14,6 +14,7 @@ const SRC = join(import.meta.dirname, '..');
 
 const LEASED: ReadonlyArray<{ file: string; job: string }> = [
   { file: 'modules/tenant-bundles/restic-retention.ts', job: 'restic-retention' },
+  { file: 'modules/system-backup/footprint-scheduler.ts', job: 'system-backup-footprint' },
   { file: 'modules/tenant-bundles/retention.ts', job: 'bundle-retention' },
   { file: 'modules/bandwidth/meter.ts', job: 'bandwidth-meter' },
   { file: 'modules/tenant-lifecycle/scheduler.ts', job: 'lifecycle-hook-retry' },

@@ -107,15 +107,24 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
   const secondsSinceMail = mailLastRun
     ? Math.max(0, Math.floor((Date.now() - mailLastRun.getTime()) / 1000))
     : null;
-  // Mail considered healthy when last run is < 5 minutes old (2-min
-  // schedule + 3-min jitter window). Matches the existing health
-  // banner threshold.
-  const mailHealthy = secondsSinceMail !== null && secondsSinceMail < 300;
 
-  // Mail enabled flag from backup_schedules.
-  const [mailSched] = await db.select({ enabled: backupSchedules.enabled })
+  // Mail enabled flag + cadence from backup_schedules.
+  const [mailSched] = await db.select({ enabled: backupSchedules.enabled, cron: backupSchedules.cronExpression })
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'mail'));
+
+  // Healthy = on its OWN schedule, judged like the dashboard card and the
+  // freshness alerts. A fixed "< 5 minutes" assumed a 2-minute schedule the
+  // snapshot no longer runs on (default every 30 min, often hourly), so mail
+  // read unhealthy almost all of the time.
+  const { classHealth, platformTimeZone } = await import('../dashboard/backup-classes.js');
+  const mailHealthy = classHealth({
+    target: mailTargetName,
+    lastSuccessAt: mailStats.runAt ?? null,
+    schedule: { enabled: mailSched?.enabled ?? false, cron: mailSched?.cron ?? null },
+    zone: await platformTimeZone(db),
+    now: new Date(),
+  }).healthy;
 
   // Schedule states for the page's schedule strip.
   const schedRows = await db.select().from(backupSchedules);

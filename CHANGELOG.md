@@ -79,6 +79,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The dashboard's Backups & DR card shows the real last backup and size for every class.**
+  - **SYSTEM.** It showed a months-old manual export as "the last system backup" and that
+    export's few hundred KB as the size. It now shows the platform database's newest completed
+    base backup. The size covers everything the system target holds: database base backups and
+    WAL, etcd snapshots and DR bundles, measured hourly.
+  - **MAIL.** It showed the mailbox part of tenant bundles and no size. It now shows the mail
+    store's own snapshot repository, with its last snapshot and size.
+  - **TENANT.** The size was the data the last snapshot processed. It is now what the tenant
+    repositories actually store.
+  - **Health.** Each class is judged against its own schedule, the same way the freshness alerts
+    judge it. A class whose scheduled backups are switched off is never shown as healthy, however
+    recent its last backup. A size that misses part of the target is shown as a minimum (≥).
+    The mail status on the Backups pages no longer reads unhealthy because of an old two-minute
+    assumption.
+
 - **Removing a domain's email could delete an unrelated mailbox; the DKIM status showed "Zone file
   not yet available" for every domain.** The mail server numbers mailbox accounts and domains
   separately, so the same id names one of each. On a live install every domain id is also some

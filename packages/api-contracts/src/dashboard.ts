@@ -157,17 +157,30 @@ export const adminDashboardSummarySchema = z.object({
     /** One entry per shim class: system, tenant, mail. */
     classes: z.array(z.object({
       backupClass: z.enum(['system', 'tenant', 'mail']),
+      /**
+       * When this class last produced a backup: system — the platform
+       * database's newest completed base backup; tenant — the newest finished
+       * bundle; mail — the mail store's newest snapshot.
+       */
       lastSuccessAt: z.string().nullable(),
       targetName: z.string().nullable(),
       targetKind: z.string().nullable(),
+      /** A target, a success, and no scheduled run missed beyond its grace. */
       healthy: z.boolean(),
+      /** Why `healthy` is what it is, in the operator's words. */
+      healthDetail: z.string().nullable().default(null),
       /**
-       * Bytes the platform holds for this class. Null where it is genuinely
-       * not a separate figure — since the per-tenant repository merge, mail
-       * lives INSIDE the tenant repos, so a "mail repo size" would either
-       * double-count the tenant total or be invented.
+       * Bytes this class stores at its target: system — everything under the
+       * system target's prefixes (database base backups + WAL, etcd, DR
+       * bundles); tenant — the tenant repositories; mail — the mail store's
+       * snapshot repository (separate from the mailbox data inside tenant
+       * bundles). Null when it has not been measured.
        */
       repoBytes: z.number().nullable(),
+      /** When `repoBytes` was measured, where the source says. */
+      repoMeasuredAt: z.string().nullable().default(null),
+      /** `repoBytes` is a floor: the measurement was cut short or some repositories are unmeasured. */
+      repoBytesPartial: z.boolean().default(false),
     })),
     bundles: z.number(),
     repoBytes: z.number().nullable(),

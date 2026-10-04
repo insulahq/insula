@@ -84,8 +84,14 @@ const ago = (iso: string | null): string => {
   return hrs < 48 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
 };
 
-const bytesToGb = (b: number | null): string =>
-  b == null ? '—' : `${(b / 1e9).toFixed(1)} GB`;
+/** Stored bytes in the unit that says something: "0.0 GB" for 990 KB reads as empty. */
+const bytesToGb = (b: number | null): string => {
+  if (b == null) return '—';
+  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
+  if (b >= 1e6) return `${(b / 1e6).toFixed(0)} MB`;
+  if (b >= 1e3) return `${(b / 1e3).toFixed(0)} KB`;
+  return `${b} B`;
+};
 
 export default function Dashboard() {
   const summary = useConsoleSummary();
@@ -450,28 +456,31 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
   const b = summary?.backups.data;
   if (!b) return <SectionFallback title="Backups & DR" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
 
+  const size = (c: (typeof b.classes)[number]): string =>
+    c.repoBytes == null ? 'not measured yet' : `${c.repoBytesPartial ? '≥ ' : ''}${bytesToGb(c.repoBytes)}`
+      + (c.repoMeasuredAt ? ` (measured ${ago(c.repoMeasuredAt)} ago)` : '');
+
   return (
     <Tile title="Backups & DR" to="/backups" card={(
       <HoverCard title="Backup classes" rows={[
         ...b.classes.flatMap((c) => ([
           [`${c.backupClass} — last success`, c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never recorded'],
-          [`${c.backupClass} target`, c.targetName ? `${c.targetName} · ${c.targetKind ?? '?'}` : 'unassigned'],
+          [`${c.backupClass} — stored`, size(c)],
+          [`${c.backupClass} — target`, c.targetName ? `${c.targetName} · ${c.targetKind ?? '?'}` : 'unassigned'],
+          ...(c.healthDetail ? [[`${c.backupClass} — status`, c.healthDetail]] : []),
         ] as Array<[string, string]>)),
         ['Bundles', b.bundles.toLocaleString()],
-        ['Stored, all tenants', bytesToGb(b.repoBytes)],
         ['Tenants never backed up', String(b.tenantsNeverBackedUp)],
-      ]} note="Mail has no size of its own: since the repository merge it is stored inside the per-tenant repos, so it is counted in the tenant figure." />
+      ]} note="System: the platform database's base backups and WAL, etcd snapshots and DR bundles. Tenant: the repositories of current tenants. Mail: the whole mail store's snapshot repository — separate from the mailboxes inside tenant bundles." />
     )}>
       <div className="flex flex-col divide-y divide-gray-100 dark:divide-gray-700">
         {b.classes.map((c) => (
-          <div key={c.backupClass} className="flex items-baseline gap-2 py-1.5 first:pt-0 last:pb-0">
+          <div key={c.backupClass} className="flex items-baseline gap-2 py-1.5 first:pt-0 last:pb-0" data-testid={`backups-class-${c.backupClass}`}>
             <span
               className={`inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full ${
                 c.healthy ? 'bg-green-500' : c.targetName ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
               }`}
-              title={c.healthy ? 'has a target and a successful run'
-                : c.targetName ? 'target assigned, no successful run recorded'
-                : 'no target assigned'}
+              title={c.healthDetail ?? (c.healthy ? 'on schedule' : c.targetName ? 'no recent successful run' : 'no target assigned')}
             />
             <span className="w-12 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
               {c.backupClass}
@@ -479,8 +488,11 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
             <span className="min-w-0 flex-1 truncate font-mono text-xs tabular-nums text-gray-900 dark:text-gray-100">
               {c.lastSuccessAt ? `${ago(c.lastSuccessAt)} ago` : 'never'}
             </span>
-            <span className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400">
-              {c.repoBytes == null ? '—' : bytesToGb(c.repoBytes)}
+            <span
+              className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400"
+              title={size(c)}
+            >
+              {c.repoBytes == null ? '—' : `${c.repoBytesPartial ? '≥' : ''}${bytesToGb(c.repoBytes)}`}
             </span>
           </div>
         ))}

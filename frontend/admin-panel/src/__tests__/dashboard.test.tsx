@@ -33,9 +33,9 @@ function summary(over: Partial<AdminDashboardSummary> = {}): AdminDashboardSumma
     tenants: okSection({ active: 26, total: 27, routes: 45, domains: 32, provisioningInFlight: 0 }),
     backups: okSection({
       classes: [
-        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: false, repoBytes: 245760 },
-        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: 64e9 },
-        { backupClass: 'mail' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, repoBytes: null },
+        { backupClass: 'system' as const, lastSuccessAt: null, targetName: 'StorageBox', targetKind: 'cifs', healthy: false, healthDetail: 'No successful backup recorded yet.', repoBytes: null, repoMeasuredAt: null, repoBytesPartial: false },
+        { backupClass: 'tenant' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, healthDetail: null, repoBytes: 64e9, repoMeasuredAt: null, repoBytesPartial: false },
+        { backupClass: 'mail' as const, lastSuccessAt: new Date().toISOString(), targetName: 'StorageBox', targetKind: 'cifs', healthy: true, healthDetail: null, repoBytes: 38.8e9, repoMeasuredAt: new Date().toISOString(), repoBytesPartial: false },
       ],
       bundles: 222, repoBytes: 184e9, tenantsNeverBackedUp: 0,
     }),
@@ -229,12 +229,31 @@ describe('Operator console — capacity', () => {
     for (const cls of ['system', 'tenant', 'mail']) {
       expect(screen.getByText(cls)).toBeInTheDocument();
     }
-    // A class with a target but no successful run is NOT healthy.
+    // A class with a target but no successful run is NOT healthy, and an
+    // unmeasured size is a dash, not 0.
     expect(screen.getByText('never')).toBeInTheDocument();
-    expect(screen.getByText('64.0 GB')).toBeInTheDocument();
-    // Mail has no size of its own since the repository merge; it must show a
-    // dash rather than repeat the tenant figure.
-    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('backups-class-system')).toHaveTextContent('—');
+    expect(screen.getByTestId('backups-class-tenant')).toHaveTextContent('64.0 GB');
+    // Mail has its own repository — the mail store's snapshots — and its own size.
+    expect(screen.getByTestId('backups-class-mail')).toHaveTextContent('38.8 GB');
+  });
+
+  it('marks a size that is only a floor', () => {
+    const data = summary().backups.data!;
+    summaryFn.mockReturnValue({ data: { data: summary({
+      backups: okSection({ ...data, classes: data.classes.map((c) => c.backupClass === 'tenant' ? { ...c, repoBytesPartial: true } : c) }),
+    }) }, isLoading: false });
+    show();
+    expect(screen.getByTestId('backups-class-tenant')).toHaveTextContent('≥64.0 GB');
+  });
+
+  it('a small repository shows its size in a unit that is not "0.0 GB"', () => {
+    const data = summary().backups.data!;
+    summaryFn.mockReturnValue({ data: { data: summary({
+      backups: okSection({ ...data, classes: data.classes.map((c) => c.backupClass === 'mail' ? { ...c, repoBytes: 991_634 } : c) }),
+    }) }, isLoading: false });
+    show();
+    expect(screen.getByTestId('backups-class-mail')).toHaveTextContent('992 KB');
   });
 
   it('states plainly that one node has no redundancy', () => {

@@ -2404,6 +2404,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => cnpgBackupHealthStop());
 
+        // What the SYSTEM backup class stores at its target, measured hourly
+        // for the dashboard's Backups & DR card (DB-only reader).
+        const { startSystemFootprintScheduler } = await import('./modules/system-backup/footprint-scheduler.js');
+        const systemFootprintStop = startSystemFootprintScheduler({
+          db: app.db,
+          core: k8sForImapsync.core,
+          custom: k8sForImapsync.custom,
+          log: { warn: (msg, err) => app.log.warn({ err: err instanceof Error ? err.message : err }, msg) },
+        });
+        app.addHook('onClose', () => systemFootprintStop());
+
         // WAL-archive health: detect CNPG continuous-archiving FAILURE (a
         // configured backup target whose sink is unreachable → un-archived WAL
         // fills the volume), alert, and — as a last-resort safety — auto-disable
