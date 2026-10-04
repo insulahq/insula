@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.4] - 2026-10-04
+
 ### Security
 
 - **Bulwark webmail 1.9.2 → 1.12.0.** Fixes a run of upstream advisories, two of them critical:
