@@ -17,6 +17,7 @@ import {
   createDomain as jmapCreateDomain,
   findDomainByName as jmapFindDomainByName,
   destroyPrincipal as jmapDestroyPrincipal,
+  destroyDomain as jmapDestroyDomain,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import type { EmailDomainDisablePreview, WebmailStatus, EmailConnectionInfo } from '@insula/api-contracts';
@@ -468,7 +469,10 @@ export async function destroyStalwartArtifactsForEmailDomain(
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     try {
-      await jmapDestroyPrincipal({
+      // x:Domain explicitly — a domain id also names some ACCOUNT (separate,
+      // colliding id sequences), and the account-first principal shim used
+      // here before destroyed that mailbox instead of this domain.
+      await jmapDestroyDomain({
         accountId,
         id: emailDomain.stalwartDomainId,
         baseUrl: process.env.STALWART_MGMT_URL,

@@ -662,7 +662,7 @@ export async function deleteOrphanDomain(
     throw new ApiError('DRIFT_ITEM_INVALID', 'orphan-domain item carries no Stalwart id', 409);
   }
 
-  const { getJmapSession, destroyPrincipal } = await import('../stalwart-jmap/client.js');
+  const { getJmapSession, destroyDomain } = await import('../stalwart-jmap/client.js');
   const { removeAllDkimSignaturesForDomain } = await import('../email-dkim/cleanup.js');
   const baseUrl = process.env.STALWART_MGMT_URL;
   const session = await getJmapSession(baseUrl, process.env);
@@ -697,7 +697,9 @@ export async function deleteOrphanDomain(
   }
 
   try {
-    await destroyPrincipal({ accountId, id: stalwartDomainId, baseUrl });
+    // x:Domain explicitly: this id also names some mailbox ACCOUNT, and the
+    // account-first principal shim destroyed that mailbox instead.
+    await destroyDomain({ accountId, id: stalwartDomainId, baseUrl });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/objectIsLinked|linked/i.test(msg)) {

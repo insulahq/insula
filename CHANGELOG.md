@@ -58,6 +58,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Removing a domain's email could delete an unrelated mailbox; the DKIM status showed "Zone file
+  not yet available" for every domain.** The mail server numbers mailbox accounts and domains
+  separately, so the same id names one of each. On a live install every domain id is also some
+  account's id. The platform looked ids up as accounts first and as domains only if no account
+  matched. As a result:
+  - The **DKIM status** read the mailbox account instead of the domain. Every domain showed "Zone
+    file not yet available".
+  - **Disabling email on a domain, deleting an email-enabled domain, deleting a tenant with email**
+    and **Data Drift → Delete orphan domain** deleted the mailbox that shared the domain's id —
+    possibly another tenant's — and left the domain behind.
+
+  Domains are now always read and deleted as domains, and mailboxes only as mailboxes. If the DKIM
+  status cannot be read, it now shows the actual error instead of "not yet available".
+
 - **A suspended tenant no longer fails its backup every night.** Suspension blocks every sign-in
   on the tenant's mailboxes, including the backup's own login, so the first nightly run after a
   suspension ended `partial` with a "Tenant backup … did not complete" alert, and every night
