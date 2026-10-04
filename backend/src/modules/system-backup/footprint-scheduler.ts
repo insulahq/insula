@@ -3,7 +3,7 @@ import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { measureSystemFootprint } from './footprint-measure.js';
-import { storeSystemFootprint } from './footprint-store.js';
+import { clearSystemFootprint, storeSystemFootprint, systemClassIsBound } from './footprint-store.js';
 
 /**
  * Hourly measurement of what the SYSTEM backup class stores at its target, for
@@ -25,6 +25,12 @@ export function startSystemFootprintScheduler(deps: {
   const tick = async (): Promise<void> => {
     if (stopped) return;
     const outcome = await withSchedulerLease(deps.db, 'system-backup-footprint', INTERVAL_MS * 1.5, async () => {
+      // No system target: nothing to measure, and a size measured at a target
+      // since unassigned must not stay on the card.
+      if (!(await systemClassIsBound(deps.db))) {
+        await clearSystemFootprint(deps.db);
+        return { error: null };
+      }
       const footprint = await measureSystemFootprint(deps.db, deps);
       await storeSystemFootprint(deps.db, footprint);
       return footprint;

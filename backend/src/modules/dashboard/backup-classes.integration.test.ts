@@ -14,7 +14,7 @@ import { sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { buildBackupClasses } from './backup-classes.js';
-import { recordSystemLastSuccess, storeSystemFootprint } from '../system-backup/footprint-store.js';
+import { clearSystemFootprint, recordSystemLastSuccess, storeSystemFootprint, systemClassIsBound } from '../system-backup/footprint-store.js';
 import type { ClusterBackupHealth } from '../cnpg-backup-health/service.js';
 
 const dbAvailable = await isDbAvailable();
@@ -84,6 +84,17 @@ describe.skipIf(!dbAvailable)('dashboard backup classes (integration)', () => {
     });
     const sys = (await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'system')!;
     expect(sys.repoBytes).toBeNull();
+  });
+
+  it('an unbound system class is detected, and its stored size can be dropped', async () => {
+    await storeSystemFootprint(db(), {
+      measuredAt: NOW.toISOString(), totalBytes: 5, objectCount: 1, truncated: false, error: null, parts: [],
+    });
+    expect(await systemClassIsBound(db())).toBe(true);
+    await db().execute(sql`DELETE FROM backup_target_assignments WHERE backup_class = 'system'`);
+    expect(await systemClassIsBound(db())).toBe(false);
+    await clearSystemFootprint(db());
+    expect((await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'system')!.repoBytes).toBeNull();
   });
 
   it('the recorded last system backup never moves backwards', async () => {

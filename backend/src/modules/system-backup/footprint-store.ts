@@ -1,5 +1,5 @@
 import { eq, inArray } from 'drizzle-orm';
-import { platformSettings } from '../../db/schema.js';
+import { backupTargetAssignments, platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { ClusterBackupHealth } from '../cnpg-backup-health/service.js';
 
@@ -106,4 +106,17 @@ export async function recordSystemLastSuccess(
 
 export async function storeSystemFootprint(db: Database, footprint: SystemBackupFootprint): Promise<void> {
   await writeJson(db, SYSTEM_BACKUP_FOOTPRINT_KEY, footprint);
+}
+
+export async function clearSystemFootprint(db: Database): Promise<void> {
+  await db.delete(platformSettings).where(eq(platformSettings.key, SYSTEM_BACKUP_FOOTPRINT_KEY));
+}
+
+/** Whether the SYSTEM class has a backup target at all. */
+export async function systemClassIsBound(db: Database): Promise<boolean> {
+  const [row] = await db.select({ cls: backupTargetAssignments.backupClass })
+    .from(backupTargetAssignments)
+    .where(eq(backupTargetAssignments.backupClass, 'system'))
+    .limit(1);
+  return Boolean(row);
 }
