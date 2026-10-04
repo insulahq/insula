@@ -972,11 +972,9 @@ export async function getAccessibleMailboxes(
 
 interface GenerateWebmailTokenOptions {
   /**
-   * Webmail engine to mint a token for. Defaults to `roundcube` to
-   * preserve the historical behaviour for all callers that haven't
-   * been updated yet. Phase 10 of the Bulwark integration roadmap
-   * (ADR-039) wires `platform_config.default_webmail_engine` to flip
-   * the default for new tenants.
+   * Webmail engine to mint a token for. Unset → the platform's
+   * `default_webmail_engine` (`getDefaultWebmailEngine`: Bulwark unless an
+   * operator chose Roundcube).
    *
    * Bulwark tokens carry `iss`/`jti`/`tenant_id`/`actor_user_id` and
    * are verified by Bulwark's own `/api/auth/impersonate` route

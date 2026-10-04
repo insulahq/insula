@@ -413,9 +413,8 @@ export function useDeleteMailboxAlias(tenantId: string) {
 export interface WebmailTokenInput {
   mailboxId: string;
   /**
-   * Optional engine override. When unset the backend uses its current
-   * default (roundcube today; Phase 10 ADR-039 introduces a
-   * platform-config flag to flip the default to bulwark).
+   * Optional engine override. When unset the backend uses the platform's
+   * default engine (Bulwark unless an operator chose Roundcube).
    */
   engine?: 'roundcube' | 'bulwark';
 }
