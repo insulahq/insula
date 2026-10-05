@@ -17,6 +17,7 @@
  * doesn't have to wait the 30s for the next scheduled tick.
  */
 
+import { checkBanAllowed } from './ban-safety-context.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -87,6 +88,7 @@ import {
 } from '@insula/api-contracts';
 import {
   getL4Status,
+  getOperatorIp,
   getOperatorIpWithSource,
   OperatorIpNotTrustedError,
   resolveTrustSources,
@@ -461,6 +463,8 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        const refusal = await checkBanAllowed({ db: app.db, kubeconfigPath }, parsed.data.value, getOperatorIp(req));
+        if (refusal) throw new ApiError(refusal.code, refusal.message, 409, { value: parsed.data.value });
         const actor = userOf(req as AuthedRequest);
         app.log.warn({ actor, ban: parsed.data }, 'crowdsec: manual ban added');
         try {
@@ -644,6 +648,8 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        const refusal = await checkBanAllowed({ db: app.db, kubeconfigPath }, parsed.data.value, getOperatorIp(req));
+        if (refusal) throw new ApiError(refusal.code, refusal.message, 409, { value: parsed.data.value });
         const actor = userOf(req as AuthedRequest);
         app.log.warn({ actor, ban: parsed.data }, 'crowdsec: permanent ban added');
         try {

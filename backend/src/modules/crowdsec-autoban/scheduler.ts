@@ -44,6 +44,9 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { crowdsecAutobanRuns, platformSettings, wafLogs } from '../../db/schema.js';
 import { addBan } from '../security-hardening/crowdsec.js';
 import { isIpInAllowlist } from '../security-hardening/crowdsec-allowlists.js';
+import { banRefusal } from '../security-hardening/ban-safety.js';
+import type { Database } from '../../db/index.js';
+import { loadPlatformBanContext } from '../security-hardening/ban-safety-context.js';
 import { evaluateWafBatch, type WafLogRow } from './evaluator.js';
 import type { CrowdsecAutobanConfig, CrowdsecAutobanOutcome } from '@insula/api-contracts';
 
@@ -352,6 +355,12 @@ export async function runOnce(deps: SchedulerDeps): Promise<void> {
 
   const decisions = evaluateWafBatch(evaluable, config, recentlyBanned, pastBansPerIp);
 
+  // Loaded once per run. Null (node list unreadable) refuses every ban this
+  // run: an automatic ban on a node or ingress address cuts the cluster off.
+  const platform = decisions.some((d) => d.outcome === 'banned')
+    ? await loadPlatformBanContext({ db: deps.db as unknown as Database, kubeconfigPath: deps.kubeconfigPath })
+    : null;
+
   for (const d of decisions) {
     if (d.outcome !== 'banned') {
       // Persist skip reason for the audit timeline.
@@ -373,6 +382,24 @@ export async function runOnce(deps: SchedulerDeps): Promise<void> {
     // (defence-in-depth — addBan/cscli will accept it anyway, but the
     // audit row should record this clearly). isIpInAllowlist is
     // fail-CLOSED so a CrowdSec outage results in skip not ban.
+    const protectedReason = platform
+      ? banRefusal(d.sourceIp, { operatorIp: null, ...platform })?.message ?? null
+      : 'the cluster\'s node addresses could not be read, so no automatic ban was issued';
+    if (protectedReason) {
+      await insertRun(deps.db, {
+        sourceIp: d.sourceIp,
+        hostname: d.hostname,
+        ruleIds: d.ruleIds,
+        eventCount: d.eventCount,
+        windowSeconds: config.windowSeconds,
+        banDuration: '0s',
+        banId: null,
+        outcome: 'skipped_protected',
+        outcomeDetail: protectedReason.slice(0, 500),
+      });
+      continue;
+    }
+
     const allowlisted = await isIpInAllowlist(deps.kubeconfigPath, d.sourceIp);
     if (allowlisted) {
       await insertRun(deps.db, {

@@ -97,6 +97,22 @@ you can add bans — timed or **Permanent** — and remove them.
 removes it. (This replaces the former *Static Blocklist* section — its entries
 now appear in the same list, labelled **Operator · Permanent**.)
 
+!!! note "Addresses that cannot be banned"
+    A ban is cluster-wide, so the platform refuses one that covers — as an
+    address or inside a range:
+
+    - **your own address** (it would lock you out of the panel);
+    - the platform's **own nodes or ingress addresses**;
+    - **private, loopback, link-local, CGNAT and other reserved** ranges
+      (`10.0.0.0/8`, `192.168.0.0/16`, `100.64.0.0/10`, `fc00::/7`, …) — that
+      traffic is cluster-internal or the reverse proxy itself;
+    - a **trusted range** or an **allowlisted** address.
+
+    The dialog says which rule applied. The WAF auto-ban follows the same
+    rules and records a skipped address as **skipped_protected**. If the
+    platform cannot read its node addresses or the allowlist, it refuses the
+    ban rather than issue it blind.
+
 ### Reading the list
 
 **One row per address**, not per detection. A single scanner usually trips

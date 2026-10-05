@@ -16,6 +16,7 @@
  * narrative.
  */
 
+import { canonicalIp } from './ip-canonical.js';
 import { z } from 'zod';
 
 export const crowdsecDecisionScopeSchema = z.enum(['Ip', 'Range', 'Country', 'AS']);
@@ -107,7 +108,8 @@ export type CrowdsecDecision = z.infer<typeof crowdsecDecisionSchema>;
  * and disagreed with the list it links to.
  */
 export function crowdsecDecisionAddressKey(d: Pick<CrowdsecDecision, 'scope' | 'value'>): string {
-  return `${d.scope}:${d.value}`;
+  // One spelling per address: two engines may write the same IPv6 host differently.
+  return `${d.scope.toLowerCase()}:${canonicalIp(d.value)}`;
 }
 
 /**

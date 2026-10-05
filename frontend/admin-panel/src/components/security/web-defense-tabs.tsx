@@ -2545,6 +2545,7 @@ function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
   const outcomeTone: Record<CrowdsecAutobanOutcome, string> = {
     banned: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200',
     skipped_allowlisted: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200',
+    skipped_protected: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200',
     skipped_excluded_rule: 'bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-300',
     skipped_already_banned: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200',
     skipped_below_threshold: 'bg-gray-100 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400',

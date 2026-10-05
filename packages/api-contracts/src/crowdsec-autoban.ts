@@ -20,6 +20,7 @@ import { z } from 'zod';
 export const crowdsecAutobanOutcomeSchema = z.enum([
   'banned',
   'skipped_allowlisted',
+  'skipped_protected',
   'skipped_excluded_rule',
   'skipped_already_banned',
   'skipped_below_threshold',
