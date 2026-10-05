@@ -22,6 +22,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Database errors no longer carry credentials.** A failed command in a database pod reported (and
   logged) the exec status, which embeds the root password and, for a password change, the new one.
   Errors now carry the database's own message with secrets redacted.
+- **Bans can no longer hit the platform itself.** Manual bans (timed or permanent) and the WAF
+  auto-ban refuse your own address, the cluster's node and ingress addresses, private / loopback /
+  CGNAT ranges, trusted ranges and allowlisted addresses — in any spelling, including ranges that
+  merely contain one. If those cannot be read, the ban is refused rather than issued blind.
 
 ### Changed
 
@@ -38,6 +42,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Traffic Detection** can be switched off (alerts only, no bans).
 - **Styled tooltips** everywhere in both panels: every hover hint renders as a bubble that is never
   clipped and stays on screen.
+- **The tenant panel's code editors no longer load from a CDN.** Monaco (SQL Manager, file editor,
+  compose editor) is served from the panel image instead of cdn.jsdelivr.net — no third-party fetch
+  from tenants' browsers, and editors work on firewalled clusters. The image grows by about 4 MB.
 - **Compose stacks can mount an existing storage folder** with Compose's own idiom
   (`driver_opts: { type: none, o: bind, device: <folder> }`); the editor's example explains where
   volumes are stored.
@@ -46,7 +53,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 - The admin **Backups** page showed "Tenants 0 — no jobs registered" although bundles ran nightly;
   it now reflects every tenant's latest bundle (failing / never run turn the card amber or red).
-- The dashboard **Web Defence** tile counted only WAF auto-bans; it now matches the Banned IPs list.
+- The dashboard **Web Defence** tile counted only WAF auto-bans; it now matches the Banned IPs list,
+  and one host written two ways (IPv6) counts once.
+- The **System** card on the Backups page now includes the platform database's own backups.
+- Retention could expire a tenant's last good copy of a component (e.g. mail) when a newer bundle
+  was `partial` because that component failed; the newest completed copy of each component is now
+  kept.
 - SQL Manager: regenerating or deleting a database user failed for accounts not created for host
   `%`, and a failure was never shown on the page.
 - The documentation used a real domain as an example; it now uses `example.com`.
