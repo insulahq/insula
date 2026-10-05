@@ -193,19 +193,24 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   // shim assignments; Longhorn volume-level backups no longer exist
   // (base RecurringJobs removed the same day).
 
-  // GET /api/v1/admin/backup-health — discovery-driven roll-up of
-  // every Job carrying the backup-health-watch=true label. Used by
-  // the admin Backups page banner + DR Job Health table.
+  // GET /api/v1/admin/backup-health — roll-up of every Job carrying the
+  // backup-health-watch=true label, PLUS one row per tenant from the
+  // tenant bundle ledger (category 'tenant'). Tenant backups are bundles
+  // recorded in backup_jobs, not labelled Jobs — with the Job listing
+  // alone the Backups dashboard's Tenants card never had a row to show.
   app.get('/admin/backup-health', async () => {
     if (!longhornTenants?.batch) {
       throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
     }
-    const { listHealthWatchedJobs, summariseHealth } = await import(
+    const { listHealthWatchedJobs, summariseHealth, sortSummaries } = await import(
       '../backup-health/service.js'
     );
-    const jobs = await listHealthWatchedJobs(longhornTenants.batch);
-    const summary = summariseHealth(jobs);
-    return success(summary);
+    const { loadTenantBundleHealth } = await import('../backup-health/tenant-bundles.js');
+    const [jobs, tenantRows] = await Promise.all([
+      listHealthWatchedJobs(longhornTenants.batch),
+      loadTenantBundleHealth(app.db),
+    ]);
+    return success(sortSummaries([...summariseHealth(jobs), ...tenantRows]));
   });
 
 }

@@ -35,9 +35,10 @@ interface ClassRow {
 }
 
 // `BackupCategory` only has the values dr / tenant / audit / custom, so
-// the System/Tenants/Mail split is derived from category + a heuristic
-// on namespace / groupKey. Phase 3 may add a dedicated `mail` category
-// label to backup-health if the heuristic proves brittle.
+// the System/Mail split is derived from category + a heuristic on
+// namespace / groupKey. Tenants are their own category: one row per tenant,
+// built by the backend from the bundle ledger — never matched by the mail
+// heuristic, whatever a tenant's key contains.
 const isMail = (s: BackupHealthSummary): boolean =>
   s.namespace === 'mail'
   || s.groupKey.toLowerCase().includes('mail')
@@ -46,7 +47,7 @@ const isMail = (s: BackupHealthSummary): boolean =>
 const CLASSES: readonly ClassRow[] = [
   { to: '/backups/system',  label: 'System',  icon: KeyRound, match: (s) => s.category === 'dr' && !isMail(s) },
   { to: '/backups/tenants', label: 'Tenants', icon: Package,  match: (s) => s.category === 'tenant' },
-  { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => isMail(s) },
+  { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => s.category !== 'tenant' && isMail(s) },
 ];
 
 /**
@@ -168,24 +169,49 @@ function classifyRows(
   const mine = rows.filter(match);
   if (mine.length === 0) return { tone: 'idle', value: '0', detail: 'no jobs registered' };
   const failing = mine.filter((s) => s.state === 'failing');
+  // Only `healthy` rows are healthy: a never-run row (for tenants, one the
+  // nightly wave covers with no bundle yet) has nothing to its name.
+  const healthy = mine.filter((s) => s.state === 'healthy').length;
+  const neverRun = mine.filter((s) => s.state === 'never_run').length;
   const lastSuccess = mine
     .map((s) => s.lastSuccessAt)
     .filter((v): v is string => !!v)
     .sort()
     .at(-1) ?? null;
+  const since = lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded';
+  const detail = [
+    ...(failing.length > 0 ? [`${healthy} healthy`] : []),
+    ...(neverRun > 0 ? [`${neverRun} never run`] : []),
+    since,
+  ].join(' · ');
   if (failing.length > 0) {
     const tone: Tone = failing.some((s) => s.severity === 'critical') ? 'fail' : 'warn';
-    return {
-      tone,
-      value: `${failing.length} failing`,
-      detail: lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded',
-    };
+    return { tone, value: `${failing.length} failing`, detail };
   }
-  return {
-    tone: 'ok',
-    value: `${mine.length} healthy`,
-    detail: lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded',
-  };
+  return { tone: neverRun > 0 ? 'warn' : 'ok', value: `${healthy} healthy`, detail };
+}
+
+const epochMs = (iso: string | null): number => {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  return Number.isNaN(t) ? 0 : t;
+};
+
+/** The newest thing that happened to a row — its last success or failure. */
+const lastActivity = (s: BackupHealthSummary): number =>
+  Math.max(epochMs(s.lastSuccessAt), epochMs(s.lastFailedAt));
+
+/**
+ * "Recent backup activity": failures first, then by the newest run. The
+ * roll-up's own order is by name, which — with a row per tenant — would let
+ * tenants early in the alphabet push every other backup off the list.
+ */
+function recentActivity(rows: ReadonlyArray<BackupHealthSummary>): BackupHealthSummary[] {
+  return [...rows].sort((a, b) => {
+    const fa = a.state === 'failing' ? 0 : 1;
+    const fb = b.state === 'failing' ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return lastActivity(b) - lastActivity(a);
+  });
 }
 
 export default function BackupsDashboard() {
@@ -255,7 +281,7 @@ export default function BackupsDashboard() {
             data-testid="backups-dashboard-recent"
             aria-label="Recent backup activity"
           >
-            {summaries.slice(0, 10).map((s) => {
+            {recentActivity(summaries).slice(0, 10).map((s) => {
               const isFail = s.state === 'failing';
               const Icon = isFail ? AlertCircle : CheckCircle;
               const iconTone = isFail

@@ -24,8 +24,15 @@ The single most important distinction:
 
 **Backups → Dashboard** answers "is anything on fire?" in one screen: a
 health banner, one stat card per class (System / Tenants / Mail) plus a
-Remote Storage Targets card, and a recent-activity list. Each card
-deep-links into its class. A failing or never-run class shows red/amber.
+Remote Storage Targets card, and a recent-activity list (failures first,
+then the most recent runs). Each card deep-links into its class. A failing
+or never-run class shows red/amber.
+
+The **Tenants** card counts tenants by their newest finished bundle: a
+`completed` bundle makes the tenant healthy, a `partial` or `failed` one
+makes it failing (until a newer bundle completes). A tenant included in the
+nightly bundle run that has no bundle yet counts as **never run** and turns
+the card amber. The card also shows when the newest tenant bundle succeeded.
 
 If a DR restore is in progress, a **frozen-targets banner** appears naming
 each target that's been marked read-only — until you mark them read-write

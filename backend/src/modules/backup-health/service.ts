@@ -188,17 +188,28 @@ export function summariseHealth(
       recentRuns: runs.length,
     });
   }
-  const order: Record<BackupHealthSummary['state'], number> = {
-    failing: 0,
-    never_run: 1,
-    healthy: 2,
-  };
-  result.sort((a, b) => {
-    const so = order[a.state] - order[b.state];
+  return sortSummaries(result);
+}
+
+const STATE_ORDER: Record<BackupHealthSummary['state'], number> = {
+  failing: 0,
+  never_run: 1,
+  healthy: 2,
+};
+
+/**
+ * The roll-up's display order: failing first, then never run, then healthy,
+ * each by name. Exported so rows from other sources (the tenant bundle ledger,
+ * tenant-bundles.ts) merge into the same order as the Job rows.
+ */
+export function sortSummaries(
+  rows: ReadonlyArray<BackupHealthSummary>,
+): BackupHealthSummary[] {
+  return [...rows].sort((a, b) => {
+    const so = STATE_ORDER[a.state] - STATE_ORDER[b.state];
     if (so !== 0) return so;
     return a.displayName.localeCompare(b.displayName);
   });
-  return result;
 }
 
 export function findNewFailures(
