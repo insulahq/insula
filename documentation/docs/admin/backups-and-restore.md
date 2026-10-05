@@ -110,6 +110,14 @@ The cluster-wide **Secrets bundle** lives on the
         Until its first new bundle completes, its newest existing bundle is
         kept, even if that bundle is past its retention date.
 
+    ??? info "The last good copy of each part is never aged out"
+        For an active tenant, retention keeps the newest bundle and, per
+        part (files, mailboxes, config, secrets), the newest bundle in which
+        that part **completed** — even past its retention date. A newer
+        **partial** bundle whose mail capture failed therefore does not let
+        the last good mail copy expire; it is released once a newer bundle
+        completes mail. At most one extra bundle per part is held this way.
+
     ??? info "Backups load when you open a tenant"
         The page itself loads only the tenant list — every tenant, with
         its backup count and repository size. No backup is fetched until
