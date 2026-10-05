@@ -53,6 +53,7 @@ import {
   crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
   crowdsecSetScenarioSimulationRequestSchema,
+  crowdsecSetTrafficDetectionRequestSchema,
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
 } from '@insula/api-contracts';
@@ -71,7 +72,8 @@ import {
   enrollConsole,
   getConsoleStatus,
 } from './crowdsec-console.js';
-import { listScenarios, setScenarioSimulation } from './crowdsec-scenarios.js';
+import { listScenarios, setScenarioSimulation, setTrafficDetectionEnabled } from './crowdsec-scenarios.js';
+import { readTrafficDetectionEnabled, writeTrafficDetectionEnabled } from './traffic-detection-setting.js';
 import {
   crowdsecConsoleEnrollRequestSchema,
   crowdsecConsoleMetaPatchSchema,
@@ -692,12 +694,24 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
     // scenarios from Traefik access logs — and the panel had a settings card
     // for one of them and nothing at all for the other.
 
+    // The saved Malicious Traffic Detection on/off. A database hiccup must not
+    // take the scenario list down with it, so a failed read is "never saved"
+    // (null) — the UI then shows what the agent actually runs.
+    const readDetectionChoice = async (): Promise<boolean | null> => {
+      try {
+        return await readTrafficDetectionEnabled(deps.db);
+      } catch (err) {
+        app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'crowdsec: could not read the traffic-detection setting');
+        return null;
+      }
+    };
+
     app.get(
       '/admin/security/crowdsec/scenarios',
       { preHandler: requireRole('super_admin') },
       async (_req: FastifyRequest, reply: FastifyReply) => {
         try {
-          return success(await listScenarios(kubeconfigPath));
+          return success(await listScenarios(kubeconfigPath, await readDetectionChoice()));
         } catch (err) {
           return reply.status(502).send({
             error: 'CROWDSEC_SCENARIOS_FAILED',
@@ -723,7 +737,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         const { name, simulated } = parsed.data;
         app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario simulation changed');
         try {
-          const out = await setScenarioSimulation(kubeconfigPath, name, simulated);
+          const out = await setScenarioSimulation(kubeconfigPath, name, simulated, await readDetectionChoice());
           return success(out);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -735,6 +749,53 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             error: status === 400 ? 'UNKNOWN_SCENARIO' : 'CROWDSEC_SCENARIO_PATCH_FAILED',
             message,
           });
+        }
+      },
+    );
+
+    // Malicious Traffic Detection on/off. Disabled = the agent's GLOBAL
+    // simulation switch on: every scenario keeps raising alerts, none bans.
+    // The choice is saved to platform_settings BEFORE it is applied, so a
+    // failed apply is re-applied at the next startup instead of being lost —
+    // and so a recreated ConfigMap comes back in the operator's state, not the
+    // shipped default.
+    app.put(
+      '/admin/security/crowdsec/traffic-detection',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecSetTrafficDetectionRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        const { enabled } = parsed.data;
+        app.log.warn({ actor, enabled }, 'crowdsec: malicious traffic detection toggled');
+        await writeTrafficDetectionEnabled(deps.db, enabled);
+        try {
+          return success(await setTrafficDetectionEnabled(kubeconfigPath, enabled));
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          app.log.warn({ actor, enabled, err: detail }, 'crowdsec: traffic detection saved but not applied');
+          throw new ApiError(
+            'CROWDSEC_TRAFFIC_DETECTION_FAILED',
+            `Saved, but not applied to the CrowdSec agent: ${detail}`,
+            502,
+            {
+              operatorError: {
+                code: 'CROWDSEC_TRAFFIC_DETECTION_FAILED',
+                title: 'Saved, but not applied yet',
+                detail: `Your choice was saved, but the agent's configuration could not be updated: ${detail}`,
+                remediation: [
+                  'Retry. The saved choice is also re-applied automatically the next time platform-api starts.',
+                  'Check that platform-api can read and patch ConfigMaps in the platform-system namespace.',
+                ],
+                retryable: true,
+              },
+            },
+          );
         }
       },
     );

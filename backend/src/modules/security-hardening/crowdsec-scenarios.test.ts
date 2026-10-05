@@ -50,7 +50,7 @@ describe('deriveAddedBy', () => {
 describe('simulation.yaml round-trip', () => {
   it('round-trips a list', () => {
     const names = ['crowdsecurity/http-crawl-non_statics', 'crowdsecurity/http-probing'];
-    const parsed = parseSimulationYaml(renderSimulationYaml(names));
+    const parsed = parseSimulationYaml(renderSimulationYaml(names, true));
     expect(parsed.simulated).toEqual(names);
     expect(parsed.global).toBe(false);
   });
@@ -59,18 +59,18 @@ describe('simulation.yaml round-trip', () => {
     // `exclusions: []` must parse back to zero names, not to "the key is
     // missing so keep the default". Turning the last scenario off is exactly
     // when a fallback-to-default bug would be most surprising.
-    const parsed = parseSimulationYaml(renderSimulationYaml([]));
+    const parsed = parseSimulationYaml(renderSimulationYaml([], true));
     expect(parsed.simulated).toEqual([]);
   });
 
   it('sorts and de-duplicates so the file does not churn', () => {
-    const out = renderSimulationYaml(['b/two', 'a/one', 'b/two']);
+    const out = renderSimulationYaml(['b/two', 'a/one', 'b/two'], true);
     expect(out).toContain('  - a/one\n  - b/two\n');
     expect(out.match(/b\/two/g)).toHaveLength(1);
   });
 
-  it('keeps the global switch off — exclusions are INVERTED when it is on', () => {
-    expect(renderSimulationYaml([])).toContain('simulation: false');
+  it('keeps the global switch off while detection is enabled — exclusions are INVERTED when it is on', () => {
+    expect(renderSimulationYaml([], true)).toContain('simulation: false');
   });
 
   it('reads the global switch when an operator has set it by hand', () => {
@@ -98,7 +98,7 @@ describe('simulation.yaml round-trip', () => {
   });
 
   it('parses the exact file the platform ships by default', () => {
-    const parsed = parseSimulationYaml(renderSimulationYaml(DEFAULT_SIMULATED_SCENARIOS));
+    const parsed = parseSimulationYaml(renderSimulationYaml(DEFAULT_SIMULATED_SCENARIOS, true));
     expect(parsed.simulated).toEqual(['crowdsecurity/http-crawl-non_statics']);
   });
 

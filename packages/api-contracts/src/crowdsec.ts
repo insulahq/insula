@@ -405,8 +405,10 @@ export const crowdsecScenarioSchema = z.object({
   /** Hub status string, e.g. "enabled". */
   status: z.string(),
   /**
-   * True when the scenario is listed in the agent's simulation exclusions:
-   * it still raises alerts but issues NO ban.
+   * The operator's per-scenario choice: true = alert-only (raises alerts,
+   * issues NO ban). While Malicious Traffic Detection is disabled every
+   * scenario is alert-only regardless, and this is the choice that comes back
+   * when it is enabled again.
    */
   simulated: z.boolean(),
   /** Events that entered this scenario's buckets since the agent started. */
@@ -434,6 +436,14 @@ export const crowdsecScenariosResponseSchema = z.object({
    */
   globalSimulation: z.boolean(),
   /**
+   * Malicious Traffic Detection on/off — the operator's SAVED choice
+   * (platform_settings), or, when it was never saved, what the agent runs
+   * (`!globalSimulation`). Disabled means every scenario runs in simulation:
+   * the agent keeps raising alerts, it issues no bans. A value that disagrees
+   * with `globalSimulation` means the choice is saved but not yet applied.
+   */
+  detectionEnabled: z.boolean(),
+  /**
    * What the agent reads. A scenario can only ever fire on an event type some
    * source produces, so this is the context that makes "0 events" legible —
    * the SSH scenarios on an agent with only an HTTP source are not broken,
@@ -456,3 +466,37 @@ export const crowdsecSetScenarioSimulationRequestSchema = z.object({
 });
 export type CrowdsecSetScenarioSimulationRequest =
   z.infer<typeof crowdsecSetScenarioSimulationRequestSchema>;
+
+export const crowdsecSetScenarioSimulationResponseSchema = z.object({
+  /** The per-scenario alert-only list after the change. */
+  simulated: z.array(z.string()),
+  /** Agent pods deleted so they re-read the config. 0 when nothing the agent reads changed. */
+  rolledPods: z.number().int().min(0),
+  /** Set when the config is saved but the agent could not be rolled onto it. */
+  rollError: z.string().nullable(),
+});
+export type CrowdsecSetScenarioSimulationResponse =
+  z.infer<typeof crowdsecSetScenarioSimulationResponseSchema>;
+
+/**
+ * Malicious Traffic Detection on/off.
+ *
+ * Disabling flips the agent's GLOBAL simulation switch: every scenario keeps
+ * reading the access log and raising alerts, and none issues a ban. The
+ * per-scenario alert-only choices are kept and come back on re-enable.
+ */
+export const crowdsecSetTrafficDetectionRequestSchema = z.object({
+  enabled: z.boolean(),
+});
+export type CrowdsecSetTrafficDetectionRequest =
+  z.infer<typeof crowdsecSetTrafficDetectionRequestSchema>;
+
+export const crowdsecSetTrafficDetectionResponseSchema = z.object({
+  enabled: z.boolean(),
+  /** Per-scenario alert-only list, preserved across a disable/enable cycle. */
+  alertOnly: z.array(z.string()),
+  rolledPods: z.number().int().min(0),
+  rollError: z.string().nullable(),
+});
+export type CrowdsecSetTrafficDetectionResponse =
+  z.infer<typeof crowdsecSetTrafficDetectionResponseSchema>;

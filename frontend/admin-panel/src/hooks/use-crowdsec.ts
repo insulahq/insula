@@ -25,6 +25,9 @@ import type {
   CrowdsecConsoleEnrollRequest,
   CrowdsecScenariosResponse,
   CrowdsecSetScenarioSimulationRequest,
+  CrowdsecSetScenarioSimulationResponse,
+  CrowdsecSetTrafficDetectionRequest,
+  CrowdsecSetTrafficDetectionResponse,
   CrowdsecConsoleMetaPatch,
   CrowdsecConsoleStatus,
   CrowdsecDeleteByIdResponse,
@@ -377,7 +380,7 @@ export function useCrowdsecScenarios() {
 export function useSetScenarioSimulation() {
   const qc = useQueryClient();
   return useMutation<
-    Envelope<{ simulated: string[]; rolledPods: number; rollError: string | null }>,
+    Envelope<CrowdsecSetScenarioSimulationResponse>,
     Error,
     CrowdsecSetScenarioSimulationRequest
   >({
@@ -389,6 +392,30 @@ export function useSetScenarioSimulation() {
       void qc.invalidateQueries({ queryKey: SCENARIOS_KEY });
       // A scenario moving in or out of simulation changes what future decisions
       // look like, so the ban table's reason copy is refetched too.
+      void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
+    },
+  });
+}
+
+/**
+ * Malicious Traffic Detection on/off. Disabled = every scenario alert-only
+ * (alerts still raised, no bans); the per-scenario choices are kept.
+ */
+export function useSetTrafficDetection() {
+  const qc = useQueryClient();
+  return useMutation<
+    Envelope<CrowdsecSetTrafficDetectionResponse>,
+    Error,
+    CrowdsecSetTrafficDetectionRequest
+  >({
+    mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/traffic-detection', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+    // Settled, not success: a 502 means "saved, not applied", and the list
+    // must refetch to show the saved-vs-running state either way.
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: SCENARIOS_KEY });
       void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
     },
   });

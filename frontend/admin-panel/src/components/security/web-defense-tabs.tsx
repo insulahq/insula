@@ -10,7 +10,8 @@
  *   - WafEventsTab     — cluster-wide ModSec/CRS event stream + filters
  *   - BannedIpsTab     — active CrowdSec bans table + Static Blocklist
  *   - WafExclusionsTab — per-route CRS rule exclusions + IP Allowlist
- *   - WafSettingsTab   — CrowdSec status, Console, auto-ban, L4 toggle
+ *   - WafSettingsTab   — CrowdSec status, community blocklist, auto-ban,
+ *                        traffic detection, L4 toggle, Console
  *
  * History note: on the previous page layout the L4
  * banner sat above the tabs as a top-of-page card. It moved into
@@ -25,6 +26,8 @@ import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
 import ScenariosCard from './ScenariosCard';
+import { CommunityBlocklistBanner, CommunityBlocklistCard, CommunityBlocklistViewer } from './CommunityBlocklist';
+import Disclosure from '@/components/ui/Disclosure';
 import {
   addedByMeta,
   compareGroups,
@@ -55,7 +58,6 @@ import {
   ShieldCheck,
   ShieldOff,
   Search,
-  X,
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
@@ -100,7 +102,6 @@ import type {
   WafEventsResponse,
   WafScraperStatus,
   CrowdsecAllowlistEntry,
-  CrowdsecDecision,
   CrowdsecDecisionScope,
   CrowdsecListDecisionsQuery,
   CrowdsecStatus,
@@ -211,37 +212,28 @@ export function WafEventsTab() {
 
   return (
     <section className="space-y-4" data-testid="waf-events-tab">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Cluster-wide WAF events from the ModSecurity / OWASP CRS rule engine.
-        Includes <strong>admin/api/client/platform-host</strong> events that have
-        no per-tenant ingress route (e.g. CRS rule 930120 blocking
-        <code className="text-xs mx-1">POST /admin/system-backup/dr-drill/runs</code>),
-        plus the same per-route events surfaced under each Domain.
-        Scraper polls the <code className="text-xs">modsec-crs</code> pod every 30s;
-        admin-host events are capped at 500 globally, per-route at 50.
-      </div>
-
-      {/* Scraper-status banner — explains an empty table BEFORE the operator wonders. */}
-      {payload?.scraperStatus && (
-        <WafScraperStatusBanner
-          status={payload.scraperStatus}
-          eventsInView={payload.events.length}
-          lastInsertAt={payload.stats.mostRecentAt}
-        />
-      )}
-
-      {/* Live-tail + refresh controls */}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-controls">
-        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-          <span>
+      {/* One header row: what this tab shows on the left, refresh controls on
+          the right. The scraper caps live in the hover text — useful when a
+          count looks short, noise the rest of the time. */}
+      <div
+        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3"
+        data-testid="waf-controls"
+      >
+        <p
+          className="min-w-0 flex-1 text-sm text-gray-700 dark:text-gray-200"
+          data-testid="waf-events-description"
+          title="Scraped from the modsec-crs pods every 30s. Admin-host events are capped at 500 cluster-wide, per-route events at 50 per route."
+        >
+          ModSecurity / OWASP CRS rule hits across the cluster — platform hosts and tenant routes.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-600 dark:text-gray-400" data-testid="waf-auto-refresh">
             Auto-refresh:{' '}
             <span className={live ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-gray-700 dark:text-gray-300'}>
               {live ? 'live (3s)' : '30s'}
             </span>
+            {isFetching && <span className="text-brand-600 dark:text-brand-400"> · reloading…</span>}
           </span>
-          {isFetching && <span className="text-brand-600 dark:text-brand-400">· reloading…</span>}
-        </div>
-        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setLive((v) => !v)}
@@ -270,6 +262,15 @@ export function WafEventsTab() {
           </button>
         </div>
       </div>
+
+      {/* Scraper-status banner — explains an empty table BEFORE the operator wonders. */}
+      {payload?.scraperStatus && (
+        <WafScraperStatusBanner
+          status={payload.scraperStatus}
+          eventsInView={payload.events.length}
+          lastInsertAt={payload.stats.mostRecentAt}
+        />
+      )}
 
       {/* Stats panel */}
       {payload?.stats && <WafStatsPanel stats={payload.stats} />}
@@ -2110,53 +2111,36 @@ export function WafExclusionsTab() {
 
 // ─── WAF Settings tab ─────────────────────────────────────────────────
 //
-// Cluster-wide CrowdSec configuration: live status panel, Console
-// enrollment (optional), auto-ban tuning + calibration dry-run, and
-// the L4 host-firewall enforcement toggle (highest-risk feature).
+// Cluster-wide CrowdSec configuration, top to bottom:
+//   1. status tiles (LAPI, enforcement coverage, bouncers)
+//   2. Community Blocklist — the opt-in shared feed
+//   3. WAF Auto-Ban — the scheduler that bans on ModSecurity rule hits
+//   4. Malicious Traffic Detection — the agent's scenarios (access log)
+//   5. L4 host-firewall enforcement (highest blast radius)
+//   6. CrowdSec Console — optional upstream enrollment
 //
 // Lives behind its own tab so the day-to-day Banned IPs view stays
-// focused on the actual ban list. Each card was previously stacked
-// at the top of Banned IPs, which buried the table the operator
-// usually came to look at.
+// focused on the actual ban list.
 
 export function WafSettingsTab() {
   const status = useCrowdsecStatus();
   return (
     <section className="space-y-4" data-testid="waf-settings-tab">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Cluster-wide CrowdSec configuration. The L4 enforcement toggle
-        below has the highest blast radius of any platform feature —
-        review the operator-IP-trust check before flipping it to
-        <code className="text-xs mx-1">enforce</code>.
-      </div>
-
       {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
 
-      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
-      <CrowdsecConsoleCard />
-
-      {/* AUTOMATIC BANS — two engines, both feeding the same ban list.
-          They were previously indistinguishable: the scheduler had this card
-          and the scenarios had nothing, while both produced rows in the Banned
-          IPs tab under CrowdSec's internal origin names. */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-4 py-3">
-        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Automatic bans</h2>
-        <p className="mt-1 max-w-3xl text-xs text-gray-600 dark:text-gray-400">
-          Two independent engines add bans, and both write to the same list under
-          <strong> Banned IPs</strong>. <strong>WAF auto-ban</strong> reacts to ModSecurity rule
-          hits on the platform's own hosts; <strong>Traffic detection</strong> reacts to
-          behaviour in the ingress access log. Turning one off does not affect the other.
-        </p>
-      </div>
+      <CommunityBlocklistCard />
 
       {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
       <CrowdsecAutobanCard />
 
-      {/* Traffic detection — the scenarios that produce the other half of the bans. */}
+      {/* The scenarios that produce the other half of the automatic bans. */}
       <ScenariosCard />
 
       {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
       <CrowdsecL4Card />
+
+      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
+      <CrowdsecConsoleCard />
     </section>
   );
 }
@@ -2600,11 +2584,13 @@ function CrowdsecAutobanCard() {
         </div>
       )}
 
-      {/* Recent runs table */}
-      <div>
-        <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-1">
-          Recent decisions (last 50)
-        </div>
+      {/* Recent runs table — collapsed by default: it is history, the form
+          above is what an operator came to change. */}
+      <Disclosure
+        testId="autoban-recent-decisions"
+        title="Recent decisions"
+        summary={runs.data?.data.runs ? `last 50 · ${runs.data.data.runs.length} shown` : 'last 50'}
+      >
         {runs.isLoading && <SkeletonLoader />}
         {runs.isError && (
           <div className="text-xs text-red-700 dark:text-red-300">Failed to load runs.</div>
@@ -2636,7 +2622,7 @@ function CrowdsecAutobanCard() {
             </table>
           </div>
         )}
-      </div>
+      </Disclosure>
     </div>
   );
 }
@@ -2954,219 +2940,6 @@ function CommunityBlocklistControl() {
         </p>
       )}
       {viewerOpen && <CommunityBlocklistViewer onClose={() => setViewerOpen(false)} total={count} />}
-    </div>
-  );
-}
-
-/** Paginated + searchable view of the community (CAPI) decisions. */
-function CommunityBlocklistViewer({ onClose, total }: { onClose: () => void; total: number }) {
-  const [q, setQ] = useState('');
-  const [page, setPage] = useState(0);
-  const debouncedQ = useDebouncedValue(q, 400);
-  const pageSize = 50;
-
-  // Reset to the first page whenever the search changes, or a non-empty search
-  // on page 5 would render an empty page and read as "no matches".
-  useEffect(() => { setPage(0); }, [debouncedQ]);
-
-  const query: CrowdsecListDecisionsQuery = useMemo(() => {
-    const out: CrowdsecListDecisionsQuery = {
-      source: 'community',
-      limit: pageSize,
-      offset: page * pageSize,
-    };
-    if (debouncedQ.trim()) out.q = debouncedQ.trim();
-    return out;
-  }, [debouncedQ, page]);
-
-  const { data, isLoading, isError, error } = useCrowdsecDecisions(query);
-  const rows = data?.data.decisions ?? [];
-  const { sortedData: sortedRows, sortKey, sortDirection, onSort } =
-    useSortable<CrowdsecDecision>(rows, 'value', 'asc');
-  const matching = data?.data.totalMatching ?? 0;
-  const pages = Math.max(1, Math.ceil(matching / pageSize));
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-3xl rounded-lg bg-white dark:bg-gray-800 shadow-xl flex flex-col max-h-[85vh]">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 p-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Community blocklist</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {total.toLocaleString()} IPs from CrowdSec&rsquo;s shared feed. Not this platform&rsquo;s decisions.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            data-testid="community-viewer-close"
-            className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-3 overflow-y-auto">
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            data-testid="community-viewer-search"
-            placeholder="Search by IP…"
-            className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
-          />
-
-          {isError && (
-            <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-xs text-red-700 dark:text-red-300">
-              Could not load the community blocklist: {error instanceof Error ? error.message : String(error)}
-            </div>
-          )}
-          {isLoading && <div className="text-xs text-gray-500 dark:text-gray-400">Loading…</div>}
-
-          {!isError && !isLoading && rows.length === 0 && (
-            <div className="text-xs text-gray-500 dark:text-gray-400" data-testid="community-viewer-empty">
-              {debouncedQ.trim() ? `No community ban matches “${debouncedQ.trim()}”.` : 'The community blocklist is empty.'}
-            </div>
-          )}
-
-          {rows.length > 0 && (
-            <table className="w-full text-left text-xs">
-              <thead className="text-gray-500 dark:text-gray-400">
-                <tr>
-                  <SortableHeader label="IP" sortKey="value" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <SortableHeader label="Scenario" sortKey="scenario" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <th className="py-1 font-medium text-right">Exclude</th>
-                </tr>
-              </thead>
-              <tbody className="text-gray-800 dark:text-gray-100" data-testid="community-viewer-rows">
-                {sortedRows.map((d) => (
-                  <tr key={d.id} className="border-t border-gray-100 dark:border-gray-700">
-                    <td className="py-1 font-mono">{d.value}</td>
-                    <td className="py-1">{d.scenario}</td>
-                    <td className="py-1 text-gray-500 dark:text-gray-400">
-                      {d.expiresAt ? new Date(d.expiresAt).toLocaleString() : d.duration}
-                    </td>
-                    <td className="py-1 text-right">
-                      <ExcludeCommunityIpButton value={d.value} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-600 dark:text-gray-300">
-          <span data-testid="community-viewer-count">
-            {matching.toLocaleString()} match{matching === 1 ? '' : 'es'} · page {page + 1} of {pages}
-          </span>
-          <span className="flex gap-2">
-            <button
-              type="button"
-              disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="rounded border border-gray-300 dark:border-gray-600 px-2 py-1 disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              data-testid="community-viewer-next"
-              disabled={page + 1 >= pages}
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded border border-gray-300 dark:border-gray-600 px-2 py-1 disabled:opacity-40"
-            >
-              Next
-            </button>
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Add one community-blocklist IP to the allowlist ("exclusion list").
- *
- * The allowlist beats every CrowdSec ban regardless of origin, so this is the
- * per-IP escape hatch from a decision made by someone else's feed — the case
- * that blocked MXToolbox on production while ordinary visitors were fine.
- * Excluding one scanner is a far smaller hammer than turning the whole feed off.
- */
-function ExcludeCommunityIpButton({ value }: { value: string }) {
-  const add = useAddCrowdsecAllowlistEntry();
-  const done = add.isSuccess;
-
-  return (
-    <span className="inline-flex items-center gap-1">
-      {add.isError && (
-        <span className="text-[10px] text-red-600 dark:text-red-400" title={add.error instanceof Error ? add.error.message : ''}>
-          failed
-        </span>
-      )}
-      <button
-        type="button"
-        data-testid={`exclude-ip-${value}`}
-        disabled={add.isPending || done}
-        onClick={() => add.mutate({
-          value,
-          scope: 'Ip',
-          // The comment is required by the contract (min 3 chars) so entries
-          // are never anonymous; record WHY this one was excluded.
-          comment: `Excluded from community blocklist via admin panel`,
-        })}
-        className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-      >
-        {done ? 'Excluded' : add.isPending ? 'Adding…' : 'Exclude'}
-      </button>
-    </span>
-  );
-}
-
-/**
- * Banner on the Banned IPs tab when the community feed is enforcing.
- *
- * The tab deliberately lists only platform decisions now, so without this an
- * operator would see a handful of rows and reasonably conclude that is
- * everything being blocked — while tens of thousands of community bans are
- * also in force. States the count and links to the same viewer.
- */
-function CommunityBlocklistBanner() {
-  const [open, setOpen] = useState(false);
-  const state = useCrowdsecCommunityBlocklist();
-  const info = state.data?.data;
-  // Only claim it is active when we actually know it is.
-  if (!info?.enabled) return null;
-
-  return (
-    <div
-      data-testid="community-active-banner"
-      className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-100"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-2">
-          <ShieldAlert size={16} className="mt-0.5 shrink-0" />
-          <div>
-            <p className="font-medium">Community blocklist is active</p>
-            <p className="text-xs">
-              <strong>{info.decisionCount.toLocaleString()}</strong> additional IPs are being blocked by
-              CrowdSec&rsquo;s shared feed. They are <em>not</em> listed below — this table shows only
-              decisions this platform made.
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          data-testid="banner-view-community"
-          onClick={() => setOpen(true)}
-          className="shrink-0 rounded border border-blue-300 px-2 py-1 text-xs hover:bg-blue-100 dark:border-blue-600 dark:hover:bg-blue-800"
-        >
-          View banned IPs
-        </button>
-      </div>
-      {open && <CommunityBlocklistViewer onClose={() => setOpen(false)} total={info.decisionCount} />}
     </div>
   );
 }
