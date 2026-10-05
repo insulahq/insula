@@ -7,7 +7,7 @@ vi.mock('@kubernetes/client-node', () => {
   return { KubeConfig: MockKubeConfig, Exec: MockExec };
 });
 
-import { importSql, redactDbSecrets, setUserPassword } from './db-manager.js';
+import { dropUser, importSql, redactDbSecrets, setUserPassword } from './db-manager.js';
 
 type Reply = { stdout?: string; stderr?: string; status?: Record<string, unknown> };
 
@@ -78,6 +78,40 @@ describe('setUserPassword (MariaDB)', () => {
     const err = await setUserPassword(ctx, 'a', 'N3wPass').catch((e: unknown) => e) as { message: string };
     expect(err.message).toMatch(/-p\*\*\*/);
     expect(err.message).not.toMatch(/r00tSecret|N3wPass/);
+  });
+});
+
+describe('dropUser (MariaDB)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('drops the account under every host it exists with (was: only \'%\', silently)', async () => {
+    const ran = routeExec((sql) => (sql.startsWith('SELECT Host') ? { stdout: 'localhost\n10.42.%\n' } : {}));
+    await dropUser(ctx, 'app_user');
+    expect(ran).toEqual([
+      "SELECT Host FROM mysql.user WHERE User = 'app_user'",
+      "DROP USER IF EXISTS 'app_user'@'localhost'",
+      "DROP USER IF EXISTS 'app_user'@'10.42.%'",
+    ]);
+  });
+});
+
+describe('inline import failure (stdin exec) never echoes the root password', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('reports the database error with credentials redacted', async () => {
+    mockExecFn.mockImplementation((
+      _ns: string, _pod: string, _c: string, _cmd: string[],
+      _out: NodeJS.WritableStream, err: NodeJS.WritableStream, stdin: NodeJS.ReadableStream | null, _tty: boolean,
+      cb: (s: Record<string, unknown>) => void,
+    ) => {
+      stdin?.resume();
+      err.write(Buffer.from('ERROR 1064 (42000) at line 1: syntax error'));
+      setTimeout(() => cb({ status: 'Failure', message: 'error executing [mariadb -u root -pr00tSecret app], exit code 1' }), 0);
+      return Promise.resolve({});
+    });
+    const res = await importSql(ctx, 'app', 'SELEC 1;');
+    expect(res.success).toBe(false);
+    expect(res.error ?? '').not.toMatch(/r00tSecret/);
   });
 });
 

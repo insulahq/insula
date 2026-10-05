@@ -13,7 +13,9 @@ import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isOomTermination, isReplacedPodRecord, messageIndicatesOom } from '../../lib/container-termination.js';
-import { findSystemStatement, parseGrepHit, systemImportPattern, systemImportRefusal } from './import-system-guard.js';
+import {
+  findSystemStatement, GREP_FAILED, grepScanCommand, parseGrepHit, systemImportPattern, systemImportRefusal,
+} from './import-system-guard.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -240,13 +242,12 @@ async function execInPodWithStdin(
           if (!s || s.status === 'Success' || s.status === undefined) {
             resolve();
           } else {
-            const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
-            console.error(`[db-manager] Exec with stdin failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
-            reject(new Error(msg));
+            // Same rule as execInPod: the status embeds the argv (-p<root password>).
+            reject(execFailure(s, stderr));
           }
         },
       )
-      .catch(reject);
+      .catch((err: unknown) => reject(new DbExecError(redactDbSecrets(err instanceof Error ? err.message : String(err)))));
   });
 
   return { stdout: stdout.trim(), stderr: stderr.trim() };
@@ -544,7 +545,13 @@ async function mysqlCreateUser(
 async function mysqlDropUser(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, username: string,
 ): Promise<void> {
-  await mysqlExec(kp, ns, pod, cn, pw, `DROP USER IF EXISTS '${username}'@'%'`);
+  // Drop the account under every host it exists with — `'%'` alone silently
+  // no-op'd for 'name'@'localhost' while the route answered 204.
+  const hostsOut = await mysqlExec(kp, ns, pod, cn, pw, `SELECT Host FROM mysql.user WHERE User = '${username}'`);
+  const hosts = hostsOut.split('\n').map((h) => h.trim()).filter(Boolean);
+  for (const host of hosts) {
+    await mysqlExec(kp, ns, pod, cn, pw, `DROP USER IF EXISTS '${username}'@'${host.replace(/'/g, "''")}'`);
+  }
 }
 
 async function mysqlSetPassword(
@@ -2129,7 +2136,12 @@ export async function importSqlFromPvcFile(
     const systemPattern = isPgRestore ? null : systemImportPattern(ctx.engine);
     if (systemPattern) {
       const scan = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `grep -n -m1 -i -E ${shellEscape(systemPattern)} ${shellEscape(fmSqlPath)} || true`]);
+        ['sh', '-c', grepScanCommand(shellEscape(systemPattern), shellEscape(fmSqlPath))]);
+      if (scan.stdout.includes(GREP_FAILED)) {
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+          ['rm', '-f', fmSqlPath]).catch(() => {});
+        return { success: false, error: 'The file could not be checked before import (it could not be read). Nothing was imported — upload it again and retry.' };
+      }
       const hit = parseGrepHit(scan.stdout);
       if (hit) {
         await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',

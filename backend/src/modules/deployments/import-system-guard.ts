@@ -24,15 +24,24 @@ const WS = '[ \\t]';
 const END = '([^A-Za-z0-9_$]|$)';
 const MYSQL_SCHEMA = '`?mysql`?';
 
+// Where a statement can start: a line start or after a `;` on the same line,
+// optionally inside a version comment (`/*!50001 USE mysql*/`), which the
+// server executes. Account statements are matched only at a line start (or in
+// a version comment): after a `;` they turn up in ordinary INSERT data — a
+// blog post about SQL — and refusing those dumps would be a false alarm.
+const STMT_START = `(^|;)${WS}*(/\\*![0-9]*${WS}*)?`;
+const LINE_START = `^${WS}*(/\\*![0-9]*${WS}*)?`;
+
 const MYSQL_PATTERNS: readonly string[] = [
-  // USE `mysql`;
-  `^${WS}*USE${WS}+${MYSQL_SCHEMA}${WS}*;`,
+  // USE `mysql`;   and the client shorthand \u mysql
+  `${STMT_START}USE${WS}+${MYSQL_SCHEMA}${WS}*(;|\\*/|$)`,
+  `^${WS}*\\\\u${WS}+${MYSQL_SCHEMA}${END}`,
   // CREATE DATABASE /*!32312 IF NOT EXISTS*/ `mysql`
-  `^${WS}*CREATE${WS}+(DATABASE|SCHEMA)${WS}+(/\\*![0-9]+${WS}+IF${WS}+NOT${WS}+EXISTS${WS}*\\*/${WS}*|IF${WS}+NOT${WS}+EXISTS${WS}+)?${MYSQL_SCHEMA}${END}`,
+  `${STMT_START}CREATE${WS}+(DATABASE|SCHEMA)${WS}+(/\\*![0-9]+${WS}+IF${WS}+NOT${WS}+EXISTS${WS}*\\*/${WS}*|IF${WS}+NOT${WS}+EXISTS${WS}+)?${MYSQL_SCHEMA}${END}`,
   // INSERT INTO `mysql`.`global_priv` …, DROP TABLE mysql.user, …
-  `^${WS}*(INSERT${WS}+(IGNORE${WS}+)?INTO|REPLACE${WS}+INTO|UPDATE|DELETE${WS}+FROM|DROP${WS}+TABLE(${WS}+IF${WS}+EXISTS)?|CREATE${WS}+TABLE(${WS}+IF${WS}+NOT${WS}+EXISTS)?|ALTER${WS}+TABLE|TRUNCATE(${WS}+TABLE)?|LOCK${WS}+TABLES)${WS}+${MYSQL_SCHEMA}${WS}*\\.`,
+  `${STMT_START}(INSERT${WS}+(IGNORE${WS}+)?INTO|REPLACE${WS}+INTO|UPDATE|DELETE${WS}+FROM|DROP${WS}+TABLE(${WS}+IF${WS}+EXISTS)?|CREATE${WS}+TABLE(${WS}+IF${WS}+NOT${WS}+EXISTS)?|ALTER${WS}+TABLE|TRUNCATE(${WS}+TABLE)?|LOCK${WS}+TABLES)${WS}+${MYSQL_SCHEMA}${WS}*\\.`,
   // Account management
-  `^${WS}*((CREATE|ALTER|DROP|RENAME)${WS}+(USER|ROLE)|SET${WS}+PASSWORD|SET${WS}+DEFAULT${WS}+ROLE|GRANT|REVOKE)${END}`,
+  `${LINE_START}((CREATE|ALTER|DROP|RENAME)${WS}+(USER|ROLE)|SET${WS}+PASSWORD|SET${WS}+DEFAULT${WS}+ROLE|GRANT|REVOKE)${END}`,
 ];
 
 const POSTGRES_PATTERNS: readonly string[] = [
@@ -65,6 +74,18 @@ export function findSystemStatement(sql: string, engine: ImportEngine): SystemSt
     if (re.test(lines[i])) return { line: i + 1, text: lines[i] };
   }
   return null;
+}
+
+/** Marker the scan prints when grep itself failed (exit > 1). */
+export const GREP_FAILED = '__IMPORT_SCAN_FAILED__';
+
+/**
+ * The in-pod scan. `-a`: a dump with a NUL byte (a binary BLOB) would
+ * otherwise print only "Binary file matches" and pass. A grep error (exit 2,
+ * e.g. unreadable file) is reported, never read as "nothing found".
+ */
+export function grepScanCommand(quotedPattern: string, quotedFile: string): string {
+  return `grep -a -n -m1 -i -E ${quotedPattern} ${quotedFile}; rc=$?; [ "$rc" -le 1 ] || echo ${GREP_FAILED}`;
 }
 
 /** Parse `grep -n -m1` output (`<line>:<text>`) into a hit. */

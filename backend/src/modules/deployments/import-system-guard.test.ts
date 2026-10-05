@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  findSystemStatement, parseGrepHit, systemImportPattern, systemImportRefusal,
+  findSystemStatement, GREP_FAILED, grepScanCommand, parseGrepHit, systemImportPattern, systemImportRefusal,
 } from './import-system-guard.js';
 
 // Lines a full-server MariaDB/MySQL dump really contains.
@@ -21,6 +21,13 @@ const MYSQL_REFUSED = [
   'GRANT ALL PRIVILEGES ON `app`.* TO `app`@`%`;',
   'SET PASSWORD FOR \'root\'@\'localhost\' = PASSWORD(\'x\');',
   '  REVOKE ALL ON *.* FROM `app`@`%`;',
+  // review: statements that do not start the line
+  'SELECT 1; USE mysql;',
+  '/*!50001 USE `mysql`*/;',
+  '/*!50001 CREATE USER `x`@`%` */;',
+  'SET @a = 1; INSERT INTO `mysql`.`global_priv` VALUES (1);',
+  '\\u mysql',
+  'USE `mysql`;\r',
 ];
 
 // Lines an ordinary single-database dump contains — must pass.
@@ -36,6 +43,8 @@ const MYSQL_ALLOWED = [
   '/*!50013 DEFINER=`app`@`%` SQL SECURITY DEFINER */',
   'CREATE TABLE `granted_items` (`id` int);',
   'UPDATE `users` SET `password` = \'x\';',
+  'INSERT INTO `posts` VALUES (2,\'Run this; GRANT ALL ON *.* TO admin; then reload\');',
+  '\\u bookstack',
 ];
 
 const PG_REFUSED = [
@@ -82,16 +91,26 @@ describe('findSystemStatement', () => {
 });
 
 describe.skipIf(!grepAvailable())('the same pattern under grep -E -i (as run in the file-manager pod)', () => {
-  const run = (engine: string, lines: readonly string[]): string => {
+  const q = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`;
+  const scan = (engine: string, content: string | Buffer, mode?: number): string => {
     const dir = mkdtempSync(join(tmpdir(), 'import-guard-'));
     try {
       const file = join(dir, 'dump.sql');
-      writeFileSync(file, `${lines.join('\n')}\n`);
-      try {
-        return execFileSync('grep', ['-n', '-m1', '-i', '-E', systemImportPattern(engine) as string, file]).toString();
-      } catch { return ''; }
+      writeFileSync(file, content);
+      if (mode !== undefined) chmodSync(file, mode);
+      return execFileSync('sh', ['-c', grepScanCommand(q(systemImportPattern(engine) as string), q(file))]).toString();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
+  const run = (engine: string, lines: readonly string[]): string => scan(engine, `${lines.join('\n')}\n`);
+
+  it('scans a dump containing a NUL byte (a binary BLOB) instead of reporting "Binary file matches"', () => {
+    const out = scan('mariadb', Buffer.concat([Buffer.from('INSERT INTO `t` VALUES (\''), Buffer.from([0]), Buffer.from('\');\nUSE `mysql`;\n')]));
+    expect(parseGrepHit(out)?.line).toBe(2);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('a file grep cannot read is reported, never read as clean', () => {
+    expect(scan('mariadb', 'USE `mysql`;\n', 0o000)).toContain(GREP_FAILED);
+  });
 
   it.each(MYSQL_REFUSED)('grep refuses: %s', (line) => {
     expect(parseGrepHit(run('mariadb', ['-- header', line]))).toEqual({ line: 2, text: line });
