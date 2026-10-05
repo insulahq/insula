@@ -53,6 +53,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Large SFTP / rsync uploads no longer kill the file manager.** An upload faster than the
+  tenant's storage could write filled the file manager's memory with not-yet-written data and it
+  was OOM-killed mid-transfer. It now flushes the volume and briefly pauses the writing processes
+  instead, so the upload slows to disk speed and completes.
 - The admin **Backups** page showed "Tenants 0 — no jobs registered" although bundles ran nightly;
   it now reflects every tenant's latest bundle (failing / never run turn the card amber or red).
 - The dashboard **Web Defence** tile counted only WAF auto-bans; it now matches the Banned IPs list,

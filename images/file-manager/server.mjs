@@ -16,6 +16,7 @@ import { open as fsOpen } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns';
 import { createTrash, FALLBACK_RETENTION_DAYS } from './trash.mjs';
+import { createDirtyGovernor } from './dirty-governor.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1895,6 +1896,14 @@ if (process.env.FM_NO_LISTEN !== '1') {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`File manager sidecar listening on :${PORT}`);
   });
+  // Slow heavy writes down instead of letting dirty pages OOM this container
+  // (see dirty-governor.mjs). 'exit' (not SIGTERM — a SIGTERM listener would
+  // replace Node's default exit) so a stopped writer is always continued.
+  if (process.env.FM_DIRTY_GOVERNOR !== 'off') {
+    const governor = createDirtyGovernor({ volume: BASE });
+    governor.start();
+    process.on('exit', () => governor.stop());
+  }
 }
 
 // Exported for unit tests (node --test). These are pure helpers — importing
