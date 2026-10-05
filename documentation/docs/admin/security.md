@@ -111,13 +111,15 @@ one-click buttons. The deep operator context lives in the
 four tabs:
 
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
-  source-IP and date-range filters. The block button on a row adds the source
-  to the **static blocklist** — a permanent entry, not a timed ban (see below).
-- **Banned IPs** — **this platform's own** ban decisions: operator bans, the
-  static blocklist, the auto-ban scheduler, and detections made by the
-  log-processing agent. Each row is tagged with where it came from:
-  **auto-ban**, **manual** (an operator clicked Add ban) or **static** (the
-  permanent list), and filters narrow the table to any one of them. The tag
+  source-IP and date-range filters. The block button on a row opens the ban
+  dialog with the **Permanent** duration preselected (see below).
+- **Banned IPs** — **this platform's own** ban decisions, one row per address:
+  operator bans (timed or permanent), the WAF auto-ban scheduler, and
+  detections made by the log-processing agent. The **Added by** column says
+  where each came from — **Operator**, **Operator · Permanent**,
+  **Auto · WAF** or **Auto · Traffic** — and hovering an operator pill shows
+  the name of the operator who added it. **Why** shows the reason they typed.
+  Filters narrow the table to manual, permanent or automatic bans. The tag
   matters when deciding whether to lift a ban — an auto-ban will be re-applied
   if the source keeps tripping the same rules, a manual one will not.
 
@@ -150,8 +152,8 @@ the whole feed off.
 
 Turning the feed off purges the entries it had already loaded, so the change
 takes effect immediately rather than as each entry expires, and restarts the
-CrowdSec pod (it reads the setting only at startup). Your own bans, the
-allowlist and the static blocklist are untouched either way.
+CrowdSec pod (it reads the setting only at startup). Your own bans — timed
+and permanent — and the allowlist are untouched either way.
 
 ### Scanning does not appear in WAF Events — by design
 
@@ -189,22 +191,30 @@ Their alerts appear under **Banned IPs** (as `auto-ban`-tagged decisions) and in
     unaffected. There is no error when this happens — the alerts are simply
     fewer than the traffic warrants.
 
-### Two ways to block an address
+### Timed and permanent bans
 
-They are not interchangeable, and the panel keeps them apart:
+Both come from the same dialog — **Banned IPs → Add manual ban**, or the block
+button on a **WAF Events** row — and differ only in the **Duration** you pick:
 
-| | Where it lives | Expires? | Use it when |
+| Duration | Expires? | Shown in Banned IPs as | Use it when |
 |---|---|---|---|
-| **Ban (CrowdSec decision)** | *Banned IPs* → Add ban | **Yes** — you choose a duration | Reacting to a burst you expect to pass |
-| **Static blocklist** | *Banned IPs* → Static Blocklist, and the block button on any **WAF Events** row | **No** — until you remove it | You have judged the source itself unwelcome |
+| **1 hour … 30 days** | **Yes**, after the chosen time | **Operator**, with the time left | Reacting to a burst you expect to pass |
+| **Permanent** | **No** — until you remove it | **Operator · Permanent**, Time left *Permanent* | You have judged the source itself unwelcome |
 
-Blocking from a WAF event uses the **static** list on purpose. A block made
-from evidence of an attack is a decision about that source, and a timed ban
-would lapse quietly while you believed the address was still handled. The
-dialog says *Permanent — until removed* and offers no duration, so the two are
-hard to confuse.
+The block button on a WAF event opens the dialog with **Permanent** selected on
+purpose. A block made from evidence of an attack is a decision about that
+source, and a timed ban would lapse quietly while you believed the address was
+still handled. You can still pick a shorter duration before confirming.
 
-To undo either one, remove the entry from its table in **Banned IPs**.
+Permanent replaces the former separate *Static Blocklist* section; existing
+static entries appear in the same list as **Operator · Permanent**. To undo
+either kind, **Unban** the row in **Banned IPs**.
+
+The **Banned IPs** figure on the Dashboard's *Web defence* tile counts the same
+rows as this list — every address banned by any of the platform's engines or
+operators. The community blocklist is not counted, as it is not listed. The
+dashboard refreshes every two minutes, so a ban you just added can take that
+long to appear in the figure.
 
 !!! note "Adding an exclusion always works, by design"
     A rule exclusion necessarily contains the pattern it excludes, so the

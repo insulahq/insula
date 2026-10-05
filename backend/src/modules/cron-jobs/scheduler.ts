@@ -12,6 +12,7 @@ import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { executeCronJob, describeFailure, runTimeoutMs, type ClusterTransport } from './executor.js';
 import { getNextRunTime } from './cron-expression.js';
+import { resolveFailureEmailRecipients } from './failure-email.js';
 
 // The scheduling maths lives in cron-expression.ts now. Re-exported because
 // this module has been its public entry point since the beginning.
@@ -215,17 +216,36 @@ export async function runAndRecord(
   // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
   // otherwise send 288 notifications before breakfast.
   if (options.notify !== false && result.status === 'failed' && job.tenantId) {
-    const { notifyTenantScheduledTaskFailure } = await import('../notifications/events.js');
-    await notifyTenantScheduledTaskFailure(
-      db,
-      job.tenantId,
-      { taskName: job.name, errorMessage: describeFailure(result, job.type) },
-      `scheduled-task-failure:${job.id}:${new Date().toISOString().slice(0, 10)}`,
-    ).catch((err) => {
-      console.warn('[cron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
-    });
+    await notifyFailure(db, job, describeFailure(result, job.type));
   }
 
   const [updated] = await db.select().from(cronJobs).where(eq(cronJobs.id, job.id));
   return updated;
+}
+
+/**
+ * The failure notification for one scheduled run: the tenant admins by scope,
+ * plus the addresses the job opted into (bounded per job and per tenant per
+ * day by failure-email.ts). Never throws — the run record is already written.
+ */
+async function notifyFailure(
+  db: Database,
+  job: typeof cronJobs.$inferSelect,
+  errorMessage: string,
+): Promise<void> {
+  const now = new Date();
+  const zone = resolveTimeZone(job, await getPlatformTimeZone(db));
+  const email = await resolveFailureEmailRecipients(db, job, now);
+  const { notifyTenantScheduledTaskFailure } = await import('../notifications/events.js');
+  await notifyTenantScheduledTaskFailure(
+    db,
+    job.tenantId,
+    { taskName: job.name, errorMessage, schedule: `${job.schedule} (${zone})` },
+    {
+      dedupeKey: `scheduled-task-failure:${job.id}:${now.toISOString().slice(0, 10)}`,
+      externalRecipients: email.recipients,
+    },
+  ).catch((err) => {
+    console.warn('[cron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
+  });
 }

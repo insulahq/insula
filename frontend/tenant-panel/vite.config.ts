@@ -1,6 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { createRequire } from 'module';
+
+// monaco-yaml's worker (via monaco-worker-manager) imports
+// `monaco-editor/esm/vs/editor/editor.worker.js`, a path monaco-editor's
+// `exports` map (since 0.55) no longer resolves. Point that deep import
+// straight at the package's files. Resolved through Node so it holds for the
+// hoisted workspace layout locally and in the Docker build alike.
+const monacoRoot = path.resolve(path.dirname(createRequire(import.meta.url).resolve('monaco-editor')), '../..');
 
 export default defineConfig({
   plugins: [react()],
@@ -13,9 +21,10 @@ export default defineConfig({
     // (e.g. useState) crashes with "Cannot read properties of null
     // (reading 'useState')" — which broke the /backups/restore page.
     dedupe: ['react', 'react-dom'],
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      { find: /^monaco-editor\/esm\/vs\/(.*)$/, replacement: `${monacoRoot}/esm/vs/$1` },
+    ],
   },
   server: {
     proxy: {

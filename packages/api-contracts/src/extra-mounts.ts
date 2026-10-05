@@ -22,7 +22,7 @@ export const MAX_EXTRA_MOUNTS = 10;
  * One path segment on the tenant PVC.
  *
  * Dots and uppercase are ALLOWED, and that is the whole point: a web host's
- * folders are named after the sites they hold — `business.na`,
+ * folders are named after the sites they hold — `example.com`,
  * `www.example.com`, `Website`. Restricting this to lowercase alphanumerics
  * rejected the single most natural naming scheme a tenant uses, and the folder
  * picker offered exactly those folders because they exist on disk, so the

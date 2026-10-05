@@ -59,7 +59,9 @@ enabled, and the result of the last run.
       command. Raise it for an application cron that legitimately runs for
       minutes — a Moodle site rebuilding its search index or running a course
       backup, for instance. The most you can set is one hour.
-5. Click **Add**. New tasks start **enabled**.
+5. Optionally tick **Email when a scheduled run fails** — see
+   [Email when a task fails](#email-when-a-task-fails) below.
+6. Click **Add**. New tasks start **enabled**.
 
 ### Writing the schedule
 
@@ -111,7 +113,8 @@ The schedule uses standard **cron** notation — five fields:
 
 Click the **pencil** on a task's row. It opens the same form you created it
 with, filled in, and the button reads **Save Changes**. Everything is editable
-— name, schedule, the URL or command, timeout and timezone — so a typo in a
+— name, schedule, the URL or command, timeout, timezone and who is emailed on
+failure — so a typo in a
 cron expression is a correction, not a reason to delete the task and start
 over (which would also throw away its run history).
 
@@ -126,6 +129,47 @@ interrupted.
       **Timezone** box and save, and that task goes back to the default (30 or
       300 seconds by type, and the platform's clock) rather than keeping what
       was there before.
+
+## Email when a task fails
+
+Every failed scheduled run already appears in your panel's notifications, and
+your account's administrators also get it by email if their own notification
+settings say so. A task can additionally **email specific addresses** when it
+fails — useful when the person who has to fix it rarely opens the panel. This
+is **off** for every task until you switch it on.
+
+1. Open the task's form (**Add Cron Job**, or the **pencil** on a saved task).
+2. Tick **Email when a scheduled run fails**.
+3. Choose who gets it — at least one of:
+    - **Tenant email** — your account's primary email address. The form shows
+      which address that is. It is looked up when the email is sent, so if your
+      account's primary email changes, the task follows it.
+    - **Additional address** — any one other address, for example a
+      developer or an operations mailbox.
+4. Save.
+
+The email names the task, your account, the schedule and its timezone, the
+reason it failed (the HTTP status or exit code, and the start of the output),
+when it happened, and a link to this page.
+
+!!! info "How many emails you can get"
+    - **At most one email per task per day** (UTC) while it keeps failing. A
+      task broken on an every-minute schedule sends one email, not hundreds.
+      The next day's first failure emails again. A task that is deleted and
+      created again counts as a new task.
+    - **At most 20 failure emails per day across all of your account's tasks**
+      combined, however many tasks there are or have been. Failures beyond
+      that still show in the panel.
+    - **Run Now never emails** — you are looking at the result already.
+    - If the address you enter also belongs to one of your account's
+      administrators who already got this failure by email, they get it once,
+      not twice.
+
+To stop the emails, untick **Email when a scheduled run fails** and save. The
+addresses you entered are kept, so switching it back on later restores them.
+
+Tasks that email on failure show a small **envelope** next to their name;
+hover it to see who is emailed.
 
 ## Run, stop, and delete
 

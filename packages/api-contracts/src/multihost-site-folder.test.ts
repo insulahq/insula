@@ -47,17 +47,17 @@ describe('site_folder at the request boundary', () => {
    *
    * The original list here was `mysite`, `site-1`, `media/library/2026` — all
    * made up, none with a dot or a capital. A web host's folders are named after
-   * the sites they hold, so the first tenant to try this picked `business.na`
+   * the sites they hold, so the first tenant to try this picked `example.com`
    * and got a 400: the picker offered the folder (it exists on disk) and the
    * API refused it. Testing that hostile input is rejected proves nothing about
    * whether ordinary input is accepted.
    */
   it.each([
-    ['business.na',        'domain-named folder — the standard shared-hosting convention'],
+    ['example.com',        'domain-named folder — the standard shared-hosting convention'],
     ['www.example.com',    'domain with subdomain'],
     ['my.site.co.uk',      'multi-label domain'],
     ['Website',            'capitalised'],
-    ['Sites/business.na',  'capitalised parent with a domain child'],
+    ['Sites/example.com',  'capitalised parent with a domain child'],
     ['custom-deployment',  'hyphenated'],
     ['my_site',            'underscored'],
     ['0start',             'leading digit'],

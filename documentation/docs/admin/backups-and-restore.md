@@ -24,8 +24,28 @@ The single most important distinction:
 
 **Backups → Dashboard** answers "is anything on fire?" in one screen: a
 health banner, one stat card per class (System / Tenants / Mail) plus a
-Remote Storage Targets card, and a recent-activity list. Each card
-deep-links into its class. A failing or never-run class shows red/amber.
+Remote Storage Targets card, and a recent-activity list (failures first,
+then the most recent runs). Each card deep-links into its class. A failing
+or never-run class shows red/amber.
+
+The **System** card counts the cluster-level backup jobs (etcd, cluster
+state, secrets) **and the platform database's own backups** — one entry per
+database cluster. A database whose last backup failed is failing (red); one
+with no completed backup for over 24 hours, or whose backup plugin reports
+none while the object store has some, is failing (amber); one with no backup
+target configured counts as **never run**.
+
+The **Tenants** card counts tenants by their newest finished bundle: a
+`completed` bundle makes the tenant healthy, a `partial` or `failed` one
+makes it failing (until a newer bundle completes). A tenant included in the
+nightly bundle run that has no bundle yet counts as **never run**. The card
+turns amber for any of these, and **red** when a bundle failed outright or a
+tenant in the nightly run has gone two nightly runs (48 h) without a
+completed bundle. It also shows when the newest tenant bundle succeeded.
+
+A tenant **opted out of scheduled bundles** that has never been bundled
+does not appear on the card at all — it is not covered, by your choice. Check
+coverage per tenant under **Backups → Tenants**.
 
 If a DR restore is in progress, a **frozen-targets banner** appears naming
 each target that's been marked read-only — until you mark them read-write
@@ -96,6 +116,14 @@ The cluster-wide **Secrets bundle** lives on the
         mailboxes. On **Reactivate** the daily run picks the tenant up again.
         Until its first new bundle completes, its newest existing bundle is
         kept, even if that bundle is past its retention date.
+
+    ??? info "The last good copy of each part is never aged out"
+        For an active tenant, retention keeps the newest bundle and, per
+        part (files, mailboxes, config, secrets), the newest bundle in which
+        that part **completed** — even past its retention date. A newer
+        **partial** bundle whose mail capture failed therefore does not let
+        the last good mail copy expire; it is released once a newer bundle
+        completes mail. At most one extra bundle per part is held this way.
 
     ??? info "Backups load when you open a tenant"
         The page itself loads only the tenant list — every tenant, with
@@ -339,6 +367,28 @@ release it once you've verified the restored data.
 - **Recover All** — restore every tenant whose namespace is missing, after a
   cluster rebuild. Tenants **deleted on purpose are skipped** (listed as
   *deleted*) — recover one of those with **Recover Tenant**.
+
+A recovery runs on the server, not in the page. **Recover** (or **Confirm
+recover** for Recover All) opens a progress window and the recovery appears in
+the **Task Center** in the top bar:
+
+- **Recover Tenant** shows each phase as it runs — re-creating a deleted
+  tenant, checking the bundle, provisioning, queuing and running the restore,
+  re-establishing services — with the restore's items one by one (which is
+  applying, which are done). When it finishes it shows what came back: whether
+  the tenant was re-created, the ingress / mail-signing / workload reconcile,
+  and any **remaining manual steps**. A failure names the step it stopped at,
+  with what to do about it.
+- **Recover All** shows one row per tenant — waiting, the step it is on,
+  recovered, or why it failed — plus the tenants the run passed over.
+
+Close the window whenever you like (**Run in background**): the recovery keeps
+going, and clicking it in the Task Center reopens the same window, including
+the final result. Only one recovery of a tenant — and one Recover All — runs at
+a time; starting a second is refused with a pointer to the running one. If the
+platform API restarts while a recovery runs, the window says it stopped
+reporting progress; starting the recovery again marks the stopped run failed
+and begins a fresh one.
 - **Secrets Bundle** — an age-encrypted bundle of everything you'd need to
   rebuild the platform, with a coverage view of what's included.
 - **DR Drill** — the operator-driven drill runbook plus a log of past

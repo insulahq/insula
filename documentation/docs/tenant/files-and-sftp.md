@@ -194,6 +194,12 @@ authentication.
     stronger authentication and none of FTP's firewall pain. Any modern
     client (FileZilla included) supports SFTP out of the box.
 
+!!! note "Very large uploads may pause briefly"
+    When you upload faster than your storage can write (a big rsync of a whole
+    site, for example), the platform briefly pauses the transfer while the
+    data is written to disk, then continues. Your client simply sees a slower
+    upload for a moment; nothing is lost and the connection stays open.
+
 ### Create a file-transfer user
 
 1. On **SFTP Access**, click **Add User**.

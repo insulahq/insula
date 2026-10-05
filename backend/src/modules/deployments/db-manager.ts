@@ -13,6 +13,9 @@ import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isOomTermination, isReplacedPodRecord, messageIndicatesOom } from '../../lib/container-termination.js';
+import {
+  findSystemStatement, GREP_FAILED, grepScanCommand, parseGrepHit, systemImportPattern, systemImportRefusal,
+} from './import-system-guard.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -69,6 +72,41 @@ function loadKubeConfig(kubeconfigPath?: string): KubeConfig {
   return kc;
 }
 
+/**
+ * Strip credentials from text that came from (or echoes) an exec command line.
+ * The k8s exec status message embeds the full argv — `-p<root password>` and,
+ * for ALTER USER / CREATE USER, the new password — so it must never reach an
+ * error response or a log unredacted.
+ */
+export function redactDbSecrets(text: string): string {
+  return text
+    .replace(/(^|\s)-p(?=\S)\S+/g, '$1-p***')
+    .replace(/--password(=|\s+)\S+/gi, '--password$1***')
+    .replace(/PGPASSWORD=\S+/g, 'PGPASSWORD=***')
+    .replace(/(IDENTIFIED\s+(?:VIA\s+\S+\s+USING|BY)\s+(?:PASSWORD\s*)?\(?\s*)'(?:[^'\\]|\\.)*'/gi, "$1'***'")
+    .replace(/(PASSWORD\s*\(?\s*)'(?:[^'\\]|\\.)*'/gi, "$1'***'");
+}
+
+/**
+ * A command that failed inside the database pod. Deliberately NOT an ApiError:
+ * the query/import paths rethrow ApiErrors (validation) but report exec
+ * failures inline as a query result. User management converts it with
+ * `asDbApiError` so the panel gets the database's message instead of a 500.
+ */
+export class DbExecError extends Error {}
+
+/** The error a failed exec rejects with: the database's own message, redacted. */
+function execFailure(status: Record<string, unknown>, stderr: string): DbExecError {
+  const statusMessage = typeof status.message === 'string' ? status.message : '';
+  const message = redactDbSecrets(stderr.trim() || statusMessage || 'Command execution failed in the database pod');
+  console.error(`[db-manager] Exec failed: ${message}`);
+  return new DbExecError(message);
+}
+
+function asDbApiError(err: unknown): unknown {
+  return err instanceof DbExecError ? new ApiError('DB_EXEC_ERROR', err.message, 500) : err;
+}
+
 async function execInPod(
   kubeconfigPath: string | undefined,
   namespace: string,
@@ -98,7 +136,9 @@ async function execInPod(
   // Wait for both the exec status callback AND the streams to finish.
   // The status callback can fire before all data is flushed to stdout/stderr,
   // causing empty results for large outputs (e.g., database exports).
-  let statusError: Error | null = null;
+  // A failed status is turned into an error only once stderr has flushed, so
+  // the database's own message (not the exec status) is what the operator sees.
+  let failedStatus: Record<string, unknown> | null = null;
 
   await new Promise<void>((resolve, reject) => {
     let statusDone = false;
@@ -107,7 +147,7 @@ async function execInPod(
 
     const tryResolve = () => {
       if (statusDone && stdoutDone && stderrDone) {
-        if (statusError) reject(statusError);
+        if (failedStatus) reject(execFailure(failedStatus, stderr));
         else resolve();
       }
     };
@@ -132,9 +172,7 @@ async function execInPod(
             stdoutStream.end();
             stderrStream.end();
           } else {
-            const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
-            console.error(`[db-manager] Exec failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
-            statusError = new Error(msg);
+            failedStatus = s;
             stdoutStream.end();
             stderrStream.end();
           }
@@ -204,13 +242,12 @@ async function execInPodWithStdin(
           if (!s || s.status === 'Success' || s.status === undefined) {
             resolve();
           } else {
-            const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
-            console.error(`[db-manager] Exec with stdin failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
-            reject(new Error(msg));
+            // Same rule as execInPod: the status embeds the argv (-p<root password>).
+            reject(execFailure(s, stderr));
           }
         },
       )
-      .catch(reject);
+      .catch((err: unknown) => reject(new DbExecError(redactDbSecrets(err instanceof Error ? err.message : String(err)))));
   });
 
   return { stdout: stdout.trim(), stderr: stderr.trim() };
@@ -362,7 +399,7 @@ async function mysqlExec(
   }
   const { stdout, stderr } = result;
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
   }
   return stdout;
 }
@@ -508,7 +545,13 @@ async function mysqlCreateUser(
 async function mysqlDropUser(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, username: string,
 ): Promise<void> {
-  await mysqlExec(kp, ns, pod, cn, pw, `DROP USER IF EXISTS '${username}'@'%'`);
+  // Drop the account under every host it exists with — `'%'` alone silently
+  // no-op'd for 'name'@'localhost' while the route answered 204.
+  const hostsOut = await mysqlExec(kp, ns, pod, cn, pw, `SELECT Host FROM mysql.user WHERE User = '${username}'`);
+  const hosts = hostsOut.split('\n').map((h) => h.trim()).filter(Boolean);
+  for (const host of hosts) {
+    await mysqlExec(kp, ns, pod, cn, pw, `DROP USER IF EXISTS '${username}'@'${host.replace(/'/g, "''")}'`);
+  }
 }
 
 async function mysqlSetPassword(
@@ -520,10 +563,22 @@ async function mysqlSetPassword(
   username: string,
   newPassword: string,
 ): Promise<void> {
-  await mysqlExec(
+  // Change the account under every host it exists with. Hard-coding '%' made
+  // the change fail for a user created as 'name'@'localhost' (or any other host).
+  const hostsOut = await mysqlExec(
     kp, ns, pod, cn, pw,
-    `ALTER USER '${username}'@'%' IDENTIFIED BY '${newPassword}'`,
+    `SELECT Host FROM mysql.user WHERE User = '${username}'`,
   );
+  const hosts = hostsOut.split('\n').map((h) => h.trim()).filter(Boolean);
+  if (hosts.length === 0) {
+    throw new ApiError('DB_USER_NOT_FOUND', `Database user "${username}" does not exist`, 404, { username });
+  }
+  for (const host of hosts) {
+    await mysqlExec(
+      kp, ns, pod, cn, pw,
+      `ALTER USER '${username}'@'${host.replace(/'/g, "''")}' IDENTIFIED BY '${newPassword}'`,
+    );
+  }
   await mysqlExec(kp, ns, pod, cn, pw, 'FLUSH PRIVILEGES');
 }
 
@@ -556,7 +611,7 @@ async function mysqlExecWithHeaders(
   }
   const { stdout, stderr } = result;
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
   }
   return stdout;
 }
@@ -591,7 +646,7 @@ async function pgExec(
     ['psql', '-U', 'postgres', '-t', '-A', '-c', sql],
   );
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
   }
   return stdout;
 }
@@ -753,7 +808,7 @@ async function pgExecCsv(
     ['psql', '-U', 'postgres', '-d', database, '-c', sql, '--csv'],
   );
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
   }
   return stdout;
 }
@@ -841,7 +896,7 @@ async function mongoExec(
     ['mongosh', '--quiet', ...authArgs, '--eval', command],
   );
   if (stderr && stderr.includes('MongoServerError')) {
-    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
   }
   return stdout;
 }
@@ -1237,45 +1292,53 @@ export async function createUser(
   password: string,
   database?: string,
 ): Promise<void> {
-  validateIdentifier(username, 'username');
-  if (database) validateIdentifier(database, 'database name');
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    return mysqlCreateUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password, database,
-    );
+  try {
+    validateIdentifier(username, 'username');
+    if (database) validateIdentifier(database, 'database name');
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlCreateUser(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ctx.rootPassword, username, password, database,
+      );
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgCreateUser(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        username, password, database,
+      );
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoCreateUser(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ctx.rootPassword, username, password, database, ctx.rootUsername,
+      );
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user creation not supported`, 400);
+  } catch (err) {
+    throw asDbApiError(err);
   }
-  if (ctx.engine === 'postgresql') {
-    return pgCreateUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      username, password, database,
-    );
-  }
-  if (ctx.engine === 'mongodb') {
-    return mongoCreateUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password, database, ctx.rootUsername,
-    );
-  }
-  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user creation not supported`, 400);
 }
 
 export async function dropUser(ctx: DbManagerContext, username: string): Promise<void> {
-  validateIdentifier(username, 'username');
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    return mysqlDropUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username,
-    );
+  try {
+    validateIdentifier(username, 'username');
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlDropUser(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username,
+      );
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgDropUser(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username);
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoDropUser(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username, ctx.rootUsername,
+      );
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user deletion not supported`, 400);
+  } catch (err) {
+    throw asDbApiError(err);
   }
-  if (ctx.engine === 'postgresql') {
-    return pgDropUser(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username);
-  }
-  if (ctx.engine === 'mongodb') {
-    return mongoDropUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username, ctx.rootUsername,
-    );
-  }
-  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user deletion not supported`, 400);
 }
 
 export async function setUserPassword(
@@ -1283,25 +1346,29 @@ export async function setUserPassword(
   username: string,
   password: string,
 ): Promise<void> {
-  validateIdentifier(username, 'username');
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    return mysqlSetPassword(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password,
-    );
+  try {
+    validateIdentifier(username, 'username');
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlSetPassword(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ctx.rootPassword, username, password,
+      );
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgSetPassword(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username, password,
+      );
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoSetPassword(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ctx.rootPassword, username, password, ctx.rootUsername,
+      );
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} password change not supported`, 400);
+  } catch (err) {
+    throw asDbApiError(err);
   }
-  if (ctx.engine === 'postgresql') {
-    return pgSetPassword(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username, password,
-    );
-  }
-  if (ctx.engine === 'mongodb') {
-    return mongoSetPassword(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password, ctx.rootUsername,
-    );
-  }
-  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} password change not supported`, 400);
 }
 
 // ─── Query Execution ────────────────────────────────────────────────────────
@@ -1809,6 +1876,9 @@ export async function importSql(
     );
   }
 
+  const systemHit = findSystemStatement(sql, ctx.engine);
+  if (systemHit) return { success: false, error: systemImportRefusal(ctx.engine, systemHit) };
+
   try {
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       return await mysqlImportSql(ctx, database, sql);
@@ -2061,6 +2131,25 @@ export async function importSqlFromPvcFile(
     }
 
     // Step 2: Import from the database pod's mount (only needs the database CLI)
+    // A full-server dump would replace the server's own accounts (see
+    // ./import-system-guard.ts). Scanned in place, so any file size works.
+    const systemPattern = isPgRestore ? null : systemImportPattern(ctx.engine);
+    if (systemPattern) {
+      const scan = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', grepScanCommand(shellEscape(systemPattern), shellEscape(fmSqlPath))]);
+      if (scan.stdout.includes(GREP_FAILED)) {
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+          ['rm', '-f', fmSqlPath]).catch(() => {});
+        return { success: false, error: 'The file could not be checked before import (it could not be read). Nothing was imported — upload it again and retry.' };
+      }
+      const hit = parseGrepHit(scan.stdout);
+      if (hit) {
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+          ['rm', '-f', fmSqlPath]).catch(() => {});
+        return { success: false, error: systemImportRefusal(ctx.engine, hit) };
+      }
+    }
+
     const importPath = `${dataRoot}/${dbImportFileName}`;
     let result: { stdout: string; stderr: string };
 

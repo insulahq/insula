@@ -1,3 +1,4 @@
+import '@/lib/monaco-setup';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, X, Check, XCircle, Eye, EyeOff, FileText, FolderPlus, Sparkles, AlertCircle, Download, Trash2, ArrowRight } from 'lucide-react';
 import { DiffEditor } from '@monaco-editor/react';

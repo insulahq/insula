@@ -247,7 +247,15 @@ export const adminDashboardLiveSchema = z.object({
   clusterAlerts: section(z.array(dashboardAlertSchema)),
   webDefence: section(z.object({
     blocked24h: z.number(), critical24h: z.number(),
-    distinctSources: z.number(), activeBans: z.number(),
+    distinctSources: z.number(),
+    /**
+     * Addresses on the Banned IPs list right now — the same platform-origin
+     * decisions the list shows by default (WAF auto-bans, traffic detection,
+     * operator bans, permanent bans), one per address. The community feed is
+     * excluded, as it is from the list. null when the CrowdSec LAPI could not
+     * be read: an unknown count must not render as zero bans.
+     */
+    activeBans: z.number().nullable(),
     /**
      * The addresses actually hammering the platform, worst first. An operator
      * asked for these in place of the most-hit rule id: a rule number says

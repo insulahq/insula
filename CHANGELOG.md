@@ -12,6 +12,63 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **SQL Manager refuses full-server dumps.** Importing a `--all-databases` / `pg_dumpall` dump
+  replaced the database server's own account tables: the platform's and every app's database
+  logins vanished on the next restart. Imports that switch to or write the `mysql` system schema,
+  or carry account statements (`CREATE USER`, `GRANT`, …), are now refused with the offending line
+  and how to export just the application database.
+- **Database errors no longer carry credentials.** A failed command in a database pod reported (and
+  logged) the exec status, which embeds the root password and, for a password change, the new one.
+  Errors now carry the database's own message with secrets redacted.
+- **Bans can no longer hit the platform itself.** Manual bans (timed or permanent) and the WAF
+  auto-ban refuse your own address, the cluster's node and ingress addresses, private / loopback /
+  CGNAT ranges, trusted ranges and allowlisted addresses — in any spelling, including ranges that
+  merely contain one. If those cannot be read, the ban is refused rather than issued blind.
+
+### Changed
+
+- **Cron jobs can email on failure** (off by default): to the tenant's email and/or one more
+  address, at most once per job per day and 20 per tenant per day.
+- **Email notifications get a custom header and footer** per provider, edited as HTML with a live
+  preview (default empty).
+- **Tenant recovery from a bundle runs in the background**, with a progress modal and a task-center
+  entry you can reopen. Only one recovery per tenant can run at a time, and each step re-checks that
+  the admin who started it still has access.
+- **Web Defense:** the Static Blocklist section is gone — a manual ban has a **Permanent** duration
+  instead; manual bans show the operator's name and just the reason. The settings tab is reordered
+  (Community Blocklist first, CrowdSec Console last), long lists start collapsed, and **Malicious
+  Traffic Detection** can be switched off (alerts only, no bans).
+- **Styled tooltips** everywhere in both panels: every hover hint renders as a bubble that is never
+  clipped and stays on screen.
+- **The tenant panel's code editors no longer load from a CDN.** Monaco (SQL Manager, file editor,
+  compose editor) is served from the panel image instead of cdn.jsdelivr.net — no third-party fetch
+  from tenants' browsers, and editors work on firewalled clusters. The image grows by about 3 MB.
+  The compose editor's in-editor schema hints are gone (they never worked with the current Monaco);
+  **Validate** still marks problems on their lines.
+- **Compose stacks can mount an existing storage folder** with Compose's own idiom
+  (`driver_opts: { type: none, o: bind, device: <folder> }`); the editor's example explains where
+  volumes are stored.
+
+### Fixed
+
+- **Large SFTP / rsync uploads no longer kill the file manager.** An upload faster than the
+  tenant's storage could write filled the file manager's memory with not-yet-written data and it
+  was OOM-killed mid-transfer. It now flushes the volume and briefly pauses the writing processes
+  instead, so the upload slows to disk speed and completes.
+- The admin **Backups** page showed "Tenants 0 — no jobs registered" although bundles ran nightly;
+  it now reflects every tenant's latest bundle (failing / never run turn the card amber or red).
+- The dashboard **Web Defence** tile counted only WAF auto-bans; it now matches the Banned IPs list,
+  and one host written two ways (IPv6) counts once.
+- The **System** card on the Backups page now includes the platform database's own backups.
+- Retention could expire a tenant's last good copy of a component (e.g. mail) when a newer bundle
+  was `partial` because that component failed; the newest completed copy of each component is now
+  kept.
+- SQL Manager: regenerating or deleting a database user failed for accounts not created for host
+  `%`, and a failure was never shown on the page.
+- The documentation used a real domain as an example; it now uses `example.com`.
+
 ## [2026.10.4] - 2026-10-04
 
 ### Security
@@ -4105,7 +4162,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so an exact fit compares equal.
 - **Setting the folder a hostname serves did nothing, with no error shown.**
   Two faults met: the folder-name rule allowed only lowercase letters, digits,
-  hyphens and underscores, so `business.na` — a folder named after the site it
+  hyphens and underscores, so `example.com` — a folder named after the site it
   holds, which is the usual convention on a web host — was refused with a 400;
   and both panels swallowed that refusal, closing the picker as though it had
   worked. The name rule now allows dots and uppercase (the first character must

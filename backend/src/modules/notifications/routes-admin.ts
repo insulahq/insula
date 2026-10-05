@@ -12,6 +12,8 @@
  *   - POST   /templates/:id/preview       render against sample vars
  *   - POST   /templates/:id/restore-seed  revert to seed
  *   - GET    /deliveries                  audit log (cursor pagination, filters)
+ *   - GET    /email-chrome/preview-sample a real rendered notification for the
+ *                                         provider editor's header/footer preview
  *
  * All routes require panel='admin' and role super_admin OR admin.
  */
@@ -36,8 +38,11 @@ import {
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
 import * as providerService from './providers/service.js';
+import { renderEmailChromePreviewSample } from './providers/email-chrome-sample.js';
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
+import type { CoreV1Api } from '@kubernetes/client-node';
+import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
 
 const PROVIDERS_RATE_LIMIT_ERR =
   'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
@@ -49,6 +54,22 @@ function requireEncryptionKey(): string {
 }
 
 export async function notificationAdminRoutes(app: FastifyInstance): Promise<void> {
+  // The stalwart-internal provider test authenticates with the master
+  // credentials from mail/mail-secrets, like the worker. Built on first use
+  // and kept: a test is rare, and one client avoids a new agent per request.
+  let k8sCore: CoreV1Api | null | undefined;
+  const getK8sCore = async (): Promise<CoreV1Api | null> => {
+    if (k8sCore !== undefined) return k8sCore;
+    try {
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const kubeconfigPath = (app.config as Record<string, unknown> | undefined)?.KUBECONFIG_PATH as string | undefined;
+      k8sCore = createK8sClients(kubeconfigPath).core;
+    } catch {
+      k8sCore = null;
+    }
+    return k8sCore;
+  };
+
   app.addHook('onRequest', authenticate);
   app.addHook('preHandler', requirePanel('admin'));
   app.addHook('preHandler', requireRole('super_admin', 'admin'));
@@ -340,44 +361,59 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
     return success(await providerService.getProvider(app.db, id));
   });
 
-  app.post('/admin/notifications/providers', async (request) => {
-    const parsed = createNotificationProviderSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      throw new ApiError(
-        'INVALID_FIELD_VALUE',
-        `Validation error: ${first.message} (${first.path.join('.')})`,
-        400,
-      );
-    }
-    const encryptionKey = requireEncryptionKey();
-    const created = await providerService.createProvider(app.db, parsed.data, {
-      userId: request.user!.sub,
-      encryptionKey,
-    });
-    return success(created);
-  });
+  // Create/update carry operator-authored HTML (the email header/footer), so
+  // the admin panel sends them as application/octet-stream — the same JSON,
+  // which the edge WAF never parses into ARGS (ADR-060, WAF rule 9000116).
+  // JSON stays accepted for API clients and the panel/API rollout window. The
+  // parser is scoped to these two routes only.
+  await app.register(async (scope) => {
+    registerRawBodyParser(scope);
 
-  app.patch('/admin/notifications/providers/:id', async (request) => {
-    const { id } = request.params as { id: string };
-    const parsed = updateNotificationProviderSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      throw new ApiError(
-        'INVALID_FIELD_VALUE',
-        `Validation error: ${first.message} (${first.path.join('.')})`,
-        400,
-      );
-    }
-    const encryptionKey = requireEncryptionKey();
-    const updated = await providerService.updateProvider(app.db, id, parsed.data, { encryptionKey });
-    return success(updated);
+    scope.post('/admin/notifications/providers', async (request) => {
+      const parsed = createNotificationProviderSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          `Validation error: ${first.message} (${first.path.join('.')})`,
+          400,
+        );
+      }
+      const encryptionKey = requireEncryptionKey();
+      const created = await providerService.createProvider(app.db, parsed.data, {
+        userId: request.user!.sub,
+        encryptionKey,
+      });
+      return success(created);
+    });
+
+    scope.patch('/admin/notifications/providers/:id', async (request) => {
+      const { id } = request.params as { id: string };
+      const parsed = updateNotificationProviderSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          `Validation error: ${first.message} (${first.path.join('.')})`,
+          400,
+        );
+      }
+      const encryptionKey = requireEncryptionKey();
+      const updated = await providerService.updateProvider(app.db, id, parsed.data, { encryptionKey });
+      return success(updated);
+    });
   });
 
   app.delete('/admin/notifications/providers/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     await providerService.deleteProvider(app.db, id);
     reply.status(204).send();
+  });
+
+  // Read-only and provider-independent: the editor wraps this sample with the
+  // header/footer the operator is typing, client-side, on every keystroke.
+  app.get('/admin/notifications/email-chrome/preview-sample', async () => {
+    return success(await renderEmailChromePreviewSample(app.db));
   });
 
   app.post('/admin/notifications/providers/:id/test', async (request) => {
@@ -392,7 +428,10 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       );
     }
     const encryptionKey = requireEncryptionKey();
-    const result = await providerService.testProvider(app.db, id, parsed.data, { encryptionKey });
+    const result = await providerService.testProvider(app.db, id, parsed.data, {
+      encryptionKey,
+      k8sCore: await getK8sCore(),
+    });
     return success(result);
   });
 }

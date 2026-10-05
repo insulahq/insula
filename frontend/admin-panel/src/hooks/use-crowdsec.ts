@@ -10,7 +10,7 @@
  * so 15s is the longest a stale list can persist.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
   CrowdsecAddAllowlistRequest,
@@ -25,6 +25,9 @@ import type {
   CrowdsecConsoleEnrollRequest,
   CrowdsecScenariosResponse,
   CrowdsecSetScenarioSimulationRequest,
+  CrowdsecSetScenarioSimulationResponse,
+  CrowdsecSetTrafficDetectionRequest,
+  CrowdsecSetTrafficDetectionResponse,
   CrowdsecConsoleMetaPatch,
   CrowdsecConsoleStatus,
   CrowdsecDeleteByIdResponse,
@@ -125,7 +128,7 @@ export function useDeleteCrowdsecDecision() {
   });
 }
 
-// ─── F2 — Allowlist + Static blocklist hooks ──────────────────────────
+// ─── F2 — Allowlist + permanent-ban hooks ─────────────────────────────
 
 const ALLOWLIST_KEY = ['crowdsec', 'allowlist'] as const;
 
@@ -191,6 +194,10 @@ export function useSetCrowdsecCommunityBlocklist() {
   });
 }
 
+/**
+ * A PERMANENT ban — the "Permanent" duration of the Add manual ban modal.
+ * The endpoint keeps its historical static-blocklist name.
+ */
 export function useAddCrowdsecStaticBan() {
   const qc = useQueryClient();
   return useMutation<Envelope<CrowdsecAddBanResponse>, Error, CrowdsecAddStaticBanRequest>({
@@ -357,6 +364,19 @@ export function usePruneCrowdsecBouncers(olderThanSeconds: number = 300) {
 // ─── Traffic detection: CrowdSec scenarios on the agent ───────────────
 
 const SCENARIOS_KEY = ['crowdsec', 'scenarios'] as const;
+/**
+ * Shared by every write to the agent's simulation config (one scenario's
+ * mode, the global on/off). The backend compare-and-swaps those writes, but
+ * the panel also runs them one at a time: while any is in flight every
+ * switch that writes the same ConfigMap is disabled, so a second click
+ * cannot be computed from a list that is about to change.
+ */
+const SIMULATION_CONFIG_MUTATION_KEY = ['crowdsec', 'simulation-config'] as const;
+
+/** True while any write to the agent's simulation config is in flight. */
+export function useSimulationConfigBusy(): boolean {
+  return useIsMutating({ mutationKey: SIMULATION_CONFIG_MUTATION_KEY }) > 0;
+}
 
 /**
  * The scenarios the log-processing agent has loaded.
@@ -371,16 +391,20 @@ export function useCrowdsecScenarios() {
     queryKey: SCENARIOS_KEY,
     queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/scenarios'),
     staleTime: 60_000,
+    // A change restarts the agent; until it is back the API serves the list
+    // it reported just before (`cachedAt`). Poll until the live list returns.
+    refetchInterval: (query) => (query.state.data?.data.cachedAt ? 5_000 : false),
   });
 }
 
 export function useSetScenarioSimulation() {
   const qc = useQueryClient();
   return useMutation<
-    Envelope<{ simulated: string[]; rolledPods: number; rollError: string | null }>,
+    Envelope<CrowdsecSetScenarioSimulationResponse>,
     Error,
     CrowdsecSetScenarioSimulationRequest
   >({
+    mutationKey: SIMULATION_CONFIG_MUTATION_KEY,
     mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/scenarios', {
       method: 'PATCH',
       body: JSON.stringify(body),
@@ -389,6 +413,31 @@ export function useSetScenarioSimulation() {
       void qc.invalidateQueries({ queryKey: SCENARIOS_KEY });
       // A scenario moving in or out of simulation changes what future decisions
       // look like, so the ban table's reason copy is refetched too.
+      void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
+    },
+  });
+}
+
+/**
+ * Malicious Traffic Detection on/off. Disabled = every scenario alert-only
+ * (alerts still raised, no bans); the per-scenario choices are kept.
+ */
+export function useSetTrafficDetection() {
+  const qc = useQueryClient();
+  return useMutation<
+    Envelope<CrowdsecSetTrafficDetectionResponse>,
+    Error,
+    CrowdsecSetTrafficDetectionRequest
+  >({
+    mutationKey: SIMULATION_CONFIG_MUTATION_KEY,
+    mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/traffic-detection', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+    // Settled, not success: a 502 means "saved, not applied", and the list
+    // must refetch to show the saved-vs-running state either way.
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: SCENARIOS_KEY });
       void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
     },
   });

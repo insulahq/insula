@@ -57,6 +57,14 @@ vi.mock('./templates/service.js', () => ({
   restoreSeedTemplate: restoreSeedTemplateMock,
 }));
 
+const renderEmailChromePreviewSampleMock = vi.fn().mockResolvedValue({
+  subject: 'Your password was changed',
+  html: '<!doctype html><html><body><p>sample</p></body></html>',
+});
+vi.mock('./providers/email-chrome-sample.js', () => ({
+  renderEmailChromePreviewSample: renderEmailChromePreviewSampleMock,
+}));
+
 const { notificationAdminRoutes } = await import('./routes-admin.js');
 
 describe('admin notification routes', () => {
@@ -185,6 +193,106 @@ describe('admin notification routes', () => {
     });
     expect(r.statusCode).toBe(200);
     expect(r.json().data).toMatchObject({ body: 'b' });
+  });
+
+  it('GET /admin/notifications/email-chrome/preview-sample returns the rendered sample', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/notifications/email-chrome/preview-sample',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data).toEqual({
+      subject: 'Your password was changed',
+      html: '<!doctype html><html><body><p>sample</p></body></html>',
+    });
+  });
+
+  it('GET /admin/notifications/email-chrome/preview-sample is admin-panel only', async () => {
+    renderEmailChromePreviewSampleMock.mockClear();
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/notifications/email-chrome/preview-sample',
+      headers: { authorization: `Bearer ${tenantToken}` },
+    });
+    expect(r.statusCode).toBe(403);
+    expect(renderEmailChromePreviewSampleMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /admin/notifications/providers/:id rejects a header with a <script> tag, naming the field', async () => {
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/notifications/providers/p1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { emailHeaderHtml: '<p>hi</p><script>alert(1)</script>' },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error.code).toBe('INVALID_FIELD_VALUE');
+    expect(r.json().error.message).toContain('<script>');
+    expect(r.json().error.message).toContain('emailHeaderHtml');
+  });
+
+  it('PATCH /admin/notifications/providers/:id rejects a footer over the size cap', async () => {
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/notifications/providers/p1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { emailFooterHtml: 'x'.repeat(20 * 1024 + 1) },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error.message).toContain('emailFooterHtml');
+  });
+
+  describe('raw JSON transport (application/octet-stream, ADR-060)', () => {
+    const raw = (method: 'POST' | 'PATCH' | 'GET', url: string, body: string) => app.inject({
+      method,
+      url,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/octet-stream' },
+      payload: body,
+    });
+
+    it('PATCH /providers/:id parses an octet-stream body as JSON and validates it', async () => {
+      const r = await raw('PATCH', '/api/v1/admin/notifications/providers/p1',
+        JSON.stringify({ emailFooterHtml: '<a href="&#106;avascript:x">x</a>' }));
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error.code).toBe('INVALID_FIELD_VALUE');
+      expect(r.json().error.message).toContain('emailFooterHtml');
+    });
+
+    it('POST /providers parses an octet-stream body as JSON and validates it', async () => {
+      const r = await raw('POST', '/api/v1/admin/notifications/providers',
+        JSON.stringify({ name: 'p', providerType: 'smtp', smtpHost: 'smtp.example.test', fromAddress: 'noreply@example.test', emailHeaderHtml: '<script>x</script>' }));
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error.message).toContain('emailHeaderHtml');
+    });
+
+    it('keeps the plugin auth gates on the scoped routes', async () => {
+      const anon = await app.inject({
+        method: 'PATCH', url: '/api/v1/admin/notifications/providers/p1',
+        headers: { 'content-type': 'application/octet-stream' }, payload: '{}',
+      });
+      expect(anon.statusCode).toBe(401);
+      const tenant = await app.inject({
+        method: 'POST', url: '/api/v1/admin/notifications/providers',
+        headers: { authorization: `Bearer ${tenantToken}`, 'content-type': 'application/octet-stream' }, payload: '{}',
+      });
+      expect(tenant.statusCode).toBe(403);
+    });
+
+    it('rejects a malformed octet-stream body as invalid JSON', async () => {
+      const r = await raw('PATCH', '/api/v1/admin/notifications/providers/p1', '{not json');
+      expect(r.statusCode).toBe(400);
+    });
+
+    it('is not accepted by the other notification routes', async () => {
+      const r = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/admin/notifications/categories/security.password_changed',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/octet-stream' },
+        payload: JSON.stringify({ defaultSeverity: 'warning' }),
+      });
+      expect(r.statusCode).toBe(415);
+    });
   });
 
   it('POST /admin/notifications/templates/:id/restore-seed', async () => {

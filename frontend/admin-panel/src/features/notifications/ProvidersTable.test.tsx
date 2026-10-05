@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -17,6 +17,12 @@ vi.mock('@/hooks/use-notification-providers', () => ({
   useUpdateNotificationProvider: () => ({ mutateAsync: updateMutate, isPending: false, error: null }),
   useDeleteNotificationProvider: () => ({ mutateAsync: deleteMutate, isPending: false, error: null }),
   useTestNotificationProvider: () => ({ mutateAsync: testMutate, isPending: false, error: null, data: { data: { status: 'success', testedAt: '2026-05-28T00:00:00Z', error: null } } }),
+  useEmailChromePreviewSample: () => ({
+    data: { data: { subject: 'Sample', html: '<html><body><p>SAMPLE-BODY</p></body></html>' } },
+    isLoading: false,
+    isFetching: false,
+    error: null,
+  }),
 }));
 
 function provider(overrides: Partial<NotificationProviderResponse> = {}): NotificationProviderResponse {
@@ -41,6 +47,8 @@ function provider(overrides: Partial<NotificationProviderResponse> = {}): Notifi
   ntfyTopic: null,
   ntfyAuthMethod: null,
   ntfyTokenSet: false,
+    emailHeaderHtml: '',
+    emailFooterHtml: '',
   lastTestedAt: '2026-05-28T10:00:00.000Z',
     lastTestStatus: 'success',
     lastTestError: null,
@@ -159,5 +167,70 @@ describe('ProvidersTable', () => {
     await user.click(screen.getByTestId('provider-test-submit'));
     await waitFor(() => expect(testMutate).toHaveBeenCalledTimes(1));
     expect(testMutate.mock.calls[0][0]).toEqual({ id: 'p1', input: { recipientEmail: 'ops@example.test' } });
+  });
+
+  describe('email header / footer', () => {
+    it('edit drawer loads the stored blocks and previews them around the sample', async () => {
+      listMock.mockReturnValue({
+        data: { data: [provider({ emailHeaderHtml: '<p>HEADER-MARK</p>', emailFooterHtml: '<p>FOOTER-MARK</p>' })] },
+        isLoading: false,
+        error: null,
+      });
+      const user = userEvent.setup();
+      render(<ProvidersTable />, { wrapper: createWrapper() });
+      await user.click(screen.getByText('Brevo EU'));
+      expect((screen.getByTestId('provider-email-header') as HTMLTextAreaElement).value).toBe('<p>HEADER-MARK</p>');
+      expect((screen.getByTestId('provider-email-footer') as HTMLTextAreaElement).value).toBe('<p>FOOTER-MARK</p>');
+      const doc = screen.getByTestId('provider-email-preview').getAttribute('srcdoc') ?? '';
+      expect(doc.indexOf('HEADER-MARK')).toBeLessThan(doc.indexOf('SAMPLE-BODY'));
+      expect(doc.indexOf('SAMPLE-BODY')).toBeLessThan(doc.indexOf('FOOTER-MARK'));
+    });
+
+    it('save sends the edited blocks on update', async () => {
+      const user = userEvent.setup();
+      render(<ProvidersTable />, { wrapper: createWrapper() });
+      await user.click(screen.getByText('Brevo EU'));
+      fireEvent.change(screen.getByTestId('provider-email-header'), { target: { value: '<p>H</p>' } });
+      fireEvent.change(screen.getByTestId('provider-email-footer'), { target: { value: '<p>F</p>' } });
+      await user.click(screen.getByTestId('provider-save'));
+      await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+      expect(updateMutate.mock.calls[0][0]).toMatchObject({
+        id: 'p1',
+        input: { emailHeaderHtml: '<p>H</p>', emailFooterHtml: '<p>F</p>' },
+      });
+    });
+
+    it('create sends empty blocks by default', async () => {
+      const user = userEvent.setup();
+      render(<ProvidersTable />, { wrapper: createWrapper() });
+      await user.click(screen.getByTestId('provider-create'));
+      await user.type(screen.getByTestId('provider-name'), 'Test');
+      await user.type(screen.getByTestId('provider-smtp-host'), 'smtp.example.test');
+      await user.type(screen.getByTestId('provider-from-address'), 'ops@example.test');
+      await user.click(screen.getByTestId('provider-save'));
+      await waitFor(() => expect(createMutate).toHaveBeenCalledTimes(1));
+      expect(createMutate.mock.calls[0][0]).toMatchObject({ emailHeaderHtml: '', emailFooterHtml: '' });
+    });
+
+    it('disables Save while a block holds HTML the API would refuse', async () => {
+      const user = userEvent.setup();
+      render(<ProvidersTable />, { wrapper: createWrapper() });
+      await user.click(screen.getByText('Brevo EU'));
+      const save = screen.getByTestId('provider-save') as HTMLButtonElement;
+      expect(save.disabled).toBe(false);
+      fireEvent.change(screen.getByTestId('provider-email-footer'), { target: { value: '<script>x</script>' } });
+      expect(save.disabled).toBe(true);
+      fireEvent.change(screen.getByTestId('provider-email-footer'), { target: { value: '<p>ok</p>' } });
+      expect(save.disabled).toBe(false);
+    });
+
+    it('is not offered for an ntfy provider', async () => {
+      const user = userEvent.setup();
+      render(<ProvidersTable />, { wrapper: createWrapper() });
+      await user.click(screen.getByTestId('provider-create'));
+      expect(screen.getByTestId('provider-email-chrome')).toBeInTheDocument();
+      await user.selectOptions(screen.getByTestId('provider-type'), 'ntfy');
+      expect(screen.queryByTestId('provider-email-chrome')).not.toBeInTheDocument();
+    });
   });
 });

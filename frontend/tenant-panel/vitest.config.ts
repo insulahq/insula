@@ -12,6 +12,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Must precede '@': the real setup loads Monaco's ESM + `?worker` imports.
+      '@/lib/monaco-setup': path.resolve(__dirname, './src/test-stubs/monaco-setup.ts'),
       '@': path.resolve(__dirname, './src'),
       // Resolve contracts from SOURCE in tests, not packages/api-contracts/dist.
       // Against dist, a stale build surfaces as "<someExport> is not a function"

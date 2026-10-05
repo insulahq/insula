@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
-import { backupJobs } from '../../db/schema.js';
+import { backupComponents, backupJobs } from '../../db/schema.js';
 import { bundleIsLive } from './bundle-hold.js';
 import { runRetentionSweep } from './retention.js';
 import { newestRecoverableBundleId } from './recoverable.js';
@@ -97,6 +97,41 @@ describe.skipIf(!dbAvailable)('bundle liveness is one rule (integration)', () =>
     // The tenant whose nightlies stopped keeps exactly its newest bundle.
     const stale = rows.filter((r) => r.tenant === 'active' && r.past && Number(r.rn) === 1);
     expect(stale.every((r) => live.has(r.id))).toBe(true);
+  });
+
+  async function component(bundleId: string, name: 'files' | 'mailboxes', status: 'completed' | 'failed' | 'skipped') {
+    seq += 1;
+    await db().insert(backupComponents).values({
+      id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`,
+      backupJobId: bundleId, component: name, artifactName: `${name}.restic`, status,
+    } as typeof backupComponents.$inferInsert);
+  }
+
+  it('keeps the newest completed copy of each component — a newer partial bundle is not enough', async () => {
+    const regionId = (await seedRegion(db())).id;
+    const planId = (await seedPlan(db())).id;
+    const t = await seedTenant(db(), regionId, planId);
+    const old = await bundle(t.id, 30, true);                  // files + mail, expired
+    await component(old, 'files', 'completed');
+    await component(old, 'mailboxes', 'completed');
+    const newer = await bundle(t.id, 2, false, 'partial');      // mail capture failed
+    await component(newer, 'files', 'completed');
+    await component(newer, 'mailboxes', 'failed');
+    const skippedOnly = await bundle(t.id, 1, false);           // nothing to capture for mail
+    await component(skippedOnly, 'files', 'completed');
+    await component(skippedOnly, 'mailboxes', 'skipped');
+
+    expect((await liveIds()).has(old)).toBe(true);
+    await runRetentionSweep({ db: db(), log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } } as unknown as FastifyInstance);
+    expect((await statuses()).get(old)).toBe('completed');      // the last mail copy survives the sweep
+
+    // A newer bundle that completes mail releases it.
+    const full = await bundle(t.id, 0.5, false);
+    await component(full, 'files', 'completed');
+    await component(full, 'mailboxes', 'completed');
+    expect((await liveIds()).has(old)).toBe(false);
+    await runRetentionSweep({ db: db(), log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } } as unknown as FastifyInstance);
+    expect((await statuses()).get(old)).toBe('expired');
   });
 
   it('a recover picks a held bundle when it is the only one left', async () => {

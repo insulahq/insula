@@ -22,6 +22,11 @@ export const LABEL_TENANT_ID = 'insula.host/tenant-id';
 /** Optional: human-friendly UI label (annotation, not a label). */
 export const ANNOTATION_DISPLAY_NAME = 'insula.host/backup-display-name';
 
+/**
+ * Tenant bundles — the platform's tenant backups — are not labelled Jobs:
+ * their `tenant` rows are read from the bundle ledger (tenant-bundles.ts).
+ * A Job labelled `tenant` still joins the roll-up as its own row.
+ */
 export type BackupCategory = 'dr' | 'tenant' | 'audit' | 'custom';
 export type BackupSeverity = 'critical' | 'warning' | 'info';
 

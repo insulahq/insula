@@ -3,7 +3,10 @@
  *
  * Returned by GET /api/v1/admin/backup-health. Each entry rolls up the
  * recent Job runs of one logical backup (CronJob or one-off Job) into
- * a single state + lastSuccess/lastFailed pair for the UI.
+ * a single state + lastSuccess/lastFailed pair for the UI — except
+ * `category: 'tenant'` entries, which roll up one tenant's bundles from the
+ * bundle ledger (groupKey `tenant-bundles/<tenantId>`; `never_run` = a
+ * tenant the nightly wave covers that has no finished bundle yet).
  */
 import { z } from 'zod';
 

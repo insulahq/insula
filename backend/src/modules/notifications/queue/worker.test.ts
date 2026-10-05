@@ -139,6 +139,47 @@ describe('processDelivery', () => {
     expect(workerSendMock).toHaveBeenCalled();
   });
 
+  describe('provider email header / footer', () => {
+    const DOC = '<!doctype html><html><head></head><body style="word-spacing:normal;"><div>BODY-MARK</div></body></html>';
+
+    function queuedDb() {
+      return buildDb({
+        delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: {} },
+        user: { email: 'u1@example.com' },
+      });
+    }
+
+    beforeEach(() => {
+      getTemplateMock.mockResolvedValue({ id: 't1', subjectTemplate: 's', bodyTemplate: 'b', bodyFormat: 'mjml', variablesSchema: null, channel: 'email', locale: 'en', version: 1 });
+      renderTemplateAsyncMock.mockResolvedValue({ subject: 's', body: DOC, bodyFormat: 'mjml' });
+      workerSendMock.mockResolvedValue(undefined);
+    });
+
+    it('sends the rendered body byte-for-byte when the provider has none', async () => {
+      getDefaultProviderRowMock.mockResolvedValue({ ...defaultProvider(), emailHeaderHtml: '', emailFooterHtml: '' });
+      const { db } = queuedDb();
+      const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
+      expect(r.status).toBe('sent');
+      expect((workerSendMock.mock.calls[0][0] as { html: string }).html).toBe(DOC);
+    });
+
+    it("wraps the body in the routed provider's header and footer", async () => {
+      getDefaultProviderRowMock.mockResolvedValue({
+        ...defaultProvider(),
+        emailHeaderHtml: '<p>HEADER-MARK</p>',
+        emailFooterHtml: '<p>FOOTER-MARK</p>',
+      });
+      const { db } = queuedDb();
+      const r = await processDelivery('d1', { db, encryptionKey: 'KEY', send: workerSendMock });
+      expect(r.status).toBe('sent');
+      const html = (workerSendMock.mock.calls[0][0] as { html: string }).html;
+      const order = ['<body style="word-spacing:normal;">', 'HEADER-MARK', 'BODY-MARK', 'FOOTER-MARK', '</body>']
+        .map((needle) => html.indexOf(needle));
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+    });
+  });
+
   it('first failure: marks failed + re-enqueues with backoff', async () => {
     const { db, updateCalls } = buildDb({
       delivery: { id: 'd1', status: 'queued', channel: 'email', attempt: 0, maxAttempts: 6, templateId: 't1', userId: 'u1', categoryId: 'c', locale: 'en', eventVariables: { name: 'a' } },

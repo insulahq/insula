@@ -137,6 +137,37 @@ async function attemptRefresh(): Promise<RefreshOutcome> {
   }
 }
 
+/** `exp` of a JWT in epoch ms, or null when it cannot be read. */
+function jwtExpiryMs(token: string): number | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const claims = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: unknown };
+    return typeof claims.exp === 'number' ? claims.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Make sure the access token stays valid for at least `minValidityMs`,
+ * refreshing it first when it would not.
+ *
+ * For operations the SERVER carries on with the caller's token after it has
+ * answered — a background tenant recovery forwards it into its provision and
+ * restore sub-requests for minutes. The usual refresh-on-401 never fires for
+ * those: the browser's request already succeeded, and the run fails half-way
+ * with nobody watching. Best-effort — if the refresh fails, the current token
+ * stays and the request itself decides.
+ */
+export async function ensureFreshAccessToken(minValidityMs: number): Promise<void> {
+  const token = localStorage.getItem('auth_token');
+  if (!token) return;
+  const exp = jwtExpiryMs(token);
+  if (exp === null || exp - Date.now() >= minValidityMs) return;
+  await attemptRefresh();
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},

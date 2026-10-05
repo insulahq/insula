@@ -15,7 +15,7 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
 function ch(over: Partial<AcmeChallenge> & { name: string; created: string }): AcmeChallenge {
   return {
     metadata: { name: over.name, creationTimestamp: over.created },
-    spec: { dnsName: 'business.na', type: 'DNS-01', ...(over.spec ?? {}) },
+    spec: { dnsName: 'example.com', type: 'DNS-01', ...(over.spec ?? {}) },
     status: over.status,
   };
 }
@@ -89,7 +89,7 @@ describe('operator summary', () => {
       ),
     );
     expect(blocked).toBe(true);
-    expect(summary).toContain('business.na');
+    expect(summary).toContain('example.com');
     expect(summary).toContain('180 minutes');
     expect(summary).toContain('not yet propagated');
   });
@@ -174,14 +174,14 @@ describe('break-glass is deliberately narrow', () => {
         deleteNamespacedCustomObject: del,
       },
     };
-    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['business.na'] });
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
     expect(res.deleted).toEqual(['mine']);
   });
 
   it('matches the wildcard challenge, which carries the BASE name', async () => {
     // The real shapes, verified against production: the Certificate lists
-    // ["business.na", "*.business.na"], but cert-manager strips the prefix and
-    // creates BOTH challenges with spec.dnsName="business.na", distinguishing
+    // ["example.com", "*.example.com"], but cert-manager strips the prefix and
+    // creates BOTH challenges with spec.dnsName="example.com", distinguishing
     // them with spec.wildcard. Callers scope with domain.domainName — the plain
     // name — so this is the pairing that actually occurs.
     //
@@ -192,14 +192,14 @@ describe('break-glass is deliberately narrow', () => {
       custom: {
         listNamespacedCustomObject: vi.fn().mockResolvedValue({
           items: [
-            ch({ name: 'wild', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'business.na', type: 'DNS-01', wildcard: true }, status: { processing: true } }),
-            ch({ name: 'base', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'business.na', type: 'DNS-01', wildcard: false }, status: { processing: true } }),
+            ch({ name: 'wild', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'example.com', type: 'DNS-01', wildcard: true }, status: { processing: true } }),
+            ch({ name: 'base', created: ago(3 * 60 * 60 * 1000), spec: { dnsName: 'example.com', type: 'DNS-01', wildcard: false }, status: { processing: true } }),
           ],
         }),
         deleteNamespacedCustomObject: del,
       },
     };
-    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['business.na'] });
+    const res = await clearWedgedChallenges(k8s as never, 'ns', { now: NOW, dnsNames: ['example.com'] });
     expect(res.deleted).toEqual(['wild', 'base']);
   });
 });

@@ -8,9 +8,10 @@
  *
  * Exports (consumed by frontend/admin-panel/src/pages/WebDefensePage.tsx):
  *   - WafEventsTab     — cluster-wide ModSec/CRS event stream + filters
- *   - BannedIpsTab     — active CrowdSec bans table + Static Blocklist
+ *   - BannedIpsTab     — active platform bans table (timed + permanent)
  *   - WafExclusionsTab — per-route CRS rule exclusions + IP Allowlist
- *   - WafSettingsTab   — CrowdSec status, Console, auto-ban, L4 toggle
+ *   - WafSettingsTab   — CrowdSec status, community blocklist, auto-ban,
+ *                        traffic detection, L4 toggle, Console
  *
  * History note: on the previous page layout the L4
  * banner sat above the tabs as a top-of-page card. It moved into
@@ -25,11 +26,17 @@ import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
 import ScenariosCard from './ScenariosCard';
+import { CommunityBlocklistBanner, CommunityBlocklistCard } from './CommunityBlocklist';
+import Disclosure from '@/components/ui/Disclosure';
 import {
   addedByMeta,
+  addedByTooltip,
   compareGroups,
+  decisionAddedByTooltip,
+  decisionHoverText,
   describeDecision,
   groupDecisions,
+  isPermanentGroup,
   scenarioDescriptionMap,
   type BanSortKey,
   type DecisionGroup,
@@ -55,7 +62,6 @@ import {
   ShieldCheck,
   ShieldOff,
   Search,
-  X,
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
@@ -76,7 +82,6 @@ import {
   useCrowdsecAllowlist,
   useCrowdsecAutobanConfig,
   useCrowdsecAutobanRuns,
-  useCrowdsecCommunityBlocklist,
   useCrowdsecConsoleStatus,
   useCrowdsecDecisions,
   useCrowdsecL4Status,
@@ -90,7 +95,6 @@ import {
   usePruneCrowdsecBouncers,
   useCrowdsecScenarios,
   useRemoveCrowdsecAllowlistEntry,
-  useSetCrowdsecCommunityBlocklist,
 } from '@/hooks/use-crowdsec';
 import type {
   WafEvent,
@@ -100,7 +104,6 @@ import type {
   WafEventsResponse,
   WafScraperStatus,
   CrowdsecAllowlistEntry,
-  CrowdsecDecision,
   CrowdsecDecisionScope,
   CrowdsecListDecisionsQuery,
   CrowdsecStatus,
@@ -211,37 +214,28 @@ export function WafEventsTab() {
 
   return (
     <section className="space-y-4" data-testid="waf-events-tab">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Cluster-wide WAF events from the ModSecurity / OWASP CRS rule engine.
-        Includes <strong>admin/api/client/platform-host</strong> events that have
-        no per-tenant ingress route (e.g. CRS rule 930120 blocking
-        <code className="text-xs mx-1">POST /admin/system-backup/dr-drill/runs</code>),
-        plus the same per-route events surfaced under each Domain.
-        Scraper polls the <code className="text-xs">modsec-crs</code> pod every 30s;
-        admin-host events are capped at 500 globally, per-route at 50.
-      </div>
-
-      {/* Scraper-status banner — explains an empty table BEFORE the operator wonders. */}
-      {payload?.scraperStatus && (
-        <WafScraperStatusBanner
-          status={payload.scraperStatus}
-          eventsInView={payload.events.length}
-          lastInsertAt={payload.stats.mostRecentAt}
-        />
-      )}
-
-      {/* Live-tail + refresh controls */}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-controls">
-        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-          <span>
+      {/* One header row: what this tab shows on the left, refresh controls on
+          the right. The scraper caps live in the hover text — useful when a
+          count looks short, noise the rest of the time. */}
+      <div
+        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3"
+        data-testid="waf-controls"
+      >
+        <p
+          className="min-w-0 flex-1 text-sm text-gray-700 dark:text-gray-200"
+          data-testid="waf-events-description"
+          title="Scraped from the modsec-crs pods every 30s. Admin-host events are capped at 500 cluster-wide, per-route events at 50 per route."
+        >
+          ModSecurity / OWASP CRS rule hits across the cluster — platform hosts and tenant routes.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-600 dark:text-gray-400" data-testid="waf-auto-refresh">
             Auto-refresh:{' '}
             <span className={live ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-gray-700 dark:text-gray-300'}>
               {live ? 'live (3s)' : '30s'}
             </span>
+            {isFetching && <span className="text-brand-600 dark:text-brand-400"> · reloading…</span>}
           </span>
-          {isFetching && <span className="text-brand-600 dark:text-brand-400">· reloading…</span>}
-        </div>
-        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setLive((v) => !v)}
@@ -270,6 +264,15 @@ export function WafEventsTab() {
           </button>
         </div>
       </div>
+
+      {/* Scraper-status banner — explains an empty table BEFORE the operator wonders. */}
+      {payload?.scraperStatus && (
+        <WafScraperStatusBanner
+          status={payload.scraperStatus}
+          eventsInView={payload.events.length}
+          lastInsertAt={payload.stats.mostRecentAt}
+        />
+      )}
 
       {/* Stats panel */}
       {payload?.stats && <WafStatsPanel stats={payload.stats} />}
@@ -777,7 +780,7 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
               onClick={() => onBan(ev.sourceIp as string)}
               className="inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-1 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
               data-testid={`waf-ban-${ev.id}`}
-              title={`Block ${ev.sourceIp} permanently — adds it to the static blocklist (does not expire)`}
+              title={`Ban ${ev.sourceIp} — opens the ban dialog with Permanent preselected (you can pick a shorter duration)`}
               aria-label={`Block ${ev.sourceIp} permanently`}
             >
               <Ban size={12} />
@@ -828,6 +831,13 @@ function FilterField({ label, hint, children }: { label: string; hint?: string; 
 // Traefik DaemonSet's crowdsec middleware queries the LAPI on every
 // request — see backend/src/modules/security-hardening/crowdsec.ts.
 
+/**
+ * Not a CrowdSec duration: selecting it sends the ban to the permanent-ban
+ * endpoint (what the Static Blocklist's "Add static ban" did), which stores a
+ * 100-year decision. Every other option is a timed ban.
+ */
+const PERMANENT_DURATION = 'permanent';
+
 const DURATION_OPTIONS: ReadonlyArray<{ readonly label: string; readonly value: string }> = [
   { label: '1 hour', value: '1h' },
   { label: '4 hours', value: '4h' },
@@ -835,6 +845,7 @@ const DURATION_OPTIONS: ReadonlyArray<{ readonly label: string; readonly value: 
   { label: '1 day', value: '24h' },
   { label: '7 days', value: '168h' },
   { label: '30 days', value: '720h' },
+  { label: 'Permanent', value: PERMANENT_DURATION },
 ];
 
 export function BannedIpsTab() {
@@ -844,7 +855,6 @@ export function BannedIpsTab() {
   const [staticOnly, setStaticOnly] = useState(false);
   const [autoOnly, setAutoOnly] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [staticAddOpen, setStaticAddOpen] = useState(false);
 
   const debouncedQ = useDebouncedValue(q, 400);
 
@@ -897,26 +907,12 @@ export function BannedIpsTab() {
   return (
     <section className="space-y-4" data-testid="banned-ips-tab">
       <CommunityBlocklistBanner />
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Addresses this platform is blocking, one row per address. Four things add them, and the
-        <strong> Added by</strong> column says which:{' '}
-        <span className="text-[10px] uppercase text-amber-700 dark:text-amber-300">operator</span>,{' '}
-        <span className="text-[10px] uppercase text-purple-700 dark:text-purple-300">static list</span>,{' '}
-        <span className="text-[10px] uppercase text-sky-700 dark:text-sky-300">auto · waf</span> (ModSecurity
-        rule hits) and{' '}
-        <span className="text-[10px] uppercase text-teal-700 dark:text-teal-300">auto · traffic</span> (this
-        platform's CrowdSec agent reading the ingress access log). The community feed is listed
-        separately — see “View banned IPs” on the LAPI tile under Settings.
-        Enforcement is cluster-wide — the <code className="text-xs">crowdsec</code> Traefik middleware queries the
-        LAPI on every request, so a ban applies on every node simultaneously. Adding or removing a ban here
-        propagates to all <code className="text-xs">traefik</code> DaemonSet pods within a few seconds.
-      </div>
 
-      {/* F2 — Static blocklist (long-term, operator-managed list).
-          Allowlist + CrowdSec status panel + Console + autoban + L4
-          all moved to the WAF Settings tab so the Banned IPs tab is
-          just "the list + the things you do to the list". */}
-      <StaticBlocklistCard onOpenAdd={() => setStaticAddOpen(true)} />
+      {/* Operator request: no description block and no separate Static
+          Blocklist section. A permanent ban is the "Permanent" duration of
+          Add manual ban, and lands in this one list with an
+          "Operator · Permanent" pill. Allowlist, CrowdSec status, Console,
+          auto-ban and L4 live on the WAF Settings tab. */}
 
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
@@ -961,7 +957,7 @@ export function BannedIpsTab() {
               onChange={(e) => setStaticOnly(e.target.checked)}
               data-testid="bans-filter-static"
             />
-            Static (1y) bans only
+            Permanent bans only
           </label>
           <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
             <input
@@ -1053,8 +1049,8 @@ export function BannedIpsTab() {
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-gray-500 text-sm">
                       {payload.totalActive > 0
-                        ? 'No bans match the current filters. Clear filters to see all.'
-                        : 'No active bans. The community blocklist refreshes hourly — check back, or add a manual ban above.'}
+                        ? 'No platform bans match the current filters. Clear filters to see all.'
+                        : 'No active bans. Add a manual ban above, or wait for the auto-ban engines to act.'}
                     </td>
                   </tr>
                 )}
@@ -1069,9 +1065,6 @@ export function BannedIpsTab() {
           prefill={{ value: '', reason: '' }}
           onClose={() => setAddOpen(false)}
         />
-      )}
-      {staticAddOpen && (
-        <StaticBanModal onClose={() => setStaticAddOpen(false)} />
       )}
     </section>
   );
@@ -1125,7 +1118,6 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
             : <span className="text-amber-600 dark:text-amber-400">disabled</span>}
           {!status.capiAuthenticated && <span className="text-amber-600 dark:text-amber-400"> (CAPI auth failed)</span>}
         </div>
-        <CommunityBlocklistControl />
         {/* Decision counts — surfaced when cscli was reachable on the
             most-recent status fetch. Community blocklist count + total
             give operators an at-a-glance sense of how many IPs are
@@ -1225,6 +1217,9 @@ function BanGroupRow({
   const [open, setOpen] = useState(false);
   const primary = group.decisions[0];
   const multiple = group.decisions.length > 1;
+  // A permanent ban is stored as a 100-year decision; counting that down read
+  // as "36499d", which says "very long", not "until someone removes it".
+  const permanent = isPermanentGroup(group);
   // The LATEST expiry is when the address is actually free again. Showing the
   // earliest would say the ban had lapsed while four other decisions held it.
   const expiresIn = group.expiresAt
@@ -1272,7 +1267,8 @@ function BanGroupRow({
                 <span
                   key={a}
                   className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${meta.cls}`}
-                  title={meta.title}
+                  // Operator pills name the operator; automatic ones describe the engine.
+                  title={addedByTooltip(group, a)}
                   data-testid={`ban-badge-${a}`}
                 >
                   {meta.label}
@@ -1282,7 +1278,7 @@ function BanGroupRow({
           </span>
         </td>
         <td className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200">
-          <span className="block max-w-lg truncate" title={primary.scenario}>
+          <span className="block max-w-lg truncate" title={decisionHoverText(primary)}>
             {describeDecision(primary, descriptions)}
           </span>
           {multiple && (
@@ -1294,9 +1290,16 @@ function BanGroupRow({
         <td className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200">{group.decisions.length}</td>
         <td
           className="px-5 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap"
-          title={`Counts down to ${absoluteExpiry}. This is the time REMAINING, not the duration the ban was issued for.`}
+          title={permanent
+            ? 'Permanent — this address stays banned until someone removes it here.'
+            : `Counts down to ${absoluteExpiry}. This is the time REMAINING, not the duration the ban was issued for.`}
+          data-testid={`ban-time-left-${group.value}`}
         >
-          {expiresIn}
+          {permanent ? (
+            <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+              Permanent
+            </span>
+          ) : expiresIn}
         </td>
         <td className="px-5 py-2">
           <button
@@ -1317,21 +1320,31 @@ function BanGroupRow({
         <tr key={d.id} className="bg-gray-50 dark:bg-gray-900/40" data-testid={`ban-detail-${d.id}`}>
           <td className="px-5 py-1.5 text-[11px] text-gray-500 dark:text-gray-400" />
           <td className="px-5 py-1.5 text-[10px]">
-            <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${addedByMeta(d.addedBy).cls}`}>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${addedByMeta(d.addedBy).cls}`}
+              title={decisionAddedByTooltip(d)}
+            >
               {addedByMeta(d.addedBy).label}
             </span>
           </td>
           <td className="px-5 py-1.5 text-[11px] text-gray-600 dark:text-gray-400">
             {describeDecision(d, descriptions)}
-            <span className="ml-2 font-mono opacity-60">{d.scenario}</span>
+            {/* The raw scenario names an automatic ban precisely. An operator
+                ban's scenario is `admin-panel:<user id>:<reason>` — the reason
+                is already shown, and the id is not for display. */}
+            {d.addedBy !== 'operator' && d.addedBy !== 'static-list' && (
+              <span className="ml-2 font-mono opacity-60">{d.scenario}</span>
+            )}
           </td>
           <td className="px-5 py-1.5 text-[11px] text-gray-500 dark:text-gray-400">
             {d.simulated ? 'simulated' : d.type}
           </td>
           <td className="px-5 py-1.5 text-[11px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
-            {d.expiresAt
-              ? formatAge(Math.max(0, Math.floor((new Date(d.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
-              : d.duration}
+            {d.addedBy === 'static-list'
+              ? 'Permanent'
+              : d.expiresAt
+                ? formatAge(Math.max(0, Math.floor((new Date(d.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
+                : d.duration}
           </td>
           <td className="px-5 py-1.5">
             <button
@@ -1353,16 +1366,18 @@ function BanGroupRow({
 // ─── Shared Ban-IP modal (used by WAF Events row + Banned IPs tab) ──────
 
 /**
- * `target` picks which list the ban lands in:
+ * `target` picks the duration the modal OPENS with:
  *
- *   'temporary' — a CrowdSec decision that EXPIRES after `duration`. Right for
- *                 the Banned IPs tab, where an operator is reacting to a burst.
- *   'static'    — the operator-managed long-term blocklist, no expiry.
+ *   'temporary' — a timed ban (4 hours). Right for the Banned IPs tab, where
+ *                 an operator is reacting to a burst.
+ *   'static'    — Permanent. The WAF Events row uses it: banning from a WAF
+ *                 hit is a deliberate judgement about a source, and a timed
+ *                 ban that silently lapsed while the operator believed the
+ *                 address was handled is the failure this guards against.
  *
- * The WAF Events row uses 'static'. Banning from a WAF hit is a deliberate
- * judgement about a source, and putting that in a list that silently expires
- * in four hours meant the block quietly disappeared while the operator
- * believed the address was handled.
+ * Either way the operator can change the duration before banning. Permanent
+ * is what the separate Static Blocklist's "Add static ban" used to do; the
+ * section is gone and the option lives here.
  */
 type BanTarget = 'temporary' | 'static';
 
@@ -1377,20 +1392,21 @@ function BanIpModal({
 }) {
   const [value, setValue] = useState(prefill.value);
   const [scope, setScope] = useState<CrowdsecDecisionScope>('Ip');
-  const [duration, setDuration] = useState('4h');
+  const [duration, setDuration] = useState(target === 'static' ? PERMANENT_DURATION : '4h');
   const [reason, setReason] = useState(prefill.reason);
   const addTemporary = useAddCrowdsecBan();
-  const addStatic = useAddCrowdsecStaticBan();
-  const isStatic = target === 'static';
-  const add = isStatic ? addStatic : addTemporary;
+  const addPermanent = useAddCrowdsecStaticBan();
+  const isPermanent = duration === PERMANENT_DURATION;
+  const add = isPermanent ? addPermanent : addTemporary;
 
   const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && reason.trim().length >= 3;
 
   const onSubmit = () => {
     if (!valid) return;
     const done = { onSuccess: () => onClose() };
-    // The static blocklist has no duration — it is permanent until removed.
-    if (isStatic) addStatic.mutate({ value, scope, reason: reason.trim() }, done);
+    // A permanent ban has no duration to send — the backend stores the
+    // longest one CrowdSec accepts, and it lasts until someone removes it.
+    if (isPermanent) addPermanent.mutate({ value, scope, reason: reason.trim() }, done);
     else addTemporary.mutate({ value, scope, duration, reason: reason.trim() }, done);
   };
 
@@ -1398,10 +1414,8 @@ function BanIpModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="ban-ip-modal">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            {isStatic ? 'Block IP (static blocklist)' : 'Ban IP (CrowdSec)'}
-          </h3>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Ban IP</h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">✕</button>
         </div>
         <div className="px-5 py-4 space-y-3 text-sm">
           <div>
@@ -1428,45 +1442,41 @@ function BanIpModal({
                 <option value="Range">Range (CIDR)</option>
               </select>
             </div>
-            {isStatic ? (
-              <div>
-                <span className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</span>
-                <div
-                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2 text-sm text-gray-600 dark:text-gray-300"
-                  data-testid="ban-modal-duration-static"
-                >
-                  Permanent — until removed
-                </div>
-              </div>
-            ) : (
-              <div>
-                <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</label>
-                <select
-                  value={duration}
-                  onChange={(e) => setDuration(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
-                  data-testid="ban-modal-duration"
-                >
-                  {DURATION_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <div>
+              <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</label>
+              <select
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                data-testid="ban-modal-duration"
+              >
+                {DURATION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
+          {isPermanent && (
+            <div
+              className="rounded-md border border-purple-300 bg-purple-50 dark:bg-purple-900/20 dark:border-purple-700 p-2 text-xs text-purple-900 dark:text-purple-100"
+              data-testid="ban-modal-permanent-note"
+            >
+              <strong>Permanent</strong> — the address stays banned until someone removes it from the
+              Banned IPs list. Use it for sources you have judged hostile, not for a burst you expect to pass.
+            </div>
+          )}
           <div>
             <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Reason</label>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Reason for the ban — surfaced in the decisions list"
+              placeholder="Reason for the ban — shown in the Why column"
               rows={3}
               className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
               data-testid="ban-modal-reason"
             />
-            <div className="text-[10px] text-gray-500 mt-1">
-              Will be stored as <code>admin-panel:&lt;your-userId&gt;:{reason.trim() || '<reason>'}</code> so it's
-              distinguishable from automatic bans.
+            <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-1">
+              The ban list shows this reason, and your name as the operator who added it.
             </div>
           </div>
           {add.isError && (
@@ -1476,19 +1486,17 @@ function BanIpModal({
           )}
         </div>
         <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">
+          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">
             Cancel
           </button>
           <button
             type="button"
             onClick={onSubmit}
             disabled={!valid || add.isPending}
-            className="rounded-md px-3 py-1.5 text-sm border border-red-300 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
+            className="rounded-md px-3 py-1.5 text-sm border border-red-300 dark:border-red-700 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
             data-testid="ban-modal-submit"
           >
-            {add.isPending
-              ? (isStatic ? 'Blocking…' : 'Banning…')
-              : (isStatic ? 'Add to blocklist' : 'Ban')}
+            {add.isPending ? 'Banning…' : isPermanent ? 'Ban permanently' : 'Ban'}
           </button>
         </div>
       </div>
@@ -1622,108 +1630,6 @@ function AllowlistCard() {
             </tbody>
           </table>
         )}
-      </div>
-    </div>
-  );
-}
-
-// ─── F2 — Static blocklist card (operator-managed; 1-year duration) ─────
-
-function StaticBlocklistCard({ onOpenAdd }: { onOpenAdd: () => void }) {
-  return (
-    <div className="rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50/40 dark:bg-purple-900/10 p-4" data-testid="static-blocklist-card">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-sm font-medium text-purple-900 dark:text-purple-100">Static blocklist — permanent bans</div>
-          <div className="text-[11px] text-purple-800 dark:text-purple-200/70 mt-1">
-            For known-bad IPs from your own threat intelligence. Static bans appear in the table below with a <code className="text-[10px]">static</code> badge and an effectively-permanent (100 year) expiry — CrowdSec has no "never expires" flag, so the longest practical duration is the truest expression of "permanent".
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onOpenAdd}
-          className="inline-flex items-center gap-1 rounded-md border border-purple-300 dark:border-purple-700 bg-purple-100 dark:bg-purple-900/30 px-3 py-1.5 text-sm font-medium text-purple-800 dark:text-purple-200 hover:bg-purple-200 dark:hover:bg-purple-900/40"
-          data-testid="static-blocklist-add"
-        >
-          <Plus size={14} /> Add static ban
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── F2 — Static-ban add modal ─────────────────────────────────────────
-
-function StaticBanModal({ onClose }: { onClose: () => void }) {
-  const [value, setValue] = useState('');
-  const [scope, setScope] = useState<'Ip' | 'Range'>('Ip');
-  const [reason, setReason] = useState('');
-  const mut = useAddCrowdsecStaticBan();
-  const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && reason.trim().length >= 3;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="static-ban-modal">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Add static ban (permanent)</h3>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
-        </div>
-        <div className="px-5 py-4 space-y-3 text-sm">
-          <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-2 text-xs text-amber-800 dark:text-amber-200">
-            Static bans are <strong>effectively permanent</strong> (100-year duration — the longest practical setting; CrowdSec has no "never expires" flag). Use the regular &ldquo;Add manual ban&rdquo; flow for shorter, time-boxed bans.
-          </div>
-          <div>
-            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">IP / CIDR</label>
-            <input
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-mono"
-              data-testid="static-ban-modal-value"
-            />
-          </div>
-          <div>
-            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Scope</label>
-            <select
-              value={scope}
-              onChange={(e) => setScope(e.target.value as 'Ip' | 'Range')}
-              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
-              data-testid="static-ban-modal-scope"
-            >
-              <option value="Ip">IP</option>
-              <option value="Range">Range (CIDR)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Reason</label>
-            <textarea
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              rows={3}
-              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
-              data-testid="static-ban-modal-reason"
-            />
-          </div>
-          {mut.isError && (
-            <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-xs text-red-700 dark:text-red-300">
-              {mut.error?.message ?? 'Ban failed'}
-            </div>
-          )}
-        </div>
-        <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => mut.mutate({ value, scope, reason: reason.trim() }, { onSuccess: () => onClose() })}
-            disabled={!valid || mut.isPending}
-            className="rounded-md px-3 py-1.5 text-sm border border-purple-300 bg-purple-600 dark:bg-purple-700 text-white hover:bg-purple-700 dark:hover:bg-purple-600 disabled:opacity-50"
-            data-testid="static-ban-modal-submit"
-          >
-            {mut.isPending ? 'Adding…' : 'Add static ban'}
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -2110,53 +2016,36 @@ export function WafExclusionsTab() {
 
 // ─── WAF Settings tab ─────────────────────────────────────────────────
 //
-// Cluster-wide CrowdSec configuration: live status panel, Console
-// enrollment (optional), auto-ban tuning + calibration dry-run, and
-// the L4 host-firewall enforcement toggle (highest-risk feature).
+// Cluster-wide CrowdSec configuration, top to bottom:
+//   1. status tiles (LAPI, enforcement coverage, bouncers)
+//   2. Community Blocklist — the opt-in shared feed
+//   3. WAF Auto-Ban — the scheduler that bans on ModSecurity rule hits
+//   4. Malicious Traffic Detection — the agent's scenarios (access log)
+//   5. L4 host-firewall enforcement (highest blast radius)
+//   6. CrowdSec Console — optional upstream enrollment
 //
 // Lives behind its own tab so the day-to-day Banned IPs view stays
-// focused on the actual ban list. Each card was previously stacked
-// at the top of Banned IPs, which buried the table the operator
-// usually came to look at.
+// focused on the actual ban list.
 
 export function WafSettingsTab() {
   const status = useCrowdsecStatus();
   return (
     <section className="space-y-4" data-testid="waf-settings-tab">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Cluster-wide CrowdSec configuration. The L4 enforcement toggle
-        below has the highest blast radius of any platform feature —
-        review the operator-IP-trust check before flipping it to
-        <code className="text-xs mx-1">enforce</code>.
-      </div>
-
       {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
 
-      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
-      <CrowdsecConsoleCard />
-
-      {/* AUTOMATIC BANS — two engines, both feeding the same ban list.
-          They were previously indistinguishable: the scheduler had this card
-          and the scenarios had nothing, while both produced rows in the Banned
-          IPs tab under CrowdSec's internal origin names. */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-4 py-3">
-        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Automatic bans</h2>
-        <p className="mt-1 max-w-3xl text-xs text-gray-600 dark:text-gray-400">
-          Two independent engines add bans, and both write to the same list under
-          <strong> Banned IPs</strong>. <strong>WAF auto-ban</strong> reacts to ModSecurity rule
-          hits on the platform's own hosts; <strong>Traffic detection</strong> reacts to
-          behaviour in the ingress access log. Turning one off does not affect the other.
-        </p>
-      </div>
+      <CommunityBlocklistCard />
 
       {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
       <CrowdsecAutobanCard />
 
-      {/* Traffic detection — the scenarios that produce the other half of the bans. */}
+      {/* The scenarios that produce the other half of the automatic bans. */}
       <ScenariosCard />
 
       {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
       <CrowdsecL4Card />
+
+      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
+      <CrowdsecConsoleCard />
     </section>
   );
 }
@@ -2600,11 +2489,13 @@ function CrowdsecAutobanCard() {
         </div>
       )}
 
-      {/* Recent runs table */}
-      <div>
-        <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-1">
-          Recent decisions (last 50)
-        </div>
+      {/* Recent runs table — collapsed by default: it is history, the form
+          above is what an operator came to change. */}
+      <Disclosure
+        testId="autoban-recent-decisions"
+        title="Recent decisions"
+        summary={runs.data?.data.runs ? `last 50 · ${runs.data.data.runs.length} shown` : 'last 50'}
+      >
         {runs.isLoading && <SkeletonLoader />}
         {runs.isError && (
           <div className="text-xs text-red-700 dark:text-red-300">Failed to load runs.</div>
@@ -2636,7 +2527,7 @@ function CrowdsecAutobanCard() {
             </table>
           </div>
         )}
-      </div>
+      </Disclosure>
     </div>
   );
 }
@@ -2654,6 +2545,7 @@ function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
   const outcomeTone: Record<CrowdsecAutobanOutcome, string> = {
     banned: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200',
     skipped_allowlisted: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200',
+    skipped_protected: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200',
     skipped_excluded_rule: 'bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-300',
     skipped_already_banned: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200',
     skipped_below_threshold: 'bg-gray-100 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400',
@@ -2884,289 +2776,5 @@ function CrowdsecBouncerPruneButton({ staleCount }: { staleCount: number }) {
       <Trash2 size={10} />
       {mut.isPending ? 'Pruning…' : lastPruned !== null ? `Pruned ${lastPruned}` : `Prune ${staleCount} stale`}
     </button>
-  );
-}
-
-/**
- * Community blocklist (CAPI) — opt-in switch plus a viewer for its contents.
- *
- * These belong together: the switch decides whether tens of thousands of
- * externally-decided bans are enforced, and an operator cannot make that call
- * without being able to look at what is in the list. It lives on the LAPI tile
- * rather than in the Banned IPs table because the community feed is not the
- * platform's decisions — mixing them buried every operator ban on production
- * (16,220 community entries against 2 of ours).
- */
-function CommunityBlocklistControl() {
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const state = useCrowdsecCommunityBlocklist();
-  const setEnabled = useSetCrowdsecCommunityBlocklist();
-  const enabled = state.data?.data.enabled;
-  const count = state.data?.data.decisionCount ?? 0;
-
-  return (
-    <div className="mt-2 border-t border-gray-100 dark:border-gray-700 pt-2 space-y-2">
-      {state.isError && (
-        <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-[11px] text-red-700 dark:text-red-300">
-          Could not read the community-blocklist setting: {state.error instanceof Error ? state.error.message : String(state.error)}
-        </div>
-      )}
-      {setEnabled.isError && (
-        <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-[11px] text-red-700 dark:text-red-300">
-          Could not change the community blocklist: {setEnabled.error instanceof Error ? setEnabled.error.message : String(setEnabled.error)}
-        </div>
-      )}
-      <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
-          <input
-            type="checkbox"
-            data-testid="capi-toggle"
-            className="rounded border-gray-300 dark:border-gray-600"
-            checked={Boolean(enabled)}
-            disabled={state.isLoading || state.isError || setEnabled.isPending}
-            onChange={(e) => setEnabled.mutate({ enabled: e.target.checked })}
-          />
-          <span>
-            Pull community blocklist
-            {setEnabled.isPending && <span className="ml-1 text-gray-400">saving…</span>}
-          </span>
-        </label>
-        <button
-          type="button"
-          data-testid="view-community-bans"
-          onClick={() => setViewerOpen(true)}
-          className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700"
-        >
-          <Search size={11} /> View banned IPs
-        </button>
-      </div>
-      <p className="text-[11px] leading-snug text-gray-500 dark:text-gray-400">
-        {state.isError
-          ? 'Current state unknown — the setting could not be read. Do not assume it is off.'
-          : enabled
-          ? `${count.toLocaleString()} IPs banned by CrowdSec's shared feed. These are decided elsewhere on evidence you cannot inspect — a legitimate scanner (MXToolbox) was blocked this way on 2026-09-06.`
-          : 'Off. Only this platform’s own decisions are enforced. Turning it on bans tens of thousands of IPs decided by CrowdSec’s shared feed.'}
-      </p>
-      {state.data?.data.pendingRestart && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-300" data-testid="capi-pending-restart">
-          Setting saved, but {count.toLocaleString()} community decisions are still loaded — the CrowdSec pod
-          is rolling onto the new setting.
-        </p>
-      )}
-      {viewerOpen && <CommunityBlocklistViewer onClose={() => setViewerOpen(false)} total={count} />}
-    </div>
-  );
-}
-
-/** Paginated + searchable view of the community (CAPI) decisions. */
-function CommunityBlocklistViewer({ onClose, total }: { onClose: () => void; total: number }) {
-  const [q, setQ] = useState('');
-  const [page, setPage] = useState(0);
-  const debouncedQ = useDebouncedValue(q, 400);
-  const pageSize = 50;
-
-  // Reset to the first page whenever the search changes, or a non-empty search
-  // on page 5 would render an empty page and read as "no matches".
-  useEffect(() => { setPage(0); }, [debouncedQ]);
-
-  const query: CrowdsecListDecisionsQuery = useMemo(() => {
-    const out: CrowdsecListDecisionsQuery = {
-      source: 'community',
-      limit: pageSize,
-      offset: page * pageSize,
-    };
-    if (debouncedQ.trim()) out.q = debouncedQ.trim();
-    return out;
-  }, [debouncedQ, page]);
-
-  const { data, isLoading, isError, error } = useCrowdsecDecisions(query);
-  const rows = data?.data.decisions ?? [];
-  const { sortedData: sortedRows, sortKey, sortDirection, onSort } =
-    useSortable<CrowdsecDecision>(rows, 'value', 'asc');
-  const matching = data?.data.totalMatching ?? 0;
-  const pages = Math.max(1, Math.ceil(matching / pageSize));
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-3xl rounded-lg bg-white dark:bg-gray-800 shadow-xl flex flex-col max-h-[85vh]">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 p-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Community blocklist</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {total.toLocaleString()} IPs from CrowdSec&rsquo;s shared feed. Not this platform&rsquo;s decisions.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            data-testid="community-viewer-close"
-            className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-3 overflow-y-auto">
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            data-testid="community-viewer-search"
-            placeholder="Search by IP…"
-            className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
-          />
-
-          {isError && (
-            <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-xs text-red-700 dark:text-red-300">
-              Could not load the community blocklist: {error instanceof Error ? error.message : String(error)}
-            </div>
-          )}
-          {isLoading && <div className="text-xs text-gray-500 dark:text-gray-400">Loading…</div>}
-
-          {!isError && !isLoading && rows.length === 0 && (
-            <div className="text-xs text-gray-500 dark:text-gray-400" data-testid="community-viewer-empty">
-              {debouncedQ.trim() ? `No community ban matches “${debouncedQ.trim()}”.` : 'The community blocklist is empty.'}
-            </div>
-          )}
-
-          {rows.length > 0 && (
-            <table className="w-full text-left text-xs">
-              <thead className="text-gray-500 dark:text-gray-400">
-                <tr>
-                  <SortableHeader label="IP" sortKey="value" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <SortableHeader label="Scenario" sortKey="scenario" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                  <th className="py-1 font-medium text-right">Exclude</th>
-                </tr>
-              </thead>
-              <tbody className="text-gray-800 dark:text-gray-100" data-testid="community-viewer-rows">
-                {sortedRows.map((d) => (
-                  <tr key={d.id} className="border-t border-gray-100 dark:border-gray-700">
-                    <td className="py-1 font-mono">{d.value}</td>
-                    <td className="py-1">{d.scenario}</td>
-                    <td className="py-1 text-gray-500 dark:text-gray-400">
-                      {d.expiresAt ? new Date(d.expiresAt).toLocaleString() : d.duration}
-                    </td>
-                    <td className="py-1 text-right">
-                      <ExcludeCommunityIpButton value={d.value} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-600 dark:text-gray-300">
-          <span data-testid="community-viewer-count">
-            {matching.toLocaleString()} match{matching === 1 ? '' : 'es'} · page {page + 1} of {pages}
-          </span>
-          <span className="flex gap-2">
-            <button
-              type="button"
-              disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="rounded border border-gray-300 dark:border-gray-600 px-2 py-1 disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              data-testid="community-viewer-next"
-              disabled={page + 1 >= pages}
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded border border-gray-300 dark:border-gray-600 px-2 py-1 disabled:opacity-40"
-            >
-              Next
-            </button>
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Add one community-blocklist IP to the allowlist ("exclusion list").
- *
- * The allowlist beats every CrowdSec ban regardless of origin, so this is the
- * per-IP escape hatch from a decision made by someone else's feed — the case
- * that blocked MXToolbox on production while ordinary visitors were fine.
- * Excluding one scanner is a far smaller hammer than turning the whole feed off.
- */
-function ExcludeCommunityIpButton({ value }: { value: string }) {
-  const add = useAddCrowdsecAllowlistEntry();
-  const done = add.isSuccess;
-
-  return (
-    <span className="inline-flex items-center gap-1">
-      {add.isError && (
-        <span className="text-[10px] text-red-600 dark:text-red-400" title={add.error instanceof Error ? add.error.message : ''}>
-          failed
-        </span>
-      )}
-      <button
-        type="button"
-        data-testid={`exclude-ip-${value}`}
-        disabled={add.isPending || done}
-        onClick={() => add.mutate({
-          value,
-          scope: 'Ip',
-          // The comment is required by the contract (min 3 chars) so entries
-          // are never anonymous; record WHY this one was excluded.
-          comment: `Excluded from community blocklist via admin panel`,
-        })}
-        className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-      >
-        {done ? 'Excluded' : add.isPending ? 'Adding…' : 'Exclude'}
-      </button>
-    </span>
-  );
-}
-
-/**
- * Banner on the Banned IPs tab when the community feed is enforcing.
- *
- * The tab deliberately lists only platform decisions now, so without this an
- * operator would see a handful of rows and reasonably conclude that is
- * everything being blocked — while tens of thousands of community bans are
- * also in force. States the count and links to the same viewer.
- */
-function CommunityBlocklistBanner() {
-  const [open, setOpen] = useState(false);
-  const state = useCrowdsecCommunityBlocklist();
-  const info = state.data?.data;
-  // Only claim it is active when we actually know it is.
-  if (!info?.enabled) return null;
-
-  return (
-    <div
-      data-testid="community-active-banner"
-      className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-100"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-2">
-          <ShieldAlert size={16} className="mt-0.5 shrink-0" />
-          <div>
-            <p className="font-medium">Community blocklist is active</p>
-            <p className="text-xs">
-              <strong>{info.decisionCount.toLocaleString()}</strong> additional IPs are being blocked by
-              CrowdSec&rsquo;s shared feed. They are <em>not</em> listed below — this table shows only
-              decisions this platform made.
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          data-testid="banner-view-community"
-          onClick={() => setOpen(true)}
-          className="shrink-0 rounded border border-blue-300 px-2 py-1 text-xs hover:bg-blue-100 dark:border-blue-600 dark:hover:bg-blue-800"
-        >
-          View banned IPs
-        </button>
-      </div>
-      {open && <CommunityBlocklistViewer onClose={() => setOpen(false)} total={info.decisionCount} />}
-    </div>
   );
 }

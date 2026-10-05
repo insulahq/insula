@@ -10,6 +10,7 @@ import {
 } from './cluster-alerts.js';
 import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 import { buildBackupClasses } from './backup-classes.js';
+import { buildWebDefence } from './web-defence.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -199,9 +200,15 @@ function memToGiB(v: string | undefined): number {
   return n * (mult[m[2] ?? 'Ki'] ?? 1 / 1048576);
 }
 
+export interface AdminLiveDeps {
+  /** The Banned IPs list's own count — security-hardening/crowdsec-ban-list.ts. */
+  readonly countActiveBans: () => Promise<number>;
+}
+
 export async function buildAdminLive(
   db: Database,
   k8s: K8sClients,
+  deps: AdminLiveDeps,
   logger?: Logger,
 ): Promise<AdminDashboardLive> {
   const nodesSection = await collect('nodes', async () => {
@@ -496,65 +503,13 @@ export async function buildAdminLive(
     };
   }, { logger });
 
-  const webDefence = await collect('webDefence', async () => {
-    const agg = await db.execute<Record<string, number | string | null>>(sql`
-      SELECT COUNT(*)::int AS blocked,
-             SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END)::int AS critical,
-             COUNT(DISTINCT source_ip)::int AS sources,
-             MODE() WITHIN GROUP (ORDER BY rule_id) AS top_rule
-        FROM waf_logs
-       WHERE created_at > NOW() - INTERVAL '24 hours'
-    `);
-    const a = (agg.rows ?? [])[0] ?? {};
-
-    // Who is actually hitting us, worst first. A rule id says what tripped;
-    // an address says who — and only the address can be blocked, allowlisted
-    // or reported upstream.
-    const offenders = await db.execute<{ source_ip: string; hits: number }>(sql`
-      SELECT source_ip, COUNT(*)::int AS hits
-        FROM waf_logs
-       WHERE created_at > NOW() - INTERVAL '24 hours' AND source_ip IS NOT NULL
-       GROUP BY source_ip ORDER BY hits DESC LIMIT 3
-    `);
-
-    // activeBans was hardcoded to 0, so the tile reported "no bans" on a
-    // cluster that had banned 30 addresses. CrowdSec durations are stored as
-    // short strings ('1h', '3d', '72h'); Postgres parses those as intervals,
-    // but the regex keeps an unexpected value from erroring the whole query —
-    // it counts as expired instead, which understates rather than misleads.
-    const bans = await db.execute<{ active: number }>(sql`
-      SELECT COUNT(DISTINCT source_ip)::int AS active
-        FROM crowdsec_autoban_runs
-       WHERE outcome = 'banned'
-         AND ban_duration ~ '^[0-9]+[smhd]$'
-         AND triggered_at + ban_duration::interval > NOW()
-    `);
-
-    const recent = await db.execute<{ severity: string; message: string | null; source_ip: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
-      SELECT severity, message, source_ip, hostname, request_uri, created_at
-        FROM waf_logs ORDER BY created_at DESC LIMIT 6
-    `);
-    return {
-      blocked24h: Number(a.blocked ?? 0),
-      critical24h: Number(a.critical ?? 0),
-      distinctSources: Number(a.sources ?? 0),
-      activeBans: Number((bans.rows ?? [])[0]?.active ?? 0),
-      topOffenders: (offenders.rows ?? []).map((o) => ({
-        ip: String(o.source_ip), hits: Number(o.hits),
-      })),
-      topRuleId: a.top_rule == null ? null : String(a.top_rule),
-      wafEnabled: true,
-      recent: (recent.rows ?? []).map((r) => ({
-        severity: (r.severity === 'critical' ? 'critical' : 'warning') as 'warning' | 'critical',
-        label: r.message ?? r.request_uri ?? 'blocked request',
-        // The SOURCE of an attack is the address it came from. This carried
-        // the hostname — the site being attacked — under a label saying the
-        // opposite.
-        source: r.source_ip ?? r.hostname ?? '—',
-        at: String(r.created_at),
-      })),
-    };
-  }, { logger });
+  // Above the ban count's own deadline, so a slow LAPI costs the tile its ban
+  // figure rather than the whole tile (web-defence.ts).
+  const webDefence = await collect(
+    'webDefence',
+    () => buildWebDefence(db, deps.countActiveBans, logger),
+    { logger, timeoutMs: 4_000 },
+  );
 
   return {
     generatedAt: new Date().toISOString(),

@@ -107,6 +107,7 @@ import { seedCategoriesIfMissing } from './modules/notifications/categories/serv
 import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-loader.js';
 import { ensureCommunityBlocklistDefault } from './modules/security-hardening/crowdsec.js';
 import { ensureAgentSimulationDefault } from './modules/security-hardening/crowdsec-scenarios.js';
+import { readTrafficDetectionEnabled } from './modules/security-hardening/traffic-detection-setting.js';
 import { startNotificationRetention } from './modules/notifications/retention/scheduler.js';
 import { startDigestScheduler } from './modules/notifications/digest/scheduler.js';
 import { startEscalationScheduler } from './modules/notifications/escalation/scheduler.js';
@@ -263,10 +264,32 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // traffic bans, whereas starting with no simulation file would promote
   // http-crawl-non_statics to enforcing and ban search-engine crawlers from
   // every tenant site at once.
+  //
+  // The operator's Malicious Traffic Detection on/off (platform_settings) is
+  // re-applied here: a recreated ConfigMap comes back in the saved state, not
+  // the shipped default, and a toggle whose apply failed converges now. Never
+  // saved (null) leaves an existing ConfigMap exactly as it is.
+  //
+  // The saved choice is read again right before every write (after the
+  // ConfigMap read), never captured once at boot: during a rolling deploy an
+  // operator's toggle can land on another replica between this replica's
+  // first read and its write, and a boot-time value would overwrite it.
   try {
-    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG);
+    let lastDesired: boolean | null = null;
+    const readDesired = async (): Promise<boolean | null> => {
+      try {
+        lastDesired = await readTrafficDetectionEnabled(deps.db);
+      } catch (err) {
+        console.warn('[waf] could not read the traffic-detection setting:', err instanceof Error ? err.message : err);
+        lastDesired = null;
+      }
+      return lastDesired;
+    };
+    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG, readDesired);
     if (sim === 'created') {
-      console.info('[waf] crowdsec-agent-simulation created — http-crawl-non_statics defaults to alert-only');
+      console.info(`[waf] crowdsec-agent-simulation created — malicious traffic detection ${lastDesired === false ? 'DISABLED (saved choice)' : 'enabled, http-crawl-non_statics alert-only'}`);
+    } else if (sim === 'reconciled') {
+      console.info(`[waf] crowdsec-agent-simulation re-applied the saved choice — malicious traffic detection ${lastDesired ? 'enabled' : 'DISABLED'}`);
     }
   } catch (err) {
     console.warn('[waf] could not ensure the scenario-simulation default:', err instanceof Error ? err.message : err);

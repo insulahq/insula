@@ -117,6 +117,12 @@ export const TASK_KIND_REGISTRY = [
   // exists for the operator-invoked fix, which fans out over domains and
   // reports per-domain steps in its modal.
   'dns.apex-drift-fix',
+  // Tenant recovery from an off-site bundle (Disaster Recovery → Recover
+  // Tenant / Recover All). Runs server-side; the chip re-opens a step-by-step
+  // progress modal (`dr-recover` / `dr-recover-all`). The batch is the parent
+  // of one `dr.recover` per tenant, which fold under it in the chip.
+  'dr.recover',
+  'dr.recover-all',
 ] as const;
 export type TaskKind = (typeof TASK_KIND_REGISTRY)[number];
 

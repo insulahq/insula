@@ -639,7 +639,10 @@ function OperatorTrustCard() {
  * (R11 P2.3.1 — the firewall-drop-log version is intentionally not built.)
  */
 function DeniedSourcesCrossLink() {
-  const { data } = useCrowdsecDecisions({});
+  // Everything CrowdSec is denying, community feed included — the default
+  // (platform) read asks the LAPI for platform origins only. limit 1: only
+  // the count is shown here.
+  const { data } = useCrowdsecDecisions({ source: 'all', limit: 1 });
   const total = data?.data?.totalActive;
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-xs text-gray-600 dark:text-gray-400 flex flex-wrap items-center justify-between gap-2" data-testid="denied-sources-crosslink">

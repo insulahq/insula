@@ -60,6 +60,52 @@ const timeoutField = z
   .max(CRON_TIMEOUT_MAX_SECONDS)
   .optional();
 
+/**
+ * Failure email, per job, opt-in.
+ *
+ * Off by default: a scheduled run that fails always reaches the tenant's
+ * admins through their own notification preferences (in the panel, and by
+ * email if they have it on). This adds ADDRESSES on top — the tenant's primary
+ * email and/or one more address typed in here — for the person who has to
+ * fix the job and may never open the panel.
+ *
+ * The tenant email is a flag, not a copy: it is resolved from the tenant record
+ * when the email is sent, so a changed primary address is followed.
+ *
+ * The extra address is tenant-entered and the platform will mail it, so two
+ * limits bound what one tenant can make the platform send: at most one email
+ * per job per UTC day while it keeps failing, and at most
+ * CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY across all of a tenant's jobs. A job
+ * failing every minute therefore costs one email a day, not 1,440.
+ */
+export const CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY = 20;
+
+const FAILURE_EMAIL_RECIPIENT_MESSAGE =
+  'Failure emails need a recipient — tick the tenant email or enter an address';
+
+/** A contact address, not an identity: kept as typed (bar whitespace). */
+const notifyEmailField = z
+  .string()
+  .trim()
+  .max(255)
+  .email('Enter a valid email address');
+
+/**
+ * True when a job would email nobody although it was asked to.
+ *
+ * One rule for three places: the create schema below, the API's check of the
+ * MERGED row on edit (a PATCH may switch the flag on and leave the recipients
+ * as stored), and both panels' Save button.
+ */
+export function failureEmailRecipientMissing(state: {
+  readonly notifyOnFailure: boolean;
+  readonly notifyTenantEmail: boolean;
+  readonly notifyEmail: string | null | undefined;
+}): boolean {
+  if (!state.notifyOnFailure) return false;
+  return !state.notifyTenantEmail && !(state.notifyEmail ?? '').trim();
+}
+
 export const createCronJobSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.enum(['webcron', 'deployment']),
@@ -74,6 +120,10 @@ export const createCronJobSchema = z.object({
   timeout_seconds: timeoutField,
   timezone: timezoneField,
   enabled: z.boolean().default(true),
+  // Failure email — off unless asked for. See the block above.
+  notify_on_failure: z.boolean().default(false),
+  notify_tenant_email: z.boolean().default(true),
+  notify_email: notifyEmailField.nullable().optional(),
 }).refine(
   (data) => {
     if (data.type === 'webcron') return !!data.url;
@@ -81,6 +131,13 @@ export const createCronJobSchema = z.object({
     return false;
   },
   { message: 'Webcron requires url; deployment cron requires command and deployment_id' }
+).refine(
+  (data) => !failureEmailRecipientMissing({
+    notifyOnFailure: data.notify_on_failure,
+    notifyTenantEmail: data.notify_tenant_email,
+    notifyEmail: data.notify_email ?? null,
+  }),
+  { message: FAILURE_EMAIL_RECIPIENT_MESSAGE, path: ['notify_email'] },
 );
 
 /**
@@ -105,6 +162,13 @@ export const updateCronJobSchema = z.object({
   timeout_seconds: timeoutField.nullable(),
   timezone: timezoneField.nullable(),
   enabled: z.boolean().optional(),
+  // No cross-field refine here: a PATCH carries only what changed, so whether
+  // the job still names a recipient is a question about the MERGED row — the
+  // service answers it with failureEmailRecipientMissing.
+  notify_on_failure: z.boolean().optional(),
+  notify_tenant_email: z.boolean().optional(),
+  /** null removes the extra address. */
+  notify_email: notifyEmailField.nullable().optional(),
 });
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
@@ -127,6 +191,9 @@ export const cronJobResponseSchema = z.object({
   lastRunDurationMs: z.number().nullable(),
   lastRunResponseCode: z.number().nullable(),
   lastRunOutput: z.string().nullable(),
+  notifyOnFailure: z.boolean(),
+  notifyTenantEmail: z.boolean(),
+  notifyEmail: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -172,6 +239,17 @@ export type UpdateCronJobInput = z.infer<typeof updateCronJobSchema>;
 export type UpdateCronJobRequest = z.input<typeof updateCronJobSchema>;
 export type CronJobResponse = z.infer<typeof cronJobResponseSchema>;
 export type CronJobListResponse = z.infer<typeof cronJobListResponseSchema>;
+
+// ─── Failure-email recipients (GET …/cron-jobs/failure-email-info) ─────────
+//
+// What the panels need to show the user who will actually be mailed: the
+// tenant email as the API will resolve it at send time, and the daily cap.
+export const cronFailureEmailInfoSchema = z.object({
+  /** The tenant's primary email, or null when the tenant has none on record. */
+  tenantEmail: z.string().nullable(),
+  maxEmailsPerTenantPerDay: z.number().int().positive(),
+});
+export type CronFailureEmailInfo = z.infer<typeof cronFailureEmailInfoSchema>;
 
 // ─── Bulk actions (ROADMAP R29a) ───────────────────────────────────────
 //

@@ -309,7 +309,7 @@ export const createDeploymentSchema = z.object({
    * Folder on the tenant's PVC that backs this deployment, relative to the
    * PVC ROOT — ANY folder, not only one under `<type>/<code>`. The picker
    * seeds that prefix for a new folder because it is a tidy default, but a
-   * tenant reusing an existing site directory (`business.na`) or a shared
+   * tenant reusing an existing site directory (`example.com`) or a shared
    * media tree must be able to say so.
    *
    * Shares `folderProblem` with extra mounts so both surfaces enforce one

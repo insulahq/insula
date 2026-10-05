@@ -1,3 +1,4 @@
+import '@/lib/monaco-setup';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -1471,6 +1472,24 @@ export default function DatabaseManager() {
                       severity="error"
                       compact
                       testId="database-users-error"
+                    />
+                  )}
+
+                  {/* A failed regenerate / delete used to fail silently (console only). */}
+                  {setDbUserPassword.isError && (
+                    <ErrorPanel
+                      error={extractOperatorError(setDbUserPassword.error)}
+                      severity="error"
+                      compact
+                      testId="database-user-password-error"
+                    />
+                  )}
+                  {dropDbUser.isError && (
+                    <ErrorPanel
+                      error={extractOperatorError(dropDbUser.error)}
+                      severity="error"
+                      compact
+                      testId="database-user-delete-error"
                     />
                   )}
 

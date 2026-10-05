@@ -194,6 +194,22 @@ describe('Operator console — capacity', () => {
     expect(screen.getByText('203.0.113.7')).toBeInTheDocument();
   });
 
+  it('shows an unknown ban count as unknown, never as zero', () => {
+    // activeBans is null when the CrowdSec LAPI could not be read. "0" would
+    // tell the operator nothing is banned on the strength of a failed read.
+    liveFn.mockReturnValue({
+      data: { data: live({
+        webDefence: okSection({ blocked24h: 48, critical24h: 41, distinctSources: 12, activeBans: null, topOffenders: [], topRuleId: null, wafEnabled: true, recent: [] }),
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+    const cell = Array.from(container.querySelectorAll('div.text-\\[10px\\].uppercase'))
+      .find((el) => el.textContent?.trim() === 'Banned IPs')?.parentElement;
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).not.toMatch(/Banned IPs\s*0/);
+    expect(cell!.textContent).toContain('—');
+  });
+
   it('lines the NODES header up with its rows', () => {
     // Header and rows are SEPARATE grid containers, so `auto` tracks sized to
     // their own content — "Role" up top, a bordered badge in the row — and the
