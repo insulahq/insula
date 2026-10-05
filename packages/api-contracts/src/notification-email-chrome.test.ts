@@ -131,7 +131,9 @@ describe('emailChromeProblem / emailChromeHtmlSchema', () => {
   it.each([
     ['<script>alert(1)</script>', /<script>/],
     ['<SCRIPT src="https://example.test/x.js"></SCRIPT>', /<script>/],
-    ['< script>x', /<script>/],
+    ['<svg><circle r="1"/></svg>', /<svg>/],
+    ['<math><mi>x</mi></math>', /<math>/],
+    ['<noembed>', /<noembed>/],
     ['<iframe src="https://example.test"></iframe>', /<iframe>/],
     ['<object data="x"></object>', /<object>/],
     ['<embed src="x">', /<embed>/],
@@ -152,21 +154,133 @@ describe('emailChromeProblem / emailChromeHtmlSchema', () => {
   });
 
   it.each([
-    '<img src="x.png" onerror="alert(1)">',
-    '<img src=x ONLOAD=alert(1)>',
-    '<svg/onload=alert(1)>',
-    '<a href="#" onclick = "x()">a</a>',
-    '<div\nonmouseover="x()">a</div>',
-  ])('rejects the event-handler attribute in %s', (html) => {
+    ['<img src="x.png" onerror="alert(1)">', 'onerror'],
+    ['<img src=x ONLOAD=alert(1)>', 'onload'],
+    ['<img src=x onerror=alert(1)>', 'onerror'],
+    ['<img src="x"onerror=alert(1)>', 'onerror'],
+    ['<img src="x"/onerror=alert(1)>', 'onerror'],
+    ['<img/onerror=alert(1)/src=x>', 'onerror'],
+    ['<a href="#" onclick = "x()">a</a>', 'onclick'],
+    ['<div\nonmouseover="x()">a</div>', 'onmouseover'],
+    ['<img src=x onerror\n=alert(1)>', 'onerror'],
+    ['<img src=x onerror\t\n = alert(1)>', 'onerror'],
+    ['<details/open/ontoggle=alert(1)>', 'ontoggle'],
+    ['<p title="a">x</p><b\fonclick=y>z</b>', 'onclick'],
+  ])('rejects the event-handler attribute in %s', (html, name) => {
     expect(emailChromeProblem(html)).toMatch(/event-handler/);
+    expect(emailChromeProblem(html)).toContain(name);
   });
 
   it.each([
     '<a href="javascript:alert(1)">x</a>',
     '<a href=\'  JavaScript:alert(1)\'>x</a>',
+    '<a href=javascript:alert(1)>x</a>',
+    '<a href="JAVASCRIPT:alert(1)">x</a>',
+    '<a href="   javascript:alert(1)">x</a>',
+    '<a href="\u0001javascript:alert(1)">x</a>',
+    '<a href="&#106;avascript:alert(1)">x</a>',
+    '<a href="&#0000106avascript:alert(1)">x</a>',
+    '<a href="&#x6A;avascript:alert(1)">x</a>',
+    '<a href="&#X6a;avascript:alert(1)">x</a>',
+    '<a href="&#x6a&#x61;vascript:alert(1)">x</a>',
+    '<a href="java&#9;script:alert(1)">x</a>',
+    '<a href="java&#x0A;script:alert(1)">x</a>',
+    '<a href="java\tscript:alert(1)">x</a>',
+    '<a href="java\nscript:alert(1)">x</a>',
+    '<a href="java&Tab;script:alert(1)">x</a>',
+    '<a href="java&NewLine;script:alert(1)">x</a>',
+    '<a href="javascript&colon;alert(1)">x</a>',
     '<a href=vbscript:msgbox(1)>x</a>',
+    '<a href="VBScript&colon;msgbox(1)">x</a>',
+    '<img src="javascript:alert(1)">',
+    '<table background="javascript:alert(1)"><tr><td>x</td></tr></table>',
+    '<button formaction="javascript:alert(1)">x</button>',
   ])('rejects the script URL in %s', (html) => {
     expect(emailChromeProblem(html)).toMatch(/javascript:/);
+  });
+
+  it.each([
+    '<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>',
+    '<a href="&#100;ata:text/html,<script>alert(1)</script>">x</a>',
+    '<a href="DATA:text/html,x">x</a>',
+    '<a href="data:image/png;base64,iVBORw0KGgo=">x</a>',
+    '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">',
+    '<img src="data:text/html,x">',
+    '<img srcset="data:image/png;base64,iVBORw0KGgo= 1x">',
+    '<img src="https://example.test/a.png" srcset="https://example.test/a.png 1x, data:image/png;base64,AA 2x">',
+  ])('rejects the data: URL in %s', (html) => {
+    expect(emailChromeProblem(html)).toMatch(/data:/);
+  });
+
+  it.each([
+    '<img src="data:image/png;base64,iVBORw0KGgo=" alt="logo">',
+    '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">',
+    '<img src="data:image/jpeg;base64,/9j/4AAQ">',
+    '<img src="DATA:IMAGE/WEBP;base64,UklGRg==">',
+  ])('allows an inline raster logo in src: %s', (html) => {
+    expect(emailChromeProblem(html)).toBeNull();
+  });
+
+  it.each([
+    '<p style="width:expression(alert(1))">x</p>',
+    '<p style="width:EXPRESSION (alert(1))">x</p>',
+    '<p style="width:ex/**/pression(alert(1))">x</p>',
+    '<p style="width:\\65 xpression(alert(1))">x</p>',
+    '<p style="width:expression&#40;alert(1))">x</p>',
+    '<p style="background:url(javascript:alert(1))">x</p>',
+    '<p style="background:url(&#106;avascript:alert(1))">x</p>',
+    '<p style="background:url(\'vbscript:x\')">x</p>',
+    '<style>p{width:expression(alert(1))}</style>',
+    '<style>p{background:url("javascript:alert(1)")}</style>',
+    '<style>p{background:url(java\\73 cript:alert(1))}</style>',
+  ])('rejects script in CSS: %s', (html) => {
+    expect(emailChromeProblem(html)).toMatch(/CSS/);
+  });
+
+  it('allows ordinary CSS in style attributes and <style> blocks', () => {
+    expect(emailChromeProblem('<p style="background:url(https://example.test/bg.png);color:#333">x</p>')).toBeNull();
+    expect(emailChromeProblem('<style>.a{color:red}@media (max-width:480px){.a{display:block}}</style><p class="a">x</p>')).toBeNull();
+  });
+
+  describe('reads markup the way a browser does', () => {
+    it('sees a tag after an abruptly closed comment', () => {
+      // `<!-->` and `<!--->` are complete (empty) comments in HTML.
+      expect(emailChromeProblem('<!--><img src=x onerror=alert(1)>-->')).toMatch(/event-handler/);
+      expect(emailChromeProblem('<!---><img src=x onerror=alert(1)>-->')).toMatch(/event-handler/);
+      expect(emailChromeProblem('<!-- a --!><img src=x onerror=alert(1)>')).toMatch(/event-handler/);
+    });
+
+    it('ignores markup inside a real comment', () => {
+      expect(emailChromeProblem('<!-- <img src=x onerror=alert(1)> -->')).toBeNull();
+    });
+
+    it('ends <style> at the first </style>, even inside a quoted CSS string', () => {
+      const html = '<style>/* <a title=" */</style><img src=x onerror=alert(1)><style>"</style>';
+      expect(emailChromeProblem(html)).toMatch(/event-handler/);
+      expect(emailChromeProblem('<style>a[title="</style><img src=x onerror=alert(1)>"]{}</style>')).toMatch(/event-handler/);
+    });
+
+    it('treats a "tag" inside a quoted attribute value as text', () => {
+      expect(emailChromeProblem('<p title="<img src=x onerror=alert(1)>">x</p>')).toBeNull();
+    });
+
+    it('treats "<" not followed by a letter as text', () => {
+      expect(emailChromeProblem('<p>1 < 2 and < script></p>')).toBeNull();
+    });
+
+    it('sees through a bogus comment to the tag after it', () => {
+      expect(emailChromeProblem('<![CDATA[x]><img src=x onerror=alert(1)>')).toMatch(/event-handler/);
+      expect(emailChromeProblem('<?x><img src=x onerror=alert(1)>')).toMatch(/event-handler/);
+    });
+  });
+
+  it.each([
+    ['<p title="x', /inside a tag/],
+    ['<a href=x', /inside a tag/],
+    ['<p>ok</p><img src="a.png"', /inside a tag/],
+    ['<!x', /<!/],
+  ])('rejects %s, which would swallow the email body that follows', (html, msg) => {
+    expect(emailChromeProblem(html)).toMatch(msg);
   });
 
   it('rejects an unclosed comment, which would hide the rest of the email', () => {
@@ -182,9 +296,10 @@ describe('emailChromeProblem / emailChromeHtmlSchema', () => {
 
   it('does not flag words that merely contain "on" or tags that start with a forbidden name', () => {
     expect(emailChromeProblem('<p title="Contact us on Monday">Montserrat online=yes</p>')).toBeNull();
-    expect(emailChromeProblem('<p data-onboarding="1">x</p>')).toBeNull();
+    expect(emailChromeProblem('<p data-onboarding="1" on="x">x</p>')).toBeNull();
     expect(emailChromeProblem('<bodyish>x</bodyish>')).toBeNull();
     expect(emailChromeProblem('<a href="https://example.test/javascript-guide">guide</a>')).toBeNull();
+    expect(emailChromeProblem('<p>Use javascript: links? Never. data: URLs? Only in src.</p>')).toBeNull();
   });
 });
 

@@ -164,13 +164,20 @@ empty by default, and empty leaves the email byte-for-byte unchanged.
   wrapped client-side by the same `applyEmailChrome`, in a `sandbox=""`
   iframe — operator HTML never runs script in the admin panel.
 - **Validation** (contract `emailChromeHtmlSchema`, also shown inline while
-  typing): at most 20 KB per block; no `<script>`/`<iframe>`/`<object>`/
-  `<embed>`/`<form>`/`<base>`, no document-level tags
-  (`<html>`/`<head>`/`<body>`/`<meta>`/`<title>`/`<!DOCTYPE>`), no `on…=`
-  event handlers or `javascript:` URLs, and no comment or `<style>` left
-  open (either would swallow the body that follows). This is a guard rail
-  for a trusted admin field, not a sanitiser. ntfy providers reject a
-  header/footer — a push message has no email to wrap.
+  typing; one rule for the editor and the API): at most 20 KB per block; no
+  `<script>`/`<iframe>`/`<object>`/`<embed>`/`<form>`/`<base>`, no inline
+  `<svg>`/`<math>`, no document-level tags (`<html>`/`<head>`/`<body>`/
+  `<meta>`/`<title>`/`<!DOCTYPE>`); no `on…=` event handlers; no
+  `javascript:`/`vbscript:` in any attribute; no `data:` URL except an inline
+  PNG/GIF/JPEG/WebP in `src` (never `image/svg+xml`); no CSS `expression()`
+  or script URL in `style=` or `<style>`; and no tag, quote, comment, `<!…>`
+  or `<style>` left open (any of them would swallow the body that follows).
+  The markup is read by a tokenizer that follows the browser's
+  (`email-html-scan.ts`: `/` attribute separators, `<!-->` comments, raw-text
+  `<style>`), and attribute values are judged after character references are
+  decoded and control characters/whitespace removed — `&#106;avascript:`,
+  `java&Tab;script:` and `javascript&colon;` are all `javascript:`. ntfy
+  providers reject a header/footer — a push message has no email to wrap.
 - **Not covered:** the legacy `email-sender.ts` path (the channel-registry
   `emailChannel`) — nothing calls `getActiveChannels()`, so it sends nothing
   in production. There are no other platform emails: password-reset,

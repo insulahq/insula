@@ -16,14 +16,20 @@
  * a second way for a notification to fail to render — for every category at
  * once. `{{` therefore appears literally, and the preview shows exactly that.
  *
- * `emailChromeProblem` is a guard rail for a trusted, admin-only field, not an
- * HTML sanitiser: it refuses what would break the email the fragment is
- * inserted into (document-level tags, a comment or <style> left open) and the
- * active content every mail client strips anyway (scripts, event handlers,
- * javascript: URLs, embedded frames), so the operator learns at save time
- * instead of from a recipient.
+ * `emailChromeProblem` refuses what would break the email the fragment is
+ * inserted into (document-level tags; a comment, tag, quote or <style> left
+ * open) and active content (scripts, frames, event handlers, javascript:/
+ * vbscript: URLs, data: URLs other than an inline raster logo, CSS
+ * expression()), so the operator learns at save time instead of from a
+ * recipient. It reads the markup with a tokenizer that follows the browser's
+ * (email-html-scan.ts) and decodes character references before judging a
+ * value — `&#106;avascript:` and `java&Tab;script:` are `javascript:`. It is
+ * one rule for both the editor and the API, and it rejects rather than
+ * strips: a header that silently loses half its markup is a worse surprise
+ * than a clear error.
  */
 import { z } from 'zod';
+import { decodeCharRefs, scanHtml, type ScanIssue, type ScannedAttr } from './email-html-scan.js';
 
 /** Cap per block, in UTF-8 bytes. A logo row plus a legal footer is ~2 KB. */
 export const EMAIL_CHROME_MAX_BYTES = 20 * 1024;
@@ -89,40 +95,93 @@ export function utf8ByteLength(s: string): number {
   return bytes;
 }
 
+const ACTIVE = 'active content is not allowed in email';
+const FRAGMENT = 'the header and footer are fragments inside the email body';
+const SWALLOWS = 'it would swallow the email body that follows';
+
 const FORBIDDEN_TAGS: Readonly<Record<string, string>> = {
-  script: 'active content is not allowed in email',
-  iframe: 'active content is not allowed in email',
-  frame: 'active content is not allowed in email',
-  frameset: 'active content is not allowed in email',
-  object: 'active content is not allowed in email',
-  embed: 'active content is not allowed in email',
-  applet: 'active content is not allowed in email',
+  script: ACTIVE, iframe: ACTIVE, frame: ACTIVE, frameset: ACTIVE,
+  object: ACTIVE, embed: ACTIVE, applet: ACTIVE,
+  // Foreign content: <style> is not raw text there and CDATA exists, so the
+  // scanner cannot vouch for it — and mail clients drop inline SVG anyway.
+  svg: 'inline SVG can carry script and most mail clients drop it — use <img> with a PNG',
+  math: 'MathML is not supported in email',
   form: 'mail clients flag forms as phishing',
   base: 'it would rewrite every link in the email',
-  meta: 'the header and footer are fragments inside the email body',
-  link: 'the header and footer are fragments inside the email body',
-  html: 'the header and footer are fragments inside the email body',
-  head: 'the header and footer are fragments inside the email body',
-  body: 'the header and footer are fragments inside the email body',
-  title: 'the header and footer are fragments inside the email body',
-  textarea: 'it would swallow the email body that follows',
-  xmp: 'it would swallow the email body that follows',
-  plaintext: 'it would swallow the email body that follows',
-  noscript: 'it would swallow the email body that follows',
+  meta: FRAGMENT, link: FRAGMENT, html: FRAGMENT, head: FRAGMENT, body: FRAGMENT, title: FRAGMENT,
+  textarea: SWALLOWS, xmp: SWALLOWS, plaintext: SWALLOWS, noscript: SWALLOWS, noembed: SWALLOWS, noframes: SWALLOWS,
 };
 
-const FORBIDDEN_TAG_RE = new RegExp(
-  `<\\/?\\s*(${Object.keys(FORBIDDEN_TAGS).join('|')})(?=[\\s/>]|$)`,
-  'i',
-);
-/** An `on…=` attribute inside a tag: `<img onerror=…>`, `<svg/onload=…>`. */
-const EVENT_HANDLER_RE = /<[a-z][^>]*?[\s"'/]on[a-z]+\s*=/i;
-/** An attribute value that starts with a script scheme. */
-const SCRIPT_URL_RE = /=\s*["']?\s*(?:javascript|vbscript):/i;
+/** Attributes whose value is fetched or navigated to as a URL. */
+const URL_ATTRS: ReadonlySet<string> = new Set([
+  'href', 'src', 'srcset', 'action', 'formaction', 'background', 'poster', 'cite', 'longdesc',
+  'lowsrc', 'dynsrc', 'data', 'codebase', 'classid', 'archive', 'ping', 'manifest', 'usemap',
+  'profile', 'icon', 'xlink:href',
+]);
 
-function countMatches(re: RegExp, s: string): number {
-  return (s.match(re) ?? []).length;
+/** The one data: URL allowed: an inline raster image in `src` (a logo). */
+const INLINE_IMAGE_RE = /^data:image\/(?:png|gif|jpeg|webp)[;,]/;
+
+/**
+ * What a URL parser would see: every ASCII control and whitespace removed
+ * (browsers strip tab/newline anywhere and C0/space at the ends — removing
+ * all of them is stricter), lower-cased.
+ */
+function urlKey(rawValue: string): string {
+  return decodeCharRefs(rawValue)
+    .replace(/[\u0000-\u0020\u007f-\u009f\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]/g, '')
+    .toLowerCase();
 }
+
+/** CSS as the CSS parser sees it: comments gone, escapes decoded, no spaces. */
+function cssKey(css: string): string {
+  return css
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '')
+    .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\f]?/g, (_m, hex: string) => {
+      const cp = Number.parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff && (cp < 0xd800 || cp > 0xdfff) ? String.fromCodePoint(cp) : '\ufffd';
+    })
+    .replace(/\\([^\n])/g, '$1')
+    .replace(/[\u0000-\u0020\u007f]/g, '')
+    .toLowerCase();
+}
+
+function cssProblem(css: string): string | null {
+  const key = cssKey(css);
+  if (key.includes('expression(')) return 'must not contain CSS expression()';
+  if (key.includes('javascript:') || key.includes('vbscript:')) {
+    return 'must not contain javascript: or vbscript: URLs inside CSS';
+  }
+  return null;
+}
+
+function attrProblem(attr: ScannedAttr): string | null {
+  if (attr.name.length > 2 && attr.name.startsWith('on')) {
+    return `must not contain event-handler attributes such as onclick= or onerror= (found ${attr.name}=)`;
+  }
+  if (attr.name === 'style') {
+    const css = cssProblem(decodeCharRefs(attr.value));
+    if (css) return `${css} (in style=)`;
+  }
+  const key = urlKey(attr.value);
+  // Anywhere, in any attribute: srcset entries, refresh targets and the like
+  // carry URLs outside href/src, and no legitimate value needs the scheme.
+  if (key.includes('javascript:') || key.includes('vbscript:')) {
+    return `must not contain javascript: or vbscript: URLs (in ${attr.name}=)`;
+  }
+  if (URL_ATTRS.has(attr.name) && key.includes('data:')
+    && !(attr.name === 'src' && INLINE_IMAGE_RE.test(key))) {
+    return `must not contain data: URLs other than an inline PNG/GIF/JPEG/WebP image in src= (in ${attr.name}=)`;
+  }
+  return null;
+}
+
+const ISSUE_PROBLEM: Readonly<Record<Exclude<ScanIssue['kind'], 'unclosed-raw-text'>, string>> = {
+  'doctype': 'must not contain a <!DOCTYPE> (the header and footer are fragments inside the email body)',
+  'unclosed-comment': 'must not leave an <!-- comment open (it would hide the rest of the email)',
+  'unclosed-markup': `must not leave a <! or <? construct without its closing > (${SWALLOWS})`,
+  'unterminated-tag': `must not end inside a tag or an attribute value (${SWALLOWS})`,
+};
 
 /**
  * Why `html` cannot be used as an email header/footer, or null when it can.
@@ -132,26 +191,25 @@ export function emailChromeProblem(html: string): string | null {
   if (utf8ByteLength(html) > EMAIL_CHROME_MAX_BYTES) {
     return `must be at most ${EMAIL_CHROME_MAX_BYTES / 1024} KB`;
   }
-  const tag = FORBIDDEN_TAG_RE.exec(html);
-  if (tag) {
-    const name = tag[1].toLowerCase();
-    return `must not contain <${name}> tags (${FORBIDDEN_TAGS[name]})`;
+  const scan = scanHtml(html);
+  for (const tag of scan.tags) {
+    const reason = FORBIDDEN_TAGS[tag.name];
+    if (reason) return `must not contain <${tag.name}> tags (${reason})`;
   }
-  if (/<!doctype/i.test(html)) {
-    return 'must not contain a <!DOCTYPE> (the header and footer are fragments inside the email body)';
+  for (const tag of scan.tags) {
+    for (const attr of tag.attrs) {
+      const problem = attrProblem(attr);
+      if (problem) return problem;
+    }
   }
-  if (EVENT_HANDLER_RE.test(html)) {
-    return 'must not contain event-handler attributes such as onclick= or onerror=';
+  for (const block of scan.rawText) {
+    const css = cssProblem(block.text);
+    if (css) return `${css} (in a <${block.tag}> block)`;
   }
-  if (SCRIPT_URL_RE.test(html)) {
-    return 'must not contain javascript: or vbscript: URLs';
-  }
-  const lastCommentOpen = html.lastIndexOf('<!--');
-  if (lastCommentOpen !== -1 && html.indexOf('-->', lastCommentOpen + 4) === -1) {
-    return 'must not leave an <!-- comment open (it would hide the rest of the email)';
-  }
-  if (countMatches(/<style(?=[\s>])/gi, html) > countMatches(/<\/style\s*>/gi, html)) {
-    return 'must close every <style> element (an open one swallows the email body as CSS)';
+  if (scan.issue) {
+    return scan.issue.kind === 'unclosed-raw-text'
+      ? `must close every <${scan.issue.tag}> element (an open one swallows the email body as CSS)`
+      : ISSUE_PROBLEM[scan.issue.kind];
   }
   return null;
 }

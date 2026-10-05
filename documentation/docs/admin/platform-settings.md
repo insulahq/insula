@@ -212,9 +212,12 @@ The four tabs:
 
     The HTML is inserted as written: template variables such as
     `{{platformName}}` are not filled in. Each block is limited to 20 KB, and
-    scripts, frames, forms, event handlers (`onclick=` …), `javascript:`
-    links and page-level tags (`<html>`, `<body>`, …) are refused — the
-    field tells you which, and **Save** stays disabled until it is fixed.
+    scripts, frames, forms, inline SVG, event handlers (`onclick=` …),
+    `javascript:` links, `data:` links (an inline PNG/GIF/JPEG/WebP logo in
+    an `<img src>` is fine), CSS `expression()` and page-level tags
+    (`<html>`, `<body>`, …) are refused, as is a tag, quote or comment left
+    open — the field tells you which, and **Save** stays disabled until it is
+    fixed.
 
 !!! tip "Push notifications via ntfy"
     Add a provider of type **ntfy push (topic)**: point it at the public

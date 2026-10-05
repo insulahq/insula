@@ -41,6 +41,7 @@ import * as providerService from './providers/service.js';
 import { renderEmailChromePreviewSample } from './providers/email-chrome-sample.js';
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
+import type { CoreV1Api } from '@kubernetes/client-node';
 
 const PROVIDERS_RATE_LIMIT_ERR =
   'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
@@ -52,6 +53,22 @@ function requireEncryptionKey(): string {
 }
 
 export async function notificationAdminRoutes(app: FastifyInstance): Promise<void> {
+  // The stalwart-internal provider test authenticates with the master
+  // credentials from mail/mail-secrets, like the worker. Built on first use
+  // and kept: a test is rare, and one client avoids a new agent per request.
+  let k8sCore: CoreV1Api | null | undefined;
+  const getK8sCore = async (): Promise<CoreV1Api | null> => {
+    if (k8sCore !== undefined) return k8sCore;
+    try {
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const kubeconfigPath = (app.config as Record<string, unknown> | undefined)?.KUBECONFIG_PATH as string | undefined;
+      k8sCore = createK8sClients(kubeconfigPath).core;
+    } catch {
+      k8sCore = null;
+    }
+    return k8sCore;
+  };
+
   app.addHook('onRequest', authenticate);
   app.addHook('preHandler', requirePanel('admin'));
   app.addHook('preHandler', requireRole('super_admin', 'admin'));
@@ -401,7 +418,10 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       );
     }
     const encryptionKey = requireEncryptionKey();
-    const result = await providerService.testProvider(app.db, id, parsed.data, { encryptionKey });
+    const result = await providerService.testProvider(app.db, id, parsed.data, {
+      encryptionKey,
+      k8sCore: await getK8sCore(),
+    });
     return success(result);
   });
 }

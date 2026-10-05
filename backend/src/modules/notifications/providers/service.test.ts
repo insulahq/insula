@@ -285,6 +285,60 @@ describe('notificationProvidersService', () => {
     });
   });
 
+  describe('testProvider via the in-cluster Stalwart (stalwart-internal)', () => {
+    const stalwartRow = () => row({
+      providerType: 'stalwart-internal', authUsername: null, authPasswordEncrypted: null,
+      smtpHost: 'stalwart-mail.mail.svc.cluster.local', smtpPort: 465, smtpSecure: true,
+      fromAddress: 'notifications@example.test',
+    });
+
+    it('authenticates as the master account and uses it as the envelope sender, like the worker', async () => {
+      const { db, updateCalls } = buildDb({ rows: [stalwartRow()] });
+      createTransportMock.mockReturnValue({ sendMail: sendMailMock });
+      sendMailMock.mockResolvedValue(undefined);
+      const readCreds = vi.fn().mockResolvedValue({ user: 'master@example.test', password: 'master-pw' });
+      const k8sCore = { marker: 'core' } as unknown as Parameters<typeof testProvider>[3]['k8sCore'];
+      const r = await testProvider(db, 'p1', { recipientEmail: 'ops@example.test' }, {
+        encryptionKey: 'KEY', k8sCore, readStalwartMasterCreds: readCreds,
+      });
+      expect(r.status).toBe('success');
+      expect(readCreds).toHaveBeenCalledWith(k8sCore);
+      expect(createTransportMock).toHaveBeenCalledWith(expect.objectContaining({
+        host: 'stalwart-mail.mail.svc.cluster.local',
+        port: 465,
+        secure: true,
+        auth: { user: 'master@example.test', pass: 'master-pw' },
+      }));
+      const sent = sendMailMock.mock.calls[0][0] as { from: string; envelope: { from: string; to: string } };
+      // Recipient-visible From stays the operator's address; MAIL FROM is the master.
+      expect(sent.from).toBe('"Insula" <notifications@example.test>');
+      expect(sent.envelope).toEqual({ from: 'master@example.test', to: 'ops@example.test' });
+      expect(updateCalls[0]).toMatchObject({ lastTestStatus: 'success' });
+    });
+
+    it('fails the test with a clear reason when mail-secrets cannot be read', async () => {
+      const { db, updateCalls } = buildDb({ rows: [stalwartRow()] });
+      const r = await testProvider(db, 'p1', { recipientEmail: 'ops@example.test' }, {
+        encryptionKey: 'KEY', k8sCore: null, readStalwartMasterCreds: vi.fn().mockResolvedValue(null),
+      });
+      expect(r.status).toBe('failed');
+      expect(r.error).toMatch(/mail-secrets/);
+      expect(sendMailMock).not.toHaveBeenCalled();
+      expect(updateCalls[0]).toMatchObject({ lastTestStatus: 'failed' });
+    });
+
+    it('leaves every other provider type on its own credentials and envelope', async () => {
+      const { db } = buildDb({ rows: [row()] });
+      createTransportMock.mockReturnValue({ sendMail: sendMailMock });
+      sendMailMock.mockResolvedValue(undefined);
+      const readCreds = vi.fn();
+      await testProvider(db, 'p1', { recipientEmail: 'ops@example.test' }, { encryptionKey: 'KEY', readStalwartMasterCreds: readCreds });
+      expect(readCreds).not.toHaveBeenCalled();
+      expect(createTransportMock).toHaveBeenCalledWith(expect.objectContaining({ auth: { user: 'user', pass: 'secret' } }));
+      expect((sendMailMock.mock.calls[0][0] as { envelope?: unknown }).envelope).toBeUndefined();
+    });
+  });
+
   describe('getProviderForCategoryEmail (Phase 5)', () => {
     // Build a db whose select chain returns sequenced rows. Each
     // .limit() call dequeues the next array.

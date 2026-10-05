@@ -86,7 +86,7 @@ export function htmlToText(html: string | null | undefined): string {
     .replace(/<[^>]+>/g, '');
   return decodeEntities(stripped)
     .split('\n')
-    .map((line) => line.replace(/[ \t\f\v ]+/g, ' ').trim())
+    .map((line) => line.replace(/[ \t\f\v\u00a0]+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .join('\n');
 }
