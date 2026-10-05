@@ -21,7 +21,7 @@ You manage both from **Security → Web Defense** (`super_admin`).
 | Tab | What it's for |
 |---|---|
 | **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons |
-| **Banned IPs** | Active CrowdSec ban decisions + your static blocklist |
+| **Banned IPs** | Every address the platform is banning — your timed and permanent bans, and the auto-bans |
 | **WAF Exclusions** | Per-route CRS rule exclusions + an IP allowlist |
 | **WAF Settings** | CrowdSec status, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
 
@@ -89,8 +89,13 @@ rule set remains active everywhere else.
 ## CrowdSec: bans
 
 CrowdSec sits in front of every route and drops known-bad IPs. On the
-**Banned IPs** tab you see every address the platform is currently blocking and
-your static blocklist; you can add static bans and remove bans.
+**Banned IPs** tab you see every address the platform is currently blocking;
+you can add bans — timed or **Permanent** — and remove them.
+
+**Add manual ban** asks for the address, a duration and a reason. Pick
+**Permanent** for a source you have judged hostile: the ban stays until someone
+removes it. (This replaces the former *Static Blocklist* section — its entries
+now appear in the same list, labelled **Operator · Permanent**.)
 
 ### Reading the list
 
@@ -100,12 +105,14 @@ collapses them, and clicking it expands the individual detections. The **Time
 left** column counts down to the moment the address is actually free again,
 which is the *last* of its bans to expire, not the first.
 
-The **Added by** column says which of four things blocked the address:
+The **Added by** column says which of four things blocked the address. Hover
+an **Operator** pill to see who added the ban; the **Why** column shows the
+reason they gave.
 
 | Added by | What it means |
 |---|---|
-| **Operator** | A person clicked *Add ban* in this panel. |
-| **Static list** | A person added it to the long-term static blocklist. It does not expire on its own. |
+| **Operator** | A person added a timed ban in this panel. |
+| **Operator · Permanent** | A person added a ban with the **Permanent** duration. It does not expire on its own; **Time left** reads *Permanent*. |
 | **Auto · WAF** | The auto-ban scheduler, after enough ModSecurity rules tripped on the platform's own hosts. |
 | **Auto · Traffic** | This platform's own CrowdSec agent, after spotting a pattern in the ingress access log. |
 

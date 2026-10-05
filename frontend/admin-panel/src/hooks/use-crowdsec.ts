@@ -128,7 +128,7 @@ export function useDeleteCrowdsecDecision() {
   });
 }
 
-// ─── F2 — Allowlist + Static blocklist hooks ──────────────────────────
+// ─── F2 — Allowlist + permanent-ban hooks ─────────────────────────────
 
 const ALLOWLIST_KEY = ['crowdsec', 'allowlist'] as const;
 
@@ -194,6 +194,10 @@ export function useSetCrowdsecCommunityBlocklist() {
   });
 }
 
+/**
+ * A PERMANENT ban — the "Permanent" duration of the Add manual ban modal.
+ * The endpoint keeps its historical static-blocklist name.
+ */
 export function useAddCrowdsecStaticBan() {
   const qc = useQueryClient();
   return useMutation<Envelope<CrowdsecAddBanResponse>, Error, CrowdsecAddStaticBanRequest>({

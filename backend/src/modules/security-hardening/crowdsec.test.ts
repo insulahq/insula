@@ -173,6 +173,48 @@ describe('parseLapiDecision — auto-ban classification', () => {
   });
 });
 
+describe('parseLapiDecision — operator reason without the user id', () => {
+  /**
+   * The scenario of an operator ban is `admin-panel:<user id>:<reason>`. The
+   * panel used to strip only the prefix, so the Why column read
+   * `<user id>:probing /.env`. The reason is split out server-side so
+   * no consumer has to know the encoding.
+   */
+  const actor = '11111111-2222-4333-8444-555555555555';
+  const decide = (origin: string, scenario: string) => parseLapiDecision({
+    id: 7, origin, type: 'ban', scope: 'Ip', value: '203.0.113.20', scenario, duration: '4h',
+  })!;
+
+  it('gives a timed operator ban its reason alone', () => {
+    const d = decide('cscli', `${MANUAL_BAN_REASON_PREFIX}${actor}:probing /.env`);
+    expect(d.operatorReason).toBe('probing /.env');
+    expect(d.operatorReason).not.toContain(actor);
+  });
+
+  it('gives a permanent ban its reason alone', () => {
+    const d = decide('cscli', `admin-panel-static:${actor}:known scanner`);
+    expect(d.addedBy).toBe('static-list');
+    expect(d.operatorReason).toBe('known scanner');
+  });
+
+  it('keeps a colon the operator typed inside the reason', () => {
+    const d = decide('cscli', `${MANUAL_BAN_REASON_PREFIX}${actor}:WAF rule 930130: path traversal`);
+    expect(d.operatorReason).toBe('WAF rule 930130: path traversal');
+  });
+
+  it('has no operator reason for automatic or external decisions', () => {
+    expect(decide('cscli', `${AUTO_BAN_SCENARIO_PREFIX}auto-ban:rules 930130 count 9`).operatorReason).toBeNull();
+    expect(decide('crowdsec', 'crowdsecurity/http-probing').operatorReason).toBeNull();
+    expect(decide('CAPI', 'crowdsecurity/http-scan').operatorReason).toBeNull();
+    // cscli on the host, outside this panel: no platform prefix, no operator.
+    expect(decide('cscli', 'manual ban from the shell').operatorReason).toBeNull();
+  });
+
+  it('leaves the operator name for the route to resolve', () => {
+    expect(decide('cscli', `${MANUAL_BAN_REASON_PREFIX}${actor}:probing`).addedByName).toBeNull();
+  });
+});
+
 describe('applyDecisionFilters — source scoping and paging', () => {
   const { applyDecisionFilters } = __test;
 
@@ -216,6 +258,13 @@ describe('applyDecisionFilters — source scoping and paging', () => {
     const r = applyDecisionFilters(all, { staticOnly: true });
     expect(r.decisions).toHaveLength(1);
     expect(r.decisions[0].value).toBe('203.0.113.8');
+  });
+
+  it('counts a PERMANENT ban as a manual ban', () => {
+    // Permanent is now a duration of the Add manual ban modal, so "Manual
+    // bans only" hiding it would hide the operator's own action.
+    const r = applyDecisionFilters(all, { manualOnly: true });
+    expect(r.decisions.map((d) => d.value).sort()).toEqual(['203.0.113.7', '203.0.113.8']);
   });
 
   it('pages the community list and reports the pre-paging total', () => {

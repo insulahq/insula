@@ -76,8 +76,10 @@ const MODSEC_LABEL_SELECTOR = 'app.kubernetes.io/name=modsec-crs';
 export const MANUAL_BAN_REASON_PREFIX = 'admin-panel:';
 
 /**
- * Long-duration "static" operator bans (F2). Distinguished from transient
- * MANUAL bans by the prefix so the UI can flag them with staticByOperator=true.
+ * PERMANENT operator bans — the "Permanent" duration of the Add manual ban
+ * modal (formerly the separate Static Blocklist). Distinguished from timed
+ * manual bans by the prefix so the list can flag them staticByOperator=true.
+ * The prefix is persisted in every existing decision, so it keeps its name.
  */
 export const MANUAL_STATIC_BAN_REASON_PREFIX = 'admin-panel-static:';
 
@@ -346,6 +348,34 @@ export function deriveAddedBy(origin: string, scenario: string): CrowdsecAddedBy
   return 'external';
 }
 
+/**
+ * Split an operator ban's scenario into who added it and what they typed.
+ *
+ *   admin-panel:<actor>:<reason>          — timed operator ban
+ *   admin-panel-static:<actor>:<reason>   — permanent operator ban
+ *
+ * The actor is the authenticated caller's user id, so stripping only the
+ * prefix — what the panel used to do — printed `<user id>:probing /.env` as
+ * the reason. Split ONCE, at the first colon after the prefix: a user id has
+ * no colon, a reason may well have one.
+ *
+ * null for everything that is not an operator ban, including the auto-ban
+ * scheduler, whose scenario shares the `admin-panel:` prefix.
+ */
+export function parseOperatorScenario(
+  origin: string,
+  scenario: string,
+): { actor: string | null; reason: string } | null {
+  const kind = deriveAddedBy(origin, scenario);
+  if (kind !== 'operator' && kind !== 'static-list') return null;
+  const prefix = kind === 'static-list' ? MANUAL_STATIC_BAN_REASON_PREFIX : MANUAL_BAN_REASON_PREFIX;
+  const rest = scenario.slice(prefix.length);
+  const sep = rest.indexOf(':');
+  // No actor segment: written by something other than addBan/addStaticBan.
+  if (sep === -1) return { actor: null, reason: rest.trim() };
+  return { actor: rest.slice(0, sep) || null, reason: rest.slice(sep + 1).trim() };
+}
+
 function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
   const idNum = typeof d.id === 'number' ? d.id : Number(d.id);
   const origin = String(d.origin ?? '');
@@ -377,6 +407,9 @@ function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
     autoBanned: origin === 'cscli' && scenario.startsWith(AUTO_BAN_SCENARIO_PREFIX),
     addedBy: deriveAddedBy(origin, scenario),
     simulated: Boolean(d.simulated),
+    operatorReason: parseOperatorScenario(origin, scenario)?.reason || null,
+    // Resolved by the route, which has the database; see crowdsec-ban-list.ts.
+    addedByName: null,
   };
 }
 
@@ -471,7 +504,8 @@ export function applyDecisionFilters(
   if (source === 'platform') filtered = filtered.filter((d) => isPlatformOrigin(d.origin));
   else if (source === 'community') filtered = filtered.filter((d) => !isPlatformOrigin(d.origin));
   if (query.scope) filtered = filtered.filter((d) => d.scope === query.scope);
-  if (query.manualOnly) filtered = filtered.filter((d) => d.manualByOperator);
+  // Permanent is a duration of the manual-ban modal, so it counts as manual.
+  if (query.manualOnly) filtered = filtered.filter((d) => d.manualByOperator || d.staticByOperator);
   if (query.staticOnly) filtered = filtered.filter((d) => d.staticByOperator);
   if (query.autoOnly) filtered = filtered.filter((d) => d.autoBanned);
   if (query.q) {
@@ -848,12 +882,12 @@ export async function addBan(
 }
 
 /**
- * F2 — Static (effectively-permanent) operator ban. Same code path as
- * addBan but with the static prefix + 100-year duration. The list
- * endpoint flags these with staticByOperator=true. Bumped from 1-year
- * to 100-year so operators no longer have to re-add
- * known-bad IPs annually; CrowdSec has no "never expires" flag, so a
- * very-long duration is the only available expression of "permanent".
+ * Permanent operator ban — the "Permanent" duration of the Add manual ban
+ * modal. Same code path as addBan but with the static prefix + 100-year
+ * duration. The list endpoint flags these with staticByOperator=true.
+ * CrowdSec has no "never expires" flag, so a very long duration is the only
+ * available expression of "permanent"; removal is the same delete-by-id as
+ * any other decision.
  */
 export async function addStaticBan(
   kubeconfigPath: string | undefined,

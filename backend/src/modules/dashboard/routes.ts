@@ -5,6 +5,7 @@ import { tenants, domains, backupJobs } from '../../db/schema.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildAdminSummary, buildAdminLive } from './admin-service.js';
+import { countActivePlatformBans } from '../security-hardening/crowdsec-ban-list.js';
 
 /**
  * Two endpoints, not twenty-three.
@@ -38,7 +39,11 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   }, async () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    return { data: await buildAdminLive(app.db, k8s, app.log) };
+    return {
+      data: await buildAdminLive(app.db, k8s, {
+        countActiveBans: () => countActivePlatformBans(kubeconfigPath),
+      }, app.log),
+    };
   });
 
   // Retained: the old four-counter payload. Removing it would break any

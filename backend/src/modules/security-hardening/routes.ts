@@ -40,6 +40,7 @@ import {
   pruneStaleBouncers,
   STATIC_BAN_DURATION,
 } from './crowdsec.js';
+import { attachOperatorNames } from './crowdsec-ban-list.js';
 import {
   addAllowlistEntry,
   listAllowlistEntries,
@@ -364,9 +365,9 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        let response: Awaited<ReturnType<typeof listDecisions>>;
         try {
-          const response = await listDecisions(kubeconfigPath, parsed.data);
-          return success(response);
+          response = await listDecisions(kubeconfigPath, parsed.data);
         } catch (err) {
           // Throw the platform ApiError so the global error-handler
           // middleware emits the standard {error:{code,message,...}}
@@ -382,6 +383,18 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             undefined,
             'Check the CrowdSec pod is Running and the platform-api bouncer is registered (cscli bouncers list).',
           );
+        }
+        // "Added by" names the operator. A failed lookup must not blank the
+        // list of what is being blocked — the rows still render, as
+        // "Operator" without a name — but it is logged, not swallowed.
+        try {
+          return success({ ...response, decisions: await attachOperatorNames(deps.db, response.decisions) });
+        } catch (err) {
+          app.log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            'crowdsec: could not resolve operator names for the ban list',
+          );
+          return success(response);
         }
       },
     );
@@ -618,7 +631,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
       },
     );
 
-    // ─── F2 — Static (long-duration) operator ban ───────────────────────
+    // ─── Permanent operator ban (the modal's "Permanent" duration) ───────
 
     app.post(
       '/admin/security/crowdsec/static-blocklist',
@@ -632,7 +645,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           });
         }
         const actor = userOf(req as AuthedRequest);
-        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: static ban added (1y duration)');
+        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: permanent ban added');
         try {
           const result = await addStaticBan(kubeconfigPath, parsed.data, actor);
           return success({

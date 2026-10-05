@@ -5,7 +5,7 @@
  *
  * Layout: 4 tabs
  *   - WAF Events     — cluster-wide ModSec/CRS event stream
- *   - Banned IPs     — active CrowdSec bans + static blocklist
+ *   - Banned IPs     — active platform bans, timed and permanent
  *   - WAF Exclusions — per-route CRS rule exclusions + IP allowlist
  *   - WAF Settings   — CrowdSec status, Console enrollment, auto-ban
  *                     calibration, L4 host-firewall enforcement toggle
@@ -38,7 +38,7 @@ type TabId = TabOf<'/security/web-defense'>;
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly hint: string }> = [
   { id: 'waf', label: 'WAF Events', hint: 'Cluster-wide ModSec/CRS event stream' },
-  { id: 'bans', label: 'Banned IPs', hint: 'CrowdSec ban decisions + static blocklist' },
+  { id: 'bans', label: 'Banned IPs', hint: 'Active bans — operator (timed or permanent) and auto-bans' },
   { id: 'exclusions', label: 'WAF Exclusions', hint: 'Per-route CRS rule exclusions + IP allowlist' },
   { id: 'settings', label: 'WAF Settings', hint: 'CrowdSec status, auto-ban, L4 enforcement' },
 ];

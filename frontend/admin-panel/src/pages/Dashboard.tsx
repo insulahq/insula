@@ -393,12 +393,19 @@ function WebDefenceTile({ live }: { live: Live | undefined }) {
   const w = live?.webDefence.data;
   if (!w) return <SectionFallback title="Web defence" to="/security/web-defense" section={live?.webDefence ?? { state: 'stale', reason: null, observedAt: null }} />;
   const offenders = w.topOffenders ?? [];
+  // null = the CrowdSec LAPI did not answer. Rendering 0 would claim nothing
+  // is banned on the strength of a failed read.
+  const bans = w.activeBans;
   const cells: MatrixCell[] = [
     { k: 'Blocked · 24h', v: w.blocked24h.toLocaleString(), tone: w.blocked24h > 0 ? 'warn' : 'ok' },
     // Operator request: a ban count and the addresses behind it, in place of
     // a severity tally and a rule number. Both of those describe the traffic;
     // these two describe what has been done about it and to whom.
-    { k: 'Banned IPs', v: String(w.activeBans), tone: w.activeBans > 0 ? 'warn' : 'ok' },
+    // The same count as the Banned IPs list this tile links to — every
+    // platform engine, one per address; the community feed is not in either.
+    bans === null
+      ? { k: 'Banned IPs', v: '—', sub: 'unavailable' }
+      : { k: 'Banned IPs', v: String(bans), tone: bans > 0 ? 'warn' : 'ok' },
     { k: 'Sources', v: String(w.distinctSources) },
     {
       k: 'Top offenders',
@@ -412,12 +419,12 @@ function WebDefenceTile({ live }: { live: Live | undefined }) {
         ['Requests blocked', w.blocked24h.toLocaleString()],
         ['Critical', w.critical24h.toLocaleString()],
         ['Distinct sources', String(w.distinctSources)],
-        ['Banned addresses (active)', String(w.activeBans)],
+        ['Banned addresses (active)', bans === null ? 'unavailable — CrowdSec did not answer' : String(bans)],
         ...offenders.map((o) => [
           `Offender · ${o.ip}`, `${o.hits.toLocaleString()} blocked`,
         ] as [string, string]),
         ['Most hit rule', w.topRuleId ?? '—'],
-      ]} note="Your own address may be allowlisted — a probe from here can read as a pass." />
+      ]} note="Banned addresses match the Banned IPs list: WAF and traffic auto-bans, operator and permanent bans. The community blocklist is not counted. Your own address may be allowlisted — a probe from here can read as a pass." />
     )} />
   );
 }

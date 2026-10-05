@@ -34,8 +34,10 @@ export type CrowdsecDecisionType = z.infer<typeof crowdsecDecisionTypeSchema>;
  * also indistinguishable in the table — only the WAF one carried an "auto-ban"
  * pill, because that pill was a prefix check on a scenario string.
  *
- *   operator         — a human clicked Add ban.
- *   static-list      — a human added a long-duration entry to the static list.
+ *   operator         — a human clicked Add manual ban with a timed duration.
+ *   static-list      — a human clicked Add manual ban with the Permanent
+ *                      duration. The value keeps its historical name; the
+ *                      panel labels it "Operator · Permanent".
  *   auto-ban-waf     — the WAF auto-ban scheduler, from ModSecurity rule hits.
  *   auto-ban-traffic — this platform's CrowdSec agent, from Traefik access logs.
  *   community        — CrowdSec's shared CAPI feed (community viewer only).
@@ -80,8 +82,33 @@ export const crowdsecDecisionSchema = z.object({
    * any other consumer agree, instead of each re-deriving the prefix rules.
    */
   addedBy: crowdsecAddedBySchema,
+  /**
+   * For operator and permanent bans: the reason the operator typed, without
+   * the platform prefix or the user id the scenario string also carries.
+   * null for every automatic or external decision.
+   */
+  operatorReason: z.string().nullable(),
+  /**
+   * For operator and permanent bans: who added it, as "Full Name (email)",
+   * resolved server-side from the user id embedded in the scenario. null for
+   * automatic decisions, and when the account no longer exists — the panel
+   * then says so rather than printing the raw id.
+   */
+  addedByName: z.string().nullable(),
 });
 export type CrowdsecDecision = z.infer<typeof crowdsecDecisionSchema>;
+
+/**
+ * The identity of one row in the Banned IPs list: one ADDRESS, however many
+ * decisions (one per scenario) currently ban it.
+ *
+ * Shared so the list and every count of it use the same definition. The
+ * dashboard's "Banned IPs" figure once counted a different table entirely
+ * and disagreed with the list it links to.
+ */
+export function crowdsecDecisionAddressKey(d: Pick<CrowdsecDecision, 'scope' | 'value'>): string {
+  return `${d.scope}:${d.value}`;
+}
 
 /**
  * WHERE a decision came from, as an operator thinks about it.
@@ -105,9 +132,9 @@ export const crowdsecListDecisionsQuerySchema = z.object({
   q: z.string().max(64).regex(/^[a-zA-Z0-9.:\-_/]*$/, 'invalid characters in filter').optional(),
   /** Filter by scope. */
   scope: crowdsecDecisionScopeSchema.optional(),
-  /** Filter to only operator-added bans (origin=cscli + admin-panel prefix). */
+  /** Filter to only operator-added bans — timed AND permanent (origin=cscli + an admin-panel prefix). */
   manualOnly: z.coerce.boolean().optional(),
-  /** Filter to only static (long-duration) operator-added bans. */
+  /** Filter to only permanent operator-added bans. */
   staticOnly: z.coerce.boolean().optional(),
   /** Filter to only bans added by the auto-ban scheduler. */
   autoOnly: z.coerce.boolean().optional(),
@@ -189,7 +216,11 @@ export function crowdsecDurationToMs(duration: string): number {
   return matched ? total : NaN;
 }
 
-/** Maximum ban duration: 8760h = 1 year. addStaticBan uses exactly this. */
+/**
+ * Maximum TIMED ban duration: 8760h = 1 year. A permanent ban is not a timed
+ * ban — it goes through the static-blocklist endpoint, which uses its own
+ * 100-year duration (STATIC_BAN_DURATION in the backend).
+ */
 export const MAX_BAN_DURATION_MS = 8760 * 60 * 60 * 1000;
 /** Minimum ban duration: 1 minute. */
 export const MIN_BAN_DURATION_MS = 60 * 1000;
@@ -317,12 +348,13 @@ export const crowdsecRemoveAllowlistResponseSchema = z.object({
 });
 export type CrowdsecRemoveAllowlistResponse = z.infer<typeof crowdsecRemoveAllowlistResponseSchema>;
 
-// ─── F2 — static (long-duration) ban ────────────────────────────────────
+// ─── Permanent operator ban ─────────────────────────────────────────────
 //
-// Implementation note: there's no "permanent" decision type in CrowdSec;
-// we re-use `addBan` with the maximum supported duration `8760h` (1 year)
-// and a distinguishing scenario prefix `admin-panel-static:` so the list
-// endpoint can flag them as `staticByOperator: true`.
+// The "Permanent" duration of the Add manual ban modal. There is no
+// "never expires" decision in CrowdSec, so the backend adds an ordinary ban
+// with a 100-year duration and the scenario prefix `admin-panel-static:`,
+// which the list endpoint reports as `staticByOperator: true` /
+// `addedBy: 'static-list'`.
 
 export const crowdsecAddStaticBanRequestSchema = z.object({
   value: z.string().min(1).max(64).regex(/^[a-fA-F0-9.:/]+$/, 'value must be an IP or CIDR'),
