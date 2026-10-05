@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.5] - 2026-10-05
+
 ### Security
 
 - **SQL Manager refuses full-server dumps.** Importing a `--all-databases` / `pg_dumpall` dump
