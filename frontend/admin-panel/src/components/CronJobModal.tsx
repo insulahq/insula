@@ -9,6 +9,8 @@ import CronFailureEmailFields, {
   type CronFailureEmailValue,
 } from '@/components/CronFailureEmailFields';
 import { useDeployments } from '@/hooks/use-deployments';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import type { CronJob } from '@/types/api';
 
 interface CronJobModalProps {
@@ -136,10 +138,8 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
         </div>
 
         {mutation.error && (
-          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="create-cron-job-error">
-            {mutation.error instanceof Error
-              ? mutation.error.message
-              : editing ? 'Failed to save changes' : 'Failed to create cron job'}
+          <div className="mb-4">
+            <ErrorPanel error={extractOperatorError(mutation.error)} compact testId="create-cron-job-error" />
           </div>
         )}
 

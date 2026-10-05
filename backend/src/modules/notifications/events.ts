@@ -36,6 +36,8 @@ async function dispatchSafe(
   extraOpts?: {
     readonly dedupeKey?: string;
     readonly externalRecipients?: readonly string[];
+    /** See EmitEventOptions.externalRecipientsOptedIn — opt-in address lists only. */
+    readonly externalRecipientsOptedIn?: boolean;
     /** What the event is ABOUT, when that differs from the scope. */
     readonly resourceType?: string;
     readonly resourceId?: string;
@@ -49,6 +51,7 @@ async function dispatchSafe(
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
       externalRecipients: extraOpts?.externalRecipients,
+      externalRecipientsOptedIn: extraOpts?.externalRecipientsOptedIn,
       resourceType: extraOpts?.resourceType,
       resourceId: extraOpts?.resourceId,
     });
@@ -1365,7 +1368,9 @@ export async function notifyTenantScheduledTaskFailure(
     { kind: 'tenant', tenantId },
     payload,
     tenantId,
-    { dedupeKey: opts.dedupeKey, externalRecipients: opts.externalRecipients },
+    // Each address was chosen on the job for exactly this event, so it is
+    // skipped only when its account holder was actually emailed about it.
+    { dedupeKey: opts.dedupeKey, externalRecipients: opts.externalRecipients, externalRecipientsOptedIn: true },
   );
 }
 

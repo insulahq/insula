@@ -97,6 +97,20 @@ export interface EmitEventOptions {
    * for an in-app row to live in.
    */
   readonly externalRecipients?: readonly string[];
+  /**
+   * The external addresses were each EXPLICITLY chosen for this kind of event
+   * (a cron job's failure contacts). Then an address that is also a tenant
+   * admin's is skipped only when that admin was actually emailed about this
+   * event — queued, digest-queued, or already told under the same dedupe key.
+   * An admin whose own copy was muted, rate-limited or held for quiet hours
+   * received nothing, and the address was asked for by name.
+   *
+   * Off (the default) keeps the original rule — skip ANY address that belongs
+   * to a resolved admin — which is what lets an admin's mute of
+   * mailbox.quota_* also cover the mailbox-owner copy sent to the same
+   * address. Only set this where the address list is itself an opt-in.
+   */
+  readonly externalRecipientsOptedIn?: boolean;
   /** Override encryption key (tests). Production reads PLATFORM_ENCRYPTION_KEY. */
   readonly encryptionKey?: string;
   /**
@@ -554,10 +568,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   const bypassesQuietHours = isCritical || classBypassesQuietHours;
 
   // Account holders who have been EMAILED about this event — now, into their
-  // digest, or by an earlier dispatch under the same dedupe key. The external
-  // leg defers to these only: a holder whose own email was muted, rate-limited
-  // or held for quiet hours received nothing, so mailing their address there
-  // is the first copy, not a second one.
+  // digest, or by an earlier dispatch under the same dedupe key. Consulted by
+  // the external leg only when opts.externalRecipientsOptedIn is set.
   const emailedUserIds = new Set<string>();
 
   // 3. For each recipient × channel pair.
@@ -886,12 +898,14 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // audience independently (by user id, and by address), so the only place
   // they can be reconciled is here, where both lists exist.
   //
-  // Only holders who were actually emailed count (see emailedUserIds): one
-  // whose own copy was muted or rate-limited got nothing, and skipping their
-  // address here too left an address somebody explicitly asked to be mailed
-  // with no email at all.
+  // For an opted-in list (externalRecipientsOptedIn) only holders who were
+  // actually emailed count: one whose own copy was muted or rate-limited got
+  // nothing, and skipping the address too would leave an address somebody
+  // asked for by name with no email at all. Otherwise every resolved holder
+  // counts, so their mute also covers the copy to their own address.
   const alreadyMailed = new Set<string>();
-  for (const userId of emailedUserIds) {
+  const holdersToDeferTo = opts.externalRecipientsOptedIn ? [...emailedUserIds] : recipients;
+  for (const userId of holdersToDeferTo) {
     const email = await getUserEmail(db, userId);
     if (email) alreadyMailed.add(email.trim().toLowerCase());
   }

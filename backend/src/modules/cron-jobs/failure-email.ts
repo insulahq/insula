@@ -80,6 +80,11 @@ export function failureEmailRecipients(
 /**
  * Bucket keys for the two limits. They end in `:win:<windowStart>` because
  * `incrementBucket` derives the window from that suffix.
+ *
+ * Known and accepted: the per-job key is the job's id, so deleting a job and
+ * creating it again starts a fresh per-job allowance the same day. The
+ * per-tenant key is the stable tenant id, and that cap is the backstop — no
+ * amount of delete-and-recreate gets a tenant past it.
  */
 export function failureEmailBucketKeys(
   job: Pick<FailureEmailJob, 'id' | 'tenantId'>,

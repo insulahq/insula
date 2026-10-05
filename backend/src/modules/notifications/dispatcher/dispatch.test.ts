@@ -271,12 +271,12 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.some((st) => st.error === 'duplicate_recipient')).toBe(false);
   });
 
-  // "Do not mail the same person twice" needs a FIRST email to be a second
-  // one of. The address of an account holder whose own email leg did not go
-  // out — muted, rate-limited, quiet hours — is not a duplicate: skipping it
-  // too means an address someone explicitly asked to be mailed (a cron job's
-  // failure contact, a mailbox owner) receives nothing at all.
-  describe('the external leg only defers to an email that actually went out', () => {
+  // For an OPTED-IN address list (a cron job's failure contacts), "do not mail
+  // the same person twice" needs a FIRST email to be a second one of. The
+  // address of an account holder whose own email leg did not go out — muted,
+  // rate-limited, quiet hours — is not a duplicate there: skipping it too
+  // means an address someone asked for by name receives nothing at all.
+  describe('opted-in external addresses defer only to an email that actually went out', () => {
     const external = (r: Awaited<ReturnType<typeof emitEvent>>) =>
       r.perChannelStatuses.filter((st) => st.userId === null && st.channel === 'email');
 
@@ -291,6 +291,7 @@ describe('emitEvent', () => {
         variables: {},
         encryptionKey: 'KEY',
         externalRecipients: ['owner@example.test'],
+        externalRecipientsOptedIn: true,
       });
       expect(external(r)).toEqual([expect.objectContaining({ status: 'queued' })]);
     });
@@ -306,6 +307,7 @@ describe('emitEvent', () => {
         variables: {},
         encryptionKey: 'KEY',
         externalRecipients: ['owner@example.test'],
+        externalRecipientsOptedIn: true,
       });
       expect(external(r)).toEqual([expect.objectContaining({ status: 'queued' })]);
     });
@@ -321,6 +323,7 @@ describe('emitEvent', () => {
         encryptionKey: 'KEY',
         dedupeKey: 'k:1',
         externalRecipients: ['owner@example.test'],
+        externalRecipientsOptedIn: true,
       });
       expect(external(r)).toEqual([expect.objectContaining({ status: 'skipped', error: 'duplicate_recipient' })]);
     });
@@ -335,6 +338,47 @@ describe('emitEvent', () => {
       });
       const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
         categoryId: 'tasks.scheduled_failure',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        externalRecipients: ['owner@example.test'],
+        externalRecipientsOptedIn: true,
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'skipped', error: 'duplicate_recipient' })]);
+    });
+  });
+
+  // Without the flag the original rule stands, byte for byte: ANY address that
+  // belongs to a resolved admin is skipped. That is what lets an admin's mute
+  // of mailbox.quota_* also cover the mailbox-owner copy to their own address.
+  describe('a plain external list (mailbox owner) keeps the original rule', () => {
+    const external = (r: Awaited<ReturnType<typeof emitEvent>>) =>
+      r.perChannelStatuses.filter((st) => st.userId === null && st.channel === 'email');
+
+    it('honours the admin\'s mute of mailbox.quota_threshold for the owner copy to the same address', async () => {
+      enqueueDeliveryMock.mockClear();
+      getCategoryMock.mockResolvedValue({ ...baseCategory, id: 'mailbox.quota_threshold', isMandatory: false });
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue({ ...baseTemplate, categoryId: 'mailbox.quota_threshold' });
+      isAllowedMock.mockImplementation(async (_db: unknown, _u: string, _c: string, channel: string) => channel !== 'email');
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+        categoryId: 'mailbox.quota_threshold',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        externalRecipients: ['owner@example.test'],
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'skipped', error: 'duplicate_recipient' })]);
+      expect(enqueueDeliveryMock).not.toHaveBeenCalled();
+    });
+
+    it('still skips the owner address when the admin\'s copy was rate-limited', async () => {
+      getCategoryMock.mockResolvedValue({ ...baseCategory, id: 'mailbox.quota_threshold', rateLimitWindowS: 3600, rateLimitMax: 3 });
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue({ ...baseTemplate, categoryId: 'mailbox.quota_threshold' });
+      consumeRateLimitMock.mockResolvedValue({ allowed: false, remaining: 0, count: 4, windowEnd: new Date() });
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+        categoryId: 'mailbox.quota_threshold',
         scope: { kind: 'tenant', tenantId: 't1' },
         variables: {},
         encryptionKey: 'KEY',

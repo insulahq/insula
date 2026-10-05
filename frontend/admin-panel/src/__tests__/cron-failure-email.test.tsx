@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CronJobModal from '../components/CronJobModal';
 import CronJobsTab from '../pages/tenants/CronJobsTab';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, ApiError } from '@/lib/api-client';
 
 /**
  * The admin modal edits the same per-job failure email as the tenant panel:
@@ -17,7 +17,12 @@ import { apiFetch } from '@/lib/api-client';
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
-    constructor(public readonly status: number, public readonly code: string, message: string) {
+    constructor(
+      public readonly status: number,
+      public readonly code: string,
+      message: string,
+      public readonly details?: Record<string, unknown>,
+    ) {
       super(message); this.name = 'ApiError';
     }
   },
@@ -140,5 +145,36 @@ describe('CronJobsTab failure email marker', () => {
     await waitFor(() => expect(screen.getByTestId('cron-notify-badge-cj1')).toBeInTheDocument());
     expect(screen.getByTestId('cron-notify-badge-cj1').getAttribute('title')).toContain('ops@example.test');
     expect(screen.queryByTestId('cron-notify-badge-cj2')).not.toBeInTheDocument();
+  });
+});
+
+describe('CronJobModal save failure', () => {
+  // CLAUDE.md: every operator-facing failure renders an OperatorError via
+  // <ErrorPanel> — title, code, detail and what to do — not a bare string.
+  it('renders the API rejection through ErrorPanel and keeps the modal open', async () => {
+    const onClose = vi.fn();
+    mockApiFetch.mockImplementation(((url: string, init?: { method?: string }) => {
+      if (init?.method === 'PATCH') {
+        return Promise.reject(new ApiError(
+          400,
+          'INVALID_FIELD_VALUE',
+          'Failure emails need a recipient — tick the tenant email or enter an address',
+          { field: 'notify_email' },
+        ));
+      }
+      if (url.includes('/failure-email-info')) {
+        return Promise.resolve({ data: { tenantEmail: 'owner9@example.test', maxEmailsPerTenantPerDay: 20 } });
+      }
+      return Promise.resolve({ data: [] });
+    }) as never);
+    const user = userEvent.setup();
+    render(<CronJobModal open job={JOB as never} onClose={onClose} tenantId="tenant-9" />, { wrapper: wrapper() });
+    await user.click(screen.getByTestId('submit-cron-job-button'));
+
+    const panel = await screen.findByTestId('create-cron-job-error');
+    expect(panel).toHaveAttribute('role', 'alert');
+    expect(panel).toHaveTextContent('INVALID_FIELD_VALUE');
+    expect(panel).toHaveTextContent('Failure emails need a recipient');
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

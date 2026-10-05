@@ -65,6 +65,8 @@ const {
   notifyAdminBackupTargetUnreachable,
   notifyAdminNodeDown,
   notifyAdminSecurityHardeningDrift,
+  notifyTenantScheduledTaskFailure,
+  notifyMailboxQuotaThreshold,
 } = await import('./events.js');
 
 
@@ -296,6 +298,29 @@ describe('notification events', () => {
         'admin.node_down',
         'admin.security_hardening_drift',
       ]);
+    });
+
+    // The "defer only to an admin who was actually emailed" rule is for opt-in
+    // address lists. The mailbox-owner copy must keep honouring an admin's mute.
+    it('only the cron failure event marks its external addresses as opted in', async () => {
+      await notifyTenantScheduledTaskFailure({} as never, 't1', {
+        taskName: 'Nightly import', errorMessage: 'HTTP 500', schedule: '0 3 * * * (UTC)',
+      }, { dedupeKey: 'k', externalRecipients: ['ops@example.test'] });
+      const cron = emitEventMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(cron).toMatchObject({
+        categoryId: 'tasks.scheduled_failure',
+        externalRecipients: ['ops@example.test'],
+        externalRecipientsOptedIn: true,
+      });
+
+      await notifyMailboxQuotaThreshold({} as never, 't1', 'owner@example.test', {
+        mailboxAddress: 'owner@example.test', tenantName: 'Example', percent: '90',
+        usedMb: '90', quotaMb: '100', occurredAt: '12:00',
+      }, { exceeded: false, dedupeKey: 'mq' });
+      const quota = emitEventMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(quota.categoryId).toBe('mailbox.quota_threshold');
+      expect(quota.externalRecipients).toEqual(['owner@example.test']);
+      expect(quota.externalRecipientsOptedIn).toBeFalsy();
     });
 
     it('swallows dispatcher errors (legacy contract: never throw)', async () => {

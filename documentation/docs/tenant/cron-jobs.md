@@ -155,9 +155,11 @@ when it happened, and a link to this page.
 !!! info "How many emails you can get"
     - **At most one email per task per day** (UTC) while it keeps failing. A
       task broken on an every-minute schedule sends one email, not hundreds.
-      The next day's first failure emails again.
+      The next day's first failure emails again. A task that is deleted and
+      created again counts as a new task.
     - **At most 20 failure emails per day across all of your account's tasks**
-      combined. Failures beyond that still show in the panel.
+      combined, however many tasks there are or have been. Failures beyond
+      that still show in the panel.
     - **Run Now never emails** — you are looking at the result already.
     - If the address you enter also belongs to one of your account's
       administrators who already got this failure by email, they get it once,
