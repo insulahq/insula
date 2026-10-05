@@ -12,6 +12,45 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **SQL Manager refuses full-server dumps.** Importing a `--all-databases` / `pg_dumpall` dump
+  replaced the database server's own account tables: the platform's and every app's database
+  logins vanished on the next restart. Imports that switch to or write the `mysql` system schema,
+  or carry account statements (`CREATE USER`, `GRANT`, …), are now refused with the offending line
+  and how to export just the application database.
+- **Database errors no longer carry credentials.** A failed command in a database pod reported (and
+  logged) the exec status, which embeds the root password and, for a password change, the new one.
+  Errors now carry the database's own message with secrets redacted.
+
+### Changed
+
+- **Cron jobs can email on failure** (off by default): to the tenant's email and/or one more
+  address, at most once per job per day and 20 per tenant per day.
+- **Email notifications get a custom header and footer** per provider, edited as HTML with a live
+  preview (default empty).
+- **Tenant recovery from a bundle runs in the background**, with a progress modal and a task-center
+  entry you can reopen. Only one recovery per tenant can run at a time, and each step re-checks that
+  the admin who started it still has access.
+- **Web Defense:** the Static Blocklist section is gone — a manual ban has a **Permanent** duration
+  instead; manual bans show the operator's name and just the reason. The settings tab is reordered
+  (Community Blocklist first, CrowdSec Console last), long lists start collapsed, and **Malicious
+  Traffic Detection** can be switched off (alerts only, no bans).
+- **Styled tooltips** everywhere in both panels: every hover hint renders as a bubble that is never
+  clipped and stays on screen.
+- **Compose stacks can mount an existing storage folder** with Compose's own idiom
+  (`driver_opts: { type: none, o: bind, device: <folder> }`); the editor's example explains where
+  volumes are stored.
+
+### Fixed
+
+- The admin **Backups** page showed "Tenants 0 — no jobs registered" although bundles ran nightly;
+  it now reflects every tenant's latest bundle (failing / never run turn the card amber or red).
+- The dashboard **Web Defence** tile counted only WAF auto-bans; it now matches the Banned IPs list.
+- SQL Manager: regenerating or deleting a database user failed for accounts not created for host
+  `%`, and a failure was never shown on the page.
+- The documentation used a real domain as an example; it now uses `example.com`.
+
 ## [2026.10.4] - 2026-10-04
 
 ### Security
