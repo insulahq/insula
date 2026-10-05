@@ -10,7 +10,7 @@
  * so 15s is the longest a stale list can persist.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
   CrowdsecAddAllowlistRequest,
@@ -360,6 +360,19 @@ export function usePruneCrowdsecBouncers(olderThanSeconds: number = 300) {
 // ─── Traffic detection: CrowdSec scenarios on the agent ───────────────
 
 const SCENARIOS_KEY = ['crowdsec', 'scenarios'] as const;
+/**
+ * Shared by every write to the agent's simulation config (one scenario's
+ * mode, the global on/off). The backend compare-and-swaps those writes, but
+ * the panel also runs them one at a time: while any is in flight every
+ * switch that writes the same ConfigMap is disabled, so a second click
+ * cannot be computed from a list that is about to change.
+ */
+const SIMULATION_CONFIG_MUTATION_KEY = ['crowdsec', 'simulation-config'] as const;
+
+/** True while any write to the agent's simulation config is in flight. */
+export function useSimulationConfigBusy(): boolean {
+  return useIsMutating({ mutationKey: SIMULATION_CONFIG_MUTATION_KEY }) > 0;
+}
 
 /**
  * The scenarios the log-processing agent has loaded.
@@ -384,6 +397,7 @@ export function useSetScenarioSimulation() {
     Error,
     CrowdsecSetScenarioSimulationRequest
   >({
+    mutationKey: SIMULATION_CONFIG_MUTATION_KEY,
     mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/scenarios', {
       method: 'PATCH',
       body: JSON.stringify(body),
@@ -408,6 +422,7 @@ export function useSetTrafficDetection() {
     Error,
     CrowdsecSetTrafficDetectionRequest
   >({
+    mutationKey: SIMULATION_CONFIG_MUTATION_KEY,
     mutationFn: (body) => apiFetch('/api/v1/admin/security/crowdsec/traffic-detection', {
       method: 'PUT',
       body: JSON.stringify(body),

@@ -269,18 +269,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // re-applied here: a recreated ConfigMap comes back in the saved state, not
   // the shipped default, and a toggle whose apply failed converges now. Never
   // saved (null) leaves an existing ConfigMap exactly as it is.
+  //
+  // The saved choice is read again right before every write (after the
+  // ConfigMap read), never captured once at boot: during a rolling deploy an
+  // operator's toggle can land on another replica between this replica's
+  // first read and its write, and a boot-time value would overwrite it.
   try {
-    let desiredDetection: boolean | null = null;
-    try {
-      desiredDetection = await readTrafficDetectionEnabled(deps.db);
-    } catch (err) {
-      console.warn('[waf] could not read the traffic-detection setting:', err instanceof Error ? err.message : err);
-    }
-    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG, desiredDetection);
+    let lastDesired: boolean | null = null;
+    const readDesired = async (): Promise<boolean | null> => {
+      try {
+        lastDesired = await readTrafficDetectionEnabled(deps.db);
+      } catch (err) {
+        console.warn('[waf] could not read the traffic-detection setting:', err instanceof Error ? err.message : err);
+        lastDesired = null;
+      }
+      return lastDesired;
+    };
+    const sim = await ensureAgentSimulationDefault(process.env.KUBECONFIG, readDesired);
     if (sim === 'created') {
-      console.info(`[waf] crowdsec-agent-simulation created — malicious traffic detection ${desiredDetection === false ? 'DISABLED (saved choice)' : 'enabled, http-crawl-non_statics alert-only'}`);
+      console.info(`[waf] crowdsec-agent-simulation created — malicious traffic detection ${lastDesired === false ? 'DISABLED (saved choice)' : 'enabled, http-crawl-non_statics alert-only'}`);
     } else if (sim === 'reconciled') {
-      console.info(`[waf] crowdsec-agent-simulation re-applied the saved choice — malicious traffic detection ${desiredDetection ? 'enabled' : 'DISABLED'}`);
+      console.info(`[waf] crowdsec-agent-simulation re-applied the saved choice — malicious traffic detection ${lastDesired ? 'enabled' : 'DISABLED'}`);
     }
   } catch (err) {
     console.warn('[waf] could not ensure the scenario-simulation default:', err instanceof Error ? err.message : err);

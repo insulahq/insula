@@ -63,15 +63,13 @@ import type {
   CrowdsecSetTrafficDetectionResponse,
 } from '@insula/api-contracts';
 import { AGENT_TARGET, cscliExec, findCrowdsecPodName, parseCscliJson } from './cscli-exec.js';
-import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { DEFAULT_SIMULATED_SCENARIOS } from './crowdsec-simulation-config.js';
 import {
-  DEFAULT_SIMULATED_SCENARIOS,
-  SIMULATION_CONFIGMAP_NAME,
-  agentConfigUnchanged,
-  simulationConfigMapData,
-  simulationStateFromData,
-  type SimulationState,
-} from './crowdsec-simulation-config.js';
+  convergeDetection,
+  errorMessage,
+  readSnapshot,
+  updateAlertOnly,
+} from './crowdsec-simulation-store.js';
 
 // Re-exported so existing importers keep one entry point for this feature.
 export {
@@ -85,177 +83,17 @@ export {
   renderSimulationYaml,
   simulationStateFromData,
 } from './crowdsec-simulation-config.js';
-
-export const AGENT_NAMESPACE = 'platform-system';
-const AGENT_DAEMONSET_NAME = 'crowdsec-agent';
+export {
+  AGENT_NAMESPACE,
+  MAX_CAS_ATTEMPTS,
+  SimulationConfigConflictError,
+} from './crowdsec-simulation-store.js';
 
 function createKubeConfig(kubeconfigPath: string | undefined): k8s.KubeConfig {
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
   else kc.loadFromDefault();
   return kc;
-}
-
-function errorCode(err: unknown): number | undefined {
-  return (err as { statusCode?: number; code?: number })?.statusCode
-    ?? (err as { code?: number })?.code;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-// ─── ConfigMap access ───────────────────────────────────────────────────
-
-async function readSimulationState(kc: k8s.KubeConfig): Promise<SimulationState | null> {
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  try {
-    const cm = await core.readNamespacedConfigMap({
-      name: SIMULATION_CONFIGMAP_NAME, namespace: AGENT_NAMESPACE,
-    });
-    return simulationStateFromData((cm as { data?: Record<string, string> }).data);
-  } catch (err) {
-    if (errorCode(err) === 404) return null;
-    throw err;
-  }
-}
-
-/** Create the ConfigMap. 'conflict' when another replica created it first. */
-async function createSimulationConfigMap(
-  kc: k8s.KubeConfig,
-  alertOnly: readonly string[],
-  detectionEnabled: boolean,
-): Promise<'created' | 'conflict'> {
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  try {
-    await core.createNamespacedConfigMap({
-      namespace: AGENT_NAMESPACE,
-      body: {
-        metadata: {
-          name: SIMULATION_CONFIGMAP_NAME,
-          namespace: AGENT_NAMESPACE,
-          labels: {
-            'app.kubernetes.io/name': 'crowdsec-agent',
-            'app.kubernetes.io/part-of': 'hosting-platform',
-            'app.kubernetes.io/component': 'waf',
-          },
-          annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
-        },
-        data: simulationConfigMapData(alertOnly, detectionEnabled),
-      },
-    });
-    return 'created';
-  } catch (err) {
-    // HA boots 2-3 platform-api replicas together and every one runs the
-    // startup ensure. Losing that race is success, not an error.
-    if (errorCode(err) === 409) return 'conflict';
-    throw err;
-  }
-}
-
-/**
- * Write both keys. MERGE_PATCH, never replace: a full PUT would drop the
- * `reconcile: disabled` annotation that stops Flux reverting this very
- * setting. (Also not the SDK default: v1.4 sends `application/json-patch+json`
- * for every PATCH and the apiserver rejects a merge object with "cannot
- * unmarshal object into Go value of type []jsonPatchOp".)
- */
-async function writeSimulationConfigMap(
-  kc: k8s.KubeConfig,
-  alertOnly: readonly string[],
-  detectionEnabled: boolean,
-): Promise<void> {
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  await core.patchNamespacedConfigMap(
-    {
-      name: SIMULATION_CONFIGMAP_NAME,
-      namespace: AGENT_NAMESPACE,
-      body: { data: simulationConfigMapData(alertOnly, detectionEnabled) },
-    },
-    MERGE_PATCH,
-  );
-}
-
-/**
- * Roll the agent DaemonSet so it re-parses simulation.yaml.
- *
- * Deletes the pods rather than annotating the template: Flux treats a restart
- * annotation as git drift and scales the new generation back down, and the
- * DaemonSet controller recreates a deleted pod from the CURRENT template
- * immediately. Best effort — the config is already durable, so a failed roll
- * delays the change rather than losing it, and the caller reports that.
- */
-async function rollAgent(kc: k8s.KubeConfig): Promise<number> {
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  const pods = await (core as unknown as {
-    listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
-      items: { metadata?: { name?: string } }[];
-    }>;
-  }).listNamespacedPod({
-    namespace: AGENT_NAMESPACE,
-    labelSelector: `app.kubernetes.io/name=${AGENT_DAEMONSET_NAME}`,
-  });
-  let deleted = 0;
-  for (const pod of pods.items ?? []) {
-    const name = pod.metadata?.name;
-    if (!name) continue;
-    try {
-      await core.deleteNamespacedPod({ name, namespace: AGENT_NAMESPACE });
-      deleted += 1;
-    } catch { /* swallow — a pod already gone is the state we wanted */ }
-  }
-  return deleted;
-}
-
-/**
- * Bring the ConfigMap to (alertOnly, detectionEnabled) and roll the agent when
- * — and only when — what the agent reads changed. Creates the ConfigMap if it
- * is absent. A roll failure is REPORTED, not thrown: the config is saved, and
- * an operator told "nothing happened" would toggle again.
- */
-async function applySimulationConfig(
-  kc: k8s.KubeConfig,
-  current: SimulationState | null,
-  alertOnly: readonly string[],
-  detectionEnabled: boolean,
-): Promise<{ rolledPods: number; rollError: string | null }> {
-  const agentChanges = !agentConfigUnchanged(current, alertOnly, detectionEnabled);
-  const created = !current
-    && (await createSimulationConfigMap(kc, alertOnly, detectionEnabled)) === 'created';
-  if (!created) await writeSimulationConfigMap(kc, alertOnly, detectionEnabled);
-  if (!agentChanges) return { rolledPods: 0, rollError: null };
-  try {
-    return { rolledPods: await rollAgent(kc), rollError: null };
-  } catch (err) {
-    return { rolledPods: 0, rollError: errorMessage(err) };
-  }
-}
-
-/**
- * Startup: create the ConfigMap if absent, and re-apply the operator's saved
- * on/off choice if the ConfigMap disagrees with it.
- *
- * `desiredEnabled` is the platform_settings value; null = never saved, in
- * which case an existing ConfigMap is left exactly as it is (an upgrading
- * cluster keeps what its agent runs) and a missing one gets the shipped
- * default. Never touches the per-scenario list, and never rolls the agent
- * when nothing changed — booting must not bounce it on every restart.
- */
-export async function ensureAgentSimulationDefault(
-  kubeconfigPath: string | undefined,
-  desiredEnabled: boolean | null,
-): Promise<'created' | 'present' | 'reconciled'> {
-  const kc = createKubeConfig(kubeconfigPath);
-  const existing = await readSimulationState(kc);
-  if (!existing) {
-    const result = await createSimulationConfigMap(
-      kc, DEFAULT_SIMULATED_SCENARIOS, desiredEnabled ?? true,
-    );
-    return result === 'created' ? 'created' : 'present';
-  }
-  if (desiredEnabled === null || existing.globalSimulation === !desiredEnabled) return 'present';
-  await applySimulationConfig(kc, existing, existing.alertOnly, desiredEnabled);
-  return 'reconciled';
 }
 
 // ─── cscli readers ──────────────────────────────────────────────────────
@@ -304,8 +142,6 @@ function extractScenarioMetrics(parsed: unknown): Map<string, { poured: number; 
 
 // ─── Public surface ─────────────────────────────────────────────────────
 
-// ─── Public surface ─────────────────────────────────────────────────────
-
 /**
  * List the scenarios the agent has loaded, with the operator's per-scenario
  * choice, the global switch, and real activity counters.
@@ -326,7 +162,7 @@ export async function listScenarios(
   const kc = createKubeConfig(kubeconfigPath);
   // An unreadable ConfigMap falls back to the shipped default instead of
   // failing the page, as before; reaching the agent is what reports errors.
-  const state = await readSimulationState(kc).catch(() => null);
+  const state = await readSnapshot(kc).then((snap) => snap?.state ?? null, () => null);
   const globalSimulation = state?.globalSimulation ?? false;
   const alertOnly = new Set(state?.alertOnly ?? DEFAULT_SIMULATED_SCENARIOS);
   const base: CrowdsecScenariosResponse = {
@@ -431,19 +267,23 @@ async function readAcquisitionSources(
  * real scenario keeps banning — exactly what shipped on DEV with a
  * hyphen in place of the underscore in `http-crawl-non_statics`.
  *
- * The global on/off is kept as the agent runs it: a per-scenario change never
- * re-enables (or disables) detection as a side effect. While detection is
- * disabled the change only updates the stashed list — the agent file stays
- * "everything simulated" and the agent is not rolled.
+ * The write is compare-and-swap (crowdsec-simulation-store.ts): a concurrent
+ * toggle of ANOTHER scenario is re-read and kept, never overwritten. The
+ * global on/off is kept as the agent runs it — a per-scenario change never
+ * re-enables or disables detection as a side effect. While detection is
+ * disabled the change only updates the stashed list and the agent is not
+ * rolled. `readDesired` (the saved on/off) is consulted only when the
+ * ConfigMap has to be created. Throws SimulationConfigConflictError when
+ * every attempt lost to a concurrent writer.
  */
 export async function setScenarioSimulation(
   kubeconfigPath: string | undefined,
   name: string,
   simulated: boolean,
-  desiredEnabled: boolean | null,
+  readDesired: () => Promise<boolean | null>,
 ): Promise<CrowdsecSetScenarioSimulationResponse> {
   const kc = createKubeConfig(kubeconfigPath);
-  const known = await listScenarios(kubeconfigPath, desiredEnabled);
+  const known = await listScenarios(kubeconfigPath, null);
   if (known.error) {
     throw new Error(`cannot reach the CrowdSec agent to validate the scenario name: ${known.error}`);
   }
@@ -453,33 +293,51 @@ export async function setScenarioSimulation(
       + 'and cscli silently accepts names that do not exist, so this is rejected here',
     );
   }
-
-  const current = await readSimulationState(kc);
-  const set = new Set(current?.alertOnly ?? DEFAULT_SIMULATED_SCENARIOS);
-  if (simulated) set.add(name); else set.delete(name);
-  const next = [...set].sort();
-  const detectionEnabled = current ? !current.globalSimulation : (desiredEnabled ?? true);
-
-  const roll = await applySimulationConfig(kc, current, next, detectionEnabled);
-  return { simulated: next, ...roll };
+  return updateAlertOnly(kc, name, simulated, readDesired);
 }
 
 /**
- * Turn Malicious Traffic Detection on or off on the agent.
+ * Apply the SAVED Malicious Traffic Detection on/off to the agent.
  *
  * Off = `simulation: true` with no exclusions: every scenario keeps raising
  * alerts and none bans. The per-scenario list is carried over untouched, so
  * re-enabling restores exactly the exclusions that were in force before.
- * The caller persists the choice in platform_settings FIRST, so a failure
- * here is re-applied at the next startup rather than forgotten.
+ *
+ * The caller saves the choice to platform_settings FIRST and passes a reader
+ * for it; this applies whatever is saved at write time (so of two racing
+ * toggles the later SAVE wins on the agent too), and always writes — that
+ * write invalidates any concurrent startup re-apply that read the old value.
+ * A failure here is re-applied at the next startup rather than forgotten.
  */
 export async function setTrafficDetectionEnabled(
   kubeconfigPath: string | undefined,
-  enabled: boolean,
+  readDesired: () => Promise<boolean | null>,
 ): Promise<CrowdsecSetTrafficDetectionResponse> {
   const kc = createKubeConfig(kubeconfigPath);
-  const current = await readSimulationState(kc);
-  const alertOnly = [...(current?.alertOnly ?? DEFAULT_SIMULATED_SCENARIOS)].sort();
-  const roll = await applySimulationConfig(kc, current, alertOnly, enabled);
-  return { enabled, alertOnly, ...roll };
+  const out = await convergeDetection(kc, readDesired, { touch: true });
+  return {
+    enabled: out.enabled,
+    alertOnly: [...out.alertOnly].sort(),
+    rolledPods: out.rolledPods,
+    rollError: out.rollError,
+  };
+}
+
+/**
+ * Startup: create the ConfigMap if absent, and re-apply the operator's saved
+ * on/off choice if the ConfigMap disagrees with it.
+ *
+ * `readDesired` reads platform_settings (null = never saved) and is called
+ * again right before every write, after the ConfigMap read — so a toggle
+ * that lands on another replica during a rolling deploy is never overwritten
+ * with this replica's boot-time value (see convergeDetection). Never saved
+ * leaves an existing ConfigMap exactly as it is. Never touches the
+ * per-scenario list, and never writes or rolls the agent when nothing changed.
+ */
+export async function ensureAgentSimulationDefault(
+  kubeconfigPath: string | undefined,
+  readDesired: () => Promise<boolean | null>,
+): Promise<'created' | 'present' | 'reconciled'> {
+  const kc = createKubeConfig(kubeconfigPath);
+  return (await convergeDetection(kc, readDesired, { touch: false })).outcome;
 }

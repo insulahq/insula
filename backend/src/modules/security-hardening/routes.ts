@@ -72,7 +72,12 @@ import {
   enrollConsole,
   getConsoleStatus,
 } from './crowdsec-console.js';
-import { listScenarios, setScenarioSimulation, setTrafficDetectionEnabled } from './crowdsec-scenarios.js';
+import {
+  listScenarios,
+  setScenarioSimulation,
+  setTrafficDetectionEnabled,
+  SimulationConfigConflictError,
+} from './crowdsec-scenarios.js';
 import { readTrafficDetectionEnabled, writeTrafficDetectionEnabled } from './traffic-detection-setting.js';
 import {
   crowdsecConsoleEnrollRequestSchema,
@@ -104,6 +109,23 @@ async function readConsoleMetaEnabled(db: any): Promise<boolean> {
   const raw = rows[0]?.setting_value;
   if (raw === undefined) return true;
   return raw.toLowerCase() !== 'false';
+}
+
+/**
+ * Every compare-and-swap write of the agent's simulation config lost to a
+ * concurrent change. 409, retryable: nothing was overwritten, the caller's
+ * change simply has not landed.
+ */
+function simulationConflict(err: SimulationConfigConflictError, title: string, outcome: string): ApiError {
+  return new ApiError('CROWDSEC_SIMULATION_CONFLICT', err.message, 409, {
+    operatorError: {
+      code: 'CROWDSEC_SIMULATION_CONFLICT',
+      title,
+      detail: `The agent's configuration was changed by someone else ${err.attempts} times while this change was being written. ${outcome}`,
+      remediation: ['Retry in a few seconds.'],
+      retryable: true,
+    },
+  });
 }
 
 interface AuthedRequest {
@@ -737,9 +759,13 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         const { name, simulated } = parsed.data;
         app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario simulation changed');
         try {
-          const out = await setScenarioSimulation(kubeconfigPath, name, simulated, await readDetectionChoice());
+          const out = await setScenarioSimulation(kubeconfigPath, name, simulated, readDetectionChoice);
           return success(out);
         } catch (err) {
+          if (err instanceof SimulationConfigConflictError) {
+            app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario change lost every compare-and-swap attempt');
+            throw simulationConflict(err, 'Scenario not changed', 'The scenario keeps its previous mode; nothing else was overwritten.');
+          }
           const message = err instanceof Error ? err.message : String(err);
           // An unknown scenario name is the caller's mistake, not a cluster
           // fault — and it is the mistake this endpoint exists to catch, since
@@ -775,8 +801,16 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         app.log.warn({ actor, enabled }, 'crowdsec: malicious traffic detection toggled');
         await writeTrafficDetectionEnabled(deps.db, enabled);
         try {
-          return success(await setTrafficDetectionEnabled(kubeconfigPath, enabled));
+          // Apply what is SAVED at write time, not this request's value: of
+          // two racing toggles the later save then wins on the agent too.
+          const readSaved = async (): Promise<boolean> =>
+            (await readTrafficDetectionEnabled(deps.db)) ?? enabled;
+          return success(await setTrafficDetectionEnabled(kubeconfigPath, readSaved));
         } catch (err) {
+          if (err instanceof SimulationConfigConflictError) {
+            app.log.warn({ actor, enabled }, 'crowdsec: traffic detection saved but lost every compare-and-swap attempt');
+            throw simulationConflict(err, 'Saved, but not applied yet', 'Your choice was saved and is re-applied automatically the next time platform-api starts.');
+          }
           const detail = err instanceof Error ? err.message : String(err);
           app.log.warn({ actor, enabled, err: detail }, 'crowdsec: traffic detection saved but not applied');
           throw new ApiError(

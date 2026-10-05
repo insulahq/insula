@@ -17,6 +17,7 @@ const scenarios = vi.fn();
 const setDetection = vi.fn();
 const setDetectionState = vi.fn();
 const wafEvents = vi.fn();
+const simulationBusy = vi.fn(() => false);
 
 const ok = (data: unknown) => ({ data: { data }, isLoading: false, isError: false, error: null, refetch: vi.fn(), isFetching: false });
 
@@ -48,6 +49,7 @@ vi.mock('@/hooks/use-crowdsec', () => {
     useCrowdsecScenarios: () => scenarios(),
     useSetScenarioSimulation: mut,
     useSetTrafficDetection: () => setDetectionState(),
+    useSimulationConfigBusy: () => simulationBusy(),
     useCrowdsecL4Status: () => ok({
       mode: 'disabled', totalPods: 1, appliedPods: 1, operatorIp: '198.51.100.7', operatorIpSource: 'x-real-ip',
       operatorIpTrusted: true, trustedRangeCount: 1, clusterPeerCount: 1,
@@ -100,6 +102,7 @@ beforeEach(() => {
   scenarios.mockReturnValue(scenariosPayload());
   setDetection.mockReset();
   setDetectionState.mockReturnValue({ mutate: setDetection, isPending: false, isError: false, error: null, data: undefined });
+  simulationBusy.mockReturnValue(false);
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -242,6 +245,27 @@ describe('Malicious Traffic Detection — Enable / Disable', () => {
     });
     render(<WafSettingsTab />, { wrapper });
     expect(screen.getByTestId('traffic-detection-error')).toHaveTextContent(/Saved, but not applied/);
+  });
+});
+
+describe('Writes to the agent config run one at a time', () => {
+  it('locks every scenario toggle and the Enable/Disable button while any write is in flight', () => {
+    simulationBusy.mockReturnValue(true);
+    render(<WafSettingsTab />, { wrapper });
+    expect(screen.getByTestId('traffic-detection-toggle')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('crowdsec-scenarios-list-toggle'));
+    for (const row of SCENARIO_ROWS) {
+      expect(screen.getByTestId(`scenario-toggle-${row.name}`)).toBeDisabled();
+    }
+  });
+
+  it('unlocks them again when nothing is in flight', () => {
+    render(<WafSettingsTab />, { wrapper });
+    expect(screen.getByTestId('traffic-detection-toggle')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('crowdsec-scenarios-list-toggle'));
+    for (const row of SCENARIO_ROWS) {
+      expect(screen.getByTestId(`scenario-toggle-${row.name}`)).toBeEnabled();
+    }
   });
 });
 

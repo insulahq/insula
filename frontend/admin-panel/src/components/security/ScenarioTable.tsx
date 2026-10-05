@@ -15,7 +15,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useSortable } from '@/hooks/use-sortable';
-import { useSetScenarioSimulation } from '@/hooks/use-crowdsec';
+import { useSetScenarioSimulation, useSimulationConfigBusy } from '@/hooks/use-crowdsec';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import type { CrowdsecScenario } from '@insula/api-contracts';
 
@@ -37,6 +37,9 @@ const ALIGN = {
 
 export default function ScenarioTable({ scenarios, isLoading, detectionRunning }: ScenarioTableProps) {
   const mutate = useSetScenarioSimulation();
+  // Any write to the simulation config in flight — this table's or the
+  // Enable/Disable switch's — locks every row until it settles.
+  const busy = useSimulationConfigBusy();
   const [q, setQ] = useState('');
   const [onlyActive, setOnlyActive] = useState(false);
   const debouncedQ = useDebouncedValue(q, 300);
@@ -153,6 +156,7 @@ export default function ScenarioTable({ scenarios, isLoading, detectionRunning }
                 key={s.name}
                 s={s}
                 pending={pending === s.name}
+                locked={busy}
                 detectionRunning={detectionRunning}
                 onToggle={() => toggle(s)}
               />
@@ -170,9 +174,11 @@ export default function ScenarioTable({ scenarios, isLoading, detectionRunning }
   );
 }
 
-function ScenarioRow({ s, pending, detectionRunning, onToggle }: {
+function ScenarioRow({ s, pending, locked, detectionRunning, onToggle }: {
   readonly s: CrowdsecScenario;
   readonly pending: boolean;
+  /** Another write to the same config is in flight. */
+  readonly locked: boolean;
   readonly detectionRunning: boolean;
   readonly onToggle: () => void;
 }) {
@@ -195,8 +201,8 @@ function ScenarioRow({ s, pending, detectionRunning, onToggle }: {
         <button
           type="button"
           onClick={onToggle}
-          disabled={pending}
-          title={hint}
+          disabled={pending || locked}
+          title={locked && !pending ? 'Wait — another change to the agent config is being saved.' : hint}
           data-testid={`scenario-toggle-${s.name}`}
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors disabled:opacity-50 ${
             detectionRunning ? '' : 'opacity-60'

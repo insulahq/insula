@@ -20,7 +20,7 @@ import { Activity, AlertTriangle, FileText, Loader2 } from 'lucide-react';
 import Disclosure from '@/components/ui/Disclosure';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { useCrowdsecScenarios, useSetTrafficDetection } from '@/hooks/use-crowdsec';
+import { useCrowdsecScenarios, useSetTrafficDetection, useSimulationConfigBusy } from '@/hooks/use-crowdsec';
 import type { CrowdsecLogSource, CrowdsecScenariosResponse, OperatorError } from '@insula/api-contracts';
 import ScenarioTable from './ScenarioTable';
 
@@ -126,6 +126,7 @@ function DetectionBadge({ enabled }: { readonly enabled: boolean }) {
  */
 function DetectionToggle({ payload }: { readonly payload: CrowdsecScenariosResponse }) {
   const set = useSetTrafficDetection();
+  const busy = useSimulationConfigBusy();
   const saved = payload.detectionEnabled;
   const notApplied = saved === payload.globalSimulation;
 
@@ -139,7 +140,7 @@ function DetectionToggle({ payload }: { readonly payload: CrowdsecScenariosRespo
       <button
         type="button"
         onClick={() => apply(!saved)}
-        disabled={set.isPending}
+        disabled={busy}
         data-testid="traffic-detection-toggle"
         aria-label={saved ? 'Disable Malicious Traffic Detection' : 'Enable Malicious Traffic Detection'}
         className={saved
@@ -149,7 +150,7 @@ function DetectionToggle({ payload }: { readonly payload: CrowdsecScenariosRespo
         {set.isPending && <Loader2 size={12} className="animate-spin" />}
         {saved ? 'Disable' : 'Enable'}
       </button>
-      {notApplied && !set.isPending && (
+      {notApplied && !busy && (
         <p className="text-right text-[11px] text-amber-700 dark:text-amber-300" data-testid="traffic-detection-not-applied">
           Saved as {saved ? 'enabled' : 'disabled'}, but the agent still runs it {saved ? 'disabled' : 'enabled'}.{' '}
           <button

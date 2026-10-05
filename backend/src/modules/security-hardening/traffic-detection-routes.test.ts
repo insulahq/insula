@@ -19,10 +19,14 @@ vi.mock('../../middleware/auth.js', () => ({
 const setTrafficDetectionEnabled = vi.fn();
 const listScenarios = vi.fn();
 const setScenarioSimulation = vi.fn();
+class FakeConflict extends Error {
+  constructor(readonly attempts: number) { super(`lost ${attempts} compare-and-swap attempts`); }
+}
 vi.mock('./crowdsec-scenarios.js', () => ({
   setTrafficDetectionEnabled: (...a: unknown[]) => setTrafficDetectionEnabled(...a),
   listScenarios: (...a: unknown[]) => listScenarios(...a),
   setScenarioSimulation: (...a: unknown[]) => setScenarioSimulation(...a),
+  SimulationConfigConflictError: FakeConflict,
 }));
 
 const readTrafficDetectionEnabled = vi.fn();
@@ -64,9 +68,34 @@ describe('PUT /admin/security/crowdsec/traffic-detection', () => {
       enabled: false, alertOnly: ['crowdsecurity/http-crawl-non_statics'], rolledPods: 1, rollError: null,
     });
     expect(writeTrafficDetectionEnabled).toHaveBeenCalledWith(db, false);
-    expect(setTrafficDetectionEnabled).toHaveBeenCalledWith(undefined, false);
     expect(writeTrafficDetectionEnabled.mock.invocationCallOrder[0])
       .toBeLessThan(setTrafficDetectionEnabled.mock.invocationCallOrder[0]);
+  });
+
+  it('applies what is SAVED at write time, falling back to the request only if the row is missing', async () => {
+    setTrafficDetectionEnabled.mockResolvedValue({ enabled: true, alertOnly: [], rolledPods: 0, rollError: null });
+    await app.inject({
+      method: 'PUT', url: '/api/v1/admin/security/crowdsec/traffic-detection', payload: { enabled: false },
+    });
+    const readSaved = setTrafficDetectionEnabled.mock.calls[0][1] as () => Promise<boolean>;
+    expect(setTrafficDetectionEnabled.mock.calls[0][0]).toBeUndefined();
+
+    readTrafficDetectionEnabled.mockResolvedValueOnce(true); // a later toggle saved "enabled"
+    expect(await readSaved()).toBe(true);
+    readTrafficDetectionEnabled.mockResolvedValueOnce(null);
+    expect(await readSaved()).toBe(false);
+  });
+
+  it('answers 409 with an operator error when every compare-and-swap attempt lost', async () => {
+    setTrafficDetectionEnabled.mockRejectedValue(new FakeConflict(5));
+    const res = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/security/crowdsec/traffic-detection', payload: { enabled: false },
+    });
+    expect(res.statusCode).toBe(409);
+    const op = res.json().error.details.operatorError;
+    expect(op.code).toBe('CROWDSEC_SIMULATION_CONFLICT');
+    expect(op.title).toMatch(/Saved, but not applied yet/);
+    expect(op.retryable).toBe(true);
   });
 
   it('rejects a body without a boolean and saves nothing', async () => {
@@ -125,6 +154,21 @@ describe('scenario routes pass the saved choice through', () => {
       payload: { name: 'crowdsecurity/http-probing', simulated: true },
     });
     expect(res.statusCode).toBe(200);
-    expect(setScenarioSimulation).toHaveBeenCalledWith(undefined, 'crowdsecurity/http-probing', true, false);
+    const [kube, name, simulated, readSaved] = setScenarioSimulation.mock.calls[0] as [unknown, string, boolean, () => Promise<boolean | null>];
+    expect([kube, name, simulated]).toEqual([undefined, 'crowdsecurity/http-probing', true]);
+    expect(await readSaved()).toBe(false);
+  });
+
+  it('PATCH answers 409 with an operator error when every compare-and-swap attempt lost', async () => {
+    setScenarioSimulation.mockRejectedValue(new FakeConflict(5));
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/security/crowdsec/scenarios',
+      payload: { name: 'crowdsecurity/http-probing', simulated: true },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.details.operatorError).toMatchObject({
+      code: 'CROWDSEC_SIMULATION_CONFLICT', title: 'Scenario not changed', retryable: true,
+    });
   });
 });
