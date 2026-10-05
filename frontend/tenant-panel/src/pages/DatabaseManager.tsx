@@ -1474,6 +1474,24 @@ export default function DatabaseManager() {
                     />
                   )}
 
+                  {/* A failed regenerate / delete used to fail silently (console only). */}
+                  {setDbUserPassword.isError && (
+                    <ErrorPanel
+                      error={extractOperatorError(setDbUserPassword.error)}
+                      severity="error"
+                      compact
+                      testId="database-user-password-error"
+                    />
+                  )}
+                  {dropDbUser.isError && (
+                    <ErrorPanel
+                      error={extractOperatorError(dropDbUser.error)}
+                      severity="error"
+                      compact
+                      testId="database-user-delete-error"
+                    />
+                  )}
+
                   {/* "No users" is only true when the request actually succeeded. */}
                   {!usersLoading && !usersError && dbUsers.length === 0 && (
                     <p className="text-xs text-gray-400 dark:text-gray-500 py-1">No users found.</p>

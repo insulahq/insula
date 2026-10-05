@@ -537,7 +537,8 @@ describe('db-manager', () => {
 
   describe('setUserPassword', () => {
     it('should execute password change for mysql', async () => {
-      setupExecSuccess('');
+      // The host lookup answers '%' (every call gets the same stdout here).
+      setupExecSuccess('%');
 
       const ctx = {
         kubeconfigPath: '/tmp/kc',
@@ -549,8 +550,8 @@ describe('db-manager', () => {
       };
 
       await expect(setUserPassword(ctx, 'app_user', 'new_pass')).resolves.toBeUndefined();
-      // ALTER USER + FLUSH PRIVILEGES
-      expect(mockExecFn).toHaveBeenCalledTimes(2);
+      // host lookup + ALTER USER + FLUSH PRIVILEGES
+      expect(mockExecFn).toHaveBeenCalledTimes(3);
     });
 
     it('should execute password change for postgresql', async () => {

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -48,6 +48,8 @@ const idleMutation = { mutateAsync: vi.fn(), mutate: vi.fn(), isPending: false, 
 let databasesQuery: MockQuery = idleQuery;
 let usersQuery: MockQuery = idleQuery;
 let tablesQuery: MockQuery = idleQuery;
+let passwordMutation: Record<string, unknown> = { ...idleMutation };
+let dropUserMutation: Record<string, unknown> = { ...idleMutation };
 
 vi.mock('@/hooks/use-tenant-context', () => ({
   useTenantContext: () => ({ tenantId: 'tenant-1', tenant: { id: 'tenant-1' } }),
@@ -65,8 +67,8 @@ vi.mock('@/hooks/use-deployments', () => ({
   useCreateDbDatabase: () => ({ ...idleMutation }),
   useDropDbDatabase: () => ({ ...idleMutation }),
   useCreateDbUser: () => ({ ...idleMutation }),
-  useDropDbUser: () => ({ ...idleMutation }),
-  useSetDbUserPassword: () => ({ ...idleMutation }),
+  useDropDbUser: () => dropUserMutation,
+  useSetDbUserPassword: () => passwordMutation,
 }));
 
 vi.mock('@/hooks/use-sql-manager', () => ({
@@ -108,6 +110,24 @@ describe('SQL Manager error surface', () => {
     databasesQuery = { ...idleQuery, data: { data: [] } };
     usersQuery = { ...idleQuery, data: { data: [] } };
     tablesQuery = { ...idleQuery, data: { data: [] } };
+    passwordMutation = { ...idleMutation };
+    dropUserMutation = { ...idleMutation };
+  });
+
+  it('shows why regenerating or deleting a database user failed (it used to fail silently)', async () => {
+    usersQuery = { ...idleQuery, data: { data: [{ username: 'app_user', host: '%', databases: ['app'] }] } };
+    passwordMutation = {
+      ...idleMutation, isError: true,
+      error: new Error("ERROR 1396 (HY000) at line 1: Operation ALTER USER failed for 'app_user'@'%'"),
+    };
+    dropUserMutation = { ...idleMutation, isError: true, error: new Error('ERROR 1045 (28000): Access denied') };
+
+    await renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /^Users$/ }));
+    fireEvent.click(within(await screen.findByTestId('users-section')).getAllByRole('button')[0]);
+
+    expect((await screen.findByTestId('database-user-password-error')).textContent).toMatch(/ALTER USER failed/);
+    expect(screen.getByTestId('database-user-delete-error').textContent).toMatch(/Access denied/);
   });
 
   it('renders an error panel when the database list fails', async () => {
