@@ -57,6 +57,14 @@ vi.mock('./templates/service.js', () => ({
   restoreSeedTemplate: restoreSeedTemplateMock,
 }));
 
+const renderEmailChromePreviewSampleMock = vi.fn().mockResolvedValue({
+  subject: 'Your password was changed',
+  html: '<!doctype html><html><body><p>sample</p></body></html>',
+});
+vi.mock('./providers/email-chrome-sample.js', () => ({
+  renderEmailChromePreviewSample: renderEmailChromePreviewSampleMock,
+}));
+
 const { notificationAdminRoutes } = await import('./routes-admin.js');
 
 describe('admin notification routes', () => {
@@ -185,6 +193,54 @@ describe('admin notification routes', () => {
     });
     expect(r.statusCode).toBe(200);
     expect(r.json().data).toMatchObject({ body: 'b' });
+  });
+
+  it('GET /admin/notifications/email-chrome/preview-sample returns the rendered sample', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/notifications/email-chrome/preview-sample',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data).toEqual({
+      subject: 'Your password was changed',
+      html: '<!doctype html><html><body><p>sample</p></body></html>',
+    });
+  });
+
+  it('GET /admin/notifications/email-chrome/preview-sample is admin-panel only', async () => {
+    renderEmailChromePreviewSampleMock.mockClear();
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/notifications/email-chrome/preview-sample',
+      headers: { authorization: `Bearer ${tenantToken}` },
+    });
+    expect(r.statusCode).toBe(403);
+    expect(renderEmailChromePreviewSampleMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /admin/notifications/providers/:id rejects a header with a <script> tag, naming the field', async () => {
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/notifications/providers/p1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { emailHeaderHtml: '<p>hi</p><script>alert(1)</script>' },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error.code).toBe('INVALID_FIELD_VALUE');
+    expect(r.json().error.message).toContain('<script>');
+    expect(r.json().error.message).toContain('emailHeaderHtml');
+  });
+
+  it('PATCH /admin/notifications/providers/:id rejects a footer over the size cap', async () => {
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/notifications/providers/p1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { emailFooterHtml: 'x'.repeat(20 * 1024 + 1) },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error.message).toContain('emailFooterHtml');
   });
 
   it('POST /admin/notifications/templates/:id/restore-seed', async () => {

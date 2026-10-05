@@ -53,6 +53,7 @@ export * from './notification-preferences.js';
 export * from './notification-deliveries.js';
 export * from './notification-mutes.js';
 export * from './notification-providers.js';
+export * from './notification-email-chrome.js';
 export * from './backup-config.js';
 export * from './k8s-manifests.js';
 export * from './admin-users.js';

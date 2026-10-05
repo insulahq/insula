@@ -201,6 +201,21 @@ The four tabs:
 - **Providers** — the transport endpoints that deliver them: SMTP relays
   for email, and **ntfy push** for phone/desktop push notifications.
 
+!!! tip "Email header & footer"
+    Each email provider has an **Email header & footer** section: HTML that
+    is placed above and below every notification email the provider sends
+    (and its **Test** email) — a logo row, a legal footer, a support link.
+    Both are empty by default, which leaves emails unchanged. The **Preview**
+    under the two fields shows a sample notification wrapped in what you
+    type, exactly as it will be sent; use **Test** to see it in a real mail
+    client.
+
+    The HTML is inserted as written: template variables such as
+    `{{platformName}}` are not filled in. Each block is limited to 20 KB, and
+    scripts, frames, forms, event handlers (`onclick=` …), `javascript:`
+    links and page-level tags (`<html>`, `<body>`, …) are refused — the
+    field tells you which, and **Save** stays disabled until it is fixed.
+
 !!! tip "Push notifications via ntfy"
     Add a provider of type **ntfy push (topic)**: point it at the public
     [ntfy.sh](https://ntfy.sh) or your own self-hosted ntfy server (any

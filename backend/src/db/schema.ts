@@ -2375,6 +2375,9 @@ export const notificationProviders = pgTable('notification_providers', {
   ntfyTopic: varchar('ntfy_topic', { length: 64 }),
   ntfyAuthMethod: varchar('ntfy_auth_method', { length: 16 }),
   ntfyTokenEncrypted: varchar('ntfy_token_encrypted', { length: 500 }),
+  // ─── email header / footer HTML ('' = none; migration 0145) ───
+  emailHeaderHtml: text('email_header_html').notNull().default(''),
+  emailFooterHtml: text('email_footer_html').notNull().default(''),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
   lastTestStatus: varchar('last_test_status', { length: 32 }),
   lastTestError: text('last_test_error'),

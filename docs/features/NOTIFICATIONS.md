@@ -137,6 +137,46 @@ and silently rerouting would subvert that intent. To revert a Source
 to using the default, clear the dropdown back to the placeholder
 option.
 
+## Email header & footer
+
+Every email provider has an optional **Email header & footer** (provider
+editor → below the From fields): HTML placed above and below every
+notification email that provider sends, and in its **Test** email. Both are
+empty by default, and empty leaves the email byte-for-byte unchanged.
+
+- **Where it goes.** The worker (`queue/worker.ts`) wraps the rendered body
+  with `applyEmailChrome` (`@insula/api-contracts`,
+  `notification-email-chrome.ts`): the header straight after `<body>`, the
+  footer straight before `</body>` (a fragment with no `<body>` is simply
+  surrounded). Each block sits in a centred 600px column to line up with the
+  MJML body. It follows the **routed** provider, so a Source with a provider
+  override carries that provider's header/footer.
+- **Verbatim, no variables.** The HTML is not run through Handlebars —
+  `{{platformName}}` arrives literally. Static branding/legal text needs no
+  variables, and a second render step would be one more way for every
+  notification to fail at once.
+- **Plain text.** Notification emails are sent HTML-only, so no text part is
+  invented for them. The Test email keeps its text part and gets a
+  tag-stripped rendering of the header/footer around its sentence.
+- **Preview.** The editor previews a real notification (the active
+  `security.password_changed` email template, rendered server-side with
+  sample values by `GET /admin/notifications/email-chrome/preview-sample`)
+  wrapped client-side by the same `applyEmailChrome`, in a `sandbox=""`
+  iframe — operator HTML never runs script in the admin panel.
+- **Validation** (contract `emailChromeHtmlSchema`, also shown inline while
+  typing): at most 20 KB per block; no `<script>`/`<iframe>`/`<object>`/
+  `<embed>`/`<form>`/`<base>`, no document-level tags
+  (`<html>`/`<head>`/`<body>`/`<meta>`/`<title>`/`<!DOCTYPE>`), no `on…=`
+  event handlers or `javascript:` URLs, and no comment or `<style>` left
+  open (either would swallow the body that follows). This is a guard rail
+  for a trusted admin field, not a sanitiser. ntfy providers reject a
+  header/footer — a push message has no email to wrap.
+- **Not covered:** the legacy `email-sender.ts` path (the channel-registry
+  `emailChannel`) — nothing calls `getActiveChannels()`, so it sends nothing
+  in production. There are no other platform emails: password-reset,
+  password-changed and every other notice is a notification category and
+  goes through the worker.
+
 ## Sources reference
 
 22 Sources seeded at boot. **Mandatory** sources cannot be opted out

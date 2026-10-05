@@ -45,6 +45,8 @@ type Row = {
   fromAddress: string;
   fromName: string | null;
   region: string | null;
+  emailHeaderHtml: string;
+  emailFooterHtml: string;
   lastTestedAt: Date | null;
   lastTestStatus: string | null;
   lastTestError: string | null;
@@ -71,6 +73,8 @@ function row(overrides: Partial<Row> = {}): Row {
     fromAddress: 'noreply@example.test',
     fromName: 'Insula',
     region: null,
+    emailHeaderHtml: '',
+    emailFooterHtml: '',
     lastTestedAt: null,
     lastTestStatus: null,
     lastTestError: null,
@@ -217,6 +221,68 @@ describe('notificationProvidersService', () => {
     await updateProvider(db, 'p1', { authPassword: 'rotated' }, { encryptionKey: 'KEY' });
     expect(encryptMock).toHaveBeenCalledWith('rotated', 'KEY');
     expect(updateCalls[0]).toMatchObject({ authPasswordEncrypted: 'enc:rotated' });
+  });
+
+  describe('email header / footer', () => {
+    it('returns both blocks on the response', async () => {
+      const { db } = buildDb({ rows: [row({ emailHeaderHtml: '<p>H</p>', emailFooterHtml: '<p>F</p>' })] });
+      const r = await getProvider(db, 'p1');
+      expect(r.emailHeaderHtml).toBe('<p>H</p>');
+      expect(r.emailFooterHtml).toBe('<p>F</p>');
+    });
+
+    it('createProvider stores the blocks, defaulting to empty', async () => {
+      const base = {
+        name: 'Relay', providerType: 'smtp' as const, smtpHost: 'smtp.example.test', smtpPort: 587,
+        smtpSecure: false, fromAddress: 'noreply@example.test', enabled: true, isDefault: false,
+      };
+      const a = buildDb({ rows: [row()] });
+      await createProvider(a.db, base, { userId: 'admin', encryptionKey: 'KEY' });
+      expect(a.insertCalls[0]).toMatchObject({ emailHeaderHtml: '', emailFooterHtml: '' });
+
+      const b = buildDb({ rows: [row()] });
+      await createProvider(b.db, { ...base, emailHeaderHtml: '<p>H</p>', emailFooterHtml: '<p>F</p>' }, { userId: 'admin', encryptionKey: 'KEY' });
+      expect(b.insertCalls[0]).toMatchObject({ emailHeaderHtml: '<p>H</p>', emailFooterHtml: '<p>F</p>' });
+    });
+
+    it('updateProvider patches only the blocks it is given, and can clear one', async () => {
+      const { db, updateCalls } = buildDb({ rows: [row({ emailHeaderHtml: '<p>H</p>' })] });
+      await updateProvider(db, 'p1', { emailHeaderHtml: '', emailFooterHtml: '<p>F</p>' }, { encryptionKey: 'KEY' });
+      expect(updateCalls[0]).toEqual({ emailHeaderHtml: '', emailFooterHtml: '<p>F</p>' });
+    });
+
+    it('updateProvider refuses a header/footer on an ntfy provider', async () => {
+      const { db, updateCalls } = buildDb({ rows: [row({ providerType: 'ntfy', channel: 'ntfy' })] });
+      await expect(updateProvider(db, 'p1', { emailFooterHtml: '<p>F</p>' }, { encryptionKey: 'KEY' }))
+        .rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE', status: 400 });
+      expect(updateCalls).toHaveLength(0);
+      // Clearing (a no-op for ntfy) is accepted so a generic form can always send ''.
+      await updateProvider(db, 'p1', { emailFooterHtml: '' }, { encryptionKey: 'KEY' });
+    });
+
+    it('testProvider without a header/footer sends the historical text-only message', async () => {
+      const { db } = buildDb({ rows: [row()] });
+      createTransportMock.mockReturnValue({ sendMail: sendMailMock });
+      sendMailMock.mockResolvedValue(undefined);
+      await testProvider(db, 'p1', { recipientEmail: 'ops@example.test' }, { encryptionKey: 'KEY' });
+      expect(sendMailMock).toHaveBeenCalledWith({
+        from: '"Insula" <noreply@example.test>',
+        to: 'ops@example.test',
+        subject: '[Platform] Notification provider test',
+        text: 'This is an automated test from the notification provider "Test". If you received this, the provider\'s SMTP credentials are working.\n',
+      });
+    });
+
+    it('testProvider with a header/footer adds an HTML part wrapped in them', async () => {
+      const { db } = buildDb({ rows: [row({ emailHeaderHtml: '<p>HEADER-MARK</p>', emailFooterHtml: '<p>FOOTER-MARK</p>' })] });
+      createTransportMock.mockReturnValue({ sendMail: sendMailMock });
+      sendMailMock.mockResolvedValue(undefined);
+      await testProvider(db, 'p1', { recipientEmail: 'ops@example.test' }, { encryptionKey: 'KEY' });
+      const sent = sendMailMock.mock.calls[0][0] as { html: string; text: string };
+      expect(sent.html.indexOf('HEADER-MARK')).toBeLessThan(sent.html.indexOf('automated test'));
+      expect(sent.html.indexOf('automated test')).toBeLessThan(sent.html.indexOf('FOOTER-MARK'));
+      expect(sent.text).toMatch(/^HEADER-MARK\n\nThis is an automated test[\s\S]*\n\nFOOTER-MARK\n$/);
+    });
   });
 
   describe('getProviderForCategoryEmail (Phase 5)', () => {

@@ -12,6 +12,8 @@
  *   - POST   /templates/:id/preview       render against sample vars
  *   - POST   /templates/:id/restore-seed  revert to seed
  *   - GET    /deliveries                  audit log (cursor pagination, filters)
+ *   - GET    /email-chrome/preview-sample a real rendered notification for the
+ *                                         provider editor's header/footer preview
  *
  * All routes require panel='admin' and role super_admin OR admin.
  */
@@ -36,6 +38,7 @@ import {
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
 import * as providerService from './providers/service.js';
+import { renderEmailChromePreviewSample } from './providers/email-chrome-sample.js';
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
 
@@ -378,6 +381,12 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
     const { id } = request.params as { id: string };
     await providerService.deleteProvider(app.db, id);
     reply.status(204).send();
+  });
+
+  // Read-only and provider-independent: the editor wraps this sample with the
+  // header/footer the operator is typing, client-side, on every keystroke.
+  app.get('/admin/notifications/email-chrome/preview-sample', async () => {
+    return success(await renderEmailChromePreviewSample(app.db));
   });
 
   app.post('/admin/notifications/providers/:id/test', async (request) => {

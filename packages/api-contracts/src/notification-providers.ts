@@ -23,6 +23,7 @@
 
 import { z } from 'zod';
 import { NOTIFICATION_CHANNEL_ID } from './notification-categories.js';
+import { emailChromeHtmlSchema } from './notification-email-chrome.js';
 
 export const NOTIFICATION_PROVIDER_TYPE = [
   'stalwart-internal', 'smtp', 'postmark', 'brevo', 'mailjet', 'mailgun-eu',
@@ -73,6 +74,10 @@ export const notificationProviderResponseSchema = z.object({
   ntfyAuthMethod: z.enum(NTFY_AUTH_METHOD).nullable(),
   /** Derived — the stored access token is never returned. */
   ntfyTokenSet: z.boolean(),
+  /** Operator HTML wrapped above / below every email this provider sends.
+   *  Empty string = none (see notification-email-chrome.ts). */
+  emailHeaderHtml: z.string(),
+  emailFooterHtml: z.string(),
   lastTestedAt: z.string().nullable(),
   lastTestStatus: z.enum(NOTIFICATION_PROVIDER_TEST_STATUS).nullable(),
   lastTestError: z.string().nullable(),
@@ -118,6 +123,9 @@ const baseProviderInput = {
   ntfyAuthMethod: z.enum(NTFY_AUTH_METHOD).optional(),
   /** Write-only access token for token auth (encrypted at rest). */
   ntfyToken: z.string().min(1).max(500).optional(),
+  // ─── email header / footer (email providers only; '' = none) ───
+  emailHeaderHtml: emailChromeHtmlSchema.optional(),
+  emailFooterHtml: emailChromeHtmlSchema.optional(),
 };
 
 /** Shared cross-field rules for create + update of ntfy providers. */
@@ -129,8 +137,17 @@ function refineNtfy(data: {
   ntfyAuthMethod?: string;
   ntfyToken?: string;
   authUsername?: string | null;
+  emailHeaderHtml?: string;
+  emailFooterHtml?: string;
 }, ctx: z.RefinementCtx, isCreate: boolean): void {
   if (data.providerType === 'ntfy') {
+    // A push message is not an email: a header/footer here would be stored
+    // and never rendered, which reads to the operator as a broken feature.
+    for (const field of ['emailHeaderHtml', 'emailFooterHtml'] as const) {
+      if (data[field]?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: 'ntfy providers do not send email — the email header/footer does not apply' });
+      }
+    }
     if (isCreate && !data.ntfyTopic) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ntfyTopic'], message: 'ntfy providers require a topic' });
     }
@@ -194,6 +211,9 @@ export const updateNotificationProviderSchema = z.object({
   region: z.string().max(50).nullable().optional(),
   enabled: z.boolean().optional(),
   isDefault: z.boolean().optional(),
+  /** '' clears the block. Rejected by the service for an ntfy provider. */
+  emailHeaderHtml: emailChromeHtmlSchema.optional(),
+  emailFooterHtml: emailChromeHtmlSchema.optional(),
 });
 export type UpdateNotificationProviderInput = z.infer<typeof updateNotificationProviderSchema>;
 

@@ -19,6 +19,7 @@ import type {
   UpdateNotificationProviderInput,
 } from '@insula/api-contracts';
 import { NTFY_DEFAULT_SERVER_URL } from '@insula/api-contracts';
+import { buildProviderTestMessage } from './test-message.js';
 
 type Row = typeof notificationProviders.$inferSelect;
 
@@ -44,6 +45,8 @@ function rowToResponse(row: Row): NotificationProviderResponse {
     ntfyTopic: row.ntfyTopic ?? null,
     ntfyAuthMethod: (row.ntfyAuthMethod as 'none' | 'token' | 'basic' | null) ?? null,
     ntfyTokenSet: row.ntfyTokenEncrypted != null && row.ntfyTokenEncrypted.length > 0,
+    emailHeaderHtml: row.emailHeaderHtml,
+    emailFooterHtml: row.emailFooterHtml,
     lastTestedAt: row.lastTestedAt?.toISOString() ?? null,
     lastTestStatus: (row.lastTestStatus as 'success' | 'failed' | null) ?? null,
     lastTestError: row.lastTestError ?? null,
@@ -194,6 +197,9 @@ export async function createProvider(
     ntfyTopic: isNtfy ? (input.ntfyTopic ?? null) : null,
     ntfyAuthMethod: isNtfy ? (input.ntfyAuthMethod ?? 'none') : null,
     ntfyTokenEncrypted,
+    // The contract already refuses a non-empty block on an ntfy provider.
+    emailHeaderHtml: isNtfy ? '' : (input.emailHeaderHtml ?? ''),
+    emailFooterHtml: isNtfy ? '' : (input.emailFooterHtml ?? ''),
     createdByUserId: ctx.userId,
   });
   return await getProvider(db, id);
@@ -206,6 +212,16 @@ export async function updateProvider(
   ctx: { readonly encryptionKey: string },
 ): Promise<NotificationProviderResponse> {
   const existing = await getProvider(db, id);
+  if (existing.channel === 'ntfy' && (input.emailHeaderHtml?.trim() || input.emailFooterHtml?.trim())) {
+    // The update contract cannot see the provider type, so this half of the
+    // create-time rule lives here: a push message has no email to wrap.
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'ntfy providers do not send email — the email header/footer does not apply',
+      400,
+      { provider_id: id },
+    );
+  }
   if (input.isDefault === true && !existing.isDefault) {
     await ensureSingleDefault(db, { channel: existing.channel, wantDefault: true, excludeId: id });
   }
@@ -225,6 +241,10 @@ export async function updateProvider(
   if (input.ntfyTopic !== undefined) patch.ntfyTopic = input.ntfyTopic;
   if (input.ntfyAuthMethod !== undefined) patch.ntfyAuthMethod = input.ntfyAuthMethod;
   if (input.ntfyToken !== undefined) patch.ntfyTokenEncrypted = encrypt(input.ntfyToken, ctx.encryptionKey);
+  if (existing.channel !== 'ntfy') {
+    if (input.emailHeaderHtml !== undefined) patch.emailHeaderHtml = input.emailHeaderHtml;
+    if (input.emailFooterHtml !== undefined) patch.emailFooterHtml = input.emailFooterHtml;
+  }
   if (Object.keys(patch).length > 0) {
     await db.update(notificationProviders).set(patch).where(eq(notificationProviders.id, id));
   }
@@ -274,12 +294,19 @@ export async function testProvider(
     auth: row.authUsername ? { user: row.authUsername, pass: password ?? '' } : undefined,
   });
   const now = new Date();
+  // Carries the provider's email header/footer (HTML part) when it has any,
+  // so the operator sees the real result before a notification goes out.
+  const message = buildProviderTestMessage(row.name, {
+    headerHtml: row.emailHeaderHtml,
+    footerHtml: row.emailFooterHtml,
+  });
   try {
     await transport.sendMail({
       from: `"${fromName}" <${row.fromAddress}>`,
       to: input.recipientEmail,
       subject: '[Platform] Notification provider test',
-      text: `This is an automated test from the notification provider "${row.name}". If you received this, the provider's SMTP credentials are working.\n`,
+      text: message.text,
+      ...(message.html !== undefined ? { html: message.html } : {}),
     });
     await db.update(notificationProviders)
       .set({ lastTestedAt: now, lastTestStatus: 'success', lastTestError: null })

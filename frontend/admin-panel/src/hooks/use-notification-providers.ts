@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
   CreateNotificationProviderInput,
+  EmailChromePreviewSampleResponse,
   NotificationProviderResponse,
   TestNotificationProviderInput,
   TestNotificationProviderResponse,
@@ -71,5 +72,22 @@ export function useTestNotificationProvider() {
         { method: 'POST', body: JSON.stringify(input) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: NOTIFICATION_PROVIDERS_KEY }),
+  });
+}
+
+/**
+ * A real notification, rendered server-side with sample values, that the
+ * provider editor wraps in the header/footer being typed. Provider-independent,
+ * so one fetch serves every editor opening; `enabled` keeps ntfy editors from
+ * asking for it.
+ */
+export function useEmailChromePreviewSample(enabled: boolean) {
+  return useQuery({
+    queryKey: ['notification-email-chrome-preview-sample'] as const,
+    queryFn: () => apiFetch<Envelope<EmailChromePreviewSampleResponse>>(
+      '/api/v1/admin/notifications/email-chrome/preview-sample',
+    ),
+    enabled,
+    staleTime: 5 * 60_000,
   });
 }
