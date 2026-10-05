@@ -178,6 +178,13 @@ empty by default, and empty leaves the email byte-for-byte unchanged.
   decoded and control characters/whitespace removed — `&#106;avascript:`,
   `java&Tab;script:` and `javascript&colon;` are all `javascript:`. ntfy
   providers reject a header/footer — a push message has no email to wrap.
+- **Transport through the WAF.** Provider create/update
+  (`POST /admin/notifications/providers`, `PATCH …/providers/:id`) carry
+  HTML, which the edge WAF's XSS rules refuse as `application/json` (an
+  ordinary `<a href>` footer scored 20 → 949110 on DEV). The admin panel
+  sends the same JSON as `application/octet-stream` (ADR-060 raw transport;
+  parser scoped to those two routes) and WAF rule `9000116` allows that
+  content type on exactly those paths. JSON is still accepted by the API.
 - **Not covered:** the legacy `email-sender.ts` path (the channel-registry
   `emailChannel`) — nothing calls `getActiveChannels()`, so it sends nothing
   in production. There are no other platform emails: password-reset,

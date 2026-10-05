@@ -649,6 +649,36 @@ data:
         # copy that shape to the end of this file.
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
 
+    # ── ADR-060: raw transport for notification provider create/update ─
+    #
+    # An email provider carries an operator-authored email header and footer
+    # as HTML. Sent as application/json the WAF parses it into ARGS, and the
+    # CRS XSS family refuses an ordinary footer — a styled <div> and an
+    # <a href="https://…"> — measured on DEV as 949110 (anomaly score 20),
+    # a 403 the API never sees. The content is HTML by definition, so the
+    # admin panel sends the same JSON labelled application/octet-stream,
+    # exactly as 9000115 below does for compose documents. The API validates
+    # the HTML itself (no script, event handlers, script/data URLs).
+    #
+    # Same two removals as 9000115: 920420 (CRS rejects octet-stream by
+    # default) and the REQUEST_BODY / ARGS_POST targets. URL, method, header
+    # and query-string rules are untouched.
+    #
+    # SCOPE — `(/[^/]+)?(\?|$)`: POST <base> and PATCH /<id> only. The
+    # /<id>/test route (two segments) still sends JSON and stays inspected;
+    # the octet-stream parser is registered for the two routes alone.
+    # `t:none` keeps an action list on the chain's second rule (see 9000112).
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000116,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
+        SecRule REQUEST_URI "@rx ^/api/v1/admin/notifications/providers(/[^/]+)?(\?|$)" "t:none"
+
     # ── ADR-060: raw transport for custom-container specs ─────────────
     #
     # A compose document and its env files are shell commands and KEY=value

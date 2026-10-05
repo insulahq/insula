@@ -243,6 +243,58 @@ describe('admin notification routes', () => {
     expect(r.json().error.message).toContain('emailFooterHtml');
   });
 
+  describe('raw JSON transport (application/octet-stream, ADR-060)', () => {
+    const raw = (method: 'POST' | 'PATCH' | 'GET', url: string, body: string) => app.inject({
+      method,
+      url,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/octet-stream' },
+      payload: body,
+    });
+
+    it('PATCH /providers/:id parses an octet-stream body as JSON and validates it', async () => {
+      const r = await raw('PATCH', '/api/v1/admin/notifications/providers/p1',
+        JSON.stringify({ emailFooterHtml: '<a href="&#106;avascript:x">x</a>' }));
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error.code).toBe('INVALID_FIELD_VALUE');
+      expect(r.json().error.message).toContain('emailFooterHtml');
+    });
+
+    it('POST /providers parses an octet-stream body as JSON and validates it', async () => {
+      const r = await raw('POST', '/api/v1/admin/notifications/providers',
+        JSON.stringify({ name: 'p', providerType: 'smtp', smtpHost: 'smtp.example.test', fromAddress: 'noreply@example.test', emailHeaderHtml: '<script>x</script>' }));
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error.message).toContain('emailHeaderHtml');
+    });
+
+    it('keeps the plugin auth gates on the scoped routes', async () => {
+      const anon = await app.inject({
+        method: 'PATCH', url: '/api/v1/admin/notifications/providers/p1',
+        headers: { 'content-type': 'application/octet-stream' }, payload: '{}',
+      });
+      expect(anon.statusCode).toBe(401);
+      const tenant = await app.inject({
+        method: 'POST', url: '/api/v1/admin/notifications/providers',
+        headers: { authorization: `Bearer ${tenantToken}`, 'content-type': 'application/octet-stream' }, payload: '{}',
+      });
+      expect(tenant.statusCode).toBe(403);
+    });
+
+    it('rejects a malformed octet-stream body as invalid JSON', async () => {
+      const r = await raw('PATCH', '/api/v1/admin/notifications/providers/p1', '{not json');
+      expect(r.statusCode).toBe(400);
+    });
+
+    it('is not accepted by the other notification routes', async () => {
+      const r = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/admin/notifications/categories/security.password_changed',
+        headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/octet-stream' },
+        payload: JSON.stringify({ defaultSeverity: 'warning' }),
+      });
+      expect(r.statusCode).toBe(415);
+    });
+  });
+
   it('POST /admin/notifications/templates/:id/restore-seed', async () => {
     const r = await app.inject({
       method: 'POST',

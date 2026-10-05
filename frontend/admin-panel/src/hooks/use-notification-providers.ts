@@ -21,6 +21,15 @@ interface Envelope<T> { readonly data: T }
 
 export const NOTIFICATION_PROVIDERS_KEY = ['notification-providers'] as const;
 
+/**
+ * Create/update carry operator-authored HTML (the email header/footer). As
+ * application/json the edge WAF parses it into ARGS and its XSS rules refuse an
+ * ordinary `<a href>` footer with a 403 the API never sees. The same JSON
+ * labelled application/octet-stream is never parsed into ARGS; the API reads
+ * either. ADR-060, WAF rule 9000116.
+ */
+const RAW_JSON_HEADERS = { 'Content-Type': 'application/octet-stream' } as const;
+
 export function useNotificationProviders() {
   return useQuery({
     queryKey: NOTIFICATION_PROVIDERS_KEY,
@@ -36,7 +45,7 @@ export function useCreateNotificationProvider() {
     mutationFn: (input: CreateNotificationProviderInput) =>
       apiFetch<Envelope<NotificationProviderResponse>>(
         '/api/v1/admin/notifications/providers',
-        { method: 'POST', body: JSON.stringify(input) },
+        { method: 'POST', headers: RAW_JSON_HEADERS, body: JSON.stringify(input) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: NOTIFICATION_PROVIDERS_KEY }),
   });
@@ -48,7 +57,7 @@ export function useUpdateNotificationProvider() {
     mutationFn: ({ id, input }: { readonly id: string; readonly input: UpdateNotificationProviderInput }) =>
       apiFetch<Envelope<NotificationProviderResponse>>(
         `/api/v1/admin/notifications/providers/${id}`,
-        { method: 'PATCH', body: JSON.stringify(input) },
+        { method: 'PATCH', headers: RAW_JSON_HEADERS, body: JSON.stringify(input) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: NOTIFICATION_PROVIDERS_KEY }),
   });

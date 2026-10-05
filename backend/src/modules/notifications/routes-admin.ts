@@ -42,6 +42,7 @@ import { renderEmailChromePreviewSample } from './providers/email-chrome-sample.
 import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
 import type { CoreV1Api } from '@kubernetes/client-node';
+import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
 
 const PROVIDERS_RATE_LIMIT_ERR =
   'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
@@ -360,38 +361,47 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
     return success(await providerService.getProvider(app.db, id));
   });
 
-  app.post('/admin/notifications/providers', async (request) => {
-    const parsed = createNotificationProviderSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      throw new ApiError(
-        'INVALID_FIELD_VALUE',
-        `Validation error: ${first.message} (${first.path.join('.')})`,
-        400,
-      );
-    }
-    const encryptionKey = requireEncryptionKey();
-    const created = await providerService.createProvider(app.db, parsed.data, {
-      userId: request.user!.sub,
-      encryptionKey,
-    });
-    return success(created);
-  });
+  // Create/update carry operator-authored HTML (the email header/footer), so
+  // the admin panel sends them as application/octet-stream — the same JSON,
+  // which the edge WAF never parses into ARGS (ADR-060, WAF rule 9000116).
+  // JSON stays accepted for API clients and the panel/API rollout window. The
+  // parser is scoped to these two routes only.
+  await app.register(async (scope) => {
+    registerRawBodyParser(scope);
 
-  app.patch('/admin/notifications/providers/:id', async (request) => {
-    const { id } = request.params as { id: string };
-    const parsed = updateNotificationProviderSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      throw new ApiError(
-        'INVALID_FIELD_VALUE',
-        `Validation error: ${first.message} (${first.path.join('.')})`,
-        400,
-      );
-    }
-    const encryptionKey = requireEncryptionKey();
-    const updated = await providerService.updateProvider(app.db, id, parsed.data, { encryptionKey });
-    return success(updated);
+    scope.post('/admin/notifications/providers', async (request) => {
+      const parsed = createNotificationProviderSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          `Validation error: ${first.message} (${first.path.join('.')})`,
+          400,
+        );
+      }
+      const encryptionKey = requireEncryptionKey();
+      const created = await providerService.createProvider(app.db, parsed.data, {
+        userId: request.user!.sub,
+        encryptionKey,
+      });
+      return success(created);
+    });
+
+    scope.patch('/admin/notifications/providers/:id', async (request) => {
+      const { id } = request.params as { id: string };
+      const parsed = updateNotificationProviderSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          `Validation error: ${first.message} (${first.path.join('.')})`,
+          400,
+        );
+      }
+      const encryptionKey = requireEncryptionKey();
+      const updated = await providerService.updateProvider(app.db, id, parsed.data, { encryptionKey });
+      return success(updated);
+    });
   });
 
   app.delete('/admin/notifications/providers/:id', async (request, reply) => {
