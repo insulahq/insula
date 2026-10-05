@@ -195,7 +195,8 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/backup-health — roll-up of every Job carrying the
   // backup-health-watch=true label, PLUS one row per tenant from the
-  // tenant bundle ledger (category 'tenant'). Tenant backups are bundles
+  // tenant bundle ledger (category 'tenant') and one per CNPG cluster (the
+  // platform database, category 'dr'). Tenant backups are bundles
   // recorded in backup_jobs, not labelled Jobs — with the Job listing
   // alone the Backups dashboard's Tenants card never had a row to show.
   app.get('/admin/backup-health', async () => {
@@ -206,11 +207,13 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
       '../backup-health/service.js'
     );
     const { loadTenantBundleHealth } = await import('../backup-health/tenant-bundles.js');
-    const [jobs, tenantRows] = await Promise.all([
+    const { loadCnpgHealthRows } = await import('../backup-health/cnpg-rows.js');
+    const [jobs, tenantRows, databaseRows] = await Promise.all([
       listHealthWatchedJobs(longhornTenants.batch),
       loadTenantBundleHealth(app.db),
+      loadCnpgHealthRows({ custom: longhornTenants.custom, core: longhornTenants.core }),
     ]);
-    return success(sortSummaries([...summariseHealth(jobs), ...tenantRows]));
+    return success(sortSummaries([...summariseHealth(jobs), ...databaseRows, ...tenantRows]));
   });
 
 }

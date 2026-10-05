@@ -28,6 +28,13 @@ Remote Storage Targets card, and a recent-activity list (failures first,
 then the most recent runs). Each card deep-links into its class. A failing
 or never-run class shows red/amber.
 
+The **System** card counts the cluster-level backup jobs (etcd, cluster
+state, secrets) **and the platform database's own backups** — one entry per
+database cluster. A database whose last backup failed is failing (red); one
+with no completed backup for over 24 hours, or whose backup plugin reports
+none while the object store has some, is failing (amber); one with no backup
+target configured counts as **never run**.
+
 The **Tenants** card counts tenants by their newest finished bundle: a
 `completed` bundle makes the tenant healthy, a `partial` or `failed` one
 makes it failing (until a newer bundle completes). A tenant included in the
