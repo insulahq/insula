@@ -6,6 +6,7 @@ interface FileSystemDirectoryEntry extends FileSystemEntry { createReader(): Fil
 interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[]) => void, err?: () => void): void; }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+import '@/lib/monaco-setup';
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {

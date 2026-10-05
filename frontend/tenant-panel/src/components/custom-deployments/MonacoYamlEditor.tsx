@@ -6,6 +6,7 @@
 // to initialise (e.g. missing CDN worker), ComposeEditor's ErrorBoundary
 // catches the error and falls back to a plain textarea.
 
+import '@/lib/monaco-setup';
 import { useEffect, useRef } from 'react';
 import Editor, { type Monaco } from '@monaco-editor/react';
 import { configureMonacoYaml } from 'monaco-yaml';

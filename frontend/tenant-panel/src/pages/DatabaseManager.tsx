@@ -1,3 +1,4 @@
+import '@/lib/monaco-setup';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
