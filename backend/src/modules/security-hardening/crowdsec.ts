@@ -461,8 +461,21 @@ export async function listDecisions(
 ): Promise<CrowdsecListDecisionsResponse> {
   const kc = createKubeConfig(kubeconfigPath);
   const key = await loadBouncerKey(kc);
+  // Platform reads ask the LAPI for platform origins only. The list polls
+  // every 15s and the dashboard counts from the same read; production held
+  // ~16k community decisions against a handful of platform ones, all fetched
+  // to be discarded. `origins` is an exact match on the decision origin
+  // (verified on DEV against crowdsec, cscli and cscli-import decisions), so
+  // it selects what isPlatformOrigin keeps. applyDecisionFilters still
+  // filters, so a LAPI that ignored the parameter could not widen the list.
+  // The community view is "every OTHER origin", which `origins` cannot
+  // express, so it still reads everything.
+  const source = query.source ?? 'platform';
+  const path = source === 'platform'
+    ? `/v1/decisions?origins=${PLATFORM_ORIGINS.join(',')}`
+    : '/v1/decisions';
   // Pass kc so lapiGet can self-heal on 403 (re-register bouncer + retry).
-  const raw = await lapiGet<LapiRawDecision[] | null>('/v1/decisions', key, kc);
+  const raw = await lapiGet<LapiRawDecision[] | null>(path, key, kc);
   const all = (raw ?? []).map(parseLapiDecision).filter((d): d is CrowdsecDecision => d !== null);
   return applyDecisionFilters(all, query);
 }
@@ -483,8 +496,10 @@ export async function listDecisions(
  * which is false. Anything else (CAPI, console blocklists, third-party lists)
  * is genuinely external.
  */
+export const PLATFORM_ORIGINS: readonly string[] = ['cscli', 'crowdsec'];
+
 export function isPlatformOrigin(origin: string): boolean {
-  return origin === 'cscli' || origin === 'crowdsec';
+  return PLATFORM_ORIGINS.includes(origin);
 }
 
 /**

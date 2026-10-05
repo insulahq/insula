@@ -149,7 +149,12 @@ export type CrowdsecListDecisionsQuery = z.infer<typeof crowdsecListDecisionsQue
 
 export const crowdsecListDecisionsResponseSchema = z.object({
   decisions: z.array(crowdsecDecisionSchema),
-  /** Total before any filter — useful for the "X of Y" UI label. */
+  /**
+   * Decisions the LAPI returned before the remaining filters. For
+   * source=platform the LAPI is asked for platform origins only, so this
+   * excludes the community feed; source=all or community counts everything
+   * the LAPI holds.
+   */
   totalActive: z.number().int().min(0),
   /**
    * Rows matching the filters BEFORE paging. Without this the UI cannot tell

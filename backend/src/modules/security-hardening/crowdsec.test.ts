@@ -239,7 +239,9 @@ describe('applyDecisionFilters — source scoping and paging', () => {
     const r = applyDecisionFilters(all, {});
     expect(r.decisions).toHaveLength(2);
     expect(r.decisions.every((d) => d.origin === 'cscli')).toBe(true);
-    // totalActive still reports everything the LAPI holds.
+    // totalActive reports every decision it was handed (listDecisions asks
+    // the LAPI for platform origins only, so in production that is the
+    // platform set; see crowdsec-list-origins.test.ts).
     expect(r.totalActive).toBe(52);
     expect(r.totalMatching).toBe(2);
   });
