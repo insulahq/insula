@@ -7,16 +7,15 @@
  * clusters. `loader.config({ monaco })` hands it the bundled copy instead.
  *
  * Lean on purpose — the editor core, syntax highlighting for the languages our
- * editors actually use (Files' LANG_MAP, SQL Manager, the compose editor), the
- * YAML worker for monaco-yaml. The TypeScript / CSS / HTML / JSON language
+ * editors actually use (Files' LANG_MAP, SQL Manager, the compose editor) and
+ * the editor worker. The TypeScript / CSS / HTML / JSON language
  * services (IntelliSense, validation) are left out: they are most of Monaco's
  * weight (the JSON service alone is 1.6 MB) and a hosting panel's file editor
  * needs highlighting, not a compiler. JSON gets a small Monarch highlighter.
  *
  * Import this module from every file that renders an editor, before the editor
- * mounts; Vite puts it in the editors' lazy chunk. monaco-editor stays on the
- * version monaco-yaml's peer range already locked (0.56): the deep-import alias
- * in vite.config.ts and the definitions paths were verified against it.
+ * mounts; Vite puts it in the editors' lazy chunk. Paths verified against
+ * monaco-editor 0.56.
  */
 import { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor/editor/editor.api';
@@ -43,11 +42,9 @@ import 'monaco-editor/languages/definitions/typescript/register';
 import 'monaco-editor/languages/definitions/xml/register';
 import 'monaco-editor/languages/definitions/yaml/register';
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker';
-import YamlWorker from 'monaco-yaml/yaml.worker?worker';
 
 self.MonacoEnvironment = {
-  getWorker(_workerId: string, label: string): Worker {
-    if (label === 'yaml') return new YamlWorker();
+  getWorker(): Worker {
     return new EditorWorker();
   },
 };

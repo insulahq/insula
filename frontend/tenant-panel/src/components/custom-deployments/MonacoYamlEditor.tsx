@@ -1,15 +1,15 @@
-// Monaco + monaco-yaml lazy-loaded YAML editor. Wired to the platform's
-// compose JSON Schema for per-field validation, autocomplete, and hover.
+// Monaco YAML editor, lazy-loaded by ComposeEditor (React.lazy) so the editor
+// bundle does not inflate the main chunk; ComposeEditor's ErrorBoundary falls
+// back to a plain textarea if it cannot load.
 //
-// This module is dynamically imported by ComposeEditor via React.lazy so
-// its ~1.5 MB bundle does not inflate the main chunk. If monaco-yaml fails
-// to initialise (e.g. missing CDN worker), ComposeEditor's ErrorBoundary
-// catches the error and falls back to a plain textarea.
+// Validation is the server's: Validate puts its issues on the lines as markers
+// (below). monaco-yaml's in-editor schema checks were removed — its worker
+// protocol does not work with monaco-editor >= 0.55 (it threw "Missing
+// requestHandler or method: doValidation"), and it was 1 MB of bundle.
 
 import '@/lib/monaco-setup';
 import { useEffect, useRef } from 'react';
 import Editor, { type Monaco } from '@monaco-editor/react';
-import { configureMonacoYaml } from 'monaco-yaml';
 
 /** One backend issue that resolved to a line in this document. */
 export interface EditorMarker {
@@ -22,7 +22,8 @@ export interface EditorMarker {
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  jsonSchema: unknown;
+  /** Accepted for API stability; the server validates against it. */
+  jsonSchema?: unknown;
   /**
    * Backend validation issues to render as squiggles. The JSON Schema already
    * catches shape mistakes as you type; these are the SEMANTIC ones only the
@@ -40,41 +41,11 @@ interface Props {
   revealLine?: { readonly line: number } | null;
 }
 
-let yamlConfigured = false;
-
-function ensureYaml(monaco: Monaco, schema: unknown) {
-  if (yamlConfigured) return;
-  yamlConfigured = true;
-  configureMonacoYaml(monaco, {
-    enableSchemaRequest: false,
-    hover: true,
-    completion: true,
-    validate: true,
-    format: {},
-    schemas: schema
-      ? [
-          {
-            uri: 'platform://compose-schema',
-            fileMatch: ['*'],
-            schema: schema as object,
-          },
-        ]
-      : [],
-  });
-}
-
-export default function MonacoYamlEditor({ value, onChange, jsonSchema, markers, revealLine }: Props) {
-  const schemaRef = useRef(jsonSchema);
-  schemaRef.current = jsonSchema;
+export default function MonacoYamlEditor({ value, onChange, markers, revealLine }: Props) {
   const editorRef = useRef<Parameters<NonNullable<Parameters<typeof Editor>[0]['onMount']>>[0] | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
 
-  useEffect(() => {
-    yamlConfigured = false;
-  }, [jsonSchema]);
-
-  // Own a dedicated marker owner string so we only ever clear OUR markers —
-  // monaco-yaml owns its own set from the JSON Schema and both must coexist.
+  // A dedicated marker owner, so we only ever clear OUR markers.
   useEffect(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
@@ -129,7 +100,6 @@ export default function MonacoYamlEditor({ value, onChange, jsonSchema, markers,
       onMount={(editor, monaco) => {
         editorRef.current = editor;
         monacoRef.current = monaco;
-        ensureYaml(monaco, schemaRef.current);
       }}
       data-testid="custom-compose-monaco"
     />

@@ -1,9 +1,8 @@
 // Compose editor — split view with YAML on the left, Issues / Rendered
 // preview tabs on the right.
 //
-// Uses Monaco + monaco-yaml for YAML validation, autocomplete, and
-// JSON Schema-driven hints from the backend's compose-schema endpoint.
-// Falls back to a plain <textarea> via ErrorBoundary if Monaco fails
+// Uses the self-hosted Monaco for YAML editing; validation is the server's
+// (Validate → Issues tab, and markers on the offending lines). Falls back to a plain <textarea> via ErrorBoundary if Monaco fails
 // to load (e.g. in low-end environments or during tests).
 
 import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
@@ -23,7 +22,7 @@ import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
 
-// Lazy-load Monaco + monaco-yaml (~1.5 MB gzipped). The dynamic import
+// Lazy-load Monaco (~0.75 MB gzipped). The dynamic import
 // is wrapped in a thin component so the ErrorBoundary can catch any
 // Monaco init failure and fall back to the textarea.
 const MonacoYamlEditor = lazy(() =>
