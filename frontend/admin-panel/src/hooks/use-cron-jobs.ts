@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateCronJobRequest, UpdateCronJobRequest } from '@insula/api-contracts';
+import type { CreateCronJobRequest, CronFailureEmailInfo, UpdateCronJobRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
@@ -27,6 +27,19 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
   return useQuery({
     queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor, search }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
+  });
+}
+
+/**
+ * Who "the tenant email" is for a tenant's cron failure emails, as the API
+ * resolves it at send time, plus the per-tenant daily cap.
+ */
+export function useCronFailureEmailInfo(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: ['cron-failure-email-info', tenantId],
+    queryFn: () => apiFetch<{ data: CronFailureEmailInfo }>(`/api/v1/tenants/${tenantId}/cron-jobs/failure-email-info`),
+    enabled: Boolean(tenantId),
+    staleTime: 60_000,
   });
 }
 

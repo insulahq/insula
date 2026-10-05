@@ -80,6 +80,16 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success(job));
   });
 
+  // GET /api/v1/tenants/:id/cron-jobs/failure-email-info
+  //
+  // The address "tenant email" resolves to, and the per-tenant daily cap, so
+  // the create/edit form can show who will actually be mailed. A static
+  // segment, so it wins over `:cronJobId` below.
+  app.get('/tenants/:id/cron-jobs/failure-email-info', async (request) => {
+    const { id } = request.params as { id: string };
+    return success(await service.getFailureEmailInfo(app.db, id));
+  });
+
   // GET /api/v1/tenants/:id/cron-jobs/:cronJobId
   app.get('/tenants/:id/cron-jobs/:cronJobId', async (request) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };

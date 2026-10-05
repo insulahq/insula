@@ -5,6 +5,10 @@ import {
   CRON_TIMEOUT_MIN_SECONDS,
   CRON_TIMEOUT_MAX_SECONDS,
   DEFAULT_CRON_TIMEOUT_SECONDS,
+  CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
+  cronJobResponseSchema,
+  cronFailureEmailInfoSchema,
+  failureEmailRecipientMissing,
 } from './cron-jobs.js';
 
 const base = {
@@ -96,5 +100,102 @@ describe('updateCronJobSchema: clearing a pinned field', () => {
   it('refuses to change a job between webcron and deployment', () => {
     const parsed = updateCronJobSchema.parse({ type: 'webcron', name: 'x' } as never);
     expect('type' in parsed).toBe(false);
+  });
+});
+
+/**
+ * Failure emails are opt-in per job. The platform sends mail to an address the
+ * tenant typed in, so the contract is strict about what an address is and
+ * refuses a switched-on notification that names nobody.
+ */
+describe('cron job failure emails', () => {
+  const webcron = {
+    name: 'Nightly ping',
+    type: 'webcron' as const,
+    schedule: '0 3 * * *',
+    url: 'https://example.test/cron.php',
+  };
+
+  it('is off by default on create, with the tenant email pre-selected', () => {
+    const parsed = createCronJobSchema.parse(webcron);
+    expect(parsed.notify_on_failure).toBe(false);
+    expect(parsed.notify_tenant_email).toBe(true);
+    expect(parsed.notify_email ?? null).toBeNull();
+  });
+
+  it('accepts the tenant email alone, an extra address alone, or both', () => {
+    expect(createCronJobSchema.safeParse({ ...webcron, notify_on_failure: true }).success).toBe(true);
+    expect(createCronJobSchema.safeParse({
+      ...webcron, notify_on_failure: true, notify_tenant_email: false, notify_email: 'ops@example.test',
+    }).success).toBe(true);
+    expect(createCronJobSchema.safeParse({
+      ...webcron, notify_on_failure: true, notify_email: 'ops@example.test',
+    }).success).toBe(true);
+  });
+
+  it('refuses a switched-on notification with no recipient, naming the field', () => {
+    const parsed = createCronJobSchema.safeParse({
+      ...webcron, notify_on_failure: true, notify_tenant_email: false,
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0].path).toEqual(['notify_email']);
+      expect(parsed.error.issues[0].message).toMatch(/recipient/i);
+    }
+  });
+
+  it('does not demand a recipient while the notification is off', () => {
+    expect(createCronJobSchema.safeParse({
+      ...webcron, notify_on_failure: false, notify_tenant_email: false,
+    }).success).toBe(true);
+  });
+
+  it('refuses something that is not an email address', () => {
+    for (const bad of ['not-an-address', 'ops@', 'ops@example', 'a@b.c\r\nBcc: x@example.test']) {
+      expect(createCronJobSchema.safeParse({ ...webcron, notify_email: bad }).success).toBe(false);
+      expect(updateCronJobSchema.safeParse({ notify_email: bad }).success).toBe(false);
+    }
+  });
+
+  it('trims the address and caps its length', () => {
+    const parsed = createCronJobSchema.parse({ ...webcron, notify_email: '  ops@example.test ' });
+    expect(parsed.notify_email).toBe('ops@example.test');
+    const long = `${'a'.repeat(250)}@example.test`;
+    expect(createCronJobSchema.safeParse({ ...webcron, notify_email: long }).success).toBe(false);
+  });
+
+  it('lets an edit clear the extra address with null and leaves omitted fields alone', () => {
+    expect(updateCronJobSchema.parse({ notify_email: null }).notify_email).toBeNull();
+    const omitted = updateCronJobSchema.parse({ name: 'x' });
+    expect(omitted.notify_on_failure).toBeUndefined();
+    expect(omitted.notify_tenant_email).toBeUndefined();
+    expect(omitted.notify_email).toBeUndefined();
+  });
+
+  it('exposes the three settings on the response', () => {
+    const shape = cronJobResponseSchema.shape;
+    expect(shape.notifyOnFailure).toBeDefined();
+    expect(shape.notifyTenantEmail).toBeDefined();
+    expect(shape.notifyEmail).toBeDefined();
+  });
+
+  it('caps failure emails per tenant per day at a small positive number', () => {
+    expect(CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY).toBeGreaterThan(0);
+    expect(CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY).toBeLessThanOrEqual(50);
+    expect(cronFailureEmailInfoSchema.safeParse({
+      tenantEmail: 'owner@example.test', maxEmailsPerTenantPerDay: CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
+    }).success).toBe(true);
+  });
+});
+
+describe('failureEmailRecipientMissing', () => {
+  // One rule, shared by the API (which validates the MERGED row on edit) and
+  // both panels (which disable Save) — so they cannot disagree.
+  it('is only ever true when the notification is on and names nobody', () => {
+    expect(failureEmailRecipientMissing({ notifyOnFailure: false, notifyTenantEmail: false, notifyEmail: null })).toBe(false);
+    expect(failureEmailRecipientMissing({ notifyOnFailure: true, notifyTenantEmail: true, notifyEmail: null })).toBe(false);
+    expect(failureEmailRecipientMissing({ notifyOnFailure: true, notifyTenantEmail: false, notifyEmail: 'ops@example.test' })).toBe(false);
+    expect(failureEmailRecipientMissing({ notifyOnFailure: true, notifyTenantEmail: false, notifyEmail: null })).toBe(true);
+    expect(failureEmailRecipientMissing({ notifyOnFailure: true, notifyTenantEmail: false, notifyEmail: '   ' })).toBe(true);
   });
 });

@@ -16,6 +16,17 @@ vi.mock('../notifications/events.js', () => ({
     notifyTenantScheduledTaskFailure(...args),
 }));
 
+// The opt-in email leg has its own suite (failure-email.test.ts); here only the
+// hand-off matters — what runAndRecord asks for, and what it passes on.
+const resolveFailureEmailRecipients = vi.fn().mockResolvedValue({ recipients: [], skipped: 'disabled' });
+vi.mock('./failure-email.js', () => ({
+  resolveFailureEmailRecipients: (...args: unknown[]) => resolveFailureEmailRecipients(...args),
+}));
+
+vi.mock('../system-settings/service.js', () => ({
+  getSettings: vi.fn().mockResolvedValue({ timezone: 'Europe/Berlin' }),
+}));
+
 function makeJob(overrides: Partial<CronJobRow> = {}): CronJobRow {
   return {
     id: 'job-1',
@@ -33,6 +44,9 @@ function makeJob(overrides: Partial<CronJobRow> = {}): CronJobRow {
     lastRunDurationMs: null,
     lastRunResponseCode: null,
     lastRunOutput: null,
+    notifyOnFailure: false,
+    notifyTenantEmail: true,
+    notifyEmail: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -78,6 +92,8 @@ const RUNNING_DEPLOYMENT = {
 
 beforeEach(() => {
   notifyTenantScheduledTaskFailure.mockClear();
+  resolveFailureEmailRecipients.mockClear();
+  resolveFailureEmailRecipients.mockResolvedValue({ recipients: [], skipped: 'disabled' });
 });
 
 describe('runAndRecord', () => {
@@ -117,21 +133,81 @@ describe('runAndRecord', () => {
     expect(updates[0].lastRunResponseCode).toBe(127);
     expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
 
-    const [, tenantId, payload, dedupeKey] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    const [, tenantId, payload, opts] = notifyTenantScheduledTaskFailure.mock.calls[0];
     expect(tenantId).toBe('tenant-1');
     expect(payload).toMatchObject({ taskName: 'Moodle cron' });
     expect((payload as { errorMessage: string }).errorMessage).toContain('exit 127');
     // Per (job, UTC day) — a broken job on a 5-minute schedule would otherwise
     // send 288 notifications before breakfast.
-    expect(dedupeKey).toMatch(/^scheduled-task-failure:job-1:\d{4}-\d{2}-\d{2}$/);
+    expect((opts as { dedupeKey: string }).dedupeKey).toMatch(/^scheduled-task-failure:job-1:\d{4}-\d{2}-\d{2}$/);
+    // Switched off by default: nobody beyond the tenant's own admins.
+    expect((opts as { externalRecipients: readonly string[] }).externalRecipients).toEqual([]);
+  });
+
+  it('names the schedule and the clock it is read on, so the email says WHEN it runs', async () => {
+    const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
+
+    await runAndRecord(db, makeJob({ schedule: '0 3 * * *', timezone: null }), {});
+    const [, , payload] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    // No zone of its own, so the platform's.
+    expect((payload as { schedule: string }).schedule).toBe('0 3 * * * (Europe/Berlin)');
+
+    notifyTenantScheduledTaskFailure.mockClear();
+    await runAndRecord(db, makeJob({ schedule: '*/5 * * * *', timezone: 'Asia/Tokyo' }), {});
+    const [, , pinned] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    expect((pinned as { schedule: string }).schedule).toBe('*/5 * * * * (Asia/Tokyo)');
+  });
+
+  it('hands the opted-in addresses to the dispatcher as external recipients', async () => {
+    resolveFailureEmailRecipients.mockResolvedValue({ recipients: ['owner@example.test', 'ops@example.test'] });
+    const optedIn = makeJob({ notifyOnFailure: true, notifyEmail: 'ops@example.test' });
+    const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
+
+    await runAndRecord(db, optedIn, {});
+
+    expect(resolveFailureEmailRecipients).toHaveBeenCalledTimes(1);
+    const [, jobArg] = resolveFailureEmailRecipients.mock.calls[0];
+    expect(jobArg).toMatchObject({ id: 'job-1', tenantId: 'tenant-1', notifyOnFailure: true, notifyEmail: 'ops@example.test' });
+    const [, , , opts] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    expect((opts as { externalRecipients: readonly string[] }).externalRecipients)
+      .toEqual(['owner@example.test', 'ops@example.test']);
+  });
+
+  it('still notifies the tenant admins when today\'s email slot is already spent', async () => {
+    resolveFailureEmailRecipients.mockResolvedValue({ recipients: [], skipped: 'already-sent-today' });
+    const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
+
+    await runAndRecord(db, makeJob({ notifyOnFailure: true }), {});
+
+    expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+    const [, , , opts] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    expect((opts as { externalRecipients: readonly string[] }).externalRecipients).toEqual([]);
+  });
+
+  it('never emails on success', async () => {
+    const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'success' }));
+
+    await runAndRecord(db, makeJob({ notifyOnFailure: true }), {
+      transport: {
+        listPods: vi.fn().mockResolvedValue([
+          { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'] },
+        ]),
+        exec: vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '', exitCode: 0 }),
+      },
+    });
+
+    expect(resolveFailureEmailRecipients).not.toHaveBeenCalled();
+    expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
   });
 
   it('does not notify on a manual run — the operator is looking at the result', async () => {
     const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
 
-    await runAndRecord(db, makeJob(), {}, { notify: false });
+    await runAndRecord(db, makeJob({ notifyOnFailure: true }), {}, { notify: false });
 
     expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+    // Nor does it spend the day's email slot on a test run.
+    expect(resolveFailureEmailRecipients).not.toHaveBeenCalled();
   });
 
   it('records a failure rather than a success when the job could not run at all', async () => {

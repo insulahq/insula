@@ -1301,19 +1301,29 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
 
   // ── tasks.scheduled_failure ────────────────────────────────────────
   {
+    // Also mailed to the addresses a cron job opted into (its failure
+    // contacts), who may have no platform account — so the body names the
+    // account, the schedule and the reason itself rather than assuming the
+    // reader can open the panel, and says why they are getting it.
     categoryId: 'tasks.scheduled_failure',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Scheduled task failed: {{taskName}}',
+    subjectTemplate: 'Scheduled task failed: {{taskName}}{{#if tenantName}} ({{tenantName}}){{/if}}',
     bodyTemplate: emailMjml(
       'Scheduled task failed',
-      'The scheduled task "{{taskName}}" failed: {{errorMessage}}',
+      'The scheduled task <strong>{{taskName}}</strong>'
+      + '{{#if tenantName}} of {{tenantName}}{{/if}} failed.<br /><br />'
+      + '{{#if schedule}}<strong>Schedule:</strong> {{schedule}}<br />{{/if}}'
+      + '{{#if errorMessage}}<strong>Reason:</strong> {{errorMessage}}<br />{{/if}}'
+      + '<br />While the task keeps failing you get at most one email about it per day. '
+      + 'Who is emailed is set on the task under Cron Jobs in the control panel.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'taskName', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+      { name: 'schedule', type: 'string', required: false },
     ],
   },
   {

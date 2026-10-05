@@ -1,10 +1,16 @@
 import { useRef, useState, type FormEvent } from 'react';
-import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal, Pencil } from 'lucide-react';
+import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal, Pencil, Mail } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
-import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob, useCronFailureEmailInfo } from '@/hooks/use-cron-jobs';
+import CronFailureEmailFields, {
+  DEFAULT_FAILURE_EMAIL,
+  failureEmailBody,
+  failureEmailIncomplete,
+  type CronFailureEmailValue,
+} from '@/components/CronFailureEmailFields';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import TimezoneSelect from '@/components/TimezoneSelect';
@@ -57,6 +63,8 @@ interface CronFormState {
   readonly timeoutSeconds: string;
   /** Blank follows the platform timezone. */
   readonly timezone: string;
+  /** Opt-in email on a failed scheduled run. */
+  readonly failureEmail: CronFailureEmailValue;
 }
 
 const INITIAL_FORM: CronFormState = {
@@ -69,7 +77,20 @@ const INITIAL_FORM: CronFormState = {
   deploymentId: '',
   timeoutSeconds: '',
   timezone: '',
+  failureEmail: DEFAULT_FAILURE_EMAIL,
 };
+
+/** Who a job emails on failure, for the row's hover text. */
+function failureRecipientsLabel(
+  job: { readonly notifyTenantEmail: boolean; readonly notifyEmail: string | null },
+  tenantEmail: string | null | undefined,
+): string {
+  const who = [
+    job.notifyTenantEmail ? (tenantEmail ?? 'the tenant email') : null,
+    job.notifyEmail,
+  ].filter((x): x is string => Boolean(x));
+  return who.length > 0 ? who.join(', ') : 'nobody';
+}
 
 export default function CronJobs() {
   const { tenantId } = useTenantContext();
@@ -83,6 +104,9 @@ export default function CronJobs() {
   // The zone a task with none of its own is read on — shown so "03:00" is never ambiguous.
   const { data: systemInfo } = useSystemInfo();
   const platformTimezone = systemInfo?.timezone;
+  // Who "tenant email" is, as the API will resolve it when a run fails.
+  const { data: failureEmailInfo } = useCronFailureEmailInfo(tenantId ?? undefined);
+  const tenantEmail = failureEmailInfo?.data?.tenantEmail;
 
   const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
 
@@ -130,6 +154,11 @@ export default function CronJobs() {
       // Blank is meaningful on the way back out: it clears the pin.
       timeoutSeconds: job.timeoutSeconds != null ? String(job.timeoutSeconds) : '',
       timezone: job.timezone ?? '',
+      failureEmail: {
+        notifyOnFailure: job.notifyOnFailure ?? false,
+        notifyTenantEmail: job.notifyTenantEmail ?? true,
+        notifyEmail: job.notifyEmail ?? '',
+      },
     });
     setShowForm(true);
     // jsdom has no scrollIntoView; the optional call keeps tests honest rather
@@ -143,6 +172,7 @@ export default function CronJobs() {
 
     if (form.type === 'webcron' && !form.url.trim()) return;
     if (form.type === 'deployment' && (!form.command.trim() || !form.deploymentId)) return;
+    if (failureEmailIncomplete(form.failureEmail)) return;
 
     if (editingId) {
       try {
@@ -160,6 +190,8 @@ export default function CronJobs() {
           // has to say so explicitly to get back to the default.
           timeout_seconds: form.timeoutSeconds.trim() ? Number(form.timeoutSeconds) : null,
           timezone: form.timezone.trim() ? form.timezone.trim() : null,
+          // Always sent: the form shows all three, so a save reflects them.
+          ...failureEmailBody(form.failureEmail),
         });
         closeForm();
       } catch { /* error via updateJob.error */ }
@@ -181,6 +213,7 @@ export default function CronJobs() {
         // than pinning today's platform value onto the job for ever.
         ...(form.timezone.trim() ? { timezone: form.timezone.trim() } : {}),
         enabled: true,
+        ...failureEmailBody(form.failureEmail),
       });
       closeForm();
     } catch { /* error via createJob.error */ }
@@ -375,22 +408,35 @@ export default function CronJobs() {
                 {form.timezone ? '' : ' Changing the platform timezone moves this task with it.'}
               </p>
             </div>
-            <div className="flex items-end gap-2">
-              <button type="submit" disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-cron-job">
-                {pending && <Loader2 size={14} className="animate-spin" />}
-                {editingId ? 'Save Changes' : 'Add'}
+          </div>
+
+          <CronFailureEmailFields
+            value={form.failureEmail}
+            onChange={(failureEmail) => setForm({ ...form, failureEmail })}
+            tenantEmail={tenantEmail}
+            maxPerDay={failureEmailInfo?.data?.maxEmailsPerTenantPerDay}
+          />
+
+          <div className="flex items-end gap-2">
+            <button
+              type="submit"
+              disabled={pending || failureEmailIncomplete(form.failureEmail)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="submit-cron-job"
+            >
+              {pending && <Loader2 size={14} className="animate-spin" />}
+              {editingId ? 'Save Changes' : 'Add'}
+            </button>
+            {editingId && (
+              <button
+                type="button"
+                onClick={closeForm}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                data-testid="cancel-cron-edit"
+              >
+                Cancel
               </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={closeForm}
-                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-                  data-testid="cancel-cron-edit"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
+            )}
           </div>
 
           {submitError && (
@@ -443,7 +489,18 @@ export default function CronJobs() {
               <tbody>
                 {jobs.map((job) => (
                   <tr key={job.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
-                    <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">{job.name}</td>
+                    <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">
+                      {job.name}
+                      {job.notifyOnFailure && (
+                        <span
+                          className="ml-2 inline-flex align-middle text-blue-600 dark:text-blue-400"
+                          title={`Emails on failure: ${failureRecipientsLabel(job, tenantEmail)}`}
+                          data-testid={`cron-notify-badge-${job.id}`}
+                        >
+                          <Mail size={12} />
+                        </span>
+                      )}
+                    </td>
                     <td className="px-6 py-4">
                       <TypeBadge type={job.type} />
                     </td>

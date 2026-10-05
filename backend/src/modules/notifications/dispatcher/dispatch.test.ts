@@ -271,6 +271,79 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.some((st) => st.error === 'duplicate_recipient')).toBe(false);
   });
 
+  // "Do not mail the same person twice" needs a FIRST email to be a second
+  // one of. The address of an account holder whose own email leg did not go
+  // out — muted, rate-limited, quiet hours — is not a duplicate: skipping it
+  // too means an address someone explicitly asked to be mailed (a cron job's
+  // failure contact, a mailbox owner) receives nothing at all.
+  describe('the external leg only defers to an email that actually went out', () => {
+    const external = (r: Awaited<ReturnType<typeof emitEvent>>) =>
+      r.perChannelStatuses.filter((st) => st.userId === null && st.channel === 'email');
+
+    it('mails the address when the account holder muted this category by email', async () => {
+      getCategoryMock.mockResolvedValue({ ...baseCategory, isMandatory: false });
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue(baseTemplate);
+      isAllowedMock.mockImplementation(async (_db: unknown, _u: string, _c: string, channel: string) => channel !== 'email');
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+        categoryId: 'tenant.suspended',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        externalRecipients: ['owner@example.test'],
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'queued' })]);
+    });
+
+    it('mails the address when the account holder\'s email was rate-limited', async () => {
+      getCategoryMock.mockResolvedValue({ ...baseCategory, rateLimitWindowS: 3600, rateLimitMax: 3 });
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue(baseTemplate);
+      consumeRateLimitMock.mockResolvedValue({ allowed: false, remaining: 0, count: 4, windowEnd: new Date() });
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+        categoryId: 'tenant.suspended',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        externalRecipients: ['owner@example.test'],
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'queued' })]);
+    });
+
+    it('still skips the address when the account holder was already told under this key', async () => {
+      getCategoryMock.mockResolvedValue(baseCategory);
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue(baseTemplate);
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test', dedupedExists: true }), {
+        categoryId: 'tenant.suspended',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        dedupeKey: 'k:1',
+        externalRecipients: ['owner@example.test'],
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'skipped', error: 'duplicate_recipient' })]);
+    });
+
+    it('still skips the address when the account holder\'s copy went into their digest', async () => {
+      // tasks.scheduled_failure is an `action` class category — digestible.
+      getCategoryMock.mockResolvedValue({ ...baseCategory, id: 'tasks.scheduled_failure', isMandatory: false });
+      resolveRecipientsMock.mockResolvedValue(['u1']);
+      getActiveTemplateMock.mockResolvedValue({ ...baseTemplate, categoryId: 'tasks.scheduled_failure' });
+      getUserSettingsMock.mockResolvedValue({
+        quietHoursStart: null, quietHoursEnd: null, timezone: null, digestMode: 'daily', locale: 'en',
+      });
+      const r = await emitEvent(mockDb({ userEmail: 'owner@example.test' }), {
+        categoryId: 'tasks.scheduled_failure',
+        scope: { kind: 'tenant', tenantId: 't1' },
+        variables: {},
+        encryptionKey: 'KEY',
+        externalRecipients: ['owner@example.test'],
+      });
+      expect(external(r)).toEqual([expect.objectContaining({ status: 'skipped', error: 'duplicate_recipient' })]);
+    });
+  });
+
   it('suppresses tenant recipients when flagged', async () => {
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);

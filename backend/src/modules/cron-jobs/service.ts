@@ -1,13 +1,18 @@
 import { eq, and, desc, lt, sql, ilike, or } from 'drizzle-orm';
 import { cronJobs, tenants } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
-import { ApiError } from '../../shared/errors.js';
+import { ApiError, tenantNotFound } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import { runAndRecord, type CronSchedulerDeps } from './scheduler.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
-import type { BulkIdResult } from '@insula/api-contracts';
+import {
+  CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
+  failureEmailRecipientMissing,
+  type BulkIdResult,
+  type CronFailureEmailInfo,
+} from '@insula/api-contracts';
 
 export async function createCronJob(db: Database, tenantId: string, input: CreateCronJobInput) {
   await getTenantById(db, tenantId);
@@ -26,6 +31,9 @@ export async function createCronJob(db: Database, tenantId: string, input: Creat
     timeoutSeconds: input.timeout_seconds ?? null,
     timezone: input.timezone ?? null,
     enabled: input.enabled ? 1 : 0,
+    notifyOnFailure: input.notify_on_failure ?? false,
+    notifyTenantEmail: input.notify_tenant_email ?? true,
+    notifyEmail: input.notify_email?.trim() || null,
   });
 
   const [created] = await db.select().from(cronJobs).where(eq(cronJobs.id, id));
@@ -85,6 +93,9 @@ export async function listAllCronJobs(
       lastRunDurationMs: cronJobs.lastRunDurationMs,
       lastRunResponseCode: cronJobs.lastRunResponseCode,
       lastRunOutput: cronJobs.lastRunOutput,
+      notifyOnFailure: cronJobs.notifyOnFailure,
+      notifyTenantEmail: cronJobs.notifyTenantEmail,
+      notifyEmail: cronJobs.notifyEmail,
       createdAt: cronJobs.createdAt,
       updatedAt: cronJobs.updatedAt,
       tenantName: tenants.name,
@@ -178,7 +189,24 @@ export async function listCronJobs(
 }
 
 export async function updateCronJob(db: Database, tenantId: string, cronJobId: string, input: UpdateCronJobInput) {
-  await getCronJobById(db, tenantId, cronJobId);
+  const existing = await getCronJobById(db, tenantId, cronJobId);
+
+  // A PATCH carries only what changed, so "does this job still name somebody
+  // to mail?" is a question about the row AFTER the edit — switching the flag
+  // on, or unticking the tenant email, can each be fine or not depending on
+  // what is already stored.
+  if (failureEmailRecipientMissing({
+    notifyOnFailure: input.notify_on_failure ?? existing.notifyOnFailure,
+    notifyTenantEmail: input.notify_tenant_email ?? existing.notifyTenantEmail,
+    notifyEmail: input.notify_email !== undefined ? input.notify_email : existing.notifyEmail,
+  })) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'Failure emails need a recipient — tick the tenant email or enter an address',
+      400,
+      { field: 'notify_email' },
+    );
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -190,12 +218,32 @@ export async function updateCronJob(db: Database, tenantId: string, cronJobId: s
   if (input.timeout_seconds !== undefined) updateValues.timeoutSeconds = input.timeout_seconds;
   if (input.timezone !== undefined) updateValues.timezone = input.timezone;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
+  if (input.notify_on_failure !== undefined) updateValues.notifyOnFailure = input.notify_on_failure;
+  if (input.notify_tenant_email !== undefined) updateValues.notifyTenantEmail = input.notify_tenant_email;
+  if (input.notify_email !== undefined) updateValues.notifyEmail = input.notify_email?.trim() || null;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(cronJobs).set(updateValues).where(eq(cronJobs.id, cronJobId));
   }
 
   return getCronJobById(db, tenantId, cronJobId);
+}
+
+/**
+ * Who "the tenant email" is, as the scheduler will resolve it when a run
+ * fails — so the form can show the actual address instead of a label.
+ */
+export async function getFailureEmailInfo(db: Database, tenantId: string): Promise<CronFailureEmailInfo> {
+  const [row] = await db
+    .select({ primaryEmail: tenants.primaryEmail })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!row) throw tenantNotFound(tenantId);
+  return {
+    tenantEmail: row.primaryEmail || null,
+    maxEmailsPerTenantPerDay: CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
+  };
 }
 
 export async function runCronJobNow(

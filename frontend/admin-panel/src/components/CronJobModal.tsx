@@ -1,7 +1,13 @@
 import { useState, type FormEvent } from 'react';
 import { X, Loader2, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
-import { useCreateCronJob, useUpdateCronJob } from '@/hooks/use-cron-jobs';
+import { useCreateCronJob, useUpdateCronJob, useCronFailureEmailInfo } from '@/hooks/use-cron-jobs';
+import CronFailureEmailFields, {
+  DEFAULT_FAILURE_EMAIL,
+  failureEmailBody,
+  failureEmailIncomplete,
+  type CronFailureEmailValue,
+} from '@/components/CronFailureEmailFields';
 import { useDeployments } from '@/hooks/use-deployments';
 import type { CronJob } from '@/types/api';
 
@@ -34,6 +40,13 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
   const [command, setCommand] = useState(job?.command ?? '');
   const [deploymentId, setDeploymentId] = useState(job?.deploymentId ?? '');
   const [enabled, setEnabled] = useState(job ? Boolean(job.enabled) : true);
+  const [failureEmail, setFailureEmail] = useState<CronFailureEmailValue>(job
+    ? {
+      notifyOnFailure: job.notifyOnFailure ?? false,
+      notifyTenantEmail: job.notifyTenantEmail ?? true,
+      notifyEmail: job.notifyEmail ?? '',
+    }
+    : DEFAULT_FAILURE_EMAIL);
 
   // Cross-tenant list: the row being edited owns the tenant, not the filter.
   const jobTenantId = job?.tenantId ?? tenantId;
@@ -42,6 +55,9 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
   const mutation = editing ? updateCronJob : createCronJob;
   const { data: deploymentsResponse } = useDeployments(jobTenantId);
   const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
+  // The JOB's tenant: on the cross-tenant tab that is not the filter's.
+  const { data: failureEmailInfo } = useCronFailureEmailInfo(jobTenantId);
+  const recipientMissing = failureEmailIncomplete(failureEmail);
 
   const resetForm = () => {
     setName('');
@@ -52,6 +68,7 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
     setCommand('');
     setDeploymentId('');
     setEnabled(true);
+    setFailureEmail(DEFAULT_FAILURE_EMAIL);
     createCronJob.reset();
     updateCronJob.reset();
   };
@@ -63,6 +80,7 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (recipientMissing) return;
     try {
       if (job) {
         // Only the fields this modal actually renders. It has no timeout or
@@ -77,6 +95,8 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
             ? { url, http_method: httpMethod }
             : { command, deployment_id: deploymentId }),
           enabled,
+          // Rendered below, so always sent — unlike timeout and timezone.
+          ...failureEmailBody(failureEmail),
         });
       } else {
         await createCronJob.mutateAsync({
@@ -87,6 +107,7 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
             ? { url, http_method: httpMethod }
             : { command, deployment_id: deploymentId }),
           enabled,
+          ...failureEmailBody(failureEmail),
         });
       }
       handleClose();
@@ -290,6 +311,13 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
             </label>
           </div>
 
+          <CronFailureEmailFields
+            value={failureEmail}
+            onChange={setFailureEmail}
+            tenantEmail={failureEmailInfo?.data?.tenantEmail}
+            maxPerDay={failureEmailInfo?.data?.maxEmailsPerTenantPerDay}
+          />
+
           <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"
@@ -300,7 +328,7 @@ export default function CronJobModal({ open, onClose, tenantId, job }: CronJobMo
             </button>
             <button
               type="submit"
-              disabled={mutation.isPending}
+              disabled={mutation.isPending || recipientMissing}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               data-testid="submit-cron-job-button"
             >

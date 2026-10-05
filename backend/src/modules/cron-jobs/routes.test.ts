@@ -32,7 +32,9 @@ vi.mock('./service.js', () => ({
   updateCronJob: vi.fn().mockResolvedValue({ ...mockJob, name: 'updated' }),
   deleteCronJob: vi.fn().mockResolvedValue(undefined),
   runCronJobNow: vi.fn().mockResolvedValue({ ...mockJob, lastRunStatus: 'success' }),
+  getFailureEmailInfo: vi.fn().mockResolvedValue({ tenantEmail: 'owner@example.test', maxEmailsPerTenantPerDay: 20 }),
 }));
+const service = await import('./service.js');
 
 const { cronJobRoutes } = await import('./routes.js');
 
@@ -175,6 +177,83 @@ describe('cron-job routes', () => {
       payload: { name: 'updated-name' },
     });
     expect(res.statusCode).toBe(200);
+  });
+
+  describe('failure email', () => {
+    const tenantToken = (tenantId: string) => app.jwt.sign({
+      sub: 'cu-1', role: 'tenant_user', panel: 'tenant', tenantId, iat: Math.floor(Date.now() / 1000),
+    });
+
+    it('GET failure-email-info shows who "tenant email" means — not a job lookup', async () => {
+      vi.mocked(service.getCronJobById).mockClear();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/tenants/c1/cron-jobs/failure-email-info',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toEqual({ tenantEmail: 'owner@example.test', maxEmailsPerTenantPerDay: 20 });
+      expect(service.getFailureEmailInfo).toHaveBeenCalledWith(expect.anything(), 'c1');
+      // The static segment must win over `:cronJobId`.
+      expect(service.getCronJobById).not.toHaveBeenCalled();
+    });
+
+    it('is readable by the tenant\'s own users and by no other tenant', async () => {
+      const own = await app.inject({
+        method: 'GET',
+        url: '/api/v1/tenants/c1/cron-jobs/failure-email-info',
+        headers: { authorization: `Bearer ${tenantToken('c1')}` },
+      });
+      expect(own.statusCode).toBe(200);
+      const other = await app.inject({
+        method: 'GET',
+        url: '/api/v1/tenants/c1/cron-jobs/failure-email-info',
+        headers: { authorization: `Bearer ${tenantToken('c2')}` },
+      });
+      expect(other.statusCode).toBe(403);
+    });
+
+    it('POST passes the opt-in through to the service', async () => {
+      vi.mocked(service.createCronJob).mockClear();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/cron-jobs',
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {
+          name: 'test', type: 'webcron', schedule: '0 * * * *', url: 'https://example.com/cron',
+          notify_on_failure: true, notify_tenant_email: false, notify_email: 'ops@example.test',
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(vi.mocked(service.createCronJob).mock.calls[0][2]).toMatchObject({
+        notify_on_failure: true, notify_tenant_email: false, notify_email: 'ops@example.test',
+      });
+    });
+
+    it('POST refuses failure emails with no recipient, naming the field', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/cron-jobs',
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {
+          name: 'test', type: 'webcron', schedule: '0 * * * *', url: 'https://example.com/cron',
+          notify_on_failure: true, notify_tenant_email: false,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.details.field).toBe('notify_email');
+    });
+
+    it('PATCH refuses a malformed extra address', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/tenants/c1/cron-jobs/j1',
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { notify_email: 'not-an-address' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+    });
   });
 
   it('DELETE should return 204', async () => {

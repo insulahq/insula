@@ -1334,6 +1334,8 @@ export async function notifyAdminMailboxQuotaFleet(
 export interface ScheduledTaskFailurePayload {
   readonly taskName: string;
   readonly errorMessage: string;
+  /** The cron expression and the clock it is read on, e.g. `0 3 * * * (UTC)`. */
+  readonly schedule: string;
 }
 /**
  * A tenant's scheduled task (web cron) run failed.
@@ -1346,14 +1348,25 @@ export interface ScheduledTaskFailurePayload {
  *
  * Dedupe per (job, day): a job on a 5-minute schedule that is broken would
  * otherwise send 288 notifications before breakfast.
+ *
+ * TWO audiences, like the mailbox-quota event: the tenant admins by scope (per
+ * their own preferences), and the addresses a job opted into by address —
+ * see cron-jobs/failure-email.ts, which also bounds how often those are mailed.
  */
 export async function notifyTenantScheduledTaskFailure(
   db: Database,
   tenantId: string,
   payload: ScheduledTaskFailurePayload,
-  dedupeKey?: string,
+  opts: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] } = {},
 ): Promise<void> {
-  await dispatchSafe(db, 'tasks.scheduled_failure', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+  await dispatchSafe(
+    db,
+    'tasks.scheduled_failure',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey: opts.dedupeKey, externalRecipients: opts.externalRecipients },
+  );
 }
 
 export interface TenantEmailQuotaPayload {

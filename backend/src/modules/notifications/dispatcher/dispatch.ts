@@ -553,6 +553,13 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   const classBypassesQuietHours = meta ? CLASS_POLICY[meta.cls].bypassesQuietHours : false;
   const bypassesQuietHours = isCritical || classBypassesQuietHours;
 
+  // Account holders who have been EMAILED about this event — now, into their
+  // digest, or by an earlier dispatch under the same dedupe key. The external
+  // leg defers to these only: a holder whose own email was muted, rate-limited
+  // or held for quiet hours received nothing, so mailing their address there
+  // is the first copy, not a second one.
+  const emailedUserIds = new Set<string>();
+
   // 3. For each recipient × channel pair.
   for (const userId of recipients) {
     const userSettings = await getUserSettings(db, userId);
@@ -565,6 +572,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     if (dedupeKey) {
       const existing = await findDedupedNotification(db, userId, dedupeKey);
       if (existing) {
+        emailedUserIds.add(userId);
         for (const channel of routedChannels) {
           statuses.push({ userId, channel, status: 'skipped', error: 'duplicate' });
         }
@@ -817,6 +825,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           subject: rendered.subject ?? category.displayName,
           body: rendered.body,
         });
+        emailedUserIds.add(userId);
         statuses.push({ userId, channel, status: 'queued' });
         continue;
       }
@@ -847,6 +856,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         // the exact context the dispatcher validated here.
         eventVariables: renderVars,
       });
+      // Queued is committed: the worker owns it from here, retries included.
+      emailedUserIds.add(userId);
 
       try {
         // Best-effort enqueue. If pg-boss isn't started yet (e.g. unit
@@ -874,8 +885,13 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   // warning twice under an identical dedupe key. The two legs resolve their
   // audience independently (by user id, and by address), so the only place
   // they can be reconciled is here, where both lists exist.
+  //
+  // Only holders who were actually emailed count (see emailedUserIds): one
+  // whose own copy was muted or rate-limited got nothing, and skipping their
+  // address here too left an address somebody explicitly asked to be mailed
+  // with no email at all.
   const alreadyMailed = new Set<string>();
-  for (const userId of recipients) {
+  for (const userId of emailedUserIds) {
     const email = await getUserEmail(db, userId);
     if (email) alreadyMailed.add(email.trim().toLowerCase());
   }
