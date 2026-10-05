@@ -26,7 +26,7 @@ import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
 import ScenariosCard from './ScenariosCard';
-import { CommunityBlocklistBanner, CommunityBlocklistCard, CommunityBlocklistViewer } from './CommunityBlocklist';
+import { CommunityBlocklistBanner, CommunityBlocklistCard } from './CommunityBlocklist';
 import Disclosure from '@/components/ui/Disclosure';
 import {
   addedByMeta,
@@ -78,7 +78,6 @@ import {
   useCrowdsecAllowlist,
   useCrowdsecAutobanConfig,
   useCrowdsecAutobanRuns,
-  useCrowdsecCommunityBlocklist,
   useCrowdsecConsoleStatus,
   useCrowdsecDecisions,
   useCrowdsecL4Status,
@@ -92,7 +91,6 @@ import {
   usePruneCrowdsecBouncers,
   useCrowdsecScenarios,
   useRemoveCrowdsecAllowlistEntry,
-  useSetCrowdsecCommunityBlocklist,
 } from '@/hooks/use-crowdsec';
 import type {
   WafEvent,
@@ -1126,7 +1124,6 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
             : <span className="text-amber-600 dark:text-amber-400">disabled</span>}
           {!status.capiAuthenticated && <span className="text-amber-600 dark:text-amber-400"> (CAPI auth failed)</span>}
         </div>
-        <CommunityBlocklistControl />
         {/* Decision counts — surfaced when cscli was reachable on the
             most-recent status fetch. Community blocklist count + total
             give operators an at-a-glance sense of how many IPs are
@@ -2870,76 +2867,5 @@ function CrowdsecBouncerPruneButton({ staleCount }: { staleCount: number }) {
       <Trash2 size={10} />
       {mut.isPending ? 'Pruning…' : lastPruned !== null ? `Pruned ${lastPruned}` : `Prune ${staleCount} stale`}
     </button>
-  );
-}
-
-/**
- * Community blocklist (CAPI) — opt-in switch plus a viewer for its contents.
- *
- * These belong together: the switch decides whether tens of thousands of
- * externally-decided bans are enforced, and an operator cannot make that call
- * without being able to look at what is in the list. It lives on the LAPI tile
- * rather than in the Banned IPs table because the community feed is not the
- * platform's decisions — mixing them buried every operator ban on production
- * (16,220 community entries against 2 of ours).
- */
-function CommunityBlocklistControl() {
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const state = useCrowdsecCommunityBlocklist();
-  const setEnabled = useSetCrowdsecCommunityBlocklist();
-  const enabled = state.data?.data.enabled;
-  const count = state.data?.data.decisionCount ?? 0;
-
-  return (
-    <div className="mt-2 border-t border-gray-100 dark:border-gray-700 pt-2 space-y-2">
-      {state.isError && (
-        <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-[11px] text-red-700 dark:text-red-300">
-          Could not read the community-blocklist setting: {state.error instanceof Error ? state.error.message : String(state.error)}
-        </div>
-      )}
-      {setEnabled.isError && (
-        <div className="rounded border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-[11px] text-red-700 dark:text-red-300">
-          Could not change the community blocklist: {setEnabled.error instanceof Error ? setEnabled.error.message : String(setEnabled.error)}
-        </div>
-      )}
-      <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
-          <input
-            type="checkbox"
-            data-testid="capi-toggle"
-            className="rounded border-gray-300 dark:border-gray-600"
-            checked={Boolean(enabled)}
-            disabled={state.isLoading || state.isError || setEnabled.isPending}
-            onChange={(e) => setEnabled.mutate({ enabled: e.target.checked })}
-          />
-          <span>
-            Pull community blocklist
-            {setEnabled.isPending && <span className="ml-1 text-gray-400">saving…</span>}
-          </span>
-        </label>
-        <button
-          type="button"
-          data-testid="view-community-bans"
-          onClick={() => setViewerOpen(true)}
-          className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700"
-        >
-          <Search size={11} /> View banned IPs
-        </button>
-      </div>
-      <p className="text-[11px] leading-snug text-gray-500 dark:text-gray-400">
-        {state.isError
-          ? 'Current state unknown — the setting could not be read. Do not assume it is off.'
-          : enabled
-          ? `${count.toLocaleString()} IPs banned by CrowdSec's shared feed. These are decided elsewhere on evidence you cannot inspect — a legitimate scanner (MXToolbox) was blocked this way on 2026-09-06.`
-          : 'Off. Only this platform’s own decisions are enforced. Turning it on bans tens of thousands of IPs decided by CrowdSec’s shared feed.'}
-      </p>
-      {state.data?.data.pendingRestart && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-300" data-testid="capi-pending-restart">
-          Setting saved, but {count.toLocaleString()} community decisions are still loaded — the CrowdSec pod
-          is rolling onto the new setting.
-        </p>
-      )}
-      {viewerOpen && <CommunityBlocklistViewer onClose={() => setViewerOpen(false)} total={count} />}
-    </div>
   );
 }

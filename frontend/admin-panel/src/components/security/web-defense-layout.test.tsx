@@ -139,6 +139,16 @@ describe('WAF Settings — section order and removed sections', () => {
     expect(within(section).getByTestId('view-community-bans')).toBeInTheDocument();
   });
 
+  it('takes the community controls out of the LAPI tile', () => {
+    render(<WafSettingsTab />, { wrapper });
+    const statusPanel = screen.getByTestId('crowdsec-status-panel');
+    expect(within(statusPanel).queryByTestId('capi-toggle')).not.toBeInTheDocument();
+    expect(within(statusPanel).queryByTestId('view-community-bans')).not.toBeInTheDocument();
+    // One toggle on the page, and only under its new name.
+    expect(screen.getAllByTestId('capi-toggle')).toHaveLength(1);
+    expect(screen.queryByText(/Pull community blocklist/)).not.toBeInTheDocument();
+  });
+
   it('opens the community viewer from the new section', () => {
     render(<WafSettingsTab />, { wrapper });
     fireEvent.click(within(screen.getByTestId('community-blocklist-section')).getByTestId('view-community-bans'));
