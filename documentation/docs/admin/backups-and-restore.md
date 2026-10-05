@@ -31,8 +31,14 @@ or never-run class shows red/amber.
 The **Tenants** card counts tenants by their newest finished bundle: a
 `completed` bundle makes the tenant healthy, a `partial` or `failed` one
 makes it failing (until a newer bundle completes). A tenant included in the
-nightly bundle run that has no bundle yet counts as **never run** and turns
-the card amber. The card also shows when the newest tenant bundle succeeded.
+nightly bundle run that has no bundle yet counts as **never run**. The card
+turns amber for any of these, and **red** when a bundle failed outright or a
+tenant in the nightly run has gone two nightly runs (48 h) without a
+completed bundle. It also shows when the newest tenant bundle succeeded.
+
+A tenant **opted out of scheduled bundles** that has never been bundled
+does not appear on the card at all — it is not covered, by your choice. Check
+coverage per tenant under **Backups → Tenants**.
 
 If a DR restore is in progress, a **frozen-targets banner** appears naming
 each target that's been marked read-only — until you mark them read-write

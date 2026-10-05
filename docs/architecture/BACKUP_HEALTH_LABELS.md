@@ -32,7 +32,9 @@ insula.host/backup-category: "dr"  # or "tenant" | "audit" | "custom"
 > (`backend/src/modules/backup-health/tenant-bundles.ts`, groupKey
 > `tenant-bundles/<tenantId>`): the newest finished bundle decides the state
 > (`completed` → healthy, `partial`/`failed` → failing), and a tenant the
-> nightly wave covers with no finished bundle is `never_run`. These rows feed
+> nightly wave covers with no finished bundle is `never_run`. Severity is
+> `critical` when the newest bundle `failed` outright or a wave-covered tenant
+> has had no completed bundle for 48 h, else `warning`. These rows feed
 > the Backups dashboard (Tenants card, recent-activity list); failure
 > notifications for bundles come from the bundle orchestrator itself, not
 > from the backup-health scheduler.

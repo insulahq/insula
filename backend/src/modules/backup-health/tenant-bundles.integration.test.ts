@@ -32,24 +32,26 @@ describe.skipIf(!dbAvailable)('backup-health tenant bundle rows (integration)', 
     planId = (await seedPlan(db())).id;
   });
 
+  // Created well before NOW unless a test says otherwise.
   const tenant = async (overrides: Record<string, unknown> = {}) =>
-    (await seedTenant(db(), regionId, planId, overrides)).id;
+    (await seedTenant(db(), regionId, planId, { createdAt: hoursAgo(24 * 30), ...overrides })).id;
 
   const bundle = async (
     tenantId: string,
     status: 'completed' | 'partial' | 'failed' | 'expired' | 'running',
     startedHoursAgo: number,
     lastError: string | null = null,
+    finishedHoursAgo: number = startedHoursAgo - 0.5,
   ) => {
     bundleSeq += 1;
-    const finished = status === 'running' ? null : hoursAgo(startedHoursAgo - 0.5);
+    const finished = status === 'running' ? null : hoursAgo(finishedHoursAgo);
     await db().execute(sql`
       INSERT INTO backup_jobs (id, tenant_id, initiator, status, target_kind, target_uri, retention_days, created_at, finished_at, last_error)
       VALUES (${`bkp-${bundleSeq}`}, ${tenantId}, 'system', ${status}, 's3', 's3://example.test/b', 7,
               ${hoursAgo(startedHoursAgo)}, ${finished}, ${lastError})`);
   };
 
-  const byTenant = async () => new Map((await loadTenantBundleHealth(db())).map((r) => [r.tenantId, r]));
+  const byTenant = async () => new Map((await loadTenantBundleHealth(db(), NOW)).map((r) => [r.tenantId, r]));
 
   it('a tenant whose newest bundle completed is a healthy tenant-category row', async () => {
     const t = await tenant({ name: 'Acme' });
@@ -72,8 +74,33 @@ describe.skipIf(!dbAvailable)('backup-health tenant bundle rows (integration)', 
     await bundle(failed, 'failed', 6, 'target unreachable');
 
     const rows = await byTenant();
-    expect(rows.get(partial)).toMatchObject({ state: 'failing', lastFailedReason: 'mailboxes: restic exited 1' });
-    expect(rows.get(failed)).toMatchObject({ state: 'failing', lastSuccessAt: null, lastFailedReason: 'target unreachable' });
+    // Partial with a success 30 h ago: warning. Failed outright: critical.
+    expect(rows.get(partial)).toMatchObject({ state: 'failing', severity: 'warning', lastFailedReason: 'mailboxes: restic exited 1' });
+    expect(rows.get(failed)).toMatchObject({ state: 'failing', severity: 'critical', lastSuccessAt: null, lastFailedReason: 'target unreachable' });
+  });
+
+  it('"last failed" and "last success" each show ONE bundle — the newest-started — even when finish order differs', async () => {
+    const t = await tenant();
+    // Failures: A started first but was reaped last; B started later, finished first.
+    await bundle(t, 'failed', 30, 'A: stuck run reaped', 1);
+    await bundle(t, 'partial', 10, 'B: mailboxes failed', 9.5);
+    // Successes: C started first and ran long; D started later, finished sooner.
+    await bundle(t, 'completed', 20, null, 2);
+    await bundle(t, 'completed', 15, null, 14.5);
+
+    const row = (await byTenant()).get(t)!;
+    expect(row.lastFailedReason).toBe('B: mailboxes failed');
+    expect(row.lastFailedAt?.toISOString()).toBe(hoursAgo(9.5).toISOString());
+    expect(row.lastSuccessAt?.toISOString()).toBe(hoursAgo(14.5).toISOString());
+    // B (started 10 h ago) is newer than D (15 h ago): the tenant is failing.
+    expect(row.state).toBe('failing');
+  });
+
+  it('a covered tenant with no completed bundle for two nightly runs is critical', async () => {
+    const t = await tenant();
+    await bundle(t, 'completed', 60);
+    await bundle(t, 'partial', 10, 'files: timed out');
+    expect((await byTenant()).get(t)).toMatchObject({ state: 'failing', severity: 'critical' });
   });
 
   it('in-flight and expired bundles neither count as runs nor decide the state', async () => {
@@ -86,11 +113,14 @@ describe.skipIf(!dbAvailable)('backup-health tenant bundle rows (integration)', 
 
   it('a tenant the nightly wave covers with no bundle yet is never_run; one it skips is left out', async () => {
     const covered = await tenant();
+    const newcomer = await tenant({ createdAt: hoursAgo(3) });
     const optedOut = await tenant({ includeInScheduledBundlesOverride: false });
     const suspended = await tenant({ status: 'suspended' });
 
     const rows = await byTenant();
-    expect(rows.get(covered)).toMatchObject({ state: 'never_run', recentRuns: 0, lastSuccessAt: null });
+    // Unprotected for 30 days: critical. Created 3 h ago: has missed nothing yet.
+    expect(rows.get(covered)).toMatchObject({ state: 'never_run', severity: 'critical', recentRuns: 0, lastSuccessAt: null });
+    expect(rows.get(newcomer)).toMatchObject({ state: 'never_run', severity: 'warning' });
     expect(rows.has(optedOut)).toBe(false);
     expect(rows.has(suspended)).toBe(false);
   });

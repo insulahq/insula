@@ -18,7 +18,12 @@
  *   - success = a `completed` bundle; failure = `partial` or `failed` (a
  *     partial bundle "did not complete", as its notification says);
  *   - the NEWEST finished bundle decides the state, judged by when each
- *     started, exactly as a Job group is judged by its newest run.
+ *     started, exactly as a Job group is judged by its newest run. The last
+ *     success and the last failure are each ONE bundle — the newest-started of
+ *     its kind — so a time and an error are never taken from two bundles;
+ *   - severity: `critical` when the newest bundle `failed` outright, or when a
+ *     tenant the wave covers has gone two nightly runs (48 h) without a
+ *     completed bundle; `warning` otherwise.
  *
  * Archived tenants are gone and are left out. `expired` bundles were pruned
  * by retention and say nothing about the tenant's current protection.
@@ -31,6 +36,9 @@ import type { BackupHealthSummary } from './service.js';
 /** groupKey prefix — a CronJob name cannot contain '/', so no collision. */
 export const TENANT_BUNDLE_GROUP_PREFIX = 'tenant-bundles/';
 
+/** Two missed nightly runs: a covered tenant unprotected this long is critical. */
+export const UNPROTECTED_CRITICAL_MS = 48 * 3_600_000;
+
 /** Same cap the failure notifications apply to a Job's failure message. */
 const REASON_MAX_CHARS = 500;
 
@@ -39,33 +47,41 @@ export interface TenantBundleLedger {
   readonly tenantId: string;
   readonly tenantName: string;
   readonly namespace: string;
+  readonly tenantCreatedAt: Date;
+  /** The nightly wave bundles this tenant (selectWaveTenants). */
+  readonly waveCovered: boolean;
   /** Finished bundles on record: completed, partial or failed. */
   readonly runs: number;
-  /** Newest completed bundle — when it started, and when it finished. */
+  /** The newest-started completed bundle — when it started and finished. */
   readonly lastSuccessStartedAt: Date | null;
   readonly lastSuccessAt: Date | null;
-  /** Newest partial or failed bundle. */
+  /** The newest-started partial or failed bundle — every field from it. */
   readonly lastFailedStartedAt: Date | null;
   readonly lastFailedAt: Date | null;
   readonly lastFailedReason: string | null;
+  readonly lastFailedStatus: 'partial' | 'failed' | null;
 }
 
 export function summariseTenantBundles(
   ledgers: ReadonlyArray<TenantBundleLedger>,
+  now: Date,
 ): BackupHealthSummary[] {
-  return ledgers.map((l) => ({
-    groupKey: `${TENANT_BUNDLE_GROUP_PREFIX}${l.tenantId}`,
-    displayName: l.tenantName,
-    namespace: l.namespace,
-    category: 'tenant',
-    severity: 'warning',
-    tenantId: l.tenantId,
-    state: stateOf(l),
-    lastSuccessAt: l.lastSuccessAt,
-    lastFailedAt: l.lastFailedAt,
-    lastFailedReason: l.lastFailedReason ? l.lastFailedReason.slice(0, REASON_MAX_CHARS) : null,
-    recentRuns: l.runs,
-  }));
+  return ledgers.map((l) => {
+    const state = stateOf(l);
+    return {
+      groupKey: `${TENANT_BUNDLE_GROUP_PREFIX}${l.tenantId}`,
+      displayName: l.tenantName,
+      namespace: l.namespace,
+      category: 'tenant',
+      severity: severityOf(l, state, now),
+      tenantId: l.tenantId,
+      state,
+      lastSuccessAt: l.lastSuccessAt,
+      lastFailedAt: l.lastFailedAt,
+      lastFailedReason: l.lastFailedReason ? l.lastFailedReason.slice(0, REASON_MAX_CHARS) : null,
+      recentRuns: l.runs,
+    };
+  });
 }
 
 function stateOf(l: TenantBundleLedger): BackupHealthSummary['state'] {
@@ -76,17 +92,32 @@ function stateOf(l: TenantBundleLedger): BackupHealthSummary['state'] {
   return 'healthy';
 }
 
+function severityOf(
+  l: TenantBundleLedger,
+  state: BackupHealthSummary['state'],
+  now: Date,
+): BackupHealthSummary['severity'] {
+  if (state === 'failing' && l.lastFailedStatus === 'failed') return 'critical';
+  // Unprotected since the last completed bundle — or, never backed up, since
+  // the tenant was created (a tenant made an hour ago has missed nothing yet).
+  const unprotectedSince = (l.lastSuccessAt ?? l.tenantCreatedAt).getTime();
+  if (l.waveCovered && now.getTime() - unprotectedSince > UNPROTECTED_CRITICAL_MS) return 'critical';
+  return 'warning';
+}
+
 // A type alias, not an interface: db.execute<T> wants Record<string, unknown>.
 type LedgerRow = {
   readonly tenant_id: string;
   readonly tenant_name: string;
   readonly namespace: string;
+  readonly tenant_created_at: Date | string;
   readonly runs: number | null;
   readonly ok_started: Date | string | null;
   readonly ok_at: Date | string | null;
   readonly bad_started: Date | string | null;
   readonly bad_at: Date | string | null;
   readonly bad_reason: string | null;
+  readonly bad_status: string | null;
 };
 
 const toDate = (v: Date | string | null): Date | null => (v == null ? null : new Date(v));
@@ -96,33 +127,34 @@ const toDate = (v: Date | string | null): Date | null => (v == null ? null : new
  * nightly wave covers (selectWaveTenants — the wave's own predicate, so the
  * two cannot drift) that has none.
  */
-export async function loadTenantBundleHealth(db: Database): Promise<BackupHealthSummary[]> {
+export async function loadTenantBundleHealth(
+  db: Database,
+  now: Date = new Date(),
+): Promise<BackupHealthSummary[]> {
   const res = await db.execute<LedgerRow>(sql`
     WITH finished AS (
-      SELECT tenant_id, status, created_at, COALESCE(finished_at, created_at) AS ended_at, last_error
+      SELECT id, tenant_id, status, created_at, COALESCE(finished_at, created_at) AS ended_at,
+             last_error, (status = 'completed') AS ok
         FROM backup_jobs
        WHERE status IN ('completed', 'partial', 'failed')
-    ), agg AS (
-      SELECT tenant_id,
-             COUNT(*)::int AS runs,
-             MAX(created_at) FILTER (WHERE status = 'completed') AS ok_started,
-             MAX(ended_at)   FILTER (WHERE status = 'completed') AS ok_at,
-             MAX(created_at) FILTER (WHERE status <> 'completed') AS bad_started,
-             MAX(ended_at)   FILTER (WHERE status <> 'completed') AS bad_at
+    ), runs AS (
+      SELECT tenant_id, COUNT(*)::int AS runs FROM finished GROUP BY tenant_id
+    ), newest AS (
+      -- The newest-started bundle of each kind (success / failure) per tenant:
+      -- every field shown for "last success" / "last failure" is from it.
+      SELECT DISTINCT ON (tenant_id, ok) tenant_id, ok, status, created_at, ended_at, last_error
         FROM finished
-       GROUP BY tenant_id
-    ), newest_bad AS (
-      SELECT DISTINCT ON (tenant_id) tenant_id, last_error
-        FROM finished
-       WHERE status <> 'completed'
-       ORDER BY tenant_id, created_at DESC
+       ORDER BY tenant_id, ok, created_at DESC, id DESC
     )
     SELECT t.id AS tenant_id, t.name AS tenant_name, t.kubernetes_namespace AS namespace,
-           agg.runs, agg.ok_started, agg.ok_at, agg.bad_started, agg.bad_at,
-           newest_bad.last_error AS bad_reason
+           t.created_at AS tenant_created_at, runs.runs,
+           good.created_at AS ok_started, good.ended_at AS ok_at,
+           bad.created_at AS bad_started, bad.ended_at AS bad_at,
+           bad.last_error AS bad_reason, bad.status::text AS bad_status
       FROM tenants t
-      LEFT JOIN agg ON agg.tenant_id = t.id
-      LEFT JOIN newest_bad ON newest_bad.tenant_id = t.id
+      LEFT JOIN runs ON runs.tenant_id = t.id
+      LEFT JOIN newest good ON good.tenant_id = t.id AND good.ok
+      LEFT JOIN newest bad ON bad.tenant_id = t.id AND NOT bad.ok
      WHERE t.status <> 'archived'
   `);
 
@@ -135,12 +167,15 @@ export async function loadTenantBundleHealth(db: Database): Promise<BackupHealth
       tenantId: r.tenant_id,
       tenantName: r.tenant_name,
       namespace: r.namespace,
+      tenantCreatedAt: new Date(r.tenant_created_at),
+      waveCovered: wave.has(r.tenant_id),
       runs: r.runs ?? 0,
       lastSuccessStartedAt: toDate(r.ok_started),
       lastSuccessAt: toDate(r.ok_at),
       lastFailedStartedAt: toDate(r.bad_started),
       lastFailedAt: toDate(r.bad_at),
       lastFailedReason: r.bad_reason,
+      lastFailedStatus: r.bad_status === 'failed' || r.bad_status === 'partial' ? r.bad_status : null,
     }));
-  return summariseTenantBundles(ledgers);
+  return summariseTenantBundles(ledgers, now);
 }

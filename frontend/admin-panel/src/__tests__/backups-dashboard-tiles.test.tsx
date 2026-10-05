@@ -83,6 +83,38 @@ describe('Backups dashboard — Tenants card', () => {
     expect(card('tenants').className).toContain('border-amber-300');
   });
 
+  it('turns RED when a failing tenant is critical (a bundle failed outright, or two nightly runs missed)', () => {
+    rows = [
+      tenant(1, { state: 'failing', severity: 'critical', lastSuccessAt: null, lastFailedAt: hoursAgo(2) }),
+      tenant(2, { lastSuccessAt: hoursAgo(4) }),
+    ];
+    renderPage();
+    expect(card('tenants')).toHaveTextContent('1 failing');
+    expect(card('tenants').className).toContain('border-red-300');
+  });
+
+  it('turns RED when a covered tenant has never been backed up for two days', () => {
+    rows = [
+      tenant(1, { lastSuccessAt: hoursAgo(3) }),
+      tenant(2, { state: 'never_run', severity: 'critical', lastSuccessAt: null, recentRuns: 0 }),
+    ];
+    renderPage();
+    expect(card('tenants')).toHaveTextContent('1 healthy');
+    expect(card('tenants').className).toContain('border-red-300');
+  });
+
+  it('a critical Job group whose first run is still in flight stays amber, not red', () => {
+    rows = [row({ groupKey: 'etcd-snap-via-shim', state: 'never_run', severity: 'critical', lastSuccessAt: null, recentRuns: 1 })];
+    renderPage();
+    expect(card('system')).toHaveTextContent('0 healthy');
+    expect(card('system').className).toContain('border-amber-300');
+  });
+
+  it('says on hover what the Tenants card counts — and that opted-out tenants without bundles are not', () => {
+    renderPage();
+    expect(card('tenants')).toHaveAttribute('title', expect.stringMatching(/opted out of scheduled bundles with no bundle at all is not counted/));
+  });
+
   it('no tenant rows at all still reads "no jobs registered"', () => {
     rows = [row({ groupKey: 'etcd-snap-via-shim', displayName: 'etcd' })];
     renderPage();

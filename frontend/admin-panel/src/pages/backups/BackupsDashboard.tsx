@@ -32,6 +32,8 @@ interface ClassRow {
   readonly icon: typeof KeyRound;
   /** Predicate to match the BackupHealthSummary rows that belong to this class. */
   readonly match: (s: BackupHealthSummary) => boolean;
+  /** Hover text: what the card counts, where that is not obvious. */
+  readonly hint?: string;
 }
 
 // `BackupCategory` only has the values dr / tenant / audit / custom, so
@@ -46,7 +48,11 @@ const isMail = (s: BackupHealthSummary): boolean =>
 
 const CLASSES: readonly ClassRow[] = [
   { to: '/backups/system',  label: 'System',  icon: KeyRound, match: (s) => s.category === 'dr' && !isMail(s) },
-  { to: '/backups/tenants', label: 'Tenants', icon: Package,  match: (s) => s.category === 'tenant' },
+  {
+    to: '/backups/tenants', label: 'Tenants', icon: Package, match: (s) => s.category === 'tenant',
+    hint: 'Each tenant by its newest finished bundle, plus every tenant in the nightly bundle run that has none yet. '
+      + 'A tenant opted out of scheduled bundles with no bundle at all is not counted.',
+  },
   { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => s.category !== 'tenant' && isMail(s) },
 ];
 
@@ -107,6 +113,7 @@ function StatCard({
   detail,
   to,
   tone,
+  hint,
 }: {
   readonly icon: typeof KeyRound;
   readonly label: string;
@@ -114,6 +121,7 @@ function StatCard({
   readonly detail: string;
   readonly to: string;
   readonly tone: 'ok' | 'warn' | 'fail' | 'idle';
+  readonly hint?: string;
 }) {
   const toneRing = {
     ok:   'border-emerald-200 dark:border-emerald-800',
@@ -132,6 +140,7 @@ function StatCard({
       to={to}
       className={`block rounded-lg border bg-white p-4 shadow-sm transition hover:shadow-md dark:bg-gray-800 ${toneRing}`}
       data-testid={`backups-dashboard-stat-${label.toLowerCase()}`}
+      title={hint}
     >
       <div className="flex items-start justify-between gap-2">
         <div>
@@ -172,7 +181,13 @@ function classifyRows(
   // Only `healthy` rows are healthy: a never-run row (for tenants, one the
   // nightly wave covers with no bundle yet) has nothing to its name.
   const healthy = mine.filter((s) => s.state === 'healthy').length;
-  const neverRun = mine.filter((s) => s.state === 'never_run').length;
+  const neverRunRows = mine.filter((s) => s.state === 'never_run');
+  const neverRun = neverRunRows.length;
+  // Red when a problem row is critical. A never-run row only counts when
+  // nothing has run for it at all (a tenant the nightly run has missed for
+  // two days): a Job group whose first run is still in flight is amber.
+  const critical = [...failing, ...neverRunRows.filter((s) => s.recentRuns === 0)]
+    .some((s) => s.severity === 'critical');
   const lastSuccess = mine
     .map((s) => s.lastSuccessAt)
     .filter((v): v is string => !!v)
@@ -184,11 +199,9 @@ function classifyRows(
     ...(neverRun > 0 ? [`${neverRun} never run`] : []),
     since,
   ].join(' · ');
-  if (failing.length > 0) {
-    const tone: Tone = failing.some((s) => s.severity === 'critical') ? 'fail' : 'warn';
-    return { tone, value: `${failing.length} failing`, detail };
-  }
-  return { tone: neverRun > 0 ? 'warn' : 'ok', value: `${healthy} healthy`, detail };
+  const problemTone: Tone = critical ? 'fail' : 'warn';
+  if (failing.length > 0) return { tone: problemTone, value: `${failing.length} failing`, detail };
+  return { tone: neverRun > 0 ? problemTone : 'ok', value: `${healthy} healthy`, detail };
 }
 
 const epochMs = (iso: string | null): number => {
@@ -251,6 +264,7 @@ export default function BackupsDashboard() {
               detail={cls.detail}
               to={c.to}
               tone={cls.tone}
+              hint={c.hint}
             />
           );
         })}
