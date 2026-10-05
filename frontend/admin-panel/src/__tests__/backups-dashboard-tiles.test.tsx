@@ -12,8 +12,12 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { BackupHealthSummary } from '@insula/api-contracts';
 
-let rows: BackupHealthSummary[] = [];
-vi.mock('@/hooks/use-backup-health', () => ({ useBackupHealth: () => ({ data: rows }) }));
+let rows: BackupHealthSummary[] | undefined = [];
+let healthError: Error | null = null;
+const refetch = vi.fn();
+vi.mock('@/hooks/use-backup-health', () => ({
+  useBackupHealth: () => ({ data: rows, error: healthError, refetch, isFetching: false }),
+}));
 vi.mock('@/hooks/use-backup-config', () => ({ useBackupConfigs: () => ({ data: { data: [] } }) }));
 
 const BackupsDashboard = (await import('@/pages/backups/BackupsDashboard')).default;
@@ -52,7 +56,7 @@ function renderPage() {
 
 const card = (label: string) => screen.getByTestId(`backups-dashboard-stat-${label}`);
 
-beforeEach(() => { rows = []; });
+beforeEach(() => { rows = []; healthError = null; refetch.mockClear(); });
 
 describe('Backups dashboard — Tenants card', () => {
   it('counts healthy tenants and when the newest bundle succeeded', () => {
@@ -150,5 +154,44 @@ describe('Backups dashboard — recent activity', () => {
     expect(items[1]).toHaveTextContent('etcd snapshot');
     expect(items[2]).toHaveTextContent('Tenant 00');
     expect(items.map((li) => li.textContent).join('|')).not.toContain('Never');
+  });
+});
+
+describe('Backups dashboard — a never-run row in recent activity', () => {
+  it('is not drawn as a success: no green check, and it says "never run"', () => {
+    rows = [
+      tenant(1, { groupKey: 'tenant-bundles/never', displayName: 'Never Co', state: 'never_run', severity: 'critical', lastSuccessAt: null, recentRuns: 0 }),
+    ];
+    renderPage();
+    const item = within(screen.getByTestId('backups-dashboard-recent')).getByRole('listitem');
+    expect(item).toHaveTextContent('never run');
+    expect(item).not.toHaveTextContent('last success');
+    expect(item.querySelector('svg')?.getAttribute('class')).toContain('text-red-600');
+  });
+});
+
+describe('Backups dashboard — before the roll-up arrives', () => {
+  it('while loading, the cards say so — never "no jobs registered"', () => {
+    rows = undefined;
+    renderPage();
+    for (const label of ['tenants', 'system', 'mail']) {
+      expect(card(label)).toHaveTextContent('loading…');
+      expect(card(label)).not.toHaveTextContent('no jobs registered');
+    }
+    expect(screen.queryByText(/No backup jobs reporting yet/)).toBeNull();
+  });
+
+  it('a failed request renders the error with Retry, and the cards read "unavailable"', () => {
+    rows = undefined;
+    healthError = new Error('Request failed with status 502');
+    renderPage();
+    const panel = screen.getByTestId('backup-health-error');
+    expect(panel).toHaveTextContent('Request failed with status 502');
+    for (const label of ['tenants', 'system', 'mail']) {
+      expect(card(label)).toHaveTextContent('unavailable');
+      expect(card(label)).not.toHaveTextContent('no jobs registered');
+    }
+    within(panel).getByRole('button', { name: /retry/i }).click();
+    expect(refetch).toHaveBeenCalled();
   });
 });

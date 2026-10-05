@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import type { BackupHealthSummary } from '@insula/api-contracts';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useBackupHealth } from '@/hooks/use-backup-health';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 
@@ -173,8 +175,11 @@ type Tone = 'ok' | 'warn' | 'fail' | 'idle';
 function classifyRows(
   rows: ReadonlyArray<BackupHealthSummary> | undefined,
   match: ClassRow['match'],
+  failed: boolean,
 ): { tone: Tone; value: string; detail: string } {
-  if (!rows) return { tone: 'idle', value: '—', detail: 'loading…' };
+  // No roll-up yet: say why. "0 · no jobs registered" here would claim the
+  // class has no backups when the page simply has not heard back (or failed).
+  if (!rows) return { tone: 'idle', value: '—', detail: failed ? 'unavailable' : 'loading…' };
   const mine = rows.filter(match);
   if (mine.length === 0) return { tone: 'idle', value: '0', detail: 'no jobs registered' };
   const failing = mine.filter((s) => s.state === 'failing');
@@ -228,7 +233,7 @@ function recentActivity(rows: ReadonlyArray<BackupHealthSummary>): BackupHealthS
 }
 
 export default function BackupsDashboard() {
-  const { data: rows } = useBackupHealth();
+  const { data: rows, error: healthError, refetch, isFetching } = useBackupHealth();
   const { data: configsResponse } = useBackupConfigs();
   const configs = configsResponse?.data ?? [];
   // `BackupConfig.enabled` is typed as `number` (legacy 0/1 integer
@@ -248,13 +253,24 @@ export default function BackupsDashboard() {
         </p>
       </header>
 
+      {healthError && (
+        <ErrorPanel
+          error={extractOperatorError(healthError)}
+          severity="error"
+          compact
+          onRetry={() => { void refetch(); }}
+          retryPending={isFetching}
+          testId="backup-health-error"
+        />
+      )}
+
       <BackupHealthBanner summaries={summaries} />
 
       <FrozenTargetsBanner configs={configs} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {CLASSES.map((c) => {
-          const cls = classifyRows(summaries, c.match);
+          const cls = classifyRows(rows, c.match, !!healthError);
           return (
             <StatCard
               key={c.to}
@@ -285,7 +301,11 @@ export default function BackupsDashboard() {
             Recent backup activity
           </h2>
         </div>
-        {summaries.length === 0 ? (
+        {!rows ? (
+          <p className="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+            {healthError ? 'Backup health is unavailable.' : 'Loading…'}
+          </p>
+        ) : summaries.length === 0 ? (
           <p className="rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-6 text-center text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-400">
             No backup jobs reporting yet. Bind a backup class to a Remote Storage Target to get started.
           </p>
@@ -297,8 +317,11 @@ export default function BackupsDashboard() {
           >
             {recentActivity(summaries).slice(0, 10).map((s) => {
               const isFail = s.state === 'failing';
-              const Icon = isFail ? AlertCircle : CheckCircle;
-              const iconTone = isFail
+              // A never-run row (e.g. a tenant with no bundle yet) is a problem
+              // too — never a green check beside "last success never".
+              const isNeverRun = s.state === 'never_run';
+              const Icon = isFail || isNeverRun ? AlertCircle : CheckCircle;
+              const iconTone = isFail || isNeverRun
                 ? (s.severity === 'critical' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300')
                 : 'text-emerald-600 dark:text-emerald-300';
               return (
@@ -313,7 +336,9 @@ export default function BackupsDashboard() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">
                     {isFail
                       ? <>failed {timeAgo(s.lastFailedAt)}</>
-                      : <>last success {timeAgo(s.lastSuccessAt)}</>}
+                      : isNeverRun
+                        ? <>never run</>
+                        : <>last success {timeAgo(s.lastSuccessAt)}</>}
                   </div>
                 </li>
               );
