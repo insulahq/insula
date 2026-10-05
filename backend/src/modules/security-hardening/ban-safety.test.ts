@@ -24,6 +24,10 @@ describe('banRefusal', () => {
     ['203.0.113.0/24', /platform's own nodes or ingress/],
     ['2001:db8:aa::/48', /platform's own nodes or ingress/],
     ['::ffff:203.0.113.10', /platform's own nodes or ingress/],
+    ['0:0:0:0:0:ffff:203.0.113.10', /platform's own nodes or ingress/],   // long mapped form
+    ['::ffff:cb00:710a', /platform's own nodes or ingress/],              // hex mapped form
+    ['::FFFF:C633:6414', /your own address/],                             // = 198.51.100.20
+    ['::ffff:10.0.1.5', /private, loopback/],
     ['10.42.1.7', /private, loopback/],
     ['172.20.0.0/16', /private, loopback/],
     ['192.168.1.1', /private, loopback/],

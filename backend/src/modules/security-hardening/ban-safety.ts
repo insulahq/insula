@@ -13,6 +13,7 @@
  * Manual bans (timed and permanent) and the WAF auto-ban both go through here.
  */
 import { BlockList, isIP } from 'node:net';
+import { canonicalIp } from '@insula/api-contracts';
 
 const PRIVATE_V4: ReadonlyArray<readonly [string, number]> = [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
@@ -42,18 +43,19 @@ interface Target { readonly network: string; readonly prefix: number; readonly f
 
 /** `value` as a network; IPv4-mapped IPv6 is treated as the IPv4 it maps. */
 export function parseBanTarget(value: string): Target | null {
-  const [addrRaw, prefixRaw, extra] = value.trim().split('/');
-  if (extra !== undefined || !addrRaw) return null;
-  let addr = addrRaw;
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(addr);
-  if (mapped) addr = mapped[1];
+  // canonicalIp unwraps EVERY spelling of an IPv4-mapped address
+  // (`::ffff:a00:105`, `0:0:0:0:0:ffff:10.0.1.5`, …) to the IPv4 host — a
+  // regex for the short form alone let the long forms dodge every rule here.
+  const canon = canonicalIp(value.trim());
+  const [addr, prefixRaw, extra] = canon.split('/');
+  if (extra !== undefined || !addr) return null;
   const ver = isIP(addr);
   if (ver === 0) return null;
   const family: Family = ver === 4 ? 'ipv4' : 'ipv6';
   const max = ver === 4 ? 32 : 128;
-  let prefix = prefixRaw === undefined ? max : Number(prefixRaw);
-  if (mapped && prefixRaw !== undefined) prefix -= 96;
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > max || (prefixRaw !== undefined && !/^\d{1,3}$/.test(prefixRaw))) return null;
+  if (prefixRaw !== undefined && !/^\d{1,3}$/.test(prefixRaw)) return null;
+  const prefix = prefixRaw === undefined ? max : Number(prefixRaw);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > max) return null;
   return { network: addr, prefix, family };
 }
 
