@@ -13,7 +13,10 @@
  * and assistive tech keep working. Blanking (not removing) matters: React
  * removing the prop mid-hover is then a real, observable attribute removal, so
  * a stale title is never restored over the app's intent. The accessible
- * name/description `title` provided is kept meanwhile (`tooltip-a11y.ts`).
+ * name/description `title` provided is kept meanwhile (`tooltip-a11y.ts`) and
+ * re-classified whenever the app changes the trigger's `aria-label`,
+ * `aria-describedby` or text mid-hover; a value the APP wrote is never
+ * removed or overwritten.
  * Keyboard focus never blanks anything — browsers draw no native tooltip for
  * focus.
  *
@@ -38,11 +41,17 @@ export const WARM_MS = 300;
 /** Triggers wider than this anchor at the pointer, not at their centre. */
 const WIDE_TRIGGER_PX = 240;
 
+/**
+ * Watched only while a trigger is armed. childList/characterData: the trigger
+ * leaving the DOM or its text (= its accessible name) changing; attributes:
+ * the app rewriting what the layer mirrors or blanks.
+ */
 const OBSERVE: MutationObserverInit = {
   childList: true,
+  characterData: true,
   subtree: true,
   attributes: true,
-  attributeFilter: ['title'],
+  attributeFilter: ['title', 'aria-label', 'aria-describedby'],
 };
 
 type Source = 'pointer' | 'focus';
@@ -54,7 +63,9 @@ interface Armed {
   readonly title: string;
   /** `title` is blanked by us (pointer only). */
   readonly stashed: boolean;
+  /** The current `aria-label` is our mirror of the title (the app wrote none since). */
   readonly addedLabel: boolean;
+  /** Our id is (meant to be) in `aria-describedby`. */
   readonly addedDescription: boolean;
   /** Hidden by Escape/click/scroll/resize; stays quiet until the trigger changes. */
   readonly dismissed: boolean;
@@ -136,15 +147,29 @@ function createLayer(): () => void {
   }
 
   function stash(a: Armed): Armed {
-    const named = hasNameBesidesTitle(a.el);
     a.el.setAttribute(STASH_ATTR, a.title);
     a.el.setAttribute('title', '');
-    if (!named) {
-      a.el.setAttribute('aria-label', a.title.trim());
-      return { ...a, stashed: true, addedLabel: true };
+    return applyA11y({ ...a, stashed: true });
+  }
+
+  /**
+   * Make the blanked title keep the role it had: the trigger's NAME when
+   * nothing else names it (mirror into aria-label), its DESCRIPTION otherwise
+   * (our id in aria-describedby). Run at arm time and again whenever the app
+   * changes what names the trigger. Never touches an aria-label the app owns.
+   */
+  function applyA11y(a: Armed): Armed {
+    const { el } = a;
+    if (hasNameBesidesTitle(el, a.addedLabel)) {
+      if (a.addedLabel) el.removeAttribute('aria-label');
+      addDescribedBy(el, TOOLTIP_ID);
+      return { ...a, addedLabel: false, addedDescription: true };
     }
-    addDescribedBy(a.el, TOOLTIP_ID);
-    return { ...a, stashed: true, addedDescription: true };
+    if (a.addedDescription) removeDescribedBy(el, TOOLTIP_ID);
+    // An aria-label="" the app set is its (odd) intent — leave it.
+    const label = a.addedLabel || !el.hasAttribute('aria-label');
+    if (label) el.setAttribute('aria-label', a.title.trim());
+    return { ...a, addedLabel: label, addedDescription: false };
   }
 
   function restore(a: Armed, putTitleBack: boolean): void {
@@ -167,6 +192,10 @@ function createLayer(): () => void {
   }
 
   function disarm(putTitleBack = true): void {
+    if (!armed) return;
+    // disconnect() drops queued records: apply the app's last changes first, so
+    // restore() never writes stale state over them (and may find it disarmed).
+    flushPending();
     const a = armed;
     if (!a) return;
     armed = null;
@@ -234,19 +263,35 @@ function createLayer(): () => void {
     });
   }
 
+  /** The app's mutations (ours are dropped by writeQuietly) while a trigger is armed. */
   function onMutations(records: MutationRecord[]): void {
-    const a = armed;
-    if (!a) return;
-    if (!a.el.isConnected) {
+    const first = armed;
+    if (!first) return;
+    if (!first.el.isConnected) {
       disarm();
       return;
     }
-    if (records.some((r) => r.type === 'attributes' && r.target === a.el)) onTitleChanged(a);
-    if (records.some((r) => r.type === 'childList')) scheduleReposition();
+    const { el } = first;
+    const changed = new Set(
+      records.filter((r) => r.type === 'attributes' && r.target === el).map((r) => r.attributeName),
+    );
+    // Any app write to aria-label makes it the app's, even with our very value.
+    if (changed.has('aria-label') && first.addedLabel) armed = { ...first, addedLabel: false };
+    if (changed.has('title')) onTitleChanged();
+    const contentChanged = records.some((r) => r.type !== 'attributes' && el.contains(r.target));
+    const a = armed;
+    if (a?.stashed && (changed.has('aria-label') || changed.has('aria-describedby') || contentChanged)) {
+      writeQuietly(() => {
+        armed = applyA11y(a);
+      });
+    }
+    if (records.some((r) => r.type !== 'attributes')) scheduleReposition();
   }
 
   /** The app changed the trigger's title (our own writes never reach here). */
-  function onTitleChanged(a: Armed): void {
+  function onTitleChanged(): void {
+    const a = armed;
+    if (!a) return;
     const next = a.el.getAttribute('title');
     if (next === null || next.trim() === '') {
       disarm(false);

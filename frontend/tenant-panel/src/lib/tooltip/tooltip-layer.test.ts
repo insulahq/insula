@@ -319,6 +319,133 @@ describe('global tooltip layer — title changes while shown', () => {
   });
 });
 
+describe('global tooltip layer — app changes in the same tick as leaving', () => {
+  // The observer has not delivered the app's write yet when the pointer leaves:
+  // disarm must apply it before restoring, or the stale title comes back.
+  it.each([
+    ['the pointer moves to another trigger', () => hover(el('#other'))],
+    ['the pointer moves to an untitled element', () => hover(el('#away'))],
+    ['the pointer leaves the window', () => fireEvent.pointerOut(el('#b'), { pointerType: 'mouse', relatedTarget: null })],
+  ])('keeps a title the app blanked when %s', (_how, leave) => {
+    mount('<button id="b" title="Old">x</button><button id="other" title="Other">o</button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    vi.advanceTimersByTime(SHOW_DELAY_MS);
+    b.setAttribute('title', '');
+    leave();
+    expect(b.getAttribute('title')).toBe('');
+    expect(b.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('restores the NEW title the app set in the same tick', () => {
+    mount('<button id="b" title="Old">x</button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    b.setAttribute('title', 'New');
+    hover(el('#away'));
+    expect(b.getAttribute('title')).toBe('New');
+  });
+
+  it('keeps an aria-label the app set in the same tick as focus moves away', () => {
+    mount('<button id="b" title="Delete"><svg aria-hidden="true"></svg></button><button id="c">c</button>');
+    const b = el('#b');
+    hover(b); // label mode: aria-label mirrored from the title
+    expect(b.getAttribute('aria-label')).toBe('Delete');
+    b.setAttribute('aria-label', 'Delete'); // the app now owns it, same value
+    hover(el('#c'));
+    expect(b.getAttribute('aria-label')).toBe('Delete');
+  });
+});
+
+describe('global tooltip layer — the trigger\'s name changes while hovered', () => {
+  it('hands aria-label to the app when it writes one, and describes instead', async () => {
+    mount('<button id="b" title="Save changes"><svg aria-hidden="true"></svg></button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    vi.advanceTimersByTime(SHOW_DELAY_MS);
+    expect(b.getAttribute('aria-label')).toBe('Save changes');
+    b.setAttribute('aria-label', 'Saving…');
+    await flushMutations();
+    expect(b.getAttribute('aria-label')).toBe('Saving…');
+    expect(b.getAttribute('aria-describedby')).toBe(TOOLTIP_ID);
+    expect(b).toHaveAccessibleDescription('Save changes');
+    hover(el('#away'));
+    expect(b.getAttribute('aria-label')).toBe('Saving…');
+    expect(b.hasAttribute('aria-describedby')).toBe(false);
+    expect(b.getAttribute('title')).toBe('Save changes');
+  });
+
+  it('names the trigger from its title again when the app removes its aria-label', async () => {
+    mount('<button id="b" aria-label="Delete" title="Removes it for good"><svg aria-hidden="true"></svg></button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    expect(b.getAttribute('aria-describedby')).toBe(TOOLTIP_ID);
+    b.removeAttribute('aria-label');
+    await flushMutations();
+    expect(b).toHaveAccessibleName('Removes it for good');
+    expect(b.hasAttribute('aria-describedby')).toBe(false);
+    hover(el('#away'));
+    expect(b.hasAttribute('aria-label')).toBe(false);
+    expect(b.getAttribute('title')).toBe('Removes it for good');
+  });
+
+  it('switches to naming when a text button turns icon-only mid-hover', async () => {
+    mount('<button id="b" title="Save changes"><svg aria-hidden="true"></svg><span id="t">Save</span></button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    expect(b.hasAttribute('aria-label')).toBe(false);
+    el('#t').remove();
+    await flushMutations();
+    expect(b).toHaveAccessibleName('Save changes');
+    expect(b.hasAttribute('aria-describedby')).toBe(false);
+    hover(el('#away'));
+    expect(b.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('switches to describing when an icon-only button gains text mid-hover', async () => {
+    mount('<button id="b" title="Save changes"><svg aria-hidden="true"></svg></button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    expect(b.getAttribute('aria-label')).toBe('Save changes');
+    b.append('Saving');
+    await flushMutations();
+    expect(b.hasAttribute('aria-label')).toBe(false);
+    expect(b).toHaveAccessibleName('Saving');
+    expect(b.getAttribute('aria-describedby')).toBe(TOOLTIP_ID);
+  });
+
+  it('never overwrites an aria-label the app set, even an empty one', () => {
+    mount('<button id="b" aria-label="" title="Delete"><svg aria-hidden="true"></svg></button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    expect(b.getAttribute('aria-label')).toBe('');
+    hover(el('#away'));
+    expect(b.getAttribute('aria-label')).toBe('');
+    expect(b.getAttribute('title')).toBe('Delete');
+  });
+
+  it('notices a text node emptied in place (characterData)', async () => {
+    mount('<button id="b" title="Save changes">Save</button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    (b.firstChild as Text).data = '';
+    await flushMutations();
+    expect(b).toHaveAccessibleName('Save changes');
+  });
+
+  it('re-adds its id when the app rewrites aria-describedby, keeping the app\'s ids', async () => {
+    mount('<span id="h1">one</span><span id="h2">two</span><button id="b" aria-describedby="h1" title="Help">Go</button><div id="away">away</div>');
+    const b = el('#b');
+    hover(b);
+    expect(b.getAttribute('aria-describedby')).toBe(`h1 ${TOOLTIP_ID}`);
+    b.setAttribute('aria-describedby', 'h2');
+    await flushMutations();
+    expect(b.getAttribute('aria-describedby')).toBe(`h2 ${TOOLTIP_ID}`);
+    hover(el('#away'));
+    expect(b.getAttribute('aria-describedby')).toBe('h2');
+  });
+});
+
 describe('global tooltip layer — keyboard focus', () => {
   it('shows on keyboard focus without touching the title, hides on blur', () => {
     mount('<button id="b" title="Delete">x</button><button id="c">c</button>');

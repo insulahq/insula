@@ -297,6 +297,6 @@ under **Notifications** in the left menu and, if enabled, by email.
 
 Inside the portal, help is often one hover away: icon buttons, status badges,
 shortened values and the small ⓘ icons beside form fields show a short
-explanation when you rest the pointer on them; buttons and links also show it
-when you **Tab** onto them. The help bubble always opens fully on screen, and
-closes when you move away, click, scroll or press **Esc**.
+explanation when you rest the pointer on them; buttons, links and the ⓘ icons
+also show it when you **Tab** onto them. The help bubble always opens fully on
+screen, and closes when you move away, click, scroll or press **Esc**.

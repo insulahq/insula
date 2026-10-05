@@ -21,9 +21,12 @@ const BUTTON_LIKE_INPUTS = new Set(['button', 'submit', 'reset']);
  * `title` — i.e. whether `title` is only its description. A deliberately small
  * subset of the accname algorithm: author labels, `<label>`s, button-like
  * input values, `alt`, and text content.
+ *
+ * `ignoreAriaLabel`: the current `aria-label` is the layer's own mirror of the
+ * title, so it must not count as "another" name.
  */
-export function hasNameBesidesTitle(el: HTMLElement): boolean {
-  if (el.getAttribute('aria-label')?.trim()) return true;
+export function hasNameBesidesTitle(el: HTMLElement, ignoreAriaLabel = false): boolean {
+  if (!ignoreAriaLabel && el.getAttribute('aria-label')?.trim()) return true;
   if (el.getAttribute('aria-labelledby')?.trim()) return true;
   // `labels` exists on every labelable element (input, select, textarea, button, …).
   const labels = 'labels' in el ? (el as HTMLInputElement).labels : null;

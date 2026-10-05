@@ -80,6 +80,42 @@ describe('<GlobalTooltips />', () => {
     unmount();
   });
 
+  it('keeps the button named while React swaps its label mid-hover, and leaves React\'s values alone', async () => {
+    function SaveButton({ saving }: { saving: boolean }) {
+      return (
+        <>
+          <GlobalTooltips />
+          <button type="button" title="Save the configuration" aria-label={saving ? 'Saving' : undefined}>
+            <svg aria-hidden="true" />
+            {saving ? null : 'Save'}
+          </button>
+          <p>elsewhere</p>
+        </>
+      );
+    }
+    const { rerender, unmount } = render(<SaveButton saving={false} />);
+    const button = screen.getByRole('button');
+    hover(button);
+    act(() => { vi.advanceTimersByTime(SHOW_DELAY_MS); });
+    expect(button).toHaveAccessibleName('Save');
+    expect(button).toHaveAccessibleDescription('Save the configuration');
+
+    rerender(<SaveButton saving />); // icon-only, React-owned aria-label
+    await settle();
+    expect(button).toHaveAccessibleName('Saving');
+    expect(button).toHaveAccessibleDescription('Save the configuration');
+
+    rerender(<SaveButton saving={false} />); // React drops its label, text is back
+    await settle();
+    expect(button).toHaveAccessibleName('Save');
+
+    hover(screen.getByText('elsewhere'));
+    expect(button.hasAttribute('aria-label')).toBe(false);
+    expect(button.hasAttribute('aria-describedby')).toBe(false);
+    expect(button.getAttribute('title')).toBe('Save the configuration');
+    unmount();
+  });
+
   it('does not resurrect a title prop React removed while shown', async () => {
     const { rerender, unmount } = render(<Probe title="Disabled: needs super_admin" />);
     const button = screen.getByRole('button');
