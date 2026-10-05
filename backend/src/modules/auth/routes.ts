@@ -26,6 +26,7 @@ import {
   ACCESS_TOKEN_TTL_SECONDS,
   REFRESH_TOKEN_TTL_SECONDS,
 } from './refresh-token-service.js';
+import { signAccessToken } from './access-token.js';
 
 // Phase 3: split-token auth.
 //   - Access JWT: 30 min (ACCESS_TOKEN_TTL_SECONDS), stateless verify.
@@ -80,30 +81,6 @@ function extractRefreshTokenFromCookie(cookieHeader: string | undefined): string
     return value.length > 0 ? value : undefined;
   }
   return undefined;
-}
-
-interface AccessTokenInput {
-  readonly userId: string;
-  readonly role: string;
-  readonly panel: 'admin' | 'tenant';
-  readonly tenantId?: string | null;
-  readonly impersonatedBy?: string;
-}
-
-function signAccessToken(app: FastifyInstance, input: AccessTokenInput): string {
-  const now = Math.floor(Date.now() / 1000);
-  const payload: Record<string, unknown> = {
-    sub: input.userId,
-    role: input.role,
-    panel: input.panel,
-    exp: now + ACCESS_TOKEN_TTL_SECONDS,
-    iat: now,
-    jti: crypto.randomUUID(),
-  };
-  if (input.tenantId) payload.tenantId = input.tenantId;
-  if (input.impersonatedBy) payload.impersonatedBy = input.impersonatedBy;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return app.jwt.sign(payload as any);
 }
 
 const PRE_AUTH_TOKEN_TTL_SECONDS = 5 * 60;

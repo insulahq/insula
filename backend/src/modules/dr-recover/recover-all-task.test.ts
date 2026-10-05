@@ -6,13 +6,18 @@
  * that had already enrolled a batch would leave the operator a "running"
  * recovery that does nothing.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import type { DrRecoverAllTenantProgress } from '@insula/api-contracts';
 import { errorHandler } from '../../middleware/error-handler.js';
+import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
 import { encrypt } from '../oidc/crypto.js';
-import { tenants, backupJobs, backupComponents, backupConfigurations } from '../../db/schema.js';
+import { tenants, backupJobs, backupComponents, backupConfigurations, users } from '../../db/schema.js';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+
+const dialect = new PgDialect();
 
 let nextId = 0;
 vi.mock('../tasks/service.js', () => ({
@@ -21,7 +26,8 @@ vi.mock('../tasks/service.js', () => ({
   finish: vi.fn(async () => undefined),
   adoptChildByRef: vi.fn(async () => true),
   hasActiveTask: vi.fn(async () => false),
-  failStaleActive: vi.fn(async () => 0),
+  failStaleActive: vi.fn(async () => []),
+  withTaskLock: vi.fn(async (db: unknown, _key: string, fn: (tx: unknown) => Promise<unknown>) => fn(db)),
 }));
 const taskService = await import('../tasks/service.js');
 const { drRecoverRoutes } = await import('./routes.js');
@@ -31,9 +37,12 @@ const KEY_LOCAL = 'a'.repeat(64);
 const KEY_SOURCE = 'b'.repeat(64);
 type Row = Record<string, unknown>;
 
-function makeDb(targetKey: string | null) {
-  const rowsFor = (table: unknown, cols: Record<string, unknown> | undefined): Row[] => {
+const ADMIN: Row = { id: 'admin-1', roleName: 'super_admin', panel: 'admin', status: 'active' };
+
+function makeDb(targetKey: string | null, tenantIds: readonly string[] = ['t-1']) {
+  const rowsFor = (table: unknown, cols: Record<string, unknown> | undefined, params: unknown[]): Row[] => {
     const keys = Object.keys(cols ?? {});
+    if (table === users) return [ADMIN];
     if (table === tenants) {
       if (keys.length === 2 && keys.includes('ns')) return [{ name: 'Acme', ns: 'tenant-t-1' }];
       if (keys.length === 1 && keys[0] === 'name') return [{ name: 'Acme' }];
@@ -42,7 +51,11 @@ function makeDb(targetKey: string | null) {
     if (table === backupComponents) return [{ component: 'config', status: 'completed' }];
     if (table === backupJobs) {
       if (keys.length === 1 && keys.includes('targetConfigId')) return targetKey ? [{ targetConfigId: 'cfg-1' }] : [];
-      return [{ id: 'bundle-9', tenantId: 't-1', status: 'completed', createdAt: new Date('2026-09-01T00:00:00Z'), finishedAt: null }];
+      // Each tenant has its own bundle, `bundle-<tenantId>`: answer for the
+      // tenant (or bundle) the query names.
+      const named = params.find((p): p is string => typeof p === 'string' && /^(t-|bundle-t-)/.test(p)) ?? 't-1';
+      const tenantId = named.replace(/^bundle-/, '');
+      return [{ id: `bundle-${tenantId}`, tenantId, status: 'completed', createdAt: new Date('2026-09-01T00:00:00Z'), finishedAt: null }];
     }
     if (table === backupConfigurations) {
       if (!targetKey) return [];
@@ -56,27 +69,44 @@ function makeDb(targetKey: string | null) {
   };
   const builder = (cols?: Record<string, unknown>) => {
     let table: unknown = null;
+    let params: unknown[] = [];
     const b: Record<string, unknown> = { from: (t: unknown) => { table = t; return b; } };
-    for (const k of ['where', 'orderBy', 'limit', 'innerJoin']) b[k] = () => b;
-    b.then = (resolve: (r: Row[]) => void) => resolve(rowsFor(table, cols));
+    for (const k of ['orderBy', 'limit', 'innerJoin']) b[k] = () => b;
+    b.where = (cond: SQL | undefined) => { if (cond) params = dialect.sqlToQuery(cond).params; return b; };
+    b.then = (resolve: (r: Row[]) => void) => resolve(rowsFor(table, cols, params));
+    return b;
+  };
+  const distinct = () => {
+    const b: Record<string, unknown> = { from: () => b };
+    b.then = (resolve: (r: Row[]) => void) => resolve(tenantIds.map((tenantId) => ({ tenantId })));
     return b;
   };
   return {
-    selectDistinct: () => builder({ tenantId: 1 }),
+    selectDistinct: () => distinct(),
     select: (cols?: Record<string, unknown>) => builder(cols),
     execute: async () => ({ rows: [] }),
   };
 }
 
-async function setupApp(opts: { targetKey?: string | null; execStatus?: string } = {}) {
+async function setupApp(opts: {
+  targetKey?: string | null;
+  execStatus?: string;
+  tenantIds?: readonly string[];
+  /** Runs inside each restore's execute — e.g. to let time pass. */
+  onExecute?: () => void;
+} = {}) {
   const app = Fastify({ logger: false });
   app.setErrorHandler(errorHandler);
   await app.register(fastifyJwt, { secret: JWT_SECRET });
-  app.decorate('db', makeDb(opts.targetKey === undefined ? KEY_LOCAL : opts.targetKey) as unknown);
+  app.decorate('db', makeDb(opts.targetKey === undefined ? KEY_LOCAL : opts.targetKey, opts.tenantIds) as unknown);
   app.decorate('config', { KUBECONFIG_PATH: undefined, PLATFORM_ENCRYPTION_KEY: KEY_LOCAL });
   const provisioned: string[] = [];
   await app.register(drRecoverRoutes, { prefix: '/api/v1' });
+  // Behind the real guards: an expired token is refused here as it would be there.
   await app.register(async (a: FastifyInstance) => {
+    a.addHook('onRequest', authenticate);
+    a.addHook('onRequest', requirePanel('admin'));
+    a.addHook('onRequest', requireRole('super_admin', 'admin'));
     a.post('/admin/tenants/:tenantId/provision', async (req, reply) => {
       provisioned.push((req.params as { tenantId: string }).tenantId);
       reply.status(202).send({ data: { taskId: 'prov-1', status: 'pending' } });
@@ -91,11 +121,14 @@ async function setupApp(opts: { targetKey?: string | null; execStatus?: string }
       reply.status(201).send({ data: { id: 'item-x' } });
     });
     a.post('/admin/restores/carts/:id/execute', async (_req, reply) => {
+      opts.onExecute?.();
       reply.status(200).send({ data: { id: 'rstr-cart-1', status: opts.execStatus ?? 'done', items: [] } });
     });
   }, { prefix: '/api/v1' });
   await app.ready();
-  const token = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin' });
+  // A real 30-minute session, like the panel's.
+  const now = Math.floor(Date.now() / 1000);
+  const token = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: now, exp: now + 30 * 60 });
   const post = (payload: Record<string, unknown>) => app.inject({
     method: 'POST',
     url: '/api/v1/admin/dr/tenants/recover-all',
@@ -139,7 +172,7 @@ describe('background Recover All', () => {
     const fin = finishOf('task-1')!;
     expect(fin.status).toBe('succeeded');
     expect(fin.detailsPatch?.recovered).toBe(1);
-    expect(fin.detailsPatch?.tenants?.[0]).toMatchObject({ tenantId: 't-1', state: 'done', status: 'done', taskId: 'task-2' });
+    expect(fin.detailsPatch?.tenants?.[0]).toMatchObject({ tenantId: 't-1', bundleId: 'bundle-t-1', state: 'done', status: 'done', taskId: 'task-2' });
     expect(fin.detailsPatch?.error).toBeNull();
   });
 
@@ -181,5 +214,28 @@ describe('background Recover All', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data.targets).toHaveLength(1);
     expect(taskService.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('background Recover All — a batch longer than a session', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('recovers every tenant though the batch outlives the operator\'s 30-minute token', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Each restore takes 20 minutes: three tenants = an hour, twice the session.
+    const { post, provisioned } = await setupApp({
+      tenantIds: ['t-1', 't-2', 't-3'],
+      onExecute: () => { vi.setSystemTime(Date.now() + 20 * 60_000); },
+    });
+    const res = await post({ scope: 'all', background: true });
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() => expect(finishOf('task-1')).toBeDefined());
+
+    const fin = finishOf('task-1')!;
+    expect(fin.status).toBe('succeeded');
+    expect(fin.detailsPatch?.recovered).toBe(3);
+    expect(fin.detailsPatch?.tenants?.map((r) => r.state)).toEqual(['done', 'done', 'done']);
+    // The third tenant was provisioned 40 simulated minutes in — past the session.
+    expect(provisioned).toEqual(['t-1', 't-2', 't-3']);
   });
 });

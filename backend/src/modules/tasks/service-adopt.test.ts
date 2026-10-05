@@ -63,17 +63,18 @@ describe('hasActiveTask', () => {
 });
 
 describe('failStaleActive', () => {
-  it('fails only active rows of the kind that stopped reporting before the cutoff', async () => {
-    const { db, seen } = recordingDb([{ id: 'dead-1' }]);
-    const before = Date.now();
-    expect(await failStaleActive(db, 'dr.recover', { tenantId: 't-1', staleAfterMs: 180_000, error: 'abandoned' })).toBe(1);
+  it('fails only active rows of the kind that stopped reporting — judged on the DATABASE clock', async () => {
+    const { db, seen } = recordingDb([{ id: 'dead-1', details: { cartId: 'c-1' } }]);
+    const reaped = await failStaleActive(db, 'dr.recover', {
+      tenantId: 't-1', staleSeconds: 180, error: 'abandoned', detailsPatch: { error: { code: 'X' } },
+    });
+    expect(reaped).toEqual([{ id: 'dead-1', details: { cartId: 'c-1' } }]);
     expect(seen.set).toMatchObject({ status: 'failed', errorMessage: 'abandoned' });
     const q = dialect.sqlToQuery(seen.where!);
     expect(q.sql).toContain("IN ('queued','running')");
-    expect(q.sql).toContain('"tasks"."updated_at" < $2');
-    expect(q.sql).toContain('"tasks"."tenant_id" = $3');
-    const cutoff = new Date(q.params[1] as string).getTime();
-    expect(cutoff).toBeGreaterThanOrEqual(before - 180_000 - 1000);
-    expect(cutoff).toBeLessThanOrEqual(Date.now() - 180_000 + 1000);
+    // NOW() on the server — no cutoff computed from this replica's clock.
+    expect(q.sql).toContain('"tasks"."updated_at" < NOW() - ($2::int * INTERVAL \'1 second\')');
+    expect(q.params).toEqual(['dr.recover', 180, 't-1']);
+    expect(q.params.some((p) => p instanceof Date || (typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p)))).toBe(false);
   });
 });

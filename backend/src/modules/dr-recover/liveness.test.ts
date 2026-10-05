@@ -1,23 +1,21 @@
 /**
- * A background recovery heartbeats its task row; a new start fails the rows
- * that stopped (their process died) instead of refusing for 24 hours.
+ * A background recovery heartbeats its task row, so a new start can tell a
+ * live run from one whose process died (./exclusive.ts reaps those).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
 vi.mock('../tasks/service.js', () => ({
   progress: vi.fn(async () => undefined),
-  failStaleActive: vi.fn(async () => 1),
 }));
 const taskService = await import('../tasks/service.js');
-const { startHeartbeat, clearAbandoned, HEARTBEAT_MS, STALE_AFTER_MS } = await import('./liveness.js');
+const { startHeartbeat, HEARTBEAT_MS, STALE_AFTER_SECONDS } = await import('./liveness.js');
 
 const app = { db: {}, log: { warn: vi.fn() } } as unknown as FastifyInstance;
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(taskService.progress).mockClear();
-  vi.mocked(taskService.failStaleActive).mockClear();
 });
 afterEach(() => vi.useRealTimers());
 
@@ -33,11 +31,14 @@ describe('recovery liveness', () => {
   });
 
   it('calls a run abandoned only after several missed heartbeats', () => {
-    expect(STALE_AFTER_MS).toBeGreaterThanOrEqual(HEARTBEAT_MS * 4);
+    expect(STALE_AFTER_SECONDS * 1000).toBeGreaterThanOrEqual(HEARTBEAT_MS * 4);
   });
 
-  it('a failure to clear abandoned runs never blocks the start', async () => {
-    vi.mocked(taskService.failStaleActive).mockRejectedValueOnce(new Error('db down'));
-    await expect(clearAbandoned(app, 'dr.recover', 't-1')).resolves.toBeUndefined();
+  it('a failed heartbeat write is logged, never thrown', async () => {
+    vi.mocked(taskService.progress).mockRejectedValueOnce(new Error('db down'));
+    const stop = startHeartbeat(app, 'task-1');
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS + 10);
+    stop();
+    expect(app.log.warn).toHaveBeenCalled();
   });
 });

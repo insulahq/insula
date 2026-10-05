@@ -33,6 +33,7 @@ import {
 } from '@insula/api-contracts';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runDrRecover } from './orchestrate.js';
+import { forwardedAuth } from './task-credential.js';
 
 export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -80,30 +81,30 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     }
     const input = parsed.data;
 
-    // The caller's Bearer is forwarded into every injected sub-request. The
-    // `authenticate` hook already guaranteed it exists; this narrows the type
-    // and stays defensive.
-    const authHeader = request.headers.authorization;
-    if (!authHeader) throw missingToken();
-
     // Background: validate, enroll a `dr.recover` task, answer at once. The
     // progress modal (and the chip) follow the task; the terminal result lands
-    // in its details. See ./recover-task.ts.
+    // in its details. The run never holds this request's token — it mints a
+    // short-lived one per step for this user. See ./recover-task.ts.
     if (input.background) {
       const { startDrRecoverTask } = await import('./recover-task.js');
       const started = await startDrRecoverTask(app, {
         tenantId,
         input,
-        authHeader,
         userId: (request.user as { sub: string }).sub,
       });
       return reply.status(202).send(success(started));
     }
 
-    // Synchronous: run to the end and answer with the terminal result.
-    // /execute is synchronous so `status` is already terminal (done | failed);
+    // Synchronous: the caller's Bearer is forwarded into every injected
+    // sub-request. The `authenticate` hook already guaranteed it exists; this
+    // narrows the type and stays defensive.
+    const authHeader = request.headers.authorization;
+    if (!authHeader) throw missingToken();
+
+    // Run to the end and answer with the terminal result. /execute is
+    // synchronous so `status` is already terminal (done | failed);
     // 202 = "recover orchestration accepted + performed".
-    const response = await runDrRecover(app, { tenantId, input, authHeader });
+    const response = await runDrRecover(app, { tenantId, input, auth: forwardedAuth(authHeader) });
     reply.status(202).send(success(response));
   });
 
@@ -193,7 +194,6 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
           ...(input.targetNode ? { targetNode: input.targetNode } : {}),
           ...(input.components ? { components: input.components } : {}),
         },
-        authHeader,
         userId: (request.user as { sub: string }).sub,
       });
       return reply.status(202).send(success(started));

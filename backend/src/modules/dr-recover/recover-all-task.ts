@@ -24,11 +24,12 @@ import {
 } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import * as taskService from '../tasks/service.js';
-import { DR_RECOVER_TASK_KIND, enrollDrRecoverTask, runDrRecoverTask } from './recover-task.js';
+import { runDrRecoverTask } from './recover-task.js';
 import { toRecoverOperatorError } from './task-error.js';
-import { clearAbandoned, startHeartbeat } from './liveness.js';
+import { startHeartbeat } from './liveness.js';
+import { enrollBatchExclusive, enrollRecoveryExclusive } from './exclusive.js';
 
-export const DR_RECOVER_ALL_TASK_KIND = 'dr.recover-all';
+export { DR_RECOVER_ALL_TASK_KIND } from './exclusive.js';
 
 export interface StartAllArgs {
   readonly scope: 'missing' | 'all';
@@ -37,7 +38,7 @@ export interface StartAllArgs {
   readonly encryptionKey: DrEncryptionKeyPreflight | null;
   /** Forwarded to every tenant's recover, as the synchronous batch does. */
   readonly perTenant: { readonly targetNode?: string; readonly components?: readonly DrRecoverComponent[] };
-  readonly authHeader: string;
+  /** The admin starting it — every tenant's every step re-checks them and mints its own token. */
   readonly userId: string;
 }
 
@@ -74,19 +75,6 @@ function progressText(done: number, total: number, failed: number): ReturnType<t
 }
 
 export async function startDrRecoverAllTask(app: FastifyInstance, args: StartAllArgs): Promise<DrRecoverAllStarted> {
-  await clearAbandoned(app, DR_RECOVER_ALL_TASK_KIND);
-  if (await taskService.hasActiveTask(app.db, DR_RECOVER_ALL_TASK_KIND, {})) {
-    throw new ApiError('DR_RECOVER_ALL_IN_PROGRESS', 'A batch recovery is already running.', 409, {
-      operatorError: {
-        code: 'DR_RECOVER_ALL_IN_PROGRESS',
-        title: 'A batch recovery is already running',
-        detail: 'Only one Recover All runs at a time — two would recover the same tenants over each other.',
-        remediation: ['Follow the running batch from the task center, and start another only once it has finished.'],
-        retryable: false,
-      },
-    });
-  }
-
   const total = args.targets.length;
   const details: DrRecoverAllTaskDetails = {
     scope: args.scope,
@@ -98,8 +86,8 @@ export async function startDrRecoverAllTask(app: FastifyInstance, args: StartAll
     encryptionKey: args.encryptionKey,
     error: null,
   };
-  const { id: taskId } = await taskService.start(app.db, {
-    kind: DR_RECOVER_ALL_TASK_KIND,
+  // One batch at a time — reap + check + insert under a DB lock (./exclusive.ts).
+  const taskId = await enrollBatchExclusive(app.db, {
     scope: 'admin',
     userId: args.userId,
     label: toSafeText(`Recover ${total} tenant${total === 1 ? '' : 's'} from their bundles`),
@@ -148,18 +136,22 @@ async function runBatch(app: FastifyInstance, taskId: string, args: StartAllArgs
     // provision+restore is heavy; parallel recovers would hammer it.
     for (let i = 0; i < rows.length; i++) {
       const target = rows[i]!;
-      await clearAbandoned(app, DR_RECOVER_TASK_KIND, target.tenantId);
-      if (await taskService.hasActiveTask(app.db, DR_RECOVER_TASK_KIND, { tenantId: target.tenantId })) {
-        update(i, { state: 'failed', error: 'A recovery of this tenant was already running — skipped.' });
+      // Same tenant lock as a single recovery: a tenant already being
+      // recovered, or with a restore still executing, is skipped with why.
+      let childId: string;
+      try {
+        childId = await enrollRecoveryExclusive(app.db, {
+          tenantId: target.tenantId,
+          tenantName: target.tenantName,
+          userId: args.userId,
+          parentTaskId: taskId,
+        });
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 409) throw err;
+        update(i, { state: 'failed', error: `Skipped — ${err.message}` });
         await publish();
         continue;
       }
-      const childId = await enrollDrRecoverTask(app, {
-        tenantId: target.tenantId,
-        tenantName: target.tenantName,
-        userId: args.userId,
-        parentTaskId: taskId,
-      });
       update(i, { state: 'running', taskId: childId });
       await publish();
 
@@ -171,7 +163,7 @@ async function runBatch(app: FastifyInstance, taskId: string, args: StartAllArgs
           ...(args.perTenant.targetNode ? { targetNode: args.perTenant.targetNode } : {}),
           ...(args.perTenant.components ? { components: [...args.perTenant.components] } : {}),
         },
-        authHeader: args.authHeader,
+        userId: args.userId,
         onStep: async (label) => {
           update(i, { step: label });
           await publish();

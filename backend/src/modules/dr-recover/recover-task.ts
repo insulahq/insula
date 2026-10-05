@@ -23,18 +23,19 @@ import {
   type DrRecoverRequest,
   type DrRecoverResponse,
   type DrRecoverStarted,
-  type DrRecoverTaskDetails,
   type OperatorError,
 } from '@insula/api-contracts';
 import { restoreJobs, tenantLifecycleTransitions, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import * as taskService from '../tasks/service.js';
 import { runDrRecover } from './orchestrate.js';
-import { createTaskReporter, DR_RECOVER_STEP_LABELS, initialSteps } from './task-reporter.js';
+import { createTaskReporter, DR_RECOVER_STEP_LABELS } from './task-reporter.js';
 import { restoreFailedError, toRecoverOperatorError } from './task-error.js';
-import { clearAbandoned, startHeartbeat } from './liveness.js';
+import { startHeartbeat } from './liveness.js';
+import { enrollRecoveryExclusive } from './exclusive.js';
+import { taskMintedAuth } from './task-credential.js';
 
-export const DR_RECOVER_TASK_KIND = 'dr.recover';
+export { DR_RECOVER_TASK_KIND } from './exclusive.js';
 
 /**
  * The tenant's name for the task label: its row, or — deleted — the name its
@@ -55,74 +56,15 @@ export async function tenantDisplayName(app: FastifyInstance, tenantId: string):
   return (del.detail as { tenantName?: string } | null)?.tenantName ?? slugFromNamespace(del.namespace) ?? null;
 }
 
-function taskLabel(tenantId: string, tenantName: string | null): ReturnType<typeof toSafeText> {
-  try {
-    return toSafeText(`Recover tenant ${tenantName ?? tenantId.slice(0, 8)}`);
-  } catch {
-    // A name tripping the secret screen must not stop a recovery.
-    return toSafeText(`Recover tenant ${tenantId.slice(0, 8)}`);
-  }
-}
-
-function inProgressError(tenantId: string): ApiError {
-  return new ApiError(
-    'DR_RECOVER_IN_PROGRESS',
-    'A recovery of this tenant is already running.',
-    409,
-    {
-      tenantId,
-      operatorError: {
-        code: 'DR_RECOVER_IN_PROGRESS',
-        title: 'Already being recovered',
-        detail: 'A recovery of this tenant is already running. Two at once would restore over each other.',
-        remediation: ['Follow the running recovery from the task center, and start another only once it has finished.'],
-        retryable: false,
-      },
-    },
-  );
-}
-
-export interface EnrollArgs {
-  readonly tenantId: string;
-  readonly tenantName: string | null;
-  readonly userId: string;
-  /** Set when the recovery is one tenant of a batch. */
-  readonly parentTaskId?: string | null;
-}
-
-/** Create the `dr.recover` task row — steps pending, nothing started yet. */
-export async function enrollDrRecoverTask(app: FastifyInstance, args: EnrollArgs): Promise<string> {
-  const details: DrRecoverTaskDetails = {
-    tenantId: args.tenantId,
-    tenantName: args.tenantName,
-    bundleId: null,
-    cartId: null,
-    steps: initialSteps(),
-    result: null,
-    error: null,
-  };
-  const { id } = await taskService.start(app.db, {
-    kind: DR_RECOVER_TASK_KIND,
-    scope: 'admin',
-    userId: args.userId,
-    tenantId: args.tenantId,
-    label: taskLabel(args.tenantId, args.tenantName),
-    // `dr-recover` is a key in the admin panel's task modal registry (spelled
-    // out so ci-task-modal-registry-check can see it).
-    target: { type: 'modal', modal: 'dr-recover', modalProps: { tenantId: args.tenantId } },
-    progressPct: 0,
-    progressText: toSafeText('Starting'),
-    details,
-    parentTaskId: args.parentTaskId ?? null,
-  });
-  return id;
-}
-
 export interface RunTaskArgs {
   readonly taskId: string;
   readonly tenantId: string;
   readonly input: DrRecoverRequest;
-  readonly authHeader: string;
+  /**
+   * Who started it. Every internal call re-checks this user and carries a
+   * token minted for them on the spot — the run never holds a session token.
+   */
+  readonly userId: string;
   /** Mirrors the step a batch member is on into the batch row. */
   readonly onStep?: (label: string) => Promise<void>;
 }
@@ -158,7 +100,11 @@ export async function runDrRecoverTask(app: FastifyInstance, args: RunTaskArgs):
   let result: DrRecoverResponse | null = null;
   let error: OperatorError | null = null;
   try {
-    result = await runDrRecover(app, { tenantId: args.tenantId, input: args.input, authHeader: args.authHeader }, reporter);
+    result = await runDrRecover(
+      app,
+      { tenantId: args.tenantId, input: args.input, auth: taskMintedAuth(app, args.userId) },
+      reporter,
+    );
   } catch (err) {
     const failedStep = reporter.runningStep();
     app.log.error({ err, tenantId: args.tenantId, taskId: args.taskId, step: failedStep }, 'dr-recover: background recovery failed');
@@ -201,16 +147,16 @@ export async function runDrRecoverTask(app: FastifyInstance, args: RunTaskArgs):
 export interface StartArgs {
   readonly tenantId: string;
   readonly input: DrRecoverRequest;
-  readonly authHeader: string;
+  /** The admin starting it — the run acts for them, re-checked at every step. */
   readonly userId: string;
 }
 
 /**
  * Validate, enroll, start in the background, answer. The checks here are the
  * ones that would otherwise produce a task doomed from its first second — an
- * unknown tenant with nothing to re-create it from, or a second recovery of a
- * tenant already being recovered. Everything else fails inside the run, on
- * the step it belongs to.
+ * unknown tenant with nothing to re-create it from, a tenant already being
+ * recovered, a restore still executing (./exclusive.ts, under a DB lock).
+ * Everything else fails inside the run, on the step it belongs to.
  */
 export async function startDrRecoverTask(app: FastifyInstance, args: StartArgs): Promise<DrRecoverStarted> {
   const { tenantId } = args;
@@ -228,16 +174,12 @@ export async function startDrRecoverTask(app: FastifyInstance, args: StartArgs):
       );
     }
   }
-  await clearAbandoned(app, DR_RECOVER_TASK_KIND, tenantId);
-  if (await taskService.hasActiveTask(app.db, DR_RECOVER_TASK_KIND, { tenantId })) {
-    throw inProgressError(tenantId);
-  }
 
-  const taskId = await enrollDrRecoverTask(app, { tenantId, tenantName, userId: args.userId });
+  const taskId = await enrollRecoveryExclusive(app.db, { tenantId, tenantName, userId: args.userId });
   // Fire-and-forget with a mandatory catch: an unhandled rejection here takes
   // the API process down. runDrRecoverTask records its own failures. (The
   // orchestration ignores `background` — it only chose this path.)
-  void runDrRecoverTask(app, { taskId, tenantId, input: args.input, authHeader: args.authHeader }).catch((err) => {
+  void runDrRecoverTask(app, { taskId, tenantId, input: args.input, userId: args.userId }).catch((err) => {
     app.log.error({ err, taskId }, 'dr-recover: background runner crashed');
   });
   return { taskId, tenantId };

@@ -11,8 +11,12 @@
  *   3. POST /admin/restores/carts/:id/items  ×N       (config → files → databases → mailboxes)
  *   4. POST /admin/restores/carts/:id/execute
  *
- * The caller's `Authorization` header is forwarded into every injected call so
- * the sub-requests authenticate exactly as the operator would.
+ * Every injected call carries a credential from an `AuthProvider` (see
+ * ./task-credential.ts): the synchronous route forwards its caller's header; a
+ * background run mints a fresh short-lived token per call for the user who
+ * started it, after re-checking that user still may. A call the platform
+ * rejects (401/403) fails as `DR_CREDENTIAL_REJECTED` — never as a timeout or
+ * a generic step failure.
  *
  * Progress is reported through a `DrRecoverReporter` at every phase boundary.
  * The synchronous route passes none; the background run turns the reports into
@@ -23,6 +27,7 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, desc } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { tenants, backupJobs, backupComponents } from '../../db/schema.js';
+import type { AuthProvider } from './task-credential.js';
 import {
   MAILBOX_RESTORE_MODE_DEFAULT,
   type DrRecoverComponent,
@@ -97,8 +102,8 @@ const NOOP_REPORTER: DrRecoverReporter = {
 export interface RunDrRecoverArgs {
   readonly tenantId: string;
   readonly input: DrRecoverRequest;
-  /** The caller's `Authorization` header, forwarded into every injected call. */
-  readonly authHeader: string;
+  /** The `Authorization` header for each injected call — asked for anew per call. */
+  readonly auth: AuthProvider;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -116,6 +121,26 @@ function upstreamError(res: InjectResponseLike): { code: string; message: string
   } catch {
     return { code: 'UPSTREAM_ERROR', message: `HTTP ${res.statusCode}` };
   }
+}
+
+/**
+ * A 401/403 from an internal call means the CREDENTIAL was refused — an
+ * expired forwarded session token, or an account that lost its role. Say so,
+ * instead of letting the step read it as "provisioning timed out" or a
+ * generic upstream failure.
+ */
+function assertCredentialAccepted(res: InjectResponseLike, what: string): void {
+  if (res.statusCode !== 401 && res.statusCode !== 403) return;
+  const info = upstreamError(res);
+  throw new ApiError(
+    'DR_CREDENTIAL_REJECTED',
+    `The platform refused the recovery's credential while ${what} (HTTP ${res.statusCode} ${info.code}).`,
+    502,
+    { upstreamStatus: res.statusCode, upstreamCode: info.code },
+    res.statusCode === 401
+      ? 'The session ran out before the recovery finished. Start it again from Disaster Recovery → Recover Tenant — it runs in the background with a fresh credential for every step.'
+      : 'The account running the recovery is no longer allowed to do this step — an active admin must start the recovery again.',
+  );
 }
 
 /** `2026-…T01:36:57Z` → `… 01:36 UTC`; null when there is no usable date. */
@@ -161,7 +186,7 @@ function buildItemPayload(
  */
 async function waitForProvisioningComplete(
   app: FastifyInstance,
-  authHeader: string,
+  auth: AuthProvider,
   tenantId: string,
 ): Promise<void> {
   const deadline = Date.now() + PROVISION_POLL_TIMEOUT_MS;
@@ -169,8 +194,9 @@ async function waitForProvisioningComplete(
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/admin/tenants/${encodeURIComponent(tenantId)}/provision/status`,
-      headers: { authorization: authHeader },
+      headers: { authorization: await auth() },
     });
+    assertCredentialAccepted(res, 'checking the provisioning');
     if (res.statusCode === 200) {
       const body = JSON.parse(res.body) as { data?: { status?: string } };
       const status = body.data?.status;
@@ -217,7 +243,7 @@ export async function runDrRecover(
   args: RunDrRecoverArgs,
   reporter: DrRecoverReporter = NOOP_REPORTER,
 ): Promise<DrRecoverResponse> {
-  const { tenantId, authHeader } = args;
+  const { tenantId, auth } = args;
   let input = args.input;
 
   // ── 1. Tenant must exist — OR be re-created from the bundle (S4) ───────
@@ -352,12 +378,13 @@ export async function runDrRecover(
     const provRes = await app.inject({
       method: 'POST',
       url: `/api/v1/admin/tenants/${encodeURIComponent(tenantId)}/provision`,
-      headers: { authorization: authHeader, 'content-type': 'application/json' },
+      headers: { authorization: await auth(), 'content-type': 'application/json' },
       // Gap G2: forward the operator's node choice so the recovered tenant's
       // resources land on the chosen node. The provision endpoint validates
       // the node exists and pins the tenant to it.
       payload: input.targetNode ? { targetNode: input.targetNode } : {},
     });
+    assertCredentialAccepted(provRes, 'starting the provisioning');
     if (provRes.statusCode !== 202) {
       const info = upstreamError(provRes);
       // A provision already in flight is not fatal — poll it to completion.
@@ -380,7 +407,7 @@ export async function runDrRecover(
       })();
       if (typeof provisioningTaskId === 'string') await reporter.context({ provisioningTaskId });
     }
-    await waitForProvisioningComplete(app, authHeader, tenantId);
+    await waitForProvisioningComplete(app, auth, tenantId);
     await reporter.step('provision', 'done', input.targetNode ? `On ${input.targetNode}` : null);
   } else {
     await reporter.step('provision', 'skipped', 'Re-provisioning was turned off');
@@ -391,9 +418,10 @@ export async function runDrRecover(
   const cartRes = await app.inject({
     method: 'POST',
     url: '/api/v1/admin/restores/carts',
-    headers: { authorization: authHeader, 'content-type': 'application/json' },
+    headers: { authorization: await auth(), 'content-type': 'application/json' },
     payload: { tenantId, description: `dr-recover ${bundleId}` },
   });
+  assertCredentialAccepted(cartRes, 'creating the restore');
   if (cartRes.statusCode !== 201) {
     const info = upstreamError(cartRes);
     throw new ApiError('DR_CART_CREATE_FAILED', `Could not create restore cart (upstream ${info.code})`, 502, { upstreamStatus: cartRes.statusCode, upstreamCode: info.code });
@@ -422,9 +450,10 @@ export async function runDrRecover(
     const itemRes = await app.inject({
       method: 'POST',
       url: `/api/v1/admin/restores/carts/${encodeURIComponent(cartId)}/items`,
-      headers: { authorization: authHeader, 'content-type': 'application/json' },
+      headers: { authorization: await auth(), 'content-type': 'application/json' },
       payload,
     });
+    assertCredentialAccepted(itemRes, `queuing the ${payload.type} item`);
     if (itemRes.statusCode !== 201) {
       const info = upstreamError(itemRes);
       throw new ApiError(
@@ -443,9 +472,10 @@ export async function runDrRecover(
   const execRes = await app.inject({
     method: 'POST',
     url: `/api/v1/admin/restores/carts/${encodeURIComponent(cartId)}/execute`,
-    headers: { authorization: authHeader, 'content-type': 'application/json' },
+    headers: { authorization: await auth(), 'content-type': 'application/json' },
     payload: {},
   });
+  assertCredentialAccepted(execRes, 'running the restore');
   if (execRes.statusCode >= 400) {
     const info = upstreamError(execRes);
     throw new ApiError(

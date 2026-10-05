@@ -14,13 +14,14 @@
  *  - the provision/restore-cart rows the driven routes enroll are folded under
  *    the recovery, so the chip shows one operation, not three.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import type { DrRecoverStep, OperatorError } from '@insula/api-contracts';
 import { errorHandler } from '../../middleware/error-handler.js';
+import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
 import {
-  tenants, backupJobs, backupComponents, tenantLifecycleTransitions, restoreJobs, restoreItems,
+  tenants, backupJobs, backupComponents, tenantLifecycleTransitions, restoreJobs, restoreItems, users, tasks,
 } from '../../db/schema.js';
 
 vi.mock('../tasks/service.js', () => ({
@@ -29,7 +30,10 @@ vi.mock('../tasks/service.js', () => ({
   finish: vi.fn(async () => undefined),
   adoptChildByRef: vi.fn(async () => true),
   hasActiveTask: vi.fn(async () => false),
-  failStaleActive: vi.fn(async () => 0),
+  failStaleActive: vi.fn(async () => []),
+  // The lock itself is Postgres's job (exclusive.integration.test.ts); here
+  // the callback runs against the same mock.
+  withTaskLock: vi.fn(async (db: unknown, _key: string, fn: (tx: unknown) => Promise<unknown>) => fn(db)),
 }));
 vi.mock('./recreate.js', () => ({ recreateTenantFromBundle: vi.fn() }));
 vi.mock('./reconcile.js', () => ({ reconcileRecoveredTenant: vi.fn() }));
@@ -41,16 +45,25 @@ const { drRecoverRoutes } = await import('./routes.js');
 const JWT_SECRET = 'test-jwt-secret-for-dr-recover-task';
 type Row = Record<string, unknown>;
 
+/** The admin who starts the recovery, as the users table holds them — tests mutate it mid-run. */
+let initiator: Row | null = null;
+
 interface DbOpts {
   readonly tenantPresent?: boolean;
   readonly cartLastError?: string | null;
   readonly newestBundleRows?: Row[];
+  /** restore_jobs of the tenant still `executing`. */
+  readonly executingCarts?: Row[];
+  /** The dr.recover task that owns such a cart, if any. */
+  readonly cartOwner?: Row[];
 }
 
 /** Drizzle-shaped mock routed by the TABLE a query reads. */
 function makeDb(opts: DbOpts) {
   const rowsFor = (table: unknown, cols: Record<string, unknown> | undefined): Row[] => {
     const keys = Object.keys(cols ?? {});
+    if (table === users) return initiator ? [initiator] : [];
+    if (table === tasks) return opts.cartOwner ?? [];
     if (table === tenants) {
       if (opts.tenantPresent === false) return [];
       if (keys.length === 1 && keys[0] === 'name') return [{ name: 'Acme' }];
@@ -66,7 +79,10 @@ function makeDb(opts: DbOpts) {
     if (table === backupComponents) {
       return [{ component: 'config', status: 'completed' }, { component: 'files', status: 'completed' }];
     }
-    if (table === restoreJobs) return [{ lastError: opts.cartLastError ?? null }];
+    if (table === restoreJobs) {
+      if (keys.includes('startedAt')) return opts.executingCarts ?? [];
+      return [{ lastError: opts.cartLastError ?? null }];
+    }
     if (table === restoreItems) return [];
     return [];
   };
@@ -77,8 +93,15 @@ function makeDb(opts: DbOpts) {
     b.then = (resolve: (r: Row[]) => void) => resolve(rowsFor(table, cols));
     return b;
   };
+  const writer = () => {
+    const w: Record<string, unknown> = {};
+    for (const k of ['set', 'where']) w[k] = () => w;
+    w.then = (resolve: (r: unknown) => void) => resolve(undefined);
+    return w;
+  };
   return {
     select: (cols?: Record<string, unknown>) => builder(cols),
+    update: () => writer(),
     execute: async () => ({ rows: opts.newestBundleRows ?? [{ id: 'bundle-9' }] }),
   };
 }
@@ -86,47 +109,70 @@ function makeDb(opts: DbOpts) {
 interface StubOptions {
   readonly provisionStatus?: string;
   readonly execStatus?: string;
+  /** Status code the cart-create stub answers with (default 201). */
+  readonly cartStatusCode?: number;
+  /** Runs inside the provision POST — to change the world mid-recovery. */
+  readonly onProvision?: () => void;
+}
+
+interface SeenCall {
+  readonly route: string;
+  readonly authorization: string;
+  readonly claims: Record<string, unknown>;
 }
 
 async function setupApp(dbOpts: DbOpts = {}, stub: StubOptions = {}) {
-  const app = Fastify({ logger: false });
+  const logs: string[] = [];
+  const app = Fastify({ logger: { level: 'trace', stream: { write: (line: string) => { logs.push(line); } } } });
   app.setErrorHandler(errorHandler);
   await app.register(fastifyJwt, { secret: JWT_SECRET });
   app.decorate('db', makeDb(dbOpts) as unknown);
   app.decorate('config', { KUBECONFIG_PATH: undefined });
   const injected: string[] = [];
+  const seen: SeenCall[] = [];
   await app.register(drRecoverRoutes, { prefix: '/api/v1' });
+  // The driven routes behind the SAME guards the real ones have: a token that
+  // is expired, mis-signed or lacks the role is refused here, exactly as there.
   await app.register(async (a: FastifyInstance) => {
-    a.post('/admin/tenants/:tenantId/provision', async (req, reply) => {
-      injected.push(`POST ${req.url}`);
+    a.addHook('onRequest', authenticate);
+    a.addHook('onRequest', requirePanel('admin'));
+    a.addHook('onRequest', requireRole('super_admin', 'admin'));
+    a.addHook('preHandler', async (req) => {
+      injected.push(`${req.method} ${req.url}`);
+      seen.push({
+        route: `${req.method} ${req.url}`,
+        authorization: String(req.headers.authorization),
+        claims: req.user as unknown as Record<string, unknown>,
+      });
+    });
+    a.post('/admin/tenants/:tenantId/provision', async (_req, reply) => {
+      stub.onProvision?.();
       reply.status(202).send({ data: { taskId: 'prov-task-1', status: 'pending' } });
     });
-    a.get('/admin/tenants/:tenantId/provision/status', async (req, reply) => {
-      injected.push(`GET ${req.url}`);
+    a.get('/admin/tenants/:tenantId/provision/status', async (_req, reply) => {
       reply.status(200).send({ data: { status: stub.provisionStatus ?? 'completed' } });
     });
-    a.post('/admin/restores/carts', async (req, reply) => {
-      injected.push(`POST ${req.url}`);
-      reply.status(201).send({ data: { id: 'rstr-cart-1' } });
+    a.post('/admin/restores/carts', async (_req, reply) => {
+      const code = stub.cartStatusCode ?? 201;
+      if (code === 401) return reply.status(401).send({ error: { code: 'INVALID_TOKEN', message: 'Token is invalid or expired' } });
+      reply.status(code).send({ data: { id: 'rstr-cart-1' } });
     });
-    a.post('/admin/restores/carts/:id/items', async (req, reply) => {
-      injected.push(`POST ${req.url}`);
+    a.post('/admin/restores/carts/:id/items', async (_req, reply) => {
       reply.status(201).send({ data: { id: 'item-x' } });
     });
-    a.post('/admin/restores/carts/:id/execute', async (req, reply) => {
-      injected.push(`POST ${req.url}`);
+    a.post('/admin/restores/carts/:id/execute', async (_req, reply) => {
       reply.status(200).send({ data: { id: 'rstr-cart-1', status: stub.execStatus ?? 'done', items: [] } });
     });
   }, { prefix: '/api/v1' });
   await app.ready();
-  const token = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin' });
-  const recover = (body: Record<string, unknown>, tenantId = 't-1') => app.inject({
+  const operatorToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin' });
+  const recover = (body: Record<string, unknown>, tenantId = 't-1', token = operatorToken) => app.inject({
     method: 'POST',
     url: `/api/v1/admin/dr/tenants/${tenantId}/recover`,
     headers: { authorization: `Bearer ${token}` },
     payload: body,
   });
-  return { app, injected, recover };
+  return { app, injected, recover, seen, logs, operatorToken };
 }
 
 interface FinishArgs {
@@ -150,7 +196,9 @@ beforeEach(() => {
   vi.mocked(taskService.adoptChildByRef).mockClear();
   vi.mocked(taskService.hasActiveTask).mockReset().mockResolvedValue(false);
   vi.mocked(taskService.failStaleActive).mockClear();
+  vi.mocked(taskService.withTaskLock).mockClear();
   vi.mocked(recreateTenantFromBundle).mockReset();
+  initiator = { id: 'admin-1', roleName: 'super_admin', panel: 'admin', status: 'active' };
 });
 
 describe('background recovery — starting it', () => {
@@ -195,17 +243,46 @@ describe('background recovery — starting it', () => {
     expect(injected).toEqual([]);
   });
 
-  it('first fails a run of this tenant that stopped heartbeating (its process died), so a retry is possible', async () => {
+  it('enrolls under the tenant\'s DB lock, after failing runs that stopped heartbeating', async () => {
     const { recover } = await setupApp();
     await recover({ background: true });
+    expect(vi.mocked(taskService.withTaskLock).mock.calls[0]![1]).toBe('dr.recover:t-1');
     const [, kind, args] = vi.mocked(taskService.failStaleActive).mock.calls[0]!;
     expect(kind).toBe('dr.recover');
-    expect(args).toMatchObject({ tenantId: 't-1', staleAfterMs: 180_000 });
+    expect(args).toMatchObject({ tenantId: 't-1', staleSeconds: 180 });
     expect(args.error).toMatch(/restarted/);
-    // …and only then asks whether one is still running.
-    expect(vi.mocked(taskService.failStaleActive).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(taskService.hasActiveTask).mock.invocationCallOrder[0]!);
+    // reap → check → insert, in that order.
+    const order = (fn: { mock: { invocationCallOrder: number[] } }) => fn.mock.invocationCallOrder[0]!;
+    expect(order(vi.mocked(taskService.failStaleActive))).toBeLessThan(order(vi.mocked(taskService.hasActiveTask)));
+    expect(order(vi.mocked(taskService.hasActiveTask))).toBeLessThan(order(vi.mocked(taskService.start)));
     await finished();
+  });
+
+  it('refuses while a restore of the tenant is still executing — no second restore stacked on it', async () => {
+    const { recover, injected } = await setupApp({
+      executingCarts: [{ id: 'rstr-old', startedAt: new Date('2026-01-02T03:04:00Z') }],
+      cartOwner: [], // a cart no recovery of ours owns — its executor may be alive
+    });
+    const res = await recover({ background: true });
+    expect(res.statusCode).toBe(409);
+    const err = JSON.parse(res.body).error;
+    expect(err.code).toBe('DR_RESTORE_IN_PROGRESS');
+    expect(err.details.operatorError.detail).toContain('rstr-old');
+    expect(taskService.start).not.toHaveBeenCalled();
+    expect(injected).toEqual([]);
+  });
+
+  it('a restore left executing by a recovery that already ended is failed, and the start refused once to say so', async () => {
+    const { recover } = await setupApp({
+      executingCarts: [{ id: 'rstr-old', startedAt: new Date('2026-01-02T03:04:00Z') }],
+      cartOwner: [{ status: 'failed' }],
+    });
+    const res = await recover({ background: true });
+    expect(res.statusCode).toBe(409);
+    const err = JSON.parse(res.body).error;
+    expect(err.code).toBe('DR_PREVIOUS_RECOVERY_INCOMPLETE');
+    expect(err.details.operatorError.remediation.join(' ')).toMatch(/Start the recovery again/);
+    expect(taskService.start).not.toHaveBeenCalled();
   });
 
   it('refuses an unknown tenant with nothing to re-create it from, before any task exists', async () => {
@@ -304,5 +381,101 @@ describe('background recovery — the run on its task', () => {
     expect(JSON.stringify(error)).not.toContain('private-bucket');
     expect(fin.error).not.toContain('private-bucket');
     expect(stateOf(fin.detailsPatch?.steps)).toMatchObject({ recreate: 'failed', bundle: 'pending' });
+  });
+});
+
+describe('background recovery — the credential its steps carry', () => {
+  it('every internal call carries a fresh short-lived token minted for the initiator — never the session token', async () => {
+    const { recover, seen, operatorToken } = await setupApp();
+    await recover({ background: true });
+    await finished();
+
+    expect(seen.length).toBeGreaterThanOrEqual(6); // provision, status, cart, items…, execute
+    for (const call of seen) {
+      expect(call.authorization).not.toContain(operatorToken);
+      expect(call.claims).toMatchObject({ sub: 'admin-1', role: 'super_admin', panel: 'admin', via: 'dr-recover-task' });
+      const { iat, exp } = call.claims as { iat: number; exp: number };
+      expect(exp - iat).toBeLessThanOrEqual(300);
+    }
+    // One per call, not one reused for the run.
+    expect(new Set(seen.map((c) => c.claims.jti)).size).toBe(seen.length);
+  });
+
+  it('a token it minted never lands in the task row or the log', async () => {
+    const { recover, seen, logs } = await setupApp();
+    await recover({ background: true });
+    await finished();
+    const tokens = seen.map((c) => c.authorization.replace(/^Bearer /, ''));
+    expect(tokens.length).toBeGreaterThan(0);
+    const taskWrites = JSON.stringify([
+      vi.mocked(taskService.start).mock.calls.map((c) => c[1]),
+      vi.mocked(taskService.progress).mock.calls.map((c) => c.slice(1)),
+      vi.mocked(taskService.finish).mock.calls.map((c) => c.slice(1)),
+    ]);
+    const logText = logs.join('\n');
+    expect(logText.length).toBeGreaterThan(0);
+    for (const t of tokens) {
+      expect(taskWrites).not.toContain(t);
+      expect(logText).not.toContain(t);
+    }
+  });
+
+  it.each([
+    ['demoted', { roleName: 'read_only' }, 'their role is now read_only'],
+    ['disabled', { status: 'disabled' }, 'their account is disabled'],
+  ])('an initiator %s mid-run stops the run cleanly at the next step', async (_label, change, reason) => {
+    const { recover, injected } = await setupApp({}, {
+      // Changed while provisioning runs: the next call (the status poll) re-checks.
+      onProvision: () => { initiator = { ...initiator!, ...change }; },
+    });
+    await recover({ background: true });
+    const fin = await finished();
+
+    expect(fin.status).toBe('failed');
+    const error = fin.detailsPatch!.error!;
+    expect(error.code).toBe('DR_INITIATOR_NO_ACCESS');
+    expect(error.title).toBe('The operator who started this recovery no longer has access');
+    expect(error.detail).toContain(reason);
+    expect(error.remediation[0]).toMatch(/start the recovery again/i);
+    expect(stateOf(fin.detailsPatch?.steps)).toMatchObject({ provision: 'failed', queue: 'pending' });
+    // Nothing destructive ran on its authority after the change.
+    expect(injected.some((c) => c.includes('/restores/carts'))).toBe(false);
+  });
+
+  it('an initiator whose account is gone stops the run before its first internal call', async () => {
+    const { recover, injected } = await setupApp();
+    initiator = null;
+    await recover({ background: true });
+    const fin = await finished();
+    expect(fin.detailsPatch!.error!.code).toBe('DR_INITIATOR_NO_ACCESS');
+    expect(fin.detailsPatch!.error!.detail).toContain('no longer exists');
+    expect(injected).toEqual([]);
+  });
+
+  it('a refused credential is reported as such — not as a failed or timed-out step', async () => {
+    const { recover } = await setupApp({}, { cartStatusCode: 401 });
+    await recover({ background: true });
+    const fin = await finished();
+    expect(fin.detailsPatch!.error!.code).toBe('DR_CREDENTIAL_REJECTED');
+    expect(fin.detailsPatch!.error!.detail).toContain('creating the restore (HTTP 401');
+  });
+});
+
+describe('synchronous recovery — a session that runs out mid-run', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('is reported as a refused credential, not as a provisioning timeout', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { app, recover } = await setupApp({}, {
+      // The operator's 30-minute session expires while provisioning runs.
+      onProvision: () => { vi.setSystemTime(Date.now() + 31 * 60_000); },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    const shortSession = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: now, exp: now + 30 * 60 });
+    const res = await recover({}, 't-1', shortSession);
+    expect(res.statusCode).toBe(502);
+    const err = JSON.parse(res.body).error;
+    expect(err.code).toBe('DR_CREDENTIAL_REJECTED');
+    expect(err.message).toContain('checking the provisioning (HTTP 401');
   });
 });
