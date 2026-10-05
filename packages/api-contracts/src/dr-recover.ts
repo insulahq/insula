@@ -61,6 +61,15 @@ export const drRecoverRequestSchema = z.object({
    * `false` to skip it even on a re-create.
    */
   reconcile: z.boolean().optional(),
+  /**
+   * Run the recover in the background and report through the task center
+   * (`dr.recover` task, `dr-recover` modal). The call answers as soon as the
+   * request is validated and the task exists — `{ taskId, tenantId }` (see
+   * `drRecoverStartedSchema`) instead of the terminal result, which lands in
+   * the task's details. Omit → the synchronous call scripts and the batch
+   * recover use, answering with the terminal `DrRecoverResponse`.
+   */
+  background: z.boolean().optional(),
 });
 export type DrRecoverRequest = z.infer<typeof drRecoverRequestSchema>;
 
@@ -165,6 +174,14 @@ export const drRecoverAllRequestSchema = z.object({
    * Ignored on a dry run, which never refuses.
    */
   allowEncryptionKeyMismatch: z.boolean().default(false),
+  /**
+   * Run the batch in the background and report through the task center
+   * (`dr.recover-all` task, `dr-recover-all` modal; each tenant is a child
+   * `dr.recover` task). The call answers once the target set is resolved and
+   * the encryption-key gate has passed — `{ taskId, total }` (see
+   * `drRecoverAllStartedSchema`). Ignored on a dry run.
+   */
+  background: z.boolean().optional(),
 });
 export type DrRecoverAllRequest = z.infer<typeof drRecoverAllRequestSchema>;
 /**

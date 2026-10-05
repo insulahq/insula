@@ -207,6 +207,83 @@ export async function progressByRef(
     .where(and(eq(tasks.kind, kind), eq(tasks.refId, refId), sql`${tasks.status} IN ('queued','running')`));
 }
 
+// ─── adopt (fan-out folding after the fact) ──────────────────────────────
+
+/**
+ * Make the task `(kind, refId)` a child of `parentTaskId`, so the chip folds
+ * it under the parent instead of listing it beside it.
+ *
+ * For orchestrations that drive OTHER surfaces' tracked operations through
+ * their public routes (a DR recover provisions via the provision route, which
+ * enrolls its own `tenant.provision` row): the child row is created by code
+ * that cannot be told about the parent, so the orchestrator adopts it once it
+ * exists. Only an orphan is adopted — an existing parent is never replaced,
+ * and a row never becomes its own parent. Returns whether a row was adopted
+ * (false when it does not exist yet: callers retry while the op runs).
+ */
+export async function adoptChildByRef(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  refId: string,
+  parentTaskId: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ parentTaskId, updatedAt: sql`NOW()` })
+    .where(and(
+      eq(tasks.kind, kind),
+      eq(tasks.refId, refId),
+      sql`${tasks.parentTaskId} IS NULL`,
+      sql`${tasks.id} <> ${parentTaskId}`,
+    ))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
+/**
+ * Fail the still-`running` tasks of `kind` (for `tenantId`, when given) that
+ * have not reported anything for `staleAfterMs` — runs whose process died
+ * (an API pod restarted mid-run). For in-process background runs that
+ * heartbeat their row: without this, a dead run would block a retry, and sit
+ * "running" in the chip, until the 24 h orphan reaper. Returns how many.
+ */
+export async function failStaleActive(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  args: { readonly tenantId?: string; readonly staleAfterMs: number; readonly error: string },
+): Promise<number> {
+  const cutoff = new Date(Date.now() - args.staleAfterMs);
+  const rows = await db
+    .update(tasks)
+    .set({ status: 'failed', finishedAt: sql`NOW()`, updatedAt: sql`NOW()`, errorMessage: args.error })
+    .where(and(
+      eq(tasks.kind, kind),
+      sql`${tasks.status} IN ('queued','running')`,
+      sql`${tasks.updatedAt} < ${cutoff}`,
+      ...(args.tenantId !== undefined ? [eq(tasks.tenantId, args.tenantId)] : []),
+    ))
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
+/** Whether any task of `kind` for `tenantId` is still queued or running. */
+export async function hasActiveTask(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  filter: { readonly tenantId?: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(
+      eq(tasks.kind, kind),
+      sql`${tasks.status} IN ('queued','running')`,
+      ...(filter.tenantId !== undefined ? [eq(tasks.tenantId, filter.tenantId)] : []),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
 // ─── finish ──────────────────────────────────────────────────────────────
 
 export interface TaskFinishArgs {

@@ -28,6 +28,7 @@ export * from './backups-overview.js';
 export * from './tenant-bundles.js';
 export * from './restore.js';
 export * from './dr-recover.js';
+export * from './dr-recover-task.js';
 export * from './migration.js';
 export * from './backup-health.js';
 export * from './cnpg-backup-health.js';

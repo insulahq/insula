@@ -352,6 +352,28 @@ release it once you've verified the restored data.
 - **Recover All** — restore every tenant whose namespace is missing, after a
   cluster rebuild. Tenants **deleted on purpose are skipped** (listed as
   *deleted*) — recover one of those with **Recover Tenant**.
+
+A recovery runs on the server, not in the page. **Recover** (or **Confirm
+recover** for Recover All) opens a progress window and the recovery appears in
+the **Task Center** in the top bar:
+
+- **Recover Tenant** shows each phase as it runs — re-creating a deleted
+  tenant, checking the bundle, provisioning, queuing and running the restore,
+  re-establishing services — with the restore's items one by one (which is
+  applying, which are done). When it finishes it shows what came back: whether
+  the tenant was re-created, the ingress / mail-signing / workload reconcile,
+  and any **remaining manual steps**. A failure names the step it stopped at,
+  with what to do about it.
+- **Recover All** shows one row per tenant — waiting, the step it is on,
+  recovered, or why it failed — plus the tenants the run passed over.
+
+Close the window whenever you like (**Run in background**): the recovery keeps
+going, and clicking it in the Task Center reopens the same window, including
+the final result. Only one recovery of a tenant — and one Recover All — runs at
+a time; starting a second is refused with a pointer to the running one. If the
+platform API restarts while a recovery runs, the window says it stopped
+reporting progress; starting the recovery again marks the stopped run failed
+and begins a fresh one.
 - **Secrets Bundle** — an age-encrypted bundle of everything you'd need to
   rebuild the platform, with a coverage view of what's included.
 - **DR Drill** — the operator-driven drill runbook plus a log of past

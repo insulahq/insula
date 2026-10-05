@@ -7,18 +7,23 @@
  * tenants will be recovered; only then does RECOVER execute (per-tenant,
  * sequentially). `scope: 'missing'` never touches a live tenant; `'all'` is an
  * explicit disruptive opt-in that also restores over live tenants.
+ *
+ * The run itself is a `dr.recover-all` task-center task: confirming opens
+ * `DrRecoverAllProgressModal` (one row per tenant, the outcome, what was
+ * passed over), and the chip re-opens it. The page keeps only the preview.
  */
 
 import { useState } from 'react';
 import {
-  LifeBuoy, RefreshCw, Play, CheckCircle2, XCircle, Loader2, AlertTriangle,
+  LifeBuoy, RefreshCw, Play, Loader2, AlertTriangle,
   KeyRound, ShieldAlert, HelpCircle,
 } from 'lucide-react';
-import { useDrRecoverAllPreview, useDrRecoverAll } from '@/hooks/use-dr-recover';
+import { useDrRecoverAllPreview, useStartRecoverAll } from '@/hooks/use-dr-recover';
 import ErrorPanel from '@/components/ErrorPanel';
+import DrRecoverAllProgressModal from '@/components/DrRecoverAllProgressModal';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import type {
-  DrRecoverAllTarget, DrRecoverAllResult, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
+  DrRecoverAllTarget, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
 } from '@insula/api-contracts';
 import { Link } from 'react-router-dom';
 
@@ -32,25 +37,21 @@ export default function RecoverAllTab() {
   // resets with every new preview rather than persisting across runs.
   const [overrideKeyMismatch, setOverrideKeyMismatch] = useState(false);
   const preview = useDrRecoverAllPreview();
-  const recover = useDrRecoverAll();
+  const recover = useStartRecoverAll();
+  // The running batch's task — its progress modal is open while set.
+  const [progressTaskId, setProgressTaskId] = useState<string | null>(null);
 
   const targets: readonly DrRecoverAllTarget[] = preview.data?.data.targets ?? [];
-  // R25 §3. Present on BOTH responses: the preview answers "what would happen",
-  // the run answers "what did". A tenant that was passed over matters equally
-  // in each, and reading it from only one leaves the other silently reassuring.
-  const skipped: readonly DrRecoverAllSkipped[] =
-    (recover.data?.data.skipped ?? preview.data?.data.skipped ?? []);
+  // R25 §3. The preview answers "what would happen"; the run's modal answers
+  // "what did" from the same list. A tenant that was passed over matters
+  // equally in each, so both show it.
+  const skipped: readonly DrRecoverAllSkipped[] = preview.data?.data.skipped ?? [];
   // `namespace_present` under scope=missing is the feature working as asked;
   // only a missing/unusable bundle is something an operator must act on.
   const unrecoverable = skipped.filter((s) => s.reason === 'no_completed_bundle');
   // Deleted on purpose: kept recoverable, but never swept back in by a fleet run.
   const deletedSkips = skipped.filter((s) => s.reason === 'deleted');
-  const results: readonly DrRecoverAllResult[] = recover.data?.data.results ?? [];
-  const summary = recover.data?.data;
-  // Read from the run when there is one: a run started from a stale preview
-  // carries the verdict that actually applied.
-  const keyCheck: DrEncryptionKeyPreflight | undefined =
-    recover.data?.data.encryptionKey ?? preview.data?.data.encryptionKey;
+  const keyCheck: DrEncryptionKeyPreflight | undefined = preview.data?.data.encryptionKey;
   const keyBlocked = keyCheck?.verdict === 'mismatch' && !overrideKeyMismatch;
 
   const runPreview = () => {
@@ -61,7 +62,14 @@ export default function RecoverAllTab() {
   };
   const runRecover = () => {
     setConfirming(false);
-    recover.mutate({ scope, allowEncryptionKeyMismatch: overrideKeyMismatch });
+    recover.mutate({ scope, allowEncryptionKeyMismatch: overrideKeyMismatch }, {
+      onSuccess: (resp) => {
+        setProgressTaskId(resp.data.taskId);
+        // The preview is spent: the run is in the modal / task center now, and
+        // a stale target list would only invite starting the same batch again.
+        preview.reset();
+      },
+    });
   };
 
   return (
@@ -112,7 +120,7 @@ export default function RecoverAllTab() {
           {preview.isPending ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
           Preview lost tenants
         </button>
-        {preview.data && targets.length > 0 && !recover.data && !keyBlocked && (
+        {preview.data && targets.length > 0 && !keyBlocked && (
           confirming ? (
             <span className="inline-flex items-center gap-2 text-sm">
               <span className="text-gray-700 dark:text-gray-300">Recover {targets.length} tenant(s){scope === 'all' ? ' (incl. live)' : ''}?</span>
@@ -143,19 +151,20 @@ export default function RecoverAllTab() {
       {recover.isError && <ErrorPanel error={extractOperatorError(recover.error)} severity="error" />}
 
       {/* R25 §4: can this cluster read its own encrypted credentials? Shown on
-          every preview and run — an operator cannot tell a check that passed
-          from one that never ran unless both say so. */}
+          every preview — an operator cannot tell a check that passed from one
+          that never ran unless both say so. (A run started past a mismatch
+          says so in its progress modal.) */}
       {keyCheck && (
         <EncryptionKeyPanel
           check={keyCheck}
           overridden={overrideKeyMismatch}
           onOverride={setOverrideKeyMismatch}
-          canOverride={!recover.data}
+          canOverride
         />
       )}
 
       {/* preview target set */}
-      {preview.data && !recover.data && (
+      {preview.data && (
         targets.length === 0 ? (
           // Only an all-clear when there is genuinely nothing to act on. With
           // unrecoverable tenants present this used to render green and say
@@ -180,22 +189,13 @@ export default function RecoverAllTab() {
       )}
 
       {/* R25 §3: tenants that will NOT be recovered, and why. Rendered whenever
-          the list is non-empty — including after a run, where "recovered 9/9"
-          is true and still not the whole answer. */}
+          the list is non-empty; the run's modal repeats it, since "recovered
+          9/9" is true and still not the whole answer. */}
       {unrecoverable.length > 0 && <UnrecoverableTable rows={unrecoverable} />}
       {deletedSkips.length > 0 && <DeletedSkipsTable rows={deletedSkips} />}
 
-      {/* execution results */}
-      {summary && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-3 text-sm">
-            <span className="font-medium text-gray-900 dark:text-gray-100">
-              Recovered {summary.recovered}/{summary.total}
-            </span>
-            {summary.failed > 0 && <span className="text-red-600 dark:text-red-400">{summary.failed} failed</span>}
-          </div>
-          <ResultTable rows={results} />
-        </div>
+      {progressTaskId && (
+        <DrRecoverAllProgressModal taskId={progressTaskId} onClose={() => setProgressTaskId(null)} />
       )}
     </div>
   );
@@ -393,33 +393,6 @@ function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) 
               <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
                 {r.latestBundleAt ? new Date(r.latestBundleAt).toLocaleString() : '—'}
               </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ResultTable({ rows }: { rows: readonly DrRecoverAllResult[] }) {
-  return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Result</th><th className="px-3 py-2">Detail</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.tenantId} className="border-b border-gray-100 dark:border-gray-700/50">
-              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}</td>
-              <td className="px-3 py-2">
-                {r.ok && r.status === 'done'
-                  ? <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300"><CheckCircle2 size={14} /> recovered{r.recreated ? ' (re-created)' : ''}</span>
-                  : <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400"><XCircle size={14} /> {r.status ?? 'failed'}</span>}
-              </td>
-              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400" title={r.error ?? undefined}>{r.error ? r.error.slice(0, 80) : '—'}</td>
             </tr>
           ))}
         </tbody>

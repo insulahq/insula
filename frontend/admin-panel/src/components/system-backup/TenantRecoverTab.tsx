@@ -1,38 +1,37 @@
 /**
  * Tenant DR Recover tab (gap G3).
  *
- * The operator-visible, one-button tenant recovery: drives
- * `POST /api/v1/admin/dr/tenants/:tenantId/recover`, which orchestrates
- * provision → create cart → add items → execute in a single admin call,
- * then polls the resulting restore cart's per-item progress until it
- * reaches a terminal state.
+ * The operator-visible, one-button tenant recovery: starts
+ * `POST /api/v1/admin/dr/tenants/:tenantId/recover` in the background, which
+ * orchestrates provision → create cart → add items → execute → reconcile on
+ * the server as a `dr.recover` task-center task.
+ *
+ * The progress is NOT on this page: starting opens `DrRecoverProgressModal`
+ * (step timeline, the restore cart's per-item progress, the final result —
+ * `recreated`, the reconcile report, `residualGaps` — or the OperatorError).
+ * Closing the modal leaves the recovery running; the task-center chip
+ * re-opens it. This page is only the form.
  *
  * This is the tenant-DATA DR path (cluster loss / cross-cluster copy /
  * accidental deletion) — distinct from the cluster-wide bundle/drill
- * runbooks in the sibling tabs. On success it surfaces `recreated` (a
- * deleted tenant was re-created from the bundle) and `residualGaps` (the
- * manual steps the recover route could not close on its own).
+ * runbooks in the sibling tabs.
  */
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { LifeBuoy, Loader2, RotateCcw, ShieldAlert, ArrowRight } from 'lucide-react';
+import { LifeBuoy, Loader2, RotateCcw, ShieldAlert } from 'lucide-react';
 import type {
   DrRecoverComponent,
   DrRecoverRequest,
   MailboxRestoreMode,
-  RestoreItemStatus,
-  RestoreItemType,
-  RestoreJobStatus,
 } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
+import DrRecoverProgressModal from '@/components/DrRecoverProgressModal';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import {
   useRecoverableTenants,
   useRecoveryInfo,
-  useRecoverTenantFromBundle,
-  useLiveRestoreCart,
-  isTerminalCartStatus,
+  useStartTenantRecovery,
 } from '@/hooks/use-dr-recover';
 import SearchablePicker from '@/components/ui/SearchablePicker';
 import { BundleChooser, TenantFacts } from './RecoverTenantPickers';
@@ -52,41 +51,6 @@ const MAILBOX_MODES: ReadonlyArray<{ id: MailboxRestoreMode; label: string }> = 
   { id: 'merge-overwrite', label: 'Merge — keep duplicates' },
   { id: 'replace', label: 'Replace — wipe then restore (destructive)' },
 ];
-
-const ITEM_TYPE_LABEL: Record<RestoreItemType, string> = {
-  'files-paths': 'Files',
-  'mailboxes-by-address': 'Mailboxes',
-  'deployments-by-id': 'Deployments',
-  'databases-by-id': 'Databases',
-  'domains-by-id': 'Domains',
-  'config-tables': 'Config',
-};
-
-const ITEM_STATUS_BADGE: Record<RestoreItemStatus, string> = {
-  pending: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
-  applying: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
-  done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  skipped: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
-};
-
-const CART_STATUS_BADGE: Record<RestoreJobStatus, string> = {
-  draft: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
-  executing: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
-  paused: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-};
-
-const RECONCILE_BADGE: Record<'ok' | 'bad' | 'muted', string> = {
-  ok: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  bad: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  muted: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-};
-
-function reconcileBadgeClass(kind: 'ok' | 'bad' | 'muted'): string {
-  return `inline-block rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums ${RECONCILE_BADGE[kind]}`;
-}
 
 // ── Component ─────────────────────────────────────────────────────────
 
@@ -127,10 +91,9 @@ export default function TenantRecoverTab() {
   // namespace (node loss). Auto-runs on a re-create regardless of this toggle.
   const [forceReconcile, setForceReconcile] = useState(false);
 
-  const recover = useRecoverTenantFromBundle();
-  const result = recover.data?.data ?? null;
-  const live = useLiveRestoreCart(result?.cartId ?? null);
-  const liveCart = live.data?.data ?? null;
+  const recover = useStartTenantRecovery();
+  // The running recovery's task — its progress modal is open while set.
+  const [progressTaskId, setProgressTaskId] = useState<string | null>(null);
 
   const mailboxesSelected = components.has('mailboxes');
   const allThreeSelected = components.size === ALL_COMPONENTS.length;
@@ -150,7 +113,7 @@ export default function TenantRecoverTab() {
     // "omit → all present in the bundle" is the safe default, so only send
     // an explicit `components` list when the operator narrowed the set.
     const selected = ALL_COMPONENTS.map((c) => c.id).filter((id) => components.has(id));
-    const input: DrRecoverRequest = {
+    const input: Omit<DrRecoverRequest, 'background'> = {
       provision,
       ...(bundleId.trim() ? { bundleId: bundleId.trim() } : {}),
       ...(targetNode.trim() ? { targetNode: targetNode.trim() } : {}),
@@ -159,13 +122,12 @@ export default function TenantRecoverTab() {
       ...(forceReconcile ? { reconcile: true } : {}),
     };
     try {
-      await recover.mutateAsync({ tenantId: tenantId.trim(), input });
+      const started = await recover.mutateAsync({ tenantId: tenantId.trim(), input });
+      setProgressTaskId(started.data.taskId);
     } catch {
-      /* surfaced via <ErrorPanel> below */
+      /* a refusal (no such tenant, already recovering) — surfaced via <ErrorPanel> below */
     }
   };
-
-  const polling = liveCart != null && !isTerminalCartStatus(liveCart.status);
 
   return (
     <div className="space-y-6">
@@ -374,11 +336,15 @@ export default function TenantRecoverTab() {
             className="inline-flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-brand-600 dark:hover:bg-brand-500"
           >
             {recover.isPending ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
-            {recover.isPending ? 'Recovering…' : 'Recover'}
+            {recover.isPending ? 'Starting…' : 'Recover'}
           </button>
-          {!tenantId.trim() && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">Enter a Tenant ID to enable.</span>
-          )}
+          {!tenantId.trim()
+            ? <span className="text-xs text-gray-500 dark:text-gray-400">Enter a Tenant ID to enable.</span>
+            : (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Runs on the server — its progress opens in a window and stays in the task center.
+              </span>
+            )}
         </div>
 
         {recover.error && (
@@ -394,156 +360,8 @@ export default function TenantRecoverTab() {
         )}
       </section>
 
-      {/* ── Recover result summary ───────────────────────────────────── */}
-      {result && (
-        <section
-          className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800"
-          data-testid="dr-recover-result"
-        >
-          <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Recover triggered</h3>
-          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Cart ID</dt>
-              <dd className="font-mono text-xs text-gray-900 dark:text-gray-100" data-testid="dr-recover-cart-id">{result.cartId}</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Bundle</dt>
-              <dd className="font-mono text-xs text-gray-900 dark:text-gray-100">{result.bundleId}</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</dt>
-              <dd>
-                <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CART_STATUS_BADGE[result.status]}`}>
-                  {result.status}
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Provisioned</dt>
-              <dd className="text-sm text-gray-900 dark:text-gray-100">{result.provisioned ? 'yes' : 'no'}</dd>
-            </div>
-            <div className="sm:col-span-2">
-              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Components</dt>
-              <dd className="text-sm text-gray-900 dark:text-gray-100">{result.components.join(' → ') || '—'}</dd>
-            </div>
-          </dl>
-
-          {result.recreated && (
-            <div
-              className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
-              data-testid="dr-recover-recreated"
-            >
-              <ShieldAlert size={16} className="mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="font-semibold">Tenant re-created from the bundle</p>
-                <p className="mt-0.5">
-                  The tenant row was absent — it was re-created (original tenant ID + namespace
-                  preserved) before restore. Review the remaining manual steps below.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {result.reconcile && (
-            <div
-              className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"
-              data-testid="dr-recover-reconcile"
-            >
-              <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Auto-reconcile (post-restore)</h4>
-              <ul className="mt-1.5 space-y-1 text-sm text-gray-700 dark:text-gray-300">
-                <li className="flex items-center gap-2">
-                  <span className={reconcileBadgeClass(
-                    result.reconcile.ingress === 'reconciled' ? 'ok' : result.reconcile.ingress === 'failed' ? 'bad' : 'muted',
-                  )}>{result.reconcile.ingress}</span>
-                  Ingress routes rebuilt
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className={reconcileBadgeClass(result.reconcile.mail.failed > 0 ? 'bad' : 'ok')}>
-                    {result.reconcile.mail.dkimRegenerated}/{result.reconcile.mail.domainsTotal}
-                  </span>
-                  Mail domains DKIM-resigned{result.reconcile.mail.failed > 0 ? ` — ${result.reconcile.mail.failed} failed` : ''}
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className={reconcileBadgeClass(result.reconcile.workloads.failed > 0 ? 'bad' : 'ok')}>
-                    {result.reconcile.workloads.redeployed}/{result.reconcile.workloads.total}
-                  </span>
-                  Workloads redeployed{result.reconcile.workloads.failed > 0 ? ` — ${result.reconcile.workloads.failed} failed` : ''}
-                </li>
-              </ul>
-            </div>
-          )}
-
-          {result.residualGaps.length > 0 && (
-            <div className="mt-4" data-testid="dr-recover-residual-gaps">
-              <h4 className="flex items-center gap-1.5 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                <ArrowRight size={14} /> Remaining manual steps
-              </h4>
-              <ul className="mt-1.5 list-disc space-y-1 pl-6 text-sm text-gray-700 dark:text-gray-300">
-                {result.residualGaps.map((gap, i) => (
-                  <li key={i}>{gap}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ── Live restore progress ────────────────────────────────────── */}
-      {result && (
-        <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Restore progress</h3>
-            <div className="flex items-center gap-2">
-              {liveCart && (
-                <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CART_STATUS_BADGE[liveCart.status]}`}>
-                  {liveCart.status}
-                </span>
-              )}
-              {polling && <Loader2 size={14} className="animate-spin text-gray-400 dark:text-gray-500" />}
-            </div>
-          </div>
-
-          {live.error && (
-            <ErrorPanel error={extractOperatorError(live.error)} severity="error" testId="dr-recover-progress-error" />
-          )}
-
-          {!live.error && !liveCart && (
-            <p className="text-sm text-gray-500 dark:text-gray-400">Loading cart…</p>
-          )}
-
-          {liveCart && liveCart.items.length === 0 && (
-            <p className="text-sm text-gray-500 dark:text-gray-400">No restore items on this cart.</p>
-          )}
-
-          {liveCart && liveCart.items.length > 0 && (
-            <table className="w-full text-sm" data-testid="dr-recover-progress-table">
-              <thead className="text-gray-500 dark:text-gray-400">
-                <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
-                  <th className="px-2 py-2 text-left">#</th>
-                  <th className="px-2 py-2 text-left">Type</th>
-                  <th className="px-2 py-2 text-left">Status</th>
-                  <th className="px-2 py-2 text-left">Progress</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...liveCart.items].sort((a, b) => a.seq - b.seq).map((item) => (
-                  <tr key={item.id} className="border-t border-gray-200/60 dark:border-gray-700/40">
-                    <td className="px-2 py-2 tabular-nums text-gray-500 dark:text-gray-400">{item.seq}</td>
-                    <td className="px-2 py-2 text-gray-900 dark:text-gray-100">{ITEM_TYPE_LABEL[item.type]}</td>
-                    <td className="px-2 py-2">
-                      <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${ITEM_STATUS_BADGE[item.status]}`}>
-                        {item.status}
-                      </span>
-                    </td>
-                    <td className="px-2 py-2 text-gray-600 dark:text-gray-400">
-                      {item.progressMessage ?? (item.lastError ? item.lastError : '—')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+      {progressTaskId && (
+        <DrRecoverProgressModal taskId={progressTaskId} onClose={() => setProgressTaskId(null)} />
       )}
     </div>
   );

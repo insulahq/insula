@@ -326,8 +326,8 @@ Preview now answers two questions rather than one:
     restore list was empty — including when the list was empty **because** no
     tenant had a usable bundle. The screen was most reassuring in exactly the
     situation that most needed attention. It now says so plainly, and the
-    unrecoverable list stays on screen after the run, where *"recovered 9 of 9"*
-    can be perfectly true and still not the whole answer.
+    run's progress window repeats the unrecoverable list, where *"recovered 9
+    of 9"* can be perfectly true and still not the whole answer.
 
 If a tenant appears in the unrecoverable list, recovering it is not a matter of
 retrying: there is no completed bundle to restore from. Fix the backup first

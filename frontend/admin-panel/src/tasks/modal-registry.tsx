@@ -60,6 +60,12 @@ const DnsApexDriftTaskModal = lazy(() => import('@/components/DnsApexDriftTaskMo
 // chip re-opens the step checklist, which carries cert-manager's own
 // message for a stuck order.
 const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'));
+// tenant recovery from an off-site bundle (Disaster Recovery → Recover
+// Tenant / Recover All). The recovery runs on the server as a `dr.recover`
+// task (the batch as `dr.recover-all`, with one child per tenant); the chip
+// re-opens the step-by-step view, so closing it never abandons a recovery.
+const DrRecoverProgressModal = lazy(() => import('@/components/DrRecoverProgressModal'));
+const DrRecoverAllProgressModal = lazy(() => import('@/components/DrRecoverAllProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -77,6 +83,8 @@ const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'
 //   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
 //   mail-operation        → MailTaskProgressModal       (mail.port-exposure, mail.snapshot.trigger, webmail.engine-flip)
 //   mail-migration        → MailMigrationProgressModal  (mail.migration)
+//   dr-recover            → DrRecoverProgressModal      (dr.recover)
+//   dr-recover-all        → DrRecoverAllProgressModal   (dr.recover-all)
 //
 // Surfaces without a dedicated modal use `target.type = 'route'`
 // instead.
@@ -125,6 +133,12 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'platform-upgrade': {
     Component: PlatformUpgradeProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'dr-recover': {
+    Component: DrRecoverProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'dr-recover-all': {
+    Component: DrRecoverAllProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 
