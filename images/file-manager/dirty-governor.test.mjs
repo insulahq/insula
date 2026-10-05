@@ -128,3 +128,68 @@ test('really stops and continues a process (Linux)', { skip: process.platform !=
     child.kill('SIGKILL');
   }
 });
+
+test('only gateway transfers are paused — the server\'s own tools are not', async () => {
+  const { WRITER_COMMS } = await import('./dirty-governor.mjs');
+  for (const c of ['rsync', 'scp', 'sftp-serve', 'sftp-server']) assert.ok(WRITER_COMMS.has(c), c);
+  for (const c of ['tar', 'unzip', 'zip', 'git', 'cp', 'node']) assert.ok(!WRITER_COMMS.has(c), c);
+});
+
+test('throttle(): free below the pause mark, waits for the drain above it, released by stop()', async () => {
+  let pending = 10;
+  const gov = createDirtyGovernor({
+    readMax: () => String(LIMIT),
+    readStat: () => `file_dirty ${pending * MiB}\n`,
+    listWriters: () => [],
+    flush: async () => {},
+    log: () => {},
+    opts: { intervalMs: 5 },
+  });
+  await gov.throttle();                         // never ticked: no reading, no wait
+  gov.tick();
+  const t0 = Date.now();
+  await gov.throttle();                         // 10 MiB: below the mark
+  assert.ok(Date.now() - t0 < 50);
+
+  pending = 150; gov.tick();
+  let released = false;
+  const waiting = gov.throttle().then(() => { released = true; });
+  await sleep(30);
+  assert.equal(released, false);                // above the mark: held
+  pending = 60; gov.tick();
+  await sleep(30);
+  assert.equal(released, false);                // between the marks: still held
+  pending = 20; gov.tick();
+  await waiting;                                // below the resume mark: released
+  assert.equal(released, true);
+
+  pending = 150; gov.tick();
+  const held = gov.throttle();
+  gov.stop();                                   // shutdown never strands an upload
+  await held;
+});
+
+test('the server exits cleanly on SIGTERM (it is PID 1 in the pod)', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const base = mkdtempSync(join(tmpdir(), 'fm-sigterm-'));
+  const child = spawn(process.execPath, ['server.mjs'], {
+    cwd: new URL('.', import.meta.url).pathname,
+    env: { ...process.env, FM_BASE: base, FM_DIRTY_GOVERNOR: 'off', FM_NO_LISTEN: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('server did not start')), 10_000);
+      child.stdout.on('data', (d) => { if (String(d).includes('listening')) { clearTimeout(to); resolve(); } });
+    });
+    const exit = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
+    child.kill('SIGTERM');
+    const r = await Promise.race([exit, sleep(5000).then(() => ({ code: 'timeout' }))]);
+    assert.deepEqual(r, { code: 0, signal: null }); // handled, not killed by the signal
+  } finally {
+    child.kill('SIGKILL');
+    rmSync(base, { recursive: true, force: true });
+  }
+});

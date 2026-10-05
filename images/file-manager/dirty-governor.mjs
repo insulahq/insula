@@ -38,9 +38,16 @@ export const DEFAULTS = Object.freeze({
   maxPauseMs: 30_000,
 });
 
-/** Processes whose writes the governor may pause (/proc/<pid>/comm values). */
+/**
+ * Processes whose writes the governor may pause (/proc/<pid>/comm values):
+ * only the transfers the SFTP gateway execs in. The tools this server spawns
+ * itself (tar/unzip/zip/git) are NOT paused — server.mjs watches them with
+ * idle and wall-clock timeouts that would read a deliberate pause as a hang
+ * and kill the job. They get the flush; this server's own uploads get
+ * `throttle()` (backpressure on the request stream).
+ */
 export const WRITER_COMMS = Object.freeze(new Set([
-  'rsync', 'scp', 'sftp-serve', 'sftp-server', 'tar', 'unzip', 'git', 'cp',
+  'rsync', 'scp', 'sftp-serve', 'sftp-server',
 ]));
 
 /** `memory.stat` text → { dirty, writeback } in bytes (0 when absent). */
@@ -107,13 +114,19 @@ export function createDirtyGovernor(deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? ((msg) => console.log(`[dirty-governor] ${msg}`));
   const volume = deps.volume ?? '/data';
+  // A volume that has stalled can block `sync` in the kernel indefinitely; a
+  // flush that never returns would leave `flushing` set and switch flushing off
+  // for good. Give it a deadline, then allow the next one.
   const flush = deps.flush ?? (() => new Promise((resolve) => {
     const child = spawn('sync', ['-f', volume], { stdio: 'ignore' });
-    child.on('error', () => resolve());
-    child.on('exit', () => resolve());
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); log('flush did not finish in 60 s — retrying on the next tick'); resolve(); }, 60_000);
+    deadline.unref?.();
+    const done = () => { clearTimeout(deadline); resolve(); };
+    child.on('error', done);
+    child.on('exit', done);
   }));
 
-  const state = { paused: false, pausedAt: null, flushing: false, pausedPids: new Set() };
+  const state = { paused: false, pausedAt: null, flushing: false, pausedPids: new Set(), lastPending: null, limit: null };
   let timer = null;
 
   const send = (pid, sig) => {
@@ -152,6 +165,8 @@ export function createDirtyGovernor(deps = {}) {
       return { skipped: 'unreadable' };
     }
     if (limit === null) return { skipped: 'unlimited' };
+    state.lastPending = pending;
+    state.limit = limit;
 
     // While paused, a writer that started after the pause is held too.
     if (state.paused && pending > opts.pauseAt * limit) pauseWriters(pending);
@@ -180,12 +195,28 @@ export function createDirtyGovernor(deps = {}) {
     log(`watching ${volume}: flush at ${opts.flushAt * 100}%, pause writers at ${opts.pauseAt * 100}%, resume below ${opts.resumeAt * 100}% of memory.max (${MiB(parseLimit(readMax()))} MiB)`);
   }
 
+  /**
+   * Backpressure for writes this process makes itself (it cannot SIGSTOP
+   * itself): resolves at once below the pause mark, otherwise when the
+   * backlog has drained below the resume mark — or after maxPauseMs. Uses the
+   * last tick's reading, so calling it per chunk costs nothing.
+   */
+  async function throttle() {
+    if (state.limit === null || state.lastPending === null) return;
+    if (state.lastPending <= opts.pauseAt * state.limit) return;
+    const until = now() + opts.maxPauseMs;
+    while (state.lastPending !== null && state.lastPending >= opts.resumeAt * state.limit && now() < until) {
+      await new Promise((r) => setTimeout(r, opts.intervalMs));
+    }
+  }
+
   /** Stop ticking and never leave a writer stopped. */
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    state.lastPending = null; // releases any throttle() waiter
     if (state.paused) resumeWriters(0, 'governor stopped');
   }
 
-  return { tick, start, stop, state };
+  return { tick, start, stop, throttle, state };
 }

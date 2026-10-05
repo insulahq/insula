@@ -10,6 +10,7 @@ import { readdir, stat, lstat, readFile, writeFile, mkdir, rm, rename, cp, chown
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve, basename, extname, dirname, relative } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { open as fsOpen } from 'node:fs/promises';
@@ -282,6 +283,8 @@ if (!gidNameCache.has(70)) gidNameCache.set(70, 'postgres');
 // The PVC mount root. Overridable only for unit tests (FM_BASE); production
 // always uses the hard-coded /data mount.
 const BASE = process.env.FM_BASE || '/data';
+// Started only when the server listens (see the end of this file).
+const governor = createDirtyGovernor({ volume: BASE });
 
 const MIME_TYPES = {
   '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -968,6 +971,7 @@ async function handleWriteRaw(req, res) {
         let written = 0;
         for await (const chunk of req) {
           const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          await governor.throttle(); // backpressure while the volume catches up
           await fh.write(buf, 0, buf.length, offsetN + written);
           written += buf.length;
         }
@@ -995,7 +999,11 @@ async function handleWriteRaw(req, res) {
       }
     });
 
-    await pipeline(req, ws);
+    // Backpressure while the volume catches up (dirty-governor.mjs).
+    const gate = new Transform({
+      transform(chunk, _enc, cb) { governor.throttle().then(() => cb(null, chunk), cb); },
+    });
+    await pipeline(req, gate, ws);
     pipelineDone = true;
     await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
 
@@ -1897,13 +1905,19 @@ if (process.env.FM_NO_LISTEN !== '1') {
     console.log(`File manager sidecar listening on :${PORT}`);
   });
   // Slow heavy writes down instead of letting dirty pages OOM this container
-  // (see dirty-governor.mjs). 'exit' (not SIGTERM — a SIGTERM listener would
-  // replace Node's default exit) so a stopped writer is always continued.
-  if (process.env.FM_DIRTY_GOVERNOR !== 'off') {
-    const governor = createDirtyGovernor({ volume: BASE });
-    governor.start();
-    process.on('exit', () => governor.stop());
-  }
+  // (see dirty-governor.mjs).
+  if (process.env.FM_DIRTY_GOVERNOR !== 'off') governor.start();
+  process.on('exit', () => governor.stop());
+  // This server is the container's PID 1, and the kernel IGNORES a signal
+  // PID 1 has no handler for — so SIGTERM used to do nothing and every pod
+  // stop waited out the grace period for SIGKILL, with any paused writer
+  // still stopped. Continue the writers, stop accepting, let in-flight
+  // requests finish, and exit before the grace period ends.
+  process.once('SIGTERM', () => {
+    governor.stop();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 25_000).unref();
+  });
 }
 
 // Exported for unit tests (node --test). These are pure helpers — importing
