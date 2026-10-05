@@ -1054,7 +1054,7 @@ export const cronJobs = pgTable('cron_jobs', {
   lastRunDurationMs: integer('last_run_duration_ms'),
   lastRunResponseCode: integer('last_run_response_code'),
   lastRunOutput: text('last_run_output'),
-  // Failure email, opt-in per job (migration 0145). notifyTenantEmail is a
+  // Failure email, opt-in per job (migration 0146). notifyTenantEmail is a
   // flag, not a copy: the tenant's primary email is resolved at send time.
   notifyOnFailure: boolean('notify_on_failure').notNull().default(false),
   notifyTenantEmail: boolean('notify_tenant_email').notNull().default(true),
