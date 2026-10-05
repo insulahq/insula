@@ -24,6 +24,21 @@ includes it in the rollup returned by `GET /admin/backup-health`.
 insula.host/backup-category: "dr"  # or "tenant" | "audit" | "custom"
 ```
 
+> **Tenant bundles are not labelled Jobs.** The platform's tenant backups are
+> bundles run by the in-process orchestrator and recorded in `backup_jobs`;
+> the per-component Jobs they start carry no health label and are deleted ten
+> minutes after they finish. `GET /admin/backup-health` therefore adds one
+> `category: "tenant"` row per tenant read from that ledger
+> (`backend/src/modules/backup-health/tenant-bundles.ts`, groupKey
+> `tenant-bundles/<tenantId>`): the newest finished bundle decides the state
+> (`completed` → healthy, `partial`/`failed` → failing), and a tenant the
+> nightly wave covers with no finished bundle is `never_run`. Severity is
+> `critical` when the newest bundle `failed` outright or a wave-covered tenant
+> has had no completed bundle for 48 h, else `warning`. These rows feed
+> the Backups dashboard (Tenants card, recent-activity list); failure
+> notifications for bundles come from the bundle orchestrator itself, not
+> from the backup-health scheduler.
+
 Drives:
 
 - **UI grouping** — admin Backups page renders a separate section per
@@ -107,6 +122,7 @@ spec:
 |---|---|---|
 | `backend/src/modules/backup-health/scheduler.ts` | `backup-health-watch=true` | Cluster-wide Job listing every 5 min; emits notifications for new failures |
 | `backend/src/modules/backup-health/service.ts` | `backup-category`, `backup-severity`, `client-id`, display-name annotation | Builds `BackupHealthSummary` |
+| `backend/src/modules/backup-health/tenant-bundles.ts` | (no labels — the `backup_jobs` bundle ledger) | Adds one `tenant` row per tenant to the roll-up |
 | `backend/src/modules/backup-config/longhorn-reconciler.ts` | `depends-on=backup-credentials` | `kubectl patch suspend=true/false` on activate/deactivate |
 | `frontend/admin-panel/src/components/BackupHealthBanner.tsx` | `category` + `state` + `severity` | Shows banner only for failing DR jobs |
 | `frontend/admin-panel/src/components/BackupHealthTable.tsx` | `category` + all summary fields | Grouped table per category |

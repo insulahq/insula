@@ -3,30 +3,39 @@
  *
  * `POST /api/v1/admin/dr/tenants/:tenantId/recover` orchestrates the
  * existing restore-cart endpoints (provision → create cart → add items →
- * execute) in a single admin call, recovering a tenant's data from an
- * off-site bundle. Types come from `@insula/api-contracts` (`dr-recover.ts`,
+ * execute) to recover a tenant's data from an off-site bundle. The admin
+ * panel starts it with `background: true`: the call answers with a
+ * `dr.recover` task id at once and the run reports through the task center —
+ * `DrRecoverProgressModal` renders it, and the chip re-opens it. Types come
+ * from `@insula/api-contracts` (`dr-recover.ts`, `dr-recover-task.ts`,
  * `restore.ts`) so the UI and backend can never drift.
  *
- * `useRecoverTenantFromBundle` triggers the recover; `useLiveRestoreCart`
- * polls the resulting cart's per-item progress until it reaches a terminal
- * state (`done` | `failed`).
+ * `useLiveRestoreCart` polls the recovery's restore cart for per-item
+ * progress until it reaches a terminal state (`done` | `failed`).
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-client';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { apiFetch, ensureFreshAccessToken } from '@/lib/api-client';
 import type {
   DrRecoverRequest,
-  DrRecoverResponse,
+  DrRecoverStarted,
   DrRecoverAllRequestInput,
   DrRecoverAllResponse,
+  DrRecoverAllStarted,
   DrRecoveryInfo,
   RecoverableTenant,
   RestoreJobDetail,
   RestoreJobStatus,
 } from '@insula/api-contracts';
 
-interface DrRecoverEnvelope { readonly data: DrRecoverResponse }
 interface DrRecoverAllEnvelope { readonly data: DrRecoverAllResponse }
+
+/**
+ * A background recovery keeps using the token it was started with (forwarded
+ * into its provision / restore sub-requests) for minutes after the start
+ * request returns — start it with one that will outlive that.
+ */
+const RECOVERY_TOKEN_MIN_VALIDITY_MS = 20 * 60_000;
 interface CartDetailEnvelope { readonly data: RestoreJobDetail }
 
 /** Cart statuses at which polling can stop — no further transitions expected. */
@@ -40,24 +49,21 @@ export function isTerminalCartStatus(status: RestoreJobStatus): boolean {
 }
 
 /**
- * Trigger the one-button tenant DR recover. `tenantId` is the path
- * parameter; `input` is the (all-optional) request body.
+ * Start a tenant recovery in the background. Resolves with the `dr.recover`
+ * task to follow; a refusal (unknown tenant, a recovery already running)
+ * rejects before any task exists.
  */
-export function useRecoverTenantFromBundle() {
-  const qc = useQueryClient();
+export function useStartTenantRecovery() {
   return useMutation({
-    mutationFn: ({ tenantId, input }: { tenantId: string; input: DrRecoverRequest }) =>
-      apiFetch<DrRecoverEnvelope>(
+    mutationFn: async ({ tenantId, input }: { tenantId: string; input: Omit<DrRecoverRequest, 'background'> }) => {
+      await ensureFreshAccessToken(RECOVERY_TOKEN_MIN_VALIDITY_MS);
+      return apiFetch<{ readonly data: DrRecoverStarted }>(
         `/api/v1/admin/dr/tenants/${encodeURIComponent(tenantId)}/recover`,
         {
           method: 'POST',
-          body: JSON.stringify(input),
+          body: JSON.stringify({ ...input, background: true }),
         },
-      ),
-    onSuccess: (resp) => {
-      // Surface the freshly-created cart to any restore-cart consumers.
-      void qc.invalidateQueries({ queryKey: ['restore-cart', resp.data.cartId] });
-      void qc.invalidateQueries({ queryKey: ['restore-carts'] });
+      );
     },
   });
 }
@@ -69,7 +75,7 @@ export function useRecoverTenantFromBundle() {
  */
 export function useDrRecoverAllPreview() {
   return useMutation({
-    mutationFn: (input: Omit<DrRecoverAllRequestInput, 'dryRun'>) =>
+    mutationFn: (input: Omit<DrRecoverAllRequestInput, 'dryRun' | 'background'>) =>
       apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
         method: 'POST',
         body: JSON.stringify({ ...input, dryRun: true }),
@@ -78,20 +84,19 @@ export function useDrRecoverAllPreview() {
 }
 
 /**
- * Execute the batch DR recover-all — recovers each targeted lost tenant
- * sequentially (re-create / provision / restore / reconcile per tenant).
+ * Start the batch recover-all in the background — each targeted lost tenant
+ * is recovered in turn (re-create / provision / restore / reconcile). Resolves
+ * with the `dr.recover-all` task to follow; the encryption-key refusal and a
+ * batch already running reject before any task exists.
  */
-export function useDrRecoverAll() {
-  const qc = useQueryClient();
+export function useStartRecoverAll() {
   return useMutation({
-    mutationFn: (input: Omit<DrRecoverAllRequestInput, 'dryRun'>) =>
-      apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
+    mutationFn: async (input: Omit<DrRecoverAllRequestInput, 'dryRun' | 'background'>) => {
+      await ensureFreshAccessToken(RECOVERY_TOKEN_MIN_VALIDITY_MS);
+      return apiFetch<{ readonly data: DrRecoverAllStarted }>('/api/v1/admin/dr/tenants/recover-all', {
         method: 'POST',
-        body: JSON.stringify({ ...input, dryRun: false }),
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['restore-carts'] });
-      void qc.invalidateQueries({ queryKey: ['tenants'] });
+        body: JSON.stringify({ ...input, dryRun: false, background: true }),
+      });
     },
   });
 }

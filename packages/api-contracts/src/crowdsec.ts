@@ -16,6 +16,7 @@
  * narrative.
  */
 
+import { canonicalIp } from './ip-canonical.js';
 import { z } from 'zod';
 
 export const crowdsecDecisionScopeSchema = z.enum(['Ip', 'Range', 'Country', 'AS']);
@@ -34,8 +35,10 @@ export type CrowdsecDecisionType = z.infer<typeof crowdsecDecisionTypeSchema>;
  * also indistinguishable in the table — only the WAF one carried an "auto-ban"
  * pill, because that pill was a prefix check on a scenario string.
  *
- *   operator         — a human clicked Add ban.
- *   static-list      — a human added a long-duration entry to the static list.
+ *   operator         — a human clicked Add manual ban with a timed duration.
+ *   static-list      — a human clicked Add manual ban with the Permanent
+ *                      duration. The value keeps its historical name; the
+ *                      panel labels it "Operator · Permanent".
  *   auto-ban-waf     — the WAF auto-ban scheduler, from ModSecurity rule hits.
  *   auto-ban-traffic — this platform's CrowdSec agent, from Traefik access logs.
  *   community        — CrowdSec's shared CAPI feed (community viewer only).
@@ -80,8 +83,34 @@ export const crowdsecDecisionSchema = z.object({
    * any other consumer agree, instead of each re-deriving the prefix rules.
    */
   addedBy: crowdsecAddedBySchema,
+  /**
+   * For operator and permanent bans: the reason the operator typed, without
+   * the platform prefix or the user id the scenario string also carries.
+   * null for every automatic or external decision.
+   */
+  operatorReason: z.string().nullable(),
+  /**
+   * For operator and permanent bans: who added it, as "Full Name (email)",
+   * resolved server-side from the user id embedded in the scenario. null for
+   * automatic decisions, and when the account no longer exists — the panel
+   * then says so rather than printing the raw id.
+   */
+  addedByName: z.string().nullable(),
 });
 export type CrowdsecDecision = z.infer<typeof crowdsecDecisionSchema>;
+
+/**
+ * The identity of one row in the Banned IPs list: one ADDRESS, however many
+ * decisions (one per scenario) currently ban it.
+ *
+ * Shared so the list and every count of it use the same definition. The
+ * dashboard's "Banned IPs" figure once counted a different table entirely
+ * and disagreed with the list it links to.
+ */
+export function crowdsecDecisionAddressKey(d: Pick<CrowdsecDecision, 'scope' | 'value'>): string {
+  // One spelling per address: two engines may write the same IPv6 host differently.
+  return `${d.scope.toLowerCase()}:${canonicalIp(d.value)}`;
+}
 
 /**
  * WHERE a decision came from, as an operator thinks about it.
@@ -105,9 +134,9 @@ export const crowdsecListDecisionsQuerySchema = z.object({
   q: z.string().max(64).regex(/^[a-zA-Z0-9.:\-_/]*$/, 'invalid characters in filter').optional(),
   /** Filter by scope. */
   scope: crowdsecDecisionScopeSchema.optional(),
-  /** Filter to only operator-added bans (origin=cscli + admin-panel prefix). */
+  /** Filter to only operator-added bans — timed AND permanent (origin=cscli + an admin-panel prefix). */
   manualOnly: z.coerce.boolean().optional(),
-  /** Filter to only static (long-duration) operator-added bans. */
+  /** Filter to only permanent operator-added bans. */
   staticOnly: z.coerce.boolean().optional(),
   /** Filter to only bans added by the auto-ban scheduler. */
   autoOnly: z.coerce.boolean().optional(),
@@ -122,7 +151,12 @@ export type CrowdsecListDecisionsQuery = z.infer<typeof crowdsecListDecisionsQue
 
 export const crowdsecListDecisionsResponseSchema = z.object({
   decisions: z.array(crowdsecDecisionSchema),
-  /** Total before any filter — useful for the "X of Y" UI label. */
+  /**
+   * Decisions the LAPI returned before the remaining filters. For
+   * source=platform the LAPI is asked for platform origins only, so this
+   * excludes the community feed; source=all or community counts everything
+   * the LAPI holds.
+   */
   totalActive: z.number().int().min(0),
   /**
    * Rows matching the filters BEFORE paging. Without this the UI cannot tell
@@ -189,7 +223,11 @@ export function crowdsecDurationToMs(duration: string): number {
   return matched ? total : NaN;
 }
 
-/** Maximum ban duration: 8760h = 1 year. addStaticBan uses exactly this. */
+/**
+ * Maximum TIMED ban duration: 8760h = 1 year. A permanent ban is not a timed
+ * ban — it goes through the static-blocklist endpoint, which uses its own
+ * 100-year duration (STATIC_BAN_DURATION in the backend).
+ */
 export const MAX_BAN_DURATION_MS = 8760 * 60 * 60 * 1000;
 /** Minimum ban duration: 1 minute. */
 export const MIN_BAN_DURATION_MS = 60 * 1000;
@@ -317,12 +355,13 @@ export const crowdsecRemoveAllowlistResponseSchema = z.object({
 });
 export type CrowdsecRemoveAllowlistResponse = z.infer<typeof crowdsecRemoveAllowlistResponseSchema>;
 
-// ─── F2 — static (long-duration) ban ────────────────────────────────────
+// ─── Permanent operator ban ─────────────────────────────────────────────
 //
-// Implementation note: there's no "permanent" decision type in CrowdSec;
-// we re-use `addBan` with the maximum supported duration `8760h` (1 year)
-// and a distinguishing scenario prefix `admin-panel-static:` so the list
-// endpoint can flag them as `staticByOperator: true`.
+// The "Permanent" duration of the Add manual ban modal. There is no
+// "never expires" decision in CrowdSec, so the backend adds an ordinary ban
+// with a 100-year duration and the scenario prefix `admin-panel-static:`,
+// which the list endpoint reports as `staticByOperator: true` /
+// `addedBy: 'static-list'`.
 
 export const crowdsecAddStaticBanRequestSchema = z.object({
   value: z.string().min(1).max(64).regex(/^[a-fA-F0-9.:/]+$/, 'value must be an IP or CIDR'),
@@ -405,8 +444,10 @@ export const crowdsecScenarioSchema = z.object({
   /** Hub status string, e.g. "enabled". */
   status: z.string(),
   /**
-   * True when the scenario is listed in the agent's simulation exclusions:
-   * it still raises alerts but issues NO ban.
+   * The operator's per-scenario choice: true = alert-only (raises alerts,
+   * issues NO ban). While Malicious Traffic Detection is disabled every
+   * scenario is alert-only regardless, and this is the choice that comes back
+   * when it is enabled again.
    */
   simulated: z.boolean(),
   /** Events that entered this scenario's buckets since the agent started. */
@@ -434,14 +475,33 @@ export const crowdsecScenariosResponseSchema = z.object({
    */
   globalSimulation: z.boolean(),
   /**
+   * Malicious Traffic Detection on/off — the operator's SAVED choice
+   * (platform_settings), or, when it was never saved, what the agent runs
+   * (`!globalSimulation`). Disabled means every scenario runs in simulation:
+   * the agent keeps raising alerts, it issues no bans. A value that disagrees
+   * with `globalSimulation` means the choice is saved but not yet applied.
+   */
+  detectionEnabled: z.boolean(),
+  /**
    * What the agent reads. A scenario can only ever fire on an event type some
    * source produces, so this is the context that makes "0 events" legible —
    * the SSH scenarios on an agent with only an HTTP source are not broken,
    * they have nothing to read.
    */
   logSources: z.array(crowdsecLogSourceSchema),
-  /** Non-null when the agent could not be reached; the lists are then empty. */
+  /**
+   * Non-null when the agent could not be reached and no recent list is
+   * available; the lists are then empty.
+   */
   error: z.string().nullable(),
+  /**
+   * Non-null (ISO time) when the agent could not be reached just now — it
+   * restarts after every config change — and the scenario list and counters
+   * are the ones it reported at that time (at most a few minutes old). The
+   * per-scenario modes and the on/off switch are always current: they come
+   * from the ConfigMap, not the agent.
+   */
+  cachedAt: z.string().nullable(),
 });
 export type CrowdsecScenariosResponse = z.infer<typeof crowdsecScenariosResponseSchema>;
 
@@ -456,3 +516,37 @@ export const crowdsecSetScenarioSimulationRequestSchema = z.object({
 });
 export type CrowdsecSetScenarioSimulationRequest =
   z.infer<typeof crowdsecSetScenarioSimulationRequestSchema>;
+
+export const crowdsecSetScenarioSimulationResponseSchema = z.object({
+  /** The per-scenario alert-only list after the change. */
+  simulated: z.array(z.string()),
+  /** Agent pods deleted so they re-read the config. 0 when nothing the agent reads changed. */
+  rolledPods: z.number().int().min(0),
+  /** Set when the config is saved but the agent could not be rolled onto it. */
+  rollError: z.string().nullable(),
+});
+export type CrowdsecSetScenarioSimulationResponse =
+  z.infer<typeof crowdsecSetScenarioSimulationResponseSchema>;
+
+/**
+ * Malicious Traffic Detection on/off.
+ *
+ * Disabling flips the agent's GLOBAL simulation switch: every scenario keeps
+ * reading the access log and raising alerts, and none issues a ban. The
+ * per-scenario alert-only choices are kept and come back on re-enable.
+ */
+export const crowdsecSetTrafficDetectionRequestSchema = z.object({
+  enabled: z.boolean(),
+});
+export type CrowdsecSetTrafficDetectionRequest =
+  z.infer<typeof crowdsecSetTrafficDetectionRequestSchema>;
+
+export const crowdsecSetTrafficDetectionResponseSchema = z.object({
+  enabled: z.boolean(),
+  /** Per-scenario alert-only list, preserved across a disable/enable cycle. */
+  alertOnly: z.array(z.string()),
+  rolledPods: z.number().int().min(0),
+  rollError: z.string().nullable(),
+});
+export type CrowdsecSetTrafficDetectionResponse =
+  z.infer<typeof crowdsecSetTrafficDetectionResponseSchema>;

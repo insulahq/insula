@@ -19,6 +19,9 @@ import type {
   UpdateNotificationProviderInput,
 } from '@insula/api-contracts';
 import { NTFY_DEFAULT_SERVER_URL } from '@insula/api-contracts';
+import type { CoreV1Api } from '@kubernetes/client-node';
+import { buildProviderTestMessage } from './test-message.js';
+import { readStalwartMasterCredentials } from './stalwart-master-creds.js';
 
 type Row = typeof notificationProviders.$inferSelect;
 
@@ -44,6 +47,8 @@ function rowToResponse(row: Row): NotificationProviderResponse {
     ntfyTopic: row.ntfyTopic ?? null,
     ntfyAuthMethod: (row.ntfyAuthMethod as 'none' | 'token' | 'basic' | null) ?? null,
     ntfyTokenSet: row.ntfyTokenEncrypted != null && row.ntfyTokenEncrypted.length > 0,
+    emailHeaderHtml: row.emailHeaderHtml,
+    emailFooterHtml: row.emailFooterHtml,
     lastTestedAt: row.lastTestedAt?.toISOString() ?? null,
     lastTestStatus: (row.lastTestStatus as 'success' | 'failed' | null) ?? null,
     lastTestError: row.lastTestError ?? null,
@@ -194,6 +199,9 @@ export async function createProvider(
     ntfyTopic: isNtfy ? (input.ntfyTopic ?? null) : null,
     ntfyAuthMethod: isNtfy ? (input.ntfyAuthMethod ?? 'none') : null,
     ntfyTokenEncrypted,
+    // The contract already refuses a non-empty block on an ntfy provider.
+    emailHeaderHtml: isNtfy ? '' : (input.emailHeaderHtml ?? ''),
+    emailFooterHtml: isNtfy ? '' : (input.emailFooterHtml ?? ''),
     createdByUserId: ctx.userId,
   });
   return await getProvider(db, id);
@@ -206,6 +214,16 @@ export async function updateProvider(
   ctx: { readonly encryptionKey: string },
 ): Promise<NotificationProviderResponse> {
   const existing = await getProvider(db, id);
+  if (existing.channel === 'ntfy' && (input.emailHeaderHtml?.trim() || input.emailFooterHtml?.trim())) {
+    // The update contract cannot see the provider type, so this half of the
+    // create-time rule lives here: a push message has no email to wrap.
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'ntfy providers do not send email — the email header/footer does not apply',
+      400,
+      { provider_id: id },
+    );
+  }
   if (input.isDefault === true && !existing.isDefault) {
     await ensureSingleDefault(db, { channel: existing.channel, wantDefault: true, excludeId: id });
   }
@@ -225,6 +243,10 @@ export async function updateProvider(
   if (input.ntfyTopic !== undefined) patch.ntfyTopic = input.ntfyTopic;
   if (input.ntfyAuthMethod !== undefined) patch.ntfyAuthMethod = input.ntfyAuthMethod;
   if (input.ntfyToken !== undefined) patch.ntfyTokenEncrypted = encrypt(input.ntfyToken, ctx.encryptionKey);
+  if (existing.channel !== 'ntfy') {
+    if (input.emailHeaderHtml !== undefined) patch.emailHeaderHtml = input.emailHeaderHtml;
+    if (input.emailFooterHtml !== undefined) patch.emailFooterHtml = input.emailFooterHtml;
+  }
   if (Object.keys(patch).length > 0) {
     await db.update(notificationProviders).set(patch).where(eq(notificationProviders.id, id));
   }
@@ -244,6 +266,51 @@ export async function deleteProvider(db: Database, id: string): Promise<void> {
   await db.delete(notificationProviders).where(eq(notificationProviders.id, id));
 }
 
+export interface TestProviderContext {
+  readonly encryptionKey: string;
+  /** For stalwart-internal: reads the master credentials from mail/mail-secrets. */
+  readonly k8sCore?: CoreV1Api | null;
+  /** Test seam; defaults to the worker's own lookup. */
+  readonly readStalwartMasterCreds?: typeof readStalwartMasterCredentials;
+}
+
+interface TestSmtpIdentity {
+  readonly auth?: { readonly user: string; readonly pass: string };
+  /** SMTP MAIL FROM when it must differ from the From: header. */
+  readonly envelopeFrom?: string;
+}
+
+/**
+ * Who the test authenticates as — the same choice the queue worker makes, so
+ * a passing test means notifications will send. stalwart-internal rows carry
+ * no credentials: Stalwart requires AUTH on its submission ports and MAIL FROM
+ * equal to the authenticated user, so the test authenticates as the master
+ * account from mail/mail-secrets and uses it as the envelope sender.
+ */
+async function resolveTestSmtpIdentity(row: Row, ctx: TestProviderContext): Promise<TestSmtpIdentity | null> {
+  if (row.providerType === 'stalwart-internal') {
+    const read = ctx.readStalwartMasterCreds ?? readStalwartMasterCredentials;
+    const creds = await read(ctx.k8sCore ?? null);
+    if (!creds) return null;
+    return { auth: { user: creds.user, pass: creds.password }, envelopeFrom: creds.user };
+  }
+  if (!row.authUsername) return {};
+  const password = row.authPasswordEncrypted ? safeDecrypt(row.authPasswordEncrypted, ctx.encryptionKey) : null;
+  return { auth: { user: row.authUsername, pass: password ?? '' } };
+}
+
+async function recordTestOutcome(
+  db: Database,
+  id: string,
+  now: Date,
+  error: string | null,
+): Promise<TestNotificationProviderResponse> {
+  await db.update(notificationProviders)
+    .set({ lastTestedAt: now, lastTestStatus: error ? 'failed' : 'success', lastTestError: error })
+    .where(eq(notificationProviders.id, id));
+  return { status: error ? 'failed' : 'success', testedAt: now.toISOString(), error };
+}
+
 /**
  * Open an SMTP submission, attempt to authenticate, and send a small
  * test message to the operator-supplied recipient. Persists the
@@ -253,7 +320,7 @@ export async function testProvider(
   db: Database,
   id: string,
   input: TestNotificationProviderInput,
-  ctx: { readonly encryptionKey: string },
+  ctx: TestProviderContext,
 ): Promise<TestNotificationProviderResponse> {
   const row = await getRawRow(db, id);
   if (!row) {
@@ -265,32 +332,36 @@ export async function testProvider(
   if (!input.recipientEmail) {
     throw new ApiError('INVALID_FIELD_VALUE', 'recipientEmail is required to test an email provider', 400);
   }
-  const password = row.authPasswordEncrypted ? safeDecrypt(row.authPasswordEncrypted, ctx.encryptionKey) : null;
-  const fromName = row.fromName ?? 'Insula';
+  const now = new Date();
+  const identity = await resolveTestSmtpIdentity(row, ctx);
+  if (!identity) {
+    return await recordTestOutcome(db, id, now,
+      'Could not read STALWART_MASTER_USER / STALWART_MASTER_PASSWORD from the mail/mail-secrets Secret');
+  }
   const transport = nodemailer.createTransport({
     host: row.smtpHost ?? '',
     port: row.smtpPort,
     secure: row.smtpSecure,
-    auth: row.authUsername ? { user: row.authUsername, pass: password ?? '' } : undefined,
+    auth: identity.auth,
   });
-  const now = new Date();
+  // Carries the provider's email header/footer (HTML part) when it has any,
+  // so the operator sees the real result before a notification goes out.
+  const message = buildProviderTestMessage(row.name, {
+    headerHtml: row.emailHeaderHtml,
+    footerHtml: row.emailFooterHtml,
+  });
   try {
     await transport.sendMail({
-      from: `"${fromName}" <${row.fromAddress}>`,
+      from: `"${row.fromName ?? 'Insula'}" <${row.fromAddress}>`,
       to: input.recipientEmail,
       subject: '[Platform] Notification provider test',
-      text: `This is an automated test from the notification provider "${row.name}". If you received this, the provider's SMTP credentials are working.\n`,
+      text: message.text,
+      ...(message.html !== undefined ? { html: message.html } : {}),
+      ...(identity.envelopeFrom ? { envelope: { from: identity.envelopeFrom, to: input.recipientEmail } } : {}),
     });
-    await db.update(notificationProviders)
-      .set({ lastTestedAt: now, lastTestStatus: 'success', lastTestError: null })
-      .where(eq(notificationProviders.id, id));
-    return { status: 'success', testedAt: now.toISOString(), error: null };
+    return await recordTestOutcome(db, id, now, null);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await db.update(notificationProviders)
-      .set({ lastTestedAt: now, lastTestStatus: 'failed', lastTestError: msg })
-      .where(eq(notificationProviders.id, id));
-    return { status: 'failed', testedAt: now.toISOString(), error: msg };
+    return await recordTestOutcome(db, id, now, err instanceof Error ? err.message : String(err));
   }
 }
 

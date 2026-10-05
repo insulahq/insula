@@ -23,12 +23,14 @@ import {
 import {
   NOTIFICATION_PROVIDER_TYPE,
   NOTIFICATION_PROVIDER_DEFAULTS,
+  emailChromeProblem,
   type CreateNotificationProviderInput,
   type NotificationProviderResponse,
   type NotificationProviderType,
 } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import EmailChromeEditor from './EmailChromeEditor';
 
 const TEST_STATUS_BADGE: Record<'success' | 'failed', string> = {
   success: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -219,8 +221,14 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
   const [ntfyTopic, setNtfyTopic] = useState(provider?.ntfyTopic ?? '');
   const [ntfyAuthMethod, setNtfyAuthMethod] = useState<'none' | 'token' | 'basic'>(provider?.ntfyAuthMethod ?? 'none');
   const [ntfyToken, setNtfyToken] = useState('');
+  // ─── email header / footer ('' = none) ───
+  const [emailHeaderHtml, setEmailHeaderHtml] = useState(provider?.emailHeaderHtml ?? '');
+  const [emailFooterHtml, setEmailFooterHtml] = useState(provider?.emailFooterHtml ?? '');
 
   const isNtfy = providerType === 'ntfy';
+  // The same rule the API applies; the editor shows which field and why.
+  const chromeInvalid = !isNtfy
+    && (emailChromeProblem(emailHeaderHtml) !== null || emailChromeProblem(emailFooterHtml) !== null);
 
   const onProviderTypeChange = (next: NotificationProviderType): void => {
     setProviderType(next);
@@ -266,6 +274,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
               authPassword: authPasswordValue,
               fromAddress,
               fromName: fromName || null,
+              emailHeaderHtml,
+              emailFooterHtml,
               enabled,
               isDefault,
             };
@@ -294,6 +304,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
                 authPassword: authPasswordValue,
                 fromAddress,
                 fromName: fromName || null,
+                emailHeaderHtml,
+                emailFooterHtml,
                 enabled,
                 isDefault,
               },
@@ -310,7 +322,7 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
 
   return (
     <aside
-      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col gap-3 overflow-y-auto border-l border-gray-200 bg-white p-5 shadow-xl dark:border-gray-700 dark:bg-gray-800"
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col gap-3 overflow-y-auto border-l border-gray-200 bg-white p-5 shadow-xl dark:border-gray-700 dark:bg-gray-800"
       data-testid="provider-edit-drawer"
     >
       <div className="flex items-start justify-between">
@@ -528,6 +540,14 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
           </label>
         </div>
         )}
+        {!isNtfy && (
+          <EmailChromeEditor
+            headerHtml={emailHeaderHtml}
+            footerHtml={emailFooterHtml}
+            onHeaderChange={setEmailHeaderHtml}
+            onFooterChange={setEmailFooterHtml}
+          />
+        )}
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="provider-enabled" />
@@ -547,7 +567,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
           </button>
           <button
             type="submit"
-            disabled={isPending}
+            disabled={isPending || chromeInvalid}
+            title={chromeInvalid ? 'Fix the email header/footer HTML first' : undefined}
             data-testid="provider-save"
             className="inline-flex items-center gap-1 rounded bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
           >

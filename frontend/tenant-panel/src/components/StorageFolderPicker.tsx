@@ -9,7 +9,7 @@ import { MAX_FOLDER_SEGMENTS, folderProblem } from '@insula/api-contracts';
  * The deployment storage picker used to list one flat level under
  * `<type>/<code>`, so the only reachable folders were ones the platform had
  * created for that catalog entry. A tenant with an existing site directory
- * (`business.na`) or a shared media tree could not point a deployment at it.
+ * (`example.com`) or a shared media tree could not point a deployment at it.
  * This walks the whole tree instead, one level at a time.
  *
  * A folder another deployment already uses is offered WITH A WARNING rather

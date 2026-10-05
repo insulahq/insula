@@ -15,7 +15,7 @@ const recover = { data: undefined as unknown, isPending: false, isError: false, 
 
 vi.mock('@/hooks/use-dr-recover', () => ({
   useDrRecoverAllPreview: () => preview,
-  useDrRecoverAll: () => recover,
+  useStartRecoverAll: () => recover,
 }));
 
 const { default: RecoverAllTab } = await import('./RecoverAllTab');
@@ -94,13 +94,8 @@ describe('RecoverAllTab — unrecoverable tenants', () => {
     expect(screen.getByText(/never backed up/i)).toBeTruthy();
   });
 
-  it('keeps showing them after a run, where "recovered N/N" is true but incomplete', () => {
-    recover.data = {
-      data: { dryRun: false, scope: 'missing', total: 1, recovered: 1, failed: 0, results: [], skipped: [skipped()] },
-    };
-    render(<RecoverAllTab />);
-    expect(screen.getByTestId('dr-unrecoverable')).toBeTruthy();
-  });
+  // After a run, "recovered N/N" is true but incomplete: the run's progress
+  // modal repeats the passed-over tenants (dr-recover-all-progress.test.tsx).
 
   it('shows bundle age and components on a target', () => {
     preview.data = {

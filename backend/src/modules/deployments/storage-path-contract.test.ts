@@ -35,7 +35,7 @@ describe('createDeploymentSchema.storage_path', () => {
 
   it('accepts a folder anywhere on the PVC, not just under <type>/<code>', () => {
     // The entire point of the change.
-    expect(pathIssue('business.na')).toBeNull();
+    expect(pathIssue('example.com')).toBeNull();
     expect(pathIssue('media/library')).toBeNull();
     expect(pathIssue('www.example.com')).toBeNull();
     expect(pathIssue('Website')).toBeNull();

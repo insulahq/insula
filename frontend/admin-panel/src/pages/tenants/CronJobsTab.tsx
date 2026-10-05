@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil } from 'lucide-react';
+import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil, Mail } from 'lucide-react';
 import clsx from 'clsx';
 import CronJobModal from '@/components/CronJobModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
@@ -202,6 +202,18 @@ export default function CronJobsTab() {
                       </td>
                       <td className="px-5 py-3.5">
                         <span className="font-medium text-gray-900 dark:text-gray-100">{job.name}</span>
+                        {job.notifyOnFailure && (
+                          <span
+                            className="ml-2 inline-flex align-middle text-brand-500 dark:text-brand-400"
+                            title={`Emails on failure: ${[
+                              job.notifyTenantEmail ? 'tenant email' : null,
+                              job.notifyEmail,
+                            ].filter(Boolean).join(', ')}`}
+                            data-testid={`cron-notify-badge-${job.id}`}
+                          >
+                            <Mail size={12} />
+                          </span>
+                        )}
                       </td>
                       <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
                         {tenantMap.get(job.tenantId) ?? '—'}

@@ -363,6 +363,16 @@ export async function ensureFileManagerRunning(
                   // problem. Neither number is the cgroup's real need. Read
                   // memory.stat and memory.events before touching the limit.
                   //
+                  // DIRTY pages are the exception to "reclaimable": data written
+                  // faster than the tenant's Longhorn volume absorbs sits as
+                  // file_dirty + file_writeback, which reclaim cannot free and a
+                  // GFP_NOFS filesystem allocation cannot wait for. A production
+                  // rsync receive OOM-killed this container at 100 MiB dirty +
+                  // 40 MiB writeback (anon 24 MB). A bigger limit only moves that
+                  // ceiling; the image's dirty-governor.mjs pauses the writers
+                  // and flushes the volume instead, so the upload slows to disk
+                  // speed rather than dying.
+                  //
                   // FM carries `platform.io/system: "true"`, so isSystemPod() in
                   // metrics/resource-metrics.ts keeps all of this out of the
                   // tenant's usage figures — it cannot raise a false tenant

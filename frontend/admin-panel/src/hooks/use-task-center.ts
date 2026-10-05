@@ -144,6 +144,18 @@ const COMPLETION_REFRESH_MAP: ReadonlyArray<{
     match: (k) => k.startsWith('tenant.'),
     keys: [['tenants']],
   },
+  {
+    // dr.recover / dr.recover-all — a recovered tenant is live again (and a
+    // re-created one is no longer "deleted"), its restore cart is finished.
+    match: (k) => k.startsWith('dr.'),
+    keys: [
+      ['tenants'],
+      ['recoverable-tenants'],
+      ['dr-recovery-info'],
+      ['restore-carts'],
+      ['admin', 'tenant-bundles'],
+    ],
+  },
 ];
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);

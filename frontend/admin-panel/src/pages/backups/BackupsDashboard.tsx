@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import type { BackupHealthSummary } from '@insula/api-contracts';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useBackupHealth } from '@/hooks/use-backup-health';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 
@@ -32,12 +34,15 @@ interface ClassRow {
   readonly icon: typeof KeyRound;
   /** Predicate to match the BackupHealthSummary rows that belong to this class. */
   readonly match: (s: BackupHealthSummary) => boolean;
+  /** Hover text: what the card counts, where that is not obvious. */
+  readonly hint?: string;
 }
 
 // `BackupCategory` only has the values dr / tenant / audit / custom, so
-// the System/Tenants/Mail split is derived from category + a heuristic
-// on namespace / groupKey. Phase 3 may add a dedicated `mail` category
-// label to backup-health if the heuristic proves brittle.
+// the System/Mail split is derived from category + a heuristic on
+// namespace / groupKey. Tenants are their own category: one row per tenant,
+// built by the backend from the bundle ledger — never matched by the mail
+// heuristic, whatever a tenant's key contains.
 const isMail = (s: BackupHealthSummary): boolean =>
   s.namespace === 'mail'
   || s.groupKey.toLowerCase().includes('mail')
@@ -45,8 +50,12 @@ const isMail = (s: BackupHealthSummary): boolean =>
 
 const CLASSES: readonly ClassRow[] = [
   { to: '/backups/system',  label: 'System',  icon: KeyRound, match: (s) => s.category === 'dr' && !isMail(s) },
-  { to: '/backups/tenants', label: 'Tenants', icon: Package,  match: (s) => s.category === 'tenant' },
-  { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => isMail(s) },
+  {
+    to: '/backups/tenants', label: 'Tenants', icon: Package, match: (s) => s.category === 'tenant',
+    hint: 'Each tenant by its newest finished bundle, plus every tenant in the nightly bundle run that has none yet. '
+      + 'A tenant opted out of scheduled bundles with no bundle at all is not counted.',
+  },
+  { to: '/backups/mail',    label: 'Mail',    icon: Mail,     match: (s) => s.category !== 'tenant' && isMail(s) },
 ];
 
 /**
@@ -106,6 +115,7 @@ function StatCard({
   detail,
   to,
   tone,
+  hint,
 }: {
   readonly icon: typeof KeyRound;
   readonly label: string;
@@ -113,6 +123,7 @@ function StatCard({
   readonly detail: string;
   readonly to: string;
   readonly tone: 'ok' | 'warn' | 'fail' | 'idle';
+  readonly hint?: string;
 }) {
   const toneRing = {
     ok:   'border-emerald-200 dark:border-emerald-800',
@@ -131,6 +142,7 @@ function StatCard({
       to={to}
       className={`block rounded-lg border bg-white p-4 shadow-sm transition hover:shadow-md dark:bg-gray-800 ${toneRing}`}
       data-testid={`backups-dashboard-stat-${label.toLowerCase()}`}
+      title={hint}
     >
       <div className="flex items-start justify-between gap-2">
         <div>
@@ -163,33 +175,65 @@ type Tone = 'ok' | 'warn' | 'fail' | 'idle';
 function classifyRows(
   rows: ReadonlyArray<BackupHealthSummary> | undefined,
   match: ClassRow['match'],
+  failed: boolean,
 ): { tone: Tone; value: string; detail: string } {
-  if (!rows) return { tone: 'idle', value: '—', detail: 'loading…' };
+  // No roll-up yet: say why. "0 · no jobs registered" here would claim the
+  // class has no backups when the page simply has not heard back (or failed).
+  if (!rows) return { tone: 'idle', value: '—', detail: failed ? 'unavailable' : 'loading…' };
   const mine = rows.filter(match);
   if (mine.length === 0) return { tone: 'idle', value: '0', detail: 'no jobs registered' };
   const failing = mine.filter((s) => s.state === 'failing');
+  // Only `healthy` rows are healthy: a never-run row (for tenants, one the
+  // nightly wave covers with no bundle yet) has nothing to its name.
+  const healthy = mine.filter((s) => s.state === 'healthy').length;
+  const neverRunRows = mine.filter((s) => s.state === 'never_run');
+  const neverRun = neverRunRows.length;
+  // Red when a problem row is critical. A never-run row only counts when
+  // nothing has run for it at all (a tenant the nightly run has missed for
+  // two days): a Job group whose first run is still in flight is amber.
+  const critical = [...failing, ...neverRunRows.filter((s) => s.recentRuns === 0)]
+    .some((s) => s.severity === 'critical');
   const lastSuccess = mine
     .map((s) => s.lastSuccessAt)
     .filter((v): v is string => !!v)
     .sort()
     .at(-1) ?? null;
-  if (failing.length > 0) {
-    const tone: Tone = failing.some((s) => s.severity === 'critical') ? 'fail' : 'warn';
-    return {
-      tone,
-      value: `${failing.length} failing`,
-      detail: lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded',
-    };
-  }
-  return {
-    tone: 'ok',
-    value: `${mine.length} healthy`,
-    detail: lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded',
-  };
+  const since = lastSuccess ? `last success ${timeAgo(lastSuccess)}` : 'never succeeded';
+  const detail = [
+    ...(failing.length > 0 ? [`${healthy} healthy`] : []),
+    ...(neverRun > 0 ? [`${neverRun} never run`] : []),
+    since,
+  ].join(' · ');
+  const problemTone: Tone = critical ? 'fail' : 'warn';
+  if (failing.length > 0) return { tone: problemTone, value: `${failing.length} failing`, detail };
+  return { tone: neverRun > 0 ? problemTone : 'ok', value: `${healthy} healthy`, detail };
+}
+
+const epochMs = (iso: string | null): number => {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  return Number.isNaN(t) ? 0 : t;
+};
+
+/** The newest thing that happened to a row — its last success or failure. */
+const lastActivity = (s: BackupHealthSummary): number =>
+  Math.max(epochMs(s.lastSuccessAt), epochMs(s.lastFailedAt));
+
+/**
+ * "Recent backup activity": failures first, then by the newest run. The
+ * roll-up's own order is by name, which — with a row per tenant — would let
+ * tenants early in the alphabet push every other backup off the list.
+ */
+function recentActivity(rows: ReadonlyArray<BackupHealthSummary>): BackupHealthSummary[] {
+  return [...rows].sort((a, b) => {
+    const fa = a.state === 'failing' ? 0 : 1;
+    const fb = b.state === 'failing' ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return lastActivity(b) - lastActivity(a);
+  });
 }
 
 export default function BackupsDashboard() {
-  const { data: rows } = useBackupHealth();
+  const { data: rows, error: healthError, refetch, isFetching } = useBackupHealth();
   const { data: configsResponse } = useBackupConfigs();
   const configs = configsResponse?.data ?? [];
   // `BackupConfig.enabled` is typed as `number` (legacy 0/1 integer
@@ -209,13 +253,24 @@ export default function BackupsDashboard() {
         </p>
       </header>
 
+      {healthError && (
+        <ErrorPanel
+          error={extractOperatorError(healthError)}
+          severity="error"
+          compact
+          onRetry={() => { void refetch(); }}
+          retryPending={isFetching}
+          testId="backup-health-error"
+        />
+      )}
+
       <BackupHealthBanner summaries={summaries} />
 
       <FrozenTargetsBanner configs={configs} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {CLASSES.map((c) => {
-          const cls = classifyRows(summaries, c.match);
+          const cls = classifyRows(rows, c.match, !!healthError);
           return (
             <StatCard
               key={c.to}
@@ -225,6 +280,7 @@ export default function BackupsDashboard() {
               detail={cls.detail}
               to={c.to}
               tone={cls.tone}
+              hint={c.hint}
             />
           );
         })}
@@ -245,7 +301,11 @@ export default function BackupsDashboard() {
             Recent backup activity
           </h2>
         </div>
-        {summaries.length === 0 ? (
+        {!rows ? (
+          <p className="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+            {healthError ? 'Backup health is unavailable.' : 'Loading…'}
+          </p>
+        ) : summaries.length === 0 ? (
           <p className="rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-6 text-center text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-400">
             No backup jobs reporting yet. Bind a backup class to a Remote Storage Target to get started.
           </p>
@@ -255,10 +315,13 @@ export default function BackupsDashboard() {
             data-testid="backups-dashboard-recent"
             aria-label="Recent backup activity"
           >
-            {summaries.slice(0, 10).map((s) => {
+            {recentActivity(summaries).slice(0, 10).map((s) => {
               const isFail = s.state === 'failing';
-              const Icon = isFail ? AlertCircle : CheckCircle;
-              const iconTone = isFail
+              // A never-run row (e.g. a tenant with no bundle yet) is a problem
+              // too — never a green check beside "last success never".
+              const isNeverRun = s.state === 'never_run';
+              const Icon = isFail || isNeverRun ? AlertCircle : CheckCircle;
+              const iconTone = isFail || isNeverRun
                 ? (s.severity === 'critical' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300')
                 : 'text-emerald-600 dark:text-emerald-300';
               return (
@@ -273,7 +336,9 @@ export default function BackupsDashboard() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">
                     {isFail
                       ? <>failed {timeAgo(s.lastFailedAt)}</>
-                      : <>last success {timeAgo(s.lastSuccessAt)}</>}
+                      : isNeverRun
+                        ? <>never run</>
+                        : <>last success {timeAgo(s.lastSuccessAt)}</>}
                   </div>
                 </li>
               );

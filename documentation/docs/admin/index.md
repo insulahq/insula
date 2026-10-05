@@ -41,6 +41,14 @@ Just under the sidebar title you'll see a small identity block: the
 `platform-api` pod is serving your request. This is the fastest way to
 confirm which version is live.
 
+**Hover help.** Icon buttons, status badges, column headers and shortened
+values all over the panel explain themselves: rest the pointer on one and a
+small help bubble appears next to it (buttons and links also show it
+when you **Tab** onto them). The bubble always opens fully on screen — above
+the element, or below it when there is no room above — even inside tables,
+scrolling lists and dialogs, and it closes when you move away, click, scroll
+or press **Esc**.
+
 ## Search
 
 The search box in the top bar finds two different kinds of thing at once,
@@ -202,7 +210,7 @@ names are truncated rather than pushing the layout sideways.
 |---|---|
 | **Tenants & workloads** | Tenant count by state, and how many workloads are running, pending or failing. |
 | **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. |
-| **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. |
+| **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. **Banned IPs** is the number of addresses on the *Banned IPs* list right now — WAF and traffic auto-bans, operator and permanent bans; the community blocklist is not counted. It reads *—* when CrowdSec could not be reached. |
 | **Backups & DR** | The three backup classes, each with when it last succeeded, how much it stores at its target, and whether it is on schedule. **System** is the platform database's base backups and WAL, the etcd snapshots and the DR bundles; its size is measured hourly. **Tenant** is the tenant repositories. **Mail** is the whole mail store's snapshot repository. Hover for the target and, when a class is amber, why. |
 | **Certificates** | What is issued, what renews soon, and anything that failed to renew. |
 | **Cron & platform jobs** | Scheduled work, and anything that has not run when it should have. |

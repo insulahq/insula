@@ -45,6 +45,7 @@ vi.mock('../hooks/use-cron-jobs', () => ({
   useUpdateCronJob: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useRunCronJob: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useDeleteCronJob: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useCronFailureEmailInfo: () => ({ data: undefined, isLoading: false }),
 }));
 
 vi.mock('../hooks/use-deployments', async (importOriginal) => {

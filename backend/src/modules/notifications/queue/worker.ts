@@ -30,6 +30,7 @@
  */
 import { eq } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
+import { applyEmailChrome } from '@insula/api-contracts';
 import { notificationCategories, notificationDeliveries, users } from '../../../db/schema.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
 import { renderForDelivery, type DeliveryRender } from '../templates/render-for-delivery.js';
@@ -317,7 +318,13 @@ export async function processDelivery(
       envelopeFrom,
       to: u.email,
       subject: rendered.subject ?? '',
-      html: rendered.body,
+      // The routed provider's operator-authored header/footer. Empty (the
+      // default) returns the body byte-for-byte. No text part is added: these
+      // emails have always been HTML-only.
+      html: applyEmailChrome(rendered.body, {
+        headerHtml: provider.emailHeaderHtml,
+        footerHtml: provider.emailFooterHtml,
+      }),
     });
 
     // 7. Success. A degraded send is still a success — but the row records

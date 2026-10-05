@@ -207,6 +207,125 @@ export async function progressByRef(
     .where(and(eq(tasks.kind, kind), eq(tasks.refId, refId), sql`${tasks.status} IN ('queued','running')`));
 }
 
+// ─── adopt (fan-out folding after the fact) ──────────────────────────────
+
+/**
+ * Make the task `(kind, refId)` a child of `parentTaskId`, so the chip folds
+ * it under the parent instead of listing it beside it.
+ *
+ * For orchestrations that drive OTHER surfaces' tracked operations through
+ * their public routes (a DR recover provisions via the provision route, which
+ * enrolls its own `tenant.provision` row): the child row is created by code
+ * that cannot be told about the parent, so the orchestrator adopts it once it
+ * exists. Only an orphan is adopted — an existing parent is never replaced,
+ * and a row never becomes its own parent. Returns whether a row was adopted
+ * (false when it does not exist yet: callers retry while the op runs).
+ */
+export async function adoptChildByRef(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  refId: string,
+  parentTaskId: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ parentTaskId, updatedAt: sql`NOW()` })
+    .where(and(
+      eq(tasks.kind, kind),
+      eq(tasks.refId, refId),
+      sql`${tasks.parentTaskId} IS NULL`,
+      sql`${tasks.id} <> ${parentTaskId}`,
+    ))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
+/**
+ * Run `fn` in one transaction holding a transaction-scoped advisory lock on
+ * `key` — mutual exclusion across every API replica for a
+ * check-then-enroll ("is one running? if not, start one"). Two concurrent
+ * callers on the same key serialise: the second sees what the first
+ * committed. The lock is released at COMMIT/ROLLBACK.
+ */
+export async function withTaskLock<T>(
+  db: Database,
+  key: string,
+  fn: (tx: Database) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    // `as unknown as Database`: the codebase idiom for Drizzle's tx (same
+    // query surface, not structurally assignable).
+    return fn(tx as unknown as Database);
+  });
+}
+
+export interface StaleTask {
+  readonly id: string;
+  readonly details: Record<string, unknown> | null;
+}
+
+/**
+ * Fail the still-`running` tasks of `kind` (for `tenantId`, when given) that
+ * have not reported anything for `staleSeconds` — runs whose process died (an
+ * API pod restarted mid-run). For in-process background runs that heartbeat
+ * their row: without this a dead run blocks a retry, and sits "running" in the
+ * chip, until the 24 h orphan reaper.
+ *
+ * The cutoff is DATABASE time (`NOW()`), the same clock that wrote
+ * `updated_at` — never the calling replica's clock, whose skew could reap a
+ * run that is alive on another replica. Returns the rows it failed.
+ */
+export async function failStaleActive(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  args: {
+    readonly tenantId?: string;
+    readonly staleSeconds: number;
+    readonly error: string;
+    readonly detailsPatch?: Record<string, unknown>;
+  },
+): Promise<StaleTask[]> {
+  const staleSeconds = Math.max(1, Math.floor(args.staleSeconds));
+  const rows = await db
+    .update(tasks)
+    .set({
+      status: 'failed',
+      finishedAt: sql`NOW()`,
+      updatedAt: sql`NOW()`,
+      errorMessage: args.error,
+      ...(args.detailsPatch
+        ? { details: sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb` }
+        : {}),
+    })
+    .where(and(
+      eq(tasks.kind, kind),
+      sql`${tasks.status} IN ('queued','running')`,
+      sql`${tasks.updatedAt} < NOW() - (${staleSeconds}::int * INTERVAL '1 second')`,
+      ...(args.tenantId !== undefined ? [eq(tasks.tenantId, args.tenantId)] : []),
+    ))
+    .returning({ id: tasks.id, details: tasks.details });
+  return rows.map((r) => ({ id: r.id, details: (r.details ?? null) as Record<string, unknown> | null }));
+}
+
+/** Whether any task of `kind` for `tenantId` is still queued or running. */
+export async function hasActiveTask(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  filter: { readonly tenantId?: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(
+      eq(tasks.kind, kind),
+      sql`${tasks.status} IN ('queued','running')`,
+      ...(filter.tenantId !== undefined ? [eq(tasks.tenantId, filter.tenantId)] : []),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
 // ─── finish ──────────────────────────────────────────────────────────────
 
 export interface TaskFinishArgs {

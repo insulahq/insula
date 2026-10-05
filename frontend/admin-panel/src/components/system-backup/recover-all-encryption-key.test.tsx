@@ -14,7 +14,7 @@ const recover = { data: undefined as unknown, isPending: false, isError: false, 
 
 vi.mock('@/hooks/use-dr-recover', () => ({
   useDrRecoverAllPreview: () => preview,
-  useDrRecoverAll: () => recover,
+  useStartRecoverAll: () => recover,
 }));
 
 const { default: RecoverAllTab } = await import('./RecoverAllTab');
@@ -111,6 +111,7 @@ describe('RecoverAllTab — encryption-key preflight', () => {
 
     expect(recover.mutate).toHaveBeenCalledWith(
       expect.objectContaining({ allowEncryptionKeyMismatch: true }),
+      expect.anything(),
     );
   });
 
@@ -122,6 +123,7 @@ describe('RecoverAllTab — encryption-key preflight', () => {
 
     expect(recover.mutate).toHaveBeenCalledWith(
       expect.objectContaining({ allowEncryptionKeyMismatch: false }),
+      expect.anything(),
     );
   });
 
@@ -135,18 +137,6 @@ describe('RecoverAllTab — encryption-key preflight', () => {
     expect(screen.getByText(/Recover 1 tenant/i)).toBeTruthy();
   });
 
-  it('reports the verdict from the RUN once there is one', () => {
-    // A run launched from a stale preview carries the verdict that applied.
-    previewWith(keyCheck());
-    recover.data = {
-      data: {
-        dryRun: false, scope: 'missing', total: 1, recovered: 0, failed: 1,
-        results: [{ ...target(), ok: false, status: 'failed', recreated: false, error: 'x' }],
-        skipped: [], encryptionKey: MISMATCH,
-      },
-    };
-    render(<RecoverAllTab />);
-    expect(screen.getByText(/cannot decrypt 2 of 2 stored credentials/i)).toBeTruthy();
-    expect(screen.queryByText(/Encryption key verified/i)).toBeNull();
-  });
+  // A run started past a mismatch says so in its progress modal
+  // (dr-recover-all-progress.test.tsx); the page shows only the preview's verdict.
 });

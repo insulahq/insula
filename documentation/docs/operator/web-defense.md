@@ -21,9 +21,9 @@ You manage both from **Security → Web Defense** (`super_admin`).
 | Tab | What it's for |
 |---|---|
 | **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons |
-| **Banned IPs** | Active CrowdSec ban decisions + your static blocklist |
+| **Banned IPs** | Every address the platform is banning — your timed and permanent bans, and the auto-bans |
 | **WAF Exclusions** | Per-route CRS rule exclusions + an IP allowlist |
-| **WAF Settings** | CrowdSec status, CrowdSec Console enrollment, auto-ban tuning, the L4 host-firewall toggle |
+| **WAF Settings** | CrowdSec status, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
 
 ## WAF: OWASP CRS per route
 
@@ -89,8 +89,29 @@ rule set remains active everywhere else.
 ## CrowdSec: bans
 
 CrowdSec sits in front of every route and drops known-bad IPs. On the
-**Banned IPs** tab you see every address the platform is currently blocking and
-your static blocklist; you can add static bans and remove bans.
+**Banned IPs** tab you see every address the platform is currently blocking;
+you can add bans — timed or **Permanent** — and remove them.
+
+**Add manual ban** asks for the address, a duration and a reason. Pick
+**Permanent** for a source you have judged hostile: the ban stays until someone
+removes it. (This replaces the former *Static Blocklist* section — its entries
+now appear in the same list, labelled **Operator · Permanent**.)
+
+!!! note "Addresses that cannot be banned"
+    A ban is cluster-wide, so the platform refuses one that covers — as an
+    address or inside a range:
+
+    - **your own address** (it would lock you out of the panel);
+    - the platform's **own nodes or ingress addresses**;
+    - **private, loopback, link-local, CGNAT and other reserved** ranges
+      (`10.0.0.0/8`, `192.168.0.0/16`, `100.64.0.0/10`, `fc00::/7`, …) — that
+      traffic is cluster-internal or the reverse proxy itself;
+    - a **trusted range** or an **allowlisted** address.
+
+    The dialog says which rule applied. The WAF auto-ban follows the same
+    rules and records a skipped address as **skipped_protected**. If the
+    platform cannot read its node addresses or the allowlist, it refuses the
+    ban rather than issue it blind.
 
 ### Reading the list
 
@@ -100,12 +121,14 @@ collapses them, and clicking it expands the individual detections. The **Time
 left** column counts down to the moment the address is actually free again,
 which is the *last* of its bans to expire, not the first.
 
-The **Added by** column says which of four things blocked the address:
+The **Added by** column says which of four things blocked the address. Hover
+an **Operator** pill to see who added the ban; the **Why** column shows the
+reason they gave.
 
 | Added by | What it means |
 |---|---|
-| **Operator** | A person clicked *Add ban* in this panel. |
-| **Static list** | A person added it to the long-term static blocklist. It does not expire on its own. |
+| **Operator** | A person added a timed ban in this panel. |
+| **Operator · Permanent** | A person added a ban with the **Permanent** duration. It does not expire on its own; **Time left** reads *Permanent*. |
 | **Auto · WAF** | The auto-ban scheduler, after enough ModSecurity rules tripped on the platform's own hosts. |
 | **Auto · Traffic** | This platform's own CrowdSec agent, after spotting a pattern in the ingress access log. |
 
@@ -116,33 +139,57 @@ things, and turning one off does not affect the other.
     A pattern can run in **alert-only** mode, where it still raises alerts but
     issues no ban. When every decision on an address is alert-only the row is
     marked **not enforced** — it appears in this list, but traffic from it is
-    getting through. See *Traffic detection* below to change that.
+    getting through. See *Malicious Traffic Detection* below to change that.
 
 Every column sorts, including the community-feed viewer and the WAF Events
 table. Addresses sort numerically, so `9.x` comes before `10.x`.
 
 ### Ban from an event
 
+The **WAF Events** tab opens with one header row: a one-line description on the
+left (hover it for the scraper's caps), the auto-refresh state and the **Live
+tail** / **Refresh now** buttons on the right.
+
 The fastest workflow: on the **WAF Events** tab, find the offending request and
 click **Ban IP** on its source IP — a ban modal opens pre-filled, so you turn a
 detection into a ban in one click. The same row offers **Allowlist IP** when an
 IP is a false positive you want to permanently trust.
 
-### WAF Settings — CrowdSec status and Console
+### WAF Settings — CrowdSec status and configuration
 
 The **WAF Settings** tab is where you check that CrowdSec is healthy and tune its
-behaviour:
+behaviour. Top to bottom:
 
-- **CrowdSec status** — is the engine up and consuming the community blocklist.
-- **Console enrollment** — enrol the cluster's CrowdSec instance into the
-  CrowdSec Console for richer dashboards (and disenroll).
-- **Automatic bans** — the two engines that ban without you, described below.
+- **CrowdSec status** — the decision API (LAPI), enforcement coverage, bouncers.
+- **Community Blocklist** — the opt-in shared feed, described below.
+- **WAF Auto-Ban** — bans on ModSecurity rule hits.
+- **Malicious Traffic Detection** — bans on behaviour in the ingress access log.
 - **L4 enforcement toggle** — push CrowdSec decisions down to the host firewall
   (L4), not just the HTTP layer.
+- **CrowdSec Console** — enrol the cluster's CrowdSec instance into the
+  CrowdSec Console for richer dashboards (and disenroll).
 
-### Automatic bans — two engines, one list
+History-style sub-sections — the auto-ban **Recent decisions**, the **Log
+sources** and the **Scenarios** table — start collapsed; click a header to open
+it. The collapsed header still shows the counts.
 
-Both write to the **Banned IPs** list; disabling one leaves the other running.
+WAF auto-ban and Malicious Traffic Detection are the two engines that ban
+without you. Both write to the **Banned IPs** list; disabling one leaves the
+other running.
+
+### Community Blocklist
+
+**Enable community blocklist** makes CrowdSec pull its shared feed — tens of
+thousands of IPs reported by other CrowdSec installations — and block them on
+every route. It is **off by default**: those bans are decided elsewhere, on
+evidence you cannot inspect, and the feed has blocked legitimate scanners.
+
+**View banned IPs** opens a searchable list of the feed. **Exclude** on a row
+adds that one address to the allowlist, which beats every ban — a far smaller
+hammer than turning the whole feed off. Community bans are not listed on the
+**Banned IPs** tab; a banner there says how many are in force.
+
+### WAF auto-ban
 
 **WAF auto-ban** reacts to ModSecurity rule hits on the platform's own hosts.
 You set how many events inside a window trigger a ban, the minimum severity, the
@@ -155,16 +202,25 @@ attack and produces mass false-positive bans.
 watches the platform's own hosts — a tenant's own visitors tripping the WAF on
 the tenant's site will not get banned cluster-wide.
 
-### Traffic detection
+### Malicious Traffic Detection
 
 The second engine. It reads the ingress access log and watches for behaviour a
 WAF cannot see: a request for `/.env` or `/wp-login.php` is a perfectly valid
 request with no attack payload, so no rule fires — but a stream of them is
 reconnaissance.
 
-The card lists every pattern the agent has loaded, what each detects, how much
-traffic it has seen and how many alerts it raised since the agent last started.
-Each row switches between:
+**Enable / Disable** switches the whole engine. **Disabled** does not stop the
+agent: it keeps reading the access log and raising alerts, but **no scenario
+issues a ban**. Your per-scenario choices below are kept and come back exactly
+as they were when you enable it again. The setting is saved by the platform,
+so it survives agent restarts and redeploys. If the agent cannot be updated at
+the moment you toggle, the card says the choice is saved but not applied yet
+and offers **Apply now**; it is also re-applied automatically when the
+platform API next starts.
+
+The **Scenarios** table lists every pattern the agent has loaded, what each
+detects, how much traffic it has seen and how many alerts it raised since the
+agent last started. Each row switches between:
 
 - **Bans** — a match issues a ban.
 - **Alert only** — a match raises an alert and blocks nothing. Use this while
@@ -176,13 +232,16 @@ Each row switches between:
     `http-crawl-non_statics` ships as **alert only** — "many non-static requests
     from one address" also describes a legitimate search-engine crawler.
 
-The **Log sources** box lists what the agent actually reads. A pattern that
+The **Log sources** section lists what the agent actually reads. A pattern that
 watches a log type this agent does not read will sit at zero events forever;
 that is expected, not a fault.
 
 Changing a mode rewrites the agent's configuration and restarts it. CrowdSec
 reads that file only at startup, so the change lands when the restart completes —
-a few seconds.
+a few seconds. While it restarts the card says so and shows the list the agent
+reported just before; you can keep changing modes. Switches that write the same
+configuration are locked while a change is being saved, so changes are applied
+one at a time and none is lost.
 
 !!! note "CrowdSec fails open"
     If the CrowdSec decision API is unreachable, the bouncer **fails open** —

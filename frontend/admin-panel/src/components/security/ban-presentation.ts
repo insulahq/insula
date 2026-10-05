@@ -16,6 +16,7 @@
  *      each row said `crowdsecurity/http-sensitive-files` with nothing about
  *      what that means or how the ban came to exist.
  */
+import { crowdsecDecisionAddressKey } from '@insula/api-contracts';
 import type { CrowdsecAddedBy, CrowdsecDecision, CrowdsecScenario } from '@insula/api-contracts';
 
 export interface AddedByMeta {
@@ -36,10 +37,13 @@ const ADDED_BY: Record<CrowdsecAddedBy, AddedByMeta> = {
     title: 'A human added this ban from this panel.',
     automatic: false,
   },
+  // A manual ban with the Permanent duration. The enum value predates the
+  // modal's Permanent option — it was the separate Static Blocklist — and is
+  // part of the API; only the label moved on.
   'static-list': {
-    label: 'Static list',
+    label: 'Operator · Permanent',
     cls: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
-    title: 'A human added this to the long-term static blocklist. It does not expire on its own.',
+    title: 'A human banned this address permanently from this panel. It stays until someone removes it.',
     automatic: false,
   },
   'auto-ban-waf': {
@@ -105,7 +109,7 @@ export function parseWafAutoBanScenario(scenario: string): WafAutoBanEvidence | 
  * A wrong explanation of why an address is blocked is worse than none.
  */
 export function describeDecision(
-  d: Pick<CrowdsecDecision, 'addedBy' | 'scenario'>,
+  d: Pick<CrowdsecDecision, 'addedBy' | 'scenario' | 'operatorReason'>,
   scenarioDescriptions: ReadonlyMap<string, string>,
 ): string {
   if (d.addedBy === 'auto-ban-waf') {
@@ -119,15 +123,69 @@ export function describeDecision(
         : `Tripped ${rules} — ${ev.eventCount} blocked request${ev.eventCount === 1 ? '' : 's'}`;
     }
   }
-  if (d.addedBy === 'operator' || d.addedBy === 'static-list') {
-    // Operator reasons are free text carried after the prefix.
-    const idx = d.scenario.indexOf(':');
-    const text = idx === -1 ? d.scenario : d.scenario.slice(idx + 1).trim();
-    return text || 'Added by an operator';
+  if (isOperatorDecision(d)) {
+    // The backend splits the reason out of `admin-panel:<user id>:<reason>`.
+    // Never fall back to the scenario: it carries the operator's user id,
+    // which is how the Why column came to read `<user id>:probing /.env`.
+    return d.operatorReason?.trim() || 'Added by an operator';
   }
   const described = scenarioDescriptions.get(d.scenario);
   if (described) return described;
   return d.scenario || 'No reason recorded';
+}
+
+/** A human added it from this panel — timed or permanent. */
+function isOperatorDecision(d: Pick<CrowdsecDecision, 'addedBy'>): boolean {
+  return d.addedBy === 'operator' || d.addedBy === 'static-list';
+}
+
+/**
+ * Hover text for a reason. The raw scenario is the precise identifier for an
+ * automatic ban (`crowdsecurity/http-probing`), but for an operator ban it is
+ * `admin-panel:<user id>:<reason>` — so those hover with the reason alone.
+ */
+export function decisionHoverText(
+  d: Pick<CrowdsecDecision, 'addedBy' | 'scenario' | 'operatorReason'>,
+): string {
+  if (isOperatorDecision(d)) return d.operatorReason?.trim() || 'Added by an operator';
+  return d.scenario;
+}
+
+/**
+ * Tooltip for one "Added by" pill of a row.
+ *
+ * Operator pills say WHO — the operator's name, resolved server-side — which
+ * is what the operator asked for. A name the server could not resolve (the
+ * account was deleted, or the lookup failed) says so; the user id is never
+ * shown in its place.
+ */
+export function addedByTooltip(group: DecisionGroup, addedBy: CrowdsecAddedBy): string {
+  return tooltipFor(group.decisions, addedBy);
+}
+
+/** The same, for one decision of an expanded row. */
+export function decisionAddedByTooltip(d: CrowdsecDecision): string {
+  return tooltipFor([d], d.addedBy);
+}
+
+function tooltipFor(decisions: readonly CrowdsecDecision[], addedBy: CrowdsecAddedBy): string {
+  if (!isOperatorDecision({ addedBy })) return addedByMeta(addedBy).title;
+  const mine = decisions.filter((d) => d.addedBy === addedBy);
+  const names = [...new Set(mine.map((d) => d.addedByName).filter((n): n is string => Boolean(n)))];
+  const unnamed = mine.some((d) => !d.addedByName);
+  const permanent = addedBy === 'static-list' ? ' Permanent — stays until someone removes it.' : '';
+  return `${describeOperators(names, unnamed)}.${permanent}`;
+}
+
+function describeOperators(names: readonly string[], someUnnamed: boolean): string {
+  if (names.length === 0) return 'Added by an operator — name unavailable (the account may no longer exist)';
+  const named = `Added by ${names.join(', ')}`;
+  return someUnnamed ? `${named} and an operator whose name is unavailable` : named;
+}
+
+/** True when a permanent ban holds the address — it will not lapse on its own. */
+export function isPermanentGroup(group: DecisionGroup): boolean {
+  return group.decisions.some((d) => d.addedBy === 'static-list');
 }
 
 /** One IP (or CIDR/country/AS) and everything currently banning it. */
@@ -159,7 +217,8 @@ export interface DecisionGroup {
 export function groupDecisions(decisions: readonly CrowdsecDecision[]): DecisionGroup[] {
   const byKey = new Map<string, CrowdsecDecision[]>();
   for (const d of decisions) {
-    const key = `${d.scope}:${d.value}`;
+    // The same key the dashboard's "Banned IPs" figure counts by.
+    const key = crowdsecDecisionAddressKey(d);
     const list = byKey.get(key);
     if (list) list.push(d); else byKey.set(key, [d]);
   }

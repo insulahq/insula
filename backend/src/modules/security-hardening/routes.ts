@@ -17,6 +17,7 @@
  * doesn't have to wait the 30s for the next scheduled tick.
  */
 
+import { checkBanAllowed } from './ban-safety-context.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -40,6 +41,7 @@ import {
   pruneStaleBouncers,
   STATIC_BAN_DURATION,
 } from './crowdsec.js';
+import { attachOperatorNames } from './crowdsec-ban-list.js';
 import {
   addAllowlistEntry,
   listAllowlistEntries,
@@ -53,6 +55,7 @@ import {
   crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
   crowdsecSetScenarioSimulationRequestSchema,
+  crowdsecSetTrafficDetectionRequestSchema,
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
 } from '@insula/api-contracts';
@@ -71,7 +74,13 @@ import {
   enrollConsole,
   getConsoleStatus,
 } from './crowdsec-console.js';
-import { listScenarios, setScenarioSimulation } from './crowdsec-scenarios.js';
+import {
+  listScenarios,
+  setScenarioSimulation,
+  setTrafficDetectionEnabled,
+  SimulationConfigConflictError,
+} from './crowdsec-scenarios.js';
+import { readTrafficDetectionEnabled, writeTrafficDetectionEnabled } from './traffic-detection-setting.js';
 import {
   crowdsecConsoleEnrollRequestSchema,
   crowdsecConsoleMetaPatchSchema,
@@ -79,6 +88,7 @@ import {
 } from '@insula/api-contracts';
 import {
   getL4Status,
+  getOperatorIp,
   getOperatorIpWithSource,
   OperatorIpNotTrustedError,
   resolveTrustSources,
@@ -102,6 +112,23 @@ async function readConsoleMetaEnabled(db: any): Promise<boolean> {
   const raw = rows[0]?.setting_value;
   if (raw === undefined) return true;
   return raw.toLowerCase() !== 'false';
+}
+
+/**
+ * Every compare-and-swap write of the agent's simulation config lost to a
+ * concurrent change. 409, retryable: nothing was overwritten, the caller's
+ * change simply has not landed.
+ */
+function simulationConflict(err: SimulationConfigConflictError, title: string, outcome: string): ApiError {
+  return new ApiError('CROWDSEC_SIMULATION_CONFLICT', err.message, 409, {
+    operatorError: {
+      code: 'CROWDSEC_SIMULATION_CONFLICT',
+      title,
+      detail: `The agent's configuration was changed by someone else ${err.attempts} times while this change was being written. ${outcome}`,
+      remediation: ['Retry in a few seconds.'],
+      retryable: true,
+    },
+  });
 }
 
 interface AuthedRequest {
@@ -340,9 +367,9 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        let response: Awaited<ReturnType<typeof listDecisions>>;
         try {
-          const response = await listDecisions(kubeconfigPath, parsed.data);
-          return success(response);
+          response = await listDecisions(kubeconfigPath, parsed.data);
         } catch (err) {
           // Throw the platform ApiError so the global error-handler
           // middleware emits the standard {error:{code,message,...}}
@@ -358,6 +385,18 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             undefined,
             'Check the CrowdSec pod is Running and the platform-api bouncer is registered (cscli bouncers list).',
           );
+        }
+        // "Added by" names the operator. A failed lookup must not blank the
+        // list of what is being blocked — the rows still render, as
+        // "Operator" without a name — but it is logged, not swallowed.
+        try {
+          return success({ ...response, decisions: await attachOperatorNames(deps.db, response.decisions) });
+        } catch (err) {
+          app.log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            'crowdsec: could not resolve operator names for the ban list',
+          );
+          return success(response);
         }
       },
     );
@@ -424,6 +463,8 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        const refusal = await checkBanAllowed({ db: app.db, kubeconfigPath }, parsed.data.value, getOperatorIp(req));
+        if (refusal) throw new ApiError(refusal.code, refusal.message, 409, { value: parsed.data.value });
         const actor = userOf(req as AuthedRequest);
         app.log.warn({ actor, ban: parsed.data }, 'crowdsec: manual ban added');
         try {
@@ -594,7 +635,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
       },
     );
 
-    // ─── F2 — Static (long-duration) operator ban ───────────────────────
+    // ─── Permanent operator ban (the modal's "Permanent" duration) ───────
 
     app.post(
       '/admin/security/crowdsec/static-blocklist',
@@ -607,8 +648,10 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
           });
         }
+        const refusal = await checkBanAllowed({ db: app.db, kubeconfigPath }, parsed.data.value, getOperatorIp(req));
+        if (refusal) throw new ApiError(refusal.code, refusal.message, 409, { value: parsed.data.value });
         const actor = userOf(req as AuthedRequest);
-        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: static ban added (1y duration)');
+        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: permanent ban added');
         try {
           const result = await addStaticBan(kubeconfigPath, parsed.data, actor);
           return success({
@@ -692,12 +735,24 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
     // scenarios from Traefik access logs — and the panel had a settings card
     // for one of them and nothing at all for the other.
 
+    // The saved Malicious Traffic Detection on/off. A database hiccup must not
+    // take the scenario list down with it, so a failed read is "never saved"
+    // (null) — the UI then shows what the agent actually runs.
+    const readDetectionChoice = async (): Promise<boolean | null> => {
+      try {
+        return await readTrafficDetectionEnabled(deps.db);
+      } catch (err) {
+        app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'crowdsec: could not read the traffic-detection setting');
+        return null;
+      }
+    };
+
     app.get(
       '/admin/security/crowdsec/scenarios',
       { preHandler: requireRole('super_admin') },
       async (_req: FastifyRequest, reply: FastifyReply) => {
         try {
-          return success(await listScenarios(kubeconfigPath));
+          return success(await listScenarios(kubeconfigPath, await readDetectionChoice()));
         } catch (err) {
           return reply.status(502).send({
             error: 'CROWDSEC_SCENARIOS_FAILED',
@@ -723,9 +778,13 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         const { name, simulated } = parsed.data;
         app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario simulation changed');
         try {
-          const out = await setScenarioSimulation(kubeconfigPath, name, simulated);
+          const out = await setScenarioSimulation(kubeconfigPath, name, simulated, readDetectionChoice);
           return success(out);
         } catch (err) {
+          if (err instanceof SimulationConfigConflictError) {
+            app.log.warn({ actor, scenario: name, simulated }, 'crowdsec: scenario change lost every compare-and-swap attempt');
+            throw simulationConflict(err, 'Scenario not changed', 'The scenario keeps its previous mode; nothing else was overwritten.');
+          }
           const message = err instanceof Error ? err.message : String(err);
           // An unknown scenario name is the caller's mistake, not a cluster
           // fault — and it is the mistake this endpoint exists to catch, since
@@ -735,6 +794,61 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             error: status === 400 ? 'UNKNOWN_SCENARIO' : 'CROWDSEC_SCENARIO_PATCH_FAILED',
             message,
           });
+        }
+      },
+    );
+
+    // Malicious Traffic Detection on/off. Disabled = the agent's GLOBAL
+    // simulation switch on: every scenario keeps raising alerts, none bans.
+    // The choice is saved to platform_settings BEFORE it is applied, so a
+    // failed apply is re-applied at the next startup instead of being lost —
+    // and so a recreated ConfigMap comes back in the operator's state, not the
+    // shipped default.
+    app.put(
+      '/admin/security/crowdsec/traffic-detection',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecSetTrafficDetectionRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        const { enabled } = parsed.data;
+        app.log.warn({ actor, enabled }, 'crowdsec: malicious traffic detection toggled');
+        await writeTrafficDetectionEnabled(deps.db, enabled);
+        try {
+          // Apply what is SAVED at write time, not this request's value: of
+          // two racing toggles the later save then wins on the agent too.
+          const readSaved = async (): Promise<boolean> =>
+            (await readTrafficDetectionEnabled(deps.db)) ?? enabled;
+          return success(await setTrafficDetectionEnabled(kubeconfigPath, readSaved));
+        } catch (err) {
+          if (err instanceof SimulationConfigConflictError) {
+            app.log.warn({ actor, enabled }, 'crowdsec: traffic detection saved but lost every compare-and-swap attempt');
+            throw simulationConflict(err, 'Saved, but not applied yet', 'Your choice was saved and is re-applied automatically the next time platform-api starts.');
+          }
+          const detail = err instanceof Error ? err.message : String(err);
+          app.log.warn({ actor, enabled, err: detail }, 'crowdsec: traffic detection saved but not applied');
+          throw new ApiError(
+            'CROWDSEC_TRAFFIC_DETECTION_FAILED',
+            `Saved, but not applied to the CrowdSec agent: ${detail}`,
+            502,
+            {
+              operatorError: {
+                code: 'CROWDSEC_TRAFFIC_DETECTION_FAILED',
+                title: 'Saved, but not applied yet',
+                detail: `Your choice was saved, but the agent's configuration could not be updated: ${detail}`,
+                remediation: [
+                  'Retry. The saved choice is also re-applied automatically the next time platform-api starts.',
+                  'Check that platform-api can read and patch ConfigMaps in the platform-system namespace.',
+                ],
+                retryable: true,
+              },
+            },
+          );
         }
       },
     );

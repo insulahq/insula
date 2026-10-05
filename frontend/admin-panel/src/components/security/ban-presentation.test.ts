@@ -1,14 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import type { CrowdsecDecision } from '@insula/api-contracts';
+import { crowdsecDecisionAddressKey } from '@insula/api-contracts';
 import {
   addedByMeta,
+  addedByTooltip,
   compareAddresses,
   compareGroups,
+  decisionHoverText,
   describeDecision,
   groupDecisions,
+  isPermanentGroup,
   parseWafAutoBanScenario,
   scenarioDescriptionMap,
 } from './ban-presentation';
+
+const ALICE = '11111111-2222-4333-8444-555555555555';
 
 const decision = (over: Partial<CrowdsecDecision> = {}): CrowdsecDecision => ({
   id: 1,
@@ -24,6 +30,27 @@ const decision = (over: Partial<CrowdsecDecision> = {}): CrowdsecDecision => ({
   autoBanned: false,
   simulated: false,
   addedBy: 'auto-ban-traffic',
+  operatorReason: null,
+  addedByName: null,
+  ...over,
+});
+
+const operatorBan = (over: Partial<CrowdsecDecision> = {}) => decision({
+  origin: 'cscli',
+  scenario: `admin-panel:${ALICE}:probing /.env`,
+  manualByOperator: true,
+  addedBy: 'operator',
+  operatorReason: 'probing /.env',
+  addedByName: 'Alice Admin (alice@example.test)',
+  ...over,
+});
+
+const permanentBan = (over: Partial<CrowdsecDecision> = {}) => operatorBan({
+  scenario: `admin-panel-static:${ALICE}:known scanner`,
+  manualByOperator: false,
+  staticByOperator: true,
+  addedBy: 'static-list',
+  operatorReason: 'known scanner',
   ...over,
 });
 
@@ -45,6 +72,15 @@ describe('addedByMeta', () => {
     }
     // "crowdsec" as a bare origin was the specific complaint.
     expect(labels).not.toContain('crowdsec');
+  });
+
+  it('labels a permanent ban as an operator action that is permanent', () => {
+    // The Static Blocklist section is gone; "Static list" would name nothing
+    // on the page. Permanent is now a duration of the manual-ban modal.
+    const label = addedByMeta('static-list').label;
+    expect(label).toMatch(/operator/i);
+    expect(label).toMatch(/permanent/i);
+    expect(label.toLowerCase()).not.toContain('static');
   });
 
   it('carries a dark: variant on every pill', () => {
@@ -112,17 +148,90 @@ describe('describeDecision', () => {
     expect(text).not.toContain('requests');
   });
 
-  it('shows the operator’s own words for a manual ban', () => {
-    expect(describeDecision(
-      decision({ addedBy: 'operator', scenario: 'admin-panel:persistent scanner from OVH' }),
-      descriptions,
-    )).toBe('persistent scanner from OVH');
+  it('shows the operator’s own words for a manual ban — and nothing else', () => {
+    // Operator report: the Why column read `<user id>:probing /.env`. The
+    // scenario carries the user id; the reason is what the operator typed.
+    const text = describeDecision(operatorBan(), descriptions);
+    expect(text).toBe('probing /.env');
+    expect(text).not.toContain(ALICE);
+  });
+
+  it('shows the operator’s own words for a permanent ban', () => {
+    expect(describeDecision(permanentBan(), descriptions)).toBe('known scanner');
+  });
+
+  it('never falls back to the raw scenario of an operator ban, which carries the user id', () => {
+    const text = describeDecision(operatorBan({ operatorReason: null }), descriptions);
+    expect(text).toBe('Added by an operator');
+    expect(text).not.toContain(ALICE);
   });
 
   it('never renders an empty reason', () => {
     expect(describeDecision(decision({ scenario: '' }), new Map())).toBe('No reason recorded');
     expect(describeDecision(decision({ addedBy: 'operator', scenario: 'admin-panel:' }), new Map()))
       .toBe('Added by an operator');
+  });
+});
+
+describe('decisionHoverText', () => {
+  it('hovers an operator ban with its reason, never the id-carrying scenario', () => {
+    expect(decisionHoverText(operatorBan())).toBe('probing /.env');
+    expect(decisionHoverText(permanentBan())).not.toContain(ALICE);
+  });
+
+  it('keeps the raw scenario name for automatic bans — it is the precise identifier', () => {
+    expect(decisionHoverText(decision({ scenario: 'crowdsecurity/http-probing' })))
+      .toBe('crowdsecurity/http-probing');
+  });
+});
+
+describe('addedByTooltip', () => {
+  it('names the operator behind a manual ban', () => {
+    const g = groupDecisions([operatorBan()])[0];
+    expect(addedByTooltip(g, 'operator')).toContain('Alice Admin (alice@example.test)');
+  });
+
+  it('names the operator behind a permanent ban', () => {
+    const g = groupDecisions([permanentBan()])[0];
+    expect(addedByTooltip(g, 'static-list')).toContain('Alice Admin (alice@example.test)');
+  });
+
+  it('lists every operator once when several banned the same address', () => {
+    const g = groupDecisions([
+      operatorBan({ id: 1 }),
+      operatorBan({ id: 2, scenario: 'admin-panel:b:other', addedByName: 'Bob Builder (bob@example.test)' }),
+      operatorBan({ id: 3, scenario: 'admin-panel:c:third' }),
+    ])[0];
+    const tip = addedByTooltip(g, 'operator');
+    expect(tip.match(/Alice Admin/g)).toHaveLength(1);
+    expect(tip).toContain('Bob Builder');
+  });
+
+  it('says the name is unavailable rather than printing the user id', () => {
+    const g = groupDecisions([operatorBan({ addedByName: null })])[0];
+    const tip = addedByTooltip(g, 'operator');
+    expect(tip).toMatch(/unavailable|no longer exists/i);
+    expect(tip).not.toContain(ALICE);
+  });
+
+  it('keeps the engine description for automatic bans', () => {
+    const g = groupDecisions([decision()])[0];
+    expect(addedByTooltip(g, 'auto-ban-traffic')).toBe(addedByMeta('auto-ban-traffic').title);
+  });
+});
+
+describe('isPermanentGroup', () => {
+  it('is true when a permanent ban holds the address', () => {
+    expect(isPermanentGroup(groupDecisions([permanentBan()])[0])).toBe(true);
+    // A timed decision beside it does not make the address any less blocked.
+    expect(isPermanentGroup(groupDecisions([
+      permanentBan({ id: 1 }), decision({ id: 2, value: '203.0.113.10' }),
+    ])[0])).toBe(true);
+  });
+
+  it('is false for timed bans', () => {
+    expect(isPermanentGroup(groupDecisions([operatorBan()])[0])).toBe(false);
+    expect(isPermanentGroup(groupDecisions([decision()])[0])).toBe(false);
   });
 });
 
@@ -147,6 +256,13 @@ describe('groupDecisions', () => {
     expect(groups[0].expiresAt).toBe('2026-09-14T06:00:00.000Z');
   });
 
+  it('keys rows exactly as the dashboard counts them', () => {
+    // The dashboard tile counts distinct crowdsecDecisionAddressKey values;
+    // the list must group on the same key or the two disagree.
+    const groups = groupDecisions([decision({ id: 1 }), decision({ id: 2, scenario: 'x/y' })]);
+    expect(groups[0].key).toBe(crowdsecDecisionAddressKey(decision()));
+  });
+
   it('keeps different scopes apart even when the value matches', () => {
     const groups = groupDecisions([
       decision({ id: 1, scope: 'Ip', value: '203.0.113.10' }),
@@ -159,7 +275,7 @@ describe('groupDecisions', () => {
     const groups = groupDecisions([
       decision({ id: 1, addedBy: 'auto-ban-traffic', scenario: 'a/b' }),
       decision({ id: 2, addedBy: 'auto-ban-traffic', scenario: 'c/d' }),
-      decision({ id: 3, addedBy: 'operator', scenario: 'admin-panel:x' }),
+      operatorBan({ id: 3 }),
     ]);
     expect([...groups[0].addedBy].sort()).toEqual(['auto-ban-traffic', 'operator']);
   });

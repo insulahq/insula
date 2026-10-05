@@ -143,6 +143,16 @@ Use the **Import** menu to load a dump:
     matching tables. Import into the right database — ideally export a backup
     first.
 
+!!! note "Full-server dumps are refused"
+    Export only your application database — for example
+    `mariadb-dump --databases <name>` or `mysqldump <name>` (PostgreSQL:
+    `pg_dump <name>`). A full-server dump (`--all-databases`, `pg_dumpall`)
+    also carries the server's own `mysql` system schema or its roles; importing
+    it would replace the server's user accounts, so every app on the database
+    would lose its login. The import refuses such a file and names the line
+    that triggered it, for example ``USE `mysql`;``, `CREATE USER …` or
+    `GRANT …`. Create and manage users under **Database Users** instead.
+
 ## Connection details for your apps
 
 Apps you install from the catalog are wired to their database automatically — you

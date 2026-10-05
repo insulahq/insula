@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getCronJobById, updateCronJob, deleteCronJob } from './service.js';
+import { getCronJobById, updateCronJob, deleteCronJob, createCronJob, getFailureEmailInfo } from './service.js';
+import { CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 
 vi.mock('../tenants/service.js', () => ({
@@ -137,6 +138,92 @@ describe('deleteCronJob', () => {
 
     await expect(deleteCronJob(db, 'c1', 'missing')).rejects.toMatchObject({
       code: 'CRON_JOB_NOT_FOUND',
+    });
+  });
+});
+
+/** A db whose select() always yields `row`, recording every update().set(). */
+function recordingDb(row: Record<string, unknown>) {
+  const sets: Record<string, unknown>[] = [];
+  const inserts: Record<string, unknown>[] = [];
+  const where = vi.fn().mockImplementation(() => Object.assign(Promise.resolve([row]), {
+    limit: vi.fn().mockResolvedValue([row]),
+  }));
+  const db = {
+    select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where }) }),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockImplementation((v: Record<string, unknown>) => {
+        sets.push(v);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }),
+    insert: vi.fn().mockReturnValue({
+      values: vi.fn().mockImplementation((v: Record<string, unknown>) => {
+        inserts.push(v);
+        return Promise.resolve(undefined);
+      }),
+    }),
+  } as unknown as Parameters<typeof updateCronJob>[0];
+  return { db, sets, inserts };
+}
+
+describe('failure email settings', () => {
+  const stored = {
+    id: 'j1', tenantId: 'c1', name: 'cleanup',
+    notifyOnFailure: false, notifyTenantEmail: true, notifyEmail: null,
+  };
+
+  it('stores the opt-in on create, with a blank extra address as none', async () => {
+    const { db, inserts } = recordingDb(stored);
+    await createCronJob(db, 'c1', {
+      name: 'n', type: 'webcron', schedule: '0 * * * *', url: 'https://example.test/c',
+      http_method: 'GET', enabled: true,
+      notify_on_failure: true, notify_tenant_email: false, notify_email: 'ops@example.test',
+    });
+    expect(inserts[0]).toMatchObject({ notifyOnFailure: true, notifyTenantEmail: false, notifyEmail: 'ops@example.test' });
+
+    await createCronJob(db, 'c1', {
+      name: 'n', type: 'webcron', schedule: '0 * * * *', url: 'https://example.test/c',
+      http_method: 'GET', enabled: true, notify_on_failure: false, notify_tenant_email: true,
+    });
+    expect(inserts[1]).toMatchObject({ notifyOnFailure: false, notifyTenantEmail: true, notifyEmail: null });
+  });
+
+  it('switching it on with the stored defaults mails the tenant email', async () => {
+    const { db, sets } = recordingDb(stored);
+    await updateCronJob(db, 'c1', 'j1', { notify_on_failure: true });
+    expect(sets[0]).toEqual({ notifyOnFailure: true });
+  });
+
+  it('clears the extra address with null', async () => {
+    const { db, sets } = recordingDb({ ...stored, notifyEmail: 'ops@example.test' });
+    await updateCronJob(db, 'c1', 'j1', { notify_email: null });
+    expect(sets[0]).toEqual({ notifyEmail: null });
+  });
+
+  it('refuses an edit that leaves a switched-on job with nobody to mail', async () => {
+    // Judged on the MERGED row: this PATCH only unticks the tenant email, and
+    // the stored job has no extra address.
+    const { db, sets } = recordingDb({ ...stored, notifyOnFailure: true });
+    await expect(updateCronJob(db, 'c1', 'j1', { notify_tenant_email: false })).rejects.toMatchObject({
+      code: 'INVALID_FIELD_VALUE',
+      status: 400,
+      details: { field: 'notify_email' },
+    });
+    expect(sets).toHaveLength(0);
+  });
+
+  it('allows the same edit when the stored job has an extra address', async () => {
+    const { db, sets } = recordingDb({ ...stored, notifyOnFailure: true, notifyEmail: 'ops@example.test' });
+    await updateCronJob(db, 'c1', 'j1', { notify_tenant_email: false });
+    expect(sets[0]).toEqual({ notifyTenantEmail: false });
+  });
+
+  it('getFailureEmailInfo returns the tenant email the scheduler will use, and the cap', async () => {
+    const { db } = recordingDb({ primaryEmail: 'owner@example.test' });
+    await expect(getFailureEmailInfo(db, 'c1')).resolves.toEqual({
+      tenantEmail: 'owner@example.test',
+      maxEmailsPerTenantPerDay: CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
     });
   });
 });

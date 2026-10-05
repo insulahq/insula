@@ -53,7 +53,7 @@ describe('folderProblem', () => {
   /**
    * Uppercase and dots are ACCEPTED, deliberately — see the SEGMENT comment in
    * extra-mounts.ts. A web host's folders are named after the sites they hold
-   * (`business.na`, `www.example.com`, `Website`), and the lowercase-only rule
+   * (`example.com`, `www.example.com`, `Website`), and the lowercase-only rule
    * rejected the most natural naming scheme a tenant has while the folder
    * picker happily offered those exact folders because they exist on disk.
    *
@@ -63,7 +63,7 @@ describe('folderProblem', () => {
    */
   it('accepts uppercase and dots — real site-folder names', () => {
     expect(folderProblem('Media')).toBeNull();
-    expect(folderProblem('business.na')).toBeNull();
+    expect(folderProblem('example.com')).toBeNull();
     expect(folderProblem('www.example.com')).toBeNull();
   });
 
