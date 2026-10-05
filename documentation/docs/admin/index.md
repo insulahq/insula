@@ -41,6 +41,14 @@ Just under the sidebar title you'll see a small identity block: the
 `platform-api` pod is serving your request. This is the fastest way to
 confirm which version is live.
 
+**Hover help.** Icon buttons, status badges, column headers and shortened
+values all over the panel explain themselves: rest the pointer on one and a
+small help bubble appears next to it (buttons and links also show it
+when you **Tab** onto them). The bubble always opens fully on screen — above
+the element, or below it when there is no room above — even inside tables,
+scrolling lists and dialogs, and it closes when you move away, click, scroll
+or press **Esc**.
+
 ## Search
 
 The search box in the top bar finds two different kinds of thing at once,
