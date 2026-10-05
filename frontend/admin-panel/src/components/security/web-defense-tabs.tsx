@@ -780,7 +780,7 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
               onClick={() => onBan(ev.sourceIp as string)}
               className="inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-1 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
               data-testid={`waf-ban-${ev.id}`}
-              title={`Block ${ev.sourceIp} permanently — adds it to the static blocklist (does not expire)`}
+              title={`Ban ${ev.sourceIp} — opens the ban dialog with Permanent preselected (you can pick a shorter duration)`}
               aria-label={`Block ${ev.sourceIp} permanently`}
             >
               <Ban size={12} />
