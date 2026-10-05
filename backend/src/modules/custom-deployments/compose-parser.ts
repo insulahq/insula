@@ -43,6 +43,7 @@
 // checks (ref integrity, depends_on cycles, etc.).
 
 import { load as yamlLoad, JSON_SCHEMA as YAML_JSON_SCHEMA } from 'js-yaml';
+import { folderProblem } from '@insula/api-contracts';
 import {
   CUSTOM_SPEC_VERSION,
   CUSTOM_NAME_RE,
@@ -253,7 +254,7 @@ export function parseCompose(input: ComposeParseInput): ComposeParseResult {
           });
           continue;
         }
-        volumes[name] = {};
+        volumes[name] = parseVolumeFolder(name, def, issues);
       }
     }
   }
@@ -1592,4 +1593,54 @@ function rejectHint(field: string): string | undefined {
       return 'Use `deploy.resources.reservations.memory` — e.g. `deploy: {resources: {reservations: {memory: 128M}}}`.';
     default: return undefined;
   }
+}
+
+/**
+ * A named volume may point at a folder the tenant already has, with Compose's
+ * own idiom: `driver_opts: { type: none, o: bind, device: <folder> }`. The
+ * folder is relative to the tenant's storage root (as File Manager shows it).
+ * Without it the volume lives under the deployment's own folder. Anything else
+ * under `driver_opts` used to be accepted and silently ignored — now it is
+ * flagged, so a stack never stores data somewhere other than it says.
+ */
+function parseVolumeFolder(
+  name: string,
+  def: unknown,
+  issues: CustomDeploymentIssue[],
+): CustomDeploymentVolumeDef {
+  if (!isPlainObject(def) || def.driver_opts === undefined) return {};
+  const opts = def.driver_opts;
+  const path = `volumes.${name}.driver_opts`;
+  if (!isPlainObject(opts) || typeof opts.device !== 'string' || opts.device.trim() === '') {
+    issues.push({
+      severity: 'error',
+      code: 'VOLUME_FOLDER_INVALID',
+      path,
+      message: 'driver_opts is only used to mount a folder from your storage: set `device: <folder>`.',
+      hint: 'Example: driver_opts: { type: none, o: bind, device: sites/example.com } — or remove driver_opts to keep the volume in the deployment\'s own folder.',
+    });
+    return {};
+  }
+  const folder = opts.device.trim().replace(/\/+$/, '');
+  const problem = folderProblem(folder);
+  if (problem) {
+    issues.push({
+      severity: 'error',
+      code: 'VOLUME_FOLDER_INVALID',
+      path: `${path}.device`,
+      message: `${problem} (got '${folder}')`,
+      hint: 'Write the folder as File Manager shows it, relative to your storage root — e.g. `sites/example.com`, not `/srv/...`.',
+    });
+    return {};
+  }
+  const ignored = Object.keys(opts).filter((k) => !['type', 'o', 'device'].includes(k));
+  if (ignored.length > 0) {
+    issues.push({
+      severity: 'warning',
+      code: 'COMPOSE_FIELD_IGNORED',
+      path,
+      message: `Ignored driver_opts key(s): ${ignored.join(', ')} — only device selects the folder.`,
+    });
+  }
+  return { folder };
 }

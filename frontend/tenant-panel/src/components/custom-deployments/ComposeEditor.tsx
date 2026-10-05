@@ -131,12 +131,27 @@ services:
       retries: 3
 
 volumes:
-  cache-data: {}    # stored as a subPath on your tenant storage
+  # A named volume is a folder on your tenant storage. By default it is
+  # custom-deployment/<this deployment's name>/<volume name> — this one ends up
+  # at custom-deployment/<name>/cache-data (browse it in File Manager).
+  cache-data: {}
+
+  # To mount a folder you ALREADY have instead — a site folder, or one shared
+  # with another app — name it as \`device\`, relative to your storage root
+  # (exactly the path File Manager shows, no leading "/"). It is created if it
+  # does not exist, and deleting this stack never deletes it. Then mount it in a
+  # service like any volume:   volumes: [ "site-files:/usr/share/nginx/html" ]
+  # site-files:
+  #   driver_opts:
+  #     type: none
+  #     o: bind
+  #     device: sites/example.com
 
 # Also supported per service: command, entrypoint, env_file, user, working_dir,
 # read_only, tmpfs, restart, stop_grace_period, labels, configs, secrets.
 # Rejected (with a hint telling you what to use instead): build, privileged,
-# network_mode, devices, pid/ipc, links, and bind-mount volumes.
+# network_mode, devices, pid/ipc, links, and bind mounts like ./dir:/path
+# (use a named volume with driver_opts.device, above).
 `;
 
 type RightTab = 'issues' | 'spec';

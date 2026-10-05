@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { isReservedWorkloadName, RESERVED_WORKLOAD_NAME_MESSAGE } from './reserved-workload-names.js';
 import { uuidField, paginatedResponseSchema } from './shared.js';
+import { folderProblem } from './extra-mounts.js';
 
 // ─── Common shapes ──────────────────────────────────────────────────────────
 
@@ -316,6 +317,13 @@ export const customVolumeDefSchema = z.object({
   /** Advisory; the underlying PVC is shared across the tenant and
    *  already sized by the plan. Used for UI display only. */
   sizeHint: z.string().regex(RESOURCE_QTY_RE).optional(),
+  /** A folder on the tenant's storage (relative to its root) to mount
+   *  instead of the deployment's own `custom-deployment/<name>/<volume>`.
+   *  Compose spells it `driver_opts: { type: none, o: bind, device: <folder> }`. */
+  folder: z.string().min(1).max(255).superRefine((v, ctx) => {
+    const problem = folderProblem(v);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  }).optional(),
 });
 
 /** Inline ConfigMap (compose `configs` or simple-form file injection). */

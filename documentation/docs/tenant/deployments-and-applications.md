@@ -363,6 +363,39 @@ container images instead of catalog apps. Two ways:
     Click **New Stack (compose)** to define several services together using a
     Docker-Compose-style editor. Good for an app plus its database, cache, etc.
 
+### Storage in a stack
+
+A named volume is a folder on your storage. By default it lives at
+`custom-deployment/<stack name>/<volume name>`, which you can browse in the
+[File Manager](files-and-sftp.md).
+
+To mount a folder you **already have** — a site folder, or one another app
+also uses — give it as `device` in Compose's bind idiom, written relative to
+your storage root exactly as the File Manager shows it:
+
+```yaml
+services:
+  web:
+    image: nginx:1.27.5
+    volumes:
+      - site-files:/usr/share/nginx/html
+
+volumes:
+  site-files:
+    driver_opts:
+      type: none
+      o: bind
+      device: sites/example.com   # relative to your storage root, no leading "/"
+```
+
+- The folder is created if it does not exist; if it does, its files and
+  permissions are left as they are.
+- Removing the stack never deletes a folder named this way.
+- Host-style bind mounts (`./data:/data`, `/srv/www:/var/www`) are refused —
+  use a named volume with `device` instead. Folder names follow the same rules
+  as [Extra mounts](#extra-mounts): at most four levels, letters, digits, dots,
+  hyphens and underscores.
+
 ### Private images
 
 If the image lives in a private registry, tick **This image is in a private

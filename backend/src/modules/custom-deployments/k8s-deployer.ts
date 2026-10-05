@@ -22,7 +22,8 @@
 // Storage layout (matches catalog convention):
 //   PVC: `{namespace}-storage`   (shared tenant PVC)
 //   Mount name: `tenant-storage`
-//   subPath per volume: `custom/{deploymentName}/{volumeName}`
+//   subPath per volume: `custom-deployment/{deploymentName}/{volumeName}`, or the
+//   folder a named volume chose with `driver_opts.device` (volumeSubPath)
 //
 // Re-apply semantics: createOrReplace per resource. Idempotent.
 
@@ -492,6 +493,15 @@ function buildContainerEnv(
   });
 }
 
+/**
+ * Where a named volume lives on the tenant PVC: the folder the stack chose
+ * (`driver_opts.device`, validated by folderProblem — relative, no `..`), or
+ * the deployment's own `<storageSubPath>/<volume>`.
+ */
+export function volumeSubPath(input: Pick<DeployCustomInput, 'storageSubPath' | 'spec'>, volumeName: string): string {
+  return input.spec.volumes[volumeName]?.folder ?? `${input.storageSubPath}/${volumeName}`;
+}
+
 function buildVolumeMounts(
   service: CustomDeploymentService,
   input: DeployCustomInput,
@@ -518,7 +528,7 @@ function buildVolumeMounts(
       mounts.push({
         name: CLIENT_PVC_VOLUME_NAME,
         mountPath: vm.containerPath,
-        subPath: `${input.storageSubPath}/${vm.name}`,
+        subPath: volumeSubPath(input, vm.name),
         ...(vm.readOnly ? { readOnly: true } : {}),
       });
     }
@@ -623,8 +633,12 @@ function buildInitDirsContainer(
   if (namedVolumes.length === 0) return null;
 
   const mkdirParts = namedVolumes.map((volName) => {
-    const path = `/data/${input.storageSubPath}/${volName}`;
-    return `mkdir -p '${path}' && chmod 777 '${path}'`;
+    const path = `/data/${volumeSubPath(input, volName)}`;
+    // A folder the tenant chose already holds their files: create it if it
+    // is missing, but never loosen the permissions of one that exists.
+    return input.spec.volumes[volName]?.folder
+      ? `{ [ -d '${path}' ] || { mkdir -p '${path}' && chmod 777 '${path}'; }; }`
+      : `mkdir -p '${path}' && chmod 777 '${path}'`;
   });
   return {
     name: 'init-dirs',
