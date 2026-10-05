@@ -94,6 +94,7 @@ function scenariosPayload(over: Record<string, unknown> = {}) {
     detectionEnabled: true,
     logSources: [{ type: 'traefik', source: '/var/log/traefik/access.log' }],
     error: null,
+    cachedAt: null,
     ...over,
   });
 }
@@ -245,6 +246,21 @@ describe('Malicious Traffic Detection — Enable / Disable', () => {
     });
     render(<WafSettingsTab />, { wrapper });
     expect(screen.getByTestId('traffic-detection-error')).toHaveTextContent(/Saved, but not applied/);
+  });
+});
+
+describe('While the agent restarts', () => {
+  it('says the list is from just before the restart and keeps the rows usable', () => {
+    scenarios.mockReturnValue(scenariosPayload({ cachedAt: '2026-01-01T10:00:00.000Z' }));
+    render(<WafSettingsTab />, { wrapper });
+    expect(screen.getByTestId('crowdsec-scenarios-cached')).toHaveTextContent(/agent is restarting/);
+    fireEvent.click(screen.getByTestId('crowdsec-scenarios-list-toggle'));
+    expect(screen.getByTestId(`scenario-toggle-${SCENARIO_ROWS[0].name}`)).toBeEnabled();
+  });
+
+  it('shows no such note for a live list', () => {
+    render(<WafSettingsTab />, { wrapper });
+    expect(screen.queryByTestId('crowdsec-scenarios-cached')).not.toBeInTheDocument();
   });
 });
 

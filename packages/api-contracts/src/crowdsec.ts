@@ -450,8 +450,19 @@ export const crowdsecScenariosResponseSchema = z.object({
    * they have nothing to read.
    */
   logSources: z.array(crowdsecLogSourceSchema),
-  /** Non-null when the agent could not be reached; the lists are then empty. */
+  /**
+   * Non-null when the agent could not be reached and no recent list is
+   * available; the lists are then empty.
+   */
   error: z.string().nullable(),
+  /**
+   * Non-null (ISO time) when the agent could not be reached just now — it
+   * restarts after every config change — and the scenario list and counters
+   * are the ones it reported at that time (at most a few minutes old). The
+   * per-scenario modes and the on/off switch are always current: they come
+   * from the ConfigMap, not the agent.
+   */
+  cachedAt: z.string().nullable(),
 });
 export type CrowdsecScenariosResponse = z.infer<typeof crowdsecScenariosResponseSchema>;
 

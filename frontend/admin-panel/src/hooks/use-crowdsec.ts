@@ -387,6 +387,9 @@ export function useCrowdsecScenarios() {
     queryKey: SCENARIOS_KEY,
     queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/scenarios'),
     staleTime: 60_000,
+    // A change restarts the agent; until it is back the API serves the list
+    // it reported just before (`cachedAt`). Poll until the live list returns.
+    refetchInterval: (query) => (query.state.data?.data.cachedAt ? 5_000 : false),
   });
 }
 

@@ -215,7 +215,10 @@ that is expected, not a fault.
 
 Changing a mode rewrites the agent's configuration and restarts it. CrowdSec
 reads that file only at startup, so the change lands when the restart completes —
-a few seconds.
+a few seconds. While it restarts the card says so and shows the list the agent
+reported just before; you can keep changing modes. Switches that write the same
+configuration are locked while a change is being saved, so changes are applied
+one at a time and none is lost.
 
 !!! note "CrowdSec fails open"
     If the CrowdSec decision API is unreachable, the bouncer **fails open** —

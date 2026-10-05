@@ -142,16 +142,76 @@ function extractScenarioMetrics(parsed: unknown): Map<string, { poured: number; 
 
 // ─── Public surface ─────────────────────────────────────────────────────
 
+/** What the agent itself reports — everything except the per-scenario modes. */
+interface AgentListing {
+  readonly scenarios: ReadonlyArray<Omit<CrowdsecScenario, 'simulated'>>;
+  readonly logSources: CrowdsecLogSource[];
+}
+
+/**
+ * The last listing the agent reported (per replica), served while it restarts.
+ *
+ * Every config change deletes the agent pods, and a DaemonSet only creates the
+ * replacement once the old pod is gone — so for some seconds after each toggle
+ * there is no agent to ask. Without this, the list refetched right after a
+ * toggle came back empty and the NEXT toggle failed its name validation: two
+ * changes in a row were impossible. The window is seconds; LAST_LISTING_MAX_AGE_MS
+ * is long enough to cover it and short enough that a real outage still shows
+ * as one instead of as a stale list.
+ */
+export const LAST_LISTING_MAX_AGE_MS = 3 * 60_000;
+let lastListing: { readonly listing: AgentListing; readonly at: number } | null = null;
+
+/** Test hook: forget the cached listing. */
+export function resetLastListingForTests(): void {
+  lastListing = null;
+}
+
+async function readAgentListing(kc: k8s.KubeConfig): Promise<AgentListing> {
+  const podName = await findCrowdsecPodName(kc, AGENT_TARGET);
+  const [listRes, metricsRes, acquisRes] = await Promise.allSettled([
+    cscliExec(kc, podName, ['scenarios', 'list', '-o', 'json'], AGENT_TARGET),
+    cscliExec(kc, podName, ['metrics', 'show', 'scenarios', '-o', 'json'], AGENT_TARGET),
+    readAcquisitionSources(kc, podName),
+  ]);
+  if (listRes.status !== 'fulfilled') throw listRes.reason;
+  const rows = extractScenarioRows(parseCscliJson<unknown>(listRes.value.stdout));
+
+  const metrics = metricsRes.status === 'fulfilled'
+    ? (() => {
+      try { return extractScenarioMetrics(parseCscliJson<unknown>(metricsRes.value.stdout)); }
+      catch { return new Map<string, { poured: number; alerts: number }>(); }
+    })()
+    : new Map<string, { poured: number; alerts: number }>();
+
+  const scenarios = rows
+    .filter((r) => typeof r.name === 'string' && r.name.length > 0)
+    .map((r) => {
+      const name = String(r.name);
+      const m = metrics.get(name);
+      return {
+        name,
+        description: String(r.description ?? ''),
+        status: String(r.status ?? ''),
+        eventsPoured: m?.poured ?? 0,
+        alertsRaised: m?.alerts ?? 0,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { scenarios, logSources: acquisRes.status === 'fulfilled' ? acquisRes.value : [] };
+}
+
 /**
  * List the scenarios the agent has loaded, with the operator's per-scenario
  * choice, the global switch, and real activity counters.
  *
  * Never throws for a cluster-side problem: an operator opening the WAF settings
- * while the agent is rolling should see "could not reach the agent", not a
- * broken page and not an empty list that reads as "nothing is running". The
- * ConfigMap is read even when the agent is unreachable, so the on/off switch
- * still reports the truth — disabling detection is exactly what an operator
- * may want while the agent misbehaves.
+ * while the agent is rolling should see the list it reported moments ago
+ * (flagged `cachedAt`), or "could not reach the agent" — not a broken page and
+ * not an empty list that reads as "nothing is running". The modes and the
+ * on/off switch always come from the ConfigMap, read even when the agent is
+ * unreachable — disabling detection is exactly what an operator may want while
+ * the agent misbehaves.
  *
  * `desiredEnabled` is the saved on/off choice (null = never saved).
  */
@@ -171,60 +231,23 @@ export async function listScenarios(
     detectionEnabled: desiredEnabled ?? !globalSimulation,
     logSources: [],
     error: null,
+    cachedAt: null,
   };
+  const withModes = (listing: AgentListing): Pick<CrowdsecScenariosResponse, 'scenarios' | 'logSources'> => ({
+    scenarios: listing.scenarios.map((s) => ({ ...s, simulated: alertOnly.has(s.name) })),
+    logSources: [...listing.logSources],
+  });
 
-  let podName: string;
   try {
-    podName = await findCrowdsecPodName(kc, AGENT_TARGET);
+    const listing = await readAgentListing(kc);
+    lastListing = { listing, at: Date.now() };
+    return { ...base, ...withModes(listing) };
   } catch (err) {
+    if (lastListing && Date.now() - lastListing.at <= LAST_LISTING_MAX_AGE_MS) {
+      return { ...base, ...withModes(lastListing.listing), cachedAt: new Date(lastListing.at).toISOString() };
+    }
     return { ...base, error: errorMessage(err) };
   }
-
-  const [listRes, metricsRes, acquisRes] = await Promise.allSettled([
-    cscliExec(kc, podName, ['scenarios', 'list', '-o', 'json'], AGENT_TARGET),
-    cscliExec(kc, podName, ['metrics', 'show', 'scenarios', '-o', 'json'], AGENT_TARGET),
-    readAcquisitionSources(kc, podName),
-  ]);
-
-  if (listRes.status !== 'fulfilled') {
-    return { ...base, error: errorMessage(listRes.reason) };
-  }
-
-  let rows: RawScenarioRow[] = [];
-  try {
-    rows = extractScenarioRows(parseCscliJson<unknown>(listRes.value.stdout));
-  } catch (err) {
-    return { ...base, error: errorMessage(err) };
-  }
-
-  const metrics = metricsRes.status === 'fulfilled'
-    ? (() => {
-      try { return extractScenarioMetrics(parseCscliJson<unknown>(metricsRes.value.stdout)); }
-      catch { return new Map<string, { poured: number; alerts: number }>(); }
-    })()
-    : new Map<string, { poured: number; alerts: number }>();
-
-  const scenarios: CrowdsecScenario[] = rows
-    .filter((r) => typeof r.name === 'string' && r.name.length > 0)
-    .map((r) => {
-      const name = String(r.name);
-      const m = metrics.get(name);
-      return {
-        name,
-        description: String(r.description ?? ''),
-        status: String(r.status ?? ''),
-        simulated: alertOnly.has(name),
-        eventsPoured: m?.poured ?? 0,
-        alertsRaised: m?.alerts ?? 0,
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  return {
-    ...base,
-    scenarios,
-    logSources: acquisRes.status === 'fulfilled' ? acquisRes.value : [],
-  };
 }
 
 /**

@@ -28,10 +28,12 @@ import {
   simulationStateFromData,
   MAX_CAS_ATTEMPTS,
   SimulationConfigConflictError,
+  LAST_LISTING_MAX_AGE_MS,
+  resetLastListingForTests,
 } from './crowdsec-scenarios.js';
 import { WRITTEN_AT_ANNOTATION } from './crowdsec-simulation-store.js';
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); resetLastListingForTests(); });
 
 const CRAWL = 'crowdsecurity/http-crawl-non_statics';
 const PROBING = 'crowdsecurity/http-probing';
@@ -129,11 +131,12 @@ function fakeCluster(
 
 /** An agent that reports three scenarios, for the paths that validate names. */
 function fakeAgent(reachable = true) {
+  const find = vi.spyOn(cscli, 'findCrowdsecPodName');
   if (!reachable) {
-    vi.spyOn(cscli, 'findCrowdsecPodName').mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
-    return;
+    find.mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
+    return find;
   }
-  vi.spyOn(cscli, 'findCrowdsecPodName').mockResolvedValue('crowdsec-agent-a');
+  find.mockResolvedValue('crowdsec-agent-a');
   vi.spyOn(cscli, 'cscliExec').mockImplementation(async (_kc, _pod, args) => {
     if (args[0] === 'scenarios') {
       return {
@@ -143,6 +146,7 @@ function fakeAgent(reachable = true) {
     }
     return { stdout: '{}', stderr: '' } as never;
   });
+  return find;
 }
 
 describe('renderSimulationYaml with detection DISABLED', () => {
@@ -473,5 +477,57 @@ describe('listScenarios — detection state', () => {
     expect(out.error).toMatch(/no crowdsec-agent pod/);
     expect(out.globalSimulation).toBe(true);
     expect(out.detectionEnabled).toBe(false);
+  });
+});
+
+describe('while the agent restarts after a change', () => {
+  // Every change deletes the agent pods; a DaemonSet creates the replacement
+  // only once the old pod is gone, so for some seconds there is no agent.
+
+  it('serves the list the agent reported moments ago, flagged, with CURRENT modes', async () => {
+    const find = fakeAgent();
+    const cluster = fakeCluster(legacyData([CRAWL]));
+    const live = await listScenarios(undefined, null);
+    expect(live.cachedAt).toBeNull();
+
+    find.mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
+    cluster.externalWrite(legacyData([CRAWL, PROBING]));
+    const during = await listScenarios(undefined, null);
+
+    expect(during.error).toBeNull();
+    expect(during.cachedAt).not.toBeNull();
+    expect(during.scenarios.map((s) => s.name)).toEqual(live.scenarios.map((s) => s.name));
+    expect(during.scenarios.find((s) => s.name === PROBING)?.simulated).toBe(true);
+  });
+
+  it('lets the NEXT toggle validate against that list — two changes in a row work', async () => {
+    const find = fakeAgent();
+    const cluster = fakeCluster(legacyData([CRAWL]));
+    await setScenarioSimulation(undefined, PROBING, true, saved(null));
+    find.mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
+    await setScenarioSimulation(undefined, SENSITIVE, true, saved(null));
+    expect(cluster.agentFile().simulated).toEqual([CRAWL, PROBING, SENSITIVE].sort());
+  });
+
+  it('still rejects a name the agent never reported', async () => {
+    const find = fakeAgent();
+    fakeCluster(legacyData([CRAWL]));
+    await listScenarios(undefined, null);
+    find.mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
+    await expect(setScenarioSimulation(undefined, 'crowdsecurity/http-crawl-non-statics', true, saved(null)))
+      .rejects.toThrow(/unknown scenario/);
+  });
+
+  it('reports a real outage once the last list is too old to stand in', async () => {
+    const find = fakeAgent();
+    fakeCluster(legacyData([CRAWL]));
+    await listScenarios(undefined, null);
+    find.mockRejectedValue(new Error('no crowdsec-agent pod is Running'));
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + LAST_LISTING_MAX_AGE_MS + 1);
+    const out = await listScenarios(undefined, null);
+    expect(out.cachedAt).toBeNull();
+    expect(out.error).toMatch(/no crowdsec-agent pod/);
+    expect(out.scenarios).toEqual([]);
   });
 });

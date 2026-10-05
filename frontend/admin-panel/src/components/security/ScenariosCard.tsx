@@ -82,6 +82,16 @@ export default function ScenariosCard() {
         <ErrorPanel error={agentUnreachable(payload.error)} severity="warn" compact testId="crowdsec-scenarios-error" />
       )}
 
+      {payload?.cachedAt && (
+        <p
+          className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-800 dark:text-blue-200"
+          data-testid="crowdsec-scenarios-cached"
+        >
+          The CrowdSec agent is restarting to apply a change. Modes and the on/off switch are
+          current; the list and its counts are from {new Date(payload.cachedAt).toLocaleTimeString()}.
+        </p>
+      )}
+
       {payload && payload.logSources.length > 0 && <LogSources sources={payload.logSources} />}
 
       <Disclosure
