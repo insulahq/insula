@@ -44,7 +44,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   clipped and stays on screen.
 - **The tenant panel's code editors no longer load from a CDN.** Monaco (SQL Manager, file editor,
   compose editor) is served from the panel image instead of cdn.jsdelivr.net — no third-party fetch
-  from tenants' browsers, and editors work on firewalled clusters. The image grows by about 4 MB.
+  from tenants' browsers, and editors work on firewalled clusters. The image grows by about 3 MB.
+  The compose editor's in-editor schema hints are gone (they never worked with the current Monaco);
+  **Validate** still marks problems on their lines.
 - **Compose stacks can mount an existing storage folder** with Compose's own idiom
   (`driver_opts: { type: none, o: bind, device: <folder> }`); the editor's example explains where
   volumes are stored.
