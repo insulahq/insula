@@ -57,7 +57,7 @@ dialog's **Storage Folder** step decides which:
   location the platform picks (`<type>/<code>/<name>`). Fine for most cases.
 - **Use Custom Folder** — browse your storage and pick **any** folder, at any
   depth, or create a new one wherever you are. Use this to point a new
-  deployment at a site directory you already have (`business.na`), at content
+  deployment at a site directory you already have (`example.com`), at content
   restored from a backup, or at a folder shared with another app.
 
 The browser starts in the app's default location, but you are not limited to

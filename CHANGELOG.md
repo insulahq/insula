@@ -4105,7 +4105,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so an exact fit compares equal.
 - **Setting the folder a hostname serves did nothing, with no error shown.**
   Two faults met: the folder-name rule allowed only lowercase letters, digits,
-  hyphens and underscores, so `business.na` — a folder named after the site it
+  hyphens and underscores, so `example.com` — a folder named after the site it
   holds, which is the usual convention on a web host — was refused with a 400;
   and both panels swallowed that refusal, closing the picker as though it had
   worked. The name rule now allows dots and uppercase (the first character must

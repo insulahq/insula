@@ -2098,7 +2098,7 @@ export async function regenerateDeploymentCredentials(
  * `<entryType>/<entryCode>`, which meant "use custom folder" could only ever
  * offer folders the platform had created for that one catalog entry — a tenant
  * could not point a deployment at a site directory they already had
- * (`business.na`) or at a shared media tree.
+ * (`example.com`) or at a shared media tree.
  *
  * A folder already claimed by another deployment is returned with
  * `usedByDeployment` set rather than filtered out: sharing one folder between

@@ -96,7 +96,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
 
   // Folder names are validated inside the picker against the SAME rule the
   // API enforces (folderProblem), which allows the dots and capitals a web
-  // host's directories actually use — `business.na`, `www.example.com`.
+  // host's directories actually use — `example.com`, `www.example.com`.
   const customFolderPathError = useMemo(
     () => (selectedFolderPath ? folderProblem(selectedFolderPath) : null),
     [selectedFolderPath],
