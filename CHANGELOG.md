@@ -12,6 +12,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Removed
+
+- **The hosting-plan AI budget is gone from the database too.** v2026.10.6 retired the AI code
+  editor and stopped using the plan's weekly AI spend cap; this release drops its column
+  (`hosting_plans.weekly_ai_budget_cents`). Upgrade from v2026.10.6 or later: a cluster jumping
+  straight from v2026.10.5 has plan pages and plan lookups fail on its old pods until the rollout
+  has replaced them.
+
 ## [2026.10.6] - 2026-10-06
 
 ### Added
