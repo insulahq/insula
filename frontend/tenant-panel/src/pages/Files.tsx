@@ -14,9 +14,9 @@ import {
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive, ChevronDown,
-  Shield, UserCheck, Sparkles, X as XIcon, Globe,
+  Shield, UserCheck, Globe,
 } from 'lucide-react';
-import Editor, { DiffEditor } from '@monaco-editor/react';
+import Editor from '@monaco-editor/react';
 import {
   useFileManagerStatus, useStartFileManager, useDirectoryListing,
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
@@ -29,7 +29,6 @@ import { useBulkOperationRunner } from '@/hooks/use-bulk-operation';
 import BulkProgressModal from '@/components/files/BulkProgressModal';
 import UploadProgressModal from '@/components/files/UploadProgressModal';
 import type { FileEntry } from '@/hooks/use-file-manager';
-import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import TrashPanel from '@/components/files/TrashPanel';
 import { PermanentDeleteToggle, DeleteConsequence } from '@/components/files/PermanentDeleteToggle';
@@ -42,7 +41,6 @@ import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-man
 import FolderPickerDialog, { joinPath } from '@/components/FolderPickerDialog';
 import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
-import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
 import { resourceBarColor } from '@/lib/resource-usage';
 
@@ -145,8 +143,7 @@ export default function Files() {
   const [chownOwnerName, setChownOwnerName] = useState('');
   const [chownGroupName, setChownGroupName] = useState('');
 
-  // Folder AI modal
-  const [showFolderAi, setShowFolderAi] = useState(false);
+  // Clone-website modal + import menu
   const [showCloneSite, setShowCloneSite] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
 
@@ -631,11 +628,6 @@ export default function Files() {
           <button onClick={() => { setNewDirOpen(true); setNewDirName(''); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">
             <FolderPlus size={14} /> New Folder
           </button>
-          <button onClick={() => setShowFolderAi(!showFolderAi)}
-            className={`rounded-lg p-2 transition-colors ${showFolderAi ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300'}`}
-            title="AI Edit (folder)">
-            <Sparkles size={16} />
-          </button>
         </div>
       </div>
 
@@ -814,15 +806,6 @@ export default function Files() {
           </table>
         )}
       </div>
-
-      {/* Folder AI Modal */}
-      {showFolderAi && (
-        <AiFolderModal
-          folderPath={currentPath}
-          onClose={() => setShowFolderAi(false)}
-          onApplied={() => dirListing.refetch()}
-        />
-      )}
 
       {/* Clone Website Modal */}
       {showCloneSite && (
@@ -1858,42 +1841,9 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const [dirty, setDirty] = useState(false);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
 
-  // AI edit state
-  const [showAiChat, setShowAiChat] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [aiModelId, setAiModelId] = useState(() => localStorage.getItem('ai-model-id') ?? '');
-  const [aiProposal, setAiProposal] = useState<string | null>(null);
-  const aiEdit = useAiFileEdit('');
-  const aiBudget = useAiTokenBudget();
-  const aiModels = useAiModels();
-
-  // Chat history (persisted in sessionStorage per file)
-  type ChatMsg = { role: 'user' | 'assistant' | 'error'; text: string; tokens?: { input: number; output: number } };
-  const chatKey = `ai-chat:${path}`;
-  const [chatHistory, setChatHistory] = useState<ChatMsg[]>(() => {
-    try { return JSON.parse(sessionStorage.getItem(chatKey) ?? '[]'); } catch { return []; }
-  });
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { sessionStorage.setItem(chatKey, JSON.stringify(chatHistory)); }, [chatHistory, chatKey]);
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory.length]);
-
   useEffect(() => {
     if (fileContent.data) { setContent(fileContent.data.content); setDirty(false); }
   }, [fileContent.data]);
-
-  // Auto-select first model
-  useEffect(() => {
-    if (aiModels.data?.data?.length) {
-      const models = aiModels.data.data;
-      const savedId = aiModelId || localStorage.getItem('ai-model-id') || '';
-      const savedValid = models.some((m) => m.id === savedId);
-      if (!savedValid) {
-        const defaultModel = models.find((m) => m.isDefault) ?? models[0];
-        setAiModelId(defaultModel.id);
-        localStorage.setItem('ai-model-id', defaultModel.id);
-      }
-    }
-  }, [aiModels.data, aiModelId]);
 
   const handleSave = useCallback(() => {
     if (!dirty || writeFile.isPending) return;
@@ -1904,48 +1854,6 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
     if (dirty) { setShowUnsavedDialog(true); } else { onClose(); }
   }, [dirty, onClose]);
 
-  const handleAiSubmit = useCallback(() => {
-    if (!aiPrompt.trim() || !aiModelId || aiEdit.loading) return;
-    setChatHistory((prev) => [...prev, { role: 'user', text: aiPrompt.trim() }]);
-    aiEdit.edit(path, content, aiPrompt.trim(), aiModelId);
-    setAiPrompt('');
-  }, [aiPrompt, aiModelId, aiEdit, path, content]);
-
-  // When AI result arrives, show the proposal + add to chat
-  useEffect(() => {
-    if (aiEdit.result?.changes[0]?.modifiedContent) {
-      setAiProposal(aiEdit.result.changes[0].modifiedContent);
-      setChatHistory((prev) => [...prev, {
-        role: 'assistant',
-        text: aiEdit.result!.changes[0].summary ?? 'Changes proposed — review the diff above.',
-        tokens: aiEdit.result!.tokensUsed,
-      }]);
-    } else if (aiEdit.result?.changes[0]?.summary) {
-      setChatHistory((prev) => [...prev, { role: 'assistant', text: aiEdit.result!.changes[0].summary! }]);
-    }
-  }, [aiEdit.result]);
-
-  useEffect(() => {
-    if (aiEdit.error) {
-      setChatHistory((prev) => [...prev, { role: 'error', text: aiEdit.error! }]);
-    }
-  }, [aiEdit.error]);
-
-  const handleAcceptAi = useCallback(() => {
-    if (aiProposal) {
-      setContent(aiProposal);
-      setDirty(true);
-      setAiProposal(null);
-      setAiPrompt('');
-      aiEdit.clear();
-    }
-  }, [aiProposal, aiEdit]);
-
-  const handleRejectAi = useCallback(() => {
-    setAiProposal(null);
-    aiEdit.clear();
-  }, [aiEdit]);
-
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1954,19 +1862,15 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
         handleSave();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        if (aiProposal) handleRejectAi();
-        else handleClose();
+        handleClose();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleSave, handleClose, aiProposal, handleRejectAi]);
+  }, [handleSave, handleClose]);
 
   const filename = path.split('/').pop() ?? '';
   const language = getLanguage(filename);
-  const models = aiModels.data?.data ?? [];
-  const isDiffMode = aiProposal !== null;
-  const editorHeight = showAiChat ? 'calc(100% - 200px)' : '100%';
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 120px)' }}>
@@ -1976,28 +1880,11 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{path}</span>
           <span className="rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">{language.toUpperCase()}</span>
           {dirty && <span className="rounded-md px-2 py-0.5 text-[10px] font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">Modified</span>}
-          {isDiffMode && <span className="rounded-md px-2 py-0.5 text-[10px] font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">AI Diff</span>}
         </div>
         <div className="flex items-center gap-2">
-          {isDiffMode ? (
-            <>
-              <button onClick={handleAcceptAi} className="inline-flex items-center gap-1.5 rounded-lg bg-green-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-600">
-                <Check size={14} /> Accept
-              </button>
-              <button onClick={handleRejectAi} className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-4 py-1.5 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-                <XIcon size={14} /> Reject
-              </button>
-            </>
-          ) : (
-            <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
-              {writeFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
-            </button>
-          )}
-          <button onClick={() => setShowAiChat(!showAiChat)}
-            className={`rounded-lg p-1.5 transition-colors ${showAiChat ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-            title="AI Assistant">
-            <Sparkles size={18} />
+          <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+            {writeFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
           </button>
           <button onClick={handleClose} className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" title="Close (Esc)"><X size={18} /></button>
         </div>
@@ -2006,98 +1893,13 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
       {/* Editor */}
       <div className="flex-1 min-h-0">
         {fileContent.isLoading && <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-gray-400" /></div>}
-        {fileContent.data && !isDiffMode && (
+        {fileContent.data && (
           <Editor height="100%" language={language} value={content}
             onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
             theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
             options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
         )}
-        {fileContent.data && isDiffMode && (
-          <DiffEditor height="100%" language={language}
-            original={content}
-            modified={aiProposal}
-            theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
-            options={{ minimap: { enabled: false }, fontSize: 13, readOnly: true, renderSideBySide: true, automaticLayout: true }} />
-        )}
       </div>
-
-      {/* AI Chat Panel */}
-      {showAiChat && (
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col shrink-0" style={{ height: '180px' }}>
-          {/* Chat history */}
-          <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0">
-            {chatHistory.length === 0 && (
-              <p className="text-xs text-gray-400 py-2 text-center">Ask AI to edit this file. Chat history is preserved during your session.</p>
-            )}
-            {chatHistory.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] rounded-lg px-3 py-1.5 text-xs ${
-                  msg.role === 'user'
-                    ? 'bg-purple-500 text-white'
-                    : msg.role === 'error'
-                    ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                    : 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-600'
-                }`}>
-                  <p className="whitespace-pre-wrap">{msg.text}</p>
-                  {msg.tokens && <p className="text-[10px] opacity-60 mt-1">{msg.tokens.input + msg.tokens.output} tokens</p>}
-                </div>
-              </div>
-            ))}
-            {aiEdit.loading && (
-              <div className="flex justify-start">
-                <div className="rounded-lg px-3 py-1.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
-                  <Loader2 size={14} className="animate-spin text-purple-500" />
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          {/* Budget bar */}
-          {aiBudget.data?.data && (
-            <div className="px-4 py-1 border-t border-gray-200 dark:border-gray-700 flex items-center gap-2 text-[10px] text-gray-400 shrink-0">
-              <span>Budget: {aiBudget.data.data.percentUsed}%</span>
-              <div className="w-16 h-1 rounded-full bg-gray-200 dark:bg-gray-700">
-                <div className={`h-1 rounded-full ${aiBudget.data.data.percentUsed > 90 ? 'bg-red-500' : aiBudget.data.data.percentUsed > 70 ? 'bg-amber-500' : 'bg-green-500'}`}
-                  style={{ width: `${Math.min(aiBudget.data.data.percentUsed, 100)}%` }} />
-              </div>
-              <span>{(aiBudget.data.data.tokensUsed / 1000).toFixed(0)}k / {(aiBudget.data.data.tokenLimit / 1000).toFixed(0)}k tokens</span>
-              {aiBudget.data.data.exhausted && <span className="text-red-500 font-medium">Exhausted</span>}
-            </div>
-          )}
-
-          {/* Input area */}
-          <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-2">
-            {models.length === 0 ? (
-              <p className="text-[10px] text-gray-400 text-center py-1">No AI models configured. Go to Admin → Settings → AI to add providers and models.</p>
-            ) : (
-              <div className="flex gap-2 items-end">
-                {models.length > 1 && (
-                  <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-28 shrink-0"
-                    value={aiModelId} onChange={(e) => { setAiModelId(e.target.value); localStorage.setItem('ai-model-id', e.target.value); }}>
-                    {models.map((m) => <option key={m.id} value={m.id}>{m.displayName} {(m as Record<string, unknown>).providerName ? `(${(m as Record<string, unknown>).providerName})` : ''} — ${m.costPer1mInputTokens + m.costPer1mOutputTokens}/M</option>)}
-                  </select>
-                )}
-                <textarea
-                  className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 resize-none"
-                  placeholder="Ask AI to edit this file..."
-                  value={aiPrompt}
-                  onChange={(e) => setAiPrompt(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiSubmit(); } }}
-                  disabled={aiEdit.loading}
-                  rows={1}
-                  style={{ minHeight: '36px', maxHeight: '80px' }}
-                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = '36px'; t.style.height = Math.min(t.scrollHeight, 80) + 'px'; }}
-                />
-                <button onClick={handleAiSubmit} disabled={!aiPrompt.trim() || aiEdit.loading}
-                  className="rounded-lg bg-purple-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 shrink-0 self-end">
-                  {aiEdit.loading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Unsaved changes dialog */}
       {showUnsavedDialog && (

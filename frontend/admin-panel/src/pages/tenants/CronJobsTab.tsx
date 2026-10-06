@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil, Mail } from 'lucide-react';
+import { Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil, Mail } from 'lucide-react';
 import clsx from 'clsx';
 import CronJobModal from '@/components/CronJobModal';
 import SearchableTenantSelect from '@/components/ui/SearchableTenantSelect';
@@ -44,7 +44,6 @@ export default function CronJobsTab() {
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [showCreate, setShowCreate] = useState(false);
   /** Row being edited. The modal is keyed on this so switching rows remounts it. */
   const [editingJob, setEditingJob] = useState<(typeof cronJobs)[number] | null>(null);
   const [confirmAction, setConfirmAction] = useState<CronJobBulkAction | null>(null);
@@ -129,20 +128,6 @@ export default function CronJobsTab() {
             />
           </div>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          disabled={!selectedTenantId}
-          className={clsx(
-            'inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors',
-            selectedTenantId
-              ? 'bg-brand-500 hover:bg-brand-600'
-              : 'bg-gray-300 cursor-not-allowed',
-          )}
-          data-testid="add-cron-job-button"
-        >
-          <Plus size={16} />
-          Add Cron Job
-        </button>
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -309,7 +294,7 @@ export default function CronJobsTab() {
                         {debouncedSearch
                           ? 'No cron jobs found matching your search.'
                           : selectedTenantId
-                            ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
+                            ? 'This tenant has no cron jobs.'
                             : 'No cron jobs found across any tenant.'}
                       </td>
                     </tr>
@@ -392,15 +377,6 @@ export default function CronJobsTab() {
             </div>
           </div>
         </div>
-      )}
-
-      {selectedTenantId && (
-        <CronJobModal
-          key="create"
-          open={showCreate}
-          onClose={() => setShowCreate(false)}
-          tenantId={selectedTenantId}
-        />
       )}
 
       {/* Edit is available with no tenant filter set — the row carries its own

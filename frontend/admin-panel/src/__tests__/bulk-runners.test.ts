@@ -8,7 +8,15 @@ import {
   verifyDomainItem,
 } from '@/hooks/use-bulk-domains';
 import { runCronJobBulkItem } from '@/hooks/use-bulk-cron-jobs';
-import { describeTransition, runTenantBulkItem } from '@/hooks/use-bulk-tenants';
+import {
+  changeTenantPlanItem,
+  describeMove,
+  describeTransition,
+  moveTenantToNodeItem,
+  runTenantBulkItem,
+  type TenantChangeItem,
+} from '@/hooks/use-bulk-tenants';
+import type { MigrateToWorkerResult } from '@insula/api-contracts';
 import { outcomeFromError, outcomeFromIdResult } from '@/lib/bulk-run';
 import type { BulkOpResponse } from '@/hooks/use-lifecycle';
 
@@ -211,5 +219,78 @@ describe('tenant bulk item', () => {
       .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'try later'));
     const outcome = await runTenantBulkItem('reactivate', { id: 't1', label: 'Acme' });
     expect(outcome).toEqual({ status: 'succeeded', detail: 'Reactivated. Lifecycle hook results could not be read: try later' });
+  });
+});
+
+const TENANT: TenantChangeItem = { id: 't1', label: 'Acme', planId: 'plan-basic', nodeName: 'node-a', misplaced: false };
+const MOVE: MigrateToWorkerResult = {
+  tenantId: 't1',
+  previousWorker: 'node-a',
+  currentWorker: 'node-b',
+  deploymentsRestarted: 2,
+  dataRelocation: { started: ['pvc-1'], skipped: [], error: null },
+  moveOperationId: null,
+};
+
+describe('tenant bulk: change placement', () => {
+  it('runs the Placement card\'s move for ONE tenant and reports what it did', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: MOVE });
+    const outcome = await moveTenantToNodeItem(TENANT, { id: 'node-b', label: 'Node B' });
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/admin/tenants/t1/migrate-to-worker', {
+      method: 'POST',
+      body: JSON.stringify({ node_name: 'node-b' }),
+    });
+    expect(outcome).toEqual({ status: 'succeeded', detail: 'Pinned to Node B — restarted 2 deployments — moving 1 volume.' });
+  });
+
+  it('skips a tenant already on the target, without a request (a move restarts its pods)', async () => {
+    const outcome = await moveTenantToNodeItem(TENANT, { id: 'node-a', label: 'Node A' });
+    expect(outcome).toEqual({ status: 'skipped', detail: 'Already on Node A.' });
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('still moves a tenant pinned to the target but running elsewhere', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, misplaced: true }, { id: 'node-a', label: 'Node A' });
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(outcome.status).toBe('succeeded');
+    expect(outcome.detail).toMatch(/background operation/);
+  });
+
+  it('fails the row when the data could not follow the pin', () => {
+    const outcome = describeMove({ ...MOVE, dataRelocation: { started: [], skipped: [], error: 'Longhorn unreachable' } }, 'Node B');
+    expect(outcome).toEqual({ status: 'failed', detail: 'Pinned to Node B, but the data could not be moved: Longhorn unreachable' });
+  });
+
+  it('an API error becomes a failed row (thrown to the runner)', async () => {
+    mockApiFetch.mockRejectedValueOnce(new ApiError(409, 'TENANT_BUSY', 'a storage operation is running'));
+    await expect(moveTenantToNodeItem(TENANT, { id: 'node-b', label: 'Node B' })).rejects.toThrow('a storage operation is running');
+  });
+});
+
+describe('tenant bulk: change subscription plan', () => {
+  const PRO = { id: 'plan-pro', label: 'Pro' };
+
+  it('sends the Subscription card\'s PATCH for ONE tenant, with the notify choice', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenant_id: 't1', plan: { id: 'plan-pro', name: 'Pro' } } });
+    const outcome = await changeTenantPlanItem(TENANT, PRO, false);
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/tenants/t1/subscription', {
+      method: 'PATCH',
+      body: JSON.stringify({ plan_id: 'plan-pro', notify_tenant: false }),
+    });
+    expect(outcome).toEqual({ status: 'succeeded', detail: 'Plan set to Pro.' });
+  });
+
+  it('skips a tenant already on the plan — no request, so no email about nothing', async () => {
+    const outcome = await changeTenantPlanItem({ ...TENANT, planId: 'plan-pro' }, PRO, true);
+    expect(outcome).toEqual({ status: 'skipped', detail: 'Already on Pro.' });
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('fails the row when the API reports a different plan afterwards', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenant_id: 't1', plan: { id: 'plan-basic', name: 'Basic' } } });
+    const outcome = await changeTenantPlanItem(TENANT, PRO, true);
+    expect(outcome.status).toBe('failed');
+    expect(outcome.detail).toMatch(/reports the plan as Basic/);
   });
 });

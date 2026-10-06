@@ -29,7 +29,6 @@
 #       tenant-bundles/routes.ts     passphrase: optional, checked when present
 #       ziti-providers/routes.ts     controllerUrl: presence-checked
 #       zrok-providers/routes.ts     controllerUrl: presence-checked
-#       ai-editor/routes.ts          operations + plan: presence-checked
 #       file-manager/routes.ts       url + path: presence-checked (x2)
 #
 #  3. VALIDATED DOWNSTREAM by the service that consumes the body:
@@ -39,7 +38,6 @@
 #
 # Removing an entry is the goal. Adding one needs a reason in the PR.
 admin-users/routes.ts
-ai-editor/routes.ts
 auth/routes.ts
 custom-deployments/routes.ts
 deployments/routes.ts

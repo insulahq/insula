@@ -72,7 +72,10 @@ export type MailUsageResponse = z.infer<typeof mailUsageResponseSchema>;
 // PR 5 — Monitoring -> Mail tab aggregate.
 export const mailOverviewResponseSchema = z.object({
   totals: z.object({
-    sentToday: z.number().int().min(0),
+    // Rolling, like the top-senders `sent24h`. A calendar "today" reset at
+    // UTC midnight — 02:00 for an operator at UTC+2 — so the tile read 0 in
+    // the middle of their working day while mail was flowing.
+    sent24h: z.number().int().min(0),
     sent7d: z.number().int().min(0),
     recipients7d: z.number().int().min(0),
     rateLimited7d: z.number().int().min(0),

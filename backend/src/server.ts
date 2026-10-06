@@ -8,8 +8,14 @@ import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
 import { persistInstalledVersion } from './modules/platform-updates/service.js';
 import { releaseAllSchedulerLeases, withSchedulerLease } from './shared/scheduler-lease.js';
+import { installK8sConnectionPool } from './shared/k8s-connection-pool.js';
 
 const config = loadConfig();
+
+// Before anything builds a KubeConfig: every Kubernetes API request in this
+// process shares pooled keep-alive connections instead of a fresh TLS
+// handshake per call (see shared/k8s-connection-pool.ts).
+installK8sConnectionPool();
 const db = getDb(config.DATABASE_URL);
 const app = await buildApp({ config, db });
 

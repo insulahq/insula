@@ -56,9 +56,8 @@ export default function StorageUsageTab() {
     <div className="p-5 space-y-6" data-testid="storage-usage-tab">
       {/* System Usage Summary */}
       {overview && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <StatTile label="Platform DB" value={formatBytes(overview.system.platformDatabase.usedBytes)} />
-          <StatTile label="Redis" value={formatBytes(overview.system.redis.usedBytes)} />
           <StatTile
             label="Docker Images"
             value={formatBytes(overview.system.dockerImages.totalBytes)}
@@ -90,7 +89,13 @@ export default function StorageUsageTab() {
                 <tr key={tenant.tenantId} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
                   <td className="px-5 py-2.5 font-medium text-gray-900 dark:text-gray-100">{tenant.name}</td>
                   <td className="px-5 py-2.5 font-mono text-xs text-gray-500 dark:text-gray-400">{tenant.namespace}</td>
-                  <td className="px-5 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300">{formatBytes(tenant.usedBytes)}</td>
+                  <td className="px-5 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300" data-testid={`tenant-storage-${tenant.tenantId}`}>
+                    {tenant.approximate ? (
+                      <span title="Includes a volume nothing has mounted right now — shown at its allocated size, which reads higher than the files in it.">
+                        ≈ {formatBytes(tenant.usedBytes)}
+                      </span>
+                    ) : formatBytes(tenant.usedBytes)}
+                  </td>
                 </tr>
               ))}
             </tbody>

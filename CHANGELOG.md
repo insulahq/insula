@@ -12,6 +12,106 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **AI agents (MCP) and API tokens.** Users with the admin role can connect AI agents to the
+  platform over the Model Context Protocol (`https://admin.<apex>/api/v1/mcp`) — signing the
+  client in on a consent page (OAuth, 8-hour access) or with a personal access token — and use
+  personal access tokens for scripts on the whole REST API. Tokens carry **read**, **write**
+  and/or **delete** scopes, checked on every API route; they never exceed the user's role, show
+  their last use, and can be revoked under User Settings → API tokens & AI agents. Agents get
+  core tools (tenants incl. create/suspend, subscriptions, tenant files incl. move-to-trash,
+  deployments, domains, nodes, audit log, traffic) plus generic tools that reach every API
+  operation — generated from the API's own routes, so the two cannot drift — and can act as a
+  tenant through audited impersonation. Every token-driven change is attributed in the audit log.
+  On an admin panel protected by OAuth2 Proxy, the agent endpoints and requests carrying a personal
+  access token are routed past the proxy's sign-in (still through CrowdSec and the WAF; a token is
+  checked at the edge first), and the WAF lets through the loopback sign-in redirects that desktop
+  AI clients use.
+
+- **Apply the DMARC recommendation from the panel.** When a domain is ready to tighten ("safe to
+  move to p=quarantine"), admins (Monitoring → Mail → DMARC) and domain owners (the domain's DMARC
+  tab) can now publish the recommended step; the platform rewrites `p=` in the managed `_dmarc`
+  record. Only the step the recommendation allows right now is accepted, and **Step back** to the
+  previous level is always available. The page shows the published policy while reports catch up,
+  and the record value to publish when the domain's DNS is hosted elsewhere. A domain that
+  publishes two `_dmarc` records is told to remove the duplicate first (receivers ignore both).
+- **Admin → Tenants: change placement or plan for many tenants at once.** Two new bulk actions,
+  **Change placement** (pick a node; each tenant is re-pinned and moved there, the same move as
+  the Placement card's *Migrate pods now*) and **Change plan** (pick a hosting plan, with the
+  choice to email the tenants or not). They run one tenant at a time with a per-tenant result,
+  like the other bulk actions; tenants already on the target are skipped, and the SYSTEM tenant is
+  never selectable.
+- **Tenant detail → Traffic (7 days).** Upload and download for the tenant over the last week with
+  a small chart, in place of the IDs card. Clicking it opens Monitoring → Traffic with that tenant
+  and the 7-day range already selected — the Traffic tab now takes its starting view from the
+  link (`?scope=…&subject=…&range=…`).
+
+### Changed
+
+- **Cluster traffic now counts each byte once, and shows where it went.** The cluster figure used
+  to add up every node's network card, which counts every byte between two nodes twice — on an HA
+  cluster, where the nodes talk to each other constantly, that was most of the number (a 135 GB
+  day was ~94% node-to-node). Monitoring → Traffic → Cluster now shows **Internet** (in and out)
+  and **Node-to-node**, which add up to the real total, with node-to-node split into **Kubernetes
+  API**, **etcd**, **kubelet**, **pod network** and **other**, plus **All tenants** (through the
+  ingress) and **Backups** (off-site, in and out) always visible. The old card sum stays as **All
+  NICs**, hidden on the chart, and is the only row reaching back before the upgrade. The dashboard
+  tile shows the same split. The per-node counters come from the firewall reconciler, which now
+  also publishes them; its trusted-range status is no longer rewritten every few seconds.
+- **platform-api puts far less load on the Kubernetes API.** Background loops that list pods,
+  Deployments, nodes and certificates now run on one replica instead of every one, Kubernetes API
+  connections are reused instead of opening a new TLS connection per request, and the cluster-wide
+  pod and Deployment lists the loops share are kept current by a watch instead of being re-listed
+  every 15 seconds. On a three-node cluster this was the largest single source of traffic between
+  the nodes. The traefik plugin guard no longer re-fetches API discovery for every kubectl call.
+- **Admin → Tenants → Cron Jobs no longer has an "Add Cron Job" button.** Cron jobs are created by
+  the tenant; the operator list still runs, pauses, edits and deletes them.
+- **Admin → Tenants list: a Plan column, every column sortable, no email addresses.** The list
+  shows each tenant's hosting plan (served with the list, not looked up per row) and no longer
+  prints the tenant's email under its name. Every column sorts — CPU, memory and storage by the
+  amount in use, placement by node name, expiry by date.
+- **Tenant detail is tidier.** The email is gone from the page header; **Contact Email** shows
+  both the primary and the secondary address, each labelled; **Created By** names the user who
+  created the tenant (or their email when they have no name; *System* for platform-created
+  tenants, *Unknown* when the user no longer exists) instead of an id. **Placement** now sits next
+  to **Subscription** on wide screens. The Edit Tenant dialog says *Primary Email* / *Secondary
+  Email*, as Create Tenant does.
+
+### Removed
+
+- **The AI code editor is retired.** Gone: the tenant File Manager's AI assistant (the editor's
+  chat panel and the folder-wide *AI Edit*), Admin → Platform → AI Providers, the
+  `/api/v1/admin/ai/*`, `/api/v1/ai/models` and `/api/v1/tenants/:id/ai/*` endpoints, and the
+  hosting plan's weekly AI budget field. Migration 0148 drops the `ai_token_usage`, `ai_models`
+  and `ai_providers` tables — including the stored, encrypted provider API keys; the plan's
+  budget column is no longer used and is dropped in a following release (so old pods keep working
+  during the rolling upgrade). The backend no longer depends on the Anthropic or OpenAI SDKs.
+
+### Fixed
+
+- **OAuth2 Proxy protection no longer takes a panel down.** Enabling *Protect … via OAuth2 Proxy*
+  pointed every route of that panel at a proxy that production never ran, so the whole panel host
+  answered 404. Each protected panel now gets its own proxy, created by the platform from a
+  **sign-in provider** you choose per panel (a proxy can use only one, while the login page may
+  offer several). Saving starts the proxy and switches the routes only once it is running; if it
+  cannot start, the save fails with the reason and the panel stays reachable. The panel's login
+  then continues with the proxy's provider by itself, so visitors sign in once, and the provider
+  is no longer asked to show its consent screen on every sign-in. Register
+  `https://<panel host>/oauth2/callback` for that provider's client. On upgrade, a panel that was
+  protected with exactly one enabled provider adopts it; one with several is switched off until
+  you pick a provider. Works the same for the admin and the tenant panel.
+- **Monitoring → Mail "Sent today" read 0 while mail was flowing.** It counted from UTC midnight,
+  so for an operator east of UTC it reset in the middle of the evening. The tile is now a rolling
+  **Sent (24h)**, equal to the sum of the top-senders 24h column. The tenant dashboard's "Sent
+  today" also no longer leaves out the first hour of the day.
+- **Monitoring → Storage showed 0 B for every tenant and took minutes to load.** It asked each
+  tenant's file manager for its disk usage, one after another — and file managers are stopped when
+  idle. Usage now comes from the cluster in two calls: measured filesystem use for mounted volumes,
+  Longhorn's allocated size (marked ≈) for the rest. The obsolete Redis tile is gone.
+- **The OIDC settings page showed proxy protection as off** even when it was on (and saving the
+  form then switched it off): the page read fields the API does not send.
+
 ## [2026.10.5] - 2026-10-05
 
 ### Security

@@ -19,6 +19,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, ShieldAlert, Info, Loader2, ExternalLink, AlertCircle } from 'lucide-react';
+import DmarcPolicyActions from '@/components/dmarc/DmarcPolicyActions';
 import { apiFetch } from '@/lib/api-client';
 import type { DmarcOverview, DmarcDomainSummary, DmarcSourceSummary } from '@insula/api-contracts';
 
@@ -304,10 +305,16 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
                   <ShieldAlert size={13} className="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" />
                 )}
                 <span data-testid="dmarc-tenant-recommendation">
-                  {summary.recommendation.reason} The <code className="font-mono">_dmarc</code>{' '}
-                  record is maintained for you — contact support if you want the policy changed.
+                  {summary.recommendation.reason}
                 </span>
               </p>
+              <div className="mt-3">
+                <DmarcPolicyActions
+                  summary={summary}
+                  endpoint={`/api/v1/tenants/${tenantId}/mail/dmarc/policy`}
+                  invalidateKey={['tenant-dmarc', tenantId]}
+                />
+              </div>
             </div>
           </>
         )}

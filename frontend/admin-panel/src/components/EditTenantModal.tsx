@@ -11,16 +11,16 @@ interface EditTenantModalProps {
 
 export default function EditTenantModal({ open, onClose, tenant }: EditTenantModalProps) {
   const [name, setCompanyName] = useState('');
-  const [primaryEmail, setCompanyEmail] = useState('');
-  const [secondaryEmail, setContactEmail] = useState('');
+  const [primaryEmail, setPrimaryEmail] = useState('');
+  const [secondaryEmail, setSecondaryEmail] = useState('');
 
   const updateTenant = useUpdateTenant(tenant.id);
 
   useEffect(() => {
     if (open) {
       setCompanyName(tenant.name ?? '');
-      setCompanyEmail(tenant.primaryEmail ?? '');
-      setContactEmail(tenant.secondaryEmail ?? '');
+      setPrimaryEmail(tenant.primaryEmail ?? '');
+      setSecondaryEmail(tenant.secondaryEmail ?? '');
       updateTenant.reset();
     }
   }, [open, tenant]);
@@ -84,33 +84,33 @@ export default function EditTenantModal({ open, onClose, tenant }: EditTenantMod
           </div>
 
           <div>
-            <label htmlFor="edit-company-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Company Email *
+            <label htmlFor="edit-primary-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Primary Email *
             </label>
             <input
-              id="edit-company-email"
+              id="edit-primary-email"
               type="email"
               required
               value={primaryEmail}
-              onChange={(e) => setCompanyEmail(e.target.value)}
+              onChange={(e) => setPrimaryEmail(e.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="admin@acme.com"
-              data-testid="edit-company-email-input"
+              data-testid="edit-primary-email-input"
             />
           </div>
 
           <div>
-            <label htmlFor="edit-contact-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Contact Email
+            <label htmlFor="edit-secondary-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Secondary Email
             </label>
             <input
-              id="edit-contact-email"
+              id="edit-secondary-email"
               type="email"
               value={secondaryEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
+              onChange={(e) => setSecondaryEmail(e.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="support@acme.com (optional)"
-              data-testid="edit-contact-email-input"
+              data-testid="edit-secondary-email-input"
             />
           </div>
 

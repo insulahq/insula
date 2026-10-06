@@ -122,6 +122,32 @@ data:
          ctl:ruleRemoveById=931100"
         SecRule REQUEST_URI "@rx ^/api/v1/" "t:none"
 
+    # ── OAuth loopback redirect URIs are not SSRF ──────────────────────
+    # Desktop MCP clients (Claude Desktop, Claude Code, Cursor, VS Code)
+    # sign in with RFC 8252 loopback redirects: `http://127.0.0.1:<port>/…`
+    # or `http://localhost:<port>/…`. CRS 934110 "SSRF: Cloud provider
+    # metadata URL in Parameter" matches exactly those values, scores 5,
+    # and 949110 refuses the request with a bare nginx 403 — so dynamic
+    # client registration (ARGS:json.redirect_uris.array_N), the authorize
+    # redirect (ARGS:redirect_uri) and the token exchange (same) all fail
+    # for every desktop client. Measured on DEV (CRS 4.28.0):
+    # "Matched Data: http://127.0.0.1 found within
+    # ARGS:json.redirect_uris.array_0".
+    #
+    # SSRF is the SERVER fetching a URL. The OAuth server never fetches a
+    # redirect URI: it validates the scheme (https / loopback / private-use,
+    # modules/mcp/oauth.ts) and only ever sends the user's BROWSER there.
+    # Removed on these three exact endpoints of the admin host only;
+    # every other route keeps 934110.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^admin\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000117,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=934110"
+        SecRule REQUEST_URI "@rx ^/api/v1/oauth/(register|authorize|token)(\?|$)" "t:none"
+
     # ── Catalog deploys: parameter VALUES are container config, not
     #    paths the platform opens ──────────────────────────────────────
     #

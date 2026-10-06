@@ -51,15 +51,12 @@ describe('CronJobsTab', () => {
     expect(screen.queryByTestId('select-tenant-prompt')).not.toBeInTheDocument();
   });
 
-  it('renders Add Cron Job button', () => {
+  // Cron jobs are created by the tenant; the operator list only views, runs,
+  // pauses, edits and deletes them (operator decision).
+  it('offers no Add Cron Job button', () => {
     render(<CronJobsTab />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('add-cron-job-button')).toBeInTheDocument();
-    expect(screen.getByText('Add Cron Job')).toBeInTheDocument();
-  });
-
-  it('disables Add Cron Job button when no tenant selected', () => {
-    render(<CronJobsTab />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('add-cron-job-button')).toBeDisabled();
+    expect(screen.queryByTestId('add-cron-job-button')).not.toBeInTheDocument();
+    expect(screen.queryByText('Add Cron Job')).not.toBeInTheDocument();
   });
 });
 

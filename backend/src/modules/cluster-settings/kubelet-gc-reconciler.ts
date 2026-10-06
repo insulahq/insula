@@ -32,6 +32,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { getSettings } from '../system-settings/service.js';
 
 const RECONCILE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -137,8 +138,9 @@ export function startKubeletGcReconciler(
   k8s: K8sClients,
   log: FastifyBaseLogger,
 ): KubeletGcReconcilerHandle {
+  // One replica reconciles (lease) — it writes node config, the same for all.
   const timer = setInterval(() => {
-    tick(db, k8s, log).catch(err => {
+    withSchedulerLease(db, 'kubelet-gc-reconciler', RECONCILE_INTERVAL_MS * 1.5, () => tick(db, k8s, log)).catch(err => {
       log.warn({ err }, '[kubelet-gc-reconciler] tick failed');
     });
   }, RECONCILE_INTERVAL_MS);

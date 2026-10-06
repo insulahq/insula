@@ -125,7 +125,7 @@ daily figures survive. The longest range the API accepts is **400 days**.
 
 | Break down by | Shows |
 |---|---|
-| **Cluster** | The whole cluster as one line, in and out |
+| **Cluster** | The whole cluster: internet traffic, traffic between the nodes, all tenants, backups |
 | **Node** | One line per node, or a single node's own NIC |
 | **Tenant** | One line per tenant, or one tenant in both directions |
 | **Pod** | Every pod, or one tenant's pods once a tenant is chosen |
@@ -150,28 +150,37 @@ hostname. So a service maps to a domain exactly when the tenant serves one
 host — then every service of theirs serves it. Tenants with several hosts
 keep object naming. Rows that cannot be told apart at all are numbered.
 
-### Two measurements that share a name
+### Cluster traffic: each byte once
 
-Cluster and node traffic is the **host's own NIC**. Tenant and pod traffic is
-the **pod's own interface**. They do not add up to each other and are not
-meant to — a tenant is billed for what their pods moved, not for a share of
-the host, and no per-pod arithmetic can recover host-network traffic.
-
-Cluster traffic shows **both**, under headings that say which is which,
-rather than blending them into one number that would be wrong:
+Adding up every node's network card counts every byte that travels **between
+two nodes twice** — it leaves one card and enters the other. On a single node
+that does not matter; on an HA cluster the nodes talk to each other constantly
+(the Kubernetes API, etcd, the pod network), and that traffic can be most of
+what the cards carry. The cluster view therefore splits the traffic by where
+it went, using per-node counters kept by the firewall reconciler:
 
 | Heading | Rows | Adds up? |
 |---|---|---|
-| **At the wire — what crossed the network** | `Inbound (wire)`, `Outbound (wire)` | Yes — this is the total |
-| **Part of that same total, seen another way** | `Node-to-node (in/out)`, `Off-site backup upload` | No — already inside the wire total |
-| **What each workload sent — counted at the pod, not the wire** | `Tenant workloads sent`, one row per backup class | No — see below |
+| **At the wire — internet and between nodes, each byte once** | `Internet · outbound`, `Internet · inbound`, `Node-to-node` | Yes — these three are the total |
+| **Between nodes — by what it was** | `Kubernetes API`, `etcd`, `kubelet`, `pod network (tunnel)`, `other` | They add up to `Node-to-node` |
+| **Part of the internet traffic, seen another way** | `All tenants` (in/out, through the ingress), `Backups` (in/out, off-site) | No — already inside the internet rows |
+| **Every node's network card added up** | `All NICs` (in/out) | No — between-node bytes count twice here |
 
-The workload rows do not decompose the wire, and the page does not pretend
-they do. A backup travels job → in-cluster relay → off-site, so its bytes are
-counted twice there; traffic between two pods on the same node never reaches
-the NIC at all. They are kept because they are the only per-class detail
-there is. **Share** is therefore computed within a heading, never across all
-three.
+The summary tiles (Total, Peak, Average) read the first group, so **Total is
+the real total**. The per-class node-to-node rows and the NIC sum start hidden
+on the chart; they are listed in the table, and clicking one draws it.
+
+`All tenants` is what the ingress served on the tenants' behalf — the same
+measurement as the **Tenant** breakdown. `Backups` is what the backup relay
+sent to and fetched from the off-site storage: uploads, and the reads a
+restore, a download or a retention prune makes.
+
+The split exists from the moment the per-node counters were first collected.
+Before that, those rows are gaps and only `All NICs` reaches back.
+
+Node traffic (**Node** breakdown) is still each node's own network card.
+Tenant and pod traffic are measured at the tenant's ingress and the pod's own
+interface; they do not add up to the node figures and are not meant to.
 
 Nothing here is tied to an interface called `eth0`. A node whose NIC is
 `ens3`, `enp1s0`, `eno1`, `bond0` or a bridge is measured exactly the same
@@ -195,22 +204,13 @@ way.
 
 ### Backups
 
-Backups the platform schedules run inside the tenant's namespace, so their
-upload looks like any other egress. On a cluster traffic view they are
-**always shown separately** — there is no control to fold them back in. How
-much of the cluster's egress is the platform backing itself up is something
-you need every time you read this page, not only when you remember to ask
-for it.
-
-| Class | What it is |
-|---|---|
-| **Backup · tenant bundles** | A tenant's whole bundle. Files and mailboxes are two *components* of one bundle, alongside config and secrets — so they are one class, not two |
-| **Backup · mail server snapshots** | The mail server's own snapshots — a different job from a tenant's mailbox component |
-| **Backup · databases** | Postgres base backups and WAL archiving |
-| **Backup · cluster state & secrets** | The cluster-state and secrets backups |
-
-If nothing was backed up in the range, the page says so rather than leaving
-you to wonder whether the split is broken.
+Backup traffic is **always shown** on the cluster view, as `Backups ·
+outbound` and `Backups · inbound`: the bytes the backup relay exchanged with
+the off-site storage. It covers every kind of backup — tenant bundles (files
+and mailboxes), the mail server's snapshots, database backups and WAL
+archiving, cluster state and secrets — because all of them leave the cluster
+through that relay. Inbound backup traffic is reads: a restore, a bundle
+download, or a retention prune repacking old data.
 
 This egress is **not billed to the tenant** — see
 [Tenant backups](tenant-backups.md). The tenant's own Monitoring page does not

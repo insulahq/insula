@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateOidcProviderInput , SaveOidcGlobalSettingsInput } from '@insula/api-contracts';
+import type { CreateOidcProviderInput, OidcGlobalSettingsResponse, SaveOidcGlobalSettingsInput } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Provider Types ──────────────────────────────────────────────────────────
@@ -21,14 +21,11 @@ export interface OidcProvider {
   readonly updatedAt: string;
 }
 
-export interface OidcGlobalSettings {
-  readonly disableLocalAuthAdmin: boolean;
-  readonly disableLocalAuthTenant: boolean;
-  readonly hasBreakGlassSecret: boolean;
-  readonly proxyProtectAdmin: boolean;
-  readonly proxyProtectTenant: boolean;
-  readonly breakGlassPath: string | null;
-}
+// The contract type. The local copy named the proxy flags `proxyProtectAdmin` /
+// `proxyProtectTenant` while the API sends `protectAdminViaProxy` /
+// `protectTenantViaProxy`, so the page always showed protection as OFF — and
+// saving the form switched it off.
+export type OidcGlobalSettings = OidcGlobalSettingsResponse;
 
 export interface OidcTestResult {
   readonly issuer: string;

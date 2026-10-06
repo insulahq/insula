@@ -5,18 +5,42 @@ Where the bytes went, for whom, and when — in both panels.
 - **Admin:** Monitoring → **Traffic** (first tab).
 - **Tenant:** **Monitoring** → **Traffic** (the page formerly called Resource
   Usage; `/resource-usage` redirects to its other tab).
-- **Dashboard:** a cluster in/out tile in the Platform row.
+- **Dashboard:** a cluster tile in the Platform row — the unique total, split into internet and between-node traffic.
 
 ---
 
-## Two measurements, deliberately kept apart
+## Cluster traffic: each byte once
 
-A cluster frame tags every series with a `group` — `wire`, `wire-subset` or
-`workload` — and the summary table renders one heading per group and computes
-share **within** a group. `wire-subset` (node-to-node encapsulation, the
-off-site backup upload) is already inside the wire total; `workload` does not
-decompose the wire at all, because a backup crosses the relay twice and
-pod-to-pod traffic never reaches the NIC. Only `wire` adds up.
+A cluster frame tags every series with a `group`, and the summary table renders
+one heading per group and computes share **within** a group:
+
+| Group | Rows (series keys) | Source |
+|---|---|---|
+| `wire` | `wire:internet:out`, `wire:internet:in`, `wire:n2n` | NIC sum minus node-to-node; node-to-node counted once (outbound side) |
+| `n2n` | `n2n:{kubeapi,etcd,kubelet,tunnel,n2nother}` | per-node nft counters by port class |
+| `wire-subset` | `tenants:{out,in}`, `backup:{out,in}` | Traefik tenant services; the shim's off-site bytes (nft) |
+| `nic` | `nic:{out,in}` | cAdvisor root cgroup summed over nodes — between-node bytes twice |
+
+Only `wire` adds up; the panel's tiles read it. Measured on a three-node
+production cluster before this split: a 135 GB day by the NIC sum was ~94%
+node-to-node, and the Kubernetes API (host-to-host, outside the pod tunnel)
+was half of it — invisible while "node-to-node" meant the tunnel interface.
+
+**Per-node counters.** The `firewall-reconciler` DaemonSet owns an nft table
+`inet insula_traffic` on every node: base chains at `prerouting -90` and
+`postrouting 90` (after de-SNAT, before SNAT) count packets whose peer is
+another node's address, by port class (6443 · 2379-2380 · 10250 · 51820-51821/
+4789/IPIP · other), and the backup shim pods' traffic leaving through a
+physical interface to a non-node peer. No rule changes a verdict. Counters are
+published every 30 s to `platform-system/node-traffic-<node>` (`data.snapshot`
+JSON, version 1); platform-api's `node-traffic-collector` re-exports them as
+`platform_node_traffic_{bytes,packets}{node,class,direction}` (every replica —
+queries take `max by (node, class, direction)` first). The NIC counts frames,
+nft counts IP packets, so queries add 14 bytes per packet. A ConfigMap not
+refreshed for 5 minutes is ignored. Internet = NIC sum − node-to-node of the
+same direction, floored at 0, and absent (a gap) wherever the counters are.
+
+## Two measurements, deliberately kept apart
 
 They share a name and do not share a number.
 

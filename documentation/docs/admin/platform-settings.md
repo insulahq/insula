@@ -18,7 +18,6 @@ forget them. This chapter walks each page; some require `super_admin`.
 | **Limits & Regional** | API rate limit, retention windows (snapshots, deleted-tenant backups, file-manager recycle bin), timezone, currency. |
 | **DNS Providers** | DNS provider groups + servers. → [Domains & DNS](domains-and-dns.md) |
 | **Integrations** | Embedded-service URLs (Longhorn, …). |
-| **AI Providers** | AI model providers + keys. |
 | **Tenant Lifecycle Hooks** | Lifecycle hook health + controls. |
 | **Notifications** | Notification sources, providers, templates, log. |
 | **Export / Import** | Configuration export/import (super_admin). |
@@ -66,8 +65,8 @@ sends a partial update, so it won't disturb Limits or other settings.
 ## Limits & Regional
 
 **Platform → Limits & Regional** sets the **API rate limit**, the default
-**timezone**, and the **currency** (which is what plan prices and the AI
-budget are displayed in everywhere else), plus three retention windows:
+**timezone**, and the **currency** (which is what plan prices are
+displayed in everywhere else), plus three retention windows:
 
 | Setting | What it controls |
 |---|---|
@@ -133,17 +132,6 @@ shows whether each value is the default or your override, with a reset.
     [Email → Settings](email.md)) are part of the reserved-hostname list
     that blocks tenants from claiming internal subdomains. Editing them
     updates that protection automatically. See [Domains & DNS](domains-and-dns.md).
-
-## AI Providers
-
-**Platform → AI Providers** registers the AI model providers that power the
-tenant panel's AI-assisted file editing. Add a provider — **Anthropic**,
-**OpenAI**, or an **OpenAI-compatible** custom endpoint (e.g. a self-hosted
-Ollama) — and one or more models (with API keys). Each model can be
-enabled, disabled, edited, or deleted. The per-tenant *spend cap* for AI
-editing is set separately, on each [plan](plans-and-subscriptions.md).
-There is no AI feature beyond this file-editing assist — no AI website
-builder.
 
 ## Tenant Lifecycle Hooks
 

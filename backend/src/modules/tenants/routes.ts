@@ -29,6 +29,8 @@ import type { TenantPlacementDetail } from '@insula/api-contracts';
 import { getPlacement, listPlacements, listStorageFailovers, type StoredPlacement } from '../tenant-placement/store.js';
 import { presentFailover, presentPlacement, presentPlacementSummary } from '../tenant-placement/present.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { bodyField } from '../../shared/api-scope.js';
+import { findImpersonationTarget, signImpersonationToken } from './impersonation.js';
 
 export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // Lazy-init K8s tenants (undefined if no kubeconfig available)
@@ -53,6 +55,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants
   app.post('/tenants', {
     onRequest: [requireRole('super_admin', 'admin')],
+    config: { apiBody: createTenantSchema },
     schema: {
       tags: ['Tenants'],
       summary: 'Create a new tenant',
@@ -304,6 +307,9 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   secondaryEmail: { type: ['string', 'null'] },
                   kubernetesNamespace: { type: 'string' },
                   planId: { type: 'string' },
+                  // The hosting plan's display name, joined by listTenants for
+                  // the Plan column. Declared, or the response schema strips it.
+                  planName: { type: ['string', 'null'] },
                   regionId: { type: 'string' },
                   status: { type: 'string' },
                   storageLifecycleState: { type: 'string' },
@@ -376,7 +382,8 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const tenant = await service.getTenantById(app.db, id);
+    // getTenantDetail adds createdByName — the creator as a person, not an id.
+    const tenant = await service.getTenantDetail(app.db, id);
     return success(tenant);
   });
 
@@ -428,6 +435,12 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/v1/tenants/:id
   app.patch('/tenants/:id', {
     onRequest: [requireRole('super_admin', 'admin')],
+    // Suspending and reactivating are reversible (write); archiving removes
+    // the tenant's workloads and volumes (delete).
+    config: {
+      apiScope: (request) => (bodyField(request, 'status') === 'archived' ? 'delete' : 'write'),
+      apiBody: updateTenantSchema,
+    },
   }, async (request) => {
     const { id } = request.params as { id: string };
     const parsed = updateTenantSchema.safeParse(request.body);
@@ -477,39 +490,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/admin/impersonate/:tenantId
   app.post('/admin/impersonate/:tenantId', {
     onRequest: [requireRole('super_admin', 'admin', 'support')],
+    // A person in the panel only. The token this returns is a free-standing
+    // tenant credential; handed to an API token holder it would outlive that
+    // token's revocation. Agents act as a tenant through `asTenant` instead
+    // (modules/mcp/executor.ts), which never hands a token out.
+    config: { apiTokenForbidden: 'Impersonation hands out a tenant credential. Agents act as a tenant with asTenant.' },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-
-    // Verify tenant exists
-    await service.getTenantById(app.db, tenantId);
-
-    // Find the tenant_admin user for this tenant
-    const [tenantUser] = await app.db
-      .select()
-      .from(users)
-      .where(
-        and(
-          eq(users.tenantId, tenantId),
-          eq(users.roleName, 'tenant_admin'),
-          eq(users.status, 'active'),
-        ),
-      )
-      .limit(1);
-
-    if (!tenantUser) {
-      throw new ApiError('NO_TENANT_USER', 'No active tenant_admin user found for this tenant', 404);
-    }
-
-    // Issue a short-lived impersonation JWT
-    const token = app.jwt.sign({
-      sub: tenantUser.id,
-      role: 'tenant_admin',
-      panel: 'tenant',
-      tenantId,
-      impersonatedBy: request.user.sub,
-      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-      iat: Math.floor(Date.now() / 1000),
-      jti: crypto.randomUUID(),
+    const tenantUser = await findImpersonationTarget(app.db, tenantId);
+    const token = signImpersonationToken(app, {
+      target: tenantUser, tenantId, impersonatorId: request.user.sub, ttlSeconds: 3600,
     });
 
     return success({

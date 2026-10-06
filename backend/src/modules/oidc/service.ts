@@ -7,6 +7,7 @@ import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from './crypto.js';
 import type { Database } from '../../db/index.js';
 import { normalizeEmail } from '../../lib/email-normalize.js';
+import type { ProxyPanel } from './panel-proxy-names.js';
 
 // ─── OIDC Discovery ──────────────────────────────────────────────────────────
 
@@ -81,6 +82,8 @@ export async function getGlobalSettings(db: Database) {
       protectAdminViaProxy: false,
       protectTenantViaProxy: false,
       breakGlassPath: null as string | null,
+      proxyAdminProviderId: null as string | null,
+      proxyTenantProviderId: null as string | null,
     };
   }
   const row = rows[0];
@@ -91,6 +94,8 @@ export async function getGlobalSettings(db: Database) {
     protectAdminViaProxy: row.protectAdminViaProxy === 1,
     protectTenantViaProxy: row.protectTenantViaProxy === 1,
     breakGlassPath: row.breakGlassPath ?? null,
+    proxyAdminProviderId: row.proxyAdminProviderId ?? null,
+    proxyTenantProviderId: row.proxyTenantProviderId ?? null,
   };
 }
 
@@ -105,6 +110,8 @@ export interface SaveGlobalSettingsInput {
   readonly proxy_protect_admin?: boolean;
   readonly proxy_protect_tenant?: boolean;
   readonly break_glass_path?: string | null;
+  readonly proxy_admin_provider_id?: string | null;
+  readonly proxy_tenant_provider_id?: string | null;
 }
 
 export async function saveGlobalSettings(db: Database, input: SaveGlobalSettingsInput, encryptionKey: string) {
@@ -141,6 +148,12 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (input.break_glass_path !== undefined) {
     updateValues.breakGlassPath = input.break_glass_path;
   }
+  if (input.proxy_admin_provider_id !== undefined) {
+    updateValues.proxyAdminProviderId = input.proxy_admin_provider_id;
+  }
+  if (input.proxy_tenant_provider_id !== undefined) {
+    updateValues.proxyTenantProviderId = input.proxy_tenant_provider_id;
+  }
 
   // Validate + auto-provision when disabling admin local auth
   if (input.disable_local_auth_admin) {
@@ -160,17 +173,17 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   const wantsAdminProxy = adminProxy ?? (rows[0]?.protectAdminViaProxy === 1);
   const wantsTenantProxy = tenantProxy ?? (rows[0]?.protectTenantViaProxy === 1);
 
+  // A protected panel needs THE provider its oauth2-proxy signs in with — not
+  // merely "some enabled provider exists", which is all this used to check and
+  // why enabling protection on a cluster without a configured proxy saved fine
+  // and took the panel down.
   if (wantsAdminProxy) {
-    const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
-    if (adminProviders.length === 0) {
-      throw new ApiError('NO_ADMIN_PROVIDER', 'At least one enabled admin OIDC provider is required before enabling proxy protection for admin panel', 400);
-    }
+    await assertProxyProvider(db, 'admin', input.proxy_admin_provider_id !== undefined
+      ? input.proxy_admin_provider_id : rows[0]?.proxyAdminProviderId ?? null);
   }
   if (wantsTenantProxy) {
-    const tenantProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'tenant'), eq(oidcProviders.enabled, 1)));
-    if (tenantProviders.length === 0) {
-      throw new ApiError('NO_TENANT_PROVIDER', 'At least one enabled client OIDC provider is required before enabling proxy protection for client panel', 400);
-    }
+    await assertProxyProvider(db, 'tenant', input.proxy_tenant_provider_id !== undefined
+      ? input.proxy_tenant_provider_id : rows[0]?.proxyTenantProviderId ?? null);
   }
 
   // Auto-generate break-glass path when admin proxy is enabled and no path exists
@@ -196,6 +209,87 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   }
 
   return getGlobalSettings(db);
+}
+
+// ─── Panel proxy provider ────────────────────────────────────────────────────
+
+export type { ProxyPanel };
+
+const PANEL_LABEL: Record<ProxyPanel, string> = { admin: 'admin panel', tenant: 'tenant panel' };
+
+async function assertProxyProvider(db: Database, panel: ProxyPanel, providerId: string | null): Promise<void> {
+  if (!providerId) {
+    throw new ApiError('PROXY_PROVIDER_REQUIRED',
+      `Choose the OIDC provider the ${PANEL_LABEL[panel]}'s OAuth2 Proxy signs in with before enabling proxy protection`, 400);
+  }
+  const [provider] = await db.select().from(oidcProviders).where(eq(oidcProviders.id, providerId)).limit(1);
+  if (!provider || provider.enabled !== 1 || provider.panelScope !== panel) {
+    throw new ApiError('PROXY_PROVIDER_INVALID',
+      `The OAuth2 Proxy provider for the ${PANEL_LABEL[panel]} must be an enabled ${panel} OIDC provider`, 400);
+  }
+}
+
+/** Panels whose proxy protection is ON and signs in with this provider. */
+async function panelsUsingProxyProvider(db: Database, providerId: string): Promise<ProxyPanel[]> {
+  const settings = await getGlobalSettings(db);
+  const panels: ProxyPanel[] = [];
+  if (settings.protectAdminViaProxy && settings.proxyAdminProviderId === providerId) panels.push('admin');
+  if (settings.protectTenantViaProxy && settings.proxyTenantProviderId === providerId) panels.push('tenant');
+  return panels;
+}
+
+function proxyProviderInUse(panels: readonly ProxyPanel[], action: string): ApiError {
+  const which = panels.map((p) => PANEL_LABEL[p]).join(' and ');
+  return new ApiError('PROXY_PROVIDER_IN_USE',
+    `This provider signs visitors in to the ${which} OAuth2 Proxy and cannot be ${action}. `
+    + 'Choose another proxy provider or turn proxy protection off first.', 409);
+}
+
+/** Exported for the route: is this provider behind a live proxy (re-sync after an edit)? */
+export async function isProxyProvider(db: Database, providerId: string): Promise<boolean> {
+  return (await panelsUsingProxyProvider(db, providerId)).length > 0;
+}
+
+/**
+ * Put the proxy fields back to an earlier snapshot. Used when enabling
+ * protection fails on the cluster (the proxy never became ready): the saved
+ * setting must not claim a protection that is not in place.
+ */
+export async function restoreProxySettings(
+  db: Database,
+  previous: Pick<Awaited<ReturnType<typeof getGlobalSettings>>,
+    'protectAdminViaProxy' | 'protectTenantViaProxy' | 'proxyAdminProviderId' | 'proxyTenantProviderId'>,
+): Promise<void> {
+  const rows = await db.select().from(oidcGlobalSettings);
+  if (rows.length === 0) return;
+  await db.update(oidcGlobalSettings).set({
+    protectAdminViaProxy: previous.protectAdminViaProxy ? 1 : 0,
+    protectTenantViaProxy: previous.protectTenantViaProxy ? 1 : 0,
+    proxyAdminProviderId: previous.proxyAdminProviderId,
+    proxyTenantProviderId: previous.proxyTenantProviderId,
+  }).where(eq(oidcGlobalSettings.id, rows[0].id));
+}
+
+export interface PanelProxyProvider {
+  readonly issuerUrl: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+}
+
+/** The decrypted OIDC client a panel's oauth2-proxy uses, or null when it has none. */
+export async function loadPanelProxyProvider(
+  db: Database,
+  providerId: string | null,
+  encryptionKey: string,
+): Promise<PanelProxyProvider | null> {
+  if (!providerId) return null;
+  const [provider] = await db.select().from(oidcProviders).where(eq(oidcProviders.id, providerId)).limit(1);
+  if (!provider || provider.enabled !== 1) return null;
+  return {
+    issuerUrl: provider.issuerUrl,
+    clientId: provider.clientId,
+    clientSecret: decrypt(provider.clientSecretEncrypted, encryptionKey),
+  };
 }
 
 // ─── Provider CRUD ───────────────────────────────────────────────────────────
@@ -260,7 +354,13 @@ export async function createProvider(db: Database, input: SaveProviderInput, enc
 }
 
 export async function updateProvider(db: Database, id: string, input: Partial<SaveProviderInput>, encryptionKey: string) {
-  await getProviderById(db, id);
+  const current = await getProviderById(db, id);
+  const disabling = input.enabled === false;
+  const rescoping = input.panel_scope !== undefined && input.panel_scope !== current.panelScope;
+  if (disabling || rescoping) {
+    const panels = await panelsUsingProxyProvider(db, id);
+    if (panels.length > 0) throw proxyProviderInUse(panels, disabling ? 'disabled' : 'moved to another panel');
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.display_name !== undefined) updateValues.displayName = input.display_name;
@@ -288,8 +388,27 @@ export async function updateProvider(db: Database, id: string, input: Partial<Sa
   return getProviderById(db, id);
 }
 
+/**
+ * Put a provider's sign-in credentials back to an earlier row. Used when an
+ * edit could not be rolled out to the OAuth2 Proxy that signs in with it: the
+ * saved provider must not differ from what the running proxy uses.
+ */
+export async function restoreProviderCredentials(
+  db: Database,
+  previous: Awaited<ReturnType<typeof getProviderById>>,
+): Promise<void> {
+  await db.update(oidcProviders).set({
+    issuerUrl: previous.issuerUrl,
+    clientId: previous.clientId,
+    clientSecretEncrypted: previous.clientSecretEncrypted,
+    discoveryMetadata: previous.discoveryMetadata,
+  }).where(eq(oidcProviders.id, previous.id));
+}
+
 export async function deleteProvider(db: Database, id: string) {
   await getProviderById(db, id);
+  const panels = await panelsUsingProxyProvider(db, id);
+  if (panels.length > 0) throw proxyProviderInUse(panels, 'deleted');
   await db.delete(oidcProviders).where(eq(oidcProviders.id, id));
 }
 
@@ -681,9 +800,12 @@ export async function getAuthStatus(db: Database, panel: 'admin' | 'tenant') {
   const localAuthDisabled = panel === 'admin' ? globalSettings.disableLocalAuthAdmin : globalSettings.disableLocalAuthTenant;
   const proxyProtected = panel === 'admin' ? globalSettings.protectAdminViaProxy : globalSettings.protectTenantViaProxy;
 
+  const proxyProviderId = panel === 'admin' ? globalSettings.proxyAdminProviderId : globalSettings.proxyTenantProviderId;
+
   return {
     localAuthEnabled: !localAuthDisabled,
     proxyProtected,
+    proxyProviderId: proxyProtected && providers.some((p) => p.id === proxyProviderId) ? proxyProviderId : null,
     providers: providers.map((p) => ({
       id: p.id,
       displayName: p.displayName,

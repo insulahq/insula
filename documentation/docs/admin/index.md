@@ -103,7 +103,7 @@ pages; others are collapsible groups that expand to reveal sub-pages.
 | **Security** | Posture, Network Trust, Identity & Sessions, Web Defense, OIDC / SSO. → [Security](security.md) |
 | **Monitoring** | Live cluster/service health, plus Audit Logs. |
 | **Cluster** | Nodes, Storage, Cluster Policies, Networking, Ingress & TLS, Load Balancer, Private Worker Tunnels. → [Nodes & storage](nodes-and-storage.md) |
-| **Platform Settings** | Updates, Upgrades, Identity, Hosting Plans, Limits & Regional, DNS Providers, Integrations, AI Providers, Tenant Lifecycle Hooks, Notifications, Export / Import. → [Platform settings](platform-settings.md) |
+| **Platform Settings** | Updates, Upgrades, Identity, Hosting Plans, Limits & Regional, DNS Providers, Integrations, Tenant Lifecycle Hooks, Notifications, Export / Import. → [Platform settings](platform-settings.md) |
 
 !!! note "Some pages are role-gated"
     Several pages only render for higher roles — the whole Security

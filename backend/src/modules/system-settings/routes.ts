@@ -101,22 +101,38 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
         // with the current protection state.
         const { getGlobalSettings } = await import('../oidc/service.js');
         const oidc = await getGlobalSettings(app.db);
-        const result = await reconcileIngressHosts(
-          {
-            adminPanelUrl: updated.adminPanelUrl ?? null,
-            tenantPanelUrl: updated.tenantPanelUrl ?? null,
-            tlsSecretName,
-            protectAdminViaProxy: oidc.protectAdminViaProxy,
-            protectTenantViaProxy: oidc.protectTenantViaProxy,
-          },
-          undefined,
-          { kubeconfigPath, clusterIssuerName },
-        );
-        if (result.changed) {
-          app.log.info(
-            { adminPanelUrl: updated.adminPanelUrl, tenantPanelUrl: updated.tenantPanelUrl },
-            'system-settings: ingress hosts reconciled',
+        // A protected panel's proxy pins its callback to the panel host, so it
+        // must follow the new URL BEFORE the routes do: the full sync re-applies
+        // the proxy, waits for it, then rewrites the routes. If it cannot, the
+        // routes still move — the new host must be served either way.
+        let routed = false;
+        if (oidc.protectAdminViaProxy || oidc.protectTenantViaProxy) {
+          try {
+            const { syncPanelProxies, panelProxySyncConfig } = await import('../oidc/panel-proxy-sync.js');
+            await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: true });
+            routed = true;
+          } catch (err) {
+            app.log.warn({ err }, 'system-settings: OAuth2 Proxy did not follow the panel URL change');
+          }
+        }
+        if (!routed) {
+          const result = await reconcileIngressHosts(
+            {
+              adminPanelUrl: updated.adminPanelUrl ?? null,
+              tenantPanelUrl: updated.tenantPanelUrl ?? null,
+              tlsSecretName,
+              protectAdminViaProxy: oidc.protectAdminViaProxy,
+              protectTenantViaProxy: oidc.protectTenantViaProxy,
+            },
+            undefined,
+            { kubeconfigPath, clusterIssuerName },
           );
+          if (result.changed) {
+            app.log.info(
+              { adminPanelUrl: updated.adminPanelUrl, tenantPanelUrl: updated.tenantPanelUrl },
+              'system-settings: ingress hosts reconciled',
+            );
+          }
         }
       } catch (err) {
         app.log.warn(

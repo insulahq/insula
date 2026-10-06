@@ -1,4 +1,4 @@
-import { eq, ilike, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
+import { eq, ilike, and, sql, desc, asc, lt, gt, getTableColumns } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
 import bcrypt from 'bcrypt';
 import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions } from '../../db/schema.js';
@@ -304,6 +304,36 @@ export async function getTenantById(db: Database, id: string) {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, id));
   if (!tenant) throw tenantNotFound(id);
   return toTenantResponse(tenant);
+}
+
+/**
+ * The tenant detail read (GET /tenants/:id): the tenant plus the display name
+ * of the user who created it, so the page shows a person rather than an id.
+ *
+ * `createdByName` is the creator's full name, falling back to their email when
+ * the name is blank; null when there is no such user — never recorded, created
+ * by a platform process (`system`), or since deleted. The panel tells those
+ * apart from `createdBy` itself.
+ */
+export async function getTenantDetail(db: Database, id: string) {
+  const tenant = await getTenantById(db, id);
+  const createdByName = await resolveUserDisplayName(db, tenant.createdBy);
+  return { ...tenant, createdByName };
+}
+
+/** A user's full name, or their email when the name is blank; null when the id resolves to no user. */
+export async function resolveUserDisplayName(db: Database, userId: string | null): Promise<string | null> {
+  if (!userId) return null;
+  const [user] = await db
+    .select({ fullName: users.fullName, email: users.email })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const name = user.fullName?.trim();
+  if (name) return name;
+  const email = user.email?.trim();
+  return email ? email : null;
 }
 
 /** One row per PVC returned by getTenantStoragePlacement. */
@@ -764,10 +794,13 @@ async function loadPreArchiveRetentionDays(db: Database): Promise<number> {
   }
 }
 
+/** One admin tenant-list row: the tenant plus its hosting plan's name. */
+export type TenantListRow = typeof tenants.$inferSelect & { readonly planName: string | null };
+
 export async function listTenants(
   db: Database,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
-): Promise<{ data: typeof tenants.$inferSelect[]; pagination: PaginationMeta }> {
+): Promise<{ data: TenantListRow[]; pagination: PaginationMeta }> {
   const { limit, cursor, sort, search } = params;
 
   const conditions = [];
@@ -786,9 +819,13 @@ export async function listTenants(
   const orderBy = sort.direction === 'desc' ? desc(tenants.createdAt) : asc(tenants.createdAt);
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // The plan NAME rides along for the list's Plan column — joined here rather
+  // than looked up per row by the panel. LEFT join: a tenant whose plan row is
+  // gone still lists, with a null name.
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(tenants), planName: hostingPlans.name })
     .from(tenants)
+    .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
     .where(where)
     .orderBy(orderBy)
     .limit(limit + 1);

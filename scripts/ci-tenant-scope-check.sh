@@ -6,9 +6,9 @@
 #   route does not also verify that the CALLER owns that tenant, `tenantId`
 #   is just an attacker-chosen path segment. Two modules had shipped that
 #   way:
-#     - ai-editor      → POST /tenants/:tenantId/ai/edit resolved the
-#                        VICTIM's namespace and read their files through
-#                        the file-manager sidecar (cross-tenant disclosure)
+#     - a (since retired) file-edit route resolved the VICTIM's
+#                        namespace and read their files through the
+#                        file-manager sidecar (cross-tenant disclosure)
 #     - container-console → GET /tenants/:tenantId/.../components leaked
 #                        any tenant's pod/container topology
 #   Both were `onRequest: [authenticate]` and nothing else.

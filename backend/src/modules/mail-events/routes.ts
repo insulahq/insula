@@ -31,6 +31,7 @@ import {
   type DmarcOverview,
   type AbuseReportsOverview,
   type TlsReportsOverview,
+  applyDmarcPolicySchema,
 } from '@insula/api-contracts';
 
 import type { FastifyInstance } from 'fastify';
@@ -42,6 +43,8 @@ import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
 import { schedulePollSoon } from './dmarc.js';
 import { getMailOverview } from './overview.js';
+import { applyDmarcPolicy } from './dmarc-apply.js';
+import { parseBody } from '../../shared/validate-body.js';
 
 export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<void> {
   // Encapsulated: raw-buffer JSON so the HMAC covers exactly the bytes
@@ -136,6 +139,16 @@ export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
       intakeLocalPart: DMARC_LOCAL_PART,
     };
     return success(overview);
+  });
+
+  // Act on the recommendation: rewrite `p=` of the managed `_dmarc` record.
+  // Tightening only as the step the recommendation allows right now; loosening
+  // always (dmarc-apply.ts). Not for `support` — it changes published DNS.
+  app.post('/admin/mail/dmarc/policy', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const input = parseBody(applyDmarcPolicySchema, request.body);
+    return success(await applyDmarcPolicy(app.db, input));
   });
 
   app.get('/admin/mail/dmarc/sources', async (request) => {
@@ -304,6 +317,21 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     const result = await listTlsReports(app.db, { ...parsed.data, tenantId });
     const overview: TlsReportsOverview = { ...result, intakeLocalPart: POSTMASTER_LOCAL_PART };
     return success(overview);
+  });
+
+  // The domain owner can act on their own domain's recommendation — the page
+  // used to tell them to contact support. Scoped to this tenant's records:
+  // another tenant's domain answers like a domain without a managed record.
+  app.post('/tenants/:tenantId/mail/dmarc/policy', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'tenant_admin'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const input = parseBody(applyDmarcPolicySchema, request.body);
+    return success(await applyDmarcPolicy(app.db, { ...input, tenantId }));
   });
 
   app.get('/tenants/:tenantId/mail/dmarc/sources', {

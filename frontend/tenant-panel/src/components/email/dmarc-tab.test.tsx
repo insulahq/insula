@@ -11,7 +11,7 @@
  * Rendering the third as an empty table tells the domain owner "nobody is
  * sending as you", which is the one answer this page must never invent.
  */
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -206,3 +206,60 @@ describe('DmarcTab (tenant)', () => {
     expect(sourceCall).toContain('domain=alpha.test');
   });
 });
+
+describe('DmarcTab (tenant) — acting on the recommendation', () => {
+  function renderWith(over: Record<string, unknown>) {
+    apiFetch.mockImplementation((url?: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(init.body ?? '{}') as { domain: string; policy: string };
+        return Promise.resolve({ data: { ...body, recordName: `_dmarc.${body.domain}`, recordValue: `v=DMARC1; p=${body.policy}`, published: true } });
+      }
+      if (typeof url === 'string' && url.includes('/dmarc/sources')) return Promise.resolve({ data: { sources: [] } });
+      return Promise.resolve({ data: { windowDays: 30, domains: [summary(over)], intakeLocalPart: 'postmaster' } });
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <DmarcTab tenantId="t-1" domainName="alpha.test" />
+      </QueryClientProvider>,
+    );
+  }
+
+  it('offers the recommended step and publishes it after confirmation', async () => {
+    renderWith({ managedPolicy: 'quarantine' });
+    fireEvent.click(await screen.findByTestId('dmarc-apply-alpha.test'));
+    fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
+    await waitFor(() => {
+      const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
+      expect(post?.[0]).toBe('/api/v1/tenants/t-1/mail/dmarc/policy');
+      expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ domain: 'alpha.test', policy: 'reject' });
+    });
+    expect(await screen.findByTestId('dmarc-applied-alpha.test')).toHaveTextContent('p=reject is published');
+  });
+
+  it('does not offer a step that is already published while the reports catch up', async () => {
+    renderWith({
+      managedPolicy: 'quarantine',
+      currentPolicy: 'none',
+      recommendation: { policyDomain: 'alpha.test', currentPolicy: 'none', recommendedPolicy: 'quarantine', passRate: 1, reason: 'safe', ready: true },
+    });
+    expect(await screen.findByTestId('dmarc-lagging-alpha.test')).toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+    // The way back is always there.
+    expect(screen.getByTestId('dmarc-step-back-alpha.test')).toHaveTextContent('p=none');
+  });
+
+  it('names a duplicate _dmarc record instead of calling it unmanaged', async () => {
+    renderWith({ managedPolicy: null, managedRecordCount: 2 });
+    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('2');
+    expect(screen.queryByTestId('dmarc-unmanaged-alpha.test')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+  });
+
+  it('says so when the platform does not manage the record', async () => {
+    renderWith({ managedPolicy: null });
+    expect(await screen.findByTestId('dmarc-unmanaged-alpha.test')).toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+  });
+});
+

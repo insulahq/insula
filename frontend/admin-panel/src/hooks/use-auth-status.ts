@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { OidcAuthStatus } from '@insula/api-contracts';
 import { apiFetch, ApiError } from '@/lib/api-client';
 
 /**
@@ -27,11 +28,10 @@ import { apiFetch, ApiError } from '@/lib/api-client';
  * throwing its failure away.
  */
 
-export interface AuthStatus {
-  readonly localAuthEnabled: boolean;
-  readonly proxyProtectionEnabled?: boolean;
-  readonly providers: readonly { id: string; displayName: string }[];
-}
+// The contract type, not a local copy: the local interface called the flag
+// `proxyProtectionEnabled` while the API sends `proxyProtected`, so it was
+// never readable.
+export type AuthStatus = OidcAuthStatus;
 
 export type AuthStatusState =
   /** First probe in flight. Callers render the form exactly as before — a
@@ -45,7 +45,7 @@ export type AuthStatusState =
  * interpret. Deliberately permissive: our own gate must never be the reason an
  * operator cannot reach the login form.
  */
-const PERMISSIVE_FALLBACK: AuthStatus = { localAuthEnabled: true, providers: [] };
+const PERMISSIVE_FALLBACK: AuthStatus = { localAuthEnabled: true, proxyProtected: false, proxyProviderId: null, providers: [] };
 
 export const AUTH_STATUS_RETRY_BASE_MS = 1_000;
 export const AUTH_STATUS_RETRY_MAX_MS = 10_000;

@@ -142,18 +142,34 @@ export async function renamePlatformDomain(
   try {
     const { getGlobalSettings } = await import('../oidc/service.js');
     const oidc = await getGlobalSettings(db);
-    const r = await reconcileIngressHosts(
-      {
-        adminPanelUrl: updated.adminPanelUrl ?? null,
-        tenantPanelUrl: updated.tenantPanelUrl ?? null,
-        tlsSecretName: resolveTlsSecretName(config),
-        protectAdminViaProxy: oidc.protectAdminViaProxy,
-        protectTenantViaProxy: oidc.protectTenantViaProxy,
-      },
-      undefined,
-      { kubeconfigPath, clusterIssuerName },
-    );
-    reconciled.panels = r.changed ? 'reconciled' : 'no-change';
+    // A protected panel's proxy pins its callback to the panel host: the full
+    // sync moves the proxy to the new host, waits for it, THEN the routes. If
+    // it cannot, the routes still move — the new host must be served.
+    let routed = false;
+    if (oidc.protectAdminViaProxy || oidc.protectTenantViaProxy) {
+      try {
+        const { syncPanelProxies, panelProxySyncConfig } = await import('../oidc/panel-proxy-sync.js');
+        await syncPanelProxies(db, panelProxySyncConfig(config), { waitReady: true });
+        reconciled.panels = 'reconciled';
+        routed = true;
+      } catch (err) {
+        log.warn({ err }, 'platform-domain rename: OAuth2 Proxy did not follow the new panel hosts');
+      }
+    }
+    if (!routed) {
+      const r = await reconcileIngressHosts(
+        {
+          adminPanelUrl: updated.adminPanelUrl ?? null,
+          tenantPanelUrl: updated.tenantPanelUrl ?? null,
+          tlsSecretName: resolveTlsSecretName(config),
+          protectAdminViaProxy: oidc.protectAdminViaProxy,
+          protectTenantViaProxy: oidc.protectTenantViaProxy,
+        },
+        undefined,
+        { kubeconfigPath, clusterIssuerName },
+      );
+      reconciled.panels = r.changed ? 'reconciled' : 'no-change';
+    }
   } catch (err) {
     reconciled.panels = `error: ${err instanceof Error ? err.message : String(err)}`;
     log.warn({ err }, 'platform-domain rename: panel ingress reconcile failed (non-blocking)');

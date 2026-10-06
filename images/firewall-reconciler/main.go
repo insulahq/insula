@@ -19,14 +19,28 @@
 // trusted_ranges gates full TCP/UDP for operator-blessed sources.
 // tenant_ports gates per-tenant hostPort exposure (catalog deploy gate).
 //
-// Bootstrap.sh declares all six nft sets on every node; this reconciler
+//	traffic loop (node scope, count-only — traffic*.go) — owns its OWN
+//	table `inet insula_traffic`, never `inet filter`:
+//	  Node Internal+ExternalIPs except NODE_NAME → peers_v{4,6}
+//	  backup-rclone-shim Pod IPs on this node    → shim_v{4,6}
+//	  non-virtual host interfaces                → phys_ifs
+//	  named counters kubeapi/etcd/kubelet/tunnel/n2nother/backup _in/_out,
+//	  filled by policy-accept prerouting(-90)/postrouting(90) chains whose
+//	  only verdicts are return/jump — they never change a packet's fate.
+//	  Every 30 s the byte + packet counters are published to ConfigMap
+//	  platform-system/node-traffic-<NODE_NAME> (data.snapshot, JSON) for
+//	  platform-api. Failures are warn-logged with backoff and never touch
+//	  the firewall loops or /healthz.
+//
+// Bootstrap.sh declares the inet filter sets on every node; this reconciler
 // is the only writer at runtime. No `nft` binary in the container —
 // libnftnl talks netlink directly so the kernel's stable wire format
 // is the only userspace/kernel ABI in play.
 //
 // Runs as DaemonSet hostNetwork: true so the kernel netfilter context
 // is the host's. Drops to bare CAP_NET_ADMIN — no privileged
-// escalation, no host PID/IPC.
+// escalation, no host PID/IPC. CAP_NET_ADMIN also covers the traffic
+// table and reading its counters.
 package main
 
 import (
@@ -164,11 +178,37 @@ func main() {
 	tpr := newTenantPortsReconciler(nodeName, podLister, nsLister, r)
 	tpr.health = hs
 
-	// Peer loop event handlers — Node + the two CRDs.
-	for _, inf := range []cache.SharedIndexInformer{nodeInformer, ctrInformer, cppInformer, cfbInformer} {
+	// Traffic-accounting loop (fourth goroutine; see traffic.go). Shares the
+	// Node + Pod listers, so it adds no apiserver watches.
+	ta := newTrafficAccountant(nodeName, nodeLister, podLister,
+		newRealTrafficNft(), newTrafficPublisher(clientset, nodeName, nodeLister))
+
+	// Peer loop event handlers — Node + the three CRDs. Updates are
+	// filtered (informer_filters.go): a status-only CRD update — including
+	// the status writes this loop makes on every node — or a kubelet
+	// heartbeat on a Node must not kick a reconcile, or the status writers
+	// feed themselves. Add/Delete always kick; floorReconcile still ticks.
+	if _, err := nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(any) { r.kick(); ta.kick() },
+		UpdateFunc: func(oldObj, newObj any) {
+			if nodeUpdateNeedsReconcile(oldObj, newObj) {
+				r.kick()
+				ta.kick()
+			}
+		},
+		DeleteFunc: func(any) { r.kick(); ta.kick() },
+	}); err != nil {
+		slog.Error("AddEventHandler node", "err", err)
+		os.Exit(1)
+	}
+	for _, inf := range []cache.SharedIndexInformer{ctrInformer, cppInformer, cfbInformer} {
 		if _, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(any) { r.kick() },
-			UpdateFunc: func(any, any) { r.kick() },
+			AddFunc: func(any) { r.kick() },
+			UpdateFunc: func(oldObj, newObj any) {
+				if crdUpdateNeedsReconcile(oldObj, newObj) {
+					r.kick()
+				}
+			},
 			DeleteFunc: func(any) { r.kick() },
 		}); err != nil {
 			slog.Error("AddEventHandler peer", "err", err)
@@ -187,6 +227,29 @@ func main() {
 			slog.Error("AddEventHandler tenant", "err", err)
 			os.Exit(1)
 		}
+	}
+	// Traffic loop — only backup-rclone-shim Pods on this node matter (their
+	// IPs feed shim_v{4,6}). The node-scoped Pod informer spans all
+	// namespaces, so the shim's `platform` namespace is already in its cache.
+	if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if isBackupShimPod(obj) {
+				ta.kick()
+			}
+		},
+		UpdateFunc: func(_, newObj any) {
+			if isBackupShimPod(newObj) {
+				ta.kick()
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if isBackupShimPod(obj) {
+				ta.kick()
+			}
+		},
+	}); err != nil {
+		slog.Error("AddEventHandler traffic", "err", err)
+		os.Exit(1)
 	}
 
 	coreFactory.Start(ctx.Done())
@@ -246,11 +309,15 @@ func main() {
 	// Run the loops as separate goroutines with recover() at the
 	// boundary so a panic in one loop doesn't crash the pod (and
 	// thereby take down the other loop's reconcile cadence).
+	//
+	// The traffic loop does NOT publish to the health probe: accounting is
+	// best-effort and must never get the firewall pod restarted.
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go runWithRecover(&wg, ctx, "peer", r.run)
 	go runWithRecover(&wg, ctx, "tenant-ports", tpr.run)
 	go runWithRecover(&wg, ctx, "crowdsec-l4", crCsec.run)
+	go runWithRecover(&wg, ctx, "traffic", ta.run)
 	wg.Wait()
 }
 

@@ -7,6 +7,7 @@ import { useAuthStatus } from '@/hooks/use-auth-status';
 import ApiUnavailable from '@/components/ApiUnavailable';
 import { API_BASE, ApiError } from '@/lib/api-client';
 import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
+import { proxySsoProvider, markProxySsoAttempt, resetProxySso } from '@/lib/proxy-sso';
 
 export default function Login() {
   // The login screen sits OUTSIDE <Layout>, so the useDocumentTitle call
@@ -41,13 +42,15 @@ export default function Login() {
       try {
         const user = JSON.parse(decodeURIComponent(userJson));
         setTokenAndUser(token, user);
+        resetProxySso(sessionStorage);
         navigate('/', { replace: true });
       } catch { /* ignore */ }
     }
   }, [searchParams, navigate, setTokenAndUser]);
 
   // NO auto-redirect to the IdP, even when there is exactly one provider and
-  // local auth is off. The visitor always clicks "Sign in with …" first.
+  // local auth is off. The visitor always clicks "Sign in with …" first —
+  // with ONE exception, below handleSso: a proxy-protected panel.
   //
   // Auto-forwarding used to fire on a 500ms timer. It made the login page an
   // unusable dead end in the cases that matter most: a visitor who has just
@@ -116,6 +119,27 @@ export default function Login() {
     window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
   };
 
+  // Behind the OAuth2 Proxy the visitor has just signed in to the proxy's
+  // provider; starting that provider here completes on the IdP session it left,
+  // so they do not log in twice. Guarded against every dead end the rule above
+  // exists for — see lib/proxy-sso.ts.
+  const [ssoStartingWith, setSsoStartingWith] = useState<string | null>(null);
+  useEffect(() => {
+    if (!authStatus) return;
+    const providerId = proxySsoProvider({
+      proxyProviderId: authStatus.proxyProviderId,
+      providerIds: authStatus.providers.map((p) => p.id),
+      callbackInProgress: searchParams.has('token') || searchParams.has('error'),
+      storage: sessionStorage,
+      now: Date.now(),
+    });
+    if (!providerId) return;
+    markProxySsoAttempt(sessionStorage, Date.now());
+    setSsoStartingWith(authStatus.providers.find((p) => p.id === providerId)?.displayName ?? 'your provider');
+    const callbackUrl = `${window.location.origin}/login`;
+    window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
+  }, [authStatus, searchParams]);
+
   const showLocalAuth = authStatus?.localAuthEnabled ?? true;
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
@@ -147,6 +171,12 @@ export default function Login() {
         {(error || oidcError) && (
           <div className="mb-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="login-error">
             {error ?? (oidcMessage ? decodeURIComponent(oidcMessage) : 'Authentication failed. Please contact your administrator.')}
+          </div>
+        )}
+
+        {ssoStartingWith && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-3 text-sm text-brand-700 dark:text-brand-300" data-testid="proxy-sso-starting">
+            <Loader2 size={16} className="animate-spin" /> Signing you in with {ssoStartingWith}…
           </div>
         )}
 

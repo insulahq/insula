@@ -59,6 +59,7 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { listDeploymentsCached, listPodsCached } from '../../shared/k8s-watch-cache.js';
 
 /**
  * The Deployment fields `getK8sDeploymentStatus` actually reads.
@@ -157,9 +158,12 @@ type ListedPod = SnapshotPod & { metadata?: { namespace?: string } };
  * optimisation, never a precondition.
  */
 export async function buildWorkloadSnapshot(k8s: K8sClients): Promise<WorkloadSnapshot> {
+  // Served from the process's watch caches when they are current (see
+  // shared/k8s-watch-cache.ts) — the same objects a LIST returns, without
+  // re-sending every Pod and Deployment in the cluster every 15 seconds.
   const [deployRes, podRes] = await Promise.all([
-    k8s.apps.listDeploymentForAllNamespaces(),
-    k8s.core.listPodForAllNamespaces(),
+    listDeploymentsCached(k8s),
+    listPodsCached(k8s),
   ]);
 
   const deployments = new Map<string, SnapshotDeployment>();

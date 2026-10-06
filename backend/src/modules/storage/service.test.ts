@@ -6,18 +6,10 @@ const mockDb = {
   select: vi.fn(() => ({ from: vi.fn(() => Promise.resolve([])) })),
 };
 
-const mockRedis = {
-  info: vi.fn(),
-};
-
-vi.mock('../../shared/redis.js', () => ({
-  getRedis: () => mockRedis,
-}));
-
-// Mock file-manager service (dynamic import inside service)
-vi.mock('../file-manager/service.js', () => ({
-  proxyToFileManager: vi.fn().mockRejectedValue(new Error('not running')),
-}));
+// Tenant usage must never wake file managers again (they are scaled to zero
+// when idle; asking each one in turn made the page take minutes and read 0 B).
+const proxyToFileManager = vi.fn().mockRejectedValue(new Error('not running'));
+vi.mock('../file-manager/service.js', () => ({ proxyToFileManager }));
 
 const {
   classifyImage,
@@ -27,6 +19,7 @@ const {
   getStorageOverview,
   getImageInventory,
   purgeUnusedImages,
+  tenantStorageRows,
 } = await import('./service.js');
 
 describe('storage service', () => {
@@ -220,7 +213,6 @@ describe('storage service', () => {
 
     it('should aggregate storage data from all sources', async () => {
       mockDb.execute.mockResolvedValue({ rows: [{ size: 10_000_000 }] });
-      mockRedis.info.mockResolvedValue('used_memory:5000000\r\n');
       const k8s = createMockK8s();
 
       const result = await getStorageOverview(
@@ -232,7 +224,8 @@ describe('storage service', () => {
       expect(result.node.name).toBe('test-node');
       expect(result.node.totalBytes).toBeGreaterThan(0);
       expect(result.system.platformDatabase.usedBytes).toBe(10_000_000);
-      expect(result.system.redis.usedBytes).toBe(5_000_000);
+      expect(result.system).not.toHaveProperty('redis');
+      expect(proxyToFileManager).not.toHaveBeenCalled();
       expect(result.system.dockerImages.count).toBe(2);
       expect(result.system.dockerImages.totalBytes).toBe(505_000_000);
       expect(result.total.systemBytes).toBeGreaterThan(0);
@@ -241,7 +234,6 @@ describe('storage service', () => {
 
     it('should handle K8s API errors gracefully', async () => {
       mockDb.execute.mockRejectedValue(new Error('db error'));
-      mockRedis.info.mockRejectedValue(new Error('redis error'));
       const k8s = {
         core: {
           listNode: vi.fn().mockRejectedValue(new Error('k8s down')),
@@ -257,8 +249,37 @@ describe('storage service', () => {
 
       expect(result.node.name).toBe('unknown');
       expect(result.system.platformDatabase.usedBytes).toBe(0);
-      expect(result.system.redis.usedBytes).toBe(0);
       expect(result.system.dockerImages.count).toBe(0);
+    });
+  });
+
+  describe('tenantStorageRows', () => {
+    const tenantsList = [
+      { id: 't1', name: 'Alpha', namespace: 'tenant-alpha' },
+      { id: 't2', name: 'Beta', namespace: 'tenant-beta' },
+      { id: 't3', name: 'Gamma', namespace: 'tenant-gamma' },
+    ];
+    const volumes = [
+      { namespace: 'tenant-alpha', pvcName: 'storage', allocatedBytes: 9_000 },
+      { namespace: 'tenant-alpha', pvcName: 'db', allocatedBytes: 4_000 },
+      { namespace: 'tenant-beta', pvcName: 'storage', allocatedBytes: 7_000 },
+    ];
+
+    it('uses measured filesystem bytes for mounted volumes and allocation for the rest', () => {
+      const rows = tenantStorageRows(tenantsList, volumes, new Map([
+        ['tenant-alpha/storage', 5_000],
+        ['tenant-alpha/db', 1_000],
+      ]));
+      expect(rows[0]).toMatchObject({ tenantId: 't1', usedBytes: 6_000, approximate: false });
+      // Nothing mounts Beta's volume: its allocated size, flagged as approximate.
+      expect(rows[1]).toMatchObject({ tenantId: 't2', usedBytes: 7_000, approximate: true });
+      // A tenant without volumes is a real 0, not an approximation.
+      expect(rows[2]).toMatchObject({ tenantId: 't3', usedBytes: 0, approximate: false });
+    });
+
+    it('counts mounted volumes Longhorn does not manage', () => {
+      const rows = tenantStorageRows(tenantsList.slice(2), [], new Map([['tenant-gamma/local', 2_500]]));
+      expect(rows[0]).toMatchObject({ usedBytes: 2_500, approximate: false });
     });
   });
 

@@ -120,8 +120,10 @@ export default function TrafficSummaryTable({
     .reduce((a, r) => a + (r.total ?? 0), 0));
 
   const GROUP_LABEL: Record<string, string> = {
-    wire: 'At the wire — what crossed the network',
-    'wire-subset': 'Part of that same total, seen another way',
+    wire: 'At the wire — internet and between nodes, each byte once',
+    n2n: 'Between nodes — by what it was',
+    'wire-subset': 'Part of the internet traffic, seen another way',
+    nic: 'Every node’s network card added up — between-node bytes count twice',
     // Retained only so an older frame still renders a heading. Cluster
     // traffic no longer emits this group: pod-measured rows under a
     // wire-measured heading invited exactly the comparison they could

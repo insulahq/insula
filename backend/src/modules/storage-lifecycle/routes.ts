@@ -378,6 +378,8 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   });
 
   app.post('/admin/tenants/:tenantId/storage/fsck-repair', {
+    // A repairing fsck may discard what it cannot fix.
+    config: { apiScope: 'delete' },
     onRequest: adminGate,
     schema: {
       tags: ['Storage Lifecycle'],

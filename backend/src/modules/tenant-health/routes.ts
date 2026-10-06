@@ -106,6 +106,8 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
    * drain modal to achieve the same thing by a longer route.
    */
   app.post('/admin/tenants/:id/recover/repin', {
+    // Moves a pin, which can be moved back — not a DR recovery.
+    config: { apiScope: 'write' },
     onRequest: [requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Tenants'],

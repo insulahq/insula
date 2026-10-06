@@ -431,8 +431,44 @@ export const dmarcDomainSummarySchema = z.object({
   windowDays: z.number().int().nonnegative(),
   failingSources: z.number().int().nonnegative(),
   recommendation: dmarcRecommendationSchema,
+  /**
+   * The `p=` of the `_dmarc` record the platform manages for this domain, or
+   * null when it manages none. `currentPolicy` is what reporters SAW, which
+   * lags a change by up to a day; this is what was published.
+   */
+  managedPolicy: dmarcPolicySchema.nullable(),
+  /**
+   * How many `_dmarc` records the platform holds for the domain. More than one
+   * is a DNS error (receivers ignore the policy entirely) and the reason
+   * `managedPolicy` is null — distinct from "not managed here" (0).
+   */
+  managedRecordCount: z.number().int().nonnegative(),
 });
 export type DmarcDomainSummary = z.infer<typeof dmarcDomainSummarySchema>;
+
+/**
+ * Change the published policy of a managed `_dmarc` record. Tightening is only
+ * accepted as the step the recommendation currently allows; loosening (the way
+ * back when legitimate mail is being quarantined) is always accepted.
+ */
+export const applyDmarcPolicySchema = z.object({
+  domain: z.string().min(1).max(253),
+  policy: dmarcPolicySchema,
+}).strict();
+export type ApplyDmarcPolicyInput = z.infer<typeof applyDmarcPolicySchema>;
+
+export const applyDmarcPolicyResponseSchema = z.object({
+  domain: z.string(),
+  policy: dmarcPolicySchema,
+  recordName: z.string(),
+  recordValue: z.string(),
+  /**
+   * False when the platform is not authoritative for the zone: the record was
+   * updated here but must be published at the domain's own DNS provider.
+   */
+  published: z.boolean(),
+});
+export type ApplyDmarcPolicyResponse = z.infer<typeof applyDmarcPolicyResponseSchema>;
 
 export const dmarcSourceSummarySchema = z.object({
   sourceIp: z.string(),

@@ -74,6 +74,8 @@ import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
 import NodeName from '@/components/nodes/NodeName';
 import NodeList from '@/components/nodes/NodeList';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import TenantTrafficCard from '@/components/tenants/TenantTrafficCard';
+import { createdByLabel } from '@/lib/created-by-label';
 
 type TabKey = TabOf<'/tenants/:id'>;
 
@@ -287,7 +289,6 @@ export default function TenantDetail() {
   }
 
   const name = tenant.name ?? 'Unknown';
-  const email = tenant.primaryEmail ?? '';
   const created = tenant.createdAt;
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
@@ -325,7 +326,6 @@ export default function TenantDetail() {
         </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{email}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -595,39 +595,30 @@ export default function TenantDetail() {
             </div>
             <div>
               <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Contact Email</dt>
-              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-                {tenant.secondaryEmail ?? 'Not set'}
+              <dd className="mt-1 space-y-0.5 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-contact-email">
+                <ContactEmailLine label="Primary" value={tenant.primaryEmail} />
+                <ContactEmailLine label="Secondary" value={tenant.secondaryEmail} />
               </dd>
             </div>
             <div>
               <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Created By</dt>
-              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-                {tenant.createdBy ?? '—'}
+              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-created-by">
+                {createdByLabel(tenant.createdBy, tenant.createdByName)}
               </dd>
             </div>
           </dl>
         </div>
 
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
-          <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">IDs</h2>
-          <div className="space-y-3 text-sm">
-            <div>
-              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Client ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{tenant.id}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Plan ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{tenant.planId ?? '—'}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Region ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{tenant.regionId ?? '—'}</p>
-            </div>
-          </div>
-        </div>
+        {/* Replaced the IDs card (raw tenant/plan/region UUIDs): what the
+            tenant's sites moved this week, linking to Monitoring → Traffic. */}
+        <TenantTrafficCard namespace={tenant.kubernetesNamespace} />
       </div>
 
-      <SubscriptionCard tenantId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
+      {/* Subscription and Placement share a row on desktop, stacked on mobile. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2" data-testid="subscription-placement-row">
+        <SubscriptionCard tenantId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
+        <PlacementCard tenantId={id!} tenant={tenant} />
+      </div>
 
       {/* Remount on plan change so the limits card re-seeds from the new plan.
           Its edit state (custom-vs-plan-default toggles and the typed override
@@ -651,8 +642,6 @@ export default function TenantDetail() {
       {tenant.kubernetesNamespace && (
         <OrphanedVolumesAlert namespace={tenant.kubernetesNamespace} />
       )}
-
-      <PlacementCard tenantId={id!} tenant={tenant} />
 
       {/* Resource tabs */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -775,6 +764,19 @@ export default function TenantDetail() {
  * surfaces it in OperationProgressModal so the operator can watch
  * progress live. Suspend/resume flips remain a fire-and-forget cascade.
  */
+/** One labelled line of the Contact Email field; "Not set" when absent. */
+function ContactEmailLine({ label, value }: { readonly label: string; readonly value: string | null | undefined }) {
+  const email = value?.trim();
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-1.5">
+      <span className="text-xs text-gray-500 dark:text-gray-400">{label}:</span>
+      {email
+        ? <span className="break-all">{email}</span>
+        : <span className="italic text-gray-500 dark:text-gray-400">Not set</span>}
+    </div>
+  );
+}
+
 function LifecycleStatusControl({
   tenant,
   tenantId,

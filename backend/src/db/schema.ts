@@ -256,6 +256,9 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   protectTenantViaProxy: integer('protect_tenant_via_proxy').notNull().default(0),
   breakGlassPath: varchar('break_glass_path', { length: 100 }),
   oauth2ProxyCookieSecretEncrypted: text('oauth2_proxy_cookie_secret_encrypted'),
+  // Provider each panel's oauth2-proxy signs in with (migration 0147).
+  proxyAdminProviderId: varchar('proxy_admin_provider_id', { length: 36 }).references(() => oidcProviders.id, { onDelete: 'set null' }),
+  proxyTenantProviderId: varchar('proxy_tenant_provider_id', { length: 36 }).references(() => oidcProviders.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
@@ -333,7 +336,6 @@ export const hostingPlans = pgTable('hosting_plans', {
   // overrides live on tenants.email_send_rate_limit(_daily).
   emailHourlySendLimit: integer('email_hourly_send_limit').notNull().default(50),
   emailDailySendLimit: integer('email_daily_send_limit').notNull().default(100),
-  weeklyAiBudgetCents: integer('weekly_ai_budget_cents').notNull().default(100),
   // Backup quota — see migration 0066 / ADR-032.
   defaultBackupRetentionDays: integer('default_backup_retention_days').notNull().default(30),
   maxBackupRetentionDays: integer('max_backup_retention_days').notNull().default(90),
@@ -3271,49 +3273,6 @@ export const pendingImageReaps = pgTable('pending_image_reaps', {
 
 export type PendingImageReap = typeof pendingImageReaps.$inferSelect;
 
-// ─── AI Editor ─────────────────────────────────────────────────────────────
-
-export const aiProviders = pgTable('ai_providers', {
-  id: varchar('id', { length: 100 }).primaryKey(),
-  type: varchar('type', { length: 30 }).notNull(),
-  displayName: varchar('display_name', { length: 200 }).notNull(),
-  baseUrl: varchar('base_url', { length: 500 }),
-  apiKeyEnc: text('api_key_enc'),
-  enabled: boolean('enabled').notNull().default(true),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
-
-export type AiProvider = typeof aiProviders.$inferSelect;
-
-export const aiModels = pgTable('ai_models', {
-  id: varchar('id', { length: 100 }).primaryKey(),
-  providerId: varchar('provider_id', { length: 100 }).notNull().references(() => aiProviders.id, { onDelete: 'cascade' }),
-  modelName: varchar('model_name', { length: 200 }).notNull(),
-  displayName: varchar('display_name', { length: 200 }).notNull(),
-  costPer1mInputTokens: numeric('cost_per_1m_input_tokens', { precision: 10, scale: 4 }).default('0'),
-  costPer1mOutputTokens: numeric('cost_per_1m_output_tokens', { precision: 10, scale: 4 }).default('0'),
-  maxOutputTokens: integer('max_output_tokens').notNull().default(4096),
-  enabled: boolean('enabled').notNull().default(true),
-  adminOnly: boolean('admin_only').notNull().default(false),
-  isDefault: boolean('is_default').notNull().default(false),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-});
-
-export type AiModel = typeof aiModels.$inferSelect;
-
-export const aiTokenUsage = pgTable('ai_token_usage', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  deploymentId: varchar('deployment_id', { length: 36 }).references(() => deployments.id, { onDelete: 'set null' }),
-  modelId: varchar('model_id', { length: 100 }).notNull().references(() => aiModels.id),
-  mode: varchar('mode', { length: 20 }).notNull(),
-  tokensInput: integer('tokens_input').notNull(),
-  tokensOutput: integer('tokens_output').notNull(),
-  instruction: text('instruction'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-});
-
 // ─── Storage Lifecycle ──────────────────────────────────────────────────────
 
 /**
@@ -4745,3 +4704,56 @@ export const monitoringRuleOverrides = pgTable('monitoring_rule_overrides', {
   updatedBy: varchar('updated_by', { length: 36 }),
 });
 export type MonitoringRuleOverrideRow = typeof monitoringRuleOverrides.$inferSelect;
+
+// ─── AI agents (MCP) ──────────────────────────────────────────────────────────
+// OAuth clients registered dynamically (RFC 7591) by MCP clients, the pending
+// authorizations a user approves on the consent page, and the bearer tokens
+// agents present — OAuth (8 h) and personal access tokens. Secrets are stored
+// as SHA-256 hashes only. See modules/mcp.
+
+export const mcpOauthClients = pgTable('mcp_oauth_clients', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  name: varchar('name', { length: 200 }).notNull(),
+  redirectUris: text('redirect_uris').array().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+});
+
+export const mcpOauthRequests = pgTable('mcp_oauth_requests', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  clientId: varchar('client_id', { length: 64 }).notNull()
+    .references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  redirectUri: text('redirect_uri').notNull(),
+  state: text('state'),
+  codeChallenge: varchar('code_challenge', { length: 128 }).notNull(),
+  resource: text('resource').notNull(),
+  requestedScopes: text('requested_scopes').array().notNull(),
+  /** Set once the user decided; the code is the hash of what the client got. */
+  userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'cascade' }),
+  grantedScopes: text('granted_scopes').array(),
+  codeHash: varchar('code_hash', { length: 64 }),
+  codeUsedAt: timestamp('code_used_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mcp_oauth_requests_code_hash_idx').on(table.codeHash),
+]);
+
+export const mcpTokens = pgTable('mcp_tokens', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 10 }).notNull(), // 'pat' | 'oauth'
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  prefix: varchar('prefix', { length: 24 }).notNull(),
+  userId: varchar('user_id', { length: 36 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 64 }).references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 200 }).notNull(),
+  scopes: text('scopes').array().notNull(),
+  resource: text('resource'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mcp_tokens_token_hash_idx').on(table.tokenHash),
+  index('mcp_tokens_user_idx').on(table.userId),
+]);

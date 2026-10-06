@@ -51,8 +51,12 @@ const BTICK  = String.fromCharCode(96);
  *   /backups/restore — the tenant-bundle restore cart. The Restoration
  *   Wizard populates the cart and then navigates here; opened cold it has
  *   nothing to restore. App.tsx says the same in its own comment.
+ *
+ *   /oauth/consent — the AI-agent (MCP) consent page, opened only by an
+ *   authorization redirect carrying ?request=<id>; opened cold it has no
+ *   request to show.
  */
-const STATE_ONLY_ROUTES = new Set(["/backups/restore"]);
+const STATE_ONLY_ROUTES = new Set(["/backups/restore", "/oauth/consent"]);
 
 /** Route wrappers that are not the page component. */
 const WRAPPERS = new Set(["ProtectedRoute", "LifecycleGate", "Suspense", "Navigate", "Route", "Fragment", "TabRoute"]);

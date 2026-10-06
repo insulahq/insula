@@ -1,0 +1,32 @@
+-- Retire the AI code editor.
+--
+-- The tenant File Manager's AI-assisted editing (per-file chat + folder-wide
+-- plan/execute), the admin "AI Providers" page and the per-plan weekly AI
+-- spend cap are removed from the platform: the backend module, its routes, the
+-- API contracts and both panels' UI are gone in this release, so nothing reads
+-- or writes these objects any more.
+--
+--   ai_token_usage                   per-call token accounting for the editor
+--   ai_models                        model catalogue (FK → ai_providers)
+--   ai_providers                     provider endpoints + encrypted API keys
+--
+-- NOTE: hosting_plans.weekly_ai_budget_cents (the plan's weekly AI spend cap)
+-- is RETIRED in code as of this release — removed from the Drizzle schema, the
+-- plan contract, the plan form and the seed; nothing reads or writes it, and
+-- its DEFAULT keeps new inserts valid. The physical DROP COLUMN is deliberately
+-- DEFERRED to a follow-up migration, the expand/contract rule from 0046:
+-- dropping it here would break the still-running old backend pods during a
+-- rolling deploy (their Drizzle schema SELECTs the column by name on every
+-- plan read → undefined_column 500s until they are replaced). The three
+-- tables are safe to drop now: only the removed ai-editor routes touched them.
+--
+-- Dropping ai_providers also discards the stored (encrypted) provider API
+-- keys — intended: a retired integration must not keep credentials around.
+--
+-- Order is FK-safe: ai_token_usage references ai_models, which references
+-- ai_providers. Each statement runs on its own (the runner is not
+-- transactional) and every one is guarded with IF EXISTS, so a half-applied
+-- run replays cleanly from the top.
+DROP TABLE IF EXISTS "ai_token_usage";--> statement-breakpoint
+DROP TABLE IF EXISTS "ai_models";--> statement-breakpoint
+DROP TABLE IF EXISTS "ai_providers";

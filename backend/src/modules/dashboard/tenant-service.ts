@@ -79,7 +79,9 @@ export async function buildTenantSummary(
           (SELECT COALESCE(SUM(quota_mb), 0)::float8 FROM mailboxes
             WHERE tenant_id = ${tenantId} AND status = 'active') AS quota_mb,
           (SELECT COALESCE(SUM(sent_count), 0)::int FROM email_send_counters
-            WHERE tenant_id = ${tenantId} AND bucket_start > date_trunc('day', NOW())) AS sent_today,
+            -- >=, not >: buckets are hourly and START at midnight, so a strict >
+            -- left out every message sent in the first hour of the day.
+            WHERE tenant_id = ${tenantId} AND bucket_start >= date_trunc('day', NOW())) AS sent_today,
           -- Same override-first rule as max_boxes above: the enforced
           -- daily cap is tenants.email_send_rate_limit_daily when set.
           (SELECT COALESCE(t.email_send_rate_limit_daily, p.email_daily_send_limit, 0)::int FROM tenants t

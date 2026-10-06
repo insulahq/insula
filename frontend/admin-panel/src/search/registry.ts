@@ -196,8 +196,6 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     roles: ['super_admin', 'admin'], keywords: ['powerdns', 'cloudflare', 'route53', 'bind', 'nameservers', 'zones'] },
   { id: 'platform.integrations', label: 'Integrations', group: 'Platform Settings', to: '/platform/integrations',
     roles: ['super_admin', 'admin'], keywords: ['api', 'webhooks', 'external', 'netbird', 'connect'] },
-  { id: 'platform.ai', label: 'AI Providers', group: 'Platform Settings', to: '/platform/ai',
-    roles: ['super_admin', 'admin'], keywords: ['openai', 'anthropic', 'llm', 'models', 'tokens', 'budget'] },
   { id: 'platform.lifecycle-hooks', label: 'Tenant Lifecycle Hooks', group: 'Platform Settings', to: '/platform/lifecycle-hooks',
     roles: ['super_admin', 'admin'], keywords: ['suspend', 'archive', 'delete', 'automation', 'transitions'] },
   { id: 'platform.notifications.categories', label: 'Notification Sources', group: 'Platform Settings → Notifications', to: '/platform/notifications/categories',
