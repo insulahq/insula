@@ -38,7 +38,6 @@ Each plan has these fields:
 | **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
 | **Max Mailboxes** | How many mailboxes the tenant may create. **0** disables email for every tenant on the plan — see below. |
 | **Bandwidth (GB/month)** | Monthly served-traffic allowance (default 100 GB). See [the monthly bandwidth cap](#the-monthly-bandwidth-cap) below. |
-| **Weekly AI Budget (cents)** | The tenant's weekly spend cap for AI-assisted file editing (below). Shown live as a per-week currency figure. |
 | **Description** | Optional free text. |
 
 !!! warning "Setting Max Mailboxes to 0 switches email off for the whole plan"
@@ -84,7 +83,7 @@ Saved changes appear on the list straight away.
     not affected: the override wins, and a plan edit does not overwrite it.
 
     The other fields on this page — price, mailbox and sub-user counts,
-    bandwidth, AI budget — do not re-quota anything.
+    bandwidth — do not re-quota anything.
 
 ## The monthly bandwidth cap
 
@@ -144,19 +143,6 @@ allowance counts only what left.
     This is the safe way to retire a plan without disrupting current
     customers. You can also delete a plan outright with the trash icon
     (confirm required).
-
-### The weekly AI-edit budget
-
-The tenant panel includes an **AI-assisted file editor** (in the file
-manager): a tenant can ask an AI model to rewrite a file. Each plan sets a
-**weekly budget** that caps how much that costs per tenant. The models
-themselves — and your provider API keys — are configured in
-[Platform → AI Providers](platform-settings.md); the plan only sets the
-spend cap. Set the budget to `0` to effectively disable AI editing for a
-plan.
-
-This is the only AI feature in the platform. There is no AI website
-builder or AI page editor.
 
 ## Subscriptions and expiry
 

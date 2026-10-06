@@ -54,6 +54,7 @@
 | [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
+| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | Waiting — code retired with the AI code editor (migration 0148); the physical column drop ships one release later |
 
 ---
 
@@ -2063,3 +2064,19 @@ remove it yet**.
 4. Remove `ROUNDCUBEMAIL_*` keys from `mail-secrets`, the `roundcube` entry in
    `security/components.yaml`, and the engine selector itself (keeping the
    setting readable so an old value cannot crash the settings page).
+
+## R43 — Drop the retired plan AI-budget column
+
+The AI code editor was retired (migration `0148_retire_ai_editor.sql` drops
+`ai_token_usage`, `ai_models`, `ai_providers`). The plan's weekly AI spend cap,
+`hosting_plans.weekly_ai_budget_cents`, left the Drizzle schema, the plan
+contract and every form in that same release, but its column is still in the
+database: dropping it there would have broken the old backend pods during the
+rolling deploy (their schema selects it by name on every plan read). Same
+expand/contract rule as migration 0046.
+
+**To do, in the first release after the one carrying 0148:** a migration with
+`ALTER TABLE "hosting_plans" DROP COLUMN IF EXISTS "weekly_ai_budget_cents";`.
+Before writing it, check that a tenant-bundle `config` restore of a
+`hosting_plans` row captured by an older version does not insert the column by
+name (it must restore only the columns the current schema knows).

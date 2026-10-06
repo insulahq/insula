@@ -99,12 +99,6 @@ an explicit override exists.
 
 Manage plans under **Platform Settings → Hosting Plans** in the admin panel.
 
-!!! note "AI-assisted *file editing*, not a website builder"
-    Plans include a weekly AI budget for **AI-assisted file editing** in the
-    tenant File Manager — an assistant that helps edit existing files, with a
-    per-plan token budget. There is **no** no-code "AI website builder"; that
-    larger idea was descoped. Treat the AI feature as an editing aid only.
-
 ## Subscriptions and billing
 
 Insula tracks plan assignment and subscription state but is **not** a billing

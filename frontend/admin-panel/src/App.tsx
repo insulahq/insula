@@ -51,7 +51,6 @@ const IntegrationsPage = lazy(() => import('@/pages/platform/IntegrationsPage'))
 const DnsProvidersPage = lazy(() => import('@/pages/platform/DnsProvidersPage'));
 const PlansPage = lazy(() => import('@/pages/platform/PlansPage'));
 const PleskMigrationPage = lazy(() => import('@/pages/platform/PleskMigrationPage'));
-const AiPage = lazy(() => import('@/pages/platform/AiPage'));
 const LifecycleHooksPage = lazy(() => import('@/pages/platform/LifecycleHooksPage'));
 const NotificationsPage = lazy(() => import('@/pages/platform/NotificationsPage'));
 // The operator's own notification history, as distinct from the page above,
@@ -181,7 +180,6 @@ export default function App() {
             <Route path="platform/limits" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LimitsPage /></ProtectedRoute>} />
             <Route path="platform/dns" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DnsProvidersPage /></ProtectedRoute>} />
             <Route path="platform/integrations" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IntegrationsPage /></ProtectedRoute>} />
-            <Route path="platform/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiPage /></ProtectedRoute>} />
             <Route path="platform/lifecycle-hooks" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LifecycleHooksPage /></ProtectedRoute>} />
             <Route path="platform/notifications/:tab?" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TabRoute page="/platform/notifications"><NotificationsPage /></TabRoute></ProtectedRoute>} />
             <Route path="notifications" element={<MyNotifications />} />

@@ -810,9 +810,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     await app.register(nodeTerminalRoutes, { prefix: '/api/v1' });
   }
 
-  const { aiEditorRoutes } = await import('./modules/ai-editor/routes.js');
-  await app.register(aiEditorRoutes, { prefix: '/api/v1' });
-
   // SYSTEM tenant internal-only route (POST /internal/system-tenant/ensure).
   // Called by scripts/bootstrap.sh after platform-api is healthy so the
   // installer can confirm SYSTEM was created. Server-side startup runs

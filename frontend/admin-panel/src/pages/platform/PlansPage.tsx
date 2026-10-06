@@ -115,7 +115,6 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     max_mailbox_size_mb: String(initial?.maxMailboxSizeMb ?? 1024),
     email_hourly_send_limit: String(initial?.emailHourlySendLimit ?? 50),
     email_daily_send_limit: String(initial?.emailDailySendLimit ?? 100),
-    weekly_ai_budget_cents: String((initial as unknown as Record<string, unknown>)?.weeklyAiBudgetCents ?? 100),
     allow_custom_containers: initial?.allowCustomContainers ?? false,
   });
 
@@ -129,7 +128,6 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       max_mailbox_size_mb: Number(form.max_mailbox_size_mb),
       email_hourly_send_limit: Number(form.email_hourly_send_limit),
       email_daily_send_limit: Number(form.email_daily_send_limit),
-      weekly_ai_budget_cents: Number(form.weekly_ai_budget_cents),
       // ★ Blank -> null ("inherit"), never Number('') === 0. A 0 here would
       // read as a real ceiling of zero cores rather than an absent one.
       cpu_tier: asCpuTier(form.cpu_tier),
@@ -277,18 +275,6 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
             data-testid="plan-email-daily-input"
           />
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Weekly AI Budget (cents)</label>
-          <input
-            type="number"
-            className={INPUT_CLASS}
-            min={0}
-            max={100000}
-            value={form.weekly_ai_budget_cents}
-            onChange={(e) => setForm({ ...form, weekly_ai_budget_cents: e.target.value })}
-          />
-          <p className="text-[10px] text-gray-400 mt-0.5">{formatCurrency(Number(form.weekly_ai_budget_cents) / 100, currency)}/week</p>
-        </div>
       </div>
       <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 cursor-pointer" data-testid="plan-allow-custom-containers">
         <input
@@ -345,7 +331,6 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.maxSubUsers} users</span>
           <span>{plan.maxMailboxes} mailboxes · {plan.maxMailboxSizeMb} MB each</span>
           <span>{plan.emailHourlySendLimit}/h · {plan.emailDailySendLimit}/d mail</span>
-          <span>{formatCurrency(((plan as unknown as Record<string, unknown>).weeklyAiBudgetCents as number ?? 0) / 100, currency)}/wk AI</span>
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-plan-${plan.id}`}><Edit size={12} /></button>
             {confirmDel ? (
