@@ -11,7 +11,6 @@ export const storageOverviewSchema = z.object({
   }),
   system: z.object({
     platformDatabase: z.object({ usedBytes: z.number() }),
-    redis: z.object({ usedBytes: z.number() }),
     dockerImages: z.object({ totalBytes: z.number(), count: z.number() }),
   }),
   tenants: z.array(
@@ -20,6 +19,13 @@ export const storageOverviewSchema = z.object({
       name: z.string(),
       namespace: z.string(),
       usedBytes: z.number(),
+      /**
+       * True when at least one of the tenant's volumes is not mounted, so its
+       * share is Longhorn's allocated size rather than measured filesystem use
+       * (allocation includes filesystem overhead and freed-but-unreclaimed
+       * blocks, so it reads high).
+       */
+      approximate: z.boolean(),
     }),
   ),
   total: z.object({

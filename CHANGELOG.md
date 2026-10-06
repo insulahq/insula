@@ -42,6 +42,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so for an operator east of UTC it reset in the middle of the evening. The tile is now a rolling
   **Sent (24h)**, equal to the sum of the top-senders 24h column. The tenant dashboard's "Sent
   today" also no longer leaves out the first hour of the day.
+- **Monitoring → Storage showed 0 B for every tenant and took minutes to load.** It asked each
+  tenant's file manager for its disk usage, one after another — and file managers are stopped when
+  idle. Usage now comes from the cluster in two calls: measured filesystem use for mounted volumes,
+  Longhorn's allocated size (marked ≈) for the rest. The obsolete Redis tile is gone.
 - **The OIDC settings page showed proxy protection as off** even when it was on (and saving the
   form then switched it off): the page read fields the API does not send.
 
