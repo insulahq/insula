@@ -229,5 +229,18 @@ one matters most — one small but legitimate sender can fail every message it
 sends while your overall percentage still looks healthy, and it is that sender
 whose mail stops when you tighten.
 
-Nothing is changed for you. The recommendation is a prompt to edit the record
-yourself once you are satisfied the failing senders are not ones you rely on.
+Nothing changes on its own. When a domain is ready, open its row in
+**Monitoring → Mail → DMARC** (or, as the domain owner, the domain's **DMARC**
+tab in the tenant panel) and choose **Apply p=quarantine** (later **p=reject**).
+The platform rewrites the `p=` of the `_dmarc` record it manages and keeps every
+other tag. It only accepts the step the recommendation allows at that moment —
+one level at a time, never while a source is failing.
+
+**Step back** is always offered once a domain enforces: if legitimate mail
+starts landing in spam, return to the previous level immediately, without
+waiting for reports.
+
+After a change, the reports keep showing the old policy for up to a day (they
+describe what receivers saw); the page says so and does not offer the same step
+twice. If the domain's DNS is hosted elsewhere, the new record value is shown
+for you to publish at that provider.

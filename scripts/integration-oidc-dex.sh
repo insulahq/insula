@@ -873,11 +873,13 @@ trap 'restore_proxy_settings; cleanup_bg_temp_provider; cleanup_providers; rm -f
 
 # Enable proxy protection with a known break-glass path so the Ingress is
 # created and we can inspect its annotations.
-ENABLE_RES=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
+# Enabling starts the admin panel's own oauth2-proxy and answers only once it
+# is Ready (OIDC discovery passed), so allow for an image pull.
+ENABLE_RES=$(curl -sk --max-time 150 -X PUT "${AUTH_H[@]}" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc \
     --arg bgp "$BG_TEST_PATH" \
-    --arg pap "$ADMIN_PROVIDER_ID" \
+    --arg pap "$BG_TEMP_PROVIDER_ID" \
     '{protect_admin_via_proxy:true, protect_tenant_via_proxy:false, break_glass_path:$bgp,
       proxy_admin_provider_id:$pap}')" \
   "$ADMIN_HOST/api/v1/admin/oidc/settings")

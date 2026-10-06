@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Apply the DMARC recommendation from the panel.** When a domain is ready to tighten ("safe to
+  move to p=quarantine"), admins (Monitoring → Mail → DMARC) and domain owners (the domain's DMARC
+  tab) can now publish the recommended step; the platform rewrites `p=` in the managed `_dmarc`
+  record. Only the step the recommendation allows right now is accepted, and **Step back** to the
+  previous level is always available. The page shows the published policy while reports catch up,
+  and the record value to publish when the domain's DNS is hosted elsewhere.
+
 ### Changed
 
 - **Admin → Tenants → Cron Jobs no longer has an "Add Cron Job" button.** Cron jobs are created by
