@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTrafficUrlState, trafficTabUrl } from '@/components/traffic/traffic-url';
+import { parseTrafficUrlState, trafficTabUrl, withSelectedOption } from '@/components/traffic/traffic-url';
 
 describe('parseTrafficUrlState', () => {
   it('reads a tenant, its namespace and a 7-day range', () => {
@@ -45,5 +45,21 @@ describe('trafficTabUrl', () => {
 
   it('leaves defaults out', () => {
     expect(trafficTabUrl({ scope: 'cluster', range: '24h', metric: 'traffic' })).toBe('/monitoring');
+  });
+});
+
+describe('withSelectedOption', () => {
+  const ranked = [{ key: 'tenant-a', label: 'Tenant A', meta: '1 GB' }];
+
+  it('leaves the list alone when nothing is chosen or the choice is listed', () => {
+    expect(withSelectedOption(ranked, null)).toBe(ranked);
+    expect(withSelectedOption(ranked, 'tenant-a')).toBe(ranked);
+  });
+
+  it('lists a chosen subject the traffic ranking left out, under its key', () => {
+    expect(withSelectedOption(ranked, 'tenant-new-1a2b3c4d')).toEqual([
+      { key: 'tenant-new-1a2b3c4d', label: 'tenant-new-1a2b3c4d', meta: 'no traffic in range' },
+      ...ranked,
+    ]);
   });
 });

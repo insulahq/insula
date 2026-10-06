@@ -65,3 +65,25 @@ export function trafficTabUrl(view: Partial<TrafficUrlState>): string {
   const qs = q.toString();
   return qs ? `/monitoring?${qs}` : '/monitoring';
 }
+
+export interface SubjectOption {
+  readonly key: string;
+  readonly label: string;
+  readonly meta?: string;
+}
+
+/**
+ * The picker's options with the chosen subject guaranteed among them.
+ *
+ * The list is ranked by traffic in the range, so a subject that moved nothing
+ * — a new tenant opened from its own page — is not in it, and the picker would
+ * read "All tenants" while the chart shows only that one. Listed under its key
+ * (a tenant's namespace) when the ranking does not name it.
+ */
+export function withSelectedOption(
+  options: readonly SubjectOption[],
+  selected: string | null,
+): readonly SubjectOption[] {
+  if (!selected || options.some((o) => o.key === selected)) return options;
+  return [{ key: selected, label: selected, meta: 'no traffic in range' }, ...options];
+}

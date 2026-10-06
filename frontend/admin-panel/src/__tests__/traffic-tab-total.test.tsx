@@ -149,6 +149,14 @@ describe('Traffic tab — initial view from the URL', () => {
     expect(screen.getByText('Last 7 days')).toBeInTheDocument();
   });
 
+  it('shows a linked tenant as chosen even when it moved nothing (not in the ranked list)', () => {
+    render(<TrafficTab />, '/monitoring?scope=tenant&subject=tenant-quiet-1a2b3c4d&range=7d');
+    expect(lastParams.subject).toBe('tenant-quiet-1a2b3c4d');
+    const picker = document.getElementById('traffic-subject')!;
+    expect(picker.textContent).toContain('tenant-quiet-1a2b3c4d');
+    expect(picker.textContent).not.toContain('All tenants');
+  });
+
   it('falls back to the default view for unknown values', () => {
     render(<TrafficTab />, '/monitoring?scope=bogus&range=nope&subject=x');
     expect(lastParams.scope).toBe('cluster');

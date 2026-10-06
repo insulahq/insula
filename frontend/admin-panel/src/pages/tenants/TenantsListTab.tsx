@@ -335,7 +335,7 @@ export default function TenantsListTab() {
                       <td className="hidden px-3 py-3.5 text-sm lg:table-cell" data-testid={`tenant-plan-${tenant.id}`}>
                         {tenant.planName
                           ? <span className="text-gray-700 dark:text-gray-300">{tenant.planName}</span>
-                          : <span className="text-gray-400 dark:text-gray-500" title="The tenant's plan no longer exists">—</span>}
+                          : <span className="text-gray-400 dark:text-gray-500" title="No hosting plan matches this tenant's plan">—</span>}
                       </td>
                       <ExpiryCell expiresAt={tenant.subscriptionExpiresAt ?? null} />
                     </tr>

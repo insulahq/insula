@@ -25,7 +25,7 @@ import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from '@/components/ui/SearchablePicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
 import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
-import { parseTrafficUrlState } from './traffic-url';
+import { parseTrafficUrlState, withSelectedOption } from './traffic-url';
 
 /** "24 hours", "7 days" — what the Total tile is a total OVER. */
 function spanLabel(r: { from: Date; to: Date }): string {
@@ -194,17 +194,20 @@ export default function TrafficTab() {
     scope === 'pod',
   );
 
+  // A chosen subject stays listed even when the ranking leaves it out (it
+  // moved nothing in the range) — otherwise a linked view reads "All …".
+  const chosen = scope === 'pod' ? pod : subject;
   const options = useMemo(
-    () => (subjects ?? []).map((s) => ({
+    () => withSelectedOption((subjects ?? []).map((s) => ({
       key: s.key, label: s.name, meta: formatTrafficVolume(s.value, s.unit),
-    })),
-    [subjects],
+    })), chosen),
+    [subjects, chosen],
   );
   const tenantOptions = useMemo(
-    () => (tenantList ?? []).map((s) => ({
+    () => withSelectedOption((tenantList ?? []).map((s) => ({
       key: s.key, label: s.name, meta: formatTrafficVolume(s.value, s.unit),
-    })),
-    [tenantList],
+    })), scope === 'pod' ? subject : null),
+    [tenantList, scope, subject],
   );
 
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
