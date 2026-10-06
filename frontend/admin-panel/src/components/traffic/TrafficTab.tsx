@@ -334,7 +334,11 @@ export default function TrafficTab() {
             value: frame.unit === 'milliseconds'
               ? formatTrafficRate(stats.avg, frame.unit)
               : formatTrafficVolume(stats.total, frame.unit),
-            sub: frame.resolution === 'daily' ? 'daily rollup' : `over ${spanLabel(range)}`,
+            // The rows the Total adds up exist only from the split's start;
+            // "over 24 hours" would claim the whole range for them.
+            sub: frame.resolution === 'daily'
+              ? 'daily rollup'
+              : (scope === 'cluster' && splitStart(frame) ? `since ${formatInstant(splitStart(frame)!)}` : `over ${spanLabel(range)}`),
           },
           {
             key: 'peak',
