@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
-  TrafficBackupMode, TrafficDirection, TrafficMetric, TrafficScope,
+  TrafficBackupMode, TrafficDirection, TrafficFrame, TrafficMetric, TrafficScope,
 } from '@insula/api-contracts';
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -64,6 +64,21 @@ const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: st
 const CLUSTER_ROWS_OFF_CHART = [
   'n2n:kubeapi', 'n2n:etcd', 'n2n:kubelet', 'n2n:tunnel', 'n2n:n2nother', 'nic:out', 'nic:in',
 ] as const;
+
+/**
+ * When the cluster split starts later than the NIC sum does: the instant of
+ * its first measured point, or null when it covers the whole range.
+ */
+export function splitStart(frame: TrafficFrame): string | null {
+  const n2n = frame.series.find((s) => s.key === 'wire:n2n');
+  const nic = frame.series.find((s) => s.key === 'nic:out');
+  if (!n2n || !nic) return null;
+  const firstSplit = n2n.points.findIndex((v) => v !== null);
+  const firstNic = nic.points.findIndex((v) => v !== null);
+  if (firstNic === -1) return null;
+  if (firstSplit === -1) return frame.to;
+  return firstSplit > firstNic ? frame.times[firstSplit] ?? null : null;
+}
 
 function initialHidden(): Set<string> {
   return new Set([TOTAL_KEY, ...CLUSTER_ROWS_OFF_CHART]);
@@ -286,6 +301,19 @@ export default function TrafficTab() {
           dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-300"
         >
           No platform-scheduled backup traffic in this range.
+        </p>
+      )}
+
+      {frame && scope === 'cluster' && splitStart(frame) && (
+        // The split comes from per-node counters that exist only from the
+        // upgrade that added them; before that, the rows that add up are
+        // gaps and only the NIC sum reaches back. Say so instead of letting a
+        // Total over part of the range pass for all of it.
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800
+          dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+        >
+          The internet / node-to-node split is measured from {formatInstant(splitStart(frame)!)}. Before that
+          only <strong>All NICs</strong> was measured, and it counts traffic between nodes twice.
         </p>
       )}
 

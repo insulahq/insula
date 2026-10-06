@@ -72,7 +72,14 @@ function addPoints(series: ReadonlyArray<TrafficFrame['series'][number]>): Array
   });
 }
 
-const measured = (points: ReadonlyArray<number | null>): boolean => points.some((v) => v !== null);
+const measuredCount = (points: ReadonlyArray<number | null>): number => points.filter((v) => v !== null).length;
+
+/**
+ * Below this share of the NIC sum's measured points, the split covers too
+ * little of the window to stand for it. A 24-hour tile showing the ten minutes
+ * since an upgrade as "the last 24 hours" is wrong by two orders of magnitude.
+ */
+const SPLIT_MIN_COVERAGE = 0.9;
 
 interface TileLine { readonly key: string; readonly label: string; readonly points: Array<number | null> }
 
@@ -84,15 +91,19 @@ interface TileLine { readonly key: string; readonly label: string; readonly poin
  * shows that total, split the way an operator asks about it: what went to the
  * internet, and what moved between the nodes.
  *
- * Where those rows hold nothing yet (a range before the per-node counters
- * existed, or a cluster not upgraded) it falls back to a direction pair — the
- * NIC sum, or an older frame's wire pair — rather than an empty card.
+ * Where those rows cover too little of the window (a range reaching back
+ * before the per-node counters existed, or a cluster not upgraded) it falls
+ * back to a direction pair — the NIC sum, or an older frame's wire pair —
+ * rather than presenting a fraction of the day as all of it.
  */
 function tileLines(frame: TrafficFrame): { lines: TileLine[]; split: boolean } {
   const wire = frame.series.filter((s) => s.group === 'wire');
   const internet = wire.filter((s) => s.key.startsWith('wire:internet:'));
   const n2n = wire.find((s) => s.key === 'wire:n2n');
-  if (internet.length > 0 && n2n && [...internet, n2n].some((s) => measured(s.points))) {
+  const nic = frame.series.filter((s) => s.group === 'nic');
+  const splitPoints = n2n ? measuredCount(n2n.points) : 0;
+  const nicPoints = nic.length > 0 ? Math.max(...nic.map((s) => measuredCount(s.points))) : splitPoints;
+  if (internet.length > 0 && n2n && splitPoints > 0 && splitPoints >= SPLIT_MIN_COVERAGE * nicPoints) {
     return {
       split: true,
       lines: [
@@ -103,7 +114,6 @@ function tileLines(frame: TrafficFrame): { lines: TileLine[]; split: boolean } {
   }
   // Selected by GROUP, not by whether the key happens to contain "in" or
   // "out": other keys contain those substrings too.
-  const nic = frame.series.filter((s) => s.group === 'nic');
   const pair = nic.length > 0 ? nic : (wire.length > 0 ? wire : frame.series.slice(0, 2));
   const out = pair.find((s) => s.key.startsWith('out') || s.key.endsWith(':out')) ?? pair[0];
   const inb = pair.find((s) => s !== out);

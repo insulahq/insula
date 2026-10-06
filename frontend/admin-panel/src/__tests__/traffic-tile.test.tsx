@@ -10,6 +10,7 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { TrafficFrame } from '@insula/api-contracts';
 import { TrafficTileView } from '@/components/traffic/TrafficTile';
+import { splitStart } from '@/components/traffic/TrafficTab';
 
 const frame: TrafficFrame = {
   from: '2026-09-28T12:00:00.000Z',
@@ -149,5 +150,28 @@ describe('TrafficTile against the real cluster frame', () => {
     // 12 × 300 s × 30 MB/s = 108 GB out, 100.8 GB in.
     expect(screen.getByText(/108 GB out/)).toBeInTheDocument();
     expect(screen.getByText(/101 GB in/)).toBeInTheDocument();
+  });
+});
+
+describe('a range that reaches back before the per-node counters', () => {
+  // The split rows exist only from the upgrade that added the counters: a
+  // 24-hour range right after it holds ten minutes of them. Presented as the
+  // day, the tile read 40 MB for a day that moved gigabytes.
+  const partial: TrafficFrame = {
+    ...clusterFrame,
+    series: clusterFrame.series.map((s) => (s.group === 'wire'
+      ? { ...s, points: s.points.map((v, i) => (i >= 10 ? v : null)) }
+      : s)),
+  };
+
+  it('the tile keeps the NIC pair until the split covers the window', () => {
+    renderTile(partial);
+    expect(screen.getByText(/108 GB out/)).toBeInTheDocument();
+    expect(screen.queryByText(/between nodes/)).toBeNull();
+  });
+
+  it('the tab names the instant the split starts', () => {
+    expect(splitStart(partial)).toBe(partial.times[10]);
+    expect(splitStart(clusterFrame)).toBeNull();
   });
 });
