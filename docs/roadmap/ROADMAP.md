@@ -41,8 +41,8 @@
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
 | [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | ✅ **R29a SHIPPED 2026-09-13** — 19 of 43 converted, 24 classified + frozen by a CI guard; R29b not started |
-| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — affects multi-node (staging) only; needs measurement first |
-| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30 |
+| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — **affects production** since it went 3-node with one A record per node (2026-10); needs measurement first |
+| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30; production's agents now share one machine identity across 3 nodes |
 | [R32](#r32--oauth2-proxy-401-dead-end--resolved-2026-09-05) | oauth2-proxy 401 dead-end | — | ✅ RESOLVED 2026-09-05 |
 | [R33](#r33--dex-configmap-changes-never-reached-the-process--resolved-2026-09-05) | Dex ConfigMap changes never reached the process | — | ✅ RESOLVED 2026-09-05 — residual: other ConfigMap-driven Deployments unaudited |
 | [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
@@ -51,10 +51,10 @@
 | [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
-| [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
+| [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | ✅ **Largely shipped in v2026.10.6** — per-node nft counters split the wire into internet and node-to-node (by class), with tenant-ingress and off-site-backup subsets; residual: the rest of internet traffic (mail, image pulls, platform HTTP) is not labelled |
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
-| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | Waiting — code retired with the AI code editor (migration 0148, v2026.10.6); operator 2026-10-06: drop it in the next full release after that |
+| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
 
 ---
 
@@ -1457,8 +1457,8 @@ section (2) means "nothing found in the covered slice", never "no drift".
 ## R30 — CrowdSec scenario buckets dilute across nodes
 
 Scenario evaluation happens **in the agent**, per node: only finished alerts ship to
-the LAPI, never raw events. Where ingress is fronted by round-robin DNS (staging today
-publishes 3 A records), one client's requests spread across nodes and each agent sees
+the LAPI, never raw events. Where ingress is fronted by round-robin DNS (production
+publishes one A record per node), one client's requests spread across nodes and each agent sees
 roughly 1/N of them. A burst that would trip `http-probing` on a single node can fail
 to trip it on any of three.
 
@@ -1466,8 +1466,11 @@ to trip it on any of three.
 simply fewer alerts than the traffic warrants. Detection sensitivity drops as the
 cluster grows, with no error anywhere — the worst shape a regression can take.
 
-Unaffected today: production and DEV are single-node. **Staging is 3-node and is
-affected.**
+**Production is affected** (updated 2026-10-06): it became a 3-node HA cluster in
+October 2026 and its platform names (apex, admin, mail) resolve to all three nodes;
+whether tenant routes do depends on how many ingress addresses each was provisioned
+with — measure that too. DEV is single-node and unaffected. (This
+entry was written when only the since-retired staging cluster was multi-node.)
 
 CrowdSec has no distributed-bucket mode, so the options are:
 
@@ -1480,8 +1483,9 @@ CrowdSec has no distributed-bucket mode, so the options are:
 3. **Accept reduced sensitivity** on multi-node and rely on the community blocklist
    plus ModSecurity for those clusters.
 
-Pick against **measured** traffic, not assumption: instrument the alert rate on staging
-first and compare it with the same traffic replayed single-node. The hub scenarios'
+Pick against **measured** traffic, not assumption: instrument the alert rate on a
+multi-node cluster (production, or a 3-node cluster on the local VM tier with a replayed
+log) and compare it with the same traffic replayed single-node. The hub scenarios'
 `capacity`/`leakspeed` values decide how much dilution actually matters, and guessing
 at them is how you end up with either a silent detector or a page every hour.
 
@@ -1978,7 +1982,25 @@ low?" during the multi-host isolation work (ADR-059).
 
 ## R40 — Cluster traffic shows a wire total it does not explain
 
-**Status:** Not started. **Priority:** P2.
+**Status:** ✅ Largely shipped in v2026.10.6 (2026-10-06). **Priority:** P2 (residual only).
+
+**As shipped** (details: `docs/features/TRAFFIC_MONITORING.md`): the
+`firewall-reconciler` DaemonSet keeps an nft table `inet insula_traffic` on every
+node and publishes per-node counters; platform-api re-exports them. Monitoring →
+Traffic → Cluster now shows **Internet** (in/out) and **Node-to-node** (counted
+once, split into Kubernetes API, etcd, kubelet, pod network, other), which add up
+to the wire, plus two subsets of it: **All tenants** (Traefik tenant services) and
+**Backups** (the backup shim's off-site bytes, by nft — the host-side counter of
+point 2 below, delivered by the DaemonSet, so no host-migration was needed). The
+old NIC sum stays as **All NICs**. What the original entry did not anticipate:
+on the 3-node production cluster ~94% of the NIC sum was node-to-node, counted
+twice.
+
+**Residual:** point 3 — the part of internet traffic that is neither tenants nor
+backups (mail, image pulls, Git, DNS, platform HTTP, overhead) is not a labelled
+row yet.
+
+The original entry follows.
 
 The cluster view of **Traffic** reports the node NIC (cAdvisor's root cgroup —
 every byte that crossed the wire). The tenant view reports what the ingress
@@ -2075,8 +2097,22 @@ database: dropping it there would have broken the old backend pods during the
 rolling deploy (their schema selects it by name on every plan read). Same
 expand/contract rule as migration 0046.
 
-**To do, in the first release after the one carrying 0148:** a migration with
+**✅ Done on `development` 2026-10-06:** `0150_drop_plan_ai_budget.sql` runs
 `ALTER TABLE "hosting_plans" DROP COLUMN IF EXISTS "weekly_ai_budget_cents";`.
-Before writing it, check that a tenant-bundle `config` restore of a
-`hosting_plans` row captured by an older version does not insert the column by
-name (it must restore only the columns the current schema knows).
+The bundle check came out clean: a `config` restore does insert rows by the
+dump's own column names (`backup-restore/executors/_shared.ts:upsertRow`), but
+`hosting_plans` is in neither `CONFIG_DUMP_TABLES` nor the config-tables restore
+allow-list, and the admin export/import inserts named fields only.
+
+**Upgrade path:** ADR-045 allows skipping releases. A cluster that jumps from
+v2026.10.5 straight to the release carrying 0150 still runs v2026.10.5 pods
+until the rollout replaces them, and their plan reads fail with
+`undefined_column` for that window. Pull v2026.10.6 first. There is no
+version-floor gate in the upgrade preflight to enforce this.
+
+**Sibling, not done:** migration 0046 deferred the same contract step for
+`system_settings.mail_hostname` and no later migration took it. Unlike this
+column it is still written: `scripts/admin-domain-rewrite.sh` sets it (a dead
+write — the canonical value is `platform_settings.mail_server_hostname`, which
+the same script also sets). Dropping it means removing that line in the same
+release.
