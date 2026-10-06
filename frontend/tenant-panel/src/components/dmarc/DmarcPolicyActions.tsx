@@ -43,6 +43,14 @@ export default function DmarcPolicyActions({ summary, endpoint, invalidateKey }:
   });
 
   const published = summary.managedPolicy;
+  if (summary.managedRecordCount > 1) {
+    return (
+      <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-duplicate-${summary.policyDomain}`}>
+        This domain has {summary.managedRecordCount} <code className="font-mono">_dmarc</code> records. Receivers
+        ignore a policy published twice — remove the duplicate under the domain&apos;s DNS records first.
+      </p>
+    );
+  }
   if (published === null) {
     return (
       <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`dmarc-unmanaged-${summary.policyDomain}`}>

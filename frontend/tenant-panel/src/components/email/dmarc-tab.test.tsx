@@ -249,6 +249,13 @@ describe('DmarcTab (tenant) — acting on the recommendation', () => {
     expect(screen.getByTestId('dmarc-step-back-alpha.test')).toHaveTextContent('p=none');
   });
 
+  it('names a duplicate _dmarc record instead of calling it unmanaged', async () => {
+    renderWith({ managedPolicy: null, managedRecordCount: 2 });
+    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('2');
+    expect(screen.queryByTestId('dmarc-unmanaged-alpha.test')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+  });
+
   it('says so when the platform does not manage the record', async () => {
     renderWith({ managedPolicy: null });
     expect(await screen.findByTestId('dmarc-unmanaged-alpha.test')).toBeInTheDocument();

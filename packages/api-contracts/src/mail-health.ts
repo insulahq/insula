@@ -437,6 +437,12 @@ export const dmarcDomainSummarySchema = z.object({
    * lags a change by up to a day; this is what was published.
    */
   managedPolicy: dmarcPolicySchema.nullable(),
+  /**
+   * How many `_dmarc` records the platform holds for the domain. More than one
+   * is a DNS error (receivers ignore the policy entirely) and the reason
+   * `managedPolicy` is null — distinct from "not managed here" (0).
+   */
+  managedRecordCount: z.number().int().nonnegative(),
 });
 export type DmarcDomainSummary = z.infer<typeof dmarcDomainSummarySchema>;
 

@@ -76,6 +76,7 @@ describe.skipIf(!dbAvailable)('apply DMARC policy (integration)', () => {
     const [summary] = await dmarcDomainSummaries(db(), { tenantId });
     expect(summary.currentPolicy).toBe('none');
     expect(summary.managedPolicy).toBe('quarantine');
+    expect(summary.managedRecordCount).toBe(1);
     // …so the same tightening cannot be offered twice, nor the next one yet.
     await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'reject' }))
       .rejects.toMatchObject({ code: 'DMARC_TIGHTENING_NOT_READY' });

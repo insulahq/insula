@@ -53,6 +53,7 @@ export interface DmarcDomainSummary {
   readonly recommendation: DmarcRecommendation;
   /** `p=` of the platform-managed `_dmarc` record (null when none or ambiguous). */
   readonly managedPolicy: DmarcPolicy | null;
+  readonly managedRecordCount: number;
 }
 
 function asPolicy(v: string | null): DmarcPolicy | null {
@@ -168,6 +169,7 @@ export async function dmarcDomainSummaries(
           failingSources,
         }),
         managedPolicy,
+        managedRecordCount: records.length,
       };
     })
     .sort((a, b) => b.totalMessages - a.totalMessages);
