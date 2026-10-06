@@ -20,6 +20,16 @@ vi.mock('@/hooks/use-api-tokens', () => ({
   useRevokeApiToken: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 
+// jsdom has no matchMedia; the consent page applies the theme itself.
+const prefersDark = vi.hoisted(() => ({ value: false }));
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  value: (query: string) => ({
+    matches: prefersDark.value && query.includes('dark'), media: query,
+    addEventListener: () => {}, removeEventListener: () => {},
+  }),
+});
+
 const { default: OAuthConsent } = await import('../pages/OAuthConsent');
 const { default: ApiTokensSection } = await import('../components/settings/ApiTokensSection');
 
@@ -41,6 +51,16 @@ describe('the OAuth consent page', () => {
     expect(screen.getByTestId('oauth-consent-redirect')).toHaveTextContent('claude.example.test');
     expect(screen.getByTestId('oauth-consent-registered')).toBeInTheDocument();
     expect(screen.getByTestId('oauth-consent-first-time')).toBeInTheDocument();
+  });
+
+  it('follows the stored or system theme — it opens outside the themed layout', () => {
+    consent.request.data = request();
+    prefersDark.value = true;
+    localStorage.removeItem('theme');
+    renderConsent();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    prefersDark.value = false;
+    document.documentElement.classList.remove('dark');
   });
 
   it('drops the warning for a client that was approved before', () => {

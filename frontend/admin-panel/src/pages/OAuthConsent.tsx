@@ -13,6 +13,7 @@ import { MCP_OAUTH_TOKEN_TTL_SECONDS, type McpScope } from '@insula/api-contract
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useConsentDecision, useConsentRequest } from '@/hooks/use-api-tokens';
+import { useDarkMode } from '@/hooks/use-dark-mode';
 
 const SCOPE_TEXT: Record<McpScope, string> = {
   read: 'See everything the admin role can see',
@@ -21,6 +22,9 @@ const SCOPE_TEXT: Record<McpScope, string> = {
 };
 
 export default function OAuthConsent() {
+  // The AI client opens this page in a fresh tab, outside the layout whose
+  // header applies the theme — apply the stored / system theme here.
+  useDarkMode();
   const [params] = useSearchParams();
   const requestId = params.get('request');
   const request = useConsentRequest(requestId);
