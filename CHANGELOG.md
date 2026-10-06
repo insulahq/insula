@@ -12,6 +12,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Admin → Tenants → Cron Jobs no longer has an "Add Cron Job" button.** Cron jobs are created by
+  the tenant; the operator list still runs, pauses, edits and deletes them.
+
 ### Fixed
 
 - **OAuth2 Proxy protection no longer takes a panel down.** Enabling *Protect … via OAuth2 Proxy*
