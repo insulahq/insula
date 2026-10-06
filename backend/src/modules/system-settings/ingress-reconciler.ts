@@ -154,6 +154,24 @@ const WAF_BODY_LIMIT_MIDDLEWARE_NAME = 'waf-body-limit';
 const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
 
 /**
+ * The edge guards every admin/tenant panel route carries, around its auth
+ * step: CrowdSec first, the body cap and the WAF last. Shared with the routes
+ * that skip a panel's OAuth2 Proxy (oidc/ingress-proxy-manager.ts) — skipping
+ * the proxy must never mean skipping the ban list or the WAF.
+ */
+export const PANEL_EDGE_GUARDS: {
+  readonly before: ReadonlyArray<{ readonly name: string; readonly namespace: string }>;
+  readonly after: ReadonlyArray<{ readonly name: string; readonly namespace: string }>;
+} = {
+  before: [{ name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' }],
+  // Body cap immediately before the WAF — the plugin has no limit of its own.
+  after: [
+    { name: WAF_BODY_LIMIT_MIDDLEWARE_NAME, namespace: 'traefik' },
+    { name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' },
+  ],
+};
+
+/**
  * The file-manager's streaming upload endpoint, carved out of WAF coverage.
  *
  * The madebymode ModSecurity plugin does `body, _ := io.ReadAll(req.Body)` with
@@ -388,9 +406,7 @@ export function buildIngressRouteBody(
     //   3. WAF (`modsecurity-crs@traefik`) — admin / tenant panels are
     //      sensitive surfaces, so WAF is always-on here regardless of
     //      tenant-level wafEnabled (which only controls tenant routes).
-    const panelMiddlewares: Array<{ name: string; namespace: string }> = [
-      { name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' },
-    ];
+    const panelMiddlewares: Array<{ name: string; namespace: string }> = [...PANEL_EDGE_GUARDS.before];
     if (r.oauth2Panel) {
       // Order matters and is not cosmetic. The `errors` middleware wraps
       // everything after it, so it must precede the ForwardAuth to see its 401.
@@ -398,9 +414,7 @@ export function buildIngressRouteBody(
       panelMiddlewares.push({ name: proxySigninMiddlewareName(r.oauth2Panel), namespace: 'platform' });
       panelMiddlewares.push({ name: proxyAuthMiddlewareName(r.oauth2Panel), namespace: 'platform' });
     }
-    // Body cap immediately before the WAF — the plugin has no limit of its own.
-    panelMiddlewares.push({ name: WAF_BODY_LIMIT_MIDDLEWARE_NAME, namespace: 'traefik' });
-    panelMiddlewares.push({ name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' });
+    panelMiddlewares.push(...PANEL_EDGE_GUARDS.after);
 
     // Streaming-upload carve-out: identical chain minus the WAF *and* its body
     // cap, so the upload streams end to end — never buffered in Traefik, never

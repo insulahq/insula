@@ -59,7 +59,9 @@ JSON format, not the platform envelope. CORS is `*` without credentials for the 
 (`paths.ts`, delegator in `app.ts`).
 
 When the admin panel is behind OAuth2 Proxy, `ingress-proxy-manager.ts` adds `platform-agent-endpoints`
-with two routes above the proxied panel route:
+with two routes above the proxied panel route. Both carry the panel route's own edge guards
+(`PANEL_EDGE_GUARDS` in `system-settings/ingress-reconciler.ts`: CrowdSec first, body cap + ModSecurity
+last) — skipping the proxy never skips the ban list or the WAF:
 
 - priority 100, no middleware — the endpoints that authenticate themselves, by EXACT path
   (`SELF_AUTHENTICATING_PATHS` in `paths.ts`: MCP, OAuth register/authorize/token/revoke, the discovery
@@ -74,3 +76,13 @@ with two routes above the proxied panel route:
 
 `POST /api/v1/mcp`, Streamable HTTP, stateless (`sessionIdGenerator: undefined`, JSON responses).
 401 + `WWW-Authenticate: Bearer resource_metadata=…` without a valid token. GET/DELETE → 405.
+
+## WAF
+
+CRS 934110 ("SSRF: cloud provider metadata URL in parameter") matches the RFC 8252 loopback redirect URIs
+every desktop MCP client registers (`http://127.0.0.1:<port>/…`, `http://localhost:<port>/…`) and refused
+registration, authorize and token with a bare nginx 403. Exclusion `9000117`
+(`k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml`) removes it on exactly
+`/api/v1/oauth/(register|authorize|token)` of the admin host: the OAuth server never fetches a redirect URI,
+it only sends the browser there.
+

@@ -45,6 +45,7 @@ import {
   deleteIngressRoute,
 } from '../ingress-routes/traefik-apply.js';
 import { AGENT_TOKEN_CHECK_PATH, SELF_AUTHENTICATING_PATHS } from '../mcp/paths.js';
+import { PANEL_EDGE_GUARDS } from '../system-settings/ingress-reconciler.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -204,13 +205,25 @@ export function buildAgentEndpointsResources(adminHost: string) {
     name: AGENT_ENDPOINTS_INGRESS_NAME,
     namespace: PLATFORM_NAMESPACE,
     routes: [
-      // Above the proxied panel route on the same host, like break-glass.
-      { match: agentEndpointsMatch(adminHost), kind: 'Rule', priority: 100, services: panel },
+      // Above the proxied panel route on the same host, like break-glass —
+      // with the panel route's own CrowdSec + WAF, around ForwardAuth where
+      // the panel route has the proxy.
+      {
+        match: agentEndpointsMatch(adminHost),
+        kind: 'Rule',
+        priority: 100,
+        middlewares: [...PANEL_EDGE_GUARDS.before, ...PANEL_EDGE_GUARDS.after],
+        services: panel,
+      },
       {
         match: patApiMatch(adminHost),
         kind: 'Rule',
         priority: 99,
-        middlewares: [{ name: AGENT_TOKEN_AUTH_MIDDLEWARE, namespace: PLATFORM_NAMESPACE }],
+        middlewares: [
+          ...PANEL_EDGE_GUARDS.before,
+          { name: AGENT_TOKEN_AUTH_MIDDLEWARE, namespace: PLATFORM_NAMESPACE },
+          ...PANEL_EDGE_GUARDS.after,
+        ],
         services: panel,
       },
     ],

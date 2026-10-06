@@ -44,8 +44,19 @@ describe('the agent routes on a proxy-protected admin host', () => {
     const routes = ingressRoute.spec.routes;
     const patRoute = routes.find((r) => r.match === pat);
     const selfRoute = routes.find((r) => r.match === selfAuth);
-    expect(patRoute?.middlewares).toEqual([{ name: AGENT_TOKEN_AUTH_MIDDLEWARE, namespace: 'platform' }]);
-    expect(selfRoute?.middlewares ?? []).toEqual([]);
+    // Skipping the proxy never skips the ban list or the WAF: the panel
+    // route's own guards, with ForwardAuth where the panel route has the proxy.
+    expect(patRoute?.middlewares).toEqual([
+      { name: 'crowdsec', namespace: 'traefik' },
+      { name: AGENT_TOKEN_AUTH_MIDDLEWARE, namespace: 'platform' },
+      { name: 'waf-body-limit', namespace: 'traefik' },
+      { name: 'modsecurity-crs', namespace: 'traefik' },
+    ]);
+    expect(selfRoute?.middlewares).toEqual([
+      { name: 'crowdsec', namespace: 'traefik' },
+      { name: 'waf-body-limit', namespace: 'traefik' },
+      { name: 'modsecurity-crs', namespace: 'traefik' },
+    ]);
     expect(routes).toHaveLength(2);
 
     expect(middleware.metadata.name).toBe(AGENT_TOKEN_AUTH_MIDDLEWARE);
