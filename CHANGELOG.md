@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **OAuth2 Proxy protection no longer takes a panel down.** Enabling *Protect … via OAuth2 Proxy*
+  pointed every route of that panel at a proxy that production never ran, so the whole panel host
+  answered 404. Each protected panel now gets its own proxy, created by the platform from a
+  **sign-in provider** you choose per panel (a proxy can use only one, while the login page may
+  offer several). Saving starts the proxy and switches the routes only once it is running; if it
+  cannot start, the save fails with the reason and the panel stays reachable. The panel's login
+  then continues with the proxy's provider by itself, so visitors sign in once. Register
+  `https://<panel host>/oauth2/callback` for that provider's client. On upgrade, a panel that was
+  protected with exactly one enabled provider adopts it; one with several is switched off until
+  you pick a provider. Works the same for the admin and the tenant panel.
+- **The OIDC settings page showed proxy protection as off** even when it was on (and saving the
+  form then switched it off): the page read fields the API does not send.
+
 ## [2026.10.5] - 2026-10-05
 
 ### Security

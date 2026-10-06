@@ -12,6 +12,9 @@ import {
 } from '@/hooks/use-oidc-settings';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { oidcCallbackUrl } from '@/lib/oidc-callback-url';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
+import ProxyProtectionControl from './ProxyProtectionControl';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -42,6 +45,7 @@ export default function OidcSettings() {
       <ProvidersSection providers={providers} />
       <AuthenticationSection
         settings={globalSettings}
+        providers={providers}
         hasAdminProvider={hasAdminProvider}
         hasTenantProvider={hasTenantProvider}
       />
@@ -51,8 +55,9 @@ export default function OidcSettings() {
 
 // ─── Combined Authentication & Ingress Protection ────────────────────────────
 
-function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }: {
+function AuthenticationSection({ settings, providers, hasAdminProvider, hasTenantProvider }: {
   readonly settings: OidcGlobalSettings | undefined;
+  readonly providers: readonly OidcProvider[];
   readonly hasAdminProvider: boolean;
   readonly hasTenantProvider: boolean;
 }) {
@@ -61,8 +66,13 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
   const regenerateCookieSecret = useRegenerateCookieSecret();
   const [disableAdmin, setDisableAdmin] = useState(settings?.disableLocalAuthAdmin ?? false);
   const [disableTenant, setDisableTenant] = useState(settings?.disableLocalAuthTenant ?? false);
-  const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
-  const [proxyTenant, setProxyTenant] = useState(settings?.proxyProtectTenant ?? false);
+  const [proxyAdmin, setProxyAdmin] = useState(settings?.protectAdminViaProxy ?? false);
+  const [proxyTenant, setProxyTenant] = useState(settings?.protectTenantViaProxy ?? false);
+  const [proxyAdminProvider, setProxyAdminProvider] = useState<string | null>(settings?.proxyAdminProviderId ?? null);
+  const [proxyTenantProvider, setProxyTenantProvider] = useState<string | null>(settings?.proxyTenantProviderId ?? null);
+  const missingProxyProvider = (proxyAdmin && !proxyAdminProvider) || (proxyTenant && !proxyTenantProvider);
+  const enablingProxy = (proxyAdmin && (!settings?.protectAdminViaProxy || proxyAdminProvider !== settings?.proxyAdminProviderId))
+    || (proxyTenant && (!settings?.protectTenantViaProxy || proxyTenantProvider !== settings?.proxyTenantProviderId));
   const [showWarning, setShowWarning] = useState(false);
   const [warningChecks, setWarningChecks] = useState({ tested: false, secretSet: false });
   const [bgCopied, setBgCopied] = useState(false);
@@ -88,6 +98,8 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         disable_local_auth_tenant: disableTenant,
         proxy_protect_admin: proxyAdmin,
         proxy_protect_tenant: proxyTenant,
+        proxy_admin_provider_id: proxyAdminProvider,
+        proxy_tenant_provider_id: proxyTenantProvider,
       });
       setShowWarning(false);
     } catch { /* error shown */ }
@@ -111,15 +123,14 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         </div>
       </label>
 
-      {disableTenant && (
-        <label className={clsx('flex items-start gap-3 ml-6', !hasTenantProvider && 'opacity-50')}>
-          <input type="checkbox" checked={proxyTenant} onChange={(e) => setProxyTenant(e.target.checked)} disabled={!hasTenantProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-tenant-toggle" />
-          <div>
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect tenant panel via OAuth2 Proxy</span>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the tenant panel without OIDC authentication.</p>
-          </div>
-        </label>
-      )}
+      <ProxyProtectionControl
+        panel="tenant"
+        providers={providers}
+        enabled={proxyTenant}
+        providerId={proxyTenantProvider}
+        onEnabledChange={setProxyTenant}
+        onProviderChange={setProxyTenantProvider}
+      />
 
       {/* ── Admin Panel ── */}
       <label className={clsx('flex items-start gap-3', !canDisableAdmin && 'opacity-50')}>
@@ -132,18 +143,17 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         </div>
       </label>
 
-      {disableAdmin && (
-        <label className={clsx('flex items-start gap-3 ml-6', !hasAdminProvider && 'opacity-50')}>
-          <input type="checkbox" checked={proxyAdmin} onChange={(e) => setProxyAdmin(e.target.checked)} disabled={!hasAdminProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-admin-toggle" />
-          <div>
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect admin panel via OAuth2 Proxy</span>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the admin panel without OIDC authentication.</p>
-          </div>
-        </label>
-      )}
+      <ProxyProtectionControl
+        panel="admin"
+        providers={providers}
+        enabled={proxyAdmin}
+        providerId={proxyAdminProvider}
+        onEnabledChange={setProxyAdmin}
+        onProviderChange={setProxyAdminProvider}
+      />
 
-      {/* ── Break-Glass (shown when admin local auth is disabled) ── */}
-      {disableAdmin && (
+      {/* ── Break-Glass (admin local auth disabled, or admin behind the proxy) ── */}
+      {(disableAdmin || proxyAdmin) && (
         <div className="ml-6 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-2" data-testid="break-glass-section">
           <div className="flex items-center gap-2">
             <KeyRound size={14} className="text-amber-600 dark:text-amber-400" />
@@ -190,11 +200,16 @@ function AuthenticationSection({ settings, hasAdminProvider, hasTenantProvider }
         </div>
       )}
 
-      {saveSettings.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{saveSettings.error instanceof Error ? saveSettings.error.message : 'Failed'}</div>}
+      {saveSettings.error && <ErrorPanel error={extractOperatorError(saveSettings.error)} testId="oidc-settings-save-error" />}
+      {saveSettings.isPending && enablingProxy && (
+        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400" data-testid="proxy-starting">
+          <Loader2 size={14} className="animate-spin" /> Starting the OAuth2 Proxy — routes switch over only once it is ready. This can take a minute.
+        </div>
+      )}
       {saveSettings.isSuccess && <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400"><CheckCircle size={14} /> Saved.</div>}
 
       <div className="flex justify-end">
-        <button type="submit" disabled={saveSettings.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="save-global-settings">
+        <button type="submit" disabled={saveSettings.isPending || missingProxyProvider} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="save-global-settings">
           {saveSettings.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
         </button>
       </div>

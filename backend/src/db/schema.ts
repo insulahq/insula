@@ -256,6 +256,9 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   protectTenantViaProxy: integer('protect_tenant_via_proxy').notNull().default(0),
   breakGlassPath: varchar('break_glass_path', { length: 100 }),
   oauth2ProxyCookieSecretEncrypted: text('oauth2_proxy_cookie_secret_encrypted'),
+  // Provider each panel's oauth2-proxy signs in with (migration 0147).
+  proxyAdminProviderId: varchar('proxy_admin_provider_id', { length: 36 }).references(() => oidcProviders.id, { onDelete: 'set null' }),
+  proxyTenantProviderId: varchar('proxy_tenant_provider_id', { length: 36 }).references(() => oidcProviders.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });

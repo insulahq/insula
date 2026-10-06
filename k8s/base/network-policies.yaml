@@ -107,6 +107,9 @@ spec:
           - "admin-panel"
           - "tenant-panel"
           - "oauth2-proxy"
+          # Per-panel oauth2-proxy pods created by platform-api
+          # (backend/src/modules/oidc/panel-proxy.ts) — Traefik reaches :4180.
+          - "oauth2-proxy-panel"
           - "dex"
           - "platform-suspended"
           - "platform-bandwidth-exceeded"

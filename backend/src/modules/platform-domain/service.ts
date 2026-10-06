@@ -154,6 +154,12 @@ export async function renamePlatformDomain(
       { kubeconfigPath, clusterIssuerName },
     );
     reconciled.panels = r.changed ? 'reconciled' : 'no-change';
+    // A protected panel's oauth2-proxy pins its callback to the panel host, so a
+    // new panel URL must reach the proxy too.
+    if (oidc.protectAdminViaProxy || oidc.protectTenantViaProxy) {
+      const { syncPanelProxies, panelProxySyncConfig } = await import('../oidc/panel-proxy-sync.js');
+      await syncPanelProxies(db, panelProxySyncConfig(config), { waitReady: false });
+    }
   } catch (err) {
     reconciled.panels = `error: ${err instanceof Error ? err.message : String(err)}`;
     log.warn({ err }, 'platform-domain rename: panel ingress reconcile failed (non-blocking)');

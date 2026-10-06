@@ -9,9 +9,9 @@ import { createOidcProviderSchema, updateOidcProviderSchema,
 import { success } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
+import { syncProxyIngressAnnotations } from './ingress-proxy-manager.js';
+import { syncPanelProxies, panelProxySyncConfig } from './panel-proxy-sync.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { oidcPkceState } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -276,6 +276,14 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('INVALID_FIELD', detail, 400);
     }
     const updated = await service.updateProvider(app.db, id, parsed.data, encryptionKey);
+    // An edited issuer / client / secret must reach the proxy that signs in
+    // with it. Its old pods keep serving until the new ones are Ready, so a bad
+    // edit surfaces here as an error without taking the panel down.
+    const credentialsChanged = parsed.data.issuer_url !== undefined || parsed.data.client_id !== undefined
+      || parsed.data.client_secret !== undefined;
+    if (credentialsChanged && await service.isProxyProvider(app.db, id)) {
+      await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: true });
+    }
     return success(updated);
   });
 
@@ -305,60 +313,41 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const input = parseBody(saveOidcGlobalSettingsSchema, request.body);
+    const before = await service.getGlobalSettings(app.db);
     const settings = await service.saveGlobalSettings(app.db, input, encryptionKey);
 
-    // Sync K8s Ingress annotations + cookie secret when proxy settings change
+    const proxyChanged = before.protectAdminViaProxy !== settings.protectAdminViaProxy
+      || before.protectTenantViaProxy !== settings.protectTenantViaProxy
+      || before.proxyAdminProviderId !== settings.proxyAdminProviderId
+      || before.proxyTenantProviderId !== settings.proxyTenantProviderId
+      || before.breakGlassPath !== settings.breakGlassPath;
+    if (!proxyChanged) return success(settings);
+
+    // A panel that is newly protected, or protected through a different
+    // provider, must have a WORKING proxy before its routes depend on it.
+    const enabling = (settings.protectAdminViaProxy
+        && (!before.protectAdminViaProxy || before.proxyAdminProviderId !== settings.proxyAdminProviderId))
+      || (settings.protectTenantViaProxy
+        && (!before.protectTenantViaProxy || before.proxyTenantProviderId !== settings.proxyTenantProviderId));
+    const cfg = panelProxySyncConfig(app.config as Record<string, unknown>);
     try {
-      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8s = createK8sClients(kubeconfigPath);
-      // Resolve adminHost from system_settings.adminPanelUrl so the
-      // break-glass IngressRoute can build `Host(\`admin.example.com\`)`
-      // match expressions. The platform-ingress reconciler already does
-      // the same extraction; the duplication keeps proxy-manager
-      // independent of cross-module reconciler state.
-      const { getSettings } = await import('../system-settings/service.js');
-      const { reconcileIngressHosts, extractHost } = await import('../system-settings/ingress-reconciler.js');
-      const sysSettings = await getSettings(app.db);
-      const adminHost = extractHost(sysSettings.adminPanelUrl);
-      await syncProxyIngressAnnotations(app.db, k8s, {
-        protectAdminViaProxy: settings.protectAdminViaProxy,
-        protectTenantViaProxy: settings.protectTenantViaProxy,
-        breakGlassPath: settings.breakGlassPath,
-        adminHost,
-      });
-
-      // Sync cookie secret to K8s Secret if proxy is enabled
-      if (settings.protectAdminViaProxy || settings.protectTenantViaProxy) {
-        const cookieSecret = await service.getDecryptedCookieSecret(app.db, encryptionKey);
-        if (cookieSecret) {
-          await syncOAuth2ProxySecret(k8s, cookieSecret);
-        }
-      }
-
-      // Re-reconcile the platform-ingress so the /oauth2 priority route
-      // + ForwardAuth Middleware reference are added/removed on each
-      // protected panel host. Without this call, enabling protection
-      // would create the ForwardAuth Middleware (above) but no route
-      // would reference it — producing a still-unprotected admin panel.
-      const cfg = app.config as Record<string, unknown>;
-      const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
-      const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
-      await reconcileIngressHosts(
-        {
-          adminPanelUrl: sysSettings.adminPanelUrl ?? null,
-          tenantPanelUrl: sysSettings.tenantPanelUrl ?? null,
-          tlsSecretName,
-          protectAdminViaProxy: settings.protectAdminViaProxy,
-          protectTenantViaProxy: settings.protectTenantViaProxy,
-        },
-        undefined,
-        { kubeconfigPath, clusterIssuerName },
-      );
+      await syncPanelProxies(app.db, cfg, { waitReady: enabling });
     } catch (err) {
-      app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations — K8s may be unavailable');
+      app.log.warn({ err }, 'oidc settings: OAuth2 Proxy sync failed');
+      if (enabling) {
+        // Do not leave a setting that claims a protection that is not in
+        // place: put the proxy fields back and converge the cluster to them.
+        await service.restoreProxySettings(app.db, before);
+        await syncPanelProxies(app.db, cfg, { waitReady: false }).catch((rollbackErr: unknown) => {
+          app.log.error({ err: rollbackErr }, 'oidc settings: OAuth2 Proxy rollback sync failed');
+        });
+      }
+      if (err instanceof ApiError) throw err;
+      throw new ApiError('OAUTH2_PROXY_SYNC_FAILED',
+        `Could not apply OAuth2 Proxy protection on the cluster: ${err instanceof Error ? err.message : String(err)}`, 502);
     }
 
-    return success(settings);
+    return success(await service.getGlobalSettings(app.db));
   });
 
   // ─── Admin: Regenerate Break-Glass Path ───────────────────────────────────
@@ -377,7 +366,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       const { extractHost } = await import('../system-settings/ingress-reconciler.js');
       const sysSettings = await getSettings(app.db);
       const adminHost = extractHost(sysSettings.adminPanelUrl);
-      await syncProxyIngressAnnotations(app.db, k8s, {
+      await syncProxyIngressAnnotations(k8s, {
         protectAdminViaProxy: settings.protectAdminViaProxy,
         protectTenantViaProxy: settings.protectTenantViaProxy,
         breakGlassPath: newPath,
@@ -395,30 +384,20 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/oidc/regenerate-cookie-secret', {
     onRequest: [authenticate, requireRole('super_admin')],
   }, async (_request) => {
-    const newSecret = await service.regenerateCookieSecret(app.db, encryptionKey);
+    await service.regenerateCookieSecret(app.db, encryptionKey);
 
-    // Update the K8s oauth2-proxy Secret and restart the proxy pod
-    try {
-      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8s = createK8sClients(kubeconfigPath);
-      await syncOAuth2ProxySecret(k8s, newSecret);
-
-      // Rollout restart oauth2-proxy so it picks up the new secret
-      await k8s.apps.patchNamespacedDeployment({
-        name: 'oauth2-proxy',
-        namespace: process.env.PLATFORM_NAMESPACE ?? 'platform',
-        body: {
-          spec: {
-            template: {
-              metadata: {
-                annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() },
-              },
-            },
-          },
-        },
-      }, STRATEGIC_MERGE_PATCH);
-    } catch (err) {
-      app.log.warn({ err }, 'Failed to sync cookie secret to K8s — K8s may be unavailable');
+    // The cookie secret is part of each panel proxy's configuration hash, so
+    // re-applying rolls exactly the proxies that exist — the Deployments are
+    // platform-api's own, not Flux's, so no restart annotation is involved.
+    const settings = await service.getGlobalSettings(app.db);
+    if (settings.protectAdminViaProxy || settings.protectTenantViaProxy) {
+      try {
+        await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
+      } catch (err) {
+        app.log.warn({ err }, 'oidc: OAuth2 Proxy re-sync after cookie-secret regeneration failed');
+        throw new ApiError('OAUTH2_PROXY_SYNC_FAILED',
+          'The cookie secret was regenerated but the OAuth2 Proxies could not be updated', 502);
+      }
     }
 
     return success({ regenerated: true });

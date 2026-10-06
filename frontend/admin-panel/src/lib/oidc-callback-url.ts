@@ -51,3 +51,18 @@ export function oidcCallbackUrl(
   const origin = resolvePanelOrigin(scope, urls, currentOrigin);
   return origin ? `${origin}${OIDC_CALLBACK_PATH}` : '';
 }
+
+/**
+ * Redirect URI of a panel's OAuth2 Proxy. It is NOT the panel's own OIDC
+ * callback above: oauth2-proxy completes its sign-in at `/oauth2/callback` on
+ * the panel host, so that URI must also be registered for the client the proxy
+ * uses.
+ */
+export function proxyCallbackUrl(
+  scope: 'admin' | 'tenant',
+  urls: PanelUrls | undefined,
+  currentOrigin?: string,
+): string {
+  const origin = resolvePanelOrigin(scope, urls, currentOrigin);
+  return origin ? `${origin}/oauth2/callback` : '';
+}

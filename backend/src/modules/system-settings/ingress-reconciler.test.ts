@@ -65,8 +65,8 @@ describe('buildDesiredRoutes', () => {
       tlsSecretName: 'platform-tls',
     });
     expect(routes).toEqual([
-      { host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false },
-      { host: 'my.example.com', serviceName: 'tenant-panel', oauth2: false },
+      { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null },
+      { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Panel: null },
     ]);
   });
   it('omits a route when its URL is missing', () => {
@@ -85,8 +85,8 @@ describe('buildDesiredRoutes', () => {
       tlsSecretName: 'platform-tls',
       protectAdminViaProxy: true,
     });
-    expect(routes[0].oauth2).toBe(true);
-    expect(routes[1].oauth2).toBe(false);
+    expect(routes[0].oauth2Panel).toBe('admin');
+    expect(routes[1].oauth2Panel).toBeNull();
   });
 });
 
@@ -98,22 +98,22 @@ describe('buildIngressRouteBody', () => {
   // which is exactly what both panels did.
   it('puts the oauth2 sign-in redirect BEFORE the ForwardAuth', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: 'admin' }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as Record<string, unknown>).routes as Array<Record<string, unknown>>;
     const panel = routes.find(r => String(r.match) === 'Host(`admin.example.com`)')!;
     const names = (panel.middlewares as Array<{ name: string }>).map(m => m.name);
 
-    expect(names).toContain('platform-oauth2-proxy-signin');
-    expect(names).toContain('platform-oauth2-proxy-auth');
-    expect(names.indexOf('platform-oauth2-proxy-signin'))
-      .toBeLessThan(names.indexOf('platform-oauth2-proxy-auth'));
+    expect(names).toContain('platform-oauth2-proxy-signin-admin');
+    expect(names).toContain('platform-oauth2-proxy-auth-admin');
+    expect(names.indexOf('platform-oauth2-proxy-signin-admin'))
+      .toBeLessThan(names.indexOf('platform-oauth2-proxy-auth-admin'));
   });
 
   it('attaches neither oauth2 middleware when the panel is not protected', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as Record<string, unknown>).routes as Array<Record<string, unknown>>;
@@ -124,7 +124,7 @@ describe('buildIngressRouteBody', () => {
 
   it('emits a Host-matching rule + crowdsec + ModSecurity WAF on the panel route', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     expect(body.apiVersion).toBe('traefik.io/v1alpha1');
@@ -171,7 +171,7 @@ describe('buildIngressRouteBody', () => {
   // by a message telling the operator to go and whitelist it.
   it('routes the WAF-admin API around the WAF so a false positive can be disarmed', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as Record<string, unknown>).routes as Array<Record<string, unknown>>;
@@ -195,7 +195,7 @@ describe('buildIngressRouteBody', () => {
 
   it('routes large downloads around BOTH the response buffer and the WAF', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
@@ -226,7 +226,7 @@ describe('buildIngressRouteBody', () => {
 
   it('the download pattern covers every streaming route and nothing else', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
@@ -260,7 +260,7 @@ describe('buildIngressRouteBody', () => {
 
   it('routes /files/upload-raw around the WAF so upload bodies are never buffered', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2: false }],
+      [{ host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2Panel: null }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
@@ -287,7 +287,7 @@ describe('buildIngressRouteBody', () => {
   it('keeps ForwardAuth on the upload carve-out when oauth2 is enabled', () => {
     // Dropping the WAF must not accidentally drop authentication.
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: 'admin' }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
@@ -298,16 +298,16 @@ describe('buildIngressRouteBody', () => {
     // the IdP rather than dead-ending.
     expect(mw).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
-      { name: 'platform-oauth2-proxy-signin', namespace: 'platform' },
-      { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+      { name: 'platform-oauth2-proxy-signin-admin', namespace: 'platform' },
+      { name: 'platform-oauth2-proxy-auth-admin', namespace: 'platform' },
     ]);
   });
 
   it('emits one upload carve-out per host', () => {
     const body = buildIngressRouteBody(
       [
-        { host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false },
-        { host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2: false },
+        { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: null },
+        { host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2Panel: null },
       ],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
@@ -321,7 +321,7 @@ describe('buildIngressRouteBody', () => {
   });
   it('adds a priority-100 /oauth2 prefix route + crowdsec → ForwardAuth → WAF chain on the panel route when oauth2 is enabled', () => {
     const body = buildIngressRouteBody(
-      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2Panel: 'admin' }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
@@ -331,7 +331,7 @@ describe('buildIngressRouteBody', () => {
     expect(routes[0].match).toBe('Host(`admin.example.com`) && PathPrefix(`/oauth2`)');
     expect(routes[0].priority).toBe(100);
     expect((routes[0].services as Array<Record<string, unknown>>)[0]).toEqual({
-      name: 'oauth2-proxy',
+      name: 'oauth2-proxy-admin',
       port: 4180,
     });
     // Panel route — crowdsec → signin-redirect → ForwardAuth → WAF, in that
@@ -343,8 +343,8 @@ describe('buildIngressRouteBody', () => {
     const panelMiddlewares = panelRoute.middlewares as Array<{ name: string; namespace: string }>;
     expect(panelMiddlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
-      { name: 'platform-oauth2-proxy-signin', namespace: 'platform' },
-      { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+      { name: 'platform-oauth2-proxy-signin-admin', namespace: 'platform' },
+      { name: 'platform-oauth2-proxy-auth-admin', namespace: 'platform' },
       { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
@@ -610,7 +610,7 @@ describe('reconcileIngressHosts', () => {
       );
       expect(oauth2Route).toBeDefined();
       expect(oauth2Route.priority).toBe(100);
-      expect(oauth2Route.services[0]).toEqual({ name: 'oauth2-proxy', port: 4180 });
+      expect(oauth2Route.services[0]).toEqual({ name: 'oauth2-proxy-admin', port: 4180 });
     });
 
     it('adds /oauth2 to the tenant host when protectTenantViaProxy is true (admin unchanged)', async () => {
@@ -668,6 +668,54 @@ describe('reconcileIngressHosts', () => {
       }, deps);
       expect(result.changed).toBe(true);
       expect(deps.applyIngressRoute).toHaveBeenCalled();
+    });
+
+    it('re-applies a route that still points at the shared pre-per-panel oauth2-proxy', async () => {
+      // The production incident: the tenant host referenced `oauth2-proxy`, a
+      // Service that did not exist. Presence of an oauth2 backend is not enough
+      // to be in sync — it has to be the panel's own proxy.
+      const carveOuts = { uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] };
+      const deps = mockDeps(
+        {
+          routes: [
+            { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, ...carveOuts },
+            { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: 'oauth2-proxy', ...carveOuts },
+          ],
+          tlsSecret: 'platform-tls',
+        },
+        { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+      );
+      const result = await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        tenantPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectTenantViaProxy: true,
+      }, deps);
+      expect(result.changed).toBe(true);
+      const applied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const proxyRoute = applied.spec.routes.find((r: { match: string }) => /PathPrefix\(`\/oauth2`\)/.test(r.match));
+      expect(proxyRoute.services[0]).toEqual({ name: 'oauth2-proxy-tenant', port: 4180 });
+    });
+
+    it('is in sync when the route already points at the panel\'s own proxy', async () => {
+      const carveOuts = { uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] };
+      const deps = mockDeps(
+        {
+          routes: [
+            { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, ...carveOuts },
+            { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: 'oauth2-proxy-tenant', ...carveOuts },
+          ],
+          tlsSecret: 'platform-tls',
+        },
+        { dnsNames: ['admin.example.com', 'my.example.com'], secretName: 'platform-tls', issuerName: 'letsencrypt-prod-http01' },
+      );
+      const result = await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        tenantPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectTenantViaProxy: true,
+      }, deps);
+      expect(result.changed).toBe(false);
     });
   });
 });

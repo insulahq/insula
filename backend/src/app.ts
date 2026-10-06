@@ -916,35 +916,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // owns them via server-side apply. On every startup we sync the live
       // Ingress with whatever URLs are currently in system_settings so
       // restarts and redeploys converge to the desired state.
+      // The panels' OAuth2 Proxies are part of the same desired state: the
+      // sync applies each protected panel's proxy, its Middlewares, then the
+      // routes (in that order), and removes what nothing references.
       try {
-        const { getSettings } = await import('./modules/system-settings/service.js');
-        const { reconcileIngressHosts } = await import('./modules/system-settings/ingress-reconciler.js');
-        const { getGlobalSettings: getOidcSettings } = await import('./modules/oidc/service.js');
-        const [settings, oidc] = await Promise.all([
-          getSettings(app.db),
-          getOidcSettings(app.db),
-        ]);
-        const cfg = app.config as Record<string, unknown>;
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
-        const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
-        const result = await reconcileIngressHosts(
-          {
-            adminPanelUrl: settings.adminPanelUrl ?? null,
-            tenantPanelUrl: settings.tenantPanelUrl ?? null,
-            tlsSecretName,
-            protectAdminViaProxy: oidc.protectAdminViaProxy,
-            protectTenantViaProxy: oidc.protectTenantViaProxy,
-          },
-          undefined,
-          { kubeconfigPath, clusterIssuerName },
-        );
-        if (result.changed) {
-          app.log.info(
-            { adminPanelUrl: settings.adminPanelUrl, tenantPanelUrl: settings.tenantPanelUrl },
-            'startup: ingress hosts reconciled from DB',
-          );
-        }
+        const { syncPanelProxies, panelProxySyncConfig } = await import('./modules/oidc/panel-proxy-sync.js');
+        await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
+        app.log.info('startup: panel ingress + OAuth2 Proxies reconciled from DB');
       } catch (err) {
         app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
       }

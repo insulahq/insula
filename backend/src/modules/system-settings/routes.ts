@@ -118,6 +118,12 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
             'system-settings: ingress hosts reconciled',
           );
         }
+        // A protected panel's oauth2-proxy pins its callback to the panel host, so a
+        // new panel URL must reach the proxy too.
+        if (oidc.protectAdminViaProxy || oidc.protectTenantViaProxy) {
+          const { syncPanelProxies, panelProxySyncConfig } = await import('../oidc/panel-proxy-sync.js');
+          await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
+        }
       } catch (err) {
         app.log.warn(
           { err, adminPanelUrl: updated.adminPanelUrl, tenantPanelUrl: updated.tenantPanelUrl },
