@@ -1,7 +1,8 @@
 /**
  * Console → Platform → Traffic.
  *
- * Cluster in/out over the last 24 hours, read at a glance.
+ * Cluster traffic over the last 24 hours, read at a glance: internet and
+ * between-node traffic, each byte counted once.
  *
  * The sparkline is positioned OUT OF FLOW along the card's lower edge. In an
  * auto-fit grid every row stretches to its tallest card, so a chart added in
@@ -62,29 +63,72 @@ export default function TrafficTile() {
   return <TrafficTileView frame={frame} />;
 }
 
+/** Point-wise sum; null only where every input is unmeasured. */
+function addPoints(series: ReadonlyArray<TrafficFrame['series'][number]>): Array<number | null> {
+  const n = series[0]?.points.length ?? 0;
+  return Array.from({ length: n }, (_, i) => {
+    const vals = series.map((s) => s.points[i]).filter((v): v is number => v !== null && v !== undefined);
+    return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
+  });
+}
+
+const measured = (points: ReadonlyArray<number | null>): boolean => points.some((v) => v !== null);
+
+interface TileLine { readonly key: string; readonly label: string; readonly points: Array<number | null> }
+
+/**
+ * Which lines the tile draws, and what its legend calls them.
+ *
+ * The cluster frame's `wire` rows are internet out, internet in and
+ * node-to-node — each byte once, so they add up to the real total. The tile
+ * shows that total, split the way an operator asks about it: what went to the
+ * internet, and what moved between the nodes.
+ *
+ * Where those rows hold nothing yet (a range before the per-node counters
+ * existed, or a cluster not upgraded) it falls back to a direction pair — the
+ * NIC sum, or an older frame's wire pair — rather than an empty card.
+ */
+function tileLines(frame: TrafficFrame): { lines: TileLine[]; split: boolean } {
+  const wire = frame.series.filter((s) => s.group === 'wire');
+  const internet = wire.filter((s) => s.key.startsWith('wire:internet:'));
+  const n2n = wire.find((s) => s.key === 'wire:n2n');
+  if (internet.length > 0 && n2n && [...internet, n2n].some((s) => measured(s.points))) {
+    return {
+      split: true,
+      lines: [
+        { key: 'internet', label: 'internet', points: addPoints(internet) },
+        { key: 'n2n', label: 'between nodes', points: [...n2n.points] },
+      ],
+    };
+  }
+  // Selected by GROUP, not by whether the key happens to contain "in" or
+  // "out": other keys contain those substrings too.
+  const nic = frame.series.filter((s) => s.group === 'nic');
+  const pair = nic.length > 0 ? nic : (wire.length > 0 ? wire : frame.series.slice(0, 2));
+  const out = pair.find((s) => s.key.startsWith('out') || s.key.endsWith(':out')) ?? pair[0];
+  const inb = pair.find((s) => s !== out);
+  return {
+    split: false,
+    lines: [
+      ...(out ? [{ key: out.key, label: 'out', points: [...out.points] }] : []),
+      ...(inb ? [{ key: inb.key, label: 'in', points: [...inb.points] }] : []),
+    ],
+  };
+}
+
 /** Split out so the rendering can be tested without a query client. */
 export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
-  // The cluster frame is no longer two lines. It carries the wire pair, the
-  // subsets of that pair (node-to-node, off-site upload) and the per-class
-  // workload rows — seven or more series. Drawing all of them under a legend
-  // that names two was both wrong and unreadable, and computing the ceiling
-  // across them squashed the wire pair flat against the baseline, which is
-  // the thing the card exists to show.
-  //
-  // Selected by GROUP, not by whether the key happens to contain "in" or
-  // "out": `n2n:in` and `offsite` contain those substrings too, so the old
-  // test picked a line by accident of ordering.
-  const wire = frame.series.filter((s) => s.group === 'wire');
-  const drawn = wire.length > 0 ? wire : frame.series.slice(0, 2);
-  const out = drawn.find((s) => s.key.startsWith('out') || s.key.includes(':out')) ?? drawn[0];
-  const inb = drawn.find((s) => s !== out);
+  // The cluster frame carries a dozen series (the wire, its node-to-node split,
+  // tenants, backups, the NIC sum). Drawing all of them under a two-entry
+  // legend was both wrong and unreadable, and a ceiling taken across them
+  // squashed the lines that matter against the baseline.
+  const { lines } = tileLines(frame);
   const step = frame.stepSeconds;
-
-  const outTotal = out ? totalOf(out.points, step) : 0;
-  const inTotal = inb ? totalOf(inb.points, step) : 0;
+  const totals = lines.map((l) => totalOf(l.points, step));
+  const grand = totals.reduce((a, t) => a + t, 0);
   // Peak over what is DRAWN, so the sparkline uses the card's full height
   // and the footer figure describes the line above it.
-  const peak = drawn.reduce((best, s) => s.points.reduce<number>(
+  const peak = lines.reduce((best, l) => l.points.reduce<number>(
     (b, v) => (v !== null && v > b ? v : b), best,
   ), 0);
   const ceiling = Math.max(peak * 1.08, 1);
@@ -92,17 +136,15 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
   return (
     <Tile title="Traffic" to="/monitoring/traffic">
       <div className="text-[22px] font-semibold leading-tight tracking-tight tabular-nums text-gray-900 dark:text-gray-100">
-        {formatTrafficVolume(outTotal + inTotal, frame.unit)}
+        {formatTrafficVolume(grand, frame.unit)}
       </div>
       <div className="mt-0.5 flex gap-3 text-xs text-gray-600 dark:text-gray-300">
-        <span className="inline-flex items-center gap-1.5 tabular-nums">
-          <i className="h-2 w-2 rounded-sm" style={{ background: colourForIndex(0) }} />
-          {formatTrafficVolume(outTotal, frame.unit)} out
-        </span>
-        <span className="inline-flex items-center gap-1.5 tabular-nums">
-          <i className="h-2 w-2 rounded-sm" style={{ background: colourForIndex(1) }} />
-          {formatTrafficVolume(inTotal, frame.unit)} in
-        </span>
+        {lines.map((l, i) => (
+          <span key={l.key} className="inline-flex items-center gap-1.5 tabular-nums">
+            <i className="h-2 w-2 rounded-sm" style={{ background: colourForIndex(i) }} />
+            {formatTrafficVolume(totals[i], frame.unit)} {l.label}
+          </span>
+        ))}
       </div>
 
       <svg
@@ -112,10 +154,10 @@ export function TrafficTileView({ frame }: { frame: TrafficFrame }) {
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 bottom-0 h-[66px] w-full opacity-60"
       >
-        {drawn.map((s, i) => (
+        {lines.map((l, i) => (
           <polyline
-            key={s.key}
-            points={pathFor(s.points, ceiling)}
+            key={l.key}
+            points={pathFor(l.points, ceiling)}
             fill="none"
             stroke={colourForIndex(i)}
             strokeWidth={2.4}

@@ -23,6 +23,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Cluster traffic now counts each byte once, and shows where it went.** The cluster figure used
+  to add up every node's network card, which counts every byte between two nodes twice — on an HA
+  cluster, where the nodes talk to each other constantly, that was most of the number (a 135 GB
+  day was ~94% node-to-node). Monitoring → Traffic → Cluster now shows **Internet** (in and out)
+  and **Node-to-node**, which add up to the real total, with node-to-node split into **Kubernetes
+  API**, **etcd**, **kubelet**, **pod network** and **other**, plus **All tenants** (through the
+  ingress) and **Backups** (off-site, in and out) always visible. The old card sum stays as **All
+  NICs**, hidden on the chart, and is the only row reaching back before the upgrade. The dashboard
+  tile shows the same split. The per-node counters come from the firewall reconciler, which now
+  also publishes them; its trusted-range status is no longer rewritten every few seconds.
+- **platform-api puts far less load on the Kubernetes API.** Background loops that list pods,
+  Deployments, nodes and certificates now run on one replica instead of every one, Kubernetes API
+  connections are reused instead of opening a new TLS connection per request, and the cluster-wide
+  pod and Deployment lists the loops share are kept current by a watch instead of being re-listed
+  every 15 seconds. On a three-node cluster this was the largest single source of traffic between
+  the nodes. The traefik plugin guard no longer re-fetches API discovery for every kubectl call.
 - **Admin → Tenants → Cron Jobs no longer has an "Add Cron Job" button.** Cron jobs are created by
   the tenant; the operator list still runs, pauses, edits and deletes them.
 

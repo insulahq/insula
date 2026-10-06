@@ -93,53 +93,61 @@ describe('TrafficChart gap handling', () => {
 });
 
 /**
- * The fixture above is two series. The real cluster frame has not been two
- * series since the traffic round: it carries the wire pair, the subsets OF
- * that pair, and a row per backup class. The tile mapped over all of them
- * under a legend naming two, and took its ceiling from the largest — which
- * pinned the wire lines flat along the bottom of the card. Every assertion
- * here passed throughout, because the fixture had been built to match the
- * component instead of the server.
+ * The fixture above is two series. The real cluster frame is not: it carries
+ * the wire rows (internet out, internet in, node-to-node — each byte once),
+ * the node-to-node split, tenants, backups and the old NIC sum. Every earlier
+ * version of these assertions passed against a fixture built to match the
+ * component instead of the server, so this one mirrors service.ts exactly.
  */
+const flat = (v: number) => Array.from({ length: 12 }, () => v);
 const clusterFrame: TrafficFrame = {
   ...frame,
   series: [
-    { key: 'wire:out', name: 'Outbound (wire)', kind: 'direction', group: 'wire', points: Array.from({ length: 12 }, () => 2_000_000) },
-    { key: 'wire:in', name: 'Inbound (wire)', kind: 'direction', group: 'wire', points: Array.from({ length: 12 }, () => 1_000_000) },
-    { key: 'n2n:out', name: 'Node-to-node (out)', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 500_000) },
-    { key: 'n2n:in', name: 'Node-to-node (in)', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 400_000) },
-    { key: 'offsite', name: 'Off-site backup upload', kind: 'direction', group: 'wire-subset', points: Array.from({ length: 12 }, () => 300_000) },
-    { key: 'serving', name: 'Tenant workloads sent', kind: 'serving', group: 'workload', points: Array.from({ length: 12 }, () => 40_000_000) },
-    { key: 'backup:tenant-bundles', name: 'Backup · tenant bundles', kind: 'backup-class', group: 'workload', points: Array.from({ length: 12 }, () => 30_000_000) },
+    { key: 'wire:internet:out', name: 'Internet · outbound', kind: 'direction', group: 'wire', points: flat(1_000_000) },
+    { key: 'wire:internet:in', name: 'Internet · inbound', kind: 'direction', group: 'wire', points: flat(500_000) },
+    { key: 'wire:n2n', name: 'Node-to-node', kind: 'direction', group: 'wire', points: flat(2_000_000) },
+    { key: 'n2n:kubeapi', name: 'Node-to-node · Kubernetes API', kind: 'direction', group: 'n2n', points: flat(1_200_000) },
+    { key: 'tenants:out', name: 'All tenants · outbound (via ingress)', kind: 'direction', group: 'wire-subset', points: flat(300_000) },
+    { key: 'backup:out', name: 'Backups · outbound (off-site)', kind: 'direction', group: 'wire-subset', points: flat(100_000) },
+    { key: 'nic:out', name: 'All NICs · outbound (node-to-node counted twice)', kind: 'direction', group: 'nic', points: flat(30_000_000) },
+    { key: 'nic:in', name: 'All NICs · inbound (node-to-node counted twice)', kind: 'direction', group: 'nic', points: flat(28_000_000) },
   ],
 };
 
 describe('TrafficTile against the real cluster frame', () => {
+  it('headlines the unique total and splits it into internet and between nodes', () => {
+    renderTile(clusterFrame);
+    // 12 × 300 s × (1 + 0.5 + 2) MB/s = 12.6 GB; the NIC sum is NOT added in.
+    expect(screen.getByText('12.6 GB')).toBeInTheDocument();
+    expect(screen.getByText(/5\.40 GB internet/)).toBeInTheDocument();
+    expect(screen.getByText(/7\.20 GB between nodes/)).toBeInTheDocument();
+  });
+
   it('draws only the two lines its legend names', () => {
     const { container } = renderTile(clusterFrame);
     expect(container.querySelectorAll('[data-testid="traffic-tile-spark"] polyline')).toHaveLength(2);
   });
 
-  it('reads the totals off the wire, not off a workload row', () => {
-    renderTile(clusterFrame);
-    // Wire only: 12 × 300s × 2 MB/s = 7.20 GB out, half that in.
-    expect(screen.getByText(/7\.20 GB out/)).toBeInTheDocument();
-    expect(screen.getByText(/3\.60 GB in/)).toBeInTheDocument();
-  });
-
   it('scales to the drawn lines so they use the card height', () => {
     const { container } = renderTile(clusterFrame);
-    // The FIRST line — outbound, the larger of the pair. Taking the minimum
-    // across every polyline is not a test: while the workload rows were
-    // being drawn, one of them reached the top and satisfied it.
-    const first = container.querySelector('[data-testid="traffic-tile-spark"] polyline');
-    const ys = (first?.getAttribute('points') ?? '').split(' ')
+    // The second line (between nodes) is the larger one here. Taking the
+    // ceiling from the 30 MB/s NIC rows would pin both near the bottom.
+    const lines = container.querySelectorAll('[data-testid="traffic-tile-spark"] polyline');
+    const ys = (lines[1]?.getAttribute('points') ?? '').split(' ')
       .map((pt) => Number(pt.split(',')[1]))
       .filter((n) => Number.isFinite(n));
     const viewBoxH = Number((container.querySelector('[data-testid="traffic-tile-spark"]')?.getAttribute('viewBox') ?? '0 0 0 48').split(' ')[3]);
-    // Taking the ceiling from the 40 MB/s workload row put the 2 MB/s wire
-    // line at ~95% of the way down. The top line must reach the upper part
-    // of the box instead.
     expect(Math.min(...ys)).toBeLessThan(viewBoxH * 0.25);
+  });
+
+  it('falls back to the NIC pair where the split was not measured yet', () => {
+    const unmeasured: TrafficFrame = {
+      ...clusterFrame,
+      series: clusterFrame.series.map((s) => (s.group === 'wire' ? { ...s, points: s.points.map(() => null) } : s)),
+    };
+    renderTile(unmeasured);
+    // 12 × 300 s × 30 MB/s = 108 GB out, 100.8 GB in.
+    expect(screen.getByText(/108 GB out/)).toBeInTheDocument();
+    expect(screen.getByText(/101 GB in/)).toBeInTheDocument();
   });
 });

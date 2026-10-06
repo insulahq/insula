@@ -10,6 +10,11 @@ export interface K8sClients {
   readonly storage: k8s.StorageV1Api;
   /** EndpointSlices — what traffic actually reaches, as opposed to what is Running. */
   readonly disco: k8s.DiscoveryV1Api;
+  /**
+   * The config these clients were built from — for a watch (see
+   * shared/k8s-watch-cache.ts). Optional so test doubles need not carry one.
+   */
+  readonly kubeConfig?: k8s.KubeConfig;
 }
 
 /**
@@ -51,5 +56,6 @@ export function createK8sClients(kubeconfigPath?: string): K8sClients {
     rbac: kc.makeApiClient(k8s.RbacAuthorizationV1Api),
     storage: kc.makeApiClient(k8s.StorageV1Api),
     disco: kc.makeApiClient(k8s.DiscoveryV1Api),
+    kubeConfig: kc,
   };
 }

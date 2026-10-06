@@ -33,6 +33,36 @@ const LEASED: ReadonlyArray<{ file: string; job: string }> = [
   { file: 'modules/crowdsec-autoban/scheduler.ts', job: 'crowdsec-autoban' },
   { file: 'modules/domains/verification-cron.ts', job: 'domain-verification' },
   { file: 'modules/dns-apex-drift/scheduler.ts', job: 'dns-route-drift-scan' },
+  // Pollers of the Kubernetes API. Not unsafe to run three times, but three
+  // replicas each listing every pod/Deployment/Node/Certificate on a short
+  // cadence was most of the apiserver traffic crossing between the nodes.
+  { file: 'app.ts', job: 'deployment-status-reconcile' },
+  { file: 'app.ts', job: 'certificate-status-reconcile' },
+  { file: 'modules/file-manager/idle-cleanup.ts', job: 'file-manager-idle-cleanup' },
+  { file: 'modules/ingress-routes/waf-log-scraper.ts', job: 'waf-log-scraper' },
+  { file: 'modules/nodes/scheduler.ts', job: 'node-sync' },
+  { file: 'modules/tenant-health/scheduler.ts', job: 'tenant-auto-repin' },
+  { file: 'modules/tenant-placement/reconciler.ts', job: 'tenant-placement' },
+  { file: 'modules/cluster-health/scheduler.ts', job: 'node-subsystem-health' },
+  { file: 'modules/node-health/scheduler.ts', job: 'node-health-monitor' },
+  { file: 'modules/cluster-settings/kubelet-gc-reconciler.ts', job: 'kubelet-gc-reconciler' },
+  { file: 'modules/system-pod-placement/scheduler.ts', job: 'system-pod-placement' },
+  { file: 'modules/storage-lifecycle/scheduler.ts', job: 'tenant-workload-health' },
+  { file: 'modules/mail-admin/proxy-networks-reconciler.ts', job: 'mail-proxy-networks' },
+];
+
+/**
+ * Deliberately NOT leased — each depends on WHERE it runs, so one holder is
+ * the wrong shape:
+ *  - mail DR watcher: a replica on the failed mail node sits the failover out
+ *    so one on a healthy node does it. A single lease holder stuck on the dead
+ *    node would keep renewing and no failover would ever happen.
+ *  - fast node-down watch: if the holder dies WITH its node, the replica taking
+ *    over starts without a baseline and never announces that very node.
+ */
+const DELIBERATELY_UNLEASED: ReadonlyArray<string> = [
+  'modules/mail-admin/dr-watcher.ts',
+  'modules/node-health/fast-down-watch.ts',
 ];
 
 describe('scheduled jobs that must run on one replica', () => {
@@ -40,6 +70,10 @@ describe('scheduled jobs that must run on one replica', () => {
     const src = readFileSync(join(SRC, file), 'utf8');
     expect(src).toMatch(/withSchedulerLease\(/);
     expect(src).toContain(`'${job}'`);
+  });
+
+  it.each(DELIBERATELY_UNLEASED)('%s stays on every replica', (file) => {
+    expect(readFileSync(join(SRC, file), 'utf8')).not.toMatch(/withSchedulerLease\(/);
   });
 
   it('the job names are distinct — two jobs sharing a lease would starve each other', () => {

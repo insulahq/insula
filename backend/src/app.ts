@@ -1331,7 +1331,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn(`[pitr-watchdog] failed to start: ${(err as Error).message}`);
       }
 
-      const cleanupTimer = startIdleCleanup(kubeconfigPath);
+      const cleanupTimer = startIdleCleanup(kubeconfigPath, undefined, { db: app.db });
       if (cleanupTimer) {
         app.addHook('onClose', () => clearInterval(cleanupTimer));
       }
@@ -1537,6 +1537,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           stopBlocklist();
           stopHealthWatch();
         });
+      }
+
+      // Per-node traffic counters (firewall-reconciler ConfigMaps) → /metrics,
+      // so the Traffic tab can split node-to-node from internet traffic.
+      try {
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const { startNodeTrafficCollector } = await import('./modules/traffic/node-traffic-collector.js');
+        const stopNodeTraffic = startNodeTrafficCollector(createK8sClients(process.env.KUBECONFIG_PATH), app.log);
+        app.addHook('onClose', () => stopNodeTraffic());
+      } catch (err) {
+        app.log.warn({ err }, 'node-traffic-collector not started');
       }
 
       // Custom-deployment auto-update (ADR-036): hourly same-tag re-pull for
@@ -2490,6 +2501,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           './modules/mail-admin/proxy-networks-reconciler.js'
         );
         const proxyNetworksStop = startProxyNetworksReconciler({
+          db: app.db,
           core: k8sForImapsync.core,
           kubeconfigPath: kubePath,
           logger: {
@@ -2628,30 +2640,44 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
       }
 
-      // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
+      // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff.
+      // One replica runs it (lease): every tick lists every pod and Deployment in
+      // the cluster, and three replicas doing that every 15 s was the largest
+      // single source of apiserver traffic between the nodes.
       const reconcileInterval = setInterval(async () => {
         try {
-          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
-          const k8s = createK8sClients(kubePath);
-          await reconcileDeploymentStatuses(app.db, k8s, app.log);
+          await withSchedulerLease(app.db, 'deployment-status-reconcile', 15_000 * 1.5, async () => {
+            const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
+            const k8s = createK8sClients(kubePath);
+            await reconcileDeploymentStatuses(app.db, k8s, app.log);
+          }, { log: app.log });
         } catch (err) {
           app.log.warn({ err }, 'Deployment status reconciliation failed — skipping cycle');
         }
       }, 15_000); // Every 15 seconds
       app.addHook('onClose', () => clearInterval(reconcileInterval));
+      app.addHook('onClose', async () => {
+        const { stopWatchCaches } = await import('./shared/k8s-watch-cache.js');
+        stopWatchCaches();
+      });
 
       // Periodic certificate status reconciler — syncs cert-manager TLS
       // Secret metadata into the ssl_certificates DB table so the UI can
       // display real cert status without live K8s queries on every page load.
+      // One replica runs it (lease) — it writes the DB, and every tick reads every
+      // tenant namespace's Certificates and TLS Secrets.
       const certReconcileInterval = setInterval(async () => {
         try {
-          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
-          const k8s = createK8sClients(kubePath);
-          const result = await reconcileCertificateStatuses(app.db, k8s);
+          const leased = await withSchedulerLease(app.db, 'certificate-status-reconcile', 60_000 * 1.5, async () => {
+            const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
+            return reconcileCertificateStatuses(app.db, createK8sClients(kubePath));
+          }, { log: app.log });
+          if (!leased.ran) return;
+          const result = leased.value;
           if (result.healedChallenges > 0) {
             // Deliberately WARN, not info: a wedged challenge means issuance
             // was stalled and an operator was waiting on a certificate that

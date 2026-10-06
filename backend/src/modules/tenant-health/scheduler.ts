@@ -13,6 +13,7 @@
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { collectFacts } from './collect.js';
 import { applyAutoRepin, autoRepinDisabled, selectAutoRepinCandidates } from './auto-repin.js';
 
@@ -54,9 +55,14 @@ export async function runAutoRepinTick(deps: AutoRepinDeps): Promise<void> {
 export function startAutoRepinScheduler(deps: AutoRepinDeps): () => void {
   const tickMs = deps.tickMs ?? AUTO_REPIN_TICK_MS;
   let timer: NodeJS.Timeout | null = null;
+  // One replica decides re-pins (lease) — two acting on the same stranded
+  // tenant at once could only race each other.
+  const leasedTick = (): void => void safeTick('tenant-auto-repin', async () => {
+    await withSchedulerLease(deps.db, 'tenant-auto-repin', tickMs * 1.5, () => runAutoRepinTick(deps));
+  });
   const initial = setTimeout(() => {
-    void safeTick('tenant-auto-repin', () => runAutoRepinTick(deps));
-    timer = setInterval(() => void safeTick('tenant-auto-repin', () => runAutoRepinTick(deps)), tickMs);
+    leasedTick();
+    timer = setInterval(leasedTick, tickMs);
   }, INITIAL_DELAY_MS);
 
   return () => {

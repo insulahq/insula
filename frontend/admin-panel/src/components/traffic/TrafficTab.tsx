@@ -44,7 +44,7 @@ function draggedRange(fromIso: string, toIso: string, stepSeconds: number): Rang
 }
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
-  { key: 'cluster', label: 'Cluster', subjectLabel: 'Direction' },
+  { key: 'cluster', label: 'Cluster', subjectLabel: 'Measurement' },
   { key: 'node', label: 'Node', subjectLabel: 'Node' },
   { key: 'tenant', label: 'Tenant', subjectLabel: 'Tenant' },
   // The ONLY view that shows internal traffic. Every other scope is what
@@ -54,6 +54,20 @@ const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: st
   { key: 'pod', label: 'Pod (internal traffic)', subjectLabel: 'Pod' },
   { key: 'route', label: 'Ingress route', subjectLabel: 'Route' },
 ];
+
+/**
+ * Cluster rows left off the CHART until asked for. They stay in the table with
+ * their totals: the per-class node-to-node split is the detail under one row
+ * already drawn, and the NIC sum counts node-to-node bytes twice — drawn by
+ * default it would set the axis and flatten everything that adds up.
+ */
+const CLUSTER_ROWS_OFF_CHART = [
+  'n2n:kubeapi', 'n2n:etcd', 'n2n:kubelet', 'n2n:tunnel', 'n2n:n2nother', 'nic:out', 'nic:in',
+] as const;
+
+function initialHidden(): Set<string> {
+  return new Set([TOTAL_KEY, ...CLUSTER_ROWS_OFF_CHART]);
+}
 
 const METRICS: ReadonlyArray<{ key: TrafficMetric; label: string }> = [
   { key: 'traffic', label: 'Traffic' },
@@ -110,9 +124,9 @@ export default function TrafficTab() {
   const [direction, setDirection] = useState<TrafficDirection>('both');
   // The combined line starts OFF: it is there to be asked for, and drawn by
   // default it would set the axis and push every row down to the floor.
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set([TOTAL_KEY]));
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(initialHidden);
   const [focus, setFocus] = useState<string | null>(null);
-  const resetRows = (): void => { setHidden(new Set([TOTAL_KEY])); setFocus(null); };
+  const resetRows = (): void => { setHidden(initialHidden()); setFocus(null); };
 
   // Traefik has no per-pod dimension, so those questions are not offered.
   const metricsForScope = metricsFor(scope);
@@ -264,7 +278,7 @@ export default function TrafficTab() {
 
       {operatorError && <ErrorPanel error={operatorError} />}
 
-      {frame && effectiveBackups !== 'included'
+      {frame && scope !== 'cluster' && effectiveBackups !== 'included'
         && !frame.series.some((sx) => sx.kind === 'backup-class') && (
         // Splitting and seeing one lonely "Serving traffic" row is ambiguous:
         // it could mean no backups ran, or that the split is broken. Say which.
@@ -351,7 +365,7 @@ export default function TrafficTab() {
               <TrafficSummaryTable
                 frame={frame}
                 hidden={hidden}
-                subjectLabel={effectiveBackups === 'included' ? scopeMeta.subjectLabel : 'Class'}
+                subjectLabel={effectiveBackups === 'included' || scope === 'cluster' ? scopeMeta.subjectLabel : 'Class'}
                 total={total?.offered && combined ? {
                   name: totalLabel(frame.unit),
                   points: combined,

@@ -294,3 +294,34 @@ export const ingressSpoolBytes = new Gauge({
   help: 'Bytes of orphaned Traefik response-buffer spool remaining after the last sweep',
   registers: [metricsRegistry],
 });
+
+/**
+ * Bytes and packets each NODE exchanged with the other cluster nodes, by port
+ * class, plus its off-site backup bytes — the firewall-reconciler's nft
+ * counters (one ConfigMap per node), mirrored here by
+ * modules/traffic/node-traffic-collector.ts so vmsingle can scrape them.
+ *
+ * The values are CUMULATIVE counters exported as gauges (a mirrored foreign
+ * counter cannot be a prom-client Counter): read them with rate()/increase(),
+ * never as levels. They restart from zero when the node's counter table is
+ * recreated, which rate() treats as an ordinary counter reset.
+ *
+ * Every platform-api replica exports the same series, so queries must collapse
+ * replicas first: `max by (node, class, direction) (rate(...))`.
+ *
+ * class: kubeapi | etcd | kubelet | tunnel | n2nother | backup
+ * direction: in | out
+ */
+export const nodeTrafficBytes = new Gauge({
+  name: 'platform_node_traffic_bytes',
+  help: 'Cumulative IP bytes by node, path class and direction (nft counters; use rate())',
+  labelNames: ['node', 'class', 'direction'] as const,
+  registers: [metricsRegistry],
+});
+
+export const nodeTrafficPackets = new Gauge({
+  name: 'platform_node_traffic_packets',
+  help: 'Cumulative packets by node, path class and direction (nft counters; use rate())',
+  labelNames: ['node', 'class', 'direction'] as const,
+  registers: [metricsRegistry],
+});

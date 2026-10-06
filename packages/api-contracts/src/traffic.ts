@@ -119,17 +119,28 @@ export type TrafficUnit = z.infer<typeof trafficUnitSchema>;
 /**
  * Which measurement a series belongs to, and whether it can be added up.
  *
- * `wire` is the node's own NIC — the ground truth for what crossed the
- * network. `wire-subset` is part of that same total seen another way
- * (node-to-node encapsulation, the off-site backup upload): real, useful,
- * and already inside `wire`, so adding it would double count.
+ * `wire` is what actually crossed the network, each byte counted ONCE: on a
+ * cluster view, traffic to/from the internet in each direction plus the
+ * traffic between nodes. Those rows add up to the real total.
+ *
+ * `n2n` splits the node-to-node row by what it was (Kubernetes API, etcd,
+ * kubelet, the pod-network tunnel, other) — parts of that one row.
+ *
+ * `wire-subset` is part of the wire seen another way (all tenants' traffic
+ * through the ingress, off-site backups): real, useful, and already inside
+ * the internet rows, so adding it would double count.
+ *
+ * `nic` is every node's network card added up — the old headline figure. A
+ * byte between two nodes leaves one card and enters another, so it appears
+ * twice there; kept because it is the only figure that reaches back before
+ * the per-node counters existed.
  *
  * `workload` is measured at the pods. It does NOT decompose the wire:
  * backups travel pod → in-cluster shim → off-site, so those bytes appear
  * twice, and pod-to-pod traffic never reaches the NIC at all. Kept because
  * it is the only per-class detail there is — labelled, not blended.
  */
-export const trafficSeriesGroupSchema = z.enum(['wire', 'wire-subset', 'workload']);
+export const trafficSeriesGroupSchema = z.enum(['wire', 'n2n', 'wire-subset', 'nic', 'workload']);
 export type TrafficSeriesGroup = z.infer<typeof trafficSeriesGroupSchema>;
 
 export const trafficSeriesSchema = z.object({

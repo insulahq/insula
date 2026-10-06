@@ -21,6 +21,7 @@
 import crypto from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
 import {
@@ -514,9 +515,11 @@ export function startNodeHealthScheduler(
   const tick = async () => {
     if (stopped) return;
     try {
-      const result = await reconcileNodeHealth(db, k8s);
-      if (result.notified.length > 0) {
-        console.log(`[node-health-monitor] notified ${result.notified.length} severity transition(s): ${result.notified.join(', ')}`);
+      // One replica writes the node-health rows (lease); every replica serves them.
+      const leased = await withSchedulerLease(db, 'node-health-monitor', TICK_MS * 1.5, () => reconcileNodeHealth(db, k8s));
+      const notified = leased.ran ? leased.value.notified : [];
+      if (notified.length > 0) {
+        console.log(`[node-health-monitor] notified ${notified.length} severity transition(s): ${notified.join(', ')}`);
       }
     } catch (err) {
       console.error('[node-health-monitor] tick failed:', (err as Error).message);

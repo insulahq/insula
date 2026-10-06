@@ -12,7 +12,10 @@ const mockLog = {
   info: vi.fn(),
 };
 
-const mockDb = {} as unknown as import('../../db/index.js').Database;
+// The reconciler runs behind a scheduler lease; this replica holds it.
+const mockDb = {
+  execute: async () => ({ rows: [{ setting_key: 'scheduler-lease:kubelet-gc-reconciler' }] }),
+} as unknown as import('../../db/index.js').Database;
 
 // ── Import after mocks ────────────────────────────────────────────────────────
 // parseNodeGcArgs is internal — we test it indirectly via startKubeletGcReconciler

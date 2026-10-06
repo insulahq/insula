@@ -13,6 +13,7 @@
 import { eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { listPodsCached } from '../../shared/k8s-watch-cache.js';
 import { tenants, mailboxes, systemSettings, clusterNodes } from '../../db/schema.js';
 import type { NodeFact, PodFact, ReplicaFact, TenantFact, VolumeFact } from './service.js';
 
@@ -161,7 +162,8 @@ export async function collectFacts(
     guard('nodes', () => k8s.core.listNode() as Promise<{ items?: RawNode[] }>, { items: [] }),
     guard(
       'pods',
-      () => k8s.core.listPodForAllNamespaces({}) as Promise<{ items?: RawPod[] }>,
+      // From the shared watch cache when current (shared/k8s-watch-cache.ts).
+      () => listPodsCached(k8s) as unknown as Promise<{ items?: RawPod[] }>,
       { items: [] },
     ),
     guard(

@@ -345,10 +345,13 @@ export function startStorageLifecycleScheduler(
     if (stopped) return;
     try {
       const { reconcileTenantWorkloadHealth } = await import('./workload-health.js');
-      const r = await reconcileTenantWorkloadHealth(db, k8s);
+      // One replica heals (lease) — two re-staging the same volume at once race.
+      const leased = await withSchedulerLease(db, 'tenant-workload-health', WORKLOAD_HEALTH_INTERVAL_MS * 1.5,
+        () => reconcileTenantWorkloadHealth(db, k8s));
+      const r = leased.ran ? leased.value : null;
       // Log only when something happened — a quiet fleet must stay quiet, or the
       // one tick that matters is invisible in the noise.
-      if (r.observedDown > 0 || r.episodesCleared > 0 || r.alerted > 0) {
+      if (r && (r.observedDown > 0 || r.episodesCleared > 0 || r.alerted > 0)) {
         console.log(
           `[workload-health] down=${r.observedDown} opened=${r.episodesOpened} cleared=${r.episodesCleared} `
           + `healAttempted=${r.healAttempted} healed=${r.healed} alerted=${r.alerted}`,

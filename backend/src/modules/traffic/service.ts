@@ -24,7 +24,8 @@ import { domains, ingressRoutes, tenants, usageMetrics } from '../../db/schema.j
 import { queryRange, type VmClientOptions } from '../monitoring/vm-client.js';
 import {
   BACKUP_CLASS_POD_RE, buildTrafficQuery, UnsupportedTrafficQuery,
-  type TrafficQueryInput,
+  allTenantsIngressRate, internetRate, nicSumRate, nodeToNodeRate, offsiteBackupRate,
+  NODE_TO_NODE_CLASSES, type NodeToNodeClass, type TrafficQueryInput,
 } from './promql.js';
 import {
   alignToTimeline, buildTimeline, chooseStepSeconds, foldTail, integrate, meanOf, rankValue, seriesKey,
@@ -416,10 +417,7 @@ export async function fetchTrafficFrame(
   // unrelated row. Put each measurement's directions back together, keeping
   // outbound first, without disturbing anything else.
   if (collected.some((c) => c.group)) {
-    const rank = (key: string): number => ['wire:', 'n2n:', 'offsite', 'serving', 'backup']
-      .findIndex((p) => key.startsWith(p));
-    const dirRank = (key: string): number => (key.includes(':in') ? 1 : 0);
-    collected.sort((a, b) => (rank(a.key) - rank(b.key)) || (dirRank(a.key) - dirRank(b.key)));
+    collected.sort((a, b) => clusterRowRank(a.key) - clusterRowRank(b.key));
   }
 
   // Route series are named from the live IngressRoute each one came from
@@ -537,53 +535,11 @@ function planQueries(
     excludeNestedNamespaces,
   };
 
-  // Backup traffic is ALWAYS its own series on a cluster view — it is not a
-  // mode to opt into. An operator reading cluster traffic needs to know how
-  // much of it is the platform backing itself up, every time, not only when
-  // they remember to ask.
-  // ── cluster traffic: the wire, its subsets, then the workload view ──
-  //
-  // Two measurements, deliberately not blended. The wire is what crossed the
-  // network. The workload rows are what each job SENT, which double-counts
-  // every backup byte (job → in-cluster shim → off-site) and misses nothing
-  // that stayed inside the node. Both are true; only one of them adds up,
-  // and the frame says which is which.
+  // Cluster traffic is its own frame: unique wire traffic split into internet
+  // and node-to-node, with tenants and off-site backups always shown beside
+  // it — see clusterTrafficQueries.
   if (req.scope === 'cluster' && req.metric === 'traffic') {
-    // ── the wire, and the one honest subset of it ────────────────────────
-    //
-    // This used to carry a third group, "what each workload sent", built
-    // from pod counters: a serving line plus a row per backup class. Those
-    // are a DIFFERENT INSTRUMENT sitting under a cluster-traffic heading,
-    // and they answered a question nobody asked here — cluster traffic is
-    // about what crossed the network, and pod counters mostly measure
-    // traffic that never did. Per-workload detail lives in the pod
-    // breakdown, which is labelled for what it is.
-    //
-    // The off-site backup upload row went with them, and it was the clearest
-    // possible demonstration of the problem: it claimed to be part of the
-    // wire total while being selected by `pod=~"backup-rclone.+"` with no
-    // `id="/"` at all — the shim POD's counters. The shim also answers the
-    // backup jobs over the pod network, so its egress includes bytes that
-    // never leave the node, and the row routinely exceeded the wire total it
-    // claimed to be a part of (2.15 GB inside 1.58 GB, observed). There is no
-    // way to isolate off-site bytes at the NIC, so the row is gone rather
-    // than quietly wrong.
-    const wire = (direction === 'in' ? 'Inbound' : 'Outbound');
-    return [
-      {
-        query: buildTrafficQuery({ ...base }),
-        kind: 'direction', fallbackKey: direction, keyPrefix: 'wire',
-        nameOverride: `${wire} (wire)`, group: 'wire',
-      },
-      {
-        // Genuinely a subset: same `id="/"` root cgroup, narrowed to the
-        // encapsulation interfaces. Measured with the same instrument as the
-        // total it sits under, which is what makes it comparable.
-        query: buildTrafficQuery({ ...base, wireSubset: 'node-to-node' }),
-        kind: 'direction', fallbackKey: direction, keyPrefix: 'n2n',
-        nameOverride: `Node-to-node (${direction})`, group: 'wire-subset',
-      },
-    ];
+    return clusterTrafficQueries(direction, stepSeconds);
   }
 
   if (req.backups === 'included' || req.metric !== 'traffic') {
@@ -617,6 +573,92 @@ function planQueries(
     },
     ...classes,
   ];
+}
+
+const NODE_TO_NODE_LABEL: Record<NodeToNodeClass, string> = {
+  kubeapi: 'Node-to-node · Kubernetes API',
+  etcd: 'Node-to-node · etcd',
+  kubelet: 'Node-to-node · kubelet',
+  tunnel: 'Node-to-node · pod network (tunnel)',
+  n2nother: 'Node-to-node · other',
+};
+
+/**
+ * The cluster traffic frame, one direction's worth.
+ *
+ * ── what this replaced ────────────────────────────────────────────────────
+ * The headline used to be every node's NIC added up. On one node that is the
+ * truth; on three it counts every byte between two nodes twice (it leaves one
+ * card and enters another), and between-node traffic — the API servers, etcd,
+ * the pod-network tunnel — dwarfs the internet traffic of a small HA cluster.
+ * Measured on production: a 135 GB day was ~94% node-to-node, and only the
+ * WireGuard tunnel (~15 GB) was visible as "node-to-node" at all, because
+ * apiserver and etcd traffic go host-to-host outside it.
+ *
+ * ── the rows now ──────────────────────────────────────────────────────────
+ *  wire        Internet out, Internet in, Node-to-node (once) — these add up.
+ *  n2n         Node-to-node by port class.
+ *  wire-subset All tenants through the ingress; off-site backups.
+ *  nic         The old NIC sum, for continuity and for history that predates
+ *              the per-node counters (where the rows above are gaps).
+ *
+ * Direction-less rows (node-to-node and its classes) are emitted with the
+ * outbound plan only, so a both-directions frame carries each once.
+ */
+function clusterTrafficQueries(direction: 'in' | 'out', stepSeconds: number): PlannedQuery[] {
+  const label = direction === 'in' ? 'inbound' : 'outbound';
+  const fixed = (expr: string): PlannedQuery['query'] => ({ expr, groupBy: null });
+  const rows: PlannedQuery[] = [
+    {
+      query: fixed(internetRate(direction, stepSeconds)),
+      kind: 'direction', fallbackKey: `internet:${direction}`, keyPrefix: 'wire',
+      nameOverride: `Internet · ${label}`, group: 'wire',
+    },
+  ];
+  if (direction === 'out') {
+    rows.push({
+      query: fixed(nodeToNodeRate(NODE_TO_NODE_CLASSES, stepSeconds)),
+      kind: 'direction', fallbackKey: 'n2n', keyPrefix: 'wire',
+      nameOverride: 'Node-to-node', group: 'wire',
+    });
+    for (const cls of NODE_TO_NODE_CLASSES) {
+      rows.push({
+        query: fixed(nodeToNodeRate([cls], stepSeconds)),
+        kind: 'direction', fallbackKey: cls, keyPrefix: 'n2n',
+        nameOverride: NODE_TO_NODE_LABEL[cls], group: 'n2n',
+      });
+    }
+  }
+  rows.push(
+    {
+      query: fixed(allTenantsIngressRate(direction, stepSeconds)),
+      kind: 'direction', fallbackKey: direction, keyPrefix: 'tenants',
+      nameOverride: `All tenants · ${label} (via ingress)`, group: 'wire-subset',
+    },
+    {
+      query: fixed(offsiteBackupRate(direction, stepSeconds)),
+      kind: 'direction', fallbackKey: direction, keyPrefix: 'backup',
+      nameOverride: `Backups · ${label} (off-site)`, group: 'wire-subset',
+    },
+    {
+      query: fixed(nicSumRate(direction, stepSeconds)),
+      kind: 'direction', fallbackKey: direction, keyPrefix: 'nic',
+      nameOverride: `All NICs · ${label} (node-to-node counted twice)`, group: 'nic',
+    },
+  );
+  return rows;
+}
+
+/** Display order of the cluster rows; anything unknown sorts last, stably. */
+const CLUSTER_ROW_ORDER = [
+  'wire:internet:out', 'wire:internet:in', 'wire:n2n',
+  ...NODE_TO_NODE_CLASSES.map((c) => `n2n:${c}`),
+  'tenants:out', 'tenants:in', 'backup:out', 'backup:in', 'nic:out', 'nic:in',
+];
+
+export function clusterRowRank(key: string): number {
+  const i = CLUSTER_ROW_ORDER.indexOf(key);
+  return i === -1 ? CLUSTER_ROW_ORDER.length : i;
 }
 
 const BACKUP_CLASS_LABEL: Record<keyof typeof BACKUP_CLASS_POD_RE, string> = {

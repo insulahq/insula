@@ -156,6 +156,88 @@ export interface QuerySpec {
   readonly groupBy: string | null;
 }
 
+// ── Per-node counters (firewall-reconciler nft → node-traffic-collector) ──
+//
+// The NIC cannot say WHO a byte went to; these can. Each node counts what it
+// exchanged with the other nodes, split by port class, and what its backup
+// shim sent off-site. Exported by every platform-api replica, hence the
+// `max by (node, class, direction)` before anything is summed.
+
+export const NODE_TRAFFIC_BYTES = 'platform_node_traffic_bytes';
+export const NODE_TRAFFIC_PACKETS = 'platform_node_traffic_packets';
+
+/** Port classes of node-to-node traffic, in display order. */
+export const NODE_TO_NODE_CLASSES = ['kubeapi', 'etcd', 'kubelet', 'tunnel', 'n2nother'] as const;
+export type NodeToNodeClass = typeof NODE_TO_NODE_CLASSES[number];
+
+/**
+ * The NIC counters count Ethernet frames; nft counts IP packets. One 14-byte
+ * header per packet reconciles the two — for the small, ACK-heavy packets of
+ * apiserver and etcd traffic the difference is far from negligible.
+ */
+const ETHERNET_HEADER_BYTES = 14;
+
+/**
+ * Window for anything built on the node counters. They are re-published every
+ * 30 s, so a one-minute window can hold a single sample and rate() over it is
+ * noise; two minutes always holds several.
+ */
+function nodeCounterWindow(stepSeconds: number): string {
+  return `${Math.max(120, stepSeconds)}s`;
+}
+
+function nodeCounterRate(metric: string, classRe: string, direction: 'in' | 'out', win: string): string {
+  return `sum(max by (node, class, direction) (rate(${metric}{class=~"${classRe}",direction="${direction}"}[${win}])))`;
+}
+
+/**
+ * Bytes/s of the given classes as the NIC would count them. Falls back to the
+ * bare IP bytes where packet counts are missing, rather than to nothing.
+ */
+export function nodeTrafficRate(
+  classes: readonly string[], direction: 'in' | 'out', stepSeconds: number,
+): string {
+  const win = nodeCounterWindow(stepSeconds);
+  const re = classes.join('|');
+  const bytes = nodeCounterRate(NODE_TRAFFIC_BYTES, re, direction, win);
+  const packets = nodeCounterRate(NODE_TRAFFIC_PACKETS, re, direction, win);
+  return `((${bytes} + ${ETHERNET_HEADER_BYTES} * ${packets}) or ${bytes})`;
+}
+
+/** Every node's NIC added up, one direction. Node-to-node bytes appear at BOTH ends. */
+export function nicSumRate(direction: 'in' | 'out', stepSeconds: number): string {
+  return `sum(rate(${NETWORK_COUNTER[direction]}{interface!~"${VIRTUAL_IFACE_RE}",id="/"}[${nodeCounterWindow(stepSeconds)}]))`;
+}
+
+/**
+ * What crossed the wire to or from OUTSIDE the cluster: the NIC sum minus
+ * this direction's node-to-node bytes. Absent wherever the node counters are
+ * (before they existed) — a gap, never the NIC sum passed off as internet.
+ * Floored at zero: the two sources are sampled on different clocks.
+ */
+export function internetRate(direction: 'in' | 'out', stepSeconds: number): string {
+  return `clamp_min(${nicSumRate(direction, stepSeconds)} - ${nodeTrafficRate(NODE_TO_NODE_CLASSES, direction, stepSeconds)}, 0)`;
+}
+
+/**
+ * Node-to-node traffic counted ONCE: what left a node for another node. (Every
+ * such byte also arrives somewhere; counting both ends is what made the NIC
+ * sum twice the real figure.)
+ */
+export function nodeToNodeRate(classes: readonly string[], stepSeconds: number): string {
+  return nodeTrafficRate(classes, 'out', stepSeconds);
+}
+
+/** Off-site backup traffic: the shim's bytes to and from outside the cluster. */
+export function offsiteBackupRate(direction: 'in' | 'out', stepSeconds: number): string {
+  return nodeTrafficRate(['backup'], direction, stepSeconds);
+}
+
+/** Every tenant's HTTP through the ingress, as the tenant scope measures it. */
+export function allTenantsIngressRate(direction: 'in' | 'out', stepSeconds: number): string {
+  return `sum(rate(${TRAEFIK_BYTES[direction]}{service=~"tenant-.+"}[${Math.max(60, stepSeconds)}s]))`;
+}
+
 /** The in-cluster relay every off-site backup upload passes through. */
 export const OFFSITE_SHIM_POD_RE = 'backup-rclone.+';
 

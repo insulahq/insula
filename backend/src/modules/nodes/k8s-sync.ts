@@ -1,4 +1,5 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { listPodsCached } from '../../shared/k8s-watch-cache.js';
 import type { Database } from '../../db/index.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
@@ -375,7 +376,8 @@ async function reconcileLonghornNodeTags(
  * counts toward the "this node is busy" signal.
  */
 async function collectNodeUsage(k8s: K8sClients): Promise<Map<string, NodeUsageAggregate>> {
-  const res = await k8s.core.listPodForAllNamespaces();
+  // From the shared watch cache when current (shared/k8s-watch-cache.ts).
+  const res = await listPodsCached(k8s);
   const byNode = new Map<string, NodeUsageAggregate>();
 
   for (const pod of res.items ?? []) {
