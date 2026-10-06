@@ -99,7 +99,7 @@ async function applyPanelMiddlewares(k8s: K8sClients, panel: ProxyPanel): Promis
   }));
 }
 
-async function deletePanelMiddlewares(k8s: K8sClients, panel: ProxyPanel): Promise<void> {
+export async function deletePanelMiddlewares(k8s: K8sClients, panel: ProxyPanel): Promise<void> {
   await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, proxyAuthMiddlewareName(panel));
   await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, proxySigninMiddlewareName(panel));
 }
@@ -137,6 +137,7 @@ export interface ProxySettings {
 export async function syncProxyIngressAnnotations(
   k8s: K8sClients,
   settings: ProxySettings,
+  opts: { readonly deleteUnprotected?: boolean } = {},
 ): Promise<void> {
   const protectedPanels: Record<ProxyPanel, boolean> = {
     admin: settings.protectAdminViaProxy,
@@ -144,7 +145,10 @@ export async function syncProxyIngressAnnotations(
   };
   for (const panel of ['admin', 'tenant'] as const) {
     if (protectedPanels[panel]) await applyPanelMiddlewares(k8s, panel);
-    else await deletePanelMiddlewares(k8s, panel);
+    // A caller that is about to rewrite the routes passes false and deletes
+    // these itself AFTERWARDS — a route referencing a deleted Middleware is
+    // dropped by Traefik just like one referencing a missing Service.
+    else if (opts.deleteUnprotected !== false) await deletePanelMiddlewares(k8s, panel);
   }
 
   await syncBreakGlassIngressRoute(k8s, settings);

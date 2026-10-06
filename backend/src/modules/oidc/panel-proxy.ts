@@ -21,7 +21,7 @@
 import crypto from 'node:crypto';
 import type * as k8s from '@kubernetes/client-node';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { isNotFound } from '../../shared/k8s-errors.js';
+import { isConflict, isNotFound } from '../../shared/k8s-errors.js';
 import { ApiError } from '../../shared/errors.js';
 import type { PanelProxyProvider } from './service.js';
 import { PANEL_PROXY_PORT, panelProxyName, type ProxyPanel } from './panel-proxy-names.js';
@@ -204,6 +204,19 @@ export function buildPanelProxyService(panel: ProxyPanel): k8s.V1Service {
 
 // ─── Apply / remove ──────────────────────────────────────────────────────────
 
+/**
+ * Create, treating "already exists" as done: every platform-api replica runs
+ * the sync at startup, and a sibling may create the same object first. Its
+ * content is the same desired state, so there is nothing to retry.
+ */
+async function createTolerant(op: () => Promise<unknown>): Promise<void> {
+  try {
+    await op();
+  } catch (err) {
+    if (!isConflict(err)) throw err;
+  }
+}
+
 export async function applyPanelProxy(k8sc: K8sClients, cfg: PanelProxyConfig): Promise<void> {
   const name = panelProxyName(cfg.panel);
   const namespace = PLATFORM_NAMESPACE;
@@ -219,7 +232,7 @@ export async function applyPanelProxy(k8sc: K8sClients, cfg: PanelProxyConfig): 
   if (live && liveHash === panelProxyConfigHash(cfg)) {
     await k8sc.core.readNamespacedService({ name, namespace }).catch(async (err: unknown) => {
       if (!isNotFound(err)) throw err;
-      await k8sc.core.createNamespacedService({ namespace, body: buildPanelProxyService(cfg.panel) });
+      await createTolerant(() => k8sc.core.createNamespacedService({ namespace, body: buildPanelProxyService(cfg.panel) }));
     });
     return;
   }
@@ -232,7 +245,7 @@ export async function applyPanelProxy(k8sc: K8sClients, cfg: PanelProxyConfig): 
     // backup-coverage: excluded:cluster-infrastructure
     // (oauth2-proxy-<panel> in `platform` ns; rebuilt from oidc_providers +
     // oidc_global_settings rows by panel-proxy-sync on every startup.)
-    await k8sc.core.createNamespacedSecret({ namespace, body: secret });
+    await createTolerant(() => k8sc.core.createNamespacedSecret({ namespace, body: secret }));
   }
 
   const service = buildPanelProxyService(cfg.panel);
@@ -243,7 +256,7 @@ export async function applyPanelProxy(k8sc: K8sClients, cfg: PanelProxyConfig): 
     await k8sc.core.replaceNamespacedService({ name, namespace, body: service });
   } catch (err) {
     if (!isNotFound(err)) throw err;
-    await k8sc.core.createNamespacedService({ namespace, body: service });
+    await createTolerant(() => k8sc.core.createNamespacedService({ namespace, body: service }));
   }
 
   const deployment = buildPanelProxyDeployment(cfg);
@@ -251,7 +264,7 @@ export async function applyPanelProxy(k8sc: K8sClients, cfg: PanelProxyConfig): 
     deployment.metadata!.resourceVersion = live.metadata?.resourceVersion;
     await k8sc.apps.replaceNamespacedDeployment({ name, namespace, body: deployment });
   } else {
-    await k8sc.apps.createNamespacedDeployment({ namespace, body: deployment });
+    await createTolerant(() => k8sc.apps.createNamespacedDeployment({ namespace, body: deployment }));
   }
 }
 

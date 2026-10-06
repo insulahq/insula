@@ -6,10 +6,12 @@
  *   2. optionally WAIT until it is Ready — it has then passed OIDC discovery;
  *   3. its Traefik Middlewares and the break-glass route;
  *   4. the platform-ingress routes that reference them;
- *   5. last, the proxies of unprotected panels and the pre-per-panel shared
- *      Middlewares, which nothing references any more.
+ *   5. last, the Middlewares and proxies of unprotected panels and the
+ *      pre-per-panel shared Middlewares, which nothing references any more.
  *
- * Routes never point at a proxy before it exists. The old code did it the other
+ * Routes never point at a proxy or Middleware that does not exist — in either
+ * direction: enabling creates before referencing, disabling unreferences
+ * before deleting. The old code did it the other
  * way round — and against a proxy production never deployed — which is how
  * enabling protection took a whole panel host down.
  */
@@ -19,7 +21,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 import { getGlobalSettings, getDecryptedCookieSecret, loadPanelProxyProvider, type ProxyPanel } from './service.js';
 import { applyPanelProxy, removePanelProxy, waitPanelProxyReady } from './panel-proxy.js';
-import { syncProxyIngressAnnotations, deleteLegacySharedMiddlewares } from './ingress-proxy-manager.js';
+import { syncProxyIngressAnnotations, deleteLegacySharedMiddlewares, deletePanelMiddlewares } from './ingress-proxy-manager.js';
 
 const PANELS: readonly ProxyPanel[] = ['admin', 'tenant'];
 
@@ -104,13 +106,14 @@ export async function syncPanelProxies(
     }
   }
 
-  // 3. Middlewares + break-glass.
+  // 3. Middlewares of protected panels + break-glass. Unprotected panels'
+  // Middlewares are still referenced by the live routes until step 4.
   await syncProxyIngressAnnotations(k8s, {
     protectAdminViaProxy: wanted.admin,
     protectTenantViaProxy: wanted.tenant,
     breakGlassPath: settings.breakGlassPath,
     adminHost: extractHost(urls.admin),
-  });
+  }, { deleteUnprotected: false });
 
   // 4. Routes.
   await reconcileIngressHosts(
@@ -127,6 +130,7 @@ export async function syncPanelProxies(
 
   // 5. What nothing references any more.
   for (const panel of PANELS.filter((p) => !wanted[p])) {
+    await deletePanelMiddlewares(k8s, panel);
     await removePanelProxy(k8s, panel);
   }
   await deleteLegacySharedMiddlewares(k8s);

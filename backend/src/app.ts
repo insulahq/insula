@@ -919,13 +919,26 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // The panels' OAuth2 Proxies are part of the same desired state: the
       // sync applies each protected panel's proxy, its Middlewares, then the
       // routes (in that order), and removes what nothing references.
-      try {
-        const { syncPanelProxies, panelProxySyncConfig } = await import('./modules/oidc/panel-proxy-sync.js');
-        await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
-        app.log.info('startup: panel ingress + OAuth2 Proxies reconciled from DB');
-      } catch (err) {
-        app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
-      }
+      // A failure here is retried a few times rather than dropped: nothing else
+      // re-runs this sync until the next restart or admin action, and a
+      // transient API hiccup during a rollout must not leave it half-applied.
+      const { syncPanelProxies, panelProxySyncConfig } = await import('./modules/oidc/panel-proxy-sync.js');
+      const STARTUP_SYNC_ATTEMPTS = 5;
+      const STARTUP_SYNC_RETRY_MS = 60_000;
+      const startupSync = async (attempt: number): Promise<void> => {
+        try {
+          await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
+          app.log.info({ attempt }, 'startup: panel ingress + OAuth2 Proxies reconciled from DB');
+        } catch (err) {
+          if (attempt >= STARTUP_SYNC_ATTEMPTS) {
+            app.log.error({ err, attempt }, 'startup: panel ingress reconcile failed — giving up until the next restart');
+            return;
+          }
+          app.log.warn({ err, attempt }, 'startup: panel ingress reconcile failed — retrying');
+          setTimeout(() => { void startupSync(attempt + 1); }, STARTUP_SYNC_RETRY_MS).unref();
+        }
+      };
+      await startupSync(1);
 
       // R16 seed-then-disown: converge the platform-owned Traefik hostnames
       // that follow the platform apex (stalwart web-admin UI in mail ns + the

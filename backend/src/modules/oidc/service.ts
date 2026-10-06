@@ -388,6 +388,23 @@ export async function updateProvider(db: Database, id: string, input: Partial<Sa
   return getProviderById(db, id);
 }
 
+/**
+ * Put a provider's sign-in credentials back to an earlier row. Used when an
+ * edit could not be rolled out to the OAuth2 Proxy that signs in with it: the
+ * saved provider must not differ from what the running proxy uses.
+ */
+export async function restoreProviderCredentials(
+  db: Database,
+  previous: Awaited<ReturnType<typeof getProviderById>>,
+): Promise<void> {
+  await db.update(oidcProviders).set({
+    issuerUrl: previous.issuerUrl,
+    clientId: previous.clientId,
+    clientSecretEncrypted: previous.clientSecretEncrypted,
+    discoveryMetadata: previous.discoveryMetadata,
+  }).where(eq(oidcProviders.id, previous.id));
+}
+
 export async function deleteProvider(db: Database, id: string) {
   await getProviderById(db, id);
   const panels = await panelsUsingProxyProvider(db, id);

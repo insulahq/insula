@@ -275,14 +275,28 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         .join('; ');
       throw new ApiError('INVALID_FIELD', detail, 400);
     }
+    const before = await service.getProviderById(app.db, id);
     const updated = await service.updateProvider(app.db, id, parsed.data, encryptionKey);
     // An edited issuer / client / secret must reach the proxy that signs in
-    // with it. Its old pods keep serving until the new ones are Ready, so a bad
-    // edit surfaces here as an error without taking the panel down.
+    // with it. Its old pods keep serving until the new ones are Ready; if they
+    // never are, the edit is undone (DB and proxy) and the reason returned —
+    // the saved provider must not drift from what the running proxy uses.
     const credentialsChanged = parsed.data.issuer_url !== undefined || parsed.data.client_id !== undefined
       || parsed.data.client_secret !== undefined;
     if (credentialsChanged && await service.isProxyProvider(app.db, id)) {
-      await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: true });
+      const cfg = panelProxySyncConfig(app.config as Record<string, unknown>);
+      try {
+        await syncPanelProxies(app.db, cfg, { waitReady: true });
+      } catch (err) {
+        app.log.warn({ err, providerId: id }, 'oidc: provider edit did not roll out to its OAuth2 Proxy — reverting');
+        await service.restoreProviderCredentials(app.db, before);
+        await syncPanelProxies(app.db, cfg, { waitReady: false }).catch((rollbackErr: unknown) => {
+          app.log.error({ err: rollbackErr }, 'oidc: OAuth2 Proxy rollback after provider edit failed');
+        });
+        if (err instanceof ApiError) throw err;
+        throw new ApiError('OAUTH2_PROXY_SYNC_FAILED',
+          `The provider change could not be applied to its OAuth2 Proxy and was undone: ${err instanceof Error ? err.message : String(err)}`, 502);
+      }
     }
     return success(updated);
   });
