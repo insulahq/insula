@@ -53,6 +53,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants
   app.post('/tenants', {
     onRequest: [requireRole('super_admin', 'admin')],
+    config: { apiBody: createTenantSchema },
     schema: {
       tags: ['Tenants'],
       summary: 'Create a new tenant',
@@ -432,6 +433,12 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/v1/tenants/:id
   app.patch('/tenants/:id', {
     onRequest: [requireRole('super_admin', 'admin')],
+    // Suspending and reactivating are reversible (write); archiving removes
+    // the tenant's workloads and volumes (delete).
+    config: {
+      apiScope: (request) => ((request.body as { status?: unknown } | null)?.status === 'archived' ? 'delete' : 'write'),
+      apiBody: updateTenantSchema,
+    },
   }, async (request) => {
     const { id } = request.params as { id: string };
     const parsed = updateTenantSchema.safeParse(request.body);
@@ -481,6 +488,9 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/admin/impersonate/:tenantId
   app.post('/admin/impersonate/:tenantId', {
     onRequest: [requireRole('super_admin', 'admin', 'support')],
+    // Changes nothing by itself; the token it returns carries the caller's
+    // API-token scopes, so every action taken with it is checked as usual.
+    config: { apiScope: 'read' },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
 
@@ -504,13 +514,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('NO_TENANT_USER', 'No active tenant_admin user found for this tenant', 404);
     }
 
-    // Issue a short-lived impersonation JWT
+    // Issue a short-lived impersonation JWT. A caller acting through an API
+    // token passes its token on: an impersonation token must not let a
+    // read- or write-scoped token do what its scopes forbid.
     const token = app.jwt.sign({
       sub: tenantUser.id,
       role: 'tenant_admin',
       panel: 'tenant',
       tenantId,
       impersonatedBy: request.user.sub,
+      ...(request.user.apiToken ? { apiToken: request.user.apiToken } : {}),
       exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
       iat: Math.floor(Date.now() / 1000),
       jti: crypto.randomUUID(),

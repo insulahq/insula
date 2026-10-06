@@ -49,6 +49,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string }> = [
   { file: 'modules/system-pod-placement/scheduler.ts', job: 'system-pod-placement' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'tenant-workload-health' },
   { file: 'modules/mail-admin/proxy-networks-reconciler.ts', job: 'mail-proxy-networks' },
+  { file: 'modules/mcp/reaper.ts', job: 'mcp-token-reaper' },
 ];
 
 /**

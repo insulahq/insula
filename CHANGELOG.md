@@ -14,6 +14,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **AI agents (MCP) and API tokens.** Users with the admin role can connect AI agents to the
+  platform over the Model Context Protocol (`https://admin.<apex>/api/v1/mcp`) — signing the
+  client in on a consent page (OAuth, 8-hour access) or with a personal access token — and use
+  personal access tokens for scripts on the whole REST API. Tokens carry **read**, **write**
+  and/or **delete** scopes, checked on every API route; they never exceed the user's role, show
+  their last use, and can be revoked under User Settings → API tokens & AI agents. Agents get
+  core tools (tenants incl. create/suspend, subscriptions, tenant files incl. move-to-trash,
+  deployments, domains, nodes, audit log, traffic) plus generic tools that reach every API
+  operation — generated from the API's own routes, so the two cannot drift — and can act as a
+  tenant through audited impersonation. Every token-driven change is attributed in the audit log.
+
 - **Apply the DMARC recommendation from the panel.** When a domain is ready to tighten ("safe to
   move to p=quarantine"), admins (Monitoring → Mail → DMARC) and domain owners (the domain's DMARC
   tab) can now publish the recommended step; the platform rewrites `p=` in the managed `_dmarc`

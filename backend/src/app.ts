@@ -381,6 +381,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     trustProxy: resolveTrustedProxyCidrs(),
   });
 
+  // The operation catalog for AI agents (MCP) — Fastify's own route table,
+  // collected by an onRoute hook, so it must exist before any route does.
+  const { collectOperations } = await import('./modules/mcp/catalog.js');
+  const operationCatalog = collectOperations(app);
+
   // Plugins
   // CORS — restrict to known origins; fallback to permissive in development only
   const allowedOrigins = deps.config.CORS_ORIGINS
@@ -422,7 +427,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     }
   });
 
-  await app.register(fastifyCors, { origin: allowedOrigins });
+  // The agent endpoints (MCP, OAuth, their discovery documents) are called by
+  // MCP clients from any origin, including browser-based ones, and carry a
+  // Bearer token or nothing — never a cookie — so `*` without credentials is
+  // safe for them. Everything else keeps the configured panel origins.
+  const { isAgentPath } = await import('./modules/mcp/paths.js');
+  await app.register(fastifyCors, {
+    delegator: (req, cb) => {
+      if (isAgentPath(req.url ?? '')) {
+        cb(null, { origin: '*', credentials: false, exposedHeaders: ['WWW-Authenticate', 'Mcp-Session-Id'] });
+        return;
+      }
+      cb(null, { origin: allowedOrigins });
+    },
+  });
   await app.register(fastifyCompress, { global: true });
   // @fastify/multipart powers the tenant-bundles import endpoint
   // (encrypted tarball upload). Limits chosen to allow >1 GiB
@@ -446,6 +464,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const rateLimitMax = await resolveRateLimitMax(deps.db);
   await registerRateLimit(app, { max: rateLimitMax });
   registerAuth(app);
+  // API-token scopes, judged again once the body is parsed — the half of
+  // shared/api-scope.ts that body-dependent rules need (authenticate does
+  // the rest, in whichever hook a route runs it).
+  {
+    const { enforceApiScope } = await import('./shared/api-scope.js');
+    app.addHook('preHandler', async (request) => { enforceApiScope(request, 'handler'); });
+  }
 
   // Error handler
   app.setErrorHandler(errorHandler);
@@ -642,6 +667,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     await app.register(tenantDashboardRoutes, { prefix: '/api/v1' });
   }
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
+  // AI agents & API tokens: OAuth server + discovery (host root), the MCP
+  // endpoint, and the user's own token management.
+  {
+    const { mcpOauthRoutes } = await import('./modules/mcp/oauth.js');
+    const { mcpEndpointRoutes } = await import('./modules/mcp/server.js');
+    const { mcpTokenRoutes } = await import('./modules/mcp/token-routes.js');
+    await app.register(mcpOauthRoutes);
+    await app.register(mcpEndpointRoutes(operationCatalog));
+    await app.register(mcpTokenRoutes, { prefix: '/api/v1' });
+    const { startMcpTokenReaper } = await import('./modules/mcp/reaper.js');
+    const stopMcpReaper = startMcpTokenReaper(app.db, app.log);
+    app.addHook('onClose', () => stopMcpReaper());
+  }
   await app.register(storageSettingsRoutes, { prefix: '/api/v1' });
   await app.register(storageRoutes, { prefix: '/api/v1' });
   await app.register(dnsRecordRoutes, { prefix: '/api/v1' });

@@ -20,6 +20,7 @@ const TenantDetail = lazy(() => import('@/pages/TenantDetail'));
 const Monitoring = lazy(() => import('@/pages/Monitoring'));
 const Applications = lazy(() => import('@/pages/Applications'));
 const UserSettings = lazy(() => import('@/pages/UserSettings'));
+const OAuthConsent = lazy(() => import('@/pages/OAuthConsent'));
 const DomainDetail = lazy(() => import('@/pages/DomainDetail'));
 const RestoreCartPage = lazy(() => import('@/pages/RestoreCart'));
 const BackupsDashboard = lazy(() => import('@/pages/backups/BackupsDashboard'));
@@ -100,6 +101,8 @@ export default function App() {
         <Suspense fallback={<RouteFallback />}>
           <Routes>
           <Route path="/login" element={<Login />} />
+          {/* AI-agent (MCP) OAuth consent: signed in, but outside the app chrome. */}
+          <Route path="/oauth/consent" element={<ProtectedRoute><OAuthConsent /></ProtectedRoute>} />
           <Route
             element={
               <ProtectedRoute>

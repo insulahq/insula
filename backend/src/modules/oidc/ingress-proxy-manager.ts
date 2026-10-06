@@ -33,6 +33,7 @@ import {
   buildMiddleware,
   buildIngressRoute,
   hostAndPathMatch,
+  hostMatch,
   stripPrefixSpec,
   forwardAuthSpec,
   middlewareName,
@@ -152,6 +153,49 @@ export async function syncProxyIngressAnnotations(
   }
 
   await syncBreakGlassIngressRoute(k8s, settings);
+  await syncAgentEndpointsIngressRoute(k8s, settings);
+}
+
+// ─── Agent / API-token bypass ──────────────────────────────────────────────
+
+export const AGENT_ENDPOINTS_INGRESS_NAME = 'platform-agent-endpoints';
+
+/**
+ * Traefik match for what must reach platform-api even while the admin panel
+ * sits behind OAuth2 Proxy: requests carrying a platform API token (PAT
+ * automation, MCP), the MCP endpoint, the OAuth server and its discovery
+ * documents. An MCP client or a script cannot complete the proxy's browser
+ * sign-in; the token is its credential. The consent API stays behind the proxy
+ * (the person approving signs in through it), as do browser sessions.
+ */
+export function agentEndpointsMatch(adminHost: string): string {
+  const host = hostMatch(adminHost);
+  return `${host} && (`
+    + '(PathPrefix(`/api/v1/`) && HeaderRegexp(`Authorization`, `^Bearer insula_(pat|oat)_`))'
+    + ' || Path(`/api/v1/mcp`)'
+    + ' || (PathPrefix(`/api/v1/oauth/`) && !PathPrefix(`/api/v1/oauth/requests`))'
+    + ' || PathPrefix(`/.well-known/oauth-protected-resource`)'
+    + ' || Path(`/.well-known/oauth-authorization-server`)'
+    + ')';
+}
+
+async function syncAgentEndpointsIngressRoute(k8s: K8sClients, settings: ProxySettings): Promise<void> {
+  if (!settings.protectAdminViaProxy || !settings.adminHost) {
+    await deleteIngressRoute(k8s.custom, PLATFORM_NAMESPACE, AGENT_ENDPOINTS_INGRESS_NAME);
+    return;
+  }
+  await applyIngressRoute(k8s.custom, buildIngressRoute({
+    name: AGENT_ENDPOINTS_INGRESS_NAME,
+    namespace: PLATFORM_NAMESPACE,
+    routes: [{
+      match: agentEndpointsMatch(settings.adminHost),
+      kind: 'Rule',
+      // Above the proxied panel route on the same host, like break-glass.
+      priority: 100,
+      services: [{ name: ADMIN_PANEL_SERVICE, port: ADMIN_PANEL_PORT }],
+    }],
+    labels: { 'app.kubernetes.io/component': 'agent-endpoints' },
+  }));
 }
 
 // ─── Break-Glass IngressRoute ───────────────────────────────────────────────

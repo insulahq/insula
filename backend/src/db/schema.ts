@@ -4704,3 +4704,56 @@ export const monitoringRuleOverrides = pgTable('monitoring_rule_overrides', {
   updatedBy: varchar('updated_by', { length: 36 }),
 });
 export type MonitoringRuleOverrideRow = typeof monitoringRuleOverrides.$inferSelect;
+
+// ─── AI agents (MCP) ──────────────────────────────────────────────────────────
+// OAuth clients registered dynamically (RFC 7591) by MCP clients, the pending
+// authorizations a user approves on the consent page, and the bearer tokens
+// agents present — OAuth (8 h) and personal access tokens. Secrets are stored
+// as SHA-256 hashes only. See modules/mcp.
+
+export const mcpOauthClients = pgTable('mcp_oauth_clients', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  name: varchar('name', { length: 200 }).notNull(),
+  redirectUris: text('redirect_uris').array().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+});
+
+export const mcpOauthRequests = pgTable('mcp_oauth_requests', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  clientId: varchar('client_id', { length: 64 }).notNull()
+    .references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  redirectUri: text('redirect_uri').notNull(),
+  state: text('state'),
+  codeChallenge: varchar('code_challenge', { length: 128 }).notNull(),
+  resource: text('resource').notNull(),
+  requestedScopes: text('requested_scopes').array().notNull(),
+  /** Set once the user decided; the code is the hash of what the client got. */
+  userId: varchar('user_id', { length: 36 }).references(() => users.id, { onDelete: 'cascade' }),
+  grantedScopes: text('granted_scopes').array(),
+  codeHash: varchar('code_hash', { length: 64 }),
+  codeUsedAt: timestamp('code_used_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mcp_oauth_requests_code_hash_idx').on(table.codeHash),
+]);
+
+export const mcpTokens = pgTable('mcp_tokens', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 10 }).notNull(), // 'pat' | 'oauth'
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  prefix: varchar('prefix', { length: 24 }).notNull(),
+  userId: varchar('user_id', { length: 36 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 64 }).references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 200 }).notNull(),
+  scopes: text('scopes').array().notNull(),
+  resource: text('resource'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mcp_tokens_token_hash_idx').on(table.tokenHash),
+  index('mcp_tokens_user_idx').on(table.userId),
+]);

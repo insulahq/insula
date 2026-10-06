@@ -156,3 +156,4 @@ export * from './reserved-workload-names.js';
 export * from './bundle-imports.js';
 export * from './tenant-placement.js';
 export * from './ip-canonical.js';
+export * from './mcp.js';

@@ -79,7 +79,10 @@ export default function Login() {
   //   3. "/" fallback
   // rd= takes priority because it's the caller that triggered the login
   // flow — state.from is often empty when the Login route is hit directly.
-  const routerFrom = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
+  // Path AND query: the OAuth consent page (/oauth/consent?request=…) is
+  // useless without its query when it sends someone here to sign in first.
+  const fromLocation = (location.state as { from?: { pathname: string; search?: string } })?.from;
+  const routerFrom = fromLocation ? `${fromLocation.pathname}${fromLocation.search ?? ''}` : '/';
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const apex = getPlatformApex();
   const redirectTarget = sanitizeRedirect(searchParams.get('rd'), origin, apex, routerFrom);

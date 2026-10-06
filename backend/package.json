@@ -33,6 +33,7 @@
     "@fastify/websocket": "^11.3.0",
     "@insula/api-contracts": "*",
     "@kubernetes/client-node": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@simplewebauthn/server": "^13.3.3",
     "@types/archiver": "^8.0.0",
     "@types/mjml": "^5.0.0",

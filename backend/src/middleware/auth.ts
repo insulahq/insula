@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { insufficientPermissions, missingToken, invalidToken, ApiError } from '../shared/errors.js';
+import { enforceApiScope, type ApiTokenClaim } from '../shared/api-scope.js';
+import { looksLikeToken, resolveToken } from '../modules/mcp/tokens.js';
 
 export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read_only';
 export type TenantRole = 'tenant_admin' | 'tenant_user';
@@ -21,6 +23,12 @@ export interface JwtPayload {
    * NOT an access token; see assertAccessToken().
    */
   readonly step?: string;
+  /**
+   * Present when the request acts through an API token — a PAT used directly,
+   * or an MCP tool call made with a PAT/OAuth token. Its scopes bind every
+   * route (shared/api-scope.ts). Session requests never carry it.
+   */
+  readonly apiToken?: ApiTokenClaim;
 }
 
 declare module '@fastify/jwt' {
@@ -132,6 +140,42 @@ export function authenticate(
 
   const token = authHeader.slice(7);
 
+  // An API token (PAT) instead of a session JWT: resolved against the DB
+  // (cached briefly), acting as its owner with the token's scopes. OAuth
+  // access tokens were issued FOR the MCP endpoint and are refused here.
+  const tokenKind = looksLikeToken(token);
+  if (tokenKind) {
+    if (tokenKind !== 'pat') {
+      done(invalidToken());
+      return;
+    }
+    resolveToken(request.server.db, token).then((principal) => {
+      if (!principal || principal.kind !== 'pat') {
+        done(invalidToken());
+        return;
+      }
+      const now = Math.floor(Date.now() / 1000);
+      request.user = {
+        sub: principal.userId,
+        role: principal.role as AnyRole,
+        panel: 'admin',
+        iat: now,
+        exp: now + 60,
+        apiToken: {
+          tokenId: principal.tokenId, kind: 'pat', name: principal.name, scopes: principal.scopes, via: 'api',
+        },
+      };
+      try {
+        enforceApiScope(request);
+      } catch (err) {
+        done(err as Error);
+        return;
+      }
+      done();
+    }, () => done(invalidToken()));
+    return;
+  }
+
   // Phase 3: no denylist check. Access tokens are short-lived (30 min)
   // and verified statelessly via signature + exp. Revocation is via the
   // refresh-token side: a logout / password change kills future
@@ -139,20 +183,36 @@ export function authenticate(
   // immediate revocation of an active access token (admin disable),
   // see the admin-disable-user flow which sets users.status='disabled'
   // and is checked by /auth/refresh.
+  let decoded: JwtPayload;
   try {
-    const decoded = request.server.jwt.verify<JwtPayload>(token);
+    decoded = request.server.jwt.verify<JwtPayload>(token);
     // A pre-auth (passkey_2fa) token is NOT a session token — reject it
     // here so every `authenticate`-guarded route is covered at once.
     assertAccessToken(decoded);
-    request.user = decoded;
-    done();
   } catch {
     done(invalidToken());
+    return;
   }
+  request.user = decoded;
+  // An MCP tool call carries its token's scopes in the JWT it was minted
+  // with; hold it to them like a PAT (no effect on session tokens).
+  try {
+    enforceApiScope(request);
+  } catch (err) {
+    done(err as Error);
+    return;
+  }
+  done();
+}
+
+/** Guards carry what they allow, so the operation catalog can read it. */
+export interface TaggedGuard {
+  readonly allowedRoles?: readonly AnyRole[];
+  readonly requiredPanel?: 'admin' | 'tenant';
 }
 
 export function requirePanel(panel: 'admin' | 'tenant') {
-  return function checkPanel(
+  return Object.assign(function checkPanel(
     request: FastifyRequest,
     _reply: FastifyReply,
     done: (err?: Error) => void,
@@ -170,11 +230,11 @@ export function requirePanel(panel: 'admin' | 'tenant') {
       return;
     }
     done();
-  };
+  }, { requiredPanel: panel } satisfies TaggedGuard);
 }
 
 export function requireRole(...roles: AnyRole[]) {
-  return function checkRole(
+  return Object.assign(function checkRole(
     request: FastifyRequest,
     _reply: FastifyReply,
     done: (err?: Error) => void,
@@ -188,7 +248,7 @@ export function requireRole(...roles: AnyRole[]) {
       return;
     }
     done();
-  };
+  }, { allowedRoles: roles } satisfies TaggedGuard);
 }
 
 /**

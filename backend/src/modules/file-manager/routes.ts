@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
 import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, bulkMoveInputSchema, bulkCopyInputSchema, bulkChmodInputSchema, bulkChownInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema, trashRestoreInputSchema, trashPurgeInputSchema } from '@insula/api-contracts';
@@ -46,6 +46,11 @@ async function resolveNamespace(
     );
   }
   return tenant.kubernetesNamespace;
+}
+
+/** A file delete is recoverable unless the body asks for `permanent`. */
+function permanentIsDelete(request: FastifyRequest): 'write' | 'delete' {
+  return (request.body as { permanent?: unknown } | null)?.permanent === true ? 'delete' : 'write';
 }
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
@@ -360,6 +365,8 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // Uses POST instead of DELETE because K8s API proxy can strip DELETE body
   app.post('/tenants/:tenantId/files/delete', {
     schema: { tags: ['Files'], summary: 'Delete file or directory', security: [{ bearerAuth: [] }] },
+    // Moving to the recycle bin is recoverable (write); `permanent` is not (delete).
+    config: { apiScope: permanentIsDelete, apiBody: deleteInputSchema },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = deleteInputSchema.safeParse(request.body);
@@ -441,6 +448,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/files/bulk-delete — delete many paths
   app.post('/tenants/:tenantId/files/bulk-delete', {
     schema: { tags: ['Files'], summary: 'Delete many files or directories', security: [{ bearerAuth: [] }] },
+    config: { apiScope: permanentIsDelete, apiBody: bulkDeleteInputSchema },
   }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = bulkDeleteInputSchema.safeParse(request.body);
@@ -584,6 +592,8 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/files/trash/restore — restore one entry
   app.post('/tenants/:tenantId/files/trash/restore', {
     schema: { tags: ['Files'], summary: 'Restore an entry from the recycle bin', security: [{ bearerAuth: [] }] },
+    // Putting a trashed file back overwrites nothing — not the destructive "restore".
+    config: { apiScope: 'write', apiBody: trashRestoreInputSchema },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = trashRestoreInputSchema.safeParse(request.body);
