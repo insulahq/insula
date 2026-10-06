@@ -31,8 +31,15 @@ metadata:
 #                                     classifies which Pods the tenant
 #                                     reconciler considers.
 #
-# No write outside the two CRD /status subresources. Host firewall
-# state is mutated locally via libnftnl + CAP_NET_ADMIN, not via the
+# Traffic goroutine (namespaced Role below):
+#   ConfigMaps in          create, get, — node-traffic-<NODE_NAME>, the per-node
+#   platform-system        patch, update  traffic snapshot platform-api reads.
+#                                      Create cannot be name-restricted, so the
+#                                      Role is scoped to the namespace instead.
+#
+# No other writes: the CRD /status subresources, CPP delete, and that one
+# ConfigMap. Host firewall state (and the count-only inet insula_traffic
+# table) is mutated locally via libnftnl + CAP_NET_ADMIN, not via the
 # kube-API.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -59,6 +66,38 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
+  name: firewall-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: firewall-reconciler
+    namespace: platform-system
+---
+# Traffic accounting: write node-traffic-<NODE_NAME> ConfigMaps (one per
+# node) in platform-system. Same shape as security-probe's Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
   name: firewall-reconciler
 subjects:
   - kind: ServiceAccount

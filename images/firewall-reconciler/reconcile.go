@@ -186,11 +186,17 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 			cppV6 = append(cppV6, bareIP)
 		}
 
+		// Already claimed: markCPPClaimed wrote its complete status (incl.
+		// the Claimed condition the backend surfaces). A patchCPPStatus here
+		// would replace that condition with Ready/Pending for the rest of the
+		// grace window, so leave the status alone until the CR is deleted.
+		if claimed {
+			continue
+		}
+
 		// Claim detection: matching Node InternalIP appeared.
-		if !claimed {
-			if _, present := nodeIPSet[bareIP]; present {
-				cppToClaim = append(cppToClaim, cpp)
-			}
+		if _, present := nodeIPSet[bareIP]; present {
+			cppToClaim = append(cppToClaim, cpp)
 		}
 		cppPatches[cpp.GetName()] = cpp
 	}
@@ -295,8 +301,8 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 }
 
 // patchCTRStatus writes the spec validation outcome into the CR's
-// status subresource. Idempotent: if status already matches the
-// computed values, the merge-patch is a no-op for the kube-API.
+// status subresource. writeStatus skips the PATCH entirely when the CR
+// already carries this status and its lastSyncedAt is still fresh.
 func (r *reconciler) patchCTRStatus(ctx context.Context, ctr *unstructured.Unstructured, now time.Time) {
 	spec, ok := readCTRSpec(ctr)
 	if !ok {
@@ -449,9 +455,11 @@ type condition struct {
 	Time    time.Time
 }
 
-// writeStatus issues a JSON-merge-patch to the CR's /status subresource.
-// Conflicts (resource was deleted, generation moved on) are warned but
-// not retried — the next reconcile tick will re-emit if needed.
+// writeStatus issues a JSON-merge-patch to the CR's /status subresource —
+// unless the CR already carries this status (see statusPatchIsNoop), in
+// which case it writes nothing. Conflicts (resource was deleted, generation
+// moved on) are warned but not retried — the next reconcile tick will
+// re-emit if needed.
 func (r *reconciler) writeStatus(
 	ctx context.Context,
 	client interface {
@@ -460,6 +468,30 @@ func (r *reconciler) writeStatus(
 	cr *unstructured.Unstructured,
 	p statusPayload,
 ) {
+	existing := existingStatus(cr)
+	statusObj := renderStatus(p, existingConditions(existing))
+	if statusPatchIsNoop(existing, statusObj, p.LastSyncedAt) {
+		return
+	}
+	patch := map[string]any{"status": statusObj}
+	body, err := json.Marshal(patch)
+	if err != nil {
+		slog.Warn("marshal status patch", "name", cr.GetName(), "err", err)
+		return
+	}
+	_, err = client.Patch(ctx, cr.GetName(), types.MergePatchType, body, metav1.PatchOptions{}, "status")
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return // CR was deleted between list and patch — fine
+		}
+		slog.Warn("patch status", "name", cr.GetName(), "err", err)
+	}
+}
+
+// renderStatus builds the status object a payload writes. prevConds are the
+// CR's current conditions, used to keep an unchanged condition's
+// lastTransitionTime stable.
+func renderStatus(p statusPayload, prevConds []map[string]any) map[string]any {
 	statusObj := map[string]any{
 		"observedGeneration": p.ObservedGeneration,
 	}
@@ -482,32 +514,27 @@ func (r *reconciler) writeStatus(
 		statusObj["claimedAt"] = p.ClaimedAt.UTC().Format(time.RFC3339)
 	}
 	if len(p.Conditions) > 0 {
-		statusObj["conditions"] = renderConditions(p.Conditions)
+		statusObj["conditions"] = renderConditions(p.Conditions, prevConds)
 	}
-	patch := map[string]any{"status": statusObj}
-	body, err := json.Marshal(patch)
-	if err != nil {
-		slog.Warn("marshal status patch", "name", cr.GetName(), "err", err)
-		return
-	}
-	_, err = client.Patch(ctx, cr.GetName(), types.MergePatchType, body, metav1.PatchOptions{}, "status")
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return // CR was deleted between list and patch — fine
-		}
-		slog.Warn("patch status", "name", cr.GetName(), "err", err)
-	}
+	return statusObj
 }
 
-func renderConditions(conds []condition) []map[string]any {
+// renderConditions renders conditions for the status patch. A condition
+// whose type/status/reason/message match the CR's current one keeps that
+// one's lastTransitionTime; anything else gets c.Time.
+func renderConditions(conds []condition, prev []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(conds))
 	for _, c := range conds {
+		ts := c.Time.UTC().Format(time.RFC3339)
+		if carried, ok := carriedTransitionTime(prev, c); ok {
+			ts = carried
+		}
 		out = append(out, map[string]any{
 			"type":               c.Type,
 			"status":             c.Status,
 			"reason":             c.Reason,
 			"message":            c.Message,
-			"lastTransitionTime": c.Time.UTC().Format(time.RFC3339),
+			"lastTransitionTime": ts,
 		})
 	}
 	return out

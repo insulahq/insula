@@ -14,10 +14,24 @@
 #       (filtered to namespaces with prefix "client-" or annotation
 #        insula.host/tenant-namespace=true)
 #
-# bootstrap.sh declares all six nft sets on every node; this DaemonSet
+#   traffic goroutine (node-scope, count-only — never touches inet filter):
+#     owns its own table `inet insula_traffic`:
+#       Nodes except this one   → peers_v{4,6}   (Internal + ExternalIPs)
+#       backup-rclone-shim Pods → shim_v{4,6}    (pod IPs on this node)
+#       host interfaces         → phys_ifs       (non-virtual only)
+#     named counters kubeapi / etcd / kubelet / tunnel / n2nother / backup
+#     (_in/_out bytes + packets), fed by policy-accept prerouting(-90) and
+#     postrouting(90) chains whose only verdicts are return/jump, so no
+#     packet's fate changes. Every 30s the counters are published to
+#     ConfigMap platform-system/node-traffic-<node> (data.snapshot, JSON)
+#     for platform-api. Failures there never affect the firewall loops or
+#     the /healthz probe.
+#
+# bootstrap.sh declares the inet filter sets on every node; this DaemonSet
 # is the only writer at runtime. The container has NO `nft` binary —
 # libnftnl talks netlink directly so the host's nft tooling never sees
-# a userspace version-skewed write.
+# a userspace version-skewed write. CAP_NET_ADMIN is the only capability,
+# for the filter sets and the traffic table alike.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
