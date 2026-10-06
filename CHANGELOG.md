@@ -24,6 +24,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `https://<panel host>/oauth2/callback` for that provider's client. On upgrade, a panel that was
   protected with exactly one enabled provider adopts it; one with several is switched off until
   you pick a provider. Works the same for the admin and the tenant panel.
+- **Monitoring → Mail "Sent today" read 0 while mail was flowing.** It counted from UTC midnight,
+  so for an operator east of UTC it reset in the middle of the evening. The tile is now a rolling
+  **Sent (24h)**, equal to the sum of the top-senders 24h column. The tenant dashboard's "Sent
+  today" also no longer leaves out the first hour of the day.
 - **The OIDC settings page showed proxy protection as off** even when it was on (and saving the
   form then switched it off): the page read fields the API does not send.
 

@@ -18,7 +18,9 @@ import { inArray } from 'drizzle-orm';
 export async function getMailOverview(db: Database): Promise<MailOverviewResponse> {
   const totalsP = db
     .select({
-      sentToday: sql<number>`COALESCE(SUM(${emailSendCounters.sentCount}) FILTER (WHERE ${emailSendCounters.bucketStart} >= date_trunc('day', NOW())), 0)`,
+      // Same window as the top-senders `sent24h` below, so the tile equals the
+      // sum of that column.
+      sent24h: sql<number>`COALESCE(SUM(${emailSendCounters.sentCount}) FILTER (WHERE ${emailSendCounters.bucketStart} >= NOW() - INTERVAL '24 hours'), 0)`,
       sent7d: sql<number>`COALESCE(SUM(${emailSendCounters.sentCount}), 0)`,
       recipients7d: sql<number>`COALESCE(SUM(${emailSendCounters.recipientCount}), 0)`,
       rateLimited7d: sql<number>`COALESCE(SUM(${emailSendCounters.rateLimitedCount}), 0)`,
@@ -76,7 +78,7 @@ export async function getMailOverview(db: Database): Promise<MailOverviewRespons
 
   return {
     totals: {
-      sentToday: Number(totals?.sentToday ?? 0),
+      sent24h: Number(totals?.sent24h ?? 0),
       sent7d: Number(totals?.sent7d ?? 0),
       recipients7d: Number(totals?.recipients7d ?? 0),
       rateLimited7d: Number(totals?.rateLimited7d ?? 0),
