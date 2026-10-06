@@ -20,6 +20,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   record. Only the step the recommendation allows right now is accepted, and **Step back** to the
   previous level is always available. The page shows the published policy while reports catch up,
   and the record value to publish when the domain's DNS is hosted elsewhere.
+- **Admin → Tenants: change placement or plan for many tenants at once.** Two new bulk actions,
+  **Change placement** (pick a node; each tenant is re-pinned and moved there, the same move as
+  the Placement card's *Migrate pods now*) and **Change plan** (pick a hosting plan, with the
+  choice to email the tenants or not). They run one tenant at a time with a per-tenant result,
+  like the other bulk actions; tenants already on the target are skipped, and the SYSTEM tenant is
+  never selectable.
+- **Tenant detail → Traffic (7 days).** Upload and download for the tenant over the last week with
+  a small chart, in place of the IDs card. Clicking it opens Monitoring → Traffic with that tenant
+  and the 7-day range already selected — the Traffic tab now takes its starting view from the
+  link (`?scope=…&subject=…&range=…`).
 
 ### Changed
 
@@ -41,6 +51,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the nodes. The traefik plugin guard no longer re-fetches API discovery for every kubectl call.
 - **Admin → Tenants → Cron Jobs no longer has an "Add Cron Job" button.** Cron jobs are created by
   the tenant; the operator list still runs, pauses, edits and deletes them.
+- **Admin → Tenants list: a Plan column, every column sortable, no email addresses.** The list
+  shows each tenant's hosting plan (served with the list, not looked up per row) and no longer
+  prints the tenant's email under its name. Every column sorts — CPU, memory and storage by the
+  amount in use, placement by node name, expiry by date.
+- **Tenant detail is tidier.** The email is gone from the page header; **Contact Email** shows
+  both the primary and the secondary address, each labelled; **Created By** names the user who
+  created the tenant (or their email when they have no name; *System* for platform-created
+  tenants, *Unknown* when the user no longer exists) instead of an id. **Placement** now sits next
+  to **Subscription** on wide screens. The Edit Tenant dialog says *Primary Email* / *Secondary
+  Email*, as Create Tenant does.
+
+### Removed
+
+- **The AI code editor is retired.** Gone: the tenant File Manager's AI assistant (the editor's
+  chat panel and the folder-wide *AI Edit*), Admin → Platform → AI Providers, the
+  `/api/v1/admin/ai/*`, `/api/v1/ai/models` and `/api/v1/tenants/:id/ai/*` endpoints, and the
+  hosting plan's weekly AI budget field. Migration 0148 drops the `ai_token_usage`, `ai_models`
+  and `ai_providers` tables — including the stored, encrypted provider API keys; the plan's
+  budget column is no longer used and is dropped in a following release (so old pods keep working
+  during the rolling upgrade). The backend no longer depends on the Anthropic or OpenAI SDKs.
 
 ### Fixed
 

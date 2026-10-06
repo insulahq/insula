@@ -7,6 +7,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
@@ -24,6 +25,7 @@ import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from '@/components/ui/SearchablePicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
 import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
+import { parseTrafficUrlState } from './traffic-url';
 
 /** "24 hours", "7 days" — what the Total tile is a total OVER. */
 function spanLabel(r: { from: Date; to: Date }): string {
@@ -131,11 +133,16 @@ function metricsFor(scope: TrafficScope): ReadonlyArray<{ key: TrafficMetric; la
 }
 
 export default function TrafficTab() {
-  const [range, setRange] = useState<RangeValue>(() => presetRange('24h'));
-  const [scope, setScope] = useState<TrafficScope>('cluster');
-  const [subject, setSubject] = useState<string | null>(null);
-  const [pod, setPod] = useState<string | null>(null);
-  const [metric, setMetric] = useState<TrafficMetric>('traffic');
+  // The query string picks the INITIAL view, so another page can link straight
+  // to a question (`?scope=tenant&subject=<namespace>&range=7d`); from there
+  // the controls own the state. Read once, on mount.
+  const { search } = useLocation();
+  const [initial] = useState(() => parseTrafficUrlState(search));
+  const [range, setRange] = useState<RangeValue>(() => presetRange(initial.range));
+  const [scope, setScope] = useState<TrafficScope>(initial.scope);
+  const [subject, setSubject] = useState<string | null>(initial.subject);
+  const [pod, setPod] = useState<string | null>(initial.pod);
+  const [metric, setMetric] = useState<TrafficMetric>(initial.metric);
   const [direction, setDirection] = useState<TrafficDirection>('both');
   // The combined line starts OFF: it is there to be asked for, and drawn by
   // default it would set the axis and push every row down to the floor.

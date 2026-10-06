@@ -64,7 +64,7 @@ beforeEach(() => {
   mockResizeDryRunMib.mockReset().mockResolvedValue({ willFit: true });
 });
 
-import { createTenant, getTenantById, updateTenant, deleteTenant } from './service.js';
+import { createTenant, getTenantById, getTenantDetail, listTenants, resolveUserDisplayName, updateTenant, deleteTenant } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
 // Helper to build a chainable mock db
@@ -118,6 +118,84 @@ describe('getTenantById', () => {
       code: 'TENANT_NOT_FOUND',
       status: 404,
     });
+  });
+});
+
+/**
+ * A db whose successive `select()` calls answer with successive results —
+ * enough for reads that issue a fixed sequence of selects. Every chain shape
+ * used by the reads under test (`where`, `where().limit`, `leftJoin().where()
+ * .orderBy().limit`) resolves to that call's result.
+ */
+function sequencedSelectDb(results: unknown[][]) {
+  let call = 0;
+  const calls: Array<{ leftJoined: boolean; selection: unknown }> = [];
+  const select = vi.fn((selection?: unknown) => {
+    const result = results[call] ?? [];
+    call += 1;
+    const record = { leftJoined: false, selection };
+    calls.push(record);
+    const terminal = Object.assign(Promise.resolve(result), {
+      limit: vi.fn().mockResolvedValue(result),
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(result) }),
+    });
+    const chain = {
+      where: vi.fn().mockReturnValue(terminal),
+      leftJoin: vi.fn(() => {
+        record.leftJoined = true;
+        return chain;
+      }),
+    };
+    return { from: vi.fn().mockReturnValue(chain) };
+  });
+  return { db: { select } as unknown as Parameters<typeof createTenant>[0], calls };
+}
+
+describe('getTenantDetail — Created By as a person', () => {
+  it('adds the creating user\'s full name', async () => {
+    const { db } = sequencedSelectDb([
+      [{ id: 'c1', name: 'Acme', createdBy: 'u1' }],
+      [{ fullName: 'Ada Lovelace', email: 'ada@example.test' }],
+    ]);
+    const result = await getTenantDetail(db, 'c1');
+    expect(result).toMatchObject({ id: 'c1', createdBy: 'u1', createdByName: 'Ada Lovelace' });
+  });
+
+  it('falls back to the email when the name is blank', async () => {
+    const { db } = sequencedSelectDb([[{ fullName: '   ', email: 'ops@example.test' }]]);
+    await expect(resolveUserDisplayName(db, 'u1')).resolves.toBe('ops@example.test');
+  });
+
+  it('is null when the creator is not a user (system process, or deleted)', async () => {
+    const { db: noUser } = sequencedSelectDb([[]]);
+    await expect(resolveUserDisplayName(noUser, 'system')).resolves.toBeNull();
+
+    // Unset never queries at all.
+    const { db: unset, calls } = sequencedSelectDb([]);
+    await expect(resolveUserDisplayName(unset, null)).resolves.toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still 404s for a missing tenant', async () => {
+    const { db } = sequencedSelectDb([[]]);
+    await expect(getTenantDetail(db, 'missing')).rejects.toMatchObject({ code: 'TENANT_NOT_FOUND' });
+  });
+});
+
+describe('listTenants — the Plan column', () => {
+  it('joins the plan and returns its name on every row', async () => {
+    const rows = [
+      { id: 't1', name: 'A', createdAt: new Date('2026-01-01'), planName: 'Starter' },
+      { id: 't2', name: 'B', createdAt: new Date('2026-01-02'), planName: null },
+    ];
+    const { db, calls } = sequencedSelectDb([rows, [{ count: 2 }]]);
+    const result = await listTenants(db, { limit: 20, sort: { field: 'createdAt', direction: 'desc' } });
+
+    expect(result.data.map((r) => r.planName)).toEqual(['Starter', null]);
+    expect(result.pagination.total_count).toBe(2);
+    // The rows query is the joined one, and it selects a planName column.
+    expect(calls[0].leftJoined).toBe(true);
+    expect(Object.keys(calls[0].selection as Record<string, unknown>)).toContain('planName');
   });
 });
 

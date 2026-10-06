@@ -16,8 +16,9 @@ const mockTenant = {
 vi.mock('./service.js', () => ({
   createTenant: vi.fn().mockResolvedValue({ ...mockTenant, id: 'new-id' }),
   getTenantById: vi.fn().mockResolvedValue(mockTenant),
+  getTenantDetail: vi.fn().mockResolvedValue({ ...mockTenant, createdBy: 'admin-1', createdByName: 'Ada Admin' }),
   listTenants: vi.fn().mockResolvedValue({
-    data: [mockTenant],
+    data: [{ ...mockTenant, planName: 'Starter' }],
     pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
   }),
   updateTenant: vi.fn().mockResolvedValue({ ...mockTenant, name: 'Updated' }),
@@ -220,6 +221,25 @@ describe('tenant routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('GET /api/v1/tenants/:id names the creating user, not just their id', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/c1',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({ createdBy: 'admin-1', createdByName: 'Ada Admin' });
+  });
+
+  it('GET /api/v1/tenants keeps each row\'s plan name through the response schema', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants', headers: { authorization: `Bearer ${adminToken}` } });
+    expect(res.statusCode).toBe(200);
+    const row = (res.json().data as Array<{ id: string; planName?: unknown }>).find((r) => r.id === 'c1');
+    // An undeclared key is stripped by Fastify's serializer — this fails if
+    // the schema ever loses `planName`, not just if the service does.
+    expect(row?.planName).toBe('Starter');
   });
 
   it('POST /api/v1/tenants should reject invalid body', async () => {

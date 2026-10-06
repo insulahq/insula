@@ -10,14 +10,16 @@ interface SortableHeaderProps {
   readonly className?: string;
   /** Optional native tooltip explaining what the column measures. */
   readonly title?: string;
+  /** Cell padding — override to match a table whose cells are not `px-5`. */
+  readonly padding?: string;
 }
 
-export default function SortableHeader({ label, sortKey, currentKey, direction, onSort, className = '', title }: SortableHeaderProps) {
+export default function SortableHeader({ label, sortKey, currentKey, direction, onSort, className = '', title, padding = 'px-5 py-3' }: SortableHeaderProps) {
   const isActive = currentKey === sortKey;
 
   return (
     <th
-      className={`px-5 py-3 cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${className}`}
+      className={`${padding} cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${className}`}
       onClick={() => onSort(sortKey)}
       data-testid={`sort-${sortKey}`}
       title={title}

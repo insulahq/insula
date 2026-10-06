@@ -304,6 +304,9 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   secondaryEmail: { type: ['string', 'null'] },
                   kubernetesNamespace: { type: 'string' },
                   planId: { type: 'string' },
+                  // The hosting plan's display name, joined by listTenants for
+                  // the Plan column. Declared, or the response schema strips it.
+                  planName: { type: ['string', 'null'] },
                   regionId: { type: 'string' },
                   status: { type: 'string' },
                   storageLifecycleState: { type: 'string' },
@@ -376,7 +379,8 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const tenant = await service.getTenantById(app.db, id);
+    // getTenantDetail adds createdByName — the creator as a person, not an id.
+    const tenant = await service.getTenantDetail(app.db, id);
     return success(tenant);
   });
 
