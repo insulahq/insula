@@ -85,6 +85,7 @@ describe.skipIf(skipIntegration)('MCP token store (integration)', () => {
       ['it_idle_recent', ago(60 * DAY), ago(5 * DAY)],          // kept: used recently
       ['it_old_with_token', ago(60 * DAY), ago(40 * DAY)],      // kept: live token
       ['it_old_with_request', ago(3 * DAY), null],              // kept: pending request
+      ['it_answered', ago(4 * DAY), null],                      // kept: approved, code not yet redeemed
     ];
     await db.insert(mcpOauthClients).values(rows.map(([id, createdAt, lastUsedAt]) => ({
       id, name: 'x', redirectUris: ['http://127.0.0.1/cb'], createdAt, lastUsedAt,
@@ -93,20 +94,28 @@ describe.skipIf(skipIntegration)('MCP token store (integration)', () => {
       id: crypto.randomUUID(), kind: 'oauth', tokenHash: hashSecret(crypto.randomUUID()), prefix: 'insula_oat_',
       userId: adminId, clientId: 'it_old_with_token', name: 'x', scopes: ['read'], expiresAt: new Date(Date.now() + 3_600_000),
     });
-    await db.insert(mcpOauthRequests).values({
-      id: `it_req_${crypto.randomUUID()}`, clientId: 'it_old_with_request', redirectUri: 'http://127.0.0.1/cb',
-      codeChallenge: 'c', resource: 'r', requestedScopes: ['read'], expiresAt: new Date(Date.now() + 600_000),
-    });
+    await db.insert(mcpOauthRequests).values([
+      {
+        id: `it_req_${crypto.randomUUID()}`, clientId: 'it_old_with_request', redirectUri: 'http://127.0.0.1/cb',
+        codeChallenge: 'c', resource: 'r', requestedScopes: ['read'], expiresAt: new Date(Date.now() + 600_000),
+      },
+      {
+        id: `it_req_${crypto.randomUUID()}`, clientId: 'it_answered', redirectUri: 'http://127.0.0.1/cb',
+        codeChallenge: 'c', resource: 'r', requestedScopes: ['read'], expiresAt: new Date(Date.now() + 600_000),
+        userId: adminId, grantedScopes: ['read'], codeHash: hashSecret(crypto.randomUUID()),
+      },
+    ]);
 
     const left = async () => (await db.select({ id: mcpOauthClients.id }).from(mcpOauthClients)
       .where(like(mcpOauthClients.id, 'it_%'))).map((r) => r.id).sort();
 
     const res = await reapExpired(db);
     expect(res.clients).toBe(2);
-    expect(await left()).toEqual(['it_idle_recent', 'it_old_with_request', 'it_old_with_token', 'it_unapproved_new']);
+    expect(await left()).toEqual(['it_answered', 'it_idle_recent', 'it_old_with_request', 'it_old_with_token', 'it_unapproved_new']);
 
-    // The oldest never-approved client without a token goes (its request cascades).
+    // The oldest never-approved client without a token goes, its unanswered
+    // request with it — but not the OLDER one a person already approved.
     expect(await evictUnapprovedClient(db)).toBe(true);
-    expect(await left()).toEqual(['it_idle_recent', 'it_old_with_token', 'it_unapproved_new']);
+    expect(await left()).toEqual(['it_answered', 'it_idle_recent', 'it_old_with_token', 'it_unapproved_new']);
   });
 });

@@ -61,8 +61,10 @@ JSON format, not the platform envelope. CORS is `*` without credentials for the 
 When the admin panel is behind OAuth2 Proxy, `ingress-proxy-manager.ts` adds `platform-agent-endpoints`
 with two routes above the proxied panel route:
 
-- priority 100, no middleware — the endpoints that authenticate themselves: `/api/v1/mcp`, `/api/v1/oauth/*`
-  except the consent API, and the two discovery documents;
+- priority 100, no middleware — the endpoints that authenticate themselves, by EXACT path
+  (`SELF_AUTHENTICATING_PATHS` in `paths.ts`: MCP, OAuth register/authorize/token/revoke, the discovery
+  documents). Never a prefix with an exclusion — `/api/v1/oauth//requests` escapes one at the edge and nginx
+  merges the slashes behind it. `mcp-flow.test.ts` holds the list equal to the registered `skipAuth` routes;
 - priority 99 — `/api/v1/*` with an `insula_pat_` bearer, through the `platform-agent-token-auth`
   ForwardAuth middleware → `GET /api/v1/internal/agent-token-check` on platform-api (204 for a live PAT,
   else 401; own rate-limit bucket). The header shape only routes; the token is checked at the edge, so a

@@ -252,9 +252,11 @@ export async function reapExpired(
 
 /**
  * Make room for one registration when the table is full: drop the oldest
- * client that was never approved and holds no token (a pending request of
- * its own goes with it). Registration is open, so without this anyone could
- * fill the table and lock every real client out until the reaper ran.
+ * client that was never approved and holds no token. Registration is open, so
+ * without this anyone could fill the table and lock every real client out
+ * until the reaper ran. A client whose request a person has ANSWERED (code
+ * issued, not yet redeemed) is spared — an unanswered request is not, since
+ * `/authorize` is unauthenticated and would let a flood pin its own clients.
  * Returns false when every client is in use.
  */
 export async function evictUnapprovedClient(db: Database): Promise<boolean> {
@@ -262,6 +264,8 @@ export async function evictUnapprovedClient(db: Database): Promise<boolean> {
     .where(and(
       isNull(mcpOauthClients.lastUsedAt),
       sql`NOT EXISTS (SELECT 1 FROM ${mcpTokens} WHERE ${mcpTokens.clientId} = ${mcpOauthClients.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM ${mcpOauthRequests} WHERE ${mcpOauthRequests.clientId} = ${mcpOauthClients.id}
+        AND ${mcpOauthRequests.userId} IS NOT NULL)`,
     ))
     .orderBy(mcpOauthClients.createdAt)
     .limit(1);

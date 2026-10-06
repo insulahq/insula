@@ -17,17 +17,19 @@ describe('the agent routes on a proxy-protected admin host', () => {
     expect(pat.startsWith('Host(`admin.example.test`) && ')).toBe(true);
   });
 
-  it('let the MCP endpoint, OAuth and discovery through on their own', () => {
-    expect(selfAuth).toContain('Path(`/api/v1/mcp`)');
-    expect(selfAuth).toContain('PathPrefix(`/api/v1/oauth/`)');
-    expect(selfAuth).toContain('PathPrefix(`/.well-known/oauth-protected-resource`)');
-    expect(selfAuth).toContain('Path(`/.well-known/oauth-authorization-server`)');
+  it('let the MCP endpoint, OAuth and discovery through on their own — by exact path', () => {
+    for (const p of [
+      '/api/v1/mcp', '/api/v1/oauth/register', '/api/v1/oauth/authorize', '/api/v1/oauth/token',
+      '/api/v1/oauth/revoke', '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/api/v1/mcp', '/.well-known/oauth-authorization-server',
+    ]) expect(selfAuth).toContain(`Path(\`${p}\`)`);
   });
 
   it('keep the consent API and plain browser traffic behind the proxy', () => {
-    expect(selfAuth).toContain('!PathPrefix(`/api/v1/oauth/requests`)');
-    // The general API is never on the self-authenticating route.
-    expect(selfAuth).not.toContain('PathPrefix(`/api/v1/`)');
+    // No prefix match at all: `/api/v1/oauth//requests/x` escaped a
+    // prefix-minus-exclusion rule at the edge and was merged back by nginx.
+    expect(selfAuth).not.toContain('PathPrefix');
+    expect(selfAuth).not.toContain('/requests');
     expect(selfAuth).not.toContain('Authorization');
   });
 

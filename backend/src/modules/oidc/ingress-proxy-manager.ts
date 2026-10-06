@@ -44,7 +44,7 @@ import {
   applyIngressRoute,
   deleteIngressRoute,
 } from '../ingress-routes/traefik-apply.js';
-import { AGENT_TOKEN_CHECK_PATH } from '../mcp/paths.js';
+import { AGENT_TOKEN_CHECK_PATH, SELF_AUTHENTICATING_PATHS } from '../mcp/paths.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -168,16 +168,12 @@ const PLATFORM_API_PORT = 3000;
  * Endpoints that authenticate themselves and must stay reachable while the
  * admin panel sits behind OAuth2 Proxy: the MCP endpoint (bearer token or a
  * 401 that starts an MCP client's sign-in), the OAuth server and its discovery
- * documents. The consent API stays behind the proxy — the person approving
- * signs in through it.
+ * documents — each by its exact path (see SELF_AUTHENTICATING_PATHS). The
+ * consent API stays behind the proxy: the person approving signs in through it.
  */
 export function agentEndpointsMatch(adminHost: string): string {
-  return `${hostMatch(adminHost)} && (`
-    + 'Path(`/api/v1/mcp`)'
-    + ' || (PathPrefix(`/api/v1/oauth/`) && !PathPrefix(`/api/v1/oauth/requests`))'
-    + ' || PathPrefix(`/.well-known/oauth-protected-resource`)'
-    + ' || Path(`/.well-known/oauth-authorization-server`)'
-    + ')';
+  const paths = SELF_AUTHENTICATING_PATHS.map((p) => `Path(\`${p}\`)`).join(' || ');
+  return `${hostMatch(adminHost)} && (${paths})`;
 }
 
 /**

@@ -43,11 +43,18 @@ const { errorHandler } = await import('../../middleware/error-handler.js');
 const { collectOperations } = await import('./catalog.js');
 const { mcpEndpointRoutes } = await import('./server.js');
 const { mcpOauthRoutes } = await import('./oauth.js');
+const { AGENT_TOKEN_CHECK_PATH, SELF_AUTHENTICATING_PATHS } = await import('./paths.js');
+
+/** Every route registered with skipAuth — what the edge must agree with. */
+const skipAuthUrls = new Set<string>();
 
 let app: FastifyInstance;
 
 beforeAll(async () => {
   app = Fastify();
+  app.addHook('onRoute', (route) => {
+    if ((route.config as { skipAuth?: boolean } | undefined)?.skipAuth) skipAuthUrls.add(route.url);
+  });
   await app.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only-0123456789' });
   app.decorate('db', {} as never);
   app.decorate('config', { PLATFORM_BASE_DOMAIN: 'example.test' } as never);
@@ -231,6 +238,13 @@ describe('a PAT on the plain REST API', () => {
     const res = await app.inject({ method: 'POST', url: '/api/v1/admin/impersonate/tenant-9', headers: { authorization: 'Bearer insula_pat_rw' } });
     expect(res.statusCode).toBe(403);
     expect(res.body).not.toContain('a-one-hour-tenant-token');
+  });
+});
+
+describe('the paths a proxy-protected admin host lets past OAuth2 Proxy', () => {
+  it('are exactly the routes that authenticate themselves — no more, no fewer', () => {
+    const selfAuthenticating = [...skipAuthUrls].filter((u) => u !== AGENT_TOKEN_CHECK_PATH).sort();
+    expect(selfAuthenticating).toEqual([...SELF_AUTHENTICATING_PATHS].sort());
   });
 });
 

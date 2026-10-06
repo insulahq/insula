@@ -12,6 +12,23 @@ export const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-re
 export const AUTHORIZATION_SERVER_METADATA_PATH = '/.well-known/oauth-authorization-server';
 /** Cluster-internal: Traefik ForwardAuth asks whether a bearer is a live PAT. */
 export const AGENT_TOKEN_CHECK_PATH = '/api/v1/internal/agent-token-check';
+/**
+ * Every path that authenticates itself, EXACTLY — a proxy-protected admin host
+ * routes these past OAuth2 Proxy (oidc/ingress-proxy-manager.ts). Exact paths,
+ * never a prefix with an exclusion: `/api/v1/oauth//requests` is not a prefix of
+ * `/api/v1/oauth/requests` at the edge, yet nginx merges the slashes behind it.
+ * mcp-flow.test.ts holds this list equal to the skipAuth routes registered.
+ */
+export const SELF_AUTHENTICATING_PATHS: readonly string[] = [
+  MCP_PATH,
+  `${OAUTH_PREFIX}/register`,
+  `${OAUTH_PREFIX}/authorize`,
+  `${OAUTH_PREFIX}/token`,
+  `${OAUTH_PREFIX}/revoke`,
+  PROTECTED_RESOURCE_METADATA_PATH,
+  `${PROTECTED_RESOURCE_METADATA_PATH}${MCP_PATH}`,
+  AUTHORIZATION_SERVER_METADATA_PATH,
+];
 /** The admin panel's consent page (SPA route). */
 export const CONSENT_PAGE_PATH = '/oauth/consent';
 
