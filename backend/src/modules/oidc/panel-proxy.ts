@@ -101,6 +101,10 @@ export function buildPanelProxyArgs(panel: ProxyPanel, host: string): string[] {
     '--email-domain=*',
     '--insecure-oidc-allow-unverified-email=true',
     '--code-challenge-method=S256',
+    // oauth2-proxy otherwise sends `approval_prompt=force`, which makes the IdP
+    // show its consent page on EVERY sign-in (Dex ignores skipApprovalScreen
+    // for it; Google forces consent). `auto` asks only when consent is missing.
+    '--approval-prompt=auto',
     // One proxy per panel host: the cookie and the post-login redirect stay on
     // that host, and the callback is fixed rather than derived from headers.
     `--redirect-url=https://${host}/oauth2/callback`,

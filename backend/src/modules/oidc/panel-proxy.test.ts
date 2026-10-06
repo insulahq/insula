@@ -29,6 +29,8 @@ describe('panel oauth2-proxy manifests', () => {
     expect(args.some((a) => a.startsWith('--cookie-domain'))).toBe(false);
     // The API authenticates itself; gating it would break the panel's sign-in.
     expect(args).toContain('--skip-auth-route=^/api/');
+    // Not the oauth2-proxy default `force` — that is a consent screen per login.
+    expect(args).toContain('--approval-prompt=auto');
   });
 
   it('keeps every credential out of the pod spec', () => {
