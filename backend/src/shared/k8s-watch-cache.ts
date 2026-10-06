@@ -34,6 +34,13 @@ import { ObjectSerializer } from '@kubernetes/client-node/dist/gen/models/Object
 import type { K8sClients } from '../modules/k8s-provisioner/k8s-client.js';
 
 const RESYNC_MS = 30 * 60_000;
+/**
+ * How long one watch request lives. The server ends it cleanly at this point
+ * (`timeoutSeconds`) and the cache resumes from its resourceVersion — no
+ * relist. client-node's Watch aborts every request after a fixed 30 s on its
+ * own clock unless told otherwise; see `watcherFor`.
+ */
+const WATCH_SECONDS = 300;
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
@@ -147,7 +154,7 @@ export class WatchCache<T extends { metadata?: { namespace?: string; name?: stri
     const gen = ++this.generation;
     const request = await this.opts.watcher.watch(
       this.opts.path,
-      { resourceVersion: this.resourceVersion, allowWatchBookmarks: true },
+      { resourceVersion: this.resourceVersion, allowWatchBookmarks: true, timeoutSeconds: WATCH_SECONDS },
       (phase, raw) => { if (gen === this.generation) this.onEvent(phase, raw); },
       (err) => { if (gen === this.generation) this.onDone(err); },
     );
@@ -187,7 +194,12 @@ export class WatchCache<T extends { metadata?: { namespace?: string; name?: stri
   private onDone(err: unknown): void {
     this.request = null;
     if (this.stopped) return;
-    if (err || !this.healthy || !this.resourceVersion) {
+    // A watch ending on a timer — the server's `timeoutSeconds` or the
+    // client's own request timeout — is the normal life of a watch, not a
+    // failure: resume from where it was. Treating it as one relisted the
+    // whole cluster every 30 seconds on the first deploy.
+    const timedOut = (err as { name?: string } | null)?.name === 'TimeoutError';
+    if ((err && !timedOut) || !this.healthy || !this.resourceVersion) {
       this.fail(err ?? new Error('watch ended without a resumable resourceVersion'));
       return;
     }
@@ -206,6 +218,19 @@ export class WatchCache<T extends { metadata?: { namespace?: string; name?: stri
 
 // ─── process-wide caches for the cluster-wide lists the pollers share ────────
 
+/**
+ * A Watch whose own request timeout outlives the server-side one, so the
+ * server closes each watch cleanly. client-node 2.x hard-codes 30 s in a
+ * private field; if a future version renames it, nothing breaks — watches are
+ * simply re-established every 30 s instead (onDone treats that as normal).
+ */
+function watcherFor(kc: k8s.KubeConfig): WatchLike {
+  const watch = new k8s.Watch(kc);
+  const internals = watch as unknown as { requestTimeoutMs?: number };
+  if (typeof internals.requestTimeoutMs === 'number') internals.requestTimeoutMs = (WATCH_SECONDS + 60) * 1000;
+  return watch as unknown as WatchLike;
+}
+
 const caches = new Map<string, WatchCache<never>>();
 
 function cacheFor<T extends { metadata?: { namespace?: string; name?: string } }>(
@@ -222,7 +247,7 @@ function cacheFor<T extends { metadata?: { namespace?: string; name?: string } }
   if (!cache) {
     cache = new WatchCache<T>({
       path, modelType, list,
-      watcher: new k8s.Watch(kc) as unknown as WatchLike,
+      watcher: watcherFor(kc),
       log: console,
     });
     caches.set(key, cache as unknown as WatchCache<never>);

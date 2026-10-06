@@ -89,6 +89,23 @@ describe('WatchCache', () => {
     expect(cache.list()).not.toBeNull();
   });
 
+  it('a watch that ends on a timeout resumes from its resourceVersion — it is not a failure', async () => {
+    // client-node's Watch aborts every request on a timer and reports a
+    // DOMException named TimeoutError. Treated as a failure, the first deploy
+    // relisted every Pod in the cluster every 30 seconds.
+    const { cache, streams, list } = make();
+    cache.start();
+    await settle();
+    streams[0].onEvent('ADDED', rawPod('p', '77'));
+    streams[0].onDone(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    await settle();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(streams).toHaveLength(2);
+    expect(streams[1].query.resourceVersion).toBe('77');
+    expect(streams[1].query.timeoutSeconds).toBe(300);
+    expect(cache.list()).not.toBeNull();
+  });
+
   it('a watch ERROR (410 Gone) stops answering until a relist succeeds', async () => {
     const { cache, streams, list } = make();
     cache.start();
