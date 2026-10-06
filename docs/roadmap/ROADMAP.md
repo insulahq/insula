@@ -54,7 +54,7 @@
 | [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
-| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | Waiting — code retired with the AI code editor (migration 0148); the physical column drop ships one release later |
+| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | Waiting — code retired with the AI code editor (migration 0148, v2026.10.6); operator 2026-10-06: drop it in the next full release after that |
 
 ---
 

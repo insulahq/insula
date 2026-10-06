@@ -24,13 +24,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   deployments, domains, nodes, audit log, traffic) plus generic tools that reach every API
   operation — generated from the API's own routes, so the two cannot drift — and can act as a
   tenant through audited impersonation. Every token-driven change is attributed in the audit log.
+  On an admin panel protected by OAuth2 Proxy, the agent endpoints and requests carrying a personal
+  access token are routed past the proxy's sign-in (still through CrowdSec and the WAF; a token is
+  checked at the edge first), and the WAF lets through the loopback sign-in redirects that desktop
+  AI clients use.
 
 - **Apply the DMARC recommendation from the panel.** When a domain is ready to tighten ("safe to
   move to p=quarantine"), admins (Monitoring → Mail → DMARC) and domain owners (the domain's DMARC
   tab) can now publish the recommended step; the platform rewrites `p=` in the managed `_dmarc`
   record. Only the step the recommendation allows right now is accepted, and **Step back** to the
   previous level is always available. The page shows the published policy while reports catch up,
-  and the record value to publish when the domain's DNS is hosted elsewhere.
+  and the record value to publish when the domain's DNS is hosted elsewhere. A domain that
+  publishes two `_dmarc` records is told to remove the duplicate first (receivers ignore both).
 - **Admin → Tenants: change placement or plan for many tenants at once.** Two new bulk actions,
   **Change placement** (pick a node; each tenant is re-pinned and moved there, the same move as
   the Placement card's *Migrate pods now*) and **Change plan** (pick a hosting plan, with the
@@ -91,7 +96,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **sign-in provider** you choose per panel (a proxy can use only one, while the login page may
   offer several). Saving starts the proxy and switches the routes only once it is running; if it
   cannot start, the save fails with the reason and the panel stays reachable. The panel's login
-  then continues with the proxy's provider by itself, so visitors sign in once. Register
+  then continues with the proxy's provider by itself, so visitors sign in once, and the provider
+  is no longer asked to show its consent screen on every sign-in. Register
   `https://<panel host>/oauth2/callback` for that provider's client. On upgrade, a panel that was
   protected with exactly one enabled provider adopts it; one with several is switched off until
   you pick a provider. Works the same for the admin and the tenant panel.

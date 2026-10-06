@@ -59,7 +59,12 @@ JSON format, not the platform envelope. CORS is `*` without credentials for the 
 (`paths.ts`, delegator in `app.ts`).
 
 When the admin panel is behind OAuth2 Proxy, `ingress-proxy-manager.ts` adds `platform-agent-endpoints`
-with two routes above the proxied panel route. Both carry the panel route's own edge guards
+with two routes above the proxied panel route. The proxy itself never gates `/api/`
+(`--skip-auth-route=^/api/` in `panel-proxy.ts` — the API authenticates every call), but the panel
+route's sign-in `errors` middleware rewrites EVERY 401 on that host, the backend's included, into a
+302 to `/oauth2/sign_in`. Without these routes the MCP endpoint's 401 + `WWW-Authenticate` challenge
+would reach an agent as a browser redirect and no MCP client could start its OAuth sign-in; a script
+with a bad token would get a sign-in page instead of a 401. Both carry the panel route's own edge guards
 (`PANEL_EDGE_GUARDS` in `system-settings/ingress-reconciler.ts`: CrowdSec first, body cap + ModSecurity
 last) — skipping the proxy never skips the ban list or the WAF:
 
