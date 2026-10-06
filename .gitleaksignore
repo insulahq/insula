@@ -7,7 +7,6 @@
 # Regenerate after intentional moves: gitleaks detect --no-git (fingerprints
 # are file:rule:line).
 
-backend/src/modules/ai-editor/service.ts:generic-api-key:53
 backend/src/modules/backup-restore/shared.ts:generic-api-key:115
 backend/src/modules/backup-rclone-shim/service.ts:generic-api-key:396
 backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:161

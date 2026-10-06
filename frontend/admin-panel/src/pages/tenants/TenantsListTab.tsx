@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn } from 'lucide-react';
+import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn, Server, CreditCard } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import TenantIssuesChip from '@/components/tenants/TenantIssuesChip';
 import PlacementCell from '@/components/tenants/PlacementCell';
@@ -18,17 +18,29 @@ import ErrorPanel from '@/components/ErrorPanel';
 import TenantDeletedBanner from '@/components/tenants/TenantDeletedBanner';
 import type { OperatorError } from '@insula/api-contracts';
 import { useBulkRun } from '@/hooks/use-bulk-run';
-import { runTenantBulkItem, useInvalidateTenantQueries, type TenantBulkAction } from '@/hooks/use-bulk-tenants';
+import {
+  changeTenantPlanItem,
+  moveTenantToNodeItem,
+  runTenantBulkItem,
+  useInvalidateTenantQueries,
+  type BulkTarget,
+  type TenantBulkAction,
+  type TenantChangeItem,
+} from '@/hooks/use-bulk-tenants';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import BulkTenantChangeModal, { type TenantChangeKind } from '@/components/tenants/BulkTenantChangeModal';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 import { formatMetricsCpu, formatMetricsBytes, isMetricValue, METRIC_UNAVAILABLE } from '@/lib/format-metrics';
+import { tenantSortAccessors } from '@/lib/tenant-list-sort';
 
 export default function TenantsListTab() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [confirmAction, setConfirmAction] = useState<TenantBulkAction | null>(null);
+  const [changeKind, setChangeKind] = useState<TenantChangeKind | null>(null);
 
   const navigate = useNavigate();
   const pagination = useCursorPagination({ defaultLimit: 20 });
@@ -43,11 +55,19 @@ export default function TenantsListTab() {
     cursor: pagination.cursor,
   });
 
-  const tenants = data?.data ?? [];
+  const tenants = useMemo(() => data?.data ?? [], [data]);
   const totalCount = data?.pagination?.total_count ?? 0;
   const hasMore = data?.pagination?.has_more ?? false;
   const nextCursor = data?.pagination?.cursor ?? null;
-  const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name');
+
+  const tenantIds = tenants.map((c) => c.id);
+  const { data: metricsData, isLoading: metricsLoading } = useAllTenantMetrics(tenantIds);
+  const metricsMap: Record<string, ResourceMetrics | null> = useMemo(() => metricsData?.data ?? {}, [metricsData]);
+  const nodeLabel = useNodeLabel();
+  // Every column sorts by what it shows — metrics by the in-use figure,
+  // placement by the node name on screen (see lib/tenant-list-sort.ts).
+  const sortAccessors = useMemo(() => tenantSortAccessors(metricsMap, nodeLabel), [metricsMap, nodeLabel]);
+  const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name', 'asc', sortAccessors);
 
   // "Login as tenant" straight from the list — the same impersonation action as
   // the tenant detail header, without the detour through it. `pendingLoginId`
@@ -93,9 +113,6 @@ export default function TenantsListTab() {
   // reject SYSTEM ids defensively; this is the UI affordance.
   const selectableTenants = tenants.filter((t) => !t.isSystem);
 
-  const tenantIds = tenants.map((c) => c.id);
-  const { data: metricsData, isLoading: metricsLoading } = useAllTenantMetrics(tenantIds);
-  const metricsMap: Record<string, ResourceMetrics | null> = metricsData?.data ?? {};
   // One fleet-wide fetch; the badge renders on every row that has an issue.
   const { data: issuesData } = useTenantIssues();
   const issuesMap = issuesData?.data ?? {};
@@ -113,9 +130,8 @@ export default function TenantsListTab() {
   };
 
   // In table order, and never the SYSTEM tenant (it is not selectable).
-  const selectedTenants = sortedTenants
-    .filter((t) => !t.isSystem && selection.isSelected(t.id))
-    .map((t) => ({ id: t.id, label: t.name }));
+  const selectedRows = sortedTenants.filter((t) => !t.isSystem && selection.isSelected(t.id));
+  const selectedTenants = selectedRows.map((t) => ({ id: t.id, label: t.name }));
 
   const handleBulkAction = () => {
     if (!confirmAction) return;
@@ -130,6 +146,32 @@ export default function TenantsListTab() {
       onClose: (remainingIds) => selection.setSelection(remainingIds),
     });
     setConfirmAction(null);
+  };
+
+  // Change placement / Change plan: the same per-tenant request the tenant
+  // page sends, sequenced by the shared bulk runner like the actions above.
+  const handleChange = (kind: TenantChangeKind, target: BulkTarget, notifyTenant: boolean) => {
+    const items: TenantChangeItem[] = selectedRows.map((t) => ({
+      id: t.id,
+      label: t.name,
+      sublabel: kind === 'placement'
+        ? `now on ${t.nodeName ? nodeLabel(t.nodeName) : 'auto'}`
+        : `now on ${t.planName ?? 'no plan'}`,
+      planId: t.planId,
+      nodeName: t.nodeName ?? null,
+      misplaced: t.placement?.status === 'misplaced',
+    }));
+    bulkRun.start({
+      title: kind === 'placement' ? `Change placement to ${target.label}` : `Change plan to ${target.label}`,
+      noun: 'tenant',
+      items,
+      runItem: (item) => (kind === 'placement'
+        ? moveTenantToNodeItem(item, target)
+        : changeTenantPlanItem(item, target, notifyTenant)),
+      onSettled: invalidateTenants,
+      onClose: (remainingIds) => selection.setSelection(remainingIds),
+    });
+    setChangeKind(null);
   };
 
   return (
@@ -194,11 +236,12 @@ export default function TenantsListTab() {
                     </th>
                     <SortableHeader label="Tenant" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <th className="hidden md:table-cell px-3 py-3 text-xs">CPU</th>
-                    <th className="hidden md:table-cell px-3 py-3 text-xs">Memory</th>
-                    <th className="hidden md:table-cell px-3 py-3 text-xs">Storage</th>
-                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Placement</th>
-                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Tier</th>
+                    <SortableHeader label="CPU" sortKey="cpu" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden md:table-cell text-xs" title="Sorted by CPU in use" />
+                    <SortableHeader label="Memory" sortKey="memory" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden md:table-cell text-xs" title="Sorted by memory in use" />
+                    <SortableHeader label="Storage" sortKey="storage" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden md:table-cell text-xs" title="Sorted by storage in use" />
+                    <SortableHeader label="Placement" sortKey="placement" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden xl:table-cell text-xs" title="Sorted by node name" />
+                    <SortableHeader label="Tier" sortKey="storageTier" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden xl:table-cell text-xs" />
+                    <SortableHeader label="Plan" sortKey="planName" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-3" className="hidden lg:table-cell text-xs" />
                     <SortableHeader label="Expires" sortKey="subscriptionExpiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
@@ -258,9 +301,6 @@ export default function TenantsListTab() {
                             Login
                           </button>
                         </div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">
-                          {tenant.primaryEmail}
-                        </div>
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -292,12 +332,17 @@ export default function TenantsListTab() {
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">local</span>
                         )}
                       </td>
+                      <td className="hidden px-3 py-3.5 text-sm lg:table-cell" data-testid={`tenant-plan-${tenant.id}`}>
+                        {tenant.planName
+                          ? <span className="text-gray-700 dark:text-gray-300">{tenant.planName}</span>
+                          : <span className="text-gray-400 dark:text-gray-500" title="No hosting plan matches this tenant's plan">—</span>}
+                      </td>
                       <ExpiryCell expiresAt={tenant.subscriptionExpiresAt ?? null} />
                     </tr>
                   ))}
                   {tenants.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={10} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No tenants found matching your search.'
                           : 'No tenants yet. Click "Add Tenant" to create one.'}
@@ -343,7 +388,32 @@ export default function TenantsListTab() {
           <Trash2 size={14} />
           Delete
         </button>
+        <button
+          onClick={() => setChangeKind('placement')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 transition-colors"
+          data-testid="bulk-change-placement"
+        >
+          <Server size={14} />
+          Change placement
+        </button>
+        <button
+          onClick={() => setChangeKind('plan')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 transition-colors"
+          data-testid="bulk-change-plan"
+        >
+          <CreditCard size={14} />
+          Change plan
+        </button>
       </BulkActionBar>
+
+      {changeKind && (
+        <BulkTenantChangeModal
+          kind={changeKind}
+          count={selectedRows.length}
+          onCancel={() => setChangeKind(null)}
+          onConfirm={(target, notifyTenant) => handleChange(changeKind, target, notifyTenant)}
+        />
+      )}
 
       {confirmAction && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>

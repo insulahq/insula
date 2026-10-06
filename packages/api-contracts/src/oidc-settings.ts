@@ -48,6 +48,12 @@ export const saveOidcGlobalSettingsSchema = z.object({
     }),
     z.null(),
   ]).optional(),
+  // The OIDC provider each panel's oauth2-proxy signs in with. oauth2-proxy
+  // takes exactly ONE provider, while a panel's login page may offer several,
+  // so the operator picks it. Required (and must be an enabled provider of
+  // that panel's scope) while the panel's proxy protection is on.
+  proxy_admin_provider_id: z.string().uuid().nullable().optional(),
+  proxy_tenant_provider_id: z.string().uuid().nullable().optional(),
 }).strict();
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
@@ -59,6 +65,26 @@ export const oidcGlobalSettingsResponseSchema = z.object({
   protectAdminViaProxy: z.boolean(),
   protectTenantViaProxy: z.boolean(),
   breakGlassPath: z.string().nullable(),
+  proxyAdminProviderId: z.string().nullable(),
+  proxyTenantProviderId: z.string().nullable(),
+});
+
+/** Public `/auth/oidc/status` — what a panel's login page needs before sign-in. */
+export const oidcAuthStatusSchema = z.object({
+  localAuthEnabled: z.boolean(),
+  proxyProtected: z.boolean(),
+  /**
+   * The provider the panel's oauth2-proxy signed the visitor in with, when the
+   * panel is proxy-protected. The login page starts that provider's sign-in on
+   * its own: the IdP session from the proxy step completes it without asking
+   * again, so the visitor does not log in twice.
+   */
+  proxyProviderId: z.string().nullable(),
+  providers: z.array(z.object({
+    id: z.string(),
+    displayName: z.string(),
+    issuerUrl: z.string(),
+  })),
 });
 
 export const breakGlassPathResponseSchema = z.object({
@@ -70,6 +96,7 @@ export const breakGlassPathResponseSchema = z.object({
 export type SaveOidcGlobalSettingsInput = z.infer<typeof saveOidcGlobalSettingsSchema>;
 export type OidcGlobalSettingsResponse = z.infer<typeof oidcGlobalSettingsResponseSchema>;
 export type BreakGlassPathResponse = z.infer<typeof breakGlassPathResponseSchema>;
+export type OidcAuthStatus = z.infer<typeof oidcAuthStatusSchema>;
 
 // ─── OIDC provider create / update ───────────────────────────────────────────
 //

@@ -51,6 +51,10 @@ staticClients:
     secret: staging-secret-admin
     redirectURIs:
       - https://admin.${DOMAIN}/api/v1/auth/oidc/callback
+      # The panel's own oauth2-proxy (backend-owned, backend/src/modules/oidc/
+      # panel-proxy.ts) signs in with THIS panel's provider, so its callback
+      # is registered on this client too.
+      - https://admin.${DOMAIN}/oauth2/callback
   - id: hosting-platform-tenant
     name: Hosting Platform Tenant
     secret: staging-secret-tenant
@@ -61,6 +65,10 @@ staticClients:
       # This said admin.${DOMAIN}, which made tenant SSO fail
       # with "Unregistered redirect_uri" at Dex on every non-dind environment.
       - https://tenant.${DOMAIN}/api/v1/auth/oidc/callback
+      # The panel's own oauth2-proxy (backend-owned, backend/src/modules/oidc/
+      # panel-proxy.ts) signs in with THIS panel's provider, so its callback
+      # is registered on this client too.
+      - https://tenant.${DOMAIN}/oauth2/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
     # secretEnv, NOT `secret: $VAR`. Dex expands NOTHING in `secret:` — it

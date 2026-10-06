@@ -101,6 +101,46 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
     expect(res.json().data.id).toBe(tenant.id);
   });
 
+  it('GET /api/v1/tenants — each row carries its plan NAME (joined, not N+1)', async () => {
+    const db = getTestDb();
+    await seedTenant(db, regionId, planId, { name: 'Planned Corp' });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants?limit=10',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const row = (res.json().data as Array<{ name: string; planName?: string | null }>)
+      .find((r) => r.name === 'Planned Corp');
+    expect(row?.planName).toBe('Test Plan');
+  });
+
+  it('GET /api/v1/tenants/:id — Created By resolves to the user, with fallbacks', async () => {
+    const db = getTestDb();
+    const userId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO users (id, email, full_name, role_name, panel, status)
+      VALUES (${userId}, 'creator@example.test', 'Casey Creator', 'admin', 'admin', 'active')
+    `);
+    const byUser = await seedTenant(db, regionId, planId, { createdBy: userId });
+    const bySystem = await seedTenant(db, regionId, planId, { createdBy: 'system' });
+
+    const get = async (id: string) => (await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/${id}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    })).json().data as { createdBy: string | null; createdByName: string | null };
+
+    expect(await get(byUser.id)).toMatchObject({ createdBy: userId, createdByName: 'Casey Creator' });
+    // No such user: the name is null and the panel reads `createdBy` to say why.
+    expect(await get(bySystem.id)).toMatchObject({ createdBy: 'system', createdByName: null });
+
+    // A blank name falls back to the email.
+    await db.execute(sql`UPDATE users SET full_name = '' WHERE id = ${userId}`);
+    expect((await get(byUser.id)).createdByName).toBe('creator@example.test');
+  });
+
   it('GET /api/v1/tenants/:id — 404 for missing tenant', async () => {
     const res = await app.inject({
       method: 'GET',

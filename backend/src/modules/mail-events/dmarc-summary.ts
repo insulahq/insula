@@ -23,6 +23,7 @@ import {
   type DmarcPolicy,
   type DmarcRecommendation,
 } from './dmarc-policy.js';
+import { managedDmarcRecords, policyOf } from './dmarc-record.js';
 
 /** Default trailing window. 30 days covers a monthly-cadence sender. */
 export const DMARC_WINDOW_DAYS = 30;
@@ -50,6 +51,9 @@ export interface DmarcDomainSummary {
   readonly windowDays: number;
   readonly failingSources: number;
   readonly recommendation: DmarcRecommendation;
+  /** `p=` of the platform-managed `_dmarc` record (null when none or ambiguous). */
+  readonly managedPolicy: DmarcPolicy | null;
+  readonly managedRecordCount: number;
 }
 
 function asPolicy(v: string | null): DmarcPolicy | null {
@@ -126,9 +130,13 @@ export async function dmarcDomainSummaries(
     if (f.policyDomain) failingByDomain.set(f.policyDomain, f.failingSources);
   }
 
-  return rows
-    .filter((r): r is typeof r & { policyDomain: string } => typeof r.policyDomain === 'string')
+  const reported = rows.filter((r): r is typeof r & { policyDomain: string } => typeof r.policyDomain === 'string');
+  const managed = await managedDmarcRecords(db, reported.map((r) => r.policyDomain));
+
+  return reported
     .map((r) => {
+      const records = managed.get(r.policyDomain) ?? [];
+      const managedPolicy = records.length === 1 ? policyOf(records[0].recordValue) : null;
       const first = r.firstReportAt ? new Date(r.firstReportAt) : null;
       const last = r.lastReportAt ? new Date(r.lastReportAt) : null;
       const windowSpan = spanDays(first, last);
@@ -160,6 +168,8 @@ export async function dmarcDomainSummaries(
           windowDays: windowSpan,
           failingSources,
         }),
+        managedPolicy,
+        managedRecordCount: records.length,
       };
     })
     .sort((a, b) => b.totalMessages - a.totalMessages);

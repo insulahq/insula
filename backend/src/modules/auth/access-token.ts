@@ -11,6 +11,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import type { ApiTokenClaim } from '../../shared/api-scope.js';
 import { ACCESS_TOKEN_TTL_SECONDS } from './refresh-token-service.js';
 
 export interface AccessTokenInput {
@@ -26,6 +27,11 @@ export interface AccessTokenOptions {
   readonly ttlSeconds?: number;
   /** What minted it, when it was not a sign-in (e.g. `dr-recover-task`). */
   readonly via?: string;
+  /**
+   * The API token the call acts through (an MCP tool call). Its scopes then
+   * bind every route the token reaches (shared/api-scope.ts).
+   */
+  readonly apiToken?: ApiTokenClaim;
 }
 
 export function signAccessToken(
@@ -46,6 +52,7 @@ export function signAccessToken(
   if (input.tenantId) payload.tenantId = input.tenantId;
   if (input.impersonatedBy) payload.impersonatedBy = input.impersonatedBy;
   if (options.via) payload.via = options.via;
+  if (options.apiToken) payload.apiToken = options.apiToken;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return app.jwt.sign(payload as any);
 }

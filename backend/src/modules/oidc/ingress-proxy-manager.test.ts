@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   syncProxyIngressAnnotations,
-  OAUTH2_PROXY_MIDDLEWARE_NAME,
 } from './ingress-proxy-manager.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -60,49 +59,49 @@ function makeK8s(existing: Record<string, Record<string, unknown>> = {}): K8sCli
   } as unknown as K8sClients & { custom: CustomObjectsApiCalls };
 }
 
-const db = {} as never;
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('syncProxyIngressAnnotations — ForwardAuth Middleware', () => {
-  it('creates the platform-oauth2-proxy-auth Middleware when protect is on', async () => {
+describe('syncProxyIngressAnnotations — per-panel Middlewares', () => {
+  function createdMiddleware(k8s: ReturnType<typeof makeK8s>, name: string) {
+    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
+    const call = calls.find((c) =>
+      c[0].plural === 'middlewares' && (c[0].body as { metadata: { name: string } }).metadata.name === name);
+    return call?.[0].body as { spec: Record<string, any> } | undefined;
+  }
+
+  it('creates ONLY the protected panel\'s pair, pointing at that panel\'s own proxy', async () => {
     const k8s = makeK8s();
-    await syncProxyIngressAnnotations(db, k8s, {
-      protectAdminViaProxy: true,
-      protectTenantViaProxy: false,
+    await syncProxyIngressAnnotations(k8s, {
+      protectAdminViaProxy: false,
+      protectTenantViaProxy: true,
       breakGlassPath: null,
       adminHost: 'admin.example.com',
     });
-    // Middleware should have been created in platform namespace.
-    expect(k8s.custom.createNamespacedCustomObject).toHaveBeenCalled();
-    const calls = (k8s.custom.createNamespacedCustomObject as ReturnType<typeof vi.fn>).mock.calls;
-    const middlewareCall = calls.find((c) =>
-      c[0].plural === 'middlewares'
-      && (c[0].body as { metadata: { name: string } }).metadata.name === OAUTH2_PROXY_MIDDLEWARE_NAME,
-    );
-    expect(middlewareCall).toBeDefined();
-    const body = middlewareCall![0].body as { spec: { forwardAuth?: { address: string } } };
-    expect(body.spec.forwardAuth?.address).toBe('http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth');
+    const auth = createdMiddleware(k8s, 'platform-oauth2-proxy-auth-tenant');
+    expect(auth?.spec.forwardAuth.address).toBe('http://oauth2-proxy-tenant.platform.svc.cluster.local:4180/oauth2/auth');
+    // Identity only — the IdP access token is not handed to the panel.
+    expect(auth?.spec.forwardAuth.authResponseHeaders).toEqual(['X-Auth-Request-User', 'X-Auth-Request-Email']);
+    const signin = createdMiddleware(k8s, 'platform-oauth2-proxy-signin-tenant');
+    expect(signin?.spec.errors.service).toEqual({ name: 'oauth2-proxy-tenant', port: 4180 });
+    expect(createdMiddleware(k8s, 'platform-oauth2-proxy-auth-admin')).toBeUndefined();
   });
 
-  it('deletes the Middleware when both protect flags are off', async () => {
-    // Seed an existing Middleware so delete has something to remove.
-    const initial: Record<string, Record<string, unknown>> = {};
-    initial[`platform/middlewares/${OAUTH2_PROXY_MIDDLEWARE_NAME}`] = {
-      apiVersion: 'traefik.io/v1alpha1',
-      kind: 'Middleware',
-      metadata: { name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' },
-      spec: { forwardAuth: { address: 'http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth' } },
-    };
-    const k8s = makeK8s(initial);
-    await syncProxyIngressAnnotations(db, k8s, {
+  it('deletes an unprotected panel\'s pair', async () => {
+    const name = 'platform-oauth2-proxy-auth-admin';
+    const k8s = makeK8s({
+      [`platform/middlewares/${name}`]: {
+        apiVersion: 'traefik.io/v1alpha1', kind: 'Middleware',
+        metadata: { name, namespace: 'platform' }, spec: {},
+      },
+    });
+    await syncProxyIngressAnnotations(k8s, {
       protectAdminViaProxy: false,
       protectTenantViaProxy: false,
       breakGlassPath: null,
       adminHost: 'admin.example.com',
     });
     expect(k8s.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
-      expect.objectContaining({ plural: 'middlewares', name: OAUTH2_PROXY_MIDDLEWARE_NAME }),
+      expect.objectContaining({ plural: 'middlewares', name }),
     );
   });
 });
@@ -110,7 +109,7 @@ describe('syncProxyIngressAnnotations — ForwardAuth Middleware', () => {
 describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
   it('creates the break-glass IngressRoute with stripPrefix Middleware when configured', async () => {
     const k8s = makeK8s();
-    await syncProxyIngressAnnotations(db, k8s, {
+    await syncProxyIngressAnnotations(k8s, {
       protectAdminViaProxy: true,
       protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',
@@ -151,7 +150,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
 
   it('does not create break-glass IngressRoute when protectAdminViaProxy is false', async () => {
     const k8s = makeK8s();
-    await syncProxyIngressAnnotations(db, k8s, {
+    await syncProxyIngressAnnotations(k8s, {
       protectAdminViaProxy: false,
       protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',
@@ -167,7 +166,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
 
   it('does not create break-glass when breakGlassPath is null', async () => {
     const k8s = makeK8s();
-    await syncProxyIngressAnnotations(db, k8s, {
+    await syncProxyIngressAnnotations(k8s, {
       protectAdminViaProxy: true,
       protectTenantViaProxy: false,
       breakGlassPath: null,
@@ -183,7 +182,7 @@ describe('syncProxyIngressAnnotations — break-glass IngressRoute', () => {
 
   it('skips break-glass IngressRoute creation when adminHost is null', async () => {
     const k8s = makeK8s();
-    await syncProxyIngressAnnotations(db, k8s, {
+    await syncProxyIngressAnnotations(k8s, {
       protectAdminViaProxy: true,
       protectTenantViaProxy: false,
       breakGlassPath: 'emergency-admin',

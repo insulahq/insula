@@ -84,7 +84,18 @@ export function registerAuditHook(app: FastifyInstance, db: Database): void {
     if (!shouldAudit(request.method, request.url)) return;
 
     const { resourceType, resourceId, tenantId } = extractResourceInfo(request.url);
-    const user = (request as unknown as { user?: { sub: string; role: string } }).user;
+    const user = (request as unknown as {
+      user?: { sub: string; role: string; impersonatedBy?: string; apiToken?: { tokenId: string; name: string; via: string } };
+    }).user;
+    // Who really acted: an API token (a script or an agent) and/or an admin
+    // impersonating a tenant user. Without this an agent's action read as
+    // the user's own click.
+    const attribution: Record<string, unknown> | null = user?.apiToken || user?.impersonatedBy
+      ? {
+        ...(user.apiToken ? { via: user.apiToken.via, apiTokenId: user.apiToken.tokenId, apiTokenName: user.apiToken.name } : {}),
+        ...(user.impersonatedBy ? { impersonatedBy: user.impersonatedBy } : {}),
+      }
+      : null;
 
     // Fire-and-forget — don't block the response
     // Defensive truncation: resource_id column is varchar(36). A path
@@ -99,7 +110,9 @@ export function registerAuditHook(app: FastifyInstance, db: Database): void {
         resourceType: resourceType.slice(0, 50),
         resourceId: safeResourceId,
         actorId: user?.sub ?? 'anonymous',
+        // The actor IS the token's owner; how they acted is in `changes`.
         actorType: 'user',
+        ...(attribution ? { changes: attribution } : {}),
         httpMethod: request.method,
         httpPath: request.url,
         httpStatus: reply.statusCode,

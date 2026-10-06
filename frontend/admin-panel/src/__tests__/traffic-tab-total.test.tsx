@@ -7,7 +7,9 @@
  * tab's decisions, not the fetch.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import type { ReactElement } from 'react';
 import type { TrafficFrame, TrafficSeries } from '@insula/api-contracts';
 
 const times = Array.from({ length: 12 }, (_, i) => new Date(Date.UTC(2026, 8, 30, i)).toISOString());
@@ -33,9 +35,9 @@ const FRAMES: Record<string, TrafficFrame> = {
   single: frameOf([{ key: 'out:tenant-a', name: 'Tenant A', kind: 'subject', points: flat(9000) }]),
 };
 
-let lastParams: { scope?: string; subject?: string } = {};
+let lastParams: { scope?: string; subject?: string; from?: Date; to?: Date } = {};
 vi.mock('@/hooks/use-traffic', () => ({
-  useTrafficSeries: (params: { scope: string; subject?: string }) => {
+  useTrafficSeries: (params: { scope: string; subject?: string; from: Date; to: Date }) => {
     lastParams = params;
     const key = params.scope === 'tenant' && params.subject ? 'single' : params.scope;
     return { data: FRAMES[key] ?? FRAMES.cluster, isLoading: false, error: null };
@@ -47,6 +49,11 @@ vi.mock('@/hooks/use-traffic', () => ({
 }));
 
 const { default: TrafficTab } = await import('@/components/traffic/TrafficTab');
+
+// The tab reads its initial view from the URL, so it renders inside a router.
+function render(ui: ReactElement, url = '/monitoring') {
+  return rtlRender(<MemoryRouter initialEntries={[url]}>{ui}</MemoryRouter>);
+}
 
 function chooseScope(label: string): void {
   fireEvent.click(document.getElementById('traffic-scope')!);
@@ -125,5 +132,36 @@ describe('Traffic tab — the combined Total', () => {
     const tz = screen.getByTestId('traffic-tzpill');
     const steps = screen.getByTestId('traffic-steps-pill');
     expect(steps.className).toBe(tz.className);
+  });
+});
+
+describe('Traffic tab — initial view from the URL', () => {
+  beforeEach(() => { lastParams = {}; });
+
+  it('opens on a tenant and 7 days when linked with ?scope=tenant&subject=…&range=7d', () => {
+    render(<TrafficTab />, '/monitoring?scope=tenant&subject=tenant-a&range=7d');
+    expect(lastParams.scope).toBe('tenant');
+    expect(lastParams.subject).toBe('tenant-a');
+    const hours = (lastParams.to!.getTime() - lastParams.from!.getTime()) / 3_600_000;
+    expect(hours).toBeCloseTo(24 * 7, 5);
+    // The pickers show the linked choice, not the defaults.
+    expect(document.getElementById('traffic-subject')!.textContent).toContain('Tenant A');
+    expect(screen.getByText('Last 7 days')).toBeInTheDocument();
+  });
+
+  it('shows a linked tenant as chosen even when it moved nothing (not in the ranked list)', () => {
+    render(<TrafficTab />, '/monitoring?scope=tenant&subject=tenant-quiet-1a2b3c4d&range=7d');
+    expect(lastParams.subject).toBe('tenant-quiet-1a2b3c4d');
+    const picker = document.getElementById('traffic-subject')!;
+    expect(picker.textContent).toContain('tenant-quiet-1a2b3c4d');
+    expect(picker.textContent).not.toContain('All tenants');
+  });
+
+  it('falls back to the default view for unknown values', () => {
+    render(<TrafficTab />, '/monitoring?scope=bogus&range=nope&subject=x');
+    expect(lastParams.scope).toBe('cluster');
+    expect(lastParams.subject).toBeUndefined();
+    const hours = (lastParams.to!.getTime() - lastParams.from!.getTime()) / 3_600_000;
+    expect(hours).toBeCloseTo(24, 5);
   });
 });

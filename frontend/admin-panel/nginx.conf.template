@@ -120,6 +120,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # OAuth discovery for AI agents (MCP): RFC 9728 protected-resource
+    # metadata and RFC 8414 authorization-server metadata, served by
+    # platform-api (modules/mcp/oauth.ts). MCP clients look for them at the
+    # host root.
+    location ^~ /.well-known/oauth-protected-resource {
+        proxy_pass $backend_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /.well-known/oauth-authorization-server {
+        proxy_pass $backend_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location /.well-known/mta-sts.txt {
         proxy_pass $backend_upstream;
         proxy_set_header Host $host;

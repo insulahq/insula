@@ -19,6 +19,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, ShieldAlert, Info, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import type { DmarcOverview, DmarcDomainSummary, DmarcSourceSummary } from '@insula/api-contracts';
+import DmarcPolicyActions from '@/components/dmarc/DmarcPolicyActions';
 
 function useDmarcOverview() {
   return useQuery({
@@ -202,6 +203,9 @@ export default function DmarcSection() {
                         <p className="mb-3 text-sm text-gray-700 dark:text-gray-300" data-testid={`dmarc-reason-${d.policyDomain}`}>
                           {d.recommendation.reason}
                         </p>
+                        <div className="mb-3">
+                          <DmarcPolicyActions summary={d} endpoint="/api/v1/admin/mail/dmarc/policy" invalidateKey={['mail', 'dmarc']} />
+                        </div>
                         <div className="overflow-x-auto rounded border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
                           <SourceTable domain={d.policyDomain} />
                         </div>

@@ -266,14 +266,22 @@ strictly authentication is enforced:
     determined without it.
 - **Authentication settings** — per panel: *disable local (password)
   auth* (forces SSO — only allowed once a scoped provider is enabled), and
-  *protect via OAuth2 Proxy* (block unauthenticated access entirely).
+  *protect via OAuth2 Proxy* (block unauthenticated access entirely) with the
+  **sign-in provider** that panel's proxy uses.
 - **Break-glass** — a recovery URL so you can still get in if SSO breaks;
   you can regenerate it (and the cookie secret) on demand.
 
-!!! info "The login page never redirects on its own"
+!!! info "The login page never redirects on its own — except behind the OAuth2 Proxy"
     Even with local auth disabled and exactly one provider configured, the
     panel still shows a **Sign in with …** button and waits for the click. It
     does not forward automatically.
+
+    The one exception is a panel protected by the OAuth2 Proxy: the visitor
+    has just signed in at the proxy's provider, so the login page continues
+    with that same provider by itself and the provider's session completes it
+    without asking again — nobody signs in twice. It still never does this
+    right after you sign out, when the provider returned an error, or more
+    than once within two minutes, so the page stays reachable.
 
     This is deliberate. Auto-forwarding makes the page unreachable in the
     situations you most need it: after signing out you would be sent straight
@@ -289,21 +297,30 @@ strictly authentication is enforced:
     (Before 2026-09-05 they got a bare `401` page with no way forward. If you
     tried this and gave up, it works now.)
 
-!!! warning "Protecting the tenant panel with OAuth2 Proxy needs a second redirect URI"
-    OAuth2 Proxy derives its callback from the host being visited, so the
-    tenant panel uses `https://tenant.<your-domain>/oauth2/callback` while the
-    admin panel uses `https://admin.<your-domain>/oauth2/callback`.
+!!! info "How OAuth2 Proxy protection works"
+    Each protected panel gets its own OAuth2 Proxy, created by the platform from
+    the **sign-in provider** you choose for that panel. A proxy can use only one
+    provider, while the login page can offer several — so if a panel has more
+    than one (say Google and your own IdP), users of the others also need an
+    account at the proxy's provider.
 
-    Add the tenant callback to your identity provider's client yourself before
-    switching *protect via OAuth2 Proxy* on for the tenant panel — otherwise
-    sign-in fails at the provider with an unregistered-redirect error. (The
-    Dex instance that ships in dev and staging for OIDC testing registers both
-    already, which is why this bites on a real deployment and not while you
-    are trying it out.)
+    Saving starts the proxy first and switches the panel's routes over only once
+    it is running. If it cannot start — unreachable issuer, wrong client ID or
+    secret — the save fails with the proxy's own error, protection stays off and
+    the panel stays reachable. While a provider is a proxy's sign-in provider it
+    cannot be deleted, disabled or moved to the other panel.
+
+!!! warning "Register the proxy's redirect URI at your identity provider"
+    The proxy signs in with your chosen provider's client and completes at
+    `https://<panel host>/oauth2/callback` — `https://tenant.<your-domain>/oauth2/callback`
+    for the tenant panel, `https://admin.<your-domain>/oauth2/callback` for the
+    admin panel. The settings page shows the exact URI next to the provider
+    choice; add it to that client before saving, otherwise sign-in fails at the
+    provider with an unregistered-redirect error.
 
     Note this is a *different* URI from the per-provider OIDC redirect above:
     OAuth2 Proxy uses `/oauth2/callback`, the panel's own OIDC login uses
-    `/api/v1/auth/oidc/callback`.
+    `/api/v1/auth/oidc/callback`. Both must be registered on that client.
 
 !!! note "If you script the proxy-protection toggles over the API"
     The panel's own toggles are unaffected. But if you set these through
@@ -318,6 +335,11 @@ strictly authentication is enforced:
     It now works. If you have a script that appeared to configure tenant proxy
     protection and never did, it will start taking effect — check the intended
     value before running it again.
+
+    Turning protection on also needs the panel's sign-in provider:
+    `proxy_admin_provider_id` / `proxy_tenant_provider_id` (an enabled provider
+    of that panel's scope). Without it the call is refused with
+    `PROXY_PROVIDER_REQUIRED`.
 
 !!! tip "Enable a provider before locking the door"
     The "disable local auth" toggles only unlock after a matching

@@ -78,22 +78,29 @@ describe('EditTenantModal', () => {
     expect(screen.getByRole('heading', { name: 'Edit Tenant' })).toBeInTheDocument();
   });
 
+  it('labels the emails as Create Tenant does — Primary / Secondary', () => {
+    renderEditModal(true);
+    expect(screen.getByLabelText('Primary Email *')).toHaveValue('admin@acme.com');
+    expect(screen.getByLabelText('Secondary Email')).toHaveValue('support@acme.com');
+    expect(screen.queryByText(/Company Email|Contact Email/)).not.toBeInTheDocument();
+  });
+
   it('pre-fills fields with current tenant data', () => {
     renderEditModal(true);
     expect(screen.getByTestId('edit-company-name-input')).toHaveValue('Acme Corp');
-    expect(screen.getByTestId('edit-company-email-input')).toHaveValue('admin@acme.com');
-    expect(screen.getByTestId('edit-contact-email-input')).toHaveValue('support@acme.com');
+    expect(screen.getByTestId('edit-primary-email-input')).toHaveValue('admin@acme.com');
+    expect(screen.getByTestId('edit-secondary-email-input')).toHaveValue('support@acme.com');
   });
 
   it('has required company name and email fields', () => {
     renderEditModal(true);
     expect(screen.getByTestId('edit-company-name-input')).toBeRequired();
-    expect(screen.getByTestId('edit-company-email-input')).toBeRequired();
+    expect(screen.getByTestId('edit-primary-email-input')).toBeRequired();
   });
 
-  it('has optional contact email field', () => {
+  it('has optional secondary email field', () => {
     renderEditModal(true);
-    expect(screen.getByTestId('edit-contact-email-input')).not.toBeRequired();
+    expect(screen.getByTestId('edit-secondary-email-input')).not.toBeRequired();
   });
 
   it('has submit and cancel buttons', () => {

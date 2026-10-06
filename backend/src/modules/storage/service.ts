@@ -2,7 +2,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { sql } from 'drizzle-orm';
 import { tenants } from '../../db/schema.js';
-import { getRedis } from '../../shared/redis.js';
+import { pvcStatsKey, readPvcVolumeStats } from '../node-health/kubelet-disk.js';
 import { canonicalImageRef } from './image-ref-utils.js';
 import type {
   StorageOverviewResponse,
@@ -199,23 +199,6 @@ function parseK8sStorage(value: string): number {
   return Math.round(num * (multipliers[unit] ?? 1));
 }
 
-// ─── Redis Memory ────────────────────────────────────────────────────────────
-
-async function getRedisUsedBytes(): Promise<number> {
-  try {
-    const redis = getRedis();
-    // ioredis supports the info() method; fall back gracefully
-    type RedisWithInfo = { info?: (section?: string) => Promise<string> };
-    const redisWithInfo = redis as RedisWithInfo;
-    if (typeof redisWithInfo.info !== 'function') return 0;
-    const info = await redisWithInfo.info('memory');
-    const match = info.match(/used_memory:(\d+)/);
-    return match ? parseInt(match[1], 10) : 0;
-  } catch {
-    return 0;
-  }
-}
-
 // ─── PostgreSQL Database Size ────────────────────────────────────────────────
 
 async function getPlatformDbUsedBytes(db: Database): Promise<number> {
@@ -233,43 +216,87 @@ async function getPlatformDbUsedBytes(db: Database): Promise<number> {
   }
 }
 
-// ─── Per-Client Storage Usage ────────────────────────────────────────────────
+// ─── Per-Tenant Storage Usage ────────────────────────────────────────────────
+//
+// This used to ask every tenant's file manager for `/disk-usage`, one tenant
+// after another. File managers are scaled to zero when idle, so nearly every
+// request waited, failed and counted 0: the page took minutes and showed 0 B
+// for every tenant. It now reads what the cluster already reports, in two
+// calls regardless of the tenant count:
+//   - kubelet volume stats — real filesystem use of every MOUNTED volume;
+//   - Longhorn volumes — the allocated size, for volumes nothing has mounted.
+
+export interface TenantVolume {
+  readonly namespace: string;
+  readonly pvcName: string;
+  /** Longhorn Volume.status.actualSize — block allocation, reads high. */
+  readonly allocatedBytes: number;
+}
+
+/** Pure — exported for tests. Measured filesystem bytes where a kubelet reports the volume, else allocated. */
+export function tenantStorageRows(
+  tenantList: ReadonlyArray<{ id: string; name: string; namespace: string }>,
+  volumes: readonly TenantVolume[],
+  mountedUsedBytes: ReadonlyMap<string, number>,
+): StorageOverviewResponse['tenants'] {
+  return tenantList.map((t) => {
+    let usedBytes = 0;
+    let approximate = false;
+    const seen = new Set<string>();
+    for (const v of volumes) {
+      if (v.namespace !== t.namespace) continue;
+      const key = pvcStatsKey(v.namespace, v.pvcName);
+      seen.add(key);
+      const measured = mountedUsedBytes.get(key);
+      if (measured !== undefined) usedBytes += measured;
+      else {
+        usedBytes += v.allocatedBytes;
+        approximate = true;
+      }
+    }
+    // Mounted volumes Longhorn does not know about (another storage class).
+    for (const [key, bytes] of mountedUsedBytes) {
+      if (key.startsWith(`${t.namespace}/`) && !seen.has(key)) usedBytes += bytes;
+    }
+    return { tenantId: t.id, name: t.name, namespace: t.namespace, usedBytes, approximate };
+  });
+}
+
+async function listTenantVolumes(k8s: K8sClients): Promise<TenantVolume[]> {
+  try {
+    const res = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system', plural: 'volumes',
+    }) as { items?: Array<{ status?: { actualSize?: string | number; kubernetesStatus?: { namespace?: string; pvcName?: string } } }> };
+    return (res.items ?? []).flatMap((v) => {
+      const ks = v.status?.kubernetesStatus;
+      if (!ks?.namespace || !ks.pvcName) return [];
+      return [{ namespace: ks.namespace, pvcName: ks.pvcName, allocatedBytes: Number(v.status?.actualSize ?? 0) || 0 }];
+    });
+  } catch {
+    return []; // No Longhorn: mounted volumes are still measured below.
+  }
+}
 
 async function getTenantStorageUsage(
   db: Database,
   k8s: K8sClients,
-  kubeconfigPath: string | undefined,
 ): Promise<StorageOverviewResponse['tenants']> {
   const allTenants = await db.select().from(tenants);
-  const results: StorageOverviewResponse['tenants'] = [];
+  const provisioned = allTenants
+    .filter((c) => c.kubernetesNamespace && c.provisioningStatus === 'provisioned')
+    .map((c) => ({ id: c.id, name: c.name, namespace: c.kubernetesNamespace as string }));
+  if (provisioned.length === 0) return [];
 
-  for (const c of allTenants) {
-    if (!c.kubernetesNamespace || c.provisioningStatus !== 'provisioned') continue;
-
-    let usedBytes = 0;
-    try {
-      const { proxyToFileManager } = await import('../file-manager/service.js');
-      const result = await proxyToFileManager(kubeconfigPath, c.kubernetesNamespace, '/disk-usage');
-      if (result.status === 200) {
-        const data = JSON.parse(result.body) as { usedBytes?: number };
-        usedBytes = data.usedBytes ?? 0;
-      }
-    } catch {
-      // File manager not running — leave at 0
-    }
-
-    results.push({
-      tenantId: c.id,
-      name: c.name,
-      namespace: c.kubernetesNamespace,
-      usedBytes,
-    });
-  }
-
-  // Avoid unused import warning if k8s isn't referenced directly
-  void k8s;
-
-  return results;
+  const nodeNames = await k8s.core.listNode()
+    .then((r) => (r.items ?? []).map((n) => n.metadata?.name).filter((n): n is string => Boolean(n)))
+    .catch(() => [] as string[]);
+  const [volumes, stats] = await Promise.all([
+    listTenantVolumes(k8s),
+    readPvcVolumeStats(nodeNames).catch(() => new Map()),
+  ]);
+  const mounted = new Map<string, number>();
+  for (const [key, st] of stats) mounted.set(key, st.usedBytes);
+  return tenantStorageRows(provisioned, volumes, mounted);
 }
 
 // ─── Docker Images Summary (from Node Status) ────────────────────────────────
@@ -300,22 +327,21 @@ export async function getStorageOverview(
   k8s: K8sClients,
   kubeconfigPath: string | undefined,
 ): Promise<StorageOverviewResponse> {
-  const [node, platformDbBytes, redisBytes, imagesSummary, tenantUsage] = await Promise.all([
+  void kubeconfigPath; // kept for the route signature; usage no longer proxies to file managers
+  const [node, platformDbBytes, imagesSummary, tenantUsage] = await Promise.all([
     getNodeStats(k8s),
     getPlatformDbUsedBytes(db),
-    getRedisUsedBytes(),
     getNodeImagesSummary(k8s),
-    getTenantStorageUsage(db, k8s, kubeconfigPath),
+    getTenantStorageUsage(db, k8s),
   ]);
 
-  const systemBytes = platformDbBytes + redisBytes + imagesSummary.totalBytes;
+  const systemBytes = platformDbBytes + imagesSummary.totalBytes;
   const tenantBytes = tenantUsage.reduce((sum, c) => sum + c.usedBytes, 0);
 
   return {
     node,
     system: {
       platformDatabase: { usedBytes: platformDbBytes },
-      redis: { usedBytes: redisBytes },
       dockerImages: { totalBytes: imagesSummary.totalBytes, count: imagesSummary.count },
     },
     tenants: tenantUsage,

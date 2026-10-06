@@ -6,6 +6,7 @@ import { usePasskey } from '@/hooks/use-passkey';
 import { ApiError } from '@/lib/api-client';
 import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import TimezoneSelect from '@/components/TimezoneSelect';
+import ApiTokensSection from '@/components/settings/ApiTokensSection';
 
 // Lazy so the password inputs stay OUT of the entry chunk — routes are not
 // code-split in this panel, so an inline form here ships on every page view and
@@ -36,6 +37,8 @@ export default function UserSettings() {
       <PasswordSection />
 
       <PasskeySection />
+
+      <ApiTokensSection />
     </div>
   );
 }

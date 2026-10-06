@@ -504,7 +504,7 @@ export async function provisionEmailDns(
  * to resolve (no servers configured at all) is treated as NOT writable — the
  * safe direction, since it only downgrades a flag and adds a warning.
  */
-async function isZoneWritable(db: Database, domainId: string): Promise<boolean> {
+export async function isZoneWritable(db: Database, domainId: string): Promise<boolean> {
   try {
     const [domain] = await db
       .select({ dnsMode: domains.dnsMode })

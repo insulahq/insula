@@ -646,7 +646,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // ─── Database Query & Browsing Routes ───────────────────────────────────
 
   // POST /api/v1/tenants/:tenantId/deployments/:id/query
-  app.post('/tenants/:tenantId/deployments/:id/query', async (request) => {
+  // Raw SQL can drop or overwrite anything in the database: an API token
+  // needs the `delete` scope for it, whatever the statement says.
+  app.post('/tenants/:tenantId/deployments/:id/query', { config: { apiScope: 'delete' } }, async (request) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { database?: string; query?: string };
 

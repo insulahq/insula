@@ -22,8 +22,8 @@ const range = { from: new Date(Date.now() - 3_600_000), to: new Date() };
 
 beforeEach(() => { asked = []; });
 
-describe('the cluster frame is the wire, and only the wire', () => {
-  it('reports the wire and the one subset measured the same way', async () => {
+describe('the cluster frame counts each byte once', () => {
+  it('splits the wire into internet and node-to-node, which add up', async () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
     }, { db });
@@ -32,10 +32,35 @@ describe('the cluster frame is the wire, and only the wire', () => {
       const g = s.group ?? 'none';
       groups.set(g, [...(groups.get(g) ?? []), s.name]);
     }
-    expect(groups.get('wire')).toEqual(['Outbound (wire)', 'Inbound (wire)']);
-    // Same `id="/"` root cgroup, narrowed to the encapsulation interfaces —
-    // comparable to the total it sits under because it shares its instrument.
-    expect(groups.get('wire-subset')).toContain('Node-to-node (out)');
+    // A 135 GB day on three nodes was ~94% node-to-node, and the NIC sum
+    // counted every one of those bytes twice. These three rows are the real
+    // total, each byte once.
+    expect(groups.get('wire')).toEqual(['Internet · outbound', 'Internet · inbound', 'Node-to-node']);
+    // The API servers and etcd talk host-to-host, outside the pod tunnel —
+    // they were invisible when "node-to-node" meant the tunnel interface.
+    expect(groups.get('n2n')).toEqual([
+      'Node-to-node · Kubernetes API', 'Node-to-node · etcd', 'Node-to-node · kubelet',
+      'Node-to-node · pod network (tunnel)', 'Node-to-node · other',
+    ]);
+    expect(groups.get('wire-subset')).toEqual([
+      'All tenants · outbound (via ingress)', 'All tenants · inbound (via ingress)',
+      'Backups · outbound (off-site)', 'Backups · inbound (off-site)',
+    ]);
+    // The old headline stays, labelled for what it is.
+    expect(groups.get('nic')).toEqual([
+      'All NICs · outbound (node-to-node counted twice)', 'All NICs · inbound (node-to-node counted twice)',
+    ]);
+  });
+
+  it('asks for each direction-less node-to-node row once, not once per direction', async () => {
+    await fetchTrafficFrame({
+      ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db });
+    const n2nQueries = asked.filter((e) => e.startsWith('((sum(max by (node, class, direction)')
+      && !e.includes('class=~"backup"'));
+    // Node-to-node total + five classes; never the `in` side.
+    expect(n2nQueries).toHaveLength(6);
+    expect(n2nQueries.every((e) => e.includes('direction="out"'))).toBe(true);
   });
 
   /**
@@ -194,7 +219,7 @@ describe('the cluster view keeps both directions', () => {
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
     }, { db });
     const wire = frame.series.filter((s) => s.group === 'wire').map((s) => s.name);
-    expect(wire).toEqual(['Outbound (wire)', 'Inbound (wire)']);
+    expect(wire).toContain('Internet · inbound');
   });
 
   it('still collapses to one direction for a backup split OFF the cluster view', async () => {
@@ -212,12 +237,15 @@ describe('row order', () => {
     const frame = await fetchTrafficFrame({
       ...range, scope: 'cluster', metric: 'traffic', direction: 'both', backups: 'separate',
     }, { db });
-    const names = frame.series.map((s) => s.name);
-    const n2nOut = names.indexOf('Node-to-node (out)');
-    const n2nIn = names.indexOf('Node-to-node (in)');
-    expect(n2nOut).toBeGreaterThanOrEqual(0);
-    expect(n2nIn).toBe(n2nOut + 1);
-    expect(names.indexOf('Outbound (wire)')).toBeLessThan(names.indexOf('Inbound (wire)'));
+    const keys = frame.series.map((s) => s.key);
+    for (const prefix of ['wire:internet', 'tenants', 'backup', 'nic']) {
+      const out = keys.indexOf(`${prefix}:out`);
+      expect(out, prefix).toBeGreaterThanOrEqual(0);
+      expect(keys.indexOf(`${prefix}:in`), prefix).toBe(out + 1);
+    }
+    // The rows that add up come first; the class split follows its total.
+    expect(keys.slice(0, 3)).toEqual(['wire:internet:out', 'wire:internet:in', 'wire:n2n']);
+    expect(keys[3]).toBe('n2n:kubeapi');
   });
 });
 

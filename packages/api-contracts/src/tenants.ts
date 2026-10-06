@@ -195,6 +195,9 @@ export const tenantResponseSchema = z.object({
   billingAddress: billingAddressResponseSchema,
   kubernetesNamespace: z.string(),
   planId: uuidField,
+  // The hosting plan's display name. Present on the admin list rows (joined
+  // server-side for the Plan column); null when the plan row no longer exists.
+  planName: z.string().nullable().optional(),
   // SYSTEM tenant flag (ADR-040). True on exactly one row — the
   // platform-owned tenant that owns the apex domain and the reserved
   // mailbox space. UI uses this to render a "SYSTEM" pill, hide
@@ -239,6 +242,10 @@ export const tenantResponseSchema = z.object({
   // on the admin list rows; null until the placement reconciler has seen it.
   placement: tenantPlacementSummarySchema.nullable().optional(),
   createdBy: z.string().nullable(),
+  // The creating user as a person: full name, else email. Present on the
+  // detail read (GET /tenants/:id); null when `createdBy` resolves to no user
+  // (unset, a platform process such as `system`, or a since-deleted user).
+  createdByName: z.string().nullable().optional(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),

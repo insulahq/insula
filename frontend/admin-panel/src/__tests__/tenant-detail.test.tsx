@@ -35,6 +35,7 @@ const MOCK_CLIENT = {
     kubernetesNamespace: 'acme-ns',
     createdAt: '2026-01-01T00:00:00Z',
     createdBy: 'admin',
+    createdByName: 'Ada Admin',
   },
 };
 
@@ -92,10 +93,22 @@ function setupMockApi() {
     if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
     if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
     if (path.includes('/metrics')) return Promise.resolve({ data: { tenantId: 'tenant-001', cpu: { inUse: 0.02, reserved: 0.5, available: 2 }, memory: { inUse: 0.1, reserved: 0.5, available: 4 }, storage: { inUse: 0.001, reserved: 10, available: 50 }, lastUpdatedAt: new Date().toISOString() } });
+    if (path.includes('/monitoring/traffic/series')) return Promise.resolve({ data: MOCK_TRAFFIC });
     if (path.match(/\/tenants\/tenant-001$/)) return Promise.resolve(MOCK_CLIENT);
     return Promise.resolve({ data: [] });
   });
 }
+
+// Two hourly points per direction: 2 × 1 MB/s × 3600 s out, 2 × 0.5 MB/s in.
+const MOCK_TRAFFIC = {
+  from: '2026-09-30T00:00:00.000Z', to: '2026-10-07T00:00:00.000Z', stepSeconds: 3600,
+  times: ['2026-10-06T00:00:00.000Z', '2026-10-06T01:00:00.000Z'], unit: 'bytes', resolution: 'fine',
+  othersFolded: 0, clamped: false,
+  series: [
+    { key: 'out', name: 'Outbound', kind: 'direction', points: [1_000_000, 1_000_000] },
+    { key: 'in', name: 'Inbound', kind: 'direction', points: [500_000, 500_000] },
+  ],
+};
 
 function renderTenantDetail() {
   const queryClient = new QueryClient({
@@ -220,6 +233,43 @@ describe('TenantDetail resource tabs', () => {
     });
     expect(screen.getByText('Account Information')).toBeInTheDocument();
     expect(screen.getByTestId('resource-tabs')).toBeInTheDocument();
+  });
+
+  it('keeps the email out of the header and labels primary / secondary in Contact Email', async () => {
+    renderTenantDetail();
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Acme Corp' });
+    expect(heading.parentElement!.textContent).not.toMatch(/@/);
+    const contact = screen.getByTestId('tenant-contact-email');
+    expect(contact.textContent).toContain('Primary:admin@acme.com');
+    expect(contact.textContent).toContain('Secondary:support@acme.com');
+  });
+
+  it('names the creating user instead of showing an id', async () => {
+    renderTenantDetail();
+    expect((await screen.findByTestId('tenant-created-by')).textContent).toBe('Ada Admin');
+  });
+
+  it('replaces the IDs card with a 7-day traffic card linking to Monitoring → Traffic', async () => {
+    renderTenantDetail();
+    const link = await screen.findByTestId('tenant-traffic-link');
+    expect(link.getAttribute('href')).toBe('/monitoring?scope=tenant&subject=acme-ns&range=7d');
+    await waitFor(() => expect(screen.getByTestId('tenant-traffic-upload').textContent).toBe('7.20 GB'));
+    expect(screen.getByTestId('tenant-traffic-download').textContent).toBe('3.60 GB');
+    expect(screen.queryByText('Client ID')).not.toBeInTheDocument();
+    const call = mockApiFetch.mock.calls.map(([p]) => String(p)).find((p) => p.includes('/traffic/series'))!;
+    const q = new URLSearchParams(call.slice(call.indexOf('?')));
+    expect(q.get('scope')).toBe('tenant');
+    expect(q.get('subject')).toBe('acme-ns');
+    expect(q.get('direction')).toBe('both');
+    expect(Date.parse(q.get('to')!) - Date.parse(q.get('from')!)).toBe(7 * 86_400_000);
+  });
+
+  it('puts Subscription and Placement in one row', async () => {
+    renderTenantDetail();
+    const row = await screen.findByTestId('subscription-placement-row');
+    expect(row.className).toMatch(/lg:grid-cols-2/);
+    expect(row.textContent).toContain('Subscription');
+    expect(row.textContent).toContain('Placement');
   });
 });
 

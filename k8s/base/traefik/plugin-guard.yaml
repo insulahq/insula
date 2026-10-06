@@ -188,6 +188,17 @@ spec:
                   memory: 32Mi
                 limits:
                   memory: 128Mi
+              # kubectl keeps API discovery in a cache dir. With a read-only root
+              # and no writable home it had nowhere to keep it, so EVERY kubectl
+              # call in a run re-fetched the cluster's discovery documents (~80 KB,
+              # from whichever API server answered) — several times per run,
+              # every 2 minutes. One fetch per run now; the rest hit the cache.
+              env:
+                - name: KUBECACHEDIR
+                  value: /tmp/kube-cache
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
               command:
                 - /bin/sh
                 - -c
@@ -306,3 +317,7 @@ spec:
                   done
 
                   echo "traefik-plugin-guard: pass complete"
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi

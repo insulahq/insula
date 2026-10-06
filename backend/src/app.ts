@@ -381,6 +381,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     trustProxy: resolveTrustedProxyCidrs(),
   });
 
+  // The operation catalog for AI agents (MCP) — Fastify's own route table,
+  // collected by an onRoute hook, so it must exist before any route does.
+  const { collectOperations } = await import('./modules/mcp/catalog.js');
+  const operationCatalog = collectOperations(app);
+
   // Plugins
   // CORS — restrict to known origins; fallback to permissive in development only
   const allowedOrigins = deps.config.CORS_ORIGINS
@@ -422,7 +427,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     }
   });
 
-  await app.register(fastifyCors, { origin: allowedOrigins });
+  // The agent endpoints (MCP, OAuth, their discovery documents) are called by
+  // MCP clients from any origin, including browser-based ones, and carry a
+  // Bearer token or nothing — never a cookie — so `*` without credentials is
+  // safe for them. Everything else keeps the configured panel origins.
+  const { isAgentPath } = await import('./modules/mcp/paths.js');
+  await app.register(fastifyCors, {
+    delegator: (req, cb) => {
+      if (isAgentPath(req.url ?? '')) {
+        cb(null, { origin: '*', credentials: false, exposedHeaders: ['WWW-Authenticate', 'Mcp-Session-Id'] });
+        return;
+      }
+      cb(null, { origin: allowedOrigins });
+    },
+  });
   await app.register(fastifyCompress, { global: true });
   // @fastify/multipart powers the tenant-bundles import endpoint
   // (encrypted tarball upload). Limits chosen to allow >1 GiB
@@ -446,6 +464,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const rateLimitMax = await resolveRateLimitMax(deps.db);
   await registerRateLimit(app, { max: rateLimitMax });
   registerAuth(app);
+  // API-token scopes, judged again once the body is parsed — the half of
+  // shared/api-scope.ts that body-dependent rules need (authenticate does
+  // the rest, in whichever hook a route runs it).
+  {
+    const { enforceApiScope } = await import('./shared/api-scope.js');
+    app.addHook('preHandler', async (request) => { enforceApiScope(request, 'handler'); });
+  }
 
   // Error handler
   app.setErrorHandler(errorHandler);
@@ -642,6 +667,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     await app.register(tenantDashboardRoutes, { prefix: '/api/v1' });
   }
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
+  // AI agents & API tokens: OAuth server + discovery (host root), the MCP
+  // endpoint, and the user's own token management.
+  {
+    const { mcpOauthRoutes } = await import('./modules/mcp/oauth.js');
+    const { mcpEndpointRoutes } = await import('./modules/mcp/server.js');
+    const { mcpTokenRoutes } = await import('./modules/mcp/token-routes.js');
+    await app.register(mcpOauthRoutes);
+    await app.register(mcpEndpointRoutes(operationCatalog));
+    await app.register(mcpTokenRoutes, { prefix: '/api/v1' });
+    const { startMcpTokenReaper } = await import('./modules/mcp/reaper.js');
+    const stopMcpReaper = startMcpTokenReaper(app.db, app.log);
+    app.addHook('onClose', () => stopMcpReaper());
+  }
   await app.register(storageSettingsRoutes, { prefix: '/api/v1' });
   await app.register(storageRoutes, { prefix: '/api/v1' });
   await app.register(dnsRecordRoutes, { prefix: '/api/v1' });
@@ -810,9 +848,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     await app.register(nodeTerminalRoutes, { prefix: '/api/v1' });
   }
 
-  const { aiEditorRoutes } = await import('./modules/ai-editor/routes.js');
-  await app.register(aiEditorRoutes, { prefix: '/api/v1' });
-
   // SYSTEM tenant internal-only route (POST /internal/system-tenant/ensure).
   // Called by scripts/bootstrap.sh after platform-api is healthy so the
   // installer can confirm SYSTEM was created. Server-side startup runs
@@ -916,38 +951,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // owns them via server-side apply. On every startup we sync the live
       // Ingress with whatever URLs are currently in system_settings so
       // restarts and redeploys converge to the desired state.
-      try {
-        const { getSettings } = await import('./modules/system-settings/service.js');
-        const { reconcileIngressHosts } = await import('./modules/system-settings/ingress-reconciler.js');
-        const { getGlobalSettings: getOidcSettings } = await import('./modules/oidc/service.js');
-        const [settings, oidc] = await Promise.all([
-          getSettings(app.db),
-          getOidcSettings(app.db),
-        ]);
-        const cfg = app.config as Record<string, unknown>;
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
-        const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
-        const result = await reconcileIngressHosts(
-          {
-            adminPanelUrl: settings.adminPanelUrl ?? null,
-            tenantPanelUrl: settings.tenantPanelUrl ?? null,
-            tlsSecretName,
-            protectAdminViaProxy: oidc.protectAdminViaProxy,
-            protectTenantViaProxy: oidc.protectTenantViaProxy,
-          },
-          undefined,
-          { kubeconfigPath, clusterIssuerName },
-        );
-        if (result.changed) {
-          app.log.info(
-            { adminPanelUrl: settings.adminPanelUrl, tenantPanelUrl: settings.tenantPanelUrl },
-            'startup: ingress hosts reconciled from DB',
-          );
+      // The panels' OAuth2 Proxies are part of the same desired state: the
+      // sync applies each protected panel's proxy, its Middlewares, then the
+      // routes (in that order), and removes what nothing references.
+      // A failure here is retried a few times rather than dropped: nothing else
+      // re-runs this sync until the next restart or admin action, and a
+      // transient API hiccup during a rollout must not leave it half-applied.
+      const { syncPanelProxies, panelProxySyncConfig } = await import('./modules/oidc/panel-proxy-sync.js');
+      const STARTUP_SYNC_ATTEMPTS = 5;
+      const STARTUP_SYNC_RETRY_MS = 60_000;
+      const startupSync = async (attempt: number): Promise<void> => {
+        try {
+          await syncPanelProxies(app.db, panelProxySyncConfig(app.config as Record<string, unknown>), { waitReady: false });
+          app.log.info({ attempt }, 'startup: panel ingress + OAuth2 Proxies reconciled from DB');
+        } catch (err) {
+          if (attempt >= STARTUP_SYNC_ATTEMPTS) {
+            app.log.error({ err, attempt }, 'startup: panel ingress reconcile failed — giving up until the next restart');
+            return;
+          }
+          app.log.warn({ err, attempt }, 'startup: panel ingress reconcile failed — retrying');
+          setTimeout(() => { void startupSync(attempt + 1); }, STARTUP_SYNC_RETRY_MS).unref();
         }
-      } catch (err) {
-        app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
-      }
+      };
+      await startupSync(1);
 
       // R16 seed-then-disown: converge the platform-owned Traefik hostnames
       // that follow the platform apex (stalwart web-admin UI in mail ns + the
@@ -1340,7 +1366,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn(`[pitr-watchdog] failed to start: ${(err as Error).message}`);
       }
 
-      const cleanupTimer = startIdleCleanup(kubeconfigPath);
+      const cleanupTimer = startIdleCleanup(kubeconfigPath, undefined, { db: app.db });
       if (cleanupTimer) {
         app.addHook('onClose', () => clearInterval(cleanupTimer));
       }
@@ -1546,6 +1572,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           stopBlocklist();
           stopHealthWatch();
         });
+      }
+
+      // Per-node traffic counters (firewall-reconciler ConfigMaps) → /metrics,
+      // so the Traffic tab can split node-to-node from internet traffic.
+      try {
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const { startNodeTrafficCollector } = await import('./modules/traffic/node-traffic-collector.js');
+        const stopNodeTraffic = startNodeTrafficCollector(createK8sClients(process.env.KUBECONFIG_PATH), app.log);
+        app.addHook('onClose', () => stopNodeTraffic());
+      } catch (err) {
+        app.log.warn({ err }, 'node-traffic-collector not started');
       }
 
       // Custom-deployment auto-update (ADR-036): hourly same-tag re-pull for
@@ -2499,6 +2536,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           './modules/mail-admin/proxy-networks-reconciler.js'
         );
         const proxyNetworksStop = startProxyNetworksReconciler({
+          db: app.db,
           core: k8sForImapsync.core,
           kubeconfigPath: kubePath,
           logger: {
@@ -2637,30 +2675,44 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
       }
 
-      // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
+      // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff.
+      // One replica runs it (lease): every tick lists every pod and Deployment in
+      // the cluster, and three replicas doing that every 15 s was the largest
+      // single source of apiserver traffic between the nodes.
       const reconcileInterval = setInterval(async () => {
         try {
-          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
-          const k8s = createK8sClients(kubePath);
-          await reconcileDeploymentStatuses(app.db, k8s, app.log);
+          await withSchedulerLease(app.db, 'deployment-status-reconcile', 15_000 * 1.5, async () => {
+            const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
+            const k8s = createK8sClients(kubePath);
+            await reconcileDeploymentStatuses(app.db, k8s, app.log);
+          }, { log: app.log });
         } catch (err) {
           app.log.warn({ err }, 'Deployment status reconciliation failed — skipping cycle');
         }
       }, 15_000); // Every 15 seconds
       app.addHook('onClose', () => clearInterval(reconcileInterval));
+      app.addHook('onClose', async () => {
+        const { stopWatchCaches } = await import('./shared/k8s-watch-cache.js');
+        stopWatchCaches();
+      });
 
       // Periodic certificate status reconciler — syncs cert-manager TLS
       // Secret metadata into the ssl_certificates DB table so the UI can
       // display real cert status without live K8s queries on every page load.
+      // One replica runs it (lease) — it writes the DB, and every tick reads every
+      // tenant namespace's Certificates and TLS Secrets.
       const certReconcileInterval = setInterval(async () => {
         try {
-          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
-          const k8s = createK8sClients(kubePath);
-          const result = await reconcileCertificateStatuses(app.db, k8s);
+          const leased = await withSchedulerLease(app.db, 'certificate-status-reconcile', 60_000 * 1.5, async () => {
+            const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
+            return reconcileCertificateStatuses(app.db, createK8sClients(kubePath));
+          }, { log: app.log });
+          if (!leased.ran) return;
+          const result = leased.value;
           if (result.healedChallenges > 0) {
             // Deliberately WARN, not info: a wedged challenge means issuance
             // was stalled and an operator was waiting on a certificate that

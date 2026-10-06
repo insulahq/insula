@@ -6,6 +6,7 @@ import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import TaskCenterChip from '@/components/TaskCenterChip';
 import GlobalSearch from '@/components/search/GlobalSearch';
+import { suppressProxySso } from '@/lib/proxy-sso';
 
 // Lazy on purpose: the password inputs must not be part of the main bundle, or
 // password-manager extensions pick them up on every page load. The chunk is
@@ -45,6 +46,9 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
   const handleSignOut = async () => {
     setMenuOpen(false);
+    // An explicit sign-out must leave the visitor ON the login page (to switch
+    // accounts), not bounce them back in through the proxy's IdP session.
+    suppressProxySso(sessionStorage);
     await logout();
   };
 

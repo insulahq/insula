@@ -26,7 +26,8 @@
 import { eq, and, inArray, desc, notInArray, sql, isNull } from 'drizzle-orm';
 import crypto from 'crypto';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { wafLogs, ingressRoutes, domains } from '../../db/schema.js';
+import { wafLogs, ingressRoutes, domains, platformSettings } from '../../db/schema.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -35,6 +36,15 @@ type LooseDb = NodePgDatabase<any>;
 
 const SCRAPE_INTERVAL_MS = 30_000;
 const LOG_SINCE_SECONDS = 35;
+/**
+ * The window read on a replica's FIRST cycle after it takes the scraper over.
+ * One replica scrapes (lease); when it dies the next one takes over after the
+ * lease's ttl, so the normal 35 s window would leave a gap. Events are
+ * deduplicated on ModSecurity's unique id, so reading further back is free.
+ */
+const TAKEOVER_SINCE_SECONDS = 180;
+/** Where the scraping replica publishes its status for the others to serve. */
+const STATUS_SETTING_KEY = 'waf-scraper-status';
 const MAX_LOGS_PER_ROUTE = 50;
 // Admin/api/client/platform hosts have route_id=NULL. Cap them as one global
 // bucket so a single noisy admin endpoint can't flood the table.
@@ -112,6 +122,49 @@ const status: {
   lastCycleInserted: 0,
   lastCycleErrors: [],
 };
+
+/**
+ * The scraper's status as the WAF Events tab should show it.
+ *
+ * Only one replica scrapes, so this replica's own status is "never ran" on the
+ * other two. The scraping replica publishes after every cycle; this returns
+ * whichever of the published and the local status is newer, falling back to
+ * the local one when the published row is missing or unreadable.
+ */
+export async function loadScraperStatus(db: Database | LooseDb): Promise<WafScraperStatus> {
+  const local = getScraperStatus();
+  try {
+    const rows = await (db as LooseDb)
+      .select({ value: platformSettings.value })
+      .from(platformSettings)
+      .where(eq(platformSettings.key, STATUS_SETTING_KEY))
+      .limit(1);
+    const raw = rows[0]?.value;
+    if (!raw) return local;
+    const published = JSON.parse(raw) as Partial<WafScraperStatus>;
+    if (typeof published.lastRunAt !== 'string') return local;
+    if (local.lastRunAt && Date.parse(local.lastRunAt) >= Date.parse(published.lastRunAt)) return local;
+    return {
+      hasRunOnce: published.hasRunOnce === true,
+      lastRunAt: published.lastRunAt,
+      modsecPodFound: published.modsecPodFound === true,
+      lastCycleScraped: Number(published.lastCycleScraped ?? 0),
+      lastCycleInserted: Number(published.lastCycleInserted ?? 0),
+      lastCycleErrors: Array.isArray(published.lastCycleErrors) ? published.lastCycleErrors.map(String).slice(0, 5) : [],
+      scrapeIntervalMs: SCRAPE_INTERVAL_MS,
+    };
+  } catch {
+    return local;
+  }
+}
+
+async function publishScraperStatus(db: Database | LooseDb): Promise<void> {
+  const value = JSON.stringify(getScraperStatus());
+  await (db as LooseDb)
+    .insert(platformSettings)
+    .values({ key: STATUS_SETTING_KEY, value })
+    .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
+}
 
 export function getScraperStatus(): WafScraperStatus {
   return {
@@ -254,6 +307,7 @@ export function parseModSecurityLine(line: string): ParsedWafEvent | null {
 export async function scrapeWafLogs(
   db: Database | LooseDb,
   k8s: K8sClients,
+  sinceSeconds: number = LOG_SINCE_SECONDS,
 ): Promise<{ scraped: number; inserted: number; errors: string[] }> {
   const errors: string[] = [];
   let scraped = 0;
@@ -318,7 +372,7 @@ export async function scrapeWafLogs(
     // costs ~5 small log fetches per cycle. Fail soft per-pod.
     const results = await Promise.allSettled(
       targets.map(({ name, container }) =>
-        coreApi.readNamespacedPodLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS, container }),
+        coreApi.readNamespacedPodLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds, container }),
       ),
     );
     for (const r of results) {
@@ -600,9 +654,13 @@ export function startWafLogScraper(
 ): NodeJS.Timeout {
   console.log('[waf-log-scraper] Starting WAF log scraper');
 
-  const runCycle = async () => {
+  // Whether THIS replica ran the previous cycle — the first cycle after a
+  // takeover reads a wider window (see TAKEOVER_SINCE_SECONDS).
+  let ranLastCycle = false;
+
+  const scrapeCycle = async () => {
     try {
-      const result = await scrapeWafLogs(db, k8s);
+      const result = await scrapeWafLogs(db, k8s, ranLastCycle ? LOG_SINCE_SECONDS : TAKEOVER_SINCE_SECONDS);
       status.lastCycleScraped = result.scraped;
       status.lastCycleInserted = result.inserted;
       status.lastCycleErrors = result.errors.slice(-5).map((e) => e.slice(0, 256));
@@ -619,6 +677,22 @@ export function startWafLogScraper(
     } finally {
       status.hasRunOnce = true;
       status.lastRunAt = new Date().toISOString();
+      await publishScraperStatus(db).catch((err: unknown) => {
+        console.warn('[waf-log-scraper] status publish failed:', err instanceof Error ? err.message : String(err));
+      });
+    }
+  };
+
+  // One replica scrapes. Three replicas each read every modsec pod's logs
+  // every 30 s and inserted the same events three times over (deduplicated,
+  // but the log reads were real apiserver traffic).
+  const runCycle = async () => {
+    try {
+      const leased = await withSchedulerLease(db, 'waf-log-scraper', SCRAPE_INTERVAL_MS * 1.5, scrapeCycle);
+      ranLastCycle = leased.ran;
+    } catch (err) {
+      ranLastCycle = false;
+      console.warn('[waf-log-scraper] lease check failed:', err instanceof Error ? err.message : String(err));
     }
   };
 

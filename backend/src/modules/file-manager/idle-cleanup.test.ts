@@ -12,7 +12,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const scaleDeploymentReplicas = vi.fn(async () => undefined);
-const readNamespacedDeployment = vi.fn();
+const listDeploymentForAllNamespaces = vi.fn();
+const patchNamespacedDeployment = vi.fn(async () => ({}));
 
 vi.mock('../../shared/scale-deployment.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/scale-deployment.js')>()),
@@ -20,21 +21,21 @@ vi.mock('../../shared/scale-deployment.js', async (importOriginal) => ({
 }));
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({
   createK8sClients: () => ({
-    core: { listNamespace: async () => ({ items: [{ metadata: { name: 'tenant-acme' } }] }) },
-    apps: { readNamespacedDeployment },
+    apps: { listDeploymentForAllNamespaces },
   }),
 }));
 
-const { idleScaleDownDue, startIdleCleanup } = await import('./idle-cleanup.js');
+const { idleScaleDownDue, startIdleCleanup, recordFileManagerAccess } = await import('./idle-cleanup.js');
 const { STORAGE_QUIESCED_ANNOTATION } = await import('../../shared/scale-deployment.js');
 
 const NOW = Date.now();
 const LONG_AGO = new Date(NOW - 25 * 60 * 60 * 1000).toISOString();
 
 /** A file-manager nobody has touched through the file routes for a day. */
-function idleFileManager(opts: { replicas?: number; held?: boolean } = {}) {
+function idleFileManager(opts: { replicas?: number; held?: boolean; namespace?: string } = {}) {
   return {
     metadata: {
+      namespace: opts.namespace ?? 'tenant-acme',
       creationTimestamp: LONG_AGO,
       annotations: {
         'insula.host/file-manager-last-access': String(NOW - 25 * 60 * 60 * 1000),
@@ -83,26 +84,80 @@ describe('the idle loop', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     scaleDeploymentReplicas.mockClear();
-    readNamespacedDeployment.mockReset();
+    listDeploymentForAllNamespaces.mockReset();
   });
   afterEach(() => { vi.useRealTimers(); });
 
-  async function tick(): Promise<void> {
-    const timer = startIdleCleanup(undefined, 1_000);
+  async function tick(opts: Parameters<typeof startIdleCleanup>[2] = {}): Promise<void> {
+    const timer = startIdleCleanup(undefined, 1_000, opts);
     await vi.advanceTimersByTimeAsync(1_000);
     if (timer) clearInterval(timer);
   }
 
-  it('does not fight unquiesce for a held file-manager', async () => {
-    readNamespacedDeployment.mockResolvedValue(idleFileManager({ held: true }));
+  function listing(...items: unknown[]) {
+    listDeploymentForAllNamespaces.mockResolvedValue({ items });
+  }
+
+  it('reads every file-manager with ONE field-selected list', async () => {
+    listing(idleFileManager());
     await tick();
-    expect(readNamespacedDeployment).toHaveBeenCalled();
+    expect(listDeploymentForAllNamespaces).toHaveBeenCalledTimes(1);
+    expect(listDeploymentForAllNamespaces).toHaveBeenCalledWith({ fieldSelector: 'metadata.name=file-manager' });
+  });
+
+  it('does not fight unquiesce for a held file-manager', async () => {
+    listing(idleFileManager({ held: true }));
+    await tick();
+    expect(listDeploymentForAllNamespaces).toHaveBeenCalled();
     expect(scaleDeploymentReplicas).not.toHaveBeenCalled();
   });
 
   it('still scales down an idle file-manager nothing is holding', async () => {
-    readNamespacedDeployment.mockResolvedValue(idleFileManager());
+    listing(idleFileManager());
     await tick();
     expect(scaleDeploymentReplicas).toHaveBeenCalledWith('tenant-acme', 'file-manager', 0);
+  });
+
+  it('leaves non-tenant namespaces alone', async () => {
+    listing(idleFileManager({ namespace: 'platform' }));
+    await tick();
+    expect(scaleDeploymentReplicas).not.toHaveBeenCalled();
+  });
+
+  it('a replica that does not hold the lease does nothing', async () => {
+    listing(idleFileManager());
+    const notHeld = { execute: async () => ({ rows: [] }) };
+    await tick({ db: notHeld });
+    expect(listDeploymentForAllNamespaces).not.toHaveBeenCalled();
+    expect(scaleDeploymentReplicas).not.toHaveBeenCalled();
+  });
+
+  it('the lease holder runs it', async () => {
+    listing(idleFileManager());
+    const held = { execute: async () => ({ rows: [{ setting_key: 'x' }] }) };
+    await tick({ db: held });
+    expect(scaleDeploymentReplicas).toHaveBeenCalledWith('tenant-acme', 'file-manager', 0);
+  });
+});
+
+describe('recording an access', () => {
+  it('rewrites the annotation at most once a minute per namespace', () => {
+    vi.useFakeTimers();
+    try {
+      const k8s = { apps: { patchNamespacedDeployment } } as never;
+      patchNamespacedDeployment.mockClear();
+      recordFileManagerAccess('tenant-throttle', k8s);
+      recordFileManagerAccess('tenant-throttle', k8s);
+      vi.advanceTimersByTime(30_000);
+      recordFileManagerAccess('tenant-throttle', k8s);
+      expect(patchNamespacedDeployment).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(31_000);
+      recordFileManagerAccess('tenant-throttle', k8s);
+      expect(patchNamespacedDeployment).toHaveBeenCalledTimes(2);
+      recordFileManagerAccess('tenant-other', k8s);
+      expect(patchNamespacedDeployment).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

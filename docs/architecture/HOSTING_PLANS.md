@@ -73,7 +73,6 @@ These are the **starting templates with recommended pricing** for premium positi
 | **WAF** | Available (off by default) | Available (off by default) | Enabled |
 | **Cron Jobs** | Unlimited | Unlimited | Unlimited |
 | **Backup Retention** | Per global backup strategy | Per global backup strategy | Per global backup strategy |
-| **AI-assisted file editing** | ✅ (weekly AI budget per plan) | ✅ (weekly AI budget per plan) | ✅ (weekly AI budget per plan) |
 | **Price (USD)** | **$5.99/mo** | **$19.99/mo** | **$49.99/mo** |
 
 > **Note on backup retention:** Automated cluster backups follow the global backup strategy (see `BACKUP_STRATEGY.md`). Retention is not restricted by plan — all customers benefit from the same backup schedule and retention policy. Customer-created on-demand backups count against storage quota.
@@ -82,7 +81,7 @@ These are the **starting templates with recommended pricing** for premium positi
 
 > **Note on cron jobs:** Cron jobs are **unlimited on all plans**. Resource limits per job execution (CPU, memory, timeout) are configurable per-customer. See `CUSTOMER_CRON_JOBS.md`.
 
-> **Note on AI-assisted editing:** The platform ships AI-assisted **file editing** in the tenant File Manager (`backend/src/modules/ai-editor/` — provider adapters for Anthropic/OpenAI, weekly per-plan budget via `hosting_plans.weekly_ai_budget_cents`, per-tenant token-usage tracking, output scanning). The full no-code "AI Website Editor" described in earlier plans was **descoped on 2026-06-07** — see `../roadmap/ROADMAP.md`.
+> **Note on AI features:** The AI-assisted file editor that once lived in the tenant File Manager (with its admin provider settings and a per-plan weekly budget) has been retired and its tables dropped (migration 0148); the larger no-code "AI Website Editor" idea was descoped earlier — see `../roadmap/ROADMAP.md`.
 
 ### Pricing Rationale
 
@@ -139,7 +138,6 @@ Every parameter below is set at the **plan level** (global default) and can be *
 | `sftp_enabled` | Enable SFTP access | `true` / `false` |
 | `git_deploy_enabled` | Enable Git-based deployments | `true` / `false` |
 | `file_manager_enabled` | Enable web file manager | `true` / `false` |
-| `weekly_ai_budget_cents` | Weekly AI-assisted-editing budget (plan column; cents) | `100` (default $1/week) |
 | `php_version` | PHP version override (if applicable) | `8.3` / `8.4` |
 | `php_memory_limit` | PHP memory_limit ini setting | `128M` / `256M` / `512M` |
 | `php_max_upload` | PHP upload_max_filesize | `64M` / `128M` / `256M` |

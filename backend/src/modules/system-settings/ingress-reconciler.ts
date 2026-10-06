@@ -17,6 +17,13 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import {
+  PANEL_PROXY_PORT,
+  panelProxyName,
+  proxyAuthMiddlewareName,
+  proxySigninMiddlewareName,
+  type ProxyPanel,
+} from '../oidc/panel-proxy-names.js';
 
 // ─── Public types ────────────────────────────────────────────────────────
 
@@ -108,23 +115,12 @@ const PANEL_SERVICES: Record<'admin' | 'tenant', string> = {
   tenant: 'tenant-panel',
 };
 
-const OAUTH2_PROXY_SERVICE = 'oauth2-proxy';
-const OAUTH2_PROXY_PORT = 4180;
-
-/**
- * Name of the ForwardAuth Middleware managed by oidc/ingress-proxy-manager.ts.
- * Duplicated as a constant here (rather than imported) to avoid a circular
- * module dependency — both files are loaded at startup and the reconciler
- * doesn't need the rest of the proxy-manager.
- *
- * The Middleware lives in the `platform` namespace; admin-ingress routes
- * reference it as `platform-oauth2-proxy-auth@platform` when protect* is on.
- */
-const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
-// Catches the ForwardAuth 401 and redirects to sign-in. Must sit BEFORE the
-// ForwardAuth in the chain: a Traefik `errors` middleware only sees responses
-// produced by what comes AFTER it. Owned by oidc/ingress-proxy-manager.ts.
-const OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME = 'platform-oauth2-proxy-signin';
+// Each protected panel routes to its OWN oauth2-proxy and Middleware pair
+// (oidc/panel-proxy.ts + oidc/ingress-proxy-manager.ts). The names come from a
+// dependency-free module so this reconciler does not load the OIDC module.
+// The sign-in (`errors`) Middleware must sit BEFORE the ForwardAuth in the
+// chain: a Traefik `errors` middleware only sees responses produced by what
+// comes AFTER it.
 
 /**
  * WAF Middleware attached to platform-ingress panel routes. Currently
@@ -156,6 +152,24 @@ const WAF_BODY_LIMIT_MIDDLEWARE_NAME = 'waf-body-limit';
  * processing.
  */
 const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
+
+/**
+ * The edge guards every admin/tenant panel route carries, around its auth
+ * step: CrowdSec first, the body cap and the WAF last. Shared with the routes
+ * that skip a panel's OAuth2 Proxy (oidc/ingress-proxy-manager.ts) — skipping
+ * the proxy must never mean skipping the ban list or the WAF.
+ */
+export const PANEL_EDGE_GUARDS: {
+  readonly before: ReadonlyArray<{ readonly name: string; readonly namespace: string }>;
+  readonly after: ReadonlyArray<{ readonly name: string; readonly namespace: string }>;
+} = {
+  before: [{ name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' }],
+  // Body cap immediately before the WAF — the plugin has no limit of its own.
+  after: [
+    { name: WAF_BODY_LIMIT_MIDDLEWARE_NAME, namespace: 'traefik' },
+    { name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' },
+  ],
+};
 
 /**
  * The file-manager's streaming upload endpoint, carved out of WAF coverage.
@@ -331,7 +345,8 @@ export function extractHost(url: string | null | undefined): string | null {
 interface DesiredRoute {
   host: string;
   serviceName: string;
-  oauth2: boolean;
+  /** The panel's own oauth2-proxy when it is proxy-protected, else null. */
+  oauth2Panel: ProxyPanel | null;
 }
 
 /**
@@ -345,14 +360,14 @@ export function buildDesiredRoutes(input: IngressReconcileInput): DesiredRoute[]
     desired.push({
       host: adminHost,
       serviceName: PANEL_SERVICES.admin,
-      oauth2: input.protectAdminViaProxy === true,
+      oauth2Panel: input.protectAdminViaProxy === true ? 'admin' : null,
     });
   }
   if (tenantHost) {
     desired.push({
       host: tenantHost,
       serviceName: PANEL_SERVICES.tenant,
-      oauth2: input.protectTenantViaProxy === true,
+      oauth2Panel: input.protectTenantViaProxy === true ? 'tenant' : null,
     });
   }
   return desired;
@@ -374,14 +389,14 @@ export function buildIngressRouteBody(
   // oidc/ingress-proxy-manager.ts).
   const traefikRoutes: Array<Record<string, unknown>> = [];
   for (const r of routes) {
-    if (r.oauth2) {
+    if (r.oauth2Panel) {
       // /oauth2/* passes through to oauth2-proxy itself — no auth
       // Middleware here, because oauth2-proxy IS the auth endpoint.
       traefikRoutes.push({
         match: `Host(\`${r.host}\`) && PathPrefix(\`/oauth2\`)`,
         kind: 'Rule',
         priority: 100,
-        services: [{ name: OAUTH2_PROXY_SERVICE, port: OAUTH2_PROXY_PORT }],
+        services: [{ name: panelProxyName(r.oauth2Panel), port: PANEL_PROXY_PORT }],
       });
     }
     // Panel route middlewares — in order of execution:
@@ -391,19 +406,15 @@ export function buildIngressRouteBody(
     //   3. WAF (`modsecurity-crs@traefik`) — admin / tenant panels are
     //      sensitive surfaces, so WAF is always-on here regardless of
     //      tenant-level wafEnabled (which only controls tenant routes).
-    const panelMiddlewares: Array<{ name: string; namespace: string }> = [
-      { name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' },
-    ];
-    if (r.oauth2) {
+    const panelMiddlewares: Array<{ name: string; namespace: string }> = [...PANEL_EDGE_GUARDS.before];
+    if (r.oauth2Panel) {
       // Order matters and is not cosmetic. The `errors` middleware wraps
       // everything after it, so it must precede the ForwardAuth to see its 401.
       // Reversed, the visitor gets a bare 401 page and cannot sign in (R32).
-      panelMiddlewares.push({ name: OAUTH2_PROXY_SIGNIN_MIDDLEWARE_NAME, namespace: 'platform' });
-      panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
+      panelMiddlewares.push({ name: proxySigninMiddlewareName(r.oauth2Panel), namespace: 'platform' });
+      panelMiddlewares.push({ name: proxyAuthMiddlewareName(r.oauth2Panel), namespace: 'platform' });
     }
-    // Body cap immediately before the WAF — the plugin has no limit of its own.
-    panelMiddlewares.push({ name: WAF_BODY_LIMIT_MIDDLEWARE_NAME, namespace: 'traefik' });
-    panelMiddlewares.push({ name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' });
+    panelMiddlewares.push(...PANEL_EDGE_GUARDS.after);
 
     // Streaming-upload carve-out: identical chain minus the WAF *and* its body
     // cap, so the upload streams end to end — never buffered in Traefik, never
@@ -569,11 +580,13 @@ export async function reconcileIngressHosts(
     routesUnchanged =
       currentRoute.routes.length === desired.length &&
       currentRoute.routes.every((r, i) => {
-        const currentOauth2 = r.oauth2Backend === OAUTH2_PROXY_SERVICE;
+        // The backend NAME, not just its presence: a route still pointing at
+        // the shared pre-per-panel `oauth2-proxy` must read as drift.
+        const desiredOauth2 = desired[i].oauth2Panel ? panelProxyName(desired[i].oauth2Panel!) : null;
         return (
           r.host === desired[i].host &&
           r.serviceName === desired[i].serviceName &&
-          currentOauth2 === desired[i].oauth2 &&
+          (r.oauth2Backend ?? null) === desiredOauth2 &&
           // The upload carve-out shares its host and backend with the panel
           // route, so it collapses into the same entry and is invisible to the
           // host/service comparison. Without this term, a cluster whose live

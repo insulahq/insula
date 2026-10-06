@@ -1,4 +1,5 @@
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectNodeSubsystemHealth } from './service.js';
 import { computeSubsystemTransitions, type SubsystemState } from './subsystem-transitions.js';
@@ -22,44 +23,51 @@ export function startNodeHealthReconciler(db: Database, k8s: K8sClients): { stop
   const tick = async () => {
     if (stopped) return;
     try {
-      // One Node list feeds both the subsystem report and the join grace window.
-      const nodes = await k8s.core.listNode();
-      const reports = await collectNodeSubsystemHealth(k8s, nodes);
-      const now = new Date();
-      const joining = await loadJoinGrace(k8s, (nodes.items ?? []) as readonly RawGraceNode[], now);
-      const result = computeSubsystemTransitions(reports, lastState, joining);
-      lastState = result.nextState;
-
-      for (const name of result.suppressed) {
-        const verdict = joining.get(name);
-        if (verdict) console.log(`[node-health] ${describeSuppression(name, verdict, 'Calico / Longhorn CSI alerts')}`);
-      }
-
-      if (result.transitions.length > 0) {
-        // Dispatched, not inserted. This wrote a row per admin straight into
-        // the notifications table with no category, so a node subsystem going
-        // unhealthy could never be emailed or pushed — and the panel is
-        // exactly what may be unreachable when it happens. The `node`
-        // subsystem maps to an Availability category, which never relies on
-        // in-app delivery.
-        const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
-        for (const t of result.transitions) {
-          await notifyAdminOperationalEvent(db, 'node', {
-            subsystem: 'Node subsystem health',
-            objectLabel: t.node,
-            detail: t.reason,
-            severityLabel: t.severity === 'success' ? 'recovered' : t.severity,
-            recommendedAction: t.severity === 'success'
-              ? ''
-              : 'Check the node in Cluster → Nodes; Calico or the Longhorn CSI may need attention.',
-          }, `node-subsystem:${t.node}:${t.severity}:${new Date().toISOString().slice(0, 13)}`)
-            .catch((err) => console.error('[node-health] notification dispatch failed:', (err as Error).message));
-        }
-      }
+      // One replica watches (lease). A replica taking over starts from an
+      // empty last state, exactly as after a restart; the notifications carry
+      // an hourly dedupe key, so that cannot repeat an alert within the hour.
+      await withSchedulerLease(db, 'node-subsystem-health', SUBSYSTEM_INTERVAL_MS * 1.5, subsystemPass);
     } catch (err) {
       console.error('[node-health] tick failed:', (err as Error).message);
     }
     if (!stopped) timer = setTimeout(tick, SUBSYSTEM_INTERVAL_MS);
+  };
+
+  const subsystemPass = async (): Promise<void> => {
+    // One Node list feeds both the subsystem report and the join grace window.
+    const nodes = await k8s.core.listNode();
+    const reports = await collectNodeSubsystemHealth(k8s, nodes);
+    const now = new Date();
+    const joining = await loadJoinGrace(k8s, (nodes.items ?? []) as readonly RawGraceNode[], now);
+    const result = computeSubsystemTransitions(reports, lastState, joining);
+    lastState = result.nextState;
+
+    for (const name of result.suppressed) {
+      const verdict = joining.get(name);
+      if (verdict) console.log(`[node-health] ${describeSuppression(name, verdict, 'Calico / Longhorn CSI alerts')}`);
+    }
+
+    if (result.transitions.length > 0) {
+      // Dispatched, not inserted. This wrote a row per admin straight into
+      // the notifications table with no category, so a node subsystem going
+      // unhealthy could never be emailed or pushed — and the panel is
+      // exactly what may be unreachable when it happens. The `node`
+      // subsystem maps to an Availability category, which never relies on
+      // in-app delivery.
+      const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+      for (const t of result.transitions) {
+        await notifyAdminOperationalEvent(db, 'node', {
+          subsystem: 'Node subsystem health',
+          objectLabel: t.node,
+          detail: t.reason,
+          severityLabel: t.severity === 'success' ? 'recovered' : t.severity,
+          recommendedAction: t.severity === 'success'
+            ? ''
+            : 'Check the node in Cluster → Nodes; Calico or the Longhorn CSI may need attention.',
+        }, `node-subsystem:${t.node}:${t.severity}:${new Date().toISOString().slice(0, 13)}`)
+          .catch((err) => console.error('[node-health] notification dispatch failed:', (err as Error).message));
+      }
+    }
   };
 
   timer = setTimeout(tick, INITIAL_DELAY_MS);

@@ -113,6 +113,7 @@ nav:
       - Nodes & storage: admin/nodes-and-storage.md
       - Security: admin/security.md
       - Platform settings: admin/platform-settings.md
+      - AI agents & API tokens: admin/ai-agents-and-api-tokens.md
   - Tenant guide:
       - tenant/index.md
       - Domains & websites: tenant/domains-and-websites.md

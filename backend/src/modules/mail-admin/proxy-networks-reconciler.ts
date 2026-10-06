@@ -37,6 +37,7 @@
 
 import { readStalwartCredentials } from './credentials.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 
@@ -75,6 +76,8 @@ export interface ProxyNetworksReconcilerDeps {
    * Stalwart 0.16's HTTP listener does PROXY-v2 sniffing on every
    * non-loopback connection — see jmapPost() comment.
    */
+  /** When given, one replica reconciles (lease `mail-proxy-networks`). */
+  readonly db?: LeaseDb;
   readonly kubeconfigPath?: string;
   readonly tickMs?: number;
   readonly logger?: {
@@ -111,8 +114,11 @@ export function startProxyNetworksReconciler(
   const tickMs = deps.tickMs ?? PROXY_NETWORKS_RECONCILER_TICK_MS;
   // Run one tick immediately on start to fix drift left over from a
   // platform-api restart.
-  safeTick('proxy-networks-reconciler', () => runProxyNetworksReconcilerTick(deps));
-  const timer = setInterval(() => safeTick('proxy-networks-reconciler', () => runProxyNetworksReconcilerTick(deps)), tickMs);
+  const leasedTick = (): Promise<void> => (deps.db
+    ? withSchedulerLease(deps.db, 'mail-proxy-networks', tickMs * 1.5, () => runProxyNetworksReconcilerTick(deps)).then(() => undefined)
+    : runProxyNetworksReconcilerTick(deps));
+  safeTick('proxy-networks-reconciler', leasedTick);
+  const timer = setInterval(() => safeTick('proxy-networks-reconciler', leasedTick), tickMs);
   return () => clearInterval(timer);
 }
 

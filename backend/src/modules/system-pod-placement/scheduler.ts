@@ -1,4 +1,5 @@
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
@@ -418,25 +419,30 @@ async function reconcileWorkerStorageReserve(k8s: K8sClients): Promise<{ readonl
   return { patched, errors };
 }
 
-export function startSystemPodPlacement(_db: Database, k8s: K8sClients): { readonly stop: () => void } {
+export function startSystemPodPlacement(db: Database, k8s: K8sClients): { readonly stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
   console.log('[system-pod-placement] starting (5min cadence)');
 
+  const placementPass = async (): Promise<void> => {
+    const a = await reconcileSingletonAffinity(k8s);
+    const b = await reconcileWorkerStorageReserve(k8s);
+    const c = await reconcileCalicoInstallation(k8s);
+    const d = await reconcileCnpgPrimaryOnlySnapshots(k8s);
+    const cErrors = c.error ? [c.error] : [];
+    const allErrors = [...a.errors, ...b.errors, ...cErrors, ...d.errors];
+    const total = a.patched + b.patched + (c.patched ? 1 : 0) + d.patched;
+    if (total > 0 || allErrors.length > 0) {
+      console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} cnpg-primary-labels=${d.patched} errors=${allErrors.length}`);
+    }
+    for (const e of allErrors) console.warn('[system-pod-placement]', e);
+  };
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const a = await reconcileSingletonAffinity(k8s);
-      const b = await reconcileWorkerStorageReserve(k8s);
-      const c = await reconcileCalicoInstallation(k8s);
-      const d = await reconcileCnpgPrimaryOnlySnapshots(k8s);
-      const cErrors = c.error ? [c.error] : [];
-      const allErrors = [...a.errors, ...b.errors, ...cErrors, ...d.errors];
-      const total = a.patched + b.patched + (c.patched ? 1 : 0) + d.patched;
-      if (total > 0 || allErrors.length > 0) {
-        console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} cnpg-primary-labels=${d.patched} errors=${allErrors.length}`);
-      }
-      for (const e of allErrors) console.warn('[system-pod-placement]', e);
+      // One replica patches system placement (lease) — the patches are the same for all.
+      await withSchedulerLease(db, 'system-pod-placement', TICK_MS * 1.5, placementPass);
     } catch (err) {
       console.error('[system-pod-placement] tick failed:', (err as Error).message);
     } finally {

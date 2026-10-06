@@ -28,7 +28,7 @@ import { loadSecurityHardeningClients } from './k8s-client.js';
 import { getNetworkPolicyHardeningState, applyNetworkPolicyTemplate, removeNetworkPolicyHardening } from './netpol-templates.js';
 import { listWafEvents } from './waf-events.js';
 import { wafEventsQuerySchema, applyNetworkPolicyTemplateRequestSchema, removeNetworkPolicyHardeningRequestSchema, createTrustedRangeRequestSchema } from '@insula/api-contracts';
-import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
+import { scrapeWafLogs, getScraperStatus, loadScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   addBan,
@@ -317,7 +317,7 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         if (now - lastRefreshAt < REFRESH_MIN_GAP_MS) {
           // Don't run the cycle — surface current status so the UI can
           // still update its "last scraper run" indicator.
-          const s = getScraperStatus();
+          const s = await loadScraperStatus(deps.db);
           return reply.status(429).send({
             error: 'RATE_LIMITED',
             message: `Refresh allowed once per ${REFRESH_MIN_GAP_MS / 1000}s.`,

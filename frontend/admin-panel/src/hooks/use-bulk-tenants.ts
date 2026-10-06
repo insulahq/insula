@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { BulkTenantResult } from '@insula/api-contracts';
+import type { BulkTenantResult, MigrateToWorkerResult, SubscriptionResponse } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import { plural, type BulkItemOutcome, type BulkRunItem } from '@/lib/bulk-run';
 import type { BulkOpResponse } from '@/hooks/use-lifecycle';
@@ -89,9 +89,99 @@ export function describeTransition(done: string, progress: BulkOpResponse): Bulk
   }
 }
 
+// ─── Change placement / Change subscription plan ─────────────────────────────
+//
+// Unlike suspend/reactivate/delete these have no bulk endpoint: each runs the
+// SAME per-tenant request the tenant detail page sends — the Placement card's
+// "Migrate pods now" and the Subscription card's plan change — one tenant at
+// a time through useBulkRun. The row carries what the tenant is on now, so a
+// tenant already where it is being sent is skipped without a request: a
+// migrate restarts every Deployment (downtime for nothing), and a plan
+// "change" to the same plan would email the tenant about nothing.
+
+/** A tenants-table row as the placement / plan runners need it. */
+export interface TenantChangeItem extends BulkRunItem {
+  readonly planId: string;
+  readonly nodeName: string | null;
+  /** True when the tenant is NOT on its primary node right now. */
+  readonly misplaced: boolean;
+}
+
+/** A target as chosen in the confirm modal: its id plus what to call it. */
+export interface BulkTarget {
+  readonly id: string;
+  readonly label: string;
+}
+
+/** Re-pin to `target` and move the tenant there (POST …/migrate-to-worker). */
+export async function moveTenantToNodeItem(item: TenantChangeItem, target: BulkTarget): Promise<BulkItemOutcome> {
+  if (item.nodeName === target.id && !item.misplaced) {
+    return { status: 'skipped', detail: `Already on ${target.label}.` };
+  }
+  const res = await apiFetch<{ data: MigrateToWorkerResult }>(
+    `/api/v1/admin/tenants/${encodeURIComponent(item.id)}/migrate-to-worker`,
+    { method: 'POST', body: JSON.stringify({ node_name: target.id }) },
+  );
+  return describeMove(res.data, target.label);
+}
+
+/** What one migrate-to-worker did, in the same terms as the Placement card's note. */
+export function describeMove(result: MigrateToWorkerResult, targetLabel: string): BulkItemOutcome {
+  if (result.moveOperationId) {
+    return {
+      status: 'succeeded',
+      detail: `Moving to ${targetLabel} — stopped, moved and started by a background operation (about a minute of downtime).`,
+    };
+  }
+  const { started, error } = result.dataRelocation;
+  if (error) {
+    // The pin changed but the data did not follow: not done yet, so it stays
+    // selected for a retry instead of reading as a success.
+    return {
+      status: 'failed',
+      detail: `Pinned to ${targetLabel}, but the data could not be moved: ${error}`,
+    };
+  }
+  const parts = [`Pinned to ${targetLabel}`];
+  if (result.deploymentsRestarted > 0) parts.push(`restarted ${plural(result.deploymentsRestarted, 'deployment')}`);
+  if (started.length > 0) parts.push(`moving ${plural(started.length, 'volume')}`);
+  return { status: 'succeeded', detail: `${parts.join(' — ')}.` };
+}
+
+/** Set the hosting plan (PATCH …/subscription), as the Subscription card does. */
+export async function changeTenantPlanItem(
+  item: TenantChangeItem,
+  target: BulkTarget,
+  notifyTenant: boolean,
+): Promise<BulkItemOutcome> {
+  if (item.planId === target.id) {
+    return { status: 'skipped', detail: `Already on ${target.label}.` };
+  }
+  const res = await apiFetch<{ data: SubscriptionResponse }>(
+    `/api/v1/tenants/${encodeURIComponent(item.id)}/subscription`,
+    { method: 'PATCH', body: JSON.stringify({ plan_id: target.id, notify_tenant: notifyTenant }) },
+  );
+  return describePlanChange(res.data, target);
+}
+
+export function describePlanChange(result: SubscriptionResponse, target: BulkTarget): BulkItemOutcome {
+  // Read back what the API now says the plan is, rather than trusting the 200.
+  if (result.plan?.id !== target.id) {
+    return {
+      status: 'failed',
+      detail: `The API accepted the change but reports the plan as ${result.plan?.name ?? 'none'}.`,
+    };
+  }
+  return { status: 'succeeded', detail: `Plan set to ${result.plan.name}.` };
+}
+
 export function useInvalidateTenantQueries(): () => void {
   const queryClient = useQueryClient();
   return useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['tenants'] });
+    // A placement or plan change also moves what these derive from.
+    void queryClient.invalidateQueries({ queryKey: ['tenant-placement'] });
+    void queryClient.invalidateQueries({ queryKey: ['tenant-issues'] });
+    void queryClient.invalidateQueries({ queryKey: ['subscription'] });
   }, [queryClient]);
 }

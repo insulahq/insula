@@ -178,7 +178,6 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/platform/limits',           icon: Gauge,              label: 'Limits & Regional' },
       { kind: 'item', to: '/platform/dns',              icon: Globe,              label: 'DNS Providers' },
       { kind: 'item', to: '/platform/integrations',     icon: Link2,              label: 'Integrations' },
-      { kind: 'item', to: '/platform/ai',               icon: Cpu,                label: 'AI Providers' },
       { kind: 'item', to: '/platform/lifecycle-hooks',  icon: Workflow,           label: 'Tenant Lifecycle Hooks' },
       { kind: 'item', to: '/platform/notifications',    icon: Bell,               label: 'Notifications' },
       { kind: 'item', to: '/platform/export-import',    icon: Upload,             label: 'Export / Import' },

@@ -94,7 +94,7 @@ export default function MailTab() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Sent today" value={data.totals.sentToday} />
+        <StatCard label="Sent (24h)" value={data.totals.sent24h} />
         <StatCard label="Sent (7d)" value={data.totals.sent7d} />
         <StatCard label="Recipients (7d)" value={data.totals.recipients7d} />
         <StatCard

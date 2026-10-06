@@ -7,10 +7,11 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
-  TrafficBackupMode, TrafficDirection, TrafficMetric, TrafficScope,
+  TrafficBackupMode, TrafficDirection, TrafficFrame, TrafficMetric, TrafficScope,
 } from '@insula/api-contracts';
 import { useTrafficSeries, useTrafficSubjects } from '@/hooks/use-traffic';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -24,6 +25,7 @@ import TrafficSummaryTable from './TrafficSummaryTable';
 import TrafficPicker from '@/components/ui/SearchablePicker';
 import TrafficRangePicker, { presetRange, type RangeValue } from './TrafficRangePicker';
 import { formatInstant, formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
+import { parseTrafficUrlState, withSelectedOption } from './traffic-url';
 
 /** "24 hours", "7 days" — what the Total tile is a total OVER. */
 function spanLabel(r: { from: Date; to: Date }): string {
@@ -44,7 +46,7 @@ function draggedRange(fromIso: string, toIso: string, stepSeconds: number): Rang
 }
 
 const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
-  { key: 'cluster', label: 'Cluster', subjectLabel: 'Direction' },
+  { key: 'cluster', label: 'Cluster', subjectLabel: 'Measurement' },
   { key: 'node', label: 'Node', subjectLabel: 'Node' },
   { key: 'tenant', label: 'Tenant', subjectLabel: 'Tenant' },
   // The ONLY view that shows internal traffic. Every other scope is what
@@ -54,6 +56,35 @@ const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: st
   { key: 'pod', label: 'Pod (internal traffic)', subjectLabel: 'Pod' },
   { key: 'route', label: 'Ingress route', subjectLabel: 'Route' },
 ];
+
+/**
+ * Cluster rows left off the CHART until asked for. They stay in the table with
+ * their totals: the per-class node-to-node split is the detail under one row
+ * already drawn, and the NIC sum counts node-to-node bytes twice — drawn by
+ * default it would set the axis and flatten everything that adds up.
+ */
+const CLUSTER_ROWS_OFF_CHART = [
+  'n2n:kubeapi', 'n2n:etcd', 'n2n:kubelet', 'n2n:tunnel', 'n2n:n2nother', 'nic:out', 'nic:in',
+] as const;
+
+/**
+ * When the cluster split starts later than the NIC sum does: the instant of
+ * its first measured point, or null when it covers the whole range.
+ */
+export function splitStart(frame: TrafficFrame): string | null {
+  const n2n = frame.series.find((s) => s.key === 'wire:n2n');
+  const nic = frame.series.find((s) => s.key === 'nic:out');
+  if (!n2n || !nic) return null;
+  const firstSplit = n2n.points.findIndex((v) => v !== null);
+  const firstNic = nic.points.findIndex((v) => v !== null);
+  if (firstNic === -1) return null;
+  if (firstSplit === -1) return frame.to;
+  return firstSplit > firstNic ? frame.times[firstSplit] ?? null : null;
+}
+
+function initialHidden(): Set<string> {
+  return new Set([TOTAL_KEY, ...CLUSTER_ROWS_OFF_CHART]);
+}
 
 const METRICS: ReadonlyArray<{ key: TrafficMetric; label: string }> = [
   { key: 'traffic', label: 'Traffic' },
@@ -102,17 +133,22 @@ function metricsFor(scope: TrafficScope): ReadonlyArray<{ key: TrafficMetric; la
 }
 
 export default function TrafficTab() {
-  const [range, setRange] = useState<RangeValue>(() => presetRange('24h'));
-  const [scope, setScope] = useState<TrafficScope>('cluster');
-  const [subject, setSubject] = useState<string | null>(null);
-  const [pod, setPod] = useState<string | null>(null);
-  const [metric, setMetric] = useState<TrafficMetric>('traffic');
+  // The query string picks the INITIAL view, so another page can link straight
+  // to a question (`?scope=tenant&subject=<namespace>&range=7d`); from there
+  // the controls own the state. Read once, on mount.
+  const { search } = useLocation();
+  const [initial] = useState(() => parseTrafficUrlState(search));
+  const [range, setRange] = useState<RangeValue>(() => presetRange(initial.range));
+  const [scope, setScope] = useState<TrafficScope>(initial.scope);
+  const [subject, setSubject] = useState<string | null>(initial.subject);
+  const [pod, setPod] = useState<string | null>(initial.pod);
+  const [metric, setMetric] = useState<TrafficMetric>(initial.metric);
   const [direction, setDirection] = useState<TrafficDirection>('both');
   // The combined line starts OFF: it is there to be asked for, and drawn by
   // default it would set the axis and push every row down to the floor.
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set([TOTAL_KEY]));
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(initialHidden);
   const [focus, setFocus] = useState<string | null>(null);
-  const resetRows = (): void => { setHidden(new Set([TOTAL_KEY])); setFocus(null); };
+  const resetRows = (): void => { setHidden(initialHidden()); setFocus(null); };
 
   // Traefik has no per-pod dimension, so those questions are not offered.
   const metricsForScope = metricsFor(scope);
@@ -158,17 +194,20 @@ export default function TrafficTab() {
     scope === 'pod',
   );
 
+  // A chosen subject stays listed even when the ranking leaves it out (it
+  // moved nothing in the range) — otherwise a linked view reads "All …".
+  const chosen = scope === 'pod' ? pod : subject;
   const options = useMemo(
-    () => (subjects ?? []).map((s) => ({
+    () => withSelectedOption((subjects ?? []).map((s) => ({
       key: s.key, label: s.name, meta: formatTrafficVolume(s.value, s.unit),
-    })),
-    [subjects],
+    })), chosen),
+    [subjects, chosen],
   );
   const tenantOptions = useMemo(
-    () => (tenantList ?? []).map((s) => ({
+    () => withSelectedOption((tenantList ?? []).map((s) => ({
       key: s.key, label: s.name, meta: formatTrafficVolume(s.value, s.unit),
-    })),
-    [tenantList],
+    })), scope === 'pod' ? subject : null),
+    [tenantList, scope, subject],
   );
 
   const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
@@ -264,7 +303,7 @@ export default function TrafficTab() {
 
       {operatorError && <ErrorPanel error={operatorError} />}
 
-      {frame && effectiveBackups !== 'included'
+      {frame && scope !== 'cluster' && effectiveBackups !== 'included'
         && !frame.series.some((sx) => sx.kind === 'backup-class') && (
         // Splitting and seeing one lonely "Serving traffic" row is ambiguous:
         // it could mean no backups ran, or that the split is broken. Say which.
@@ -272,6 +311,19 @@ export default function TrafficTab() {
           dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-300"
         >
           No platform-scheduled backup traffic in this range.
+        </p>
+      )}
+
+      {frame && scope === 'cluster' && splitStart(frame) && (
+        // The split comes from per-node counters that exist only from the
+        // upgrade that added them; before that, the rows that add up are
+        // gaps and only the NIC sum reaches back. Say so instead of letting a
+        // Total over part of the range pass for all of it.
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800
+          dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+        >
+          The internet / node-to-node split is measured from {formatInstant(splitStart(frame)!)}. Before that
+          only <strong>All NICs</strong> was measured, and it counts traffic between nodes twice.
         </p>
       )}
 
@@ -292,7 +344,11 @@ export default function TrafficTab() {
             value: frame.unit === 'milliseconds'
               ? formatTrafficRate(stats.avg, frame.unit)
               : formatTrafficVolume(stats.total, frame.unit),
-            sub: frame.resolution === 'daily' ? 'daily rollup' : `over ${spanLabel(range)}`,
+            // The rows the Total adds up exist only from the split's start;
+            // "over 24 hours" would claim the whole range for them.
+            sub: frame.resolution === 'daily'
+              ? 'daily rollup'
+              : (scope === 'cluster' && splitStart(frame) ? `since ${formatInstant(splitStart(frame)!)}` : `over ${spanLabel(range)}`),
           },
           {
             key: 'peak',
@@ -351,7 +407,7 @@ export default function TrafficTab() {
               <TrafficSummaryTable
                 frame={frame}
                 hidden={hidden}
-                subjectLabel={effectiveBackups === 'included' ? scopeMeta.subjectLabel : 'Class'}
+                subjectLabel={effectiveBackups === 'included' || scope === 'cluster' ? scopeMeta.subjectLabel : 'Class'}
                 total={total?.offered && combined ? {
                   name: totalLabel(frame.unit),
                   points: combined,

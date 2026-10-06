@@ -48,7 +48,7 @@ export const CONFIG_DUMP_SCHEMA_VERSION = 1 as const;
  * mailboxes, ingressRoutes).
  *
  * Excluded on purpose:
- *   - aiTokenUsage, usageMetrics, subscriptionBillingCycles, refreshTokens,
+ *   - usageMetrics, subscriptionBillingCycles, refreshTokens,
  *     wafLogs, sftpAuditLog — audit/billing/runtime, owned by the platform.
  *   - storageOperations, storageSnapshots, provisioningTasks — runtime
  *     state, regenerated on restore.
@@ -99,7 +99,6 @@ export const CONFIG_DUMP_TABLES = [
  */
 export const CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES: ReadonlyMap<string, string> = new Map([
   // Audit / billing / metric — owned by the platform, not the tenant.
-  ['aiTokenUsage', 'platform-owned billing/usage metric, regenerated server-side'],
   ['usageMetrics', 'platform-owned metric, regenerated server-side'],
   ['subscriptionBillingCycles', 'platform-owned billing record, never restored'],
   ['wafLogs', 'audit log, owned by platform'],

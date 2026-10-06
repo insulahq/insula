@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildTrafficQuery, quoteLabel, serviceMatcherForNamespace, UnsupportedTrafficQuery,
   BACKUP_CLASS_POD_RE, isValidNamespace,
+  nodeToNodeRate, nodeTrafficRate, internetRate, allTenantsIngressRate, offsiteBackupRate,
 } from './promql.js';
 
 const base = { metric: 'traffic', direction: 'out', stepSeconds: 300 } as const;
@@ -362,5 +363,38 @@ describe('every generated query is valid PromQL', () => {
       expect((expr.match(/"/g) ?? []).length % 2, expr).toBe(0);
       expect((expr.match(/\(/g) ?? []).length, expr).toBe((expr.match(/\)/g) ?? []).length);
     }
+  });
+});
+
+describe('node-counter traffic (cluster view)', () => {
+  it('collapses platform-api replicas before summing nodes', () => {
+    const expr = nodeToNodeRate(['kubeapi'], 300);
+    expect(expr).toContain('max by (node, class, direction) (rate(platform_node_traffic_bytes{class=~"kubeapi",direction="out"}[300s]))');
+  });
+
+  it('adds one Ethernet header per packet, and falls back to bare bytes without packet counts', () => {
+    const expr = nodeTrafficRate(['etcd'], 'in', 60);
+    expect(expr).toMatch(/\+ 14 \* sum\(max by \(node, class, direction\) \(rate\(platform_node_traffic_packets/);
+    expect(expr).toMatch(/\) or sum\(max by/);
+    // Never a one-minute window on a 30-second publish cadence.
+    expect(expr).toContain('[120s]');
+  });
+
+  it('internet is the NIC sum minus that direction\'s node-to-node traffic, floored at zero', () => {
+    const expr = internetRate('in', 300);
+    expect(expr.startsWith('clamp_min(sum(rate(container_network_receive_bytes_total{')).toBe(true);
+    expect(expr).toContain('id="/"');
+    expect(expr).toContain('class=~"kubeapi|etcd|kubelet|tunnel|n2nother",direction="in"');
+    expect(expr).not.toContain('backup');
+  });
+
+  it('all tenants are their ingress services, as the tenant scope measures them', () => {
+    expect(allTenantsIngressRate('out', 300)).toBe('sum(rate(traefik_service_responses_bytes_total{service=~"tenant-.+"}[300s]))');
+    expect(allTenantsIngressRate('in', 300)).toBe('sum(rate(traefik_service_requests_bytes_total{service=~"tenant-.+"}[300s]))');
+  });
+
+  it('off-site backups are the backup class, both directions', () => {
+    expect(offsiteBackupRate('out', 300)).toContain('class=~"backup",direction="out"');
+    expect(offsiteBackupRate('in', 300)).toContain('class=~"backup",direction="in"');
   });
 });

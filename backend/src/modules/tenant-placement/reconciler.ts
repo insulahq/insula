@@ -18,6 +18,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { finishDataRelocations } from './relocate.js';
 import { tenants } from '../../db/schema.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { collectFacts, type CollectedFacts } from '../tenant-health/collect.js';
 import { notifyAdminTenantMisplaced, notifyAdminTenantStorageFailover } from '../notifications/events.js';
 import { computePlacements, observeStorageFailovers, type TenantPlacementObservation } from './compute.js';
@@ -177,7 +178,11 @@ async function maybeStartPinRepair(
 
 export function startPlacementReconciler(deps: PlacementDeps): () => void {
   let timer: NodeJS.Timeout | null = null;
-  const tick = () => void safeTick('tenant-placement', async () => { await runPlacementTick(deps); });
+  // One replica reconciles placement (lease). The state it keeps — episodes,
+  // hysteresis, failovers — lives in the database, so a takeover resumes it.
+  const tick = () => void safeTick('tenant-placement', async () => {
+    await withSchedulerLease(deps.db, 'tenant-placement', PLACEMENT_TICK_MS * 1.5, () => runPlacementTick(deps));
+  });
   const initial = setTimeout(() => {
     tick();
     timer = setInterval(tick, PLACEMENT_TICK_MS);

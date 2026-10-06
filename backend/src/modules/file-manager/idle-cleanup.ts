@@ -2,12 +2,23 @@ import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { LAST_ACCESS_ANNOTATION, hasLiveLease } from './lease-annotations.js';
+import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * How often one namespace's access annotation is rewritten. Every file route
+ * records an access, and each used to PATCH the Deployment — a busy file
+ * browser issued one PATCH per request. Against a 10-minute idle timeout a
+ * minute of granularity changes nothing.
+ */
+export const ACCESS_ANNOTATION_MIN_INTERVAL_MS = 60 * 1000;
 
 // Per-process cache (reduces API server load between writes — we still
 // reconcile against the Deployment annotation for cross-pod truth).
 const lastAccessMap = new Map<string, number>();
+/** When this replica last wrote each namespace's access annotation. */
+const lastAnnotatedMap = new Map<string, number>();
 
 /** This replica's last recorded access for `namespace` (epoch ms), 0 if none. */
 export function cachedFileManagerAccess(namespace: string): number {
@@ -24,12 +35,14 @@ export function cachedFileManagerAccess(namespace: string): number {
 export function recordFileManagerAccess(namespace: string, k8s?: K8sClients): void {
   const now = Date.now();
   lastAccessMap.set(namespace, now);
+  if (now - (lastAnnotatedMap.get(namespace) ?? 0) < ACCESS_ANNOTATION_MIN_INTERVAL_MS) return;
   // Wrap the k8s tenant call in a try block — a missing or partially
   // mocked tenant (`k8s.apps` undefined) would otherwise throw
   // synchronously, escaping the promise's `.catch`. Real callers
   // pass a fully-shaped tenant; tests pass a mock that may not
   // implement every nested property.
   if (!k8s?.apps?.patchNamespacedDeployment) return;
+  lastAnnotatedMap.set(namespace, now);
   try {
     void k8s.apps.patchNamespacedDeployment({
       name: 'file-manager',
@@ -112,7 +125,48 @@ export function idleScaleDownDue(deploy: IdleCandidate, cachedLastAccessMs: numb
   return idleMs > IDLE_TIMEOUT_MS ? idleMs : null;
 }
 
-export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): NodeJS.Timeout | null {
+export interface IdleCleanupOptions {
+  /**
+   * When given, one replica runs the loop (lease `file-manager-idle-cleanup`).
+   * The decision reads the Deployment's own access annotation, which every
+   * replica writes, so any one of them sees the same truth.
+   */
+  readonly db?: LeaseDb;
+}
+
+/** Scale down every idle file-manager. One LIST for the whole cluster. */
+export async function runIdleCleanupOnce(k8s: K8sClients, now: number = Date.now()): Promise<void> {
+  // A field selector on the name returns exactly the file-manager Deployments,
+  // cluster-wide, in one request — this used to list every namespace and then
+  // GET `file-manager` in each tenant namespace, one request per tenant per
+  // minute on every replica.
+  const list = await k8s.apps.listDeploymentForAllNamespaces({ fieldSelector: 'metadata.name=file-manager' });
+  const items = (list as { items?: Array<IdleCandidate & { metadata?: { namespace?: string } }> }).items ?? [];
+  for (const deploy of items) {
+    const ns = deploy.metadata?.namespace;
+    if (!ns || !ns.startsWith('tenant-')) continue;
+    try {
+      const idleMs = idleScaleDownDue(deploy, lastAccessMap.get(ns) ?? 0, now);
+      if (idleMs !== null) {
+        console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns} (idle for ${Math.round(idleMs / 60_000)}m)`);
+        // Raw-body scale — the typed patch drops replicas:0 (serializer),
+        // which silently no-op'd this idle scale-down. See
+        // shared/scale-deployment.ts.
+        const { scaleDeploymentReplicas } = await import('../../shared/scale-deployment.js');
+        await scaleDeploymentReplicas(ns, 'file-manager', 0);
+        lastAccessMap.delete(ns);
+      }
+    } catch {
+      // Scale raced a delete or a controller — the next tick retries.
+    }
+  }
+}
+
+export function startIdleCleanup(
+  kubeconfigPath?: string,
+  intervalMs = 60_000,
+  opts: IdleCleanupOptions = {},
+): NodeJS.Timeout | null {
   let k8s: ReturnType<typeof createK8sClients>;
   try {
     k8s = createK8sClients(kubeconfigPath);
@@ -124,32 +178,11 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
   console.log('[file-manager-cleanup] Starting idle cleanup (10min timeout)');
 
   return setInterval(async () => {
-    const now = Date.now();
-
     try {
-      // List all namespaces with file-manager deployments
-      const namespaces = await k8s.core.listNamespace({});
-      const nsList = ((namespaces as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [])
-        .map(ns => ns.metadata?.name)
-        .filter((n): n is string => !!n && n.startsWith('tenant-'));
-
-      for (const ns of nsList) {
-        try {
-          const deploy = await k8s.apps.readNamespacedDeployment({ name: 'file-manager', namespace: ns }) as IdleCandidate;
-
-          const idleMs = idleScaleDownDue(deploy, lastAccessMap.get(ns) ?? 0, now);
-          if (idleMs !== null) {
-            console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns} (idle for ${Math.round(idleMs / 60_000)}m)`);
-            // Raw-body scale — the typed patch drops replicas:0 (serializer),
-            // which silently no-op'd this idle scale-down. See
-            // shared/scale-deployment.ts.
-            const { scaleDeploymentReplicas } = await import('../../shared/scale-deployment.js');
-            await scaleDeploymentReplicas(ns, 'file-manager', 0);
-            lastAccessMap.delete(ns);
-          }
-        } catch {
-          // Deployment doesn't exist or other error — skip
-        }
+      if (opts.db) {
+        await withSchedulerLease(opts.db, 'file-manager-idle-cleanup', intervalMs * 1.5, () => runIdleCleanupOnce(k8s));
+      } else {
+        await runIdleCleanupOnce(k8s);
       }
     } catch (err) {
       console.error('[file-manager-cleanup] Error:', err);

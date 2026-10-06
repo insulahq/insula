@@ -8,6 +8,7 @@ import ApiUnavailable from '@/components/ApiUnavailable';
 import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
 import { sanitizeRedirect } from '@/lib/sanitize-redirect';
 import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
+import { proxySsoProvider, markProxySsoAttempt, resetProxySso } from '@/lib/proxy-sso';
 
 // Apex is the admin panel's hostname with its first label stripped.
 // admin.staging.example.test  → staging.example.test
@@ -78,7 +79,10 @@ export default function Login() {
   //   3. "/" fallback
   // rd= takes priority because it's the caller that triggered the login
   // flow — state.from is often empty when the Login route is hit directly.
-  const routerFrom = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
+  // Path AND query: the OAuth consent page (/oauth/consent?request=…) is
+  // useless without its query when it sends someone here to sign in first.
+  const fromLocation = (location.state as { from?: { pathname: string; search?: string } })?.from;
+  const routerFrom = fromLocation ? `${fromLocation.pathname}${fromLocation.search ?? ''}` : '/';
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const apex = getPlatformApex();
   const redirectTarget = sanitizeRedirect(searchParams.get('rd'), origin, apex, routerFrom);
@@ -91,6 +95,7 @@ export default function Login() {
       try {
         const user = JSON.parse(decodeURIComponent(userJson));
         setTokenAndUser(token, user);
+        resetProxySso(sessionStorage);
         goToTarget(redirectTarget, navigate);
       } catch { /* ignore */ }
     }
@@ -188,6 +193,27 @@ export default function Login() {
     window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
   };
 
+  // Behind the OAuth2 Proxy the visitor has just signed in to the proxy's
+  // provider; starting that provider here completes on the IdP session it left,
+  // so they do not log in twice. Never on the break-glass form, and guarded
+  // against the dead ends a login-page redirect creates — see lib/proxy-sso.ts.
+  const [ssoStartingWith, setSsoStartingWith] = useState<string | null>(null);
+  useEffect(() => {
+    if (!authStatus || isEmergency) return;
+    const providerId = proxySsoProvider({
+      proxyProviderId: authStatus.proxyProviderId,
+      providerIds: authStatus.providers.map((p) => p.id),
+      callbackInProgress: searchParams.has('token') || searchParams.has('error'),
+      storage: sessionStorage,
+      now: Date.now(),
+    });
+    if (!providerId) return;
+    markProxySsoAttempt(sessionStorage, Date.now());
+    setSsoStartingWith(authStatus.providers.find((p) => p.id === providerId)?.displayName ?? 'your provider');
+    const callbackUrl = `${window.location.origin}/login`;
+    window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
+  }, [authStatus, searchParams, isEmergency]);
+
   const showLocalAuth = authStatus?.localAuthEnabled ?? true;
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
@@ -237,6 +263,11 @@ export default function Login() {
           </form>
         ) : (
           <>
+            {ssoStartingWith && (
+              <div className="mb-4 flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-3 text-sm text-brand-700 dark:text-brand-300" data-testid="proxy-sso-starting">
+                <Loader2 size={16} className="animate-spin" /> Signing you in with {ssoStartingWith}…
+              </div>
+            )}
             {providers.map((p) => (
               <button key={p.id} type="button" onClick={() => handleSso(p.id)} className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`sso-button-${p.id}`}>
                 <Shield size={16} /> Sign in with {p.displayName}

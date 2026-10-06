@@ -150,28 +150,6 @@ provider to review the event under Security → WAF Events.
 Click a text file to open the built-in **editor** (syntax-highlighted). Make
 your changes and **Save**.
 
-### AI-assisted editing
-
-If your provider has enabled AI editing, you can ask the assistant to make
-changes for you instead of editing by hand:
-
-=== "Inside the editor"
-
-    Open a file in the editor and use the **AI** panel: type what you want in
-    plain language (for example "add a contact form section"), pick a model if
-    asked, and the assistant proposes a change. Review the highlighted
-    difference and click **Accept** to apply it (or discard it).
-
-=== "Across a folder (Sparkles button)"
-
-    The **AI Edit (folder)** button (sparkles icon) in the toolbar lets the
-    assistant work across multiple files in the current folder.
-
-!!! note "AI editing is optional"
-    The AI features only appear when your provider has configured them. If you
-    don't see them, they're not enabled for your account. This is *file
-    editing assistance* — there is no separate "AI website builder."
-
 ## File-transfer (SFTP) accounts
 
 To upload with a desktop tool (FileZilla, Cyberduck, WinSCP) or automate
