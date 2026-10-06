@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.6] - 2026-10-06
+
 ### Added
 
 - **AI agents (MCP) and API tokens.** Users with the admin role can connect AI agents to the
