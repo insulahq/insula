@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bot, Loader2, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Bot, Loader2, ShieldCheck } from 'lucide-react';
 import { MCP_OAUTH_TOKEN_TTL_SECONDS, type McpScope } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -62,8 +62,21 @@ export default function OAuthConsent() {
             </p>
             <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
               The name is chosen by the client itself. Only approve if you started this connection and recognise
-              where it is sent.
+              where it is sent. Registered{' '}
+              <span data-testid="oauth-consent-registered">{new Date(request.data.clientRegisteredAt).toLocaleString()}</span>.
             </p>
+            {!request.data.clientApprovedBefore && (
+              <div
+                className="mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+                data-testid="oauth-consent-first-time"
+              >
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  Nobody has approved this client before. If you did not just add this address to an AI client
+                  yourself, deny — a link someone sent you can open this page too.
+                </span>
+              </div>
+            )}
 
             <fieldset className="mt-4">
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">Allow it to</legend>

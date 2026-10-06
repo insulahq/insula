@@ -10,6 +10,8 @@ export const MCP_PATH = '/api/v1/mcp';
 export const OAUTH_PREFIX = '/api/v1/oauth';
 export const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
 export const AUTHORIZATION_SERVER_METADATA_PATH = '/.well-known/oauth-authorization-server';
+/** Cluster-internal: Traefik ForwardAuth asks whether a bearer is a live PAT. */
+export const AGENT_TOKEN_CHECK_PATH = '/api/v1/internal/agent-token-check';
 /** The admin panel's consent page (SPA route). */
 export const CONSENT_PAGE_PATH = '/oauth/consent';
 

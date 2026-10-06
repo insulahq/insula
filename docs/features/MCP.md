@@ -25,8 +25,10 @@ api-contracts Zod schema the handler validates with, converted by `z.toJSONSchem
 `read` / `write` / `delete`. First match wins: `config.apiScope` on the route (a scope, or a function
 of the request when the body decides — `files/delete` with `permanent`, `PATCH /tenants/:id` with
 `status: archived`); GET/HEAD/OPTIONS → read; a non-GET path naming an irreversible action
-(`delete|purge|wipe|destroy|drop|empty|erase|truncate|reset|restore|import|rollback|regenerate|rotate`)
-→ delete; DELETE → delete; else write. Enforced in `authenticate` (any hook stage) and again in a global
+(`delete|purge|wipe|destroy|drop|empty|erase|truncate|reset|restore|import|rollback|regenerate|rotate|recover|decommission|prune|reclaim|force`),
+singular or plural (`/admin/restores/…`) → delete; DELETE → delete; else write. A false match only asks
+for more scope; routes harmless despite their words (`/admin/restores/carts`, `prune-policy`,
+`recover/repin`) say `apiScope: 'write'`. Enforced in `authenticate` (any hook stage) and again in a global
 `preHandler` once the body is parsed, so neither hook order nor a body-less request skips a body rule.
 
 Session requests carry no `apiToken` claim and are unaffected.
@@ -37,22 +39,34 @@ Opaque, prefixed (`insula_pat_…`, `insula_oat_…`), stored as SHA-256 only (`
 request with a 30 s cache; on every resolve the owner must be active, admin-panel, and hold
 `MCP_ALLOWED_ROLE` (`admin`). PATs authenticate on the whole REST API (`authenticate`) and on MCP;
 OAuth tokens only on MCP, and only for the resource they were issued for (RFC 8707). Token management
-routes and the consent API are `apiTokenForbidden` (a token cannot mint tokens). Impersonation tokens
-minted for a token-bearing caller inherit its `apiToken` claim. A leased reaper deletes expired
-credentials every 15 min.
+routes and the consent API are `apiTokenForbidden` (a token cannot mint tokens), and so is
+`POST /admin/impersonate/:tenantId` — it hands out a one-hour tenant credential that would outlive the
+token's revocation. An agent's `asTenant` instead mints a 2-minute tenant JWT in-process
+(`tenants/impersonation.ts`, shared with the route) carrying the token's `apiToken` claim; it never
+leaves the server. A leased reaper (15 min) deletes expired credentials and unreferenced OAuth clients
+(never approved: 1 day; idle: 30 days).
 
 ## OAuth (`oauth.ts`)
 
 RFC 9728 / 8414 discovery at the admin host root (admin-panel nginx forwards them), open RFC 7591
-registration of public clients (https / loopback / private-use redirect URIs; capped at 2000 clients),
-`authorize` → parked `mcp_oauth_requests` row → admin-panel `/oauth/consent` → session-only consent API
+registration of public clients (https / loopback / private-use redirect URIs; capped at 2000 clients — when
+full, the oldest never-approved client without a token is evicted, so a registration flood cannot lock real
+clients out),
+`authorize` → parked `mcp_oauth_requests` row → admin-panel `/oauth/consent` (shows the redirect host, the
+client's registration time, and a warning when nobody has approved it before) → session-only consent API
 → single-use code (hash) → `token` with PKCE S256 → 8 h access token, no refresh. Errors use OAuth's
 JSON format, not the platform envelope. CORS is `*` without credentials for the agent paths only
 (`paths.ts`, delegator in `app.ts`).
 
 When the admin panel is behind OAuth2 Proxy, `ingress-proxy-manager.ts` adds `platform-agent-endpoints`
-(priority 100, no ForwardAuth): `/api/v1/*` WITH a platform bearer token, `/api/v1/mcp`, `/api/v1/oauth/*`
-except the consent API, and the two discovery documents.
+with two routes above the proxied panel route:
+
+- priority 100, no middleware — the endpoints that authenticate themselves: `/api/v1/mcp`, `/api/v1/oauth/*`
+  except the consent API, and the two discovery documents;
+- priority 99 — `/api/v1/*` with an `insula_pat_` bearer, through the `platform-agent-token-auth`
+  ForwardAuth middleware → `GET /api/v1/internal/agent-token-check` on platform-api (204 for a live PAT,
+  else 401; own rate-limit bucket). The header shape only routes; the token is checked at the edge, so a
+  made-up header never reaches the backend behind the proxy. OAuth tokens are MCP-only and get no API route.
 
 ## MCP endpoint (`server.ts`)
 

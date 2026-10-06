@@ -43,10 +43,16 @@ declare module 'fastify' {
   }
 }
 
-/** Path words that mean "this cannot be undone" (checked for non-GET methods only). */
+/**
+ * Path words that mean "this cannot be undone" (checked for non-GET methods
+ * only), singular or plural — `/admin/restores/carts/:id/execute` is a restore
+ * as much as `/restore-carts/:id/execute` is. A false match only asks for more
+ * scope than needed; routes that are harmless despite their words say so with
+ * `config.apiScope`.
+ */
 const DESTRUCTIVE_PATH = new RegExp(
-  '(^|/|-)(delete|purge|wipe|destroy|drop|empty|erase|truncate|reset|restore|import|rollback|regenerate|rotate)'
-  + '(/|$|-)',
+  '(^|/|-)(delete|purge|wipe|destroy|drop|empty|erase|truncate|reset|restore|import|rollback|regenerate|rotate'
+  + '|recover|decommission|prune|reclaim|force)s?(/|$|-)',
 );
 
 export function methodScope(method: string): McpScope {
@@ -73,6 +79,15 @@ export function requiredScope(
   if (byMethod === 'read') return 'read';
   if (DESTRUCTIVE_PATH.test(routePath)) return 'delete';
   return byMethod;
+}
+
+/**
+ * One top-level field of the request body, for body-dependent scope rules.
+ * Read-only and untyped on purpose: the route still validates the body itself.
+ */
+export function bodyField(request: FastifyRequest, field: string): unknown {
+  const body = request.body;
+  return body && typeof body === 'object' ? (body as Record<string, unknown>)[field] : undefined;
 }
 
 /** What the token carries, when the request was made with one. */

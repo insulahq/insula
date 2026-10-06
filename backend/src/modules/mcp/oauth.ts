@@ -33,7 +33,9 @@ import {
   AUTHORIZATION_SERVER_METADATA_PATH, CONSENT_PAGE_PATH, MCP_PATH, OAUTH_PREFIX,
   PROTECTED_RESOURCE_METADATA_PATH, agentUrls,
 } from './paths.js';
-import { clearTokenCache, hashSecret, issueOauthToken } from './tokens.js';
+import {
+  clearTokenCache, evictUnapprovedClient, hashSecret, issueOauthToken, looksLikeToken, resolveToken,
+} from './tokens.js';
 
 /** How long a user has to decide, and a client to redeem the code. */
 const REQUEST_TTL_MS = 10 * 60_000;
@@ -151,7 +153,9 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
       return oauthError(reply, 400, 'invalid_client_metadata', 'only the authorization_code grant is supported');
     }
     const [{ n }] = await app.db.select({ n: sql<number>`count(*)::int` }).from(mcpOauthClients);
-    if (n >= MAX_CLIENTS) return oauthError(reply, 400, 'invalid_client_metadata', 'client registration is full');
+    if (n >= MAX_CLIENTS && !(await evictUnapprovedClient(app.db))) {
+      return oauthError(reply, 400, 'invalid_client_metadata', 'client registration is full');
+    }
     const id = `mcp_${randomBytes(16).toString('hex')}`;
     const name = meta.client_name ?? 'Unnamed MCP client';
     await app.db.insert(mcpOauthClients).values({ id, name, redirectUris: meta.redirect_uris });
@@ -209,7 +213,12 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
 
   async function pendingRequest(id: string) {
     const [row] = await app.db
-      .select({ req: mcpOauthRequests, clientName: mcpOauthClients.name })
+      .select({
+        req: mcpOauthRequests,
+        clientName: mcpOauthClients.name,
+        clientCreatedAt: mcpOauthClients.createdAt,
+        clientLastUsedAt: mcpOauthClients.lastUsedAt,
+      })
       .from(mcpOauthRequests)
       .innerJoin(mcpOauthClients, eq(mcpOauthClients.id, mcpOauthRequests.clientId))
       .where(and(eq(mcpOauthRequests.id, id), isNull(mcpOauthRequests.userId), gt(mcpOauthRequests.expiresAt, new Date())))
@@ -224,13 +233,15 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     consentGuard(request.user.role);
     const { id } = request.params as { id: string };
-    const { req, clientName } = await pendingRequest(id);
+    const { req, clientName, clientCreatedAt, clientLastUsedAt } = await pendingRequest(id);
     const body: McpConsentRequest = {
       id: req.id,
       clientName,
       redirectHost: new URL(req.redirectUri).host || req.redirectUri,
       requestedScopes: req.requestedScopes.filter((s): s is McpScope => mcpScopeSchema.safeParse(s).success),
       expiresAt: req.expiresAt.toISOString(),
+      clientRegisteredAt: clientCreatedAt.toISOString(),
+      clientApprovedBefore: clientLastUsedAt !== null,
     };
     return success(body);
   });
@@ -297,6 +308,24 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
       expires_in: issued.expiresIn,
       scope: scopes.join(' '),
     });
+  });
+
+  // ── edge check for a proxy-protected admin panel ─────────────────────────
+  // Traefik's ForwardAuth asks this before letting a token-bearing API request
+  // past OAuth2 Proxy (oidc/ingress-proxy-manager.ts): 204 for a live PAT,
+  // 401 for anything else — a header that merely LOOKS like a token gets
+  // nothing. Reached only inside the cluster: the panels' nginx refuses
+  // /api/v1/internal/ at the edge.
+  // Its own bucket (a per-route limit is a separate store): sharing the global
+  // one would charge every PAT request twice. 600/min per client still bounds
+  // the hash lookups a stream of made-up tokens can cause.
+  app.get('/api/v1/internal/agent-token-check', {
+    config: { skipAuth: true, rateLimit: { max: 600, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const header = request.headers.authorization ?? '';
+    const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const principal = bearer && looksLikeToken(bearer) === 'pat' ? await resolveToken(app.db, bearer) : null;
+    return reply.code(principal ? 204 : 401).send();
   });
 
   // ── revocation (any client may revoke a token it holds) ──────────────────

@@ -8,15 +8,17 @@
  * a platform function, so an agent can do exactly what the API allows and no
  * more.
  *
- * Acting AS a tenant goes through the platform's own impersonation route
- * (`POST /admin/impersonate/:tenantId`): the tenant token it returns inherits
- * the API token's scopes, and the audit trail records the admin behind it.
+ * Acting AS a tenant uses the platform's impersonation rules
+ * (tenants/impersonation.ts) in-process: a two-minute tenant token that
+ * inherits the API token's scopes and never leaves the server; the audit trail
+ * records the admin behind every action taken with it.
  */
 import type { FastifyInstance } from 'fastify';
 import type { McpScope } from '@insula/api-contracts';
 import { signAccessToken } from '../auth/access-token.js';
 import { API_PREFIX, type Operation } from './catalog.js';
 import type { TokenPrincipal } from './tokens.js';
+import { findImpersonationTarget, signImpersonationToken } from '../tenants/impersonation.js';
 
 /** Largest response handed back to an agent before it is cut. */
 export const MAX_RESULT_CHARS = 200_000;
@@ -107,20 +109,22 @@ async function injectAs(
   return { status: res.statusCode, ok: res.statusCode < 400, body: parsed.body, truncated: parsed.truncated };
 }
 
-/** An impersonation token for `tenantId`, carrying the principal's scopes. */
-async function tenantCallToken(
-  app: FastifyInstance, principal: TokenPrincipal, tenantId: string, clientIp: string,
-): Promise<string> {
-  const res = await injectAs(
-    app, adminCallToken(app, principal), 'POST',
-    `${API_PREFIX}/admin/impersonate/${encodeURIComponent(tenantId)}`, {}, clientIp,
-  );
-  const token = (res.body as { data?: { token?: unknown } } | null)?.data?.token;
-  if (!res.ok || typeof token !== 'string') {
-    const err = (res.body as { error?: { message?: string } } | null)?.error?.message ?? `HTTP ${res.status}`;
-    throw new OperationInputError(`could not act as tenant ${tenantId}: ${err}`);
+/**
+ * A two-minute tenant token for `tenantId`, carrying the principal's scopes.
+ * Minted in-process with the same rules as the panel's Impersonate button
+ * (tenants/impersonation.ts) and never returned to the agent.
+ */
+async function tenantCallToken(app: FastifyInstance, principal: TokenPrincipal, tenantId: string): Promise<string> {
+  try {
+    const target = await findImpersonationTarget(app.db, tenantId);
+    app.log.info({ tenantId, impersonatorId: principal.userId, apiTokenId: principal.tokenId }, 'mcp: acting as tenant');
+    return signImpersonationToken(app, {
+      target, tenantId, impersonatorId: principal.userId, ttlSeconds: CALL_TOKEN_TTL_SECONDS, apiToken: claimFor(principal),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new OperationInputError(`could not act as tenant ${tenantId}: ${msg}`);
   }
-  return token;
 }
 
 export async function executeOperation(
@@ -133,7 +137,7 @@ export async function executeOperation(
   if (op.excluded) throw new OperationInputError(`${op.key} is not available to agents: ${op.excluded}`);
   const url = `${API_PREFIX}${buildPath(op, input.pathParams)}${buildQuery(input.query)}`;
   const token = input.asTenant
-    ? await tenantCallToken(app, principal, input.asTenant, clientIp)
+    ? await tenantCallToken(app, principal, input.asTenant)
     : adminCallToken(app, principal);
   return injectAs(app, token, op.method, url, input.body, clientIp);
 }

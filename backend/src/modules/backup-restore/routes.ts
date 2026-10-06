@@ -99,6 +99,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /api/v1/admin/restores/carts ──────────────────────────────
   app.post('/admin/restores/carts', {
+    // A cart only collects what to restore; running it (…/execute) needs 'delete'.
+    config: { apiScope: 'write' },
     schema: { tags: ['Restore'], summary: 'Create an empty restore cart', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const parsed = createRestoreCartSchema.safeParse(request.body);
@@ -144,6 +146,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   // transaction so two concurrent adds can't collide on the unique
   // index.
   app.post('/admin/restores/carts/:id/items', {
+    // A cart only collects what to restore; running it (…/execute) needs 'delete'.
+    config: { apiScope: 'write' },
     schema: { tags: ['Restore'], summary: 'Add an item to the cart', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { id: cartId } = request.params as { id: string };

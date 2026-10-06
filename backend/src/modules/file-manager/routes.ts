@@ -12,6 +12,7 @@ import { recordFileManagerAccess } from './idle-cleanup.js';
 import { streamBulkPathOperation, failBulkStream, joinDestination, type BulkPathOutcome } from './bulk-stream.js';
 import { getTrashRetentionDays, sweepTrashOpportunistically } from './trash-service.js';
 import { noteTrashActivity, recordTrashSummary } from './trash-reconciler.js';
+import { bodyField } from '../../shared/api-scope.js';
 
 async function resolveNamespace(
   app: FastifyInstance,
@@ -50,7 +51,7 @@ async function resolveNamespace(
 
 /** A file delete is recoverable unless the body asks for `permanent`. */
 function permanentIsDelete(request: FastifyRequest): 'write' | 'delete' {
-  return (request.body as { permanent?: unknown } | null)?.permanent === true ? 'delete' : 'write';
+  return bodyField(request, 'permanent') === true ? 'delete' : 'write';
 }
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {

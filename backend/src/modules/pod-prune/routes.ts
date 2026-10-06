@@ -35,6 +35,8 @@ export async function podPruneRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.put('/admin/pods/prune-policy', {
+    // Settings, not a prune — the path word would otherwise demand 'delete'.
+    config: { apiScope: 'write' },
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (req: { body: unknown; user?: { sub?: string } }) => {
     const parsed = podPrunePolicySchema.safeParse(req.body);

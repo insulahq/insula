@@ -44,6 +44,7 @@ import {
   applyIngressRoute,
   deleteIngressRoute,
 } from '../ingress-routes/traefik-apply.js';
+import { AGENT_TOKEN_CHECK_PATH } from '../mcp/paths.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -159,43 +160,79 @@ export async function syncProxyIngressAnnotations(
 // ─── Agent / API-token bypass ──────────────────────────────────────────────
 
 export const AGENT_ENDPOINTS_INGRESS_NAME = 'platform-agent-endpoints';
+export const AGENT_TOKEN_AUTH_MIDDLEWARE = 'platform-agent-token-auth';
+const PLATFORM_API_SERVICE = process.env.PLATFORM_API_SERVICE ?? 'platform-api';
+const PLATFORM_API_PORT = 3000;
 
 /**
- * Traefik match for what must reach platform-api even while the admin panel
- * sits behind OAuth2 Proxy: requests carrying a platform API token (PAT
- * automation, MCP), the MCP endpoint, the OAuth server and its discovery
- * documents. An MCP client or a script cannot complete the proxy's browser
- * sign-in; the token is its credential. The consent API stays behind the proxy
- * (the person approving signs in through it), as do browser sessions.
+ * Endpoints that authenticate themselves and must stay reachable while the
+ * admin panel sits behind OAuth2 Proxy: the MCP endpoint (bearer token or a
+ * 401 that starts an MCP client's sign-in), the OAuth server and its discovery
+ * documents. The consent API stays behind the proxy — the person approving
+ * signs in through it.
  */
 export function agentEndpointsMatch(adminHost: string): string {
-  const host = hostMatch(adminHost);
-  return `${host} && (`
-    + '(PathPrefix(`/api/v1/`) && HeaderRegexp(`Authorization`, `^Bearer insula_(pat|oat)_`))'
-    + ' || Path(`/api/v1/mcp`)'
+  return `${hostMatch(adminHost)} && (`
+    + 'Path(`/api/v1/mcp`)'
     + ' || (PathPrefix(`/api/v1/oauth/`) && !PathPrefix(`/api/v1/oauth/requests`))'
     + ' || PathPrefix(`/.well-known/oauth-protected-resource`)'
     + ' || Path(`/.well-known/oauth-authorization-server`)'
     + ')';
 }
 
+/**
+ * API requests carrying a personal access token — scripts, which cannot do
+ * the proxy's browser sign-in. Matching the header's SHAPE only routes the
+ * request; the ForwardAuth middleware on this route asks platform-api whether
+ * the token is live, so a made-up header gets a 401 at the edge and never the
+ * backend behind the proxy.
+ */
+export function patApiMatch(adminHost: string): string {
+  return `${hostMatch(adminHost)} && PathPrefix(\`/api/v1/\`) && HeaderRegexp(\`Authorization\`, \`^Bearer insula_pat_\`)`;
+}
+
+/** The ForwardAuth middleware + the two-route IngressRoute for an admin host. */
+export function buildAgentEndpointsResources(adminHost: string) {
+  const labels = { 'app.kubernetes.io/component': 'agent-endpoints' };
+  const panel = [{ name: ADMIN_PANEL_SERVICE, port: ADMIN_PANEL_PORT }];
+  const middleware = buildMiddleware({
+    name: AGENT_TOKEN_AUTH_MIDDLEWARE,
+    namespace: PLATFORM_NAMESPACE,
+    spec: forwardAuthSpec({
+      address: `http://${PLATFORM_API_SERVICE}.${PLATFORM_NAMESPACE}.svc.cluster.local:${PLATFORM_API_PORT}${AGENT_TOKEN_CHECK_PATH}`,
+      authRequestHeaders: ['Authorization'],
+    }),
+    labels,
+  });
+  const ingressRoute = buildIngressRoute({
+    name: AGENT_ENDPOINTS_INGRESS_NAME,
+    namespace: PLATFORM_NAMESPACE,
+    routes: [
+      // Above the proxied panel route on the same host, like break-glass.
+      { match: agentEndpointsMatch(adminHost), kind: 'Rule', priority: 100, services: panel },
+      {
+        match: patApiMatch(adminHost),
+        kind: 'Rule',
+        priority: 99,
+        middlewares: [{ name: AGENT_TOKEN_AUTH_MIDDLEWARE, namespace: PLATFORM_NAMESPACE }],
+        services: panel,
+      },
+    ],
+    labels,
+  });
+  return { middleware, ingressRoute };
+}
+
 async function syncAgentEndpointsIngressRoute(k8s: K8sClients, settings: ProxySettings): Promise<void> {
   if (!settings.protectAdminViaProxy || !settings.adminHost) {
     await deleteIngressRoute(k8s.custom, PLATFORM_NAMESPACE, AGENT_ENDPOINTS_INGRESS_NAME);
+    await deleteMiddleware(k8s.custom, PLATFORM_NAMESPACE, AGENT_TOKEN_AUTH_MIDDLEWARE);
     return;
   }
-  await applyIngressRoute(k8s.custom, buildIngressRoute({
-    name: AGENT_ENDPOINTS_INGRESS_NAME,
-    namespace: PLATFORM_NAMESPACE,
-    routes: [{
-      match: agentEndpointsMatch(settings.adminHost),
-      kind: 'Rule',
-      // Above the proxied panel route on the same host, like break-glass.
-      priority: 100,
-      services: [{ name: ADMIN_PANEL_SERVICE, port: ADMIN_PANEL_PORT }],
-    }],
-    labels: { 'app.kubernetes.io/component': 'agent-endpoints' },
-  }));
+  const { middleware, ingressRoute } = buildAgentEndpointsResources(settings.adminHost);
+  // The middleware first: a route naming a missing middleware is a Traefik 404.
+  await applyMiddleware(k8s.custom, middleware);
+  await applyIngressRoute(k8s.custom, ingressRoute);
 }
 
 // ─── Break-Glass IngressRoute ───────────────────────────────────────────────

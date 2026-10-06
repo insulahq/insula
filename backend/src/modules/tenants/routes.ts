@@ -29,6 +29,8 @@ import type { TenantPlacementDetail } from '@insula/api-contracts';
 import { getPlacement, listPlacements, listStorageFailovers, type StoredPlacement } from '../tenant-placement/store.js';
 import { presentFailover, presentPlacement, presentPlacementSummary } from '../tenant-placement/present.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { bodyField } from '../../shared/api-scope.js';
+import { findImpersonationTarget, signImpersonationToken } from './impersonation.js';
 
 export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // Lazy-init K8s tenants (undefined if no kubeconfig available)
@@ -436,7 +438,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     // Suspending and reactivating are reversible (write); archiving removes
     // the tenant's workloads and volumes (delete).
     config: {
-      apiScope: (request) => ((request.body as { status?: unknown } | null)?.status === 'archived' ? 'delete' : 'write'),
+      apiScope: (request) => (bodyField(request, 'status') === 'archived' ? 'delete' : 'write'),
       apiBody: updateTenantSchema,
     },
   }, async (request) => {
@@ -488,45 +490,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/admin/impersonate/:tenantId
   app.post('/admin/impersonate/:tenantId', {
     onRequest: [requireRole('super_admin', 'admin', 'support')],
-    // Changes nothing by itself; the token it returns carries the caller's
-    // API-token scopes, so every action taken with it is checked as usual.
-    config: { apiScope: 'read' },
+    // A person in the panel only. The token this returns is a free-standing
+    // tenant credential; handed to an API token holder it would outlive that
+    // token's revocation. Agents act as a tenant through `asTenant` instead
+    // (modules/mcp/executor.ts), which never hands a token out.
+    config: { apiTokenForbidden: 'Impersonation hands out a tenant credential. Agents act as a tenant with asTenant.' },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-
-    // Verify tenant exists
-    await service.getTenantById(app.db, tenantId);
-
-    // Find the tenant_admin user for this tenant
-    const [tenantUser] = await app.db
-      .select()
-      .from(users)
-      .where(
-        and(
-          eq(users.tenantId, tenantId),
-          eq(users.roleName, 'tenant_admin'),
-          eq(users.status, 'active'),
-        ),
-      )
-      .limit(1);
-
-    if (!tenantUser) {
-      throw new ApiError('NO_TENANT_USER', 'No active tenant_admin user found for this tenant', 404);
-    }
-
-    // Issue a short-lived impersonation JWT. A caller acting through an API
-    // token passes its token on: an impersonation token must not let a
-    // read- or write-scoped token do what its scopes forbid.
-    const token = app.jwt.sign({
-      sub: tenantUser.id,
-      role: 'tenant_admin',
-      panel: 'tenant',
-      tenantId,
-      impersonatedBy: request.user.sub,
-      ...(request.user.apiToken ? { apiToken: request.user.apiToken } : {}),
-      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-      iat: Math.floor(Date.now() / 1000),
-      jti: crypto.randomUUID(),
+    const tenantUser = await findImpersonationTarget(app.db, tenantId);
+    const token = signImpersonationToken(app, {
+      target: tenantUser, tenantId, impersonatorId: request.user.sub, ttlSeconds: 3600,
     });
 
     return success({

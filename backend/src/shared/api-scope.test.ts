@@ -35,6 +35,14 @@ describe('the scope a route needs', () => {
     expect(requiredScope('POST', '/api/v1/tenants/:t/deployments/:id/import-from-file', undefined)).toBe('delete');
     expect(requiredScope('POST', '/api/v1/tenants/:t/users/:u/reset-password', undefined)).toBe('delete');
     expect(requiredScope('POST', '/api/v1/tenants/:t/deployments/:id/regenerate-credentials', undefined)).toBe('delete');
+    // Plural path segments name the same action (code review: a write token
+    // could run an admin restore cart because "restores" missed the word list).
+    expect(requiredScope('POST', '/api/v1/admin/restores/carts/:id/execute', undefined)).toBe('delete');
+    expect(requiredScope('POST', '/api/v1/admin/tenants/:t/bundle-imports', undefined)).toBe('delete');
+    expect(requiredScope('POST', '/api/v1/admin/dr/tenants/recover-all', undefined)).toBe('delete');
+    expect(requiredScope('POST', '/api/v1/admin/tenants/:t/decommission', undefined)).toBe('delete');
+    expect(requiredScope('POST', '/api/v1/admin/stuck-deprovisions/:ns/force-clear', undefined)).toBe('delete');
+    expect(requiredScope('POST', '/api/v1/admin/pods/prune', undefined)).toBe('delete');
     // Reading about a delete is a read.
     expect(requiredScope('GET', '/api/v1/tenants/:t/domains/:d/delete-preview', undefined)).toBe('read');
     // Words that merely contain the verb do not count.

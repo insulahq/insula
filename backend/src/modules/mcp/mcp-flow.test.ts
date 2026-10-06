@@ -3,7 +3,9 @@
  * authenticate/role guards, scope hook, operation catalog and MCP endpoint —
  * only the token store is faked. Proves that a tool call runs the route
  * itself, that scopes bind on BOTH layers (the tool and the route), that
- * impersonation carries them, and that a PAT works on the plain REST API.
+ * impersonation carries them, that the impersonation ROUTE is closed to
+ * tokens (an agent acts as a tenant in-process, never holding a tenant
+ * credential), and that a PAT works on the plain REST API.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -23,11 +25,24 @@ vi.mock('./tokens.js', async (importOriginal) => {
   return { ...actual, resolveToken: vi.fn(async (_db: unknown, secret: string) => principals[secret] ?? null) };
 });
 
+vi.mock('../tenants/impersonation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tenants/impersonation.js')>();
+  const { ApiError } = await import('../../shared/errors.js');
+  return {
+    ...actual,
+    findImpersonationTarget: vi.fn(async (_db: unknown, tenantId: string) => {
+      if (tenantId === 'tenant-gone') throw new ApiError('TENANT_NOT_FOUND', 'Tenant not found', 404);
+      return { id: 'tenant-admin-1', email: 'owner@example.test', fullName: 'Owner' };
+    }),
+  };
+});
+
 const { authenticate, requirePanel, requireRole } = await import('../../middleware/auth.js');
 const { enforceApiScope } = await import('../../shared/api-scope.js');
 const { errorHandler } = await import('../../middleware/error-handler.js');
 const { collectOperations } = await import('./catalog.js');
 const { mcpEndpointRoutes } = await import('./server.js');
+const { mcpOauthRoutes } = await import('./oauth.js');
 
 let app: FastifyInstance;
 
@@ -50,22 +65,22 @@ beforeAll(async () => {
     }, async (request) => ({ data: { created: request.body } }));
     api.delete('/things/:id', { onRequest: [requireRole('admin')] }, async (request) => ({ data: { deleted: (request.params as { id: string }).id } }));
     api.post('/things/:id/purge', { onRequest: [requireRole('admin')] }, async () => ({ data: { purged: true } }));
-    // Stand-in for the platform's impersonation route: same claims.
-    api.post('/admin/impersonate/:tenantId', { onRequest: [requireRole('admin')], config: { apiScope: 'read' } }, async (request) => {
-      const { tenantId } = request.params as { tenantId: string };
-      const now = Math.floor(Date.now() / 1000);
-      const token = app.jwt.sign({
-        sub: 'tenant-admin-1', role: 'tenant_admin', panel: 'tenant', tenantId, impersonatedBy: request.user.sub,
-        ...(request.user.apiToken ? { apiToken: request.user.apiToken } : {}), iat: now, exp: now + 3600,
-      } as never);
-      return { data: { token } };
-    });
+    // Stand-in for the platform's impersonation route, closed to tokens the same way.
+    api.post('/admin/impersonate/:tenantId', {
+      onRequest: [requireRole('admin')],
+      config: { apiTokenForbidden: 'Impersonation hands out a tenant credential.' },
+    }, async () => ({ data: { token: 'a-one-hour-tenant-token' } }));
     api.get('/tenant-only', { onRequest: [requirePanel('tenant')] },
       async (request) => ({ data: { tenantId: request.user.tenantId, impersonatedBy: request.user.impersonatedBy } }));
     api.post('/tenant-only', { onRequest: [requirePanel('tenant')] }, async () => ({ data: { wrote: true } }));
     api.post('/auth/whatever', async () => ({ data: 'never via agents' }));
   }, { prefix: '/api/v1' });
+  // What @fastify/cors does: a header set on the reply in a hook.
+  app.addHook('onRequest', async (request, reply) => {
+    if (request.url === '/api/v1/mcp') reply.header('access-control-allow-origin', '*');
+  });
   await app.register(mcpEndpointRoutes(catalog));
+  await app.register(mcpOauthRoutes);
   await app.ready();
 });
 
@@ -164,6 +179,25 @@ describe('the MCP endpoint', () => {
     expect(JSON.stringify(write.out.body)).toContain('INSUFFICIENT_SCOPE');
   });
 
+  it('cannot reach the impersonation route — no tenant credential leaves the server', async () => {
+    const { isError, out } = await callTool('insula_oat_good', 'call_operation', { operation: 'POST /admin/impersonate/:tenantId', pathParams: { tenantId: 'tenant-9' } });
+    expect(isError).toBe(true);
+    expect(String(out)).toMatch(/not available to agents/);
+    expect(String(out)).not.toContain('a-one-hour-tenant-token');
+  });
+
+  it('reports a tenant it cannot act as, instead of running anything', async () => {
+    const { isError, out } = await callTool('insula_oat_good', 'call_operation', { operation: 'GET /tenant-only', asTenant: 'tenant-gone' });
+    expect(isError).toBe(true);
+    expect(String(out)).toContain('Tenant not found');
+  });
+
+  it('keeps the CORS headers hooks set, although the reply is hijacked', async () => {
+    const res = await rpc('insula_oat_good', 'tools/list');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
   it('a tenant-panel route without asTenant is refused by its own guard', async () => {
     const { isError, out } = await callTool('insula_oat_good', 'call_operation', { operation: 'GET /tenant-only' });
     expect(isError).toBe(true);
@@ -191,5 +225,27 @@ describe('a PAT on the plain REST API', () => {
   it('an unknown token is refused', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/things', headers: { authorization: 'Bearer insula_pat_nope' } });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('cannot fetch a free-standing tenant token from the impersonation route', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/admin/impersonate/tenant-9', headers: { authorization: 'Bearer insula_pat_rw' } });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).not.toContain('a-one-hour-tenant-token');
+  });
+});
+
+describe('the edge check a proxy-protected admin host asks (ForwardAuth)', () => {
+  const check = (authorization?: string) => app.inject({
+    method: 'GET', url: '/api/v1/internal/agent-token-check', headers: authorization ? { authorization } : {},
+  });
+
+  it('passes a live PAT', async () => {
+    expect((await check('Bearer insula_pat_read')).statusCode).toBe(204);
+  });
+
+  it('turns away a PAT-shaped header that is no token, an OAuth token, or nothing', async () => {
+    expect((await check('Bearer insula_pat_made_up')).statusCode).toBe(401);
+    expect((await check('Bearer insula_oat_good')).statusCode).toBe(401);
+    expect((await check()).statusCode).toBe(401);
   });
 });

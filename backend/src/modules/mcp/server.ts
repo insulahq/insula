@@ -57,7 +57,7 @@ const META_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        operation: { type: 'string', description: 'e.g. "POST /tenants/:tenantId/domains".' },
+        operation: { type: 'string', description: 'e.g. "PATCH /admin/plans/:id".' },
         pathParams: { type: 'object', additionalProperties: { type: ['string', 'number'] } },
         query: { type: 'object', additionalProperties: true },
         body: { description: 'JSON request body.' },
@@ -190,13 +190,30 @@ export function mcpEndpointRoutes(catalog: OperationCatalog) {
       if (!principal) return reply;
       const server = buildServer(app, catalog, coreTools ?? resolveCoreTools(catalog), principal, request.ip);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      // Headers hooks already set on the reply (CORS) — a hijacked reply never
+      // writes them itself; writeHead merges what setHeader put there.
+      for (const [name, value] of Object.entries(reply.getHeaders())) {
+        if (value !== undefined) reply.raw.setHeader(name, value as string | number | string[]);
+      }
       reply.hijack();
       reply.raw.on('close', () => {
         void transport.close();
         void server.close();
       });
-      await server.connect(transport);
-      await transport.handleRequest(request.raw, reply.raw, request.body);
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(request.raw, reply.raw, request.body);
+      } catch (err) {
+        // After hijack() Fastify neither answers nor times the request out, so
+        // a throw here would leave the client waiting on an open socket.
+        request.log.error({ err }, 'mcp: request failed');
+        if (!reply.raw.headersSent) {
+          reply.raw.writeHead(500, { 'content-type': 'application/json' });
+          reply.raw.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null }));
+        } else if (!reply.raw.writableEnded) {
+          reply.raw.end();
+        }
+      }
       return reply;
     });
 

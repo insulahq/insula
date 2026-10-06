@@ -30,7 +30,7 @@ Every token carries one or more scopes, and every API call is checked against th
 |---|---|
 | **read** | Looking: every `GET` the admin role may make |
 | **write** | Changing things: creating, updating, suspending a tenant, moving a tenant's file to the recycle bin |
-| **delete** | Anything that cannot be undone: deleting, purging, emptying the trash, restoring or importing over existing data, rolling back, resetting passwords, rotating credentials, archiving a tenant, running raw SQL |
+| **delete** | Anything that cannot be undone: deleting, purging, emptying the trash, restoring or importing over existing data, disaster recovery, decommissioning, rolling back, resetting passwords, rotating credentials, archiving a tenant, running raw SQL |
 
 The check happens on the API route itself, so a script and an agent are held to exactly the
 same rule. A token never exceeds its user's role: a `delete`-scoped token of an admin still
@@ -44,7 +44,9 @@ Copy the **MCP endpoint** shown under *API tokens & AI agents* —
 - **Clients that sign in (OAuth)** — Claude, ChatGPT, Cursor, VS Code and most others: add the
   address as a remote MCP server. The client opens the admin panel's consent page; sign in if
   asked, check **where the approval is sent** (the client's name is chosen by the client),
-  pick the scopes, and approve.
+  pick the scopes, and approve. The page shows when the client registered itself and warns
+  when nobody has approved it before — if you did not just add the address to an AI client
+  yourself, deny.
 - **Clients that take a token** — paste a PAT as a Bearer token, e.g.
   `Authorization: Bearer insula_pat_…`.
 
@@ -82,8 +84,10 @@ curl -H "Authorization: Bearer $INSULA_TOKEN" \
 ```
 
 Every route of the admin API accepts a PAT. If the admin panel is protected by OAuth2 Proxy,
-requests that carry a platform token are let through to the API (the token is the
-credential); browser access still goes through the proxy.
+API requests carrying a PAT skip the proxy's browser sign-in — the token is checked before
+the request is let through, so only a live token gets past. Browser access still goes
+through the proxy. (Impersonating a tenant is not available with a token; agents use
+`asTenant` instead.)
 
 ## Audit
 

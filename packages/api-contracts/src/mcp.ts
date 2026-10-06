@@ -81,6 +81,10 @@ export const mcpConsentRequestSchema = z.object({
   redirectHost: z.string(),
   requestedScopes: z.array(mcpScopeSchema),
   expiresAt: z.string(),
+  /** When the client registered itself — a minutes-old "Claude" deserves a second look. */
+  clientRegisteredAt: z.string(),
+  /** Whether anyone has completed a sign-in with this client before. */
+  clientApprovedBefore: z.boolean(),
 });
 export type McpConsentRequest = z.infer<typeof mcpConsentRequestSchema>;
 

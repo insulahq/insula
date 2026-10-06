@@ -76,6 +76,15 @@ const TOUCH_EVERY_MS = 60_000;
 
 export function clearTokenCache(): void {
   resolveCache.clear();
+  touchedAt.clear();
+}
+
+/** An entry older than TOUCH_EVERY_MS means the same as none, so drop those. */
+function pruneTouched(now: number): void {
+  if (touchedAt.size < RESOLVE_CACHE_MAX) return;
+  for (const [tokenId, at] of touchedAt) {
+    if (now - at > TOUCH_EVERY_MS) touchedAt.delete(tokenId);
+  }
 }
 
 /**
@@ -118,6 +127,7 @@ export async function resolveToken(db: Database, secret: string, now: number = D
   resolveCache.set(hash, { at: now, principal });
 
   if (principal && now - (touchedAt.get(principal.tokenId) ?? 0) > TOUCH_EVERY_MS) {
+    pruneTouched(now);
     touchedAt.set(principal.tokenId, now);
     void db.update(mcpTokens).set({ lastUsedAt: new Date(now) }).where(eq(mcpTokens.id, principal.tokenId))
       .catch(() => { /* bookkeeping only */ });
@@ -204,7 +214,22 @@ export async function issueOauthToken(db: Database, input: {
  * expired PATs older than a day (kept a little so a list refresh does not
  * race the deletion), and finished or abandoned authorization requests.
  */
-export async function reapExpired(db: Database, now: Date = new Date()): Promise<{ tokens: number; requests: number }> {
+/** A registered client nobody ever approved is gone after a day… */
+const CLIENT_UNAPPROVED_TTL_MS = 86_400_000;
+/** …and one that was approved, after a month without a sign-in. */
+const CLIENT_IDLE_TTL_MS = 30 * 86_400_000;
+
+/**
+ * No token or parked request still names the client (both cascade on delete).
+ * Built per call: tables read at import time break every test that mocks the schema.
+ */
+const clientUnreferenced = () => sql`NOT EXISTS (SELECT 1 FROM ${mcpTokens} WHERE ${mcpTokens.clientId} = ${mcpOauthClients.id})
+  AND NOT EXISTS (SELECT 1 FROM ${mcpOauthRequests} WHERE ${mcpOauthRequests.clientId} = ${mcpOauthClients.id})`;
+
+export async function reapExpired(
+  db: Database,
+  now: Date = new Date(),
+): Promise<{ tokens: number; requests: number; clients: number }> {
   const dayAgo = new Date(now.getTime() - 86_400_000);
   const tokens = await db.delete(mcpTokens).where(or(
     and(eq(mcpTokens.kind, 'oauth'), lt(mcpTokens.expiresAt, now)),
@@ -213,6 +238,34 @@ export async function reapExpired(db: Database, now: Date = new Date()): Promise
   )).returning({ id: mcpTokens.id });
   const requests = await db.delete(mcpOauthRequests).where(lt(mcpOauthRequests.expiresAt, now))
     .returning({ id: mcpOauthRequests.id });
+  // After tokens and requests, so a client whose last token just expired can go.
+  const clients = await db.delete(mcpOauthClients).where(and(
+    or(
+      and(isNull(mcpOauthClients.lastUsedAt), lt(mcpOauthClients.createdAt, new Date(now.getTime() - CLIENT_UNAPPROVED_TTL_MS))),
+      lt(mcpOauthClients.lastUsedAt, new Date(now.getTime() - CLIENT_IDLE_TTL_MS)),
+    ),
+    clientUnreferenced(),
+  )).returning({ id: mcpOauthClients.id });
   if (tokens.length > 0) clearTokenCache();
-  return { tokens: tokens.length, requests: requests.length };
+  return { tokens: tokens.length, requests: requests.length, clients: clients.length };
+}
+
+/**
+ * Make room for one registration when the table is full: drop the oldest
+ * client that was never approved and holds no token (a pending request of
+ * its own goes with it). Registration is open, so without this anyone could
+ * fill the table and lock every real client out until the reaper ran.
+ * Returns false when every client is in use.
+ */
+export async function evictUnapprovedClient(db: Database): Promise<boolean> {
+  const [oldest] = await db.select({ id: mcpOauthClients.id }).from(mcpOauthClients)
+    .where(and(
+      isNull(mcpOauthClients.lastUsedAt),
+      sql`NOT EXISTS (SELECT 1 FROM ${mcpTokens} WHERE ${mcpTokens.clientId} = ${mcpOauthClients.id})`,
+    ))
+    .orderBy(mcpOauthClients.createdAt)
+    .limit(1);
+  if (!oldest) return false;
+  await db.delete(mcpOauthClients).where(eq(mcpOauthClients.id, oldest.id));
+  return true;
 }
