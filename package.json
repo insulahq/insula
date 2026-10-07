@@ -24,6 +24,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
-    "@testing-library/dom": "^10.4.1"
+    "@testing-library/dom": "^10.4.2"
   }
 }
