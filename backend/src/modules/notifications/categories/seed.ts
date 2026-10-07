@@ -1054,7 +1054,11 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'tenant.workload_disk_limit',
-    cls: 'availability',
+    // `action`, not `availability`: availability is the platform's OWN
+    // reachability and deliberately never relies on the panel, which strips
+    // in_app — the one channel a tenant reliably reads. This is a tenant's
+    // app restarting and something they may need to change (where it writes).
+    cls: 'action',
     reportsOn: 'storage',
     displayName: 'Application restarted: local disk limit',
     description: "One of your applications wrote more to its own container filesystem (temporary files, caches, logs written outside your storage) than the platform's per-application limit allows, so it was restarted on a clean filesystem. Your files and databases on your storage were not touched. If it keeps happening, the application is writing where it should not: move that data to your storage, or ask the platform operator to raise the limit. Without this limit one application could fill the server's disk for everyone on it.",
