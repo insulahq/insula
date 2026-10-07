@@ -145,6 +145,10 @@ export async function authRoutes(app: FastifyInstance) {
           password: { type: 'string', minLength: 1 },
         },
       },
+      // Fastify's serializer DROPS every property this schema does not name.
+      // Both answers must be listed: the session, and the passkey challenge
+      // a second-factor user gets instead (it once vanished here, leaving
+      // those users unable to finish a password sign-in).
       response: {
         200: {
           type: 'object',
@@ -156,6 +160,9 @@ export async function authRoutes(app: FastifyInstance) {
                 refreshToken: { type: 'string' },
                 expiresIn: { type: 'integer' },
                 refreshExpiresIn: { type: 'integer' },
+                requires_passkey: { type: 'boolean' },
+                pre_auth_token: { type: 'string' },
+                expires_in: { type: 'integer' },
                 user: {
                   type: 'object',
                   properties: {
@@ -163,6 +170,8 @@ export async function authRoutes(app: FastifyInstance) {
                     email: { type: 'string' },
                     fullName: { type: 'string' },
                     role: { type: 'string' },
+                    panel: { type: 'string' },
+                    tenantId: { type: ['string', 'null'] },
                   },
                 },
               },

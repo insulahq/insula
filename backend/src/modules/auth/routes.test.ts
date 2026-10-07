@@ -54,11 +54,17 @@ vi.mock('./service.js', async (importOriginal) => {
   };
 });
 
+vi.mock('./passkey-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./passkey-service.js')>()),
+  issuePreAuthToken: vi.fn().mockResolvedValue({ panel: 'admin', jti: 'pre-jti-1' }),
+}));
+
 vi.mock('../oidc/service.js', () => ({
   isLocalAuthDisabled: vi.fn().mockResolvedValue(false),
 }));
 
 const { authRoutes } = await import('./routes.js');
+const authService = await import('./service.js');
 
 describe('auth routes', () => {
   let app: FastifyInstance;
@@ -89,6 +95,32 @@ describe('auth routes', () => {
     expect(body.data.token).toBeDefined();
     expect(body.data.user.email).toBe('admin@example.com');
     expect(body.data.user.role).toBe('admin');
+  });
+
+  // The route's 200 response SCHEMA used to list only the token fields, and
+  // Fastify's serializer drops every property a schema does not name — so a
+  // second-factor user got `{ data: { user } }`: no session (good) but no
+  // challenge either, and could never finish signing in with a password.
+  // Asserted through the real route + schema, the layer the bug lived in.
+  it('POST /api/v1/auth/login hands a second-factor user the passkey challenge, not a session', async () => {
+    vi.mocked(authService.authenticateUser).mockResolvedValueOnce({
+      id: 'u1', email: 'admin@example.com', fullName: 'Admin User', role: 'admin',
+      panel: 'admin', tenantId: null, passkeyMode: 'second_factor',
+    } as Awaited<ReturnType<typeof authService.authenticateUser>>);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'admin@example.com', password: 'correct-password' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const { data } = res.json();
+    expect(data.requires_passkey).toBe(true);
+    expect(typeof data.pre_auth_token).toBe('string');
+    expect(data.expires_in).toBeGreaterThan(0);
+    expect(data.user).toMatchObject({ id: 'u1', panel: 'admin', tenantId: null });
+    expect(data.token).toBeUndefined();
+    expect(data.refreshToken).toBeUndefined();
   });
 
   it('POST /api/v1/auth/login should reject invalid email format', async () => {

@@ -27,6 +27,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Signing in with a password and a passkey as second factor works again.** For a user whose
+  passkey is set as a *second factor*, the password step answered without the passkey challenge
+  (the API's response definition left those fields out, so they were silently dropped), and the
+  login page waited forever — those users could only get in with a passkey alone. The password
+  step now hands over the challenge and the panel asks for the passkey. No session was ever
+  issued on the password alone.
 - **A cross-cluster migration imports each tenant's newest backup.** Picking the newest bundle
   compared a field the backup metadata does not have, so it imported whichever bundle the source
   listed first — an arbitrary, often older, copy. It now compares capture times, and Backups →
