@@ -413,7 +413,7 @@ cluster_cidr_args() { # -> "<pod-cidrs> <svc-cidrs>"
 # So operators with the workstation IP in --allow-source still get in
 # via the trusted_ranges path even when the mesh agent is down.
 #
-# Surfaces via /etc/hosting-platform/firewall.conf for the
+# Surfaces via /etc/hosting-platform/firewall/firewall.conf for the
 # security-probe DaemonSet to read.
 SSH_VIA_MESH_IFACE=""
 
@@ -994,7 +994,7 @@ FIREWALL TRUST (always-on set mode):
                            --ssh-via-mesh wt0
                            --ssh-via-mesh tailscale0
                            --ssh-via-mesh wg0
-                         Persists to /etc/hosting-platform/firewall.conf
+                         Persists to /etc/hosting-platform/firewall/firewall.conf
                          so the security-probe DaemonSet reports it
                          via the admin panel.
 
@@ -2997,10 +2997,17 @@ NFT
   log "Firewall configured (always-on set mode)."
 
   # Persist operator-declared posture for the security-probe
-  # DaemonSet. Key-value format, KEY=val per line; the probe reads
-  # this via a hostPath mount at /host/etc/hosting-platform/.
-  mkdir -p /etc/hosting-platform
-  cat > /etc/hosting-platform/firewall.conf <<HPFW
+  # DaemonSet. Key-value format, KEY=val per line. The file has a
+  # directory of its own because the probe mounts that directory —
+  # /etc/hosting-platform is /etc/insula, which holds credentials. The
+  # old path stays as a RELATIVE symlink for older readers (same layout
+  # as host-migration 2026.10.7/0001-firewall-conf-own-directory).
+  install -d -m 0755 /etc/hosting-platform/firewall
+  if [[ -f /etc/hosting-platform/firewall.conf && ! -L /etc/hosting-platform/firewall.conf ]]; then
+    rm -f /etc/hosting-platform/firewall.conf
+  fi
+  ln -sfn firewall/firewall.conf /etc/hosting-platform/firewall.conf
+  cat > /etc/hosting-platform/firewall/firewall.conf <<HPFW
 # Written by bootstrap.sh — DO NOT EDIT BY HAND.
 # Re-run bootstrap with appropriate flags to change posture.
 PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190 23022
@@ -3008,7 +3015,7 @@ PUBLIC_UDP_PORTS=51820 29899
 SSH_VIA_MESH=${ssh_via_mesh_persist}
 SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}
 HPFW
-  chmod 0644 /etc/hosting-platform/firewall.conf
+  chmod 0644 /etc/hosting-platform/firewall/firewall.conf
 
   # Always seed the firewall sets — set mode is the only mode now.
   seed_firewall_sets

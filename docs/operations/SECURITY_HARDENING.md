@@ -32,7 +32,7 @@ Top-right buttons:
 │                              │   - detect wt0/tailscale0/wg0
 │                              │   - sample /proc/net/nf_conntrack
 │                              │   - read /etc/hosting-platform/
-│                              │     firewall.conf
+│                              │     firewall/firewall.conf
 │                              │   - write ConfigMap per node
 └──────────┬───────────────────┘
            │ writes
@@ -59,7 +59,13 @@ The probe never mutates the host. It only reads:
 - `/proc/sys/kernel/osrelease`, `/etc/os-release`, `/proc/stat`
 - `/sys/class/net/*` (interface enumeration), `/proc/net/wireguard` (peer counts)
 - `/proc/net/nf_conntrack` (recent denies)
-- `/etc/hosting-platform/firewall.conf` (operator-declared posture)
+- `/etc/hosting-platform/firewall/firewall.conf` (operator-declared posture) — the probe mounts
+  this directory only, never `/etc/hosting-platform` itself: that path is `/etc/insula`, which
+  holds the platform's credential files. The pre-2026.10.7 location
+  `/etc/hosting-platform/firewall.conf` (now a relative symlink into the directory) is mounted as
+  a single file as a fallback for nodes that have not run host-migration
+  `2026.10.7/0001-firewall-conf-own-directory` yet. Through 2026.10.6 the probe mounted the
+  whole directory and so had those credential files mounted.
 - `/usr/sbin/` + `/usr/bin/` (binary presence checks: fail2ban / sshguard / unattended-upgrades)
 
 `securityContext` drops ALL capabilities, sets `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `seccompProfile: RuntimeDefault`. No `hostNetwork`, no `hostPID`, no privileged. Runs as root inside the container only because `/etc/ssh/sshd_config` is root-readable on most distros.
@@ -133,7 +139,7 @@ bash bootstrap.sh \
    ip  saddr @trusted_ranges_v4       tcp dport 22 accept
    ip6 saddr @trusted_ranges_v6       tcp dport 22 accept
    ```
-3. Persist `/etc/hosting-platform/firewall.conf` with `SSH_VIA_MESH=true` so the probe reports the new state.
+3. Persist `/etc/hosting-platform/firewall/firewall.conf` with `SSH_VIA_MESH=true` so the probe reports the new state.
 4. `systemctl enable nftables` + `nft -f` the new ruleset.
 5. SSH service is NOT restarted — only the firewall rule is rewritten. Existing SSH sessions stay up.
 

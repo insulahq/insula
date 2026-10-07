@@ -199,7 +199,7 @@ node.
 
 ??? info "Under the hood"
     The probe reads `sshd_config`, `/sys/class/net/*` (mesh interface
-    detection), `/proc/net/nf_conntrack`, `/etc/hosting-platform/firewall.conf`,
+    detection), `/proc/net/nf_conntrack`, `/etc/hosting-platform/firewall/firewall.conf`,
     and binary presence — then writes one ConfigMap per node that the backend
     composes into the Posture snapshot. NetBird/Tailscale ship userspace
     WireGuard, so the Mesh tab can't report peer/handshake state for them (only

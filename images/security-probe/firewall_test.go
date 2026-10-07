@@ -96,3 +96,72 @@ func TestParsePortList_RejectsInvalidPorts(t *testing.T) {
 		t.Fatalf("got=%v want %v", got, want)
 	}
 }
+
+// writeFirewallConfAt writes body at <root>/<rel>, creating parents.
+func writeFirewallConfAt(t *testing.T, root, rel, body string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Since 2026.10.7 the file lives in a directory of its own (the probe mounts
+// only that directory). When both copies are visible the new one is the truth.
+func TestReadFirewallConf_PrefersItsOwnDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall.conf",
+		"PUBLIC_TCP_PORTS=80 443 22\nSSH_VIA_MESH=false\n")
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall/firewall.conf",
+		"PUBLIC_TCP_PORTS=80 443\nSSH_VIA_MESH=true\nSSH_VIA_MESH_INTERFACE=wt0\n")
+	fw := readFirewallConf(root)
+	if !fw.loaded || !fw.sshViaMesh || fw.ssh22IsPublic {
+		t.Fatalf("want the new-path posture (mesh-only SSH), got %+v", fw)
+	}
+}
+
+// A node that has not run host-migration 2026.10.7/0001 yet still has the file
+// at the old path; the DaemonSet mounts that single file as a fallback.
+func TestReadFirewallConf_FallsBackToTheOldPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc/hosting-platform/firewall"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall.conf",
+		"PUBLIC_TCP_PORTS=80 443\nSSH_VIA_MESH=true\nSSH_VIA_MESH_INTERFACE=wt0\n")
+	fw := readFirewallConf(root)
+	if !fw.loaded || !fw.sshViaMesh || fw.ssh22IsPublic {
+		t.Fatalf("want the old-path posture, got %+v", fw)
+	}
+}
+
+// The kubelet creates an EMPTY file for a hostPath FileOrCreate mount whose
+// source is missing. That must read as "not present", not as a node that
+// declares no public ports at all.
+func TestReadFirewallConf_AnEmptyFileIsNotAPosture(t *testing.T) {
+	root := t.TempDir()
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall/firewall.conf", "")
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall.conf", "# only a comment\n\n")
+	fw := readFirewallConf(root)
+	if fw.loaded {
+		t.Fatalf("an empty/comment-only file must not count as loaded, got %+v", fw)
+	}
+	if !fw.ssh22IsPublic {
+		t.Fatal("with no posture on record SSH must be assumed public")
+	}
+}
+
+// An empty file in the new directory must not hide a real one at the old path.
+func TestReadFirewallConf_EmptyNewFileFallsThroughToOld(t *testing.T) {
+	root := t.TempDir()
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall/firewall.conf", "")
+	writeFirewallConfAt(t, root, "etc/hosting-platform/firewall.conf",
+		"PUBLIC_TCP_PORTS=80 443\nSSH_VIA_MESH=true\n")
+	fw := readFirewallConf(root)
+	if !fw.loaded || !fw.sshViaMesh {
+		t.Fatalf("want the old file's posture, got %+v", fw)
+	}
+}

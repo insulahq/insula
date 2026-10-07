@@ -8,41 +8,66 @@ import (
 	"strings"
 )
 
-// publicPortsFromFirewallConf reads
-// /host/etc/hosting-platform/firewall.conf (written by bootstrap.sh)
-// to determine the operator-declared public TCP/UDP ports for this
-// node. Returns empty slices if the file is missing or malformed —
-// the UI surfaces "unknown" rather than a false-empty list.
+// readFirewallConf reads the operator-declared public TCP/UDP ports and
+// SSH posture that bootstrap.sh persists for this node. Returns the
+// "SSH public, nothing loaded" default when no file holds a posture — the UI
+// surfaces "unknown" rather than a false-empty list.
 //
 // File format (KEY=val newline-separated):
-//   PUBLIC_TCP_PORTS=22 80 443 8443 6443
-//   PUBLIC_UDP_PORTS=51820 51821
-//   SSH_VIA_MESH=true
-//   SSH_VIA_MESH_INTERFACE=wt0
 //
-// The script only writes this file when --ssh-via-mesh was set, so
-// the absence of the file means "operator hasn't run a SSH-lockdown
-// bootstrap yet" — which the UI surfaces as `sshViaMeshFlag: false`.
+//	PUBLIC_TCP_PORTS=22 80 443 8443 6443
+//	PUBLIC_UDP_PORTS=51820 51821
+//	SSH_VIA_MESH=true
+//	SSH_VIA_MESH_INTERFACE=wt0
+//
+// Where it lives: see firewallConfPaths.
 type firewallConf struct {
-	publicTCP             []int
-	publicUDP             []int
-	sshViaMesh            bool
-	sshViaMeshInterface   *string
-	ssh22IsPublic         bool
-	loaded                bool
+	publicTCP           []int
+	publicUDP           []int
+	sshViaMesh          bool
+	sshViaMeshInterface *string
+	ssh22IsPublic       bool
+	loaded              bool
+}
+
+// firewallConfPaths are tried in order, relative to the host root.
+//
+//  1. Its own directory (bootstrap.sh and host-migration
+//     2026.10.7/0001-firewall-conf-own-directory). The DaemonSet mounts this
+//     directory and nothing else of /etc/hosting-platform, which is
+//     /etc/insula — the platform's credential files live there.
+//  2. The pre-2026.10.7 location, mounted as a single file so a node that has
+//     not run that host-migration yet still reports its real posture. After
+//     the migration it is a relative symlink to (1).
+var firewallConfPaths = []string{
+	"etc/hosting-platform/firewall/firewall.conf",
+	"etc/hosting-platform/firewall.conf",
 }
 
 func readFirewallConf(hostRoot string) firewallConf {
-	p := filepath.Join(hostRoot, "etc/hosting-platform/firewall.conf")
+	for _, rel := range firewallConfPaths {
+		if fw, ok := parseFirewallConfFile(filepath.Join(hostRoot, rel)); ok {
+			return fw
+		}
+	}
+	// Default safe assumption: SSH IS public — bootstrap.sh has not gated
+	// it. This is the truthful answer for any cluster that hasn't opted in
+	// to --ssh-via-mesh yet.
+	return firewallConf{ssh22IsPublic: true}
+}
+
+// parseFirewallConfFile returns ok=false when the file is missing or holds no
+// recognised key: the kubelet creates an EMPTY file for a FileOrCreate mount
+// whose source is absent, and that is "no posture on record", not "no public
+// ports".
+func parseFirewallConfFile(p string) (firewallConf, bool) {
 	f, err := os.Open(p)
 	if err != nil {
-		// Default safe assumption: SSH IS public — bootstrap.sh has
-		// not gated it. This is the truthful answer for any cluster
-		// that hasn't opted in to --ssh-via-mesh yet.
-		return firewallConf{ssh22IsPublic: true}
+		return firewallConf{}, false
 	}
 	defer f.Close()
 	out := firewallConf{loaded: true, ssh22IsPublic: true}
+	recognised := false
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -56,6 +81,10 @@ func readFirewallConf(hostRoot string) firewallConf {
 		k = strings.ToUpper(strings.TrimSpace(k))
 		v = strings.TrimSpace(v)
 		v = strings.Trim(v, "\"'")
+		switch k {
+		case "PUBLIC_TCP_PORTS", "PUBLIC_UDP_PORTS", "SSH_VIA_MESH", "SSH_VIA_MESH_INTERFACE":
+			recognised = true
+		}
 		switch k {
 		case "PUBLIC_TCP_PORTS":
 			out.publicTCP = parsePortList(v)
@@ -75,7 +104,10 @@ func readFirewallConf(hostRoot string) firewallConf {
 	if out.sshViaMesh && !containsInt(out.publicTCP, 22) {
 		out.ssh22IsPublic = false
 	}
-	return out
+	if !recognised {
+		return firewallConf{}, false
+	}
+	return out, true
 }
 
 func parsePortList(s string) []int {
@@ -109,11 +141,11 @@ func containsInt(haystack []int, needle int) bool {
 // classifySSHRestriction derives the public-API enum from the
 // (firewallConf, mesh) pair.
 //
-//   public           — SSH allowed on 0.0.0.0/0 (no scoping).
-//   mesh-only        — SSH allowed only via the mesh interface.
-//   trusted-only     — SSH allowed only from trusted_ranges saddr.
-//   mesh-and-trusted — both scoping rules apply (the
-//                      --ssh-via-mesh path renders both).
+//	public           — SSH allowed on 0.0.0.0/0 (no scoping).
+//	mesh-only        — SSH allowed only via the mesh interface.
+//	trusted-only     — SSH allowed only from trusted_ranges saddr.
+//	mesh-and-trusted — both scoping rules apply (the
+//	                   --ssh-via-mesh path renders both).
 func classifySSHRestriction(fw firewallConf) string {
 	if !fw.sshViaMesh {
 		return "public"

@@ -199,8 +199,17 @@ spec:
             - name: usr-lib-modules
               mountPath: /host/usr/lib/modules
               readOnly: true
-            - name: etc-hosting-platform
-              mountPath: /host/etc/hosting-platform
+            # firewall.conf ONLY. /etc/hosting-platform is /etc/insula, which
+            # holds the platform's credential files — never mount the root.
+            # Its own directory (2026.10.7+), plus the old single file as a
+            # fallback for a node that has not run host-migration
+            # 2026.10.7/0001 yet. Drop the fallback once every supported
+            # upgrade path has run it (ROADMAP R23b).
+            - name: firewall-conf-dir
+              mountPath: /host/etc/hosting-platform/firewall
+              readOnly: true
+            - name: firewall-conf-legacy
+              mountPath: /host/etc/hosting-platform/firewall.conf
               readOnly: true
             # fail2ban sqlite state — READ-ONLY; the probe opens it with
             # mode=ro&immutable=1 (no locks, no -wal/-shm). We never mount
@@ -292,7 +301,13 @@ spec:
           hostPath:
             path: /usr/lib/modules
             type: DirectoryOrCreate
-        - name: etc-hosting-platform
+        - name: firewall-conf-dir
           hostPath:
-            path: /etc/hosting-platform
+            path: /etc/hosting-platform/firewall
             type: DirectoryOrCreate
+        # FileOrCreate: the kubelet creates an EMPTY file when the source is
+        # missing; the probe reads an empty file as "no posture on record".
+        - name: firewall-conf-legacy
+          hostPath:
+            path: /etc/hosting-platform/firewall.conf
+            type: FileOrCreate

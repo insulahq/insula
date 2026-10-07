@@ -352,6 +352,14 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  platform-root-hostpath-check:
+    name: No pod mounts a whole platform root (credentials, operator key)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no hostPath mounts /etc/insula, /var/lib/insula or their aliases
+        run: ./scripts/ci-no-platform-root-hostpath.sh
+
   mail-image-pin-check:
     name: Mail image pins agree (Stalwart + stalwart-cli)
     runs-on: ubuntu-latest
