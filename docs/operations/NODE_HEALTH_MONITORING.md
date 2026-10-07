@@ -189,7 +189,7 @@ not Ready                                  → critical
 disk/memory/pid pressure                   → critical
 missing baseline CSI driver                → critical
 evictions/h ≥ EVICTION_CRITICAL_THRESHOLD  → critical (default 10)
-diskUsedPct  ≥ DISK_USED_PCT_CRITICAL      → critical (default 90)
+diskUsedPct  ≥ DISK_USED_PCT_CRITICAL      → critical (default 80)
 evictions/h ≥ EVICTION_WARNING_THRESHOLD   → warning  (default 3)
 diskUsedPct  ≥ DISK_USED_PCT_WARNING       → warning  (default 75)
                                             → normal
@@ -197,6 +197,12 @@ diskUsedPct  ≥ DISK_USED_PCT_WARNING       → warning  (default 75)
 
 Constants in `backend/src/modules/node-health/service.ts`. Override
 via env vars in a follow-up if cluster shapes diverge.
+
+Critical is 80, below the kubelet's own thresholds (image GC from 70 % used,
+`imagefs.available<15%` — evictions from 85 % used, since k3s keeps images on
+the root filesystem — and `nodefs.available<10%`). It was 90, which is the
+moment the kubelet starts evicting, so it never warned first. Tenant pods are
+also bounded individually — see [TENANT_DISK_LIMITS.md](TENANT_DISK_LIMITS.md).
 
 ## API
 
