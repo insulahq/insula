@@ -62,6 +62,7 @@ import {
 } from '../ingress-routes/traefik-apply.js';
 import { loadRouteMtlsPolicy } from '../ingress-mtls/service.js';
 import { serviceObjectName } from '../custom-deployments/k8s-deployer.js';
+import { resolveCustomRoutePort, type SpecPortsLike } from '../custom-deployments/route-port.js';
 import type { RouteMtlsPolicy } from '../ingress-mtls/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
@@ -428,30 +429,12 @@ export async function reconcileIngress(
       // Custom deployment: resolve from customSpec.
       const dep = customDeploymentMap.get(route.deploymentId);
       if (dep?.customSpec) {
-        const spec = dep.customSpec as {
-          services?: Record<string, {
-            ports?: Array<{
-              name: string;
-              containerPort: number;
-              exposeAsService?: boolean;
-              ingressEligible?: boolean;
-            }>;
-          }>;
-        };
+        const spec = dep.customSpec as SpecPortsLike;
         const services = Object.entries(spec.services ?? {});
         if (services.length > 0) {
-          let resolved: { svcName: string; portName: string; port: number } | undefined;
-          if (route.servicePort) {
-            for (const [svcName, svc] of services) {
-              const p = (svc.ports ?? []).find((p) => p.containerPort === route.servicePort);
-              if (p) { resolved = { svcName, portName: p.name, port: p.containerPort }; break; }
-            }
-          } else {
-            for (const [svcName, svc] of services) {
-              const p = (svc.ports ?? []).find((p) => p.ingressEligible && p.exposeAsService);
-              if (p) { resolved = { svcName, portName: p.name, port: p.containerPort }; break; }
-            }
-          }
+          // Shared with the port-edit path, which refuses an edit that would
+          // leave a route resolving to nothing here.
+          const resolved = resolveCustomRoutePort(spec, route.servicePort);
           if (resolved) {
             // Derive the name from the SAME function the deployer used to
             // create the object. This used to be re-derived here as

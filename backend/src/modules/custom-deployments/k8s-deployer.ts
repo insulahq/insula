@@ -27,9 +27,10 @@
 //
 // Re-apply semantics: createOrReplace per resource. Idempotent.
 
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { k8sPullSecretName } from './pat-store.js';
+import { describeK8sApplyError } from './k8s-apply-error.js';
 import type {
   CustomDeploymentSpec,
   CustomDeploymentService,
@@ -113,11 +114,35 @@ export async function deployCustomDeployment(
   // 2. For each service: render Deployment + Services. Apply in a
   // stable order (insertion order from spec.services) so a redeploy
   // doesn't churn the cluster needlessly.
+  const wantedServices = new Set<string>();
   for (const [serviceName, service] of serviceEntries) {
     await applyDeployment(k8s, input, serviceName, service, serviceCount);
     for (const port of service.ports) {
       if (!port.exposeAsService) continue;
       await applyService(k8s, input, serviceName, port, serviceCount);
+      wantedServices.add(serviceObjectName(input.deploymentName, serviceName, serviceCount, port.name));
+    }
+  }
+
+  // 3. Services are named after their port, so renaming, removing or
+  // un-exposing a port leaves the old one behind, still selecting the pods
+  // on a port nothing listens on.
+  await deleteUnwantedServices(k8s, input, wantedServices);
+}
+
+async function deleteUnwantedServices(
+  k8s: K8sClients,
+  input: DeployCustomInput,
+  wanted: ReadonlySet<string>,
+): Promise<void> {
+  const labelSelector = `insula.host/deployment-id=${input.deploymentId},insula.host/owner=custom-deployments`;
+  const list = await k8s.core.listNamespacedService(
+    { namespace: input.namespace, labelSelector } as Parameters<typeof k8s.core.listNamespacedService>[0],
+  ) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  for (const item of list.items ?? []) {
+    const n = item.metadata?.name;
+    if (n && !wanted.has(n)) {
+      await k8s.core.deleteNamespacedService({ name: n, namespace: input.namespace }).catch(swallow404);
     }
   }
 }
@@ -172,10 +197,11 @@ export function serviceObjectName(
  * Wrap a raw k8s SDK error so the original message — which can
  * include parts of the request payload (e.g. a tenant's inline
  * Secret content on a PATCH 422 echo) — never reaches the caller's
- * `lastError` field on the deployment row.
+ * `lastError` field on the deployment row. What does get through (field
+ * paths, HTTP status) is described in `k8s-apply-error.ts`.
  */
-function wrapK8sDeployerError(_err: unknown, kind: string, name: string, op: 'create' | 'patch'): Error {
-  return new Error(`Failed to ${op} ${kind} '${name}' to cluster`);
+function wrapK8sDeployerError(err: unknown, kind: string, name: string, op: 'create' | 'patch'): Error {
+  return describeK8sApplyError(err, kind, name, op);
 }
 
 async function applyConfigMap(
@@ -350,12 +376,27 @@ async function applyDeployment(
     // can land in `deployments.last_error` and become visible to
     // admins via the admin panel.
     if (!isK8s409(err)) throw wrapK8sDeployerError(err, 'Deployment', name, 'create');
-    // Patch the existing Deployment in place. Strategic-merge replaces
-    // the `template` block as a unit so changes to image / env / etc.
-    // propagate cleanly.
+    // Patch the existing Deployment in place. A plain strategic merge does
+    // NOT replace the pod template: it merges every list by key and keeps
+    // whatever the patch omits. A changed port number was kept beside the
+    // old one under the same name (`ports[1].name: Duplicate value`, so the
+    // save failed), and a removed env var, volume, pull secret or node pin
+    // stayed on the pod while the panel showed it gone.
+    //
+    // `$patch: replace` on the pod spec makes the render authoritative for
+    // it. The API server re-applies its defaults, so an unchanged render is
+    // still a no-op (no new ReplicaSet). Template METADATA keeps merging, so
+    // annotations other controllers stamp (the CPU-tier marker) survive.
+    const patchBody = {
+      ...body,
+      spec: {
+        ...body.spec,
+        template: { ...body.spec.template, spec: { $patch: 'replace', ...body.spec.template.spec } },
+      },
+    };
     try {
       await k8s.apps.patchNamespacedDeployment(
-        { name, namespace: input.namespace, body } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        { name, namespace: input.namespace, body: patchBody } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
         STRATEGIC_MERGE_PATCH,
       );
     } catch (patchErr) {
@@ -801,13 +842,23 @@ async function applyService(
   } catch (err) {
     if (!isK8s409(err)) throw wrapK8sDeployerError(err, 'Service', name, 'create');
     // For Services, immutable fields (clusterIP, selector under some
-    // conditions) make strategic-merge brittle. We do a narrow patch
+    // conditions) make a full re-apply brittle. We do a narrow patch
     // of `spec.ports` only — that's the field tenants change most
     // when iterating. Selector + clusterIP stay stable.
+    //
+    // A JSON merge patch, NOT strategic: strategic merge keys the port
+    // list by `port`, so a new number was appended beside the old one
+    // under the same name and the API server refused the Service. A merge
+    // patch replaces the list. The ingress label rides along, with `null`
+    // removing it when the port is no longer ingress-eligible.
+    const patchBody = {
+      metadata: { labels: { ...labels, 'insula.host/ingress-eligible': port.ingressEligible ? 'true' : null } },
+      spec: { ports: body.spec.ports },
+    };
     try {
       await k8s.core.patchNamespacedService(
-        { name, namespace: input.namespace, body: { spec: { ports: body.spec.ports } } } as unknown as Parameters<typeof k8s.core.patchNamespacedService>[0],
-        STRATEGIC_MERGE_PATCH,
+        { name, namespace: input.namespace, body: patchBody } as unknown as Parameters<typeof k8s.core.patchNamespacedService>[0],
+        MERGE_PATCH,
       );
     } catch (patchErr) {
       throw wrapK8sDeployerError(patchErr, 'Service', name, 'patch');

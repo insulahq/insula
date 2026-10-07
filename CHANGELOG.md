@@ -90,6 +90,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Changing a custom container's port no longer fails with "An unexpected error occurred".**
+  Saving the edit re-applied the deployment with a strategic merge, which keeps every list entry the
+  new version leaves out: the old port number stayed beside the new one under the same name, and
+  Kubernetes refused the result (`Duplicate value: "http"`). The same merge meant a removed
+  environment variable, volume or registry credential quietly stayed on the running container. The
+  edit now replaces the container definition and the Service's port list, removes the Service of a
+  renamed or removed port, moves pinned routes to the port's new number and rebuilds the tenant's
+  ingress. An edit that would leave a route with no port to reach is refused (`PORT_IN_USE_BY_ROUTE`)
+  instead of turning that hostname into a 404. When Kubernetes does reject a deployment, the message
+  now names the rejected fields (never their values) instead of a generic error.
 - **A mail failover that escalated to a restic restore no longer empties the mail store right
   afterwards.** When the restored standby copy missed something just created (a new domain, say),
   the failover correctly escalated to a restic restore of the newest snapshot and cut over — then
