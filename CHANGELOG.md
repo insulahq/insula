@@ -33,6 +33,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   login page waited forever — those users could only get in with a passkey alone. The password
   step now hands over the challenge and the panel asks for the passkey. No session was ever
   issued on the password alone.
+- **Plesk migration: the "Target tenant" list is no longer empty.** It offers tenants whose
+  namespace is provisioned, but the tenant list the API returns left that field out, so no
+  tenant ever qualified and a migration could not be started from the dialog.
 - **A cross-cluster migration imports each tenant's newest backup.** Picking the newest bundle
   compared a field the backup metadata does not have, so it imported whichever bundle the source
   listed first — an arbitrary, often older, copy. It now compares capture times, and Backups →
