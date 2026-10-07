@@ -11,7 +11,6 @@ import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
-  AuthenticatorTransportFuture,
 } from '@simplewebauthn/server';
 import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
@@ -299,7 +298,7 @@ export async function beginRegistration(
     attestationType: 'none', // Don't require a specific authenticator vendor.
     excludeCredentials: existing.map((e) => ({
       id: e.credentialId.toString('base64url'),
-      transports: e.transports as AuthenticatorTransportFuture[] | undefined,
+      transports: e.transports ?? undefined,
     })),
     authenticatorSelection: {
       // Passkeys (synced + discoverable) are required so userless login
@@ -385,7 +384,9 @@ export async function beginAuthentication(
   panel: PasskeyPanel,
   userId: string | null, // null = userless flow
 ): Promise<PublicKeyCredentialRequestOptionsJSON> {
-  let allowCredentials: { id: string; transports?: AuthenticatorTransportFuture[] }[] | undefined;
+  // v14 takes transports as plain strings — stored values (incl. legacy
+  // `cable` / `smart-card`) pass through unnarrowed.
+  let allowCredentials: { id: string; transports?: string[] }[] | undefined;
   if (userId) {
     const creds = await db
       .select({ credentialId: userPasskeys.credentialId, transports: userPasskeys.transports })
@@ -397,7 +398,7 @@ export async function beginAuthentication(
     }
     allowCredentials = creds.map((c) => ({
       id: c.credentialId.toString('base64url'),
-      transports: c.transports as AuthenticatorTransportFuture[] | undefined,
+      transports: c.transports ?? undefined,
     }));
   }
 
@@ -517,7 +518,7 @@ export async function completeAuthentication(
       id: passkeyRow.credentialId.toString('base64url'),
       publicKey: Uint8Array.from(passkeyRow.publicKey),
       counter: passkeyRow.signCount,
-      transports: (passkeyRow.transports as AuthenticatorTransportFuture[] | undefined),
+      transports: passkeyRow.transports ?? undefined,
     },
   });
 
