@@ -1,6 +1,6 @@
 # ADR-055: `insula` single-binary install + host-footprint branding
 
-**Status:** Proposed (2026-07-26)
+**Status:** Implemented in v2026.7.4 (2026-07-26). Status corrected 2026-10-07 — it read "Proposed" for ten weeks after shipping. Leftovers, including a credential exposure the path consolidation caused in the security-probe (fixed in 2026.10.7): ROADMAP [R23b](../../roadmap/ROADMAP.md#r23b--adr-055-leftovers).
 
 Completes the operator-tooling consolidation started in
 [ADR-045](ADR-045-versioning-release-cycle-and-upgrade.md) W10c (host-migrations

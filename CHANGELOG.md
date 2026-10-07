@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **The security probe no longer has the platform's credential files mounted.** It mounted the
+  host directory `/etc/hosting-platform` to read the node's firewall posture. Since the 2026.7.4
+  rebrand that directory is `/etc/insula`, which also holds the admin, Stalwart, Valkey and
+  Roundcube credential files, and the probe runs as root inside its container, so those files were
+  readable to it. The posture file now has a directory of its own
+  (`/etc/hosting-platform/firewall/firewall.conf`; the old path stays as a link to it), and the
+  probe mounts only that. Existing nodes move the file with a host migration; until a node has run
+  it, the probe still reads the old file, so the security page shows the real SSH posture
+  throughout. A CI check now fails any pod that mounts a whole platform directory. Nothing to do
+  for operators beyond pulling the release.
+
+### Fixed
+
+- **A cross-cluster migration imports each tenant's newest backup.** Picking the newest bundle
+  compared a field the backup metadata does not have, so it imported whichever bundle the source
+  listed first — an arbitrary, often older, copy — and Migration showed no capture time. It now
+  compares capture times and shows the right one.
+
 ### Removed
 
 - **The hosting-plan AI budget is gone from the database too.** v2026.10.6 retired the AI code

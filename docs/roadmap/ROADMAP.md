@@ -34,9 +34,10 @@
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | ✅ Shipped 2026-07-08 — mount source read-only → list → import (single/all) + guided UI; DEV E2E 11/0 |
 | [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
-| [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
+| [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | — | ✅ **SHIPPED in v2026.7.4** (ADR-055) — bootstrap embedded in the signed `insula` binary, branded host paths, rebrand host-migration; this row said "Proposed" until 2026-10-07. Leftovers → [R23b](#r23b--adr-055-leftovers) |
+| [R23b](#r23b--adr-055-leftovers) | ADR-055 leftovers | P2 | Open — probe credential exposure **fixed 2026-10-07**; compat `platform-ops` link on every install path, drop the legacy release asset name, CLI help/version text, VM tier through `insula bootstrap`, retire the probe's legacy firewall.conf mount |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
-| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
+| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ §1–§3 shipped; **§4 half done** — the key check gates recover-all only, cross-cluster migration import has none, and a wrong key breaks every data restore (the restic password derives from it). Fleet migration importing an arbitrary, often older, bundle per tenant **fixed 2026-10-07** |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | **SHIPPED 2026-09-28.** Operator decision recorded: KEEP — the new host was already a hard dependency (Calico, Helm, CSI snapshotter) and `k3s.io` is now contacted not at all |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
@@ -969,7 +970,17 @@ exercises cosign verify + migrations + the k3s stepping before a stable cut.
 
 ## R23 — `insula` single-binary install + branding
 
-**Proposed 2026-07-26 — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+**✅ SHIPPED in v2026.7.4 (2026-07-26) — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+Re-checked against the code 2026-10-07: `insula bootstrap` extracts and runs the
+embedded `bootstrap.sh` + `scripts/lib` + `k8s/` tree (`backend/src/cli/platform-ops/deps.ts`
+`realRunBootstrap`, embedded by `scripts/build-platform-ops.sh`); release assets
+are `insula-linux-*`; `/var/lib/insula` + `/etc/insula` are the real roots with
+the four generic roots symlinked to them (`configure_branded_paths`; existing
+nodes via `platform/host-migrations/2026.7.4/0001-rebrand-to-insula.sh`, which
+moves each old directory's contents and leaves a symlink). Production was
+installed fresh with `insula bootstrap`. `platform-ops` is a TypeScript SEA,
+not Go. What was left over is tracked as [R23b](#r23b--adr-055-leftovers); the
+text below is the original proposal.
 
 > **Re-scope needed before this starts (noted 2026-09-13).** The plan below
 > sequences the three changes together "while the installed base is a single
@@ -1013,6 +1024,47 @@ node's self-upgrade can still fetch it. Host-migration markers are
 name-independent, so the binary rename cannot re-trigger migrations; the path
 rebrand preserves that invariant only because it uses symlinks — load-bearing,
 CI-guardable. Full design + risks: ADR-055.
+
+## R23b — ADR-055 leftovers
+
+Found 2026-10-07 while re-checking R23 against the code.
+
+1. ✅ **The security-probe had the platform's credential files mounted — fixed
+   2026-10-07.** It mounted `/etc/hosting-platform` to read `firewall.conf`.
+   The rebrand made that path a symlink to `/etc/insula`, which also holds the
+   admin, Stalwart, Valkey and Roundcube credential files; the probe runs as
+   uid 0, so dropping every capability did not stop it reading those root-owned
+   0600 files (verified on DEV through the running pod's mountinfo — the files
+   were not opened). `firewall.conf` now has a directory of its own
+   (`/etc/hosting-platform/firewall/`, bootstrap + host-migration
+   `2026.10.7/0001-firewall-conf-own-directory`), the probe mounts only that,
+   and `scripts/ci-no-platform-root-hostpath.sh` fails any manifest, script
+   heredoc or backend pod spec that mounts one of the six roots.
+2. **Retire the probe's legacy single-file mount** of
+   `/etc/hosting-platform/firewall.conf`. It covers nodes that have not run the
+   host-migration above yet; drop it once every supported upgrade path has.
+3. **`/usr/local/bin/platform-ops` compat link on every install path.**
+   `phase_platform_ops` (`scripts/lib/bootstrap-phases.sh`) creates it only
+   after fetching a release; the documented install puts the binary in place
+   first, takes the "already at <version>" early return and never reaches it.
+   Runbooks and integration scripts still call `platform-ops`.
+4. **Stop publishing `platform-ops-linux-*`.** `release.yml` still signs and
+   ships both names; ADR-055 planned one transition release. No binary older
+   than 2026.7.4 remains in the field.
+5. **CLI text:** help (`dispatch.ts`), `version` and the fatal-error prefix
+   still say `platform-ops`.
+6. **The VM tier never installs through `insula bootstrap`** —
+   `vm-integration-tests/spawn-cluster.sh` runs `bootstrap.sh --remote`, so the
+   path operators actually use has no automated end-to-end run.
+7. **First-binary trust:** the install docs fetch the binary and `cosign.pub`
+   from the same GitHub origin. Publish the key fingerprint out of band and add
+   a fingerprint check to the install docs.
+
+**Keep, deliberately:** the four generic-root symlinks (code still reads the
+old paths, and a rollback to an older binary needs them), and the systemd unit
+names `platform-ops-{update,host-config}` — the old binary restarts
+`platform-ops-host-config.service` by name right after swapping in the new
+one, so renaming it breaks the upgrade that ships the rename.
 
 ## R24 — PROXY-protocol support for cloud load balancers
 
@@ -1153,12 +1205,34 @@ The resolver now returns `{ targets, skipped }`:
    components. `list-tenants` already surfaces newest-bundle metadata — this is
    a presentation + hard-gate change, not new machinery.
 
-4. ~~**Encryption-key mismatch is discovered late.**~~ **Done 2026-09-14** —
-   `dr-recover/encryption-preflight.ts`, wired into `recover-all` on both the
-   preview and the run.
+4. **Encryption-key mismatch is discovered late — half done.**
+   `dr-recover/encryption-preflight.ts` (2026-09-14) is wired into `recover-all`
+   on both the preview and the run. **Still open (re-checked 2026-10-07):**
+   - The cross-cluster migration import (`migration/service.ts`) calls the
+     per-tenant recover route directly and runs no key check at all.
+   - The correction below is itself wrong about data: every tenant's restic
+     repository password is `HKDF(PLATFORM_ENCRYPTION_KEY, "restic-tenant-<id>")`
+     (`tenant-bundles/restic-driver.ts` `deriveResticPassword`, used by the
+     files, mailboxes and databases restore executors). With a different key
+     every **data** restore fails with a wrong-password error, after the
+     namespace, PVC and quota already exist — not only the encrypted columns.
+     So `allowEncryptionKeyMismatch` produces empty tenants, and its remedy text
+     undersells that.
+   - The up-front check needs evidence from the BUNDLE: a key-check value
+     stamped into `meta.json` at capture, and for older bundles a read-only
+     `restic snapshots` probe (exit 12 = wrong password). Design notes:
+     2026-10-07 analysis.
 
-   The premise needed correcting first. A key mismatch does not fail the restore
-   at all: the `secrets` component is never restored (`drRecoverComponentSchema`
+   **Fixed alongside (2026-10-07):** the migration scan picked each tenant's
+   "newest" bundle by `meta.createdAt`, which the meta schema does not have
+   (it is `capturedAt`; Zod strips unknown keys). Every comparison tied and
+   the first bundle the store listed won — bundle ids are random, so a fleet
+   migration imported an arbitrary, often older, copy of each tenant, and the
+   UI showed no capture time. Now `migration/bundle-pick.ts`, typed from the
+   meta contract, compares instants.
+
+   The 2026-09-14 write-up said the premise needed correcting first. A key
+   mismatch does not fail the restore at all: the `secrets` component is never restored (`drRecoverComponentSchema`
    excludes it — TLS secrets are re-issued by provisioning), and `config-tables`
    inserts encrypted columns verbatim without reading them. What actually
    happens is quieter and worse — the recover *succeeds*, and every encrypted
