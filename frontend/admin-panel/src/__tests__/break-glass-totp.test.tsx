@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Login from '../pages/Login';
 import { apiFetch, ApiError } from '@/lib/api-client';
+import { useAuth } from '@/hooks/use-auth';
 
 vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
@@ -74,5 +75,25 @@ describe('emergency (break-glass) sign-in with an authenticator app', () => {
     expect(breakGlassBodies()[0]).toMatchObject({ code: '123 456' });
     expect(breakGlassBodies()[1]).toMatchObject({ backup_code: 'abcde-fghij' });
     expect(breakGlassBodies()[1]).not.toHaveProperty('code');
+  });
+});
+
+describe('the code step on the login page', () => {
+  it('shows a wrong-code message once, inside the step — not again as a page banner', async () => {
+    mockApiFetch.mockResolvedValue({ data: { localAuthEnabled: true, providers: [] } });
+    useAuth.setState({
+      error: 'That code is not right.',
+      totpChallenge: { preAuthToken: 'p', expiresIn: 300, user: { id: 'u1', email: 'ada@example.test', fullName: 'A', role: 'admin' } },
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/login']}><Login /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('totp-step')).toBeInTheDocument());
+    expect(screen.getAllByText('That code is not right.')).toHaveLength(1);
+    expect(screen.queryByTestId('login-error')).not.toBeInTheDocument();
+    useAuth.setState({ error: null, totpChallenge: null });
   });
 });

@@ -235,7 +235,8 @@ export default function Login() {
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{isEmergency ? 'Emergency Admin Login' : 'Sign in to admin panel'}</p>
         </div>
 
-        {(error || oidcError) && (
+        {/* During the code step, TotpStep shows the store's error itself. */}
+        {((error && !totpChallenge) || oidcError) && (
           <div className="mb-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="login-error">
             {error ?? (oidcMessage ? decodeURIComponent(oidcMessage) : 'Authentication failed. Please contact your administrator.')}
           </div>
