@@ -25,6 +25,10 @@ export interface SystemSettings {
   // removed. The bin lives on the tenant's own PVC, so it keeps consuming
   // their quota for the whole window. Admin-adjustable (1–365 days).
   readonly fileTrashRetentionDays: number;
+  // Node-disk ceiling per tenant container (R37), MiB. Applied on next deploy.
+  readonly tenantAppDiskLimitMb: number;
+  // Same, for database components.
+  readonly tenantDatabaseDiskLimitMb: number;
   readonly timezone: string;
   readonly currencySymbol: string;
   // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat in
