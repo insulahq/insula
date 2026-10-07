@@ -41,6 +41,7 @@ import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { passkeyRoutes } from './modules/auth/passkey-routes.js';
 import { stepUpRoutes } from './modules/auth/step-up-routes.js';
+import { totpRoutes } from './modules/auth/totp-routes.js';
 import { planRoutes } from './modules/plans/routes.js';
 import { regionRoutes } from './modules/regions/routes.js';
 import { catalogRoutes } from './modules/catalog/routes.js';
@@ -647,6 +648,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(passkeyRoutes, { prefix: '/api/v1' });
   await app.register(stepUpRoutes, { prefix: '/api/v1' });
+  await app.register(totpRoutes, { prefix: '/api/v1' });
   await app.register(planRoutes, { prefix: '/api/v1' });
   await app.register(regionRoutes, { prefix: '/api/v1' });
   await app.register(tenantRoutes, { prefix: '/api/v1' });

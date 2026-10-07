@@ -7,6 +7,7 @@ import { useSelection } from '@/hooks/use-selection';
 import { useBulkDeleteAdminUsers } from '@/hooks/use-bulk-admin-users';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import TotpResetCell from '@/components/users/TotpResetCell';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -192,15 +193,19 @@ export default function AdminUsers({ onSelectUser }: AdminUsersProps = {}) {
                     <StatusBadge status={user.status === 'active' ? 'active' : 'suspended'} />
                   </td>
                   <td className="hidden px-5 py-3.5 text-sm md:table-cell" data-testid={`au-mfa-${user.id}`}>
-                    {user.passkeyCount > 0 ? (
-                      <span className="inline-flex items-center gap-1 rounded bg-green-100 dark:bg-green-900/40 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">
-                        ✓ {user.passkeyCount}
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300" title="No passkey registered">
-                        ⚠ none
-                      </span>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {user.passkeyCount > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded bg-green-100 dark:bg-green-900/40 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-300" title="Registered passkeys">
+                          ✓ {user.passkeyCount}
+                        </span>
+                      )}
+                      {user.totpEnabled && <TotpResetCell userId={user.id} enabled />}
+                      {user.passkeyCount === 0 && !user.totpEnabled && (
+                        <span className="inline-flex items-center gap-1 rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300" title="No passkey and no authenticator app">
+                          ⚠ none
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                     {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}

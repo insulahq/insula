@@ -1,21 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { AdminUserListItem } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-export interface AdminUser {
-  readonly id: string;
-  readonly email: string;
-  readonly fullName: string;
-  readonly roleName: string;
-  readonly status: string;
-  readonly lastLoginAt: string | null;
-  /** IP of the most-recent refresh-token issuance — derived (no
-   *  schema change). Null when the user has never logged in. */
-  readonly lastLoginIp: string | null;
-  /** Number of registered passkey credentials. Surfaced as an MFA
-   *  indicator column in the admin-users table. */
-  readonly passkeyCount: number;
-  readonly createdAt: string;
-}
+/** A row of GET /admin/users — the contract type (sign-in facts included). */
+export type AdminUser = AdminUserListItem;
 
 interface AdminUsersResponse {
   readonly data: readonly AdminUser[];
@@ -62,5 +50,22 @@ export function useDeleteAdminUser() {
     mutationFn: (id: string) =>
       apiFetch<void>(`/api/v1/admin/users/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+  });
+}
+
+/**
+ * Remove a user's authenticator-app second factor (admin or tenant user) —
+ * for someone who lost both the phone and the backup codes. super_admin only.
+ */
+export function useResetUserTotp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) =>
+      apiFetch<{ data: { wasEnabled: boolean } }>(`/api/v1/admin/users/${encodeURIComponent(userId)}/totp`, { method: 'DELETE' })
+        .then((r) => r.data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+      void queryClient.invalidateQueries({ queryKey: ['tenant-users'] });
+    },
   });
 }

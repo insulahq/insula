@@ -61,11 +61,18 @@ or *Read Only*; `super_admin` is the elevated system role.
 - **Active Node-Terminal Sessions** — every open node-terminal session
   across the cluster, with terminate-from-elsewhere.
 
-!!! note "Passkeys are self-service"
-    Each admin enrolls and manages their own **passkeys** from their own
-    profile (the user menu → *Settings*). This page shows you *whether* a
-    user has MFA and lets you revoke their sessions, but you don't enroll
-    passkeys on someone else's behalf from here.
+!!! note "Passkeys and authenticator apps are self-service"
+    Each user enrolls their own **passkeys** and **authenticator app**
+    (two-step sign-in with a 6-digit code) from their own profile (the user
+    menu → *Settings*). The **MFA** column here shows who has a passkey
+    (✓ count) and who has an app code; nobody is required to have either.
+
+    A **super_admin** can remove a user's authenticator app — for someone who
+    lost both their phone and their backup codes — with **Reset** next to
+    *App code* (admin users here, tenant users under **Tenants → Users**, column
+    *2FA*). The user then signs in with their password alone and can set the
+    app up again. The emergency CLI password reset
+    (`scripts/admin-password-reset.sh`) also removes it.
 
 ## Posture (super_admin)
 

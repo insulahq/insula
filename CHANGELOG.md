@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Two-step sign-in with an authenticator app (TOTP), in both panels.** Under User Settings →
+  Authenticator app, a user can add a 6-digit code from any authenticator app to their password
+  sign-in: scan the QR code (drawn in the browser), confirm with a code, and store the ten
+  single-use backup codes shown once. Signing in is then email + password + code (or a backup
+  code); a passkey still signs in on its own. Optional for everyone, admins included. The panel
+  shows the backup codes left and warns when few remain; making new ones or turning the app off
+  needs a current code. A code works once, and wrong codes lock the step for 15 minutes after
+  ten tries. A super_admin can remove a user's app (Identity & Sessions → MFA column; Tenants →
+  Users → 2FA) for someone who lost their phone and backup codes, and the emergency CLI password
+  reset removes it too.
+
+### Changed
+
+- **A passkey signs in on its own — the "Password + passkey (2FA)" mode is gone.** A passkey is
+  already two factors (the device plus its PIN or biometric); the second factor for a password is
+  now the authenticator app. Accounts that had the 2FA mode now use passkey sign-in, and could
+  not finish signing in before anyway (the password step answered without the passkey prompt,
+  and passkey-only sign-in was refused for that mode).
+
 ### Security
 
 - **The security probe no longer has the platform's credential files mounted.** It mounted the
@@ -27,12 +48,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
-- **Signing in with a password and a passkey as second factor works again.** For a user whose
-  passkey is set as a *second factor*, the password step answered without the passkey challenge
-  (the API's response definition left those fields out, so they were silently dropped), and the
-  login page waited forever — those users could only get in with a passkey alone. The password
-  step now hands over the challenge and the panel asks for the passkey. No session was ever
-  issued on the password alone.
 - **Plesk migration: the "Target tenant" list is no longer empty.** It offers tenants whose
   namespace is provisioned, but the tenant list the API returns left that field out, so no
   tenant ever qualified and a migration could not be started from the dialog.

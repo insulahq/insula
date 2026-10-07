@@ -1,18 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
+import type { TenantUserResponse } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
 
-export interface TenantUser {
-  readonly id: string;
-  readonly email: string;
-  readonly fullName: string;
-  readonly roleName: string;
-  readonly status: string;
-  readonly tenantId: string | null;
-  readonly tenantName: string | null;
-  readonly lastLoginAt: string | null;
-  readonly createdAt: string;
-}
+/** A row of GET /admin/tenant-users — the contract type. */
+export type TenantUser = TenantUserResponse;
 
 interface UseTenantUsersParams {
   readonly limit?: number;

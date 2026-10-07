@@ -9,7 +9,7 @@ import { z } from 'zod';
 //
 // Methods are derived from the user's auth config:
 //   • 'password'  — user has a passwordHash set
-//   • 'passkey'   — user has passkey_mode IN ('alternative','second_factor')
+//   • 'passkey'   — user has passkey_mode = 'alternative' (passkey sign-in on)
 //
 // Multi-method users (passwordHash AND passkey enabled) MUST pass
 // every applicable method to satisfy step-up; the backend returns the

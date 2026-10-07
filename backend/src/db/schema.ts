@@ -3743,6 +3743,32 @@ export const userPasskeys = pgTable('user_passkeys', {
 export type UserPasskey = typeof userPasskeys.$inferSelect;
 export type NewUserPasskey = typeof userPasskeys.$inferInsert;
 
+// Authenticator-app second factor for password sign-in (migration 0151).
+export const userTotp = pgTable('user_totp', {
+  userId: varchar('user_id', { length: 36 })
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  secretEncrypted: text('secret_encrypted').notNull(),
+  enabledAt: timestamp('enabled_at', { withTimezone: true }),
+  lastUsedStep: bigint('last_used_step', { mode: 'number' }),
+  failedAttempts: integer('failed_attempts').notNull().default(0),
+  failedWindowStartedAt: timestamp('failed_window_started_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const userTotpBackupCodes = pgTable('user_totp_backup_codes', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  codeHash: varchar('code_hash', { length: 64 }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('user_totp_backup_codes_user_hash_unique').on(table.userId, table.codeHash),
+]);
+
 // ─── Admin node-terminal sessions (ADR-041 evolved spec) ────────────
 //
 // Per-session row. Survives platform-api replica restarts, lets any

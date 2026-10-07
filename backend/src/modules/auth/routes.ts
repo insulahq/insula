@@ -27,6 +27,9 @@ import {
   REFRESH_TOKEN_TTL_SECONDS,
 } from './refresh-token-service.js';
 import { signAccessToken } from './access-token.js';
+import { PRE_AUTH_TOKEN_TTL_SECONDS, signPreAuthToken } from './pre-auth.js';
+import { issueSession } from './session.js';
+import { isTotpEnabled } from './totp-service.js';
 
 // Phase 3: split-token auth.
 //   - Access JWT: 30 min (ACCESS_TOKEN_TTL_SECONDS), stateless verify.
@@ -83,32 +86,6 @@ function extractRefreshTokenFromCookie(cookieHeader: string | undefined): string
   return undefined;
 }
 
-const PRE_AUTH_TOKEN_TTL_SECONDS = 5 * 60;
-
-/**
- * Issue a short-lived JWT that proves "step 1 (password) succeeded
- * for this user; awaiting passkey assertion as step 2".
- *
- * The token is signed with the same JWT secret as the access token —
- * differentiated by the `step: 'passkey_2fa'` claim and the JTI being
- * tracked single-use in auth_consumed_tokens. An attacker who steals
- * a pre-auth token can't use it as an access token because the access
- * verifier rejects payloads with non-empty `step` claims.
- */
-function signPreAuthToken(app: FastifyInstance, userId: string, panel: 'admin' | 'tenant', jti: string): string {
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    sub: userId,
-    panel,
-    step: 'passkey_2fa',
-    exp: now + PRE_AUTH_TOKEN_TTL_SECONDS,
-    iat: now,
-    jti,
-  };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return app.jwt.sign(payload as any);
-}
-
 // Login rate limit. Production gets the conservative 10 / 15 minutes —
 // real users only re-login a few times per day, so this is plenty for
 // legitimate traffic and tight enough to throttle credential-stuffing
@@ -146,9 +123,9 @@ export async function authRoutes(app: FastifyInstance) {
         },
       },
       // Fastify's serializer DROPS every property this schema does not name.
-      // Both answers must be listed: the session, and the passkey challenge
-      // a second-factor user gets instead (it once vanished here, leaving
-      // those users unable to finish a password sign-in).
+      // Both answers must be listed: the session, and the second-step
+      // challenge a TOTP user gets instead (a missing field here once left
+      // second-factor users unable to finish a password sign-in).
       response: {
         200: {
           type: 'object',
@@ -160,7 +137,7 @@ export async function authRoutes(app: FastifyInstance) {
                 refreshToken: { type: 'string' },
                 expiresIn: { type: 'integer' },
                 refreshExpiresIn: { type: 'integer' },
-                requires_passkey: { type: 'boolean' },
+                requires_totp: { type: 'boolean' },
                 pre_auth_token: { type: 'string' },
                 expires_in: { type: 'integer' },
                 user: {
@@ -200,21 +177,18 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, password } = parsed.data;
     const user = await authenticateUser(app.db, email, password);
 
-    // Passkey 2FA branch: when user opted into 'second_factor' mode,
-    // step 1 (password) must NOT issue session tokens. Return a
-    // pre-auth token; the frontend transitions to a passkey-prompt
-    // view and calls /auth/passkey/login/verify with the token.
-    if (user.passkeyMode === 'second_factor') {
-      const { issuePreAuthToken } = await import('./passkey-service.js');
-      const pre = await issuePreAuthToken(
-        app.db,
-        user.id,
-        (user.panel ?? 'admin') as 'admin' | 'tenant',
-      );
-      const preAuthToken = signPreAuthToken(app, user.id, pre.panel, pre.jti);
+    // Two-step sign-in: a user with an authenticator app (TOTP) on gets no
+    // session from the password alone — a single-use pre-auth token instead,
+    // redeemed with a code at POST /auth/totp/login/verify.
+    if (await isTotpEnabled(app.db, user.id)) {
+      const preAuthToken = signPreAuthToken(app, {
+        userId: user.id,
+        panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+        step: 'totp_2fa',
+      });
       return reply.send({
         data: {
-          requires_passkey: true,
+          requires_totp: true,
           pre_auth_token: preAuthToken,
           expires_in: PRE_AUTH_TOKEN_TTL_SECONDS,
           user: {
@@ -229,39 +203,15 @@ export async function authRoutes(app: FastifyInstance) {
       });
     }
 
-    const accessToken = signAccessToken(app, {
-      userId: user.id,
+    const session = await issueSession(app, request, reply, {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
       role: user.role,
       panel: user.panel ?? 'admin',
-      tenantId: user.tenantId,
-    });
-
-    const issued = await issueRefreshToken(app.db, {
-      userId: user.id,
-      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
       tenantId: user.tenantId ?? null,
-      userAgent: pickUserAgent(request),
-      ipAddress: request.ip,
     });
-
-    setSessionCookies(reply, accessToken, issued.token);
-
-    return reply.send({
-      data: {
-        token: accessToken,
-        refreshToken: issued.token,
-        expiresIn: ACCESS_TOKEN_TTL_SECONDS,
-        refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          role: user.role,
-          panel: user.panel,
-          tenantId: user.tenantId,
-        },
-      },
-    });
+    return reply.send({ data: session });
   });
 
   /**

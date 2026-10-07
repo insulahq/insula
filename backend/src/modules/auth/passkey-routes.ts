@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { auditLogs, users } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -12,71 +12,12 @@ import {
   listPasskeys,
   deletePasskey,
   setPasskeyMode,
-  verifyAndConsumePreAuthToken,
   type PasskeyMode,
   type PasskeyPanel,
 } from './passkey-service.js';
-import {
-  issueRefreshToken,
-  ACCESS_TOKEN_TTL_SECONDS,
-  REFRESH_TOKEN_TTL_SECONDS,
-} from './refresh-token-service.js';
+import { issueSession } from './session.js';
 import { isLocalAuthDisabled } from '../oidc/service.js';
-import { PLATFORM_SESSION_COOKIE } from '../../middleware/auth.js';
 import type { Database } from '../../db/index.js';
-
-const REFRESH_COOKIE = 'platform_refresh';
-
-function buildSessionCookie(name: string, token: string, maxAge: number): string {
-  const domain = process.env.SESSION_COOKIE_DOMAIN;
-  const sameSite = domain ? 'None' : 'Lax';
-  const parts = [
-    `${name}=${token}`,
-    'Path=/',
-    'HttpOnly',
-    'Secure',
-    `SameSite=${sameSite}`,
-    `Max-Age=${maxAge}`,
-  ];
-  if (domain) parts.push(`Domain=${domain}`);
-  return parts.join('; ');
-}
-
-function setSessionCookies(reply: FastifyReply, accessToken: string, refreshToken: string): void {
-  reply.header('Set-Cookie', [
-    buildSessionCookie(PLATFORM_SESSION_COOKIE, accessToken, ACCESS_TOKEN_TTL_SECONDS),
-    buildSessionCookie(REFRESH_COOKIE, refreshToken, REFRESH_TOKEN_TTL_SECONDS),
-  ]);
-}
-
-function pickUserAgent(request: FastifyRequest): string | undefined {
-  const ua = request.headers['user-agent'];
-  if (typeof ua === 'string') return ua;
-  if (Array.isArray(ua)) return ua[0];
-  return undefined;
-}
-
-interface AccessTokenPayload {
-  sub: string;
-  role: string;
-  panel: 'admin' | 'tenant';
-  tenantId?: string | null;
-}
-
-function signAccessToken(app: FastifyInstance, p: AccessTokenPayload): string {
-  const now = Math.floor(Date.now() / 1000);
-  const payload: Record<string, unknown> = {
-    sub: p.sub,
-    role: p.role,
-    panel: p.panel,
-    exp: now + ACCESS_TOKEN_TTL_SECONDS,
-    iat: now,
-    jti: randomUUID(),
-  };
-  if (p.tenantId) payload.tenantId = p.tenantId;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return app.jwt.sign(payload as any);
-}
 
 /**
  * Resolve the panel for a request:
@@ -161,11 +102,10 @@ export async function passkeyRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Begin login. Two flavors:
-   *   • No pre_auth_token   → userless / discoverable creds.
-   *                            Browser shows passkeys for this RP.
-   *   • { pre_auth_token }  → 2FA step 2. Server scopes
-   *                            allowCredentials to that user.
+   * Begin passkey sign-in (userless / discoverable credentials: the browser
+   * offers the passkeys it holds for this RP). A passkey signs in on its own
+   * — there is no password-plus-passkey flow; the second factor for a
+   * password is TOTP (totp-routes.ts).
    */
   app.post('/auth/passkey/login/options', {
     config: { rateLimit: { max: 30, timeWindow: '15 minutes' } },
@@ -174,20 +114,11 @@ export async function passkeyRoutes(app: FastifyInstance) {
     if (await isLocalAuthDisabled(app.db, panel)) {
       throw new ApiError('LOCAL_AUTH_DISABLED', 'Local authentication is disabled for this panel', 403);
     }
-    const body = (request.body ?? {}) as { pre_auth_token?: string };
-    let userId: string | null = null;
-    if (body.pre_auth_token) {
-      const claims = await verifyPreAuthClaims(app, body.pre_auth_token, panel);
-      userId = claims.sub;
-    }
-    const options = await beginAuthentication(app.db, config, panel, userId);
+    const options = await beginAuthentication(app.db, config, panel, null);
     return reply.send({ data: options });
   });
 
-  /**
-   * Complete login. Same two flavors. On success, issues the same
-   * access+refresh tokens as /auth/login.
-   */
+  /** Complete passkey sign-in. On success, issues the same session as /auth/login. */
   app.post('/auth/passkey/login/verify', {
     config: { rateLimit: { max: 30, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
@@ -195,73 +126,36 @@ export async function passkeyRoutes(app: FastifyInstance) {
     if (await isLocalAuthDisabled(app.db, panel)) {
       throw new ApiError('LOCAL_AUTH_DISABLED', 'Local authentication is disabled for this panel', 403);
     }
-    const body = (request.body ?? {}) as { response?: unknown; pre_auth_token?: string };
+    const body = (request.body ?? {}) as { response?: unknown };
     if (!body.response) {
       throw new ApiError('VALIDATION_ERROR', 'response is required', 400);
-    }
-
-    let expectedUserId: string | undefined;
-    if (body.pre_auth_token) {
-      const claims = await verifyPreAuthClaims(app, body.pre_auth_token, panel);
-      // Atomic single-use mark BEFORE the assertion is verified. This
-      // means a failed WebAuthn ceremony (wrong PIN, dismissed prompt,
-      // bad signature) still consumes the pre-auth token — the
-      // operator must restart at /auth/login. The alternative
-      // (consume only on success) would give an attacker an unlimited
-      // replay window during the 5-min TTL, which is the worse
-      // trade-off. The frontend renders the AUTHENTICATION_FAILED
-      // error with a "go back to login" affordance.
-      await verifyAndConsumePreAuthToken(app.db, claims.jti, claims.sub, panel);
-      expectedUserId = claims.sub;
     }
 
     const result = await completeAuthentication(app.db, config, {
       panel,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       response: body.response as any,
-      expectedUserId,
     });
 
     const user = result.user;
-    const accessToken = signAccessToken(app, {
-      sub: user.id,
+    const session = await issueSession(app, request, reply, {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
       role: user.roleName,
-      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
+      panel: user.panel,
       tenantId: user.tenantId,
     });
-    const issued = await issueRefreshToken(app.db, {
-      userId: user.id,
-      panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
-      tenantId: user.tenantId ?? null,
-      userAgent: pickUserAgent(request),
-      ipAddress: request.ip,
-    });
-    setSessionCookies(reply, accessToken, issued.token);
 
     await recordAudit(
       app.db,
       user.id,
-      expectedUserId ? 'passkey_login_2fa' : 'passkey_login_userless',
+      'passkey_login_userless',
       result.passkeyId,
       request,
     );
 
-    return reply.send({
-      data: {
-        token: accessToken,
-        refreshToken: issued.token,
-        expiresIn: ACCESS_TOKEN_TTL_SECONDS,
-        refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          role: user.roleName,
-          panel: user.panel,
-          tenantId: user.tenantId,
-        },
-      },
-    });
+    return reply.send({ data: session });
   });
 
   /** List the caller's passkeys + current mode. */
@@ -270,10 +164,13 @@ export async function passkeyRoutes(app: FastifyInstance) {
     const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const list = await listPasskeys(app.db, payload.sub);
     const [user] = await app.db.select({ mode: users.passkeyMode }).from(users).where(eq(users.id, payload.sub)).limit(1);
-    return reply.send({ data: { passkeys: list, mode: user?.mode ?? null } });
+    // A pod from before migration 0151 could still write 'second_factor'
+    // during a rolling upgrade; it means plain passkey sign-in now.
+    const mode = user?.mode === 'second_factor' ? 'alternative' : (user?.mode ?? null);
+    return reply.send({ data: { passkeys: list, mode } });
   });
 
-  /** Delete a passkey. Service refuses last-passkey delete in 2FA mode. */
+  /** Delete a passkey. */
   app.delete('/auth/passkey/:id', async (request, reply) => {
     await assertBearerAuth(request);
     const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
@@ -289,9 +186,8 @@ export async function passkeyRoutes(app: FastifyInstance) {
     const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
     const body = (request.body ?? {}) as { mode?: unknown };
     const mode = body.mode;
-    if (mode !== null && mode !== 'alternative' && mode !== 'second_factor') {
-      throw new ApiError('VALIDATION_ERROR',
-        "mode must be 'alternative', 'second_factor', or null", 400);
+    if (mode !== null && mode !== 'alternative') {
+      throw new ApiError('VALIDATION_ERROR', "mode must be 'alternative' or null", 400);
     }
     await setPasskeyMode(app.db, payload.sub, mode as PasskeyMode);
     await recordAudit(app.db, payload.sub, 'passkey_mode_changed', payload.sub, request, {
@@ -315,32 +211,8 @@ async function assertBearerAuth(request: FastifyRequest): Promise<void> {
   }
   await request.jwtVerify();
   const payload = request.user as { step?: string };
-  // Pre-auth tokens carry step:'passkey_2fa' — they're not access tokens.
+  // Pre-auth tokens carry a `step` claim — they're not access tokens.
   if (payload.step) {
     throw invalidToken();
   }
-}
-
-interface PreAuthClaims { sub: string; panel: 'admin' | 'tenant'; jti: string; }
-
-async function verifyPreAuthClaims(
-  app: FastifyInstance,
-  token: string,
-  panel: PasskeyPanel,
-): Promise<PreAuthClaims> {
-  let decoded: { sub?: string; panel?: string; step?: string; jti?: string; exp?: number };
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    decoded = app.jwt.verify(token) as any;
-  } catch {
-    throw new ApiError('PRE_AUTH_TOKEN_INVALID', 'Pre-auth token invalid or expired', 401);
-  }
-  if (decoded.step !== 'passkey_2fa' || !decoded.sub || !decoded.jti) {
-    throw new ApiError('PRE_AUTH_TOKEN_INVALID', 'Pre-auth token has wrong shape', 401);
-  }
-  if (decoded.panel !== panel) {
-    throw new ApiError('PRE_AUTH_TOKEN_PANEL_MISMATCH',
-      `Pre-auth token panel ${decoded.panel} does not match request panel ${panel}`, 401);
-  }
-  return { sub: decoded.sub, panel, jti: decoded.jti };
 }

@@ -66,10 +66,13 @@ Every public route gets a free Let's Encrypt certificate via cert-manager,
 renewed automatically. Mail listeners use TLS/STARTTLS. Panel and API traffic
 is HTTPS-only.
 
-## Logins: passkeys and step-up 2FA
+## Logins: passkeys, authenticator codes and step-up
 
 The platform supports **passkeys** (WebAuthn) alongside passwords and external
-OIDC (Google/Apple via an external provider, ADR-022). Sensitive admin
+OIDC (Google/Apple via an external provider, ADR-022). A passkey signs in on
+its own (it is already two factors); a password can be paired with a
+time-based code from an authenticator app (TOTP, with single-use backup codes)
+as a second step. Both are optional per user. Sensitive admin
 actions — like opening a node terminal — require a fresh **step-up** credential
 challenge within a short freshness window, so a stolen session alone isn't
 enough.
