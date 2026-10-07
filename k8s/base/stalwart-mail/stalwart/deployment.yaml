@@ -333,99 +333,82 @@ spec:
                 echo "restore-state: DataStore exists — skipping restore"
                 exit 0
               fi
-              # A4: FAST PATH — if the standby DaemonSet
-              # (A3) has pre-staged data on this node's hostPath, copy
-              # from there instead of paying the restic-restore network
-              # latency. Standby data is at most 5 min stale (DaemonSet
-              # cadence). A failover that lands on a standby-labelled
-              # node uses this path; cold-start failover to an
-              # unlabelled node falls through to restic.
+              # A4: FAST PATH — restore from the standby copy the
+              # mail-stack-standby-replicate DaemonSet keeps on this node
+              # instead of paying the restic-restore network latency. A
+              # failover that lands on a standby-labelled node uses it;
+              # cold-start failover to an unlabelled node falls through to
+              # restic.
+              #
+              # The choice is standby-restore-pick.sh's (in this image,
+              # shared with Bulwark's restore-state so both halves of the
+              # mail stack agree): the FRESHER of the standby copy and the
+              # newest restic snapshot wins. A copy is only considered when
+              # its completeness marker and the RocksDB CURRENT file are
+              # there. A copy older than FAST_PATH_MAX_AGE_SECONDS (default
+              # 1800s) is still used when nothing fresher exists — it loses
+              # less than a fresh start — and the log says how old it is.
+              # (This replaced a hard 30-min gate that, with no restic
+              # configured, fell through to a FRESH START.)
+              #
+              # The standby copy lives in generations (gen/<epoch>, swapped
+              # atomically by the DaemonSet), so a complete one exists even
+              # while a long sync runs. The shared standby read lock is taken
+              # BEFORE the pick resolves a generation and held until this
+              # script exits, so the DaemonSet cannot prune the generation
+              # between being chosen and being copied.
               #
               # FAST PATH runs BEFORE the allow-restore guard because
               # the .standby-complete marker is the local equivalent
               # of operator approval — the standby DaemonSet only
-              # writes the marker after a successful restic pull, so
-              # the data is already operator-vetted. Without this
-              # ordering, a restore-based failover (which sets
-              # mailActiveNode but does not stamp the allow-restore
-              # annotation) would fresh-start with no data.
-              STANDBY_STALWART=/standby-data/stalwart
-              STANDBY_COMPLETE=/standby-data/.standby-complete
-              # Gate on BOTH the CURRENT sentinel AND the
-              # .standby-complete marker — the marker is only written
-              # by the A3 DaemonSet after both stalwart+bulwark
-              # subtrees finish copying, so a partial restore
-              # (interrupted cp on either) is invisible here. Without
-              # this gate, the init could copy a half-written tree
-              # and Stalwart would crash on inconsistent RocksDB state.
+              # writes the marker after a successful pull, so the data
+              # is already operator-vetted. Without this ordering, a
+              # restore-based failover (which sets mailActiveNode but
+              # does not stamp the allow-restore annotation) would
+              # fresh-start with no data.
               #
-              # MAX-AGE GATE: the sentinel includes a date -Iseconds
-              # written by standby-replicate.sh on success. Reject the
-              # FAST PATH if the marker is older than 30 min (6× the
-              # 5-min DaemonSet cadence). Catches the case where the
-              # DaemonSet has been down for hours — better to take the
-              # restic-restore latency than silently restore frozen
-              # data. Honour FAST_PATH_MAX_AGE_SECONDS env override
-              # (default 1800s = 30 min).
-              # .standby-complete now contains epoch-seconds (since the
-              # standby-replicate.sh refactor for alpine/debian
-              # portability). `date +%s` works identically on both
-              # BusyBox and GNU coreutils — no `date -d` parsing.
-              STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
-              standby_age_ok=true
-              # Per-snapshot restore: if the operator chose
-              # a specific snapshot via /backups/mail, FAST PATH MUST be
-              # skipped — standby data is the LIVE state, which is the
-              # opposite of what the operator asked for. Detect the
-              # annotation early and disable FAST PATH if present. The
-              # downstream restic step honours the annotation.
-              FAST_PATH_DISABLED_REASON=""
+              # Per-snapshot restore: if the operator chose a specific
+              # snapshot via /backups/mail, FAST PATH MUST be skipped —
+              # standby data is the LIVE state, the opposite of what the
+              # operator asked for. The restic step below honours the
+              # annotation.
+              STANDBY_SRC=""
               PRE_RESTORE_ID=$$(cat /podinfo/restore-snapshot-id 2>/dev/null || echo "")
               if [ -n "$$PRE_RESTORE_ID" ]; then
-                FAST_PATH_DISABLED_REASON="per-snapshot restore requested (id='$$PRE_RESTORE_ID') — FAST PATH would copy live data instead of chosen snapshot"
-                standby_age_ok=false
-              fi
-              if [ -f "$$STANDBY_COMPLETE" ]; then
-                sentinel_epoch=$$(cat "$$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
-                : $${sentinel_epoch:=0}
-                now_epoch=$$(date +%s)
-                age=$$((now_epoch - sentinel_epoch))
-                if [ "$$sentinel_epoch" = "0" ] || [ "$$age" -gt "$$STANDBY_MAX_AGE_SECONDS" ]; then
-                  echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, falling through to restic"
-                  standby_age_ok=false
+                echo "restore-state: per-snapshot restore requested (id='$$PRE_RESTORE_ID') — FAST PATH would copy live data instead of chosen snapshot"
+              else
+                if [ -e /standby-data/.lock ]; then
+                  exec 9</standby-data/.lock
+                  flock -s -w 300 9 || echo "restore-state: could not take the standby read lock in 300s — continuing"
                 fi
-                # FRESHNESS-VS-SNAPSHOT GUARD: a recent standby
-                # marker only means the last rsync FINISHED recently — the copied
-                # data can still predate the latest restic snapshot (a message
-                # delivered AFTER the last rsync but captured in a snapshot is
-                # absent from the standby copy). The age gate alone would then
-                # prefer standby data up to STANDBY_MAX_AGE_SECONDS (30 min) stale
-                # over a FRESHER snapshot, LOSING snapshot-captured mail on
-                # failover(the dataplane D-assertion; observed). So:
-                # if the latest snapshot is NEWER than the standby marker, reject
-                # the FAST PATH and restore that snapshot via restic instead.
-                # Best-effort — an unreadable repo leaves the verdict unchanged
-                # (fail toward FAST PATH: never worse than the age-gate-only
-                # behaviour, and restic is the only alternative anyway when the
-                # repo is down).
-                if [ "$$standby_age_ok" = "true" ] && [ -n "$$RESTIC_REPOSITORY" ]; then
-                  snap_epoch=$$(restic snapshots --latest 1 --json 2>/dev/null | python3 -c 'import sys,json,re,datetime; a=json.load(sys.stdin); t=(a[0]["time"] if a else "").replace("Z","+00:00"); t=re.sub(r"(\.\d{1,6})\d*",r"\1",t); print(int(datetime.datetime.fromisoformat(t).timestamp()) if t else 0)' 2>/dev/null || echo 0)
-                  : $${snap_epoch:=0}
-                  if [ "$$snap_epoch" -gt "$$sentinel_epoch" ]; then
-                    echo "restore-state: latest restic snapshot ($$snap_epoch) is NEWER than standby marker ($$sentinel_epoch) — rejecting FAST PATH, restoring the fresher snapshot via restic (no snapshot-captured mail lost)"
-                    standby_age_ok=false
-                  else
-                    echo "restore-state: standby marker ($$sentinel_epoch) is >= latest snapshot ($$snap_epoch) — standby is fresh enough for FAST PATH"
-                  fi
-                fi
+                PICK=$$(standby-restore-pick.sh stalwart CURRENT || echo none)
+                case "$$PICK" in
+                  "standby "*) STANDBY_SRC="$${PICK#standby }" ;;
+                  restic)
+                    # A complete standby copy passed over for a NEWER snapshot
+                    # is the fallback if that restore fails: it beats
+                    # crash-looping with no mail at all.
+                    STANDBY_FALLBACK=$$(RESTIC_REPOSITORY= standby-restore-pick.sh stalwart CURRENT 2>/dev/null || true)
+                    case "$$STANDBY_FALLBACK" in
+                      "standby "*) STANDBY_FALLBACK="$${STANDBY_FALLBACK#standby }" ;;
+                      *) STANDBY_FALLBACK="" ;;
+                    esac
+                    ;;
+                esac
               fi
-              if [ -n "$$FAST_PATH_DISABLED_REASON" ]; then
-                echo "restore-state: $$FAST_PATH_DISABLED_REASON"
-              fi
-              if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY_STALWART" ] && [ -f "$$STANDBY_STALWART/CURRENT" ]; then
-                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY_STALWART (complete marker present, age within limit)"
+              # restore_standby_fallback — used only on the restic failure
+              # paths below, and only when the pick passed over a standby copy.
+              restore_standby_fallback() {
+                [ -n "$${STANDBY_FALLBACK:-}" ] || return 1
+                echo "restore-state: the backup restore failed — falling back to the standby copy at $$STANDBY_FALLBACK (older than the snapshot, but complete)"
+                # The standby read lock taken before the pick is still held.
+                find /var/lib/stalwart/data -mindepth 1 -delete 2>/dev/null || true
+                cp -a "$$STANDBY_FALLBACK/." /var/lib/stalwart/data/
+              }
+              if [ -n "$$STANDBY_SRC" ]; then
+                echo "restore-state: FAST PATH — restoring the standby copy at $$STANDBY_SRC"
                 mkdir -p /var/lib/stalwart/data
-                if cp -a "$$STANDBY_STALWART/." /var/lib/stalwart/data/ 2>&1; then
+                if cp -a "$$STANDBY_SRC/." /var/lib/stalwart/data/ 2>&1; then
                   echo "restore-state: standby-data copy complete ($(ls /var/lib/stalwart/data | wc -l) files) — skipping restic"
                   exit 0
                 fi
@@ -483,6 +466,7 @@ spec:
               # restore timed out, no diagnostic context).
               echo "restore-state: probing backup target reachability..."
               if ! restic snapshots --latest 1 --quiet 2>&1; then
+                restore_standby_fallback && exit 0
                 echo "RESTORE-STATE-FATAL: backup target unreachable (restic snapshots probe failed) — refusing to start with empty data because allow-restore=true. Check stalwart-snapshot-restic-repo Secret, BackupTarget Service, and DNS." >&2
                 exit 1
               fi
@@ -562,10 +546,12 @@ spec:
                 echo "restore-state: snapshot '$$CAND' is EMPTY/malformed (no stalwart/ or data/ CURRENT) — skipping to next-older snapshot"
               done
               if [ -z "$$RESTORED_DATA" ]; then
+                restore_standby_fallback && exit 0
                 echo "RESTORE-STATE-FATAL: no restorable snapshot found — every candidate was unreachable or EMPTY/malformed (no DataStore tree). Refusing to fresh-start because tenant data would be silently lost. Pod will CrashLoopBackOff until the backup target is fixed OR the allow-restore annotation is cleared to acknowledge data loss. (snapshot-upload.sh's empty-store guard prevents NEW empty snapshots; investigate the snapshot CronJob output.)" >&2
                 exit 1
               fi
               if ! cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1; then
+                restore_standby_fallback && exit 0
                 echo "RESTORE-STATE-FATAL: cp to /var/lib/stalwart/data failed after successful restic restore — refusing to fresh-start. Likely cause: PVC out of inodes or permission mismatch on local-path volume." >&2
                 exit 1
               fi

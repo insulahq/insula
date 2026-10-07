@@ -18,10 +18,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   v0.16.10, the mail store rewrites all of its message files roughly every 128 MiB of new mail
   (blob garbage collection is hard-coded to treat every file as old; only an upstream change can fix it). Two things
   can go wrong quietly on any install, and both now show in Email → health details and raise an
-  admin alert. **Standby copies:** a standby node re-copying the whole store holds no complete copy,
-  so a failover in that window would restore from the backup instead. The check reports any standby
-  without a copy younger than the restore limit (`FAST_PATH_MAX_AGE_SECONDS`, read from the
-  Deployment, 30 min by default). **Disk headroom:** during a rewrite a node briefly holds about
+  admin alert. **Standby copies:** a standby re-copying the whole store keeps its previous copy, which
+  ages meanwhile; the check reports any standby whose newest complete copy is older than the target
+  (`FAST_PATH_MAX_AGE_SECONDS`, read from the Deployment, 30 min by default). **Disk headroom:** during a rewrite a node briefly holds about
   twice its mail data, so the check reports any mail node with less free space than its mail data.
   Operator notes, with measurements: `docs/operations/MAIL_STORE_SPACE_RECLAIM.md`.
 - **Every tenant application now has a limit on the server disk it can use.** An application's
@@ -50,6 +49,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **A mail standby always holds a complete copy, and a failover restores the fresher of it and the
+  backup.** The standby sync now builds each copy beside the previous one (unchanged files are hard
+  links, so a pass costs only what changed) and switches over in one step when it completes. Every
+  sync used to delete the copy's completeness marker first, so for the length of a long sync — after
+  a large import, or each time the mail store rewrites its files — a failover found no copy at all. A
+  restore now picks the fresher of the standby copy and the newest backup snapshot, Stalwart and
+  Bulwark making the same choice; if a preferred backup restore fails, it falls back to the standby
+  copy. The sync's bandwidth can be capped per cluster (`mail-standby-settings` ConfigMap, key
+  `bwlimit`); the planned-move final sync ignores the cap. Existing standby copies are adopted on the
+  first sync after the upgrade, without copying. Operator notes: `docs/operations/MAIL_HA_FAILOVER.md`.
 - **The node "disk critical" alert fires at 80 % instead of 90 %.** 90 % is the moment the server
   starts evicting workloads on its own, so the alert never came first; 80 % leaves time to act
   (warning stays at 75 %).
@@ -81,6 +90,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A mail failover no longer starts with an empty mail store when the standby copy is old.** On an
+  install without a restic backup, a failover onto a standby whose copy was older than
+  `FAST_PATH_MAX_AGE_SECONDS` (30 min), or that was mid-sync, started Stalwart and Bulwark fresh — no
+  mail, a new webmail admin — while a complete copy sat on the node. It now restores that copy and
+  logs how old it is.
 - **Plesk migration: the "Target tenant" list is no longer empty.** It offers tenants whose
   namespace is provisioned, but the tenant list the API returns left that field out, so no
   tenant ever qualified and a migration could not be started from the dialog.

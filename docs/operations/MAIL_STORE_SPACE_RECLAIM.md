@@ -119,17 +119,20 @@ What this means for an install, whatever its size:
 - **Disk writes:** the whole store is written again on every cycle, which wears SSDs
   and can stall shared or HDD-backed storage.
 - **Standby replication and backups** copy whole files. After a rewrite the standby
-  sync re-transfers the entire store across the network, and has no complete copy
-  while it runs. The **Standby copies** health check alerts when a standby has no copy
-  young enough for a failover (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)).
-  Count a store-sized transfer every few days in traffic budgets on metered links.
+  sync re-transfers the entire store across the network. The standby keeps its
+  previous complete copy until that sync finishes, so the copy ages but never
+  disappears; the **Standby copies** health check alerts when it is older than the
+  target (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)). Count a store-sized transfer
+  every few days in traffic budgets on metered links; the sync's bandwidth can be
+  capped (`mail-standby-settings` ConfigMap, same page).
 - **Imports and migrations** cost roughly quadratic writes, because each ~128 MiB step
   rewrites everything imported so far. Expect a large mailbox import to keep the disk
-  busy, and to keep a standby without a complete copy, for longer than the copy itself
-  would suggest.
+  busy, and the standby copy ageing, for longer than the copy itself would suggest.
 
 Only an upstream change can fix this: Stalwart would need to lower the cutoff (RocksDB's
-default is 0.25) or make it configurable. RocksDB itself is working on garbage-ratio-driven
+default is 0.25) or make it configurable. Reported with a reproduction and measurements:
+[support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887).
+RocksDB itself is working on garbage-ratio-driven
 blob GC ([facebook/rocksdb#15301](https://github.com/facebook/rocksdb/issues/15301)). Until
 then there is nothing to tune on the platform side: keep the headroom, and watch the two
 health checks.

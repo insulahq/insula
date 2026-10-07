@@ -202,6 +202,21 @@ jobs:
 
   # Self-contained shell test harnesses — regression guards for the logic in
   # scripts/ (image-org fork-safety, release cutting). No DinD / root needed.
+  mail-restore-init:
+    # Runs the real Stalwart + Bulwark restore-state init scripts (rendered from
+    # the manifests the way Flux renders them) inside a tenant-backup-tools
+    # image built from this commit, across the failover restore scenarios.
+    # These scripts decide whether a mail failover restores the standby copy,
+    # the backup, or starts empty — nothing else executes them before a real
+    # failover does.
+    name: Mail restore init scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 -m pip install --user pyyaml
+      - run: docker build -t local/tenant-backup-tools:ci images/tenant-backup-tools
+      - run: TOOLS_IMAGE=local/tenant-backup-tools:ci ./scripts/test-mail-restore-init.sh
+
   shell-unit-tests:
     name: Shell unit tests
     runs-on: ubuntu-latest
@@ -216,6 +231,7 @@ jobs:
       - run: ./scripts/test-bootstrap-join-mode.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-standby-replicate.sh
+      - run: ./scripts/test-standby-restore-pick.sh
       - run: ./scripts/test-host-migration-k3s-token.sh
       - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-stall-watch.sh

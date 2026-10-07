@@ -30,12 +30,12 @@ function node(name: string, over: Partial<MailNodeStorage> = {}): MailNodeStorag
   };
 }
 
-function report(name: string, ageSeconds: number): NodeStandbyReport {
+function report(name: string, ageSeconds: number, durationSeconds = 0): NodeStandbyReport {
   return {
     node: name,
     sizeBytes: 10 * GiB,
     fileCount: 300,
-    durationSeconds: 4,
+    durationSeconds,
     reportedAt: new Date(Date.now() - ageSeconds * 1000).toISOString(),
     ageSeconds,
   };
@@ -57,22 +57,28 @@ describe('evaluateStandby — can a failover start from a standby copy?', () => 
       [report('b', 60), report('c', 1800)],
     ));
     expect(c).toMatchObject({ status: 'ok', healthy: true, error: null, maxAgeSeconds: 1800 });
-    expect(c.nodes.map((n) => [n.node, n.usable])).toEqual([['b', true], ['c', true]]);
+    expect(c.nodes.map((n) => [n.node, n.fresh])).toEqual([['b', true], ['c', true]]);
   });
 
   it('fails a copy older than the limit — a long sync holds no complete copy', () => {
     const c = evaluateStandby(input([node('b', { isStandby: true })], [report('b', 1801)]));
     expect(c.status).toBe('fail');
     expect(c.healthy).toBe(false);
-    expect(c.error).toMatch(/^1 standby node has no copy a failover could start from/);
-    expect(c.error).toContain('younger than 30 min');
-    expect(c.nodes[0]).toMatchObject({ node: 'b', ageSeconds: 1801, usable: false });
+    expect(c.error).toMatch(/^1 standby node has no copy younger than 30 min\./);
+    expect(c.error).toContain('mail received since would be lost');
+    expect(c.nodes[0]).toMatchObject({ node: 'b', ageSeconds: 1801, fresh: false });
+  });
+
+  it('dates a copy from when its sync started: a long sync ages it by its duration', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true })], [report('b', 600, 1500)]));
+    expect(c.nodes[0]).toMatchObject({ ageSeconds: 2100, durationSeconds: 1500, fresh: false });
+    expect(c.status).toBe('fail');
   });
 
   it('fails a standby node that never finished a copy', () => {
     const c = evaluateStandby(input([node('b', { isStandby: true }), node('c', { isStandby: true })], [report('c', 10)]));
     expect(c.status).toBe('fail');
-    expect(c.nodes.find((n) => n.node === 'b')).toMatchObject({ ageSeconds: null, usable: false });
+    expect(c.nodes.find((n) => n.node === 'b')).toMatchObject({ ageSeconds: null, fresh: false });
   });
 
   it('ignores the active node even when it carries the standby label', () => {
@@ -143,12 +149,12 @@ describe('evaluateStorage — room for the mail store to rewrite its files', () 
 });
 
 describe('capacityItems — one alert line per node', () => {
-  it('lists each unusable standby node', () => {
+  it('lists each standby node whose copy is too old', () => {
     const c = evaluateStandby(input(
       [node('b', { isStandby: true }), node('c', { isStandby: true }), node('d', { isStandby: true })],
       [report('b', 3000), report('d', 5)],
     ));
-    expect(capacityItems('standby', c)).toEqual(['b: last complete copy 50 min old', 'c: has never finished a copy']);
+    expect(capacityItems('standby', c)).toEqual(['b: newest complete copy 50 min old', 'c: has never finished a copy']);
   });
 
   it('lists each node short of space', () => {

@@ -26,9 +26,9 @@ const BASE: MailHealthResponse = {
     standby: {
       healthy: false,
       status: 'fail',
-      error: '1 standby node has no copy a failover could start from: it needs one younger than 30 min, and would restore from the backup instead until a sync completes.',
+      error: '1 standby node has no copy younger than 30 min. A failover restores the newest complete copy (or the backup, if that is newer), so mail received since would be lost.',
       maxAgeSeconds: 1800,
-      nodes: [{ node: 'node-2', ageSeconds: 3600, durationSeconds: 900, sizeBytes: 40 * GB, usable: false }],
+      nodes: [{ node: 'node-2', ageSeconds: 3600, durationSeconds: 900, sizeBytes: 40 * GB, fresh: false }],
     },
     storage: {
       healthy: false,
@@ -61,7 +61,7 @@ describe('MailHealthDetailsModal — capacity', () => {
     renderModal();
     expect(await screen.findByText('Standby copies')).toBeInTheDocument();
     expect(screen.getByText('node-2: copy 60 min old (last sync took 15 min)')).toBeInTheDocument();
-    expect(screen.getByText(/1 standby node has no copy a failover could start from/)).toBeInTheDocument();
+    expect(screen.getByText(/1 standby node has no copy younger than 30 min/)).toBeInTheDocument();
     expect(screen.getByText(/kubectl -n mail logs ds\/mail-stack-standby-replicate/)).toBeInTheDocument();
   });
 

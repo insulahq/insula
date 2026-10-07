@@ -107,11 +107,11 @@ describe('componentProbes — standby + storage list their nodes', () => {
     const standby = {
       healthy: false,
       nodes: [
-        { node: 'b', ageSeconds: 3600, durationSeconds: 5, sizeBytes: 1, usable: false },
-        { node: 'c', ageSeconds: 30, durationSeconds: 5, sizeBytes: 1, usable: true },
+        { node: 'b', ageSeconds: 3600, durationSeconds: 5, sizeBytes: 1, fresh: false },
+        { node: 'c', ageSeconds: 30, durationSeconds: 5, sizeBytes: 1, fresh: true },
       ],
     };
-    expect(componentProbes('standby', standby)).toEqual(['b: last complete copy 60 min old']);
+    expect(componentProbes('standby', standby)).toEqual(['b: newest complete copy 60 min old']);
     expect(componentDetail('standby', { ...standby, error: '1 standby node has no copy' })).toBe(' 1 standby node has no copy');
   });
 

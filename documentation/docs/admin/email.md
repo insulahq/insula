@@ -28,11 +28,12 @@ details modal, or refresh to bypass the cache and probe again.
 
 Two **Capacity** checks sit in the same modal and raise an admin alert when they fail:
 
-- **Standby copies.** Each standby node must hold a complete copy of the mail data
-  that is young enough for a failover to start from (30 minutes by default). While a
-  standby is re-copying the whole store, after a large import or after the mail store
-  rewrites its files, it has no complete copy, and a failover would restore from the
-  backup instead.
+- **Standby copies.** Each standby node keeps a complete copy of the mail data, and
+  the check fails when the newest one is older than 30 minutes (by default). A failover
+  restores the fresher of that copy and the newest backup snapshot, so an old copy
+  means mail received since would be lost. Copies age while a standby re-copies the
+  whole store, after a large import or after the mail store rewrites its files; the
+  previous copy stays in place until the new one is complete.
 - **Disk headroom.** Every mail node needs free space at least the size of its mail
   data. The mail store periodically rewrites its message files and holds the old and
   new files until it finishes.

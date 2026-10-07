@@ -143,42 +143,30 @@ spec:
                 echo "restore-state: admin.json exists — skipping restore"
                 exit 0
               fi
-              STANDBY=/standby-data/bulwark
-              STANDBY_COMPLETE=/standby-data/.standby-complete
-              # Gate on BOTH the admin.json sentinel AND the
-              # .standby-complete marker — the marker is only written
-              # by the A3 DaemonSet after both subtrees finish copying.
-              # Protects against an interrupted DaemonSet run leaving
-              # half a bulwark/ tree on disk (Bulwark would either
-              # crash on missing settings/* or worse, accept a
-              # zero-length admin.json).
-              #
-              # Max-age gate: same as Stalwart's restore-state. If the
-              # standby DaemonSet has been down longer than the limit
-              # (default 30 min), refuse the FAST PATH — fall through
-              # to Bulwark's fresh-start path. Admin reset is annoying
-              # but better than restoring frozen-state data without
-              # the operator knowing.
+              # Which source to restore from is standby-restore-pick.sh's (in
+              # this image, shared with Stalwart's restore-state so both halves
+              # of the mail stack agree): the FRESHER of the standby copy and
+              # the newest restic snapshot wins. A standby copy counts only
+              # with its completeness marker and admin.json. A copy older than
+              # FAST_PATH_MAX_AGE_SECONDS (default 1800s) is still used when
+              # nothing fresher exists — it beats a fresh start (admin password
+              # reset) — and the log says how old it is. The standby copy lives
+              # in generations swapped atomically by the replicate DaemonSet.
+              # The shared standby read lock is taken BEFORE the pick resolves
+              # a generation and held until this script exits, so the DaemonSet
+              # cannot prune it between being chosen and being copied.
               #
               # $$ ESCAPING: Bulwark's manifest goes through Flux
               # postBuild substituteFrom, which in Flux 2.9 runs envsubst
               # in STRICT mode. A plain dollar-brace reference gets
-              # substituted away and, if unknown, hard-fails the build
-              # (live bug — age + limit appeared as
-              # empty in the rejection log). Double-$$ tells Flux to emit
-              # a literal dollar; the shell sees the reference at runtime.
-              STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
-              standby_age_ok=true
-              if [ -f "$$STANDBY_COMPLETE" ]; then
-                sentinel_epoch=$$(cat "$$STANDBY_COMPLETE" 2>/dev/null | tr -dc 0-9)
-                : $${sentinel_epoch:=0}
-                now_epoch=$$(date +%s)
-                age=$$((now_epoch - sentinel_epoch))
-                if [ "$$sentinel_epoch" = "0" ] || [ "$$age" -gt "$$STANDBY_MAX_AGE_SECONDS" ]; then
-                  echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, Bulwark fresh-starts"
-                  standby_age_ok=false
-                fi
+              # substituted away and, if unknown, hard-fails the build.
+              # Double-$$ tells Flux to emit a literal dollar; the shell
+              # sees the reference at runtime.
+              if [ -e /standby-data/.lock ]; then
+                exec 9</standby-data/.lock
+                flock -s -w 300 9 || echo "restore-state: could not take the standby read lock in 300s — continuing"
               fi
+              PICK=$$(standby-restore-pick.sh bulwark admin/admin.json || echo none)
               # copy_into_pvc <srcdir> — copy a restored tree into the PVC.
               #
               # NOT `cp -a "$$src/." /app/data/`. That form makes cp try to
@@ -208,17 +196,37 @@ spec:
                 done
                 return $$_rc
               }
-              if [ "$$standby_age_ok" = "true" ] && [ -f "$$STANDBY_COMPLETE" ] && [ -d "$$STANDBY" ] && [ -f "$$STANDBY/admin/admin.json" ]; then
-                echo "restore-state: FAST PATH — found pre-staged standby data at $$STANDBY (complete marker present, age within limit)"
-                # Copy preserving ownership so Bulwark's UID 1000 can
-                # read its own files (standby-replicate.sh ran the
-                # earlier copy with -a preserving original UIDs).
-                if copy_into_pvc "$$STANDBY"; then
-                  echo "restore-state: standby-data copy complete ($$(find /app/data -type f -not -path '*/lost+found/*' | wc -l) files)"
-                  exit 0
-                fi
-                echo "restore-state: standby-data copy failed — falling through to restic"
-              fi
+              # standby_fallback — when the pick chose restic over a complete
+              # standby copy (the snapshot was newer) and restic then fails,
+              # that copy beats a fresh start.
+              standby_fallback() {
+                [ "$$PICK" = restic ] || return 1
+                _fb=$$(RESTIC_REPOSITORY= standby-restore-pick.sh bulwark admin/admin.json 2>/dev/null || true)
+                case "$$_fb" in "standby "*) _fb="$${_fb#standby }" ;; *) return 1 ;; esac
+                echo "restore-state: the backup restore failed — falling back to the standby copy at $$_fb (older than the snapshot, but complete)"
+                # The standby read lock taken before the pick is still held.
+                # Drop whatever a failed restic copy left behind (lost+found
+                # is root's and stays).
+                find /app/data -mindepth 1 -delete 2>/dev/null || true
+                copy_into_pvc "$$_fb"
+              }
+              case "$$PICK" in
+                "standby "*)
+                  STANDBY_SRC="$${PICK#standby }"
+                  echo "restore-state: FAST PATH — restoring the standby copy at $$STANDBY_SRC"
+                  # Copy preserving ownership so Bulwark's UID 1000 can
+                  # read its own files (standby-replicate.sh ran the
+                  # earlier copy with -a preserving original UIDs).
+                  if copy_into_pvc "$$STANDBY_SRC"; then
+                    echo "restore-state: standby-data copy complete ($$(find /app/data -type f -not -path '*/lost+found/*' | wc -l) files)"
+                    exit 0
+                  fi
+                  echo "restore-state: standby-data copy failed — falling through to restic"
+                  ;;
+                restic)
+                  echo "restore-state: the backup is the fresher source — restoring from it"
+                  ;;
+              esac
               # FAST PATH unavailable or copy-failed — try restic
               # restore from the offsite repo. Same path-detection
               # logic as Stalwart's restore-state (post-A2.5 snapshots
@@ -232,6 +240,7 @@ spec:
               echo "restore-state: standby unavailable — attempting restic restore"
               mkdir -p /restore-tmp
               if ! restic restore latest --target /restore-tmp 2>&1; then
+                standby_fallback && exit 0
                 echo "RESTORE-STATE-WARNING: restic restore failed — Bulwark will FRESH-START. Restic repo may be unreachable; check network + Secret."
                 mkdir -p /app/data/admin
                 echo "$$(date -Iseconds) reason=restic-restore-failed" > /app/data/.fresh-started-at
@@ -239,12 +248,14 @@ spec:
               fi
               RESTORED_BULWARK=/restore-tmp/var/lib/mail-stack/bulwark
               if [ ! -d "$$RESTORED_BULWARK" ]; then
+                standby_fallback && exit 0
                 echo "RESTORE-STATE-WARNING: restic snapshot has no bulwark/ subdir (pre-A2.5 layout?) — Bulwark will FRESH-START"
                 mkdir -p /app/data/admin
                 echo "$$(date -Iseconds) reason=restic-no-bulwark-subdir" > /app/data/.fresh-started-at
                 exit 0
               fi
               if ! copy_into_pvc "$$RESTORED_BULWARK"; then
+                standby_fallback && exit 0
                 echo "RESTORE-STATE-WARNING: restic→PVC copy failed — Bulwark will FRESH-START"
                 mkdir -p /app/data/admin
                 echo "$$(date -Iseconds) reason=restic-copy-failed" > /app/data/.fresh-started-at

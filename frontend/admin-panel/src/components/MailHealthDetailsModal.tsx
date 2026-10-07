@@ -408,7 +408,7 @@ function StandbyCard({ data }: { readonly data: MailHealthStandbyComponent | und
       <ProbeCard
         title="Standby copies"
         severity="skipped"
-        assertion="Each standby node holds a copy a failover can start from"
+        assertion="Each standby node holds a recent complete copy of the mail data"
         actual={data ? 'no node is labelled for mail standby' : 'not reported by this backend'}
         expected={null}
         error={null}
@@ -421,19 +421,21 @@ function StandbyCard({ data }: { readonly data: MailHealthStandbyComponent | und
     <ProbeCard
       title="Standby copies"
       severity={severityFromHealthy(data.healthy)}
-      assertion="Each standby node holds a complete copy a failover can start from"
+      assertion="Each standby node holds a recent complete copy of the mail data"
       actual={data.nodes.length > 0
         ? data.nodes.map((n) => `${nodeLabel(n.node)}: `
           + (n.ageSeconds === null ? 'no complete copy yet' : `copy ${ageText(n.ageSeconds)} old`)
           + (n.durationSeconds !== null ? ` (last sync took ${ageText(Math.round(n.durationSeconds))})` : '')).join(' • ')
         : 'no standby nodes'}
-      expected={`a complete copy younger than ${limit} min on every standby node`}
+      expected={`a copy younger than ${limit} min on every standby node`}
       error={data.error === null ? null : nodeText(data.error)}
       remediation={data.healthy
         ? null
         : 'A sync is probably still running: a large import, or the mail store rewriting its files, makes one '
-          + 'long, and the copy only counts once it completes. If it stays stale, read the standby pod logs '
-          + '(`kubectl -n mail logs ds/mail-stack-standby-replicate`) and check that the active mail pod answers on its rsync sidecar.'}
+          + 'long. The standby keeps its previous complete copy meanwhile, and a failover would restore that. '
+          + 'If the copy keeps ageing, read the standby pod logs (`kubectl -n mail logs ds/mail-stack-standby-replicate`) '
+          + 'and check that the active mail pod answers on its rsync sidecar; a slow link may need the sync speed limit '
+          + 'raised or removed (ConfigMap mail-standby-settings).'}
     />
   );
 }

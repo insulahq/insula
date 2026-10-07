@@ -625,7 +625,7 @@ describe('mail-admin/health.getMailHealth — standby + storage components', () 
     expect(r.healthy).toBe(false);
     expect(r.components.standby).toMatchObject({
       status: 'fail', healthy: false, maxAgeSeconds: 1800,
-      nodes: [{ node: 'staging2', ageSeconds: 4000, durationSeconds: 900, sizeBytes: 10, usable: false }],
+      nodes: [{ node: 'staging2', ageSeconds: 4900, durationSeconds: 900, sizeBytes: 10, fresh: false }],
     });
     expect(r.components.storage).toMatchObject({ status: 'ok', healthy: true });
   });

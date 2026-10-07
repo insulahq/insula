@@ -68,7 +68,10 @@ function gib(bytes: number): string {
   return `${(bytes / 2 ** 30).toFixed(1)} GiB`;
 }
 
-/** Standby copies a failover could start from. Pure. */
+/**
+ * How fresh the standby copies are. A copy's data dates from when its sync
+ * started, so its age is the report's age plus how long that sync took. Pure.
+ */
 export function evaluateStandby(input: MailCapacityInput): MailHealthStandbyComponent {
   const { maxAgeSeconds } = input;
   // The active node serves mail; a copy on it is no failover target.
@@ -79,22 +82,22 @@ export function evaluateStandby(input: MailCapacityInput): MailHealthStandbyComp
   const reports = new Map(input.reports.map((r) => [r.node, r]));
   const nodes: MailHealthStandbyNode[] = standbyNodes.map((n) => {
     const report = reports.get(n.nodeName);
-    const ageSeconds = report ? report.ageSeconds : null;
+    const ageSeconds = report ? report.ageSeconds + Math.round(report.durationSeconds) : null;
     return {
       node: n.nodeName,
       ageSeconds,
       durationSeconds: report?.durationSeconds ?? null,
       sizeBytes: report?.sizeBytes ?? null,
-      usable: ageSeconds !== null && ageSeconds <= maxAgeSeconds,
+      fresh: ageSeconds !== null && ageSeconds <= maxAgeSeconds,
     };
   });
-  const unusable = nodes.filter((n) => !n.usable).length;
-  if (unusable === 0) {
+  const stale = nodes.filter((n) => !n.fresh).length;
+  if (stale === 0) {
     return { status: 'ok', healthy: true, error: null, maxAgeSeconds, nodes };
   }
-  const subject = unusable === 1 ? '1 standby node has' : `${unusable} standby nodes have`;
-  const error = `${subject} no copy a failover could start from: it needs one younger than `
-    + `${minutes(maxAgeSeconds)}, and would restore from the backup instead until a sync completes.`;
+  const subject = stale === 1 ? '1 standby node has' : `${stale} standby nodes have`;
+  const error = `${subject} no copy younger than ${minutes(maxAgeSeconds)}. A failover restores the `
+    + 'newest complete copy (or the backup, if that is newer), so mail received since would be lost.';
   return { status: 'fail', healthy: false, error, maxAgeSeconds, nodes };
 }
 
@@ -149,10 +152,10 @@ export function capacityItems(key: string, component: unknown): string[] {
   if (!c || c.healthy !== false || !Array.isArray(c.nodes)) return [];
   if (key === 'standby') {
     return (c.nodes as MailHealthStandbyNode[])
-      .filter((n) => !n.usable)
+      .filter((n) => !n.fresh)
       .map((n) => (n.ageSeconds === null
         ? `${n.node}: has never finished a copy`
-        : `${n.node}: last complete copy ${minutes(n.ageSeconds)} old`));
+        : `${n.node}: newest complete copy ${minutes(n.ageSeconds)} old`));
   }
   if (key === 'storage') {
     return (c.nodes as MailHealthStorageNode[])

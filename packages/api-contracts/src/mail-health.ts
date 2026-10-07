@@ -205,28 +205,33 @@ export type MailHealthExposureComponent = z.infer<typeof mailHealthExposureCompo
 export type MailHealthExposureNode = z.infer<typeof mailHealthExposureNodeSchema>;
 
 /**
- * Standby copies of the mail store. Every node labelled for mail standby
- * pulls a copy every few minutes; a failover starts from it only when the copy
- * is complete and younger than the restore fast-path limit
- * (`FAST_PATH_MAX_AGE_SECONDS`, 30 min by default). Past that, a failover falls
- * back to the backup — slower, and older data. A long sync (a big import, or
- * the mail store rewriting its files) holds no complete copy while it runs.
- * `not_implemented` when no node is labelled for standby.
+ * Standby copies of the mail store. Every node labelled for mail standby keeps
+ * a complete copy, refreshed every few minutes; a long sync (a big import, or
+ * the mail store rewriting its files) keeps the previous complete copy until it
+ * finishes, so the copy ages. A failover restores the fresher of that copy and
+ * the newest backup snapshot, so an old copy means mail received since it would
+ * be lost (unless the backup is newer). The component fails when a copy is
+ * older than the target age (`FAST_PATH_MAX_AGE_SECONDS`, 30 min by default)
+ * or a standby never finished one. `not_implemented` when no node is labelled
+ * for standby.
  */
 export const mailHealthStandbyNodeSchema = z.object({
   node: z.string(),
-  /** Seconds since this node last finished a COMPLETE copy. Null = it never has. */
+  /**
+   * How old the data in this node's newest complete copy is: since its sync
+   * STARTED (the copy holds the mail as of then). Null = it never finished one.
+   */
   ageSeconds: z.number().int().nonnegative().nullable(),
-  /** How long that copy took. */
+  /** How long that copy's sync took. */
   durationSeconds: z.number().nonnegative().nullable(),
   sizeBytes: z.number().nonnegative().nullable(),
-  /** A failover would start from this copy right now. */
-  usable: z.boolean(),
+  /** The copy is younger than the target age. */
+  fresh: z.boolean(),
 });
 
 export const mailHealthStandbyComponentSchema = componentStatusSchema.extend({
   status: optionalProbeStatusSchema,
-  /** The restore fast-path age limit the copies were judged against. */
+  /** The target age the copies were judged against (FAST_PATH_MAX_AGE_SECONDS). */
   maxAgeSeconds: z.number().int().positive(),
   nodes: z.array(mailHealthStandbyNodeSchema),
 });
@@ -425,7 +430,7 @@ export const mailHealthResponseSchema = z.object({
      * must answer on the mail ports). Optional — older backends omit it.
      */
     exposure: mailHealthExposureComponentSchema.optional(),
-    /** Standby copies a failover can start from. Optional — older backends omit it. */
+    /** How fresh the standby copies a failover restores are. Optional — older backends omit it. */
     standby: mailHealthStandbyComponentSchema.optional(),
     /** Disk headroom for the mail store's rewrites. Optional — older backends omit it. */
     storage: mailHealthStorageComponentSchema.optional(),
