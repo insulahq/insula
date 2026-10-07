@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dedupeBucket, componentDetail, componentProbes } from './health-scheduler.js';
+import { dedupeBucket, componentDetail, componentProbes, componentsToAlert } from './health-scheduler.js';
 
 // The scheduler's value is entirely in its POLICY: which failures alert, how
 // often, and what the operator is told. Those are the parts that turn a useful
@@ -99,5 +99,53 @@ describe('alert predicate', () => {
     // This is the exact shape a dual-stack cluster with a missing AAAA
     // produces: warnings present, component still healthy. It must stay silent.
     expect(shouldAlert({ healthy: true })).toBe(false);
+  });
+});
+
+describe('componentProbes — standby + storage list their nodes', () => {
+  it('lists the standby nodes a failover could not start from', () => {
+    const standby = {
+      healthy: false,
+      nodes: [
+        { node: 'b', ageSeconds: 3600, durationSeconds: 5, sizeBytes: 1, usable: false },
+        { node: 'c', ageSeconds: 30, durationSeconds: 5, sizeBytes: 1, usable: true },
+      ],
+    };
+    expect(componentProbes('standby', standby)).toEqual(['b: last complete copy 60 min old']);
+    expect(componentDetail('standby', { ...standby, error: '1 standby node has no copy' })).toBe(' 1 standby node has no copy');
+  });
+
+  it('lists the nodes short of disk headroom', () => {
+    const storage = {
+      healthy: false,
+      nodes: [{ node: 'a', role: 'active', freeBytes: 2 ** 30, mailBytes: 3 * 2 ** 30, enough: false }],
+    };
+    expect(componentProbes('storage', storage)).toEqual(['a: 1.0 GiB free for 3.0 GiB of mail']);
+  });
+});
+
+describe('componentsToAlert — one alert per problem', () => {
+  it('alerts each failing component and skips healthy or absent ones', () => {
+    const keys = componentsToAlert({
+      pod: { healthy: true }, jmap: { healthy: false, error: 'x' }, deliverability: undefined,
+    }).map(([k]) => k);
+    expect(keys).toEqual(['jmap']);
+  });
+
+  it('alerts once when one failed capacity read failed both standby and storage', () => {
+    const reason = 'Could not read mail node capacity: kube-api down';
+    const keys = componentsToAlert({
+      standby: { healthy: false, error: reason, nodes: [] },
+      storage: { healthy: false, error: reason, nodes: [] },
+    }).map(([k]) => k);
+    expect(keys).toEqual(['standby']);
+  });
+
+  it('alerts both when standby and storage fail for different reasons', () => {
+    const keys = componentsToAlert({
+      standby: { healthy: false, error: '1 standby node has no copy' },
+      storage: { healthy: false, error: '1 mail node has less free space' },
+    }).map(([k]) => k);
+    expect(keys).toEqual(['standby', 'storage']);
   });
 });

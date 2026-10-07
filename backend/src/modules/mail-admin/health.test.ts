@@ -598,3 +598,49 @@ describe('mail-admin/health — rollover', () => {
     expect(r.components.exposure?.healthy).toBe(true);
   });
 });
+
+describe('mail-admin/health.getMailHealth — standby + storage components', () => {
+  beforeEach(() => _resetMailHealthCache());
+
+  const nodeCard = (name: string, over: Record<string, unknown> = {}) => ({
+    nodeName: name, roles: [], isActive: false, isStandby: false, totalBytes: 100, freeBytes: 50,
+    mailUsedBytes: 10, mailUsedReportedAt: null, ...over,
+  });
+
+  it('reports both as not_implemented when no capacity reader is wired', async () => {
+    const r = await getMailHealth(buildDeps());
+    expect(r.components.standby).toMatchObject({ status: 'not_implemented', healthy: true });
+    expect(r.components.storage).toMatchObject({ status: 'not_implemented', healthy: true });
+    expect(r.healthy).toBe(true);
+  });
+
+  it('a stale standby copy turns the whole response unhealthy and survives the response schema', async () => {
+    const r = await getMailHealth(buildDeps({
+      capacity: async () => ({
+        nodes: [nodeCard('staging1', { isActive: true }), nodeCard('staging2', { isStandby: true })],
+        reports: [{ node: 'staging2', sizeBytes: 10, fileCount: 3, durationSeconds: 900, reportedAt: '2026-01-01T00:00:00Z', ageSeconds: 4000 }],
+        maxAgeSeconds: 1800,
+      }),
+    }));
+    expect(r.healthy).toBe(false);
+    expect(r.components.standby).toMatchObject({
+      status: 'fail', healthy: false, maxAgeSeconds: 1800,
+      nodes: [{ node: 'staging2', ageSeconds: 4000, durationSeconds: 900, sizeBytes: 10, usable: false }],
+    });
+    expect(r.components.storage).toMatchObject({ status: 'ok', healthy: true });
+  });
+
+  it('a node short of disk headroom turns the whole response unhealthy', async () => {
+    const r = await getMailHealth(buildDeps({
+      capacity: async () => ({
+        nodes: [nodeCard('staging1', { isActive: true, freeBytes: 5, mailUsedBytes: 10 })],
+        reports: [],
+        maxAgeSeconds: 1800,
+      }),
+    }));
+    expect(r.healthy).toBe(false);
+    expect(r.components.storage).toMatchObject({
+      status: 'fail', nodes: [{ node: 'staging1', role: 'active', freeBytes: 5, mailBytes: 10, enough: false }],
+    });
+  });
+});

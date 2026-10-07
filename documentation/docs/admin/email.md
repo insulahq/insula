@@ -26,6 +26,17 @@ check, TLS certificate, ports, and deliverability (rDNS / PTR, DNSBL
 listing, banner, certificate SAN). Click it for the full per-component
 details modal, or refresh to bypass the cache and probe again.
 
+Two **Capacity** checks sit in the same modal and raise an admin alert when they fail:
+
+- **Standby copies.** Each standby node must hold a complete copy of the mail data
+  that is young enough for a failover to start from (30 minutes by default). While a
+  standby is re-copying the whole store, after a large import or after the mail store
+  rewrites its files, it has no complete copy, and a failover would restore from the
+  backup instead.
+- **Disk headroom.** Every mail node needs free space at least the size of its mail
+  data. The mail store periodically rewrites its message files and holds the old and
+  new files until it finishes.
+
 ## Domains & Relays
 
 **Email → Domains & Relays** is the daily-driver page. It has two tabs.
@@ -206,6 +217,10 @@ that feature in the webmail UI.
     | **Total disk** | The node's capacity as the kubelet reports it |
     | **Mail data used** | What the mail data actually occupies — measured live on the active node, and from the last replication report on a standby |
     | **Free space** | What the node filesystem actually has left, colour-coded by percentage: green above 20%, amber above 10%, red below |
+
+    Keep **free space at least as large as the mail data** on every mail node: the
+    mail store periodically rewrites its message files and briefly holds about twice
+    its size. The **Disk headroom** health check alerts when a node falls short.
 
     **Free space is the whole node's**, not mail's private allowance. Mail runs
     on `local-path`, which provisions a plain directory and enforces no quota —

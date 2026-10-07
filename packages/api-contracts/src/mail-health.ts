@@ -204,6 +204,64 @@ export const mailHealthExposureComponentSchema = componentStatusSchema.extend({
 export type MailHealthExposureComponent = z.infer<typeof mailHealthExposureComponentSchema>;
 export type MailHealthExposureNode = z.infer<typeof mailHealthExposureNodeSchema>;
 
+/**
+ * Standby copies of the mail store. Every node labelled for mail standby
+ * pulls a copy every few minutes; a failover starts from it only when the copy
+ * is complete and younger than the restore fast-path limit
+ * (`FAST_PATH_MAX_AGE_SECONDS`, 30 min by default). Past that, a failover falls
+ * back to the backup — slower, and older data. A long sync (a big import, or
+ * the mail store rewriting its files) holds no complete copy while it runs.
+ * `not_implemented` when no node is labelled for standby.
+ */
+export const mailHealthStandbyNodeSchema = z.object({
+  node: z.string(),
+  /** Seconds since this node last finished a COMPLETE copy. Null = it never has. */
+  ageSeconds: z.number().int().nonnegative().nullable(),
+  /** How long that copy took. */
+  durationSeconds: z.number().nonnegative().nullable(),
+  sizeBytes: z.number().nonnegative().nullable(),
+  /** A failover would start from this copy right now. */
+  usable: z.boolean(),
+});
+
+export const mailHealthStandbyComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  /** The restore fast-path age limit the copies were judged against. */
+  maxAgeSeconds: z.number().int().positive(),
+  nodes: z.array(mailHealthStandbyNodeSchema),
+});
+export type MailHealthStandbyComponent = z.infer<typeof mailHealthStandbyComponentSchema>;
+export type MailHealthStandbyNode = z.infer<typeof mailHealthStandbyNodeSchema>;
+
+/**
+ * Disk headroom on the mail nodes. The mail store's database periodically
+ * rewrites its message files and deletes the old ones only when the rewrite
+ * finishes, so for a while a node holds up to twice the store. A node needs
+ * free space at least the size of its mail data, or a rewrite can fill the
+ * disk. Checked on the active node and on every standby node.
+ * `not_implemented` when no node reported both numbers.
+ */
+export const mailHealthStorageNodeSchema = z.object({
+  node: z.string(),
+  role: z.enum(['active', 'standby']),
+  freeBytes: z.number().nonnegative().nullable(),
+  /**
+   * The mail data the node must have room for: measured live on the active
+   * node; on a standby, the larger of its last complete copy and the active
+   * node's live data (what its next sync receives).
+   */
+  mailBytes: z.number().nonnegative().nullable(),
+  /** Free space ≥ the mail data. Null when either number is unknown. */
+  enough: z.boolean().nullable(),
+});
+
+export const mailHealthStorageComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  nodes: z.array(mailHealthStorageNodeSchema),
+});
+export type MailHealthStorageComponent = z.infer<typeof mailHealthStorageComponentSchema>;
+export type MailHealthStorageNode = z.infer<typeof mailHealthStorageNodeSchema>;
+
 // ── Deliverability sub-probes (forward DNS, reverse DNS / FCrDNS, DNSBL,
 // cert SAN match, SMTP banner). These hit *external* infrastructure
 // (recursor + DNSBL providers) so they are inherently slower and
@@ -367,6 +425,10 @@ export const mailHealthResponseSchema = z.object({
      * must answer on the mail ports). Optional — older backends omit it.
      */
     exposure: mailHealthExposureComponentSchema.optional(),
+    /** Standby copies a failover can start from. Optional — older backends omit it. */
+    standby: mailHealthStandbyComponentSchema.optional(),
+    /** Disk headroom for the mail store's rewrites. Optional — older backends omit it. */
+    storage: mailHealthStorageComponentSchema.optional(),
   }),
   /**
    * The mail endpoint set every per-node / per-address check ran against.

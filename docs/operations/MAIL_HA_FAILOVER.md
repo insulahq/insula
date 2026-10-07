@@ -337,6 +337,17 @@ restore-state: standby marker is 7268s old (limit 1800s) — rejecting FAST PATH
 **Operator awareness**: if a node was offline for hours, the failover
 correctly falls through. No silent stale-data restore.
 
+A sync also has no complete copy **while it runs**: `standby-replicate.sh` removes
+the sentinel when a pass starts and writes it back only when the pass finishes. Most
+passes take seconds. But after the mail store rewrites its files (every ~128 MiB of
+new mail on Stalwart v0.16.10+, see
+[MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)),
+or after a large import, a pass copies the whole store. On a slow link that can take
+longer than the max-age gate. The **Standby copies** component of the mail health
+check (Email → health banner, and an admin alert) reports any standby node without a
+copy young enough for the FAST PATH. It reads the gate from the Deployment's
+`FAST_PATH_MAX_AGE_SECONDS`, so an override is judged correctly.
+
 ### 4. Bulwark fresh-start on failover with no standby data
 
 If `/standby-data/bulwark/admin/admin.json` is absent AND no

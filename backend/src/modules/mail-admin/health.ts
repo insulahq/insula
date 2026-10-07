@@ -30,6 +30,10 @@
  *              a hostPort for every mail port? Read from the cluster — no
  *              connection to a public address (Stalwart auto-bans sources
  *              that open bare connections to many ports).
+ *   standby  — every standby node holds a complete copy young enough for a
+ *              failover to start from (health-capacity.ts).
+ *   storage  — every mail node has free space ≥ its mail data, the headroom
+ *              the store's periodic file rewrites need (health-capacity.ts).
  *
  * Every per-node / per-address check (exposure + the deliverability DNS /
  * PTR / DNSBL probes) runs against the SAME endpoint set, which the response
@@ -61,6 +65,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { probeDeliverability, type DeliverabilityDeps } from './deliverability.js';
 import { endpointAddresses, endpointAddressNodes } from './mail-endpoints.js';
 import { probeExposure } from './exposure-probe.js';
+import { probeCapacity, type MailCapacityInput } from './health-capacity.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STALWART_LABEL = 'app=stalwart-mail';
@@ -149,6 +154,12 @@ export interface MailHealthDeps {
   readonly serverNodeIpv6s?: ReadonlyArray<string>;
   /** Visible for tests: override the deliverability probe set wholesale. */
   readonly deliverabilityOverrides?: Partial<Omit<DeliverabilityDeps, 'hostname' | 'serverNodeIps' | 'clock'>>;
+  /**
+   * Reads per-node free space, mail data and standby reports for the standby +
+   * storage components (health-capacity.ts:mailCapacityReader). Absent → both
+   * report `not_implemented`.
+   */
+  readonly capacity?: () => Promise<MailCapacityInput>;
 }
 
 export interface GetMailHealthOpts {
@@ -170,7 +181,7 @@ export async function getMailHealth(
   // (rocksdb, jmap, cert) which need a pod name, and the exposure probe
   // (hostPorts of the active node). TCP probe + deliverability are
   // independent so they run in parallel with pod.
-  const [podResult, tcp, deliverability] = await Promise.all([
+  const [podResult, tcp, deliverability, { standby, storage }] = await Promise.all([
     probePod(deps),
     probeTcp(deps),
     probeDeliverability({
@@ -181,6 +192,7 @@ export async function getMailHealth(
       clock: deps.clock,
       ...deps.deliverabilityOverrides,
     }),
+    probeCapacity(deps.capacity),
   ]);
   const { hostPorts, ...pod } = podResult;
   // Exec-based probes need pod.podName. They run in parallel with each other.
@@ -198,10 +210,12 @@ export async function getMailHealth(
     && cert.healthy
     && tcp.healthy
     && deliverability.healthy
-    && exposure.healthy;
+    && exposure.healthy
+    && standby.healthy
+    && storage.healthy;
   const response = mailHealthResponseSchema.parse({
     healthy,
-    components: { pod, jmap, rocksdb, cert, tcp, deliverability, exposure },
+    components: { pod, jmap, rocksdb, cert, tcp, deliverability, exposure, standby, storage },
     endpoints: deps.endpoints,
     checkedAt: new Date(now).toISOString(),
     cachedFor: Math.floor(CACHE_TTL_MS / 1000),

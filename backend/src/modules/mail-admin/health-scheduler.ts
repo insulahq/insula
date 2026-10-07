@@ -24,6 +24,7 @@ import { getMailHealth } from './health.js';
 import { resolveMailEndpoints } from './mail-endpoints.js';
 import type { MailEndpointSet } from '@insula/api-contracts';
 import { notifyAdminMailHealthDegraded } from '../notifications/events.js';
+import { capacityItems, mailCapacityReader } from './health-capacity.js';
 import type { Database } from '../../db/index.js';
 
 export interface MailHealthSchedulerLog {
@@ -40,6 +41,8 @@ const COMPONENT_LABELS: Record<string, string> = {
   tcp: 'mail ports',
   deliverability: 'deliverability',
   exposure: 'mail port exposure',
+  standby: 'standby mail copy',
+  storage: 'mail disk headroom',
 };
 
 /** 12h bucket: two alerts/day per component while a failure is sustained. */
@@ -68,9 +71,11 @@ export function componentDetail(key: string, component: unknown): string {
 /**
  * The failing deliverability sub-probes, one list item each; that is what
  * makes this alert actionable (e.g. "certSanMatch" is the self-signed-cert
- * case). Warnings are not failures and are not named. Pure.
+ * case). Warnings are not failures and are not named. For the standby and
+ * storage components, the nodes behind the failure (health-capacity.ts). Pure.
  */
 export function componentProbes(key: string, component: unknown): string[] {
+  if (key === 'standby' || key === 'storage') return capacityItems(key, component);
   if (key !== 'deliverability' || !component || typeof component !== 'object') return [];
   const failing: string[] = [];
   for (const [k, v] of Object.entries(component as Record<string, unknown>)) {
@@ -78,6 +83,26 @@ export function componentProbes(key: string, component: unknown): string[] {
     if (probe && typeof probe === 'object' && probe.severity === 'fail') failing.push(k);
   }
   return failing;
+}
+
+/**
+ * The failing components, one alert each. `healthy !== false` covers both ok
+ * and absent-in-this-response (the optional components, for older backends).
+ * A failed capacity read fails `standby` and `storage` with the same reason;
+ * that is one problem, so it alerts once, under `standby`. Pure.
+ */
+export function componentsToAlert(components: Record<string, unknown>): Array<[string, unknown]> {
+  const failing = Object.entries(components).filter(([, component]) => {
+    const c = component as { healthy?: boolean } | undefined;
+    return !!c && c.healthy === false;
+  });
+  const standby = (components.standby as { healthy?: boolean; error?: string | null } | undefined);
+  return failing.filter(([key, component]) => !(
+    key === 'storage'
+    && standby?.healthy === false
+    && typeof standby.error === 'string'
+    && (component as { error?: string | null }).error === standby.error
+  ));
 }
 
 /** One mail-health pass. Never throws (fire-and-forget contract). */
@@ -154,19 +179,16 @@ export async function runMailHealthCheckOnce(
 
   // refresh:true — the on-demand cache would otherwise let this scheduler
   // re-read a stale response and alert (or stay silent) on old data.
+  const capacity = mailCapacityReader({ k8s, db, kubeconfigPath, log });
   const health = await getMailHealth(
-    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError },
+    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity },
     { refresh: true },
   );
   if (health.healthy) return 0;
 
   const bucket = dedupeBucket(clock());
   let fired = 0;
-  for (const [key, component] of Object.entries(health.components)) {
-    const c = component as { healthy?: boolean } | undefined;
-    // `healthy !== false` covers both ok and absent-in-this-response
-    // (deliverability is optional in the contract for older backends).
-    if (!c || c.healthy !== false) continue;
+  for (const [key, component] of componentsToAlert(health.components)) {
     const label = COMPONENT_LABELS[key] ?? key;
     try {
       await notifyAdminMailHealthDegraded(

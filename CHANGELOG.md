@@ -14,6 +14,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **The mail health check now covers capacity: standby copies and disk headroom.** Since Stalwart
+  v0.16.10, the mail store rewrites all of its message files roughly every 128 MiB of new mail
+  (blob garbage collection is hard-coded to treat every file as old; only an upstream change can fix it). Two things
+  can go wrong quietly on any install, and both now show in Email → health details and raise an
+  admin alert. **Standby copies:** a standby node re-copying the whole store holds no complete copy,
+  so a failover in that window would restore from the backup instead. The check reports any standby
+  without a copy younger than the restore limit (`FAST_PATH_MAX_AGE_SECONDS`, read from the
+  Deployment, 30 min by default). **Disk headroom:** during a rewrite a node briefly holds about
+  twice its mail data, so the check reports any mail node with less free space than its mail data.
+  Operator notes, with measurements: `docs/operations/MAIL_STORE_SPACE_RECLAIM.md`.
 - **Every tenant application now has a limit on the server disk it can use.** An application's
   temporary files, caches and logs written outside the tenant's storage live on the server's own
   disk, shared with every other tenant and the platform — until now one application could fill it

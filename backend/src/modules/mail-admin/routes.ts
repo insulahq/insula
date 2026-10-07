@@ -35,6 +35,7 @@ import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-master-user.js';
 import { getMailPvcStorage } from './mail-pvc.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
+import { mailCapacityReader } from './health-capacity.js';
 import {
   startMailArchive,
   startMailArchiveRestore,
@@ -202,8 +203,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         endpointsError = err instanceof Error ? err.message : String(err);
       }
       const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
+      const capacity = mailCapacityReader({
+        k8s, db: app.db, kubeconfigPath, log: { warn: (...args: unknown[]) => app.log.warn(args.join(' ')) },
+      });
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity },
         { refresh },
       );
       return success(result);
