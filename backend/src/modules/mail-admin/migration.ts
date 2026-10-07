@@ -1730,6 +1730,9 @@ async function runMigrationStateMachine(
     .set({ mailActiveNode: targetNode, mailDrState: dataLossCutover ? 'degraded' : 'healthy' })
     .where(eq(systemSettings.id, SETTINGS_ID)));
 
+  // Step 8a: the standby copy follows the stack — see moveStandbyLabelsWithStack.
+  await moveStandbyLabelsWithStack(deps, targetNode, log);
+
   // Step 8b: re-reconcile port-exposure for the NEW active node. In
   // thisNodeOnly mode the stalwart-mail Service.externalIPs must follow
   // the active node — without this, kube-proxy keeps routing mail
@@ -2006,6 +2009,41 @@ async function runMigrationStateMachine(
  * (e.g., they pre-share the password to a monitoring tool that they
  * don't want to re-configure on every migration).
  */
+/**
+ * Step 8a: re-derive the mail-standby labels for the node the stack now runs on.
+ * Nothing else does it after a migration: the platform-api startup reconcile
+ * skips while a migration is in flight, and Step 8b1's credential rotation
+ * restarts platform-api inside exactly that window. A VM failover drill ended
+ * with the label on the node that had just become active (its replicator copying
+ * from its own pod) and none on the secondary, so the next failure would have
+ * restored from a stale copy or restic. Non-fatal: the cutover already
+ * succeeded, and the next platform-api start or placement save re-derives them.
+ */
+export async function moveStandbyLabelsWithStack(
+  deps: Pick<MigrationDeps, 'db' | 'core' | 'batch'>,
+  activeNode: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<void> {
+  try {
+    const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    const standby = await applyMailStandbyLabels(
+      deps.core,
+      deps.batch,
+      {
+        primary: row?.mailPrimaryNode ?? null,
+        secondary: row?.mailSecondaryNode ?? null,
+        tertiary: row?.mailTertiaryNode ?? null,
+      },
+      activeNode,
+      { warn: log.warn },
+    );
+    log.info(`[migration] standby copies now staged on: ${standby.join(', ') || '(none — single-node placement)'}`);
+  } catch (err) {
+    log.warn('[migration] moving the standby labels with the stack failed (non-fatal — the next platform-api start or placement save re-derives them):', err);
+  }
+}
+
 async function readAutoRotateOnMigrationFlag(db: Database): Promise<boolean> {
   const [row] = await db
     .select({ value: platformSettings.value })

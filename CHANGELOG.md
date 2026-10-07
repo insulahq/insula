@@ -107,6 +107,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   self-signed certificate indefinitely, breaking every client that verifies TLS. A queued order more
   than 90 minutes past due (Stalwart's own task lock lasts an hour) is now discarded and a fresh
   one placed; on that cluster the fresh order was issued in two seconds.
+- **After a mail failover or failback, the standby copy is kept on the right node.** The nodes that
+  stage a standby copy are re-chosen when the mail stack moves — but only at platform start-up or
+  when placement is saved, and the start-up pass waits out a running migration, which restarts the
+  platform itself mid-run. After a failover or failback the standby label therefore stayed on the
+  node that had just become active (copying from its own pod) while the real standby received
+  nothing, so the next failure restored from an old copy or the last backup. A migration now
+  re-chooses the standby nodes as soon as it has moved the stack.
 - **A mail failover that escalated to a restic restore no longer empties the mail store right
   afterwards.** When the restored standby copy missed something just created (a new domain, say),
   the failover correctly escalated to a restic restore of the newest snapshot and cut over — then

@@ -621,3 +621,49 @@ describe('mail-admin/placement.updateMailPlacement applies what it saved', () =>
     expect(apply).not.toHaveBeenCalled();
   });
 });
+
+describe('mail-admin/placement.applyMailStandbyLabels', () => {
+  const STANDBY = 'insula.host/mail-standby';
+  const nodes = (labelled: readonly string[]) => ({
+    items: ['s1', 's2', 's3'].map((name) => ({
+      metadata: { name, labels: labelled.includes(name) ? { [STANDBY]: 'true' } : {} },
+    })),
+  });
+
+  // After a failback the label stayed on the node that had just become ACTIVE
+  // (a replicator copying from its own pod) while the secondary got nothing —
+  // the startup reconcile skips during a migration, so only the migration
+  // itself can move the label with the stack.
+  it('moves the label off the node that just became active, onto the other candidates', async () => {
+    const patchNode = vi.fn(async (_req: { name: string; body: Array<{ op: string }> }) => undefined);
+    const createNamespacedJob = vi.fn(async () => undefined);
+    const core = { listNode: vi.fn(async () => nodes(['s1'])), patchNode };
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    const standby = await applyMailStandbyLabels(
+      core as never, { createNamespacedJob } as never,
+      { primary: 's1', secondary: 's2', tertiary: null }, 's1',
+    );
+    expect(standby).toEqual(['s2']);
+    expect(patchNode.mock.calls.map(([req]) => [req.name, req.body[0].op])).toEqual([['s1', 'remove'], ['s2', 'add']]);
+    // The de-elected node's copy is parked for the janitor, not left to rot.
+    expect(createNamespacedJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a failover labels the primary (the failback target) and leaves a correct set alone', async () => {
+    const patchNode = vi.fn(async (_req: { name: string; body: Array<{ op: string }> }) => undefined);
+    const createNamespacedJob = vi.fn(async () => undefined);
+    const core = { listNode: vi.fn(async () => nodes(['s2'])), patchNode };
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    const standby = await applyMailStandbyLabels(
+      core as never, { createNamespacedJob } as never,
+      { primary: 's1', secondary: 's2', tertiary: 's3' }, 's2',
+    );
+    expect(standby).toEqual(['s1', 's3']);
+    expect(patchNode.mock.calls.map(([req]) => [req.name, req.body[0].op])).toEqual([['s1', 'add'], ['s2', 'remove'], ['s3', 'add']]);
+
+    patchNode.mockClear();
+    core.listNode.mockResolvedValueOnce(nodes(['s1', 's3']));
+    await applyMailStandbyLabels(core as never, { createNamespacedJob } as never, { primary: 's1', secondary: 's2', tertiary: 's3' }, 's2');
+    expect(patchNode).not.toHaveBeenCalled();
+  });
+});

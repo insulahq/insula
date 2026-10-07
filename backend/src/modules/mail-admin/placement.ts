@@ -686,13 +686,40 @@ export async function ensureMailStackPlacementApplied(
   //
   // Staging a copy on the primary is exactly what makes failback fast, and
   // staging one on the active node is exactly what never helps.
-  const standbyNodes = deriveStandbyNodes({
-    primary: row?.mailPrimaryNode ?? null,
-    secondary: row?.mailSecondaryNode ?? null,
-    tertiary: row?.mailTertiaryNode ?? null,
+  await applyMailStandbyLabels(
+    core,
+    batch,
+    {
+      primary: row?.mailPrimaryNode ?? null,
+      secondary: row?.mailSecondaryNode ?? null,
+      tertiary: row?.mailTertiaryNode ?? null,
+    },
     activeNode,
-  });
-  await reconcileMailStandbyLabel(core, batch, standbyNodes, opts.logger);
+    opts.logger,
+  );
+}
+
+/**
+ * Label exactly the nodes that should stage a standby copy for a stack running
+ * on `activeNode` (deriveStandbyNodes), de-electing the rest. Returns that set.
+ *
+ * A migration calls this once it has moved the stack. The startup reconcile
+ * above skips while a migration is in flight — and the migration's own admin
+ * credential rotation restarts platform-api inside that window — so after a
+ * failover or failback the label stayed on the node that had just become
+ * ACTIVE (a replicator copying from its own pod) while the real standby got
+ * nothing, and the next failure restored from a stale copy or restic.
+ */
+export async function applyMailStandbyLabels(
+  core: import('@kubernetes/client-node').CoreV1Api,
+  batch: import('@kubernetes/client-node').BatchV1Api,
+  placement: { readonly primary: string | null; readonly secondary: string | null; readonly tertiary: string | null },
+  activeNode: string,
+  logger?: PlacementOptions['logger'],
+): Promise<string[]> {
+  const standbyNodes = deriveStandbyNodes({ ...placement, activeNode });
+  await reconcileMailStandbyLabel(core, batch, standbyNodes, logger);
+  return standbyNodes;
 }
 
 /**
