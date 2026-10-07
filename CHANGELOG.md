@@ -14,6 +14,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Every tenant application now has a limit on the server disk it can use.** An application's
+  temporary files, caches and logs written outside the tenant's storage live on the server's own
+  disk, shared with every other tenant and the platform — until now one application could fill it
+  for everyone. Each tenant container is now limited (Platform → Limits & Regional: **2 GiB** for
+  applications, **8 GiB** for database components, which spill large sorts to disk); past it the
+  server restarts the application on a clean filesystem. The tenant's files and databases on their
+  storage are never touched. The tenant is told (*Application restarted: local disk limit*, naming
+  the application and the limit) and the operator sees the event in Node health. The limit reaches
+  each application the next time it is deployed — saving the setting or upgrading the platform
+  restarts nothing. Small pod-local volumes (PHP sessions, migration scratch) are size-capped too.
+  Container images and the sum of all limits remain bounded by the server's own cleanup and disk
+  alerts; see `docs/operations/TENANT_DISK_LIMITS.md`.
+
 - **Two-step sign-in with an authenticator app (TOTP), in both panels.** Under User Settings →
   Authenticator app, a user can add a 6-digit code from any authenticator app to their password
   sign-in: scan the QR code (drawn in the browser), confirm with a code, and store the ten
@@ -26,6 +39,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   reset removes it too.
 
 ### Changed
+
+- **The node "disk critical" alert fires at 80 % instead of 90 %.** 90 % is the moment the server
+  starts evicting workloads on its own, so the alert never came first; 80 % leaves time to act
+  (warning stays at 75 %).
 
 - **A passkey signs in on its own — the "Password + passkey (2FA)" mode is gone.** A passkey is
   already two factors (the device plus its PIN or biometric); the second factor for a password is

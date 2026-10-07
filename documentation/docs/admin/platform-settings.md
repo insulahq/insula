@@ -15,7 +15,7 @@ forget them. This chapter walks each page; some require `super_admin`.
 | **Upgrades** | Guarded platform version upgrades (super_admin). |
 | **Identity** | Platform name, panel URLs, support contacts. |
 | **Hosting Plans** | Plans and resource limits. → [Plans & subscriptions](plans-and-subscriptions.md) |
-| **Limits & Regional** | API rate limit, retention windows (snapshots, deleted-tenant backups, file-manager recycle bin), timezone, currency. |
+| **Limits & Regional** | API rate limit, retention windows (snapshots, deleted-tenant backups, file-manager recycle bin), tenant disk limits, timezone, currency. |
 | **DNS Providers** | DNS provider groups + servers. → [Domains & DNS](domains-and-dns.md) |
 | **Integrations** | Embedded-service URLs (Longhorn, …). |
 | **Tenant Lifecycle Hooks** | Lifecycle hook health + controls. |
@@ -66,7 +66,8 @@ sends a partial update, so it won't disturb Limits or other settings.
 
 **Platform → Limits & Regional** sets the **API rate limit**, the default
 **timezone**, and the **currency** (which is what plan prices are
-displayed in everywhere else), plus three retention windows:
+displayed in everywhere else), the [tenant disk limits](#tenant-disk-limits),
+plus three retention windows:
 
 | Setting | What it controls |
 |---|---|
@@ -89,6 +90,38 @@ active ISO 4217 code, not a shortlist — if you bill in MXN, KES, PLN or VED,
 pick it here and prices display in it everywhere. Codes ISO has since retired
 stay selectable too, so a platform that set one years ago can still see and
 keep its own currency.
+
+### Tenant disk limits
+
+Every tenant application gets a limit on what it may write to **its own
+container filesystem on the server** — temporary files, caches and logs that
+land outside the tenant's storage. That filesystem lives on the server's disk,
+shared with every other tenant and with the platform itself; without a limit
+one application could fill it for everyone.
+
+| Setting | Default | Applies to |
+|---|---|---|
+| **Tenant App Disk Limit** | 2048 MiB | Every tenant container that is not a database — catalog apps and bring-your-own containers alike. |
+| **Tenant Database Disk Limit** | 8192 MiB | Database components (MariaDB, PostgreSQL, …), which spill sorts and temporary tables that do not fit in memory to disk. |
+
+What happens at the limit: the server restarts that application on a clean
+filesystem. The tenant's files and databases **on their storage are not
+touched** — the limit covers only what the application wrote to its own
+container. The tenant receives a notification (*Application restarted: local
+disk limit*) naming the application, and you see the same event under
+**Node health → memory events** as *pod ephemeral-storage limit exceeded*.
+
+A changed value reaches each application **the next time it is deployed**
+(any redeploy, edit, upgrade or restore) — saving it never restarts running
+workloads. Raise it only for a workload that genuinely needs the space; an
+application that keeps reaching it is usually writing data that belongs on
+the tenant's storage. Allowed range: 256–65536 MiB.
+
+What it does not cover (by design, see the operations runbook
+`docs/operations/TENANT_DISK_LIMITS.md`): container **images**, which are
+shared and cleaned up by the server once its disk passes 70 %; and the sum of
+all limits — they overlap on a shared disk, so the server's own disk alerts
+(warning 75 %, critical 80 %) remain the backstop.
 
 ### File-manager recycle bin
 

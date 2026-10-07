@@ -49,7 +49,7 @@
 | [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
 | [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ **SHIPPED** — Postgres + RollingUpdate + reconciler-owned 2 replicas (verified 2/2 Ready on DEV) |
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
-| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
+| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | ✅ **Decided + built 2026-10-07** — bounded, not charged: a per-container `ephemeral-storage` limit on every tenant pod (2 GiB apps / 8 GiB databases, operator setting), size caps on every tenant emptyDir, tenant + admin eviction notices, node disk critical alert 90 → 80 %. Quotas, admission policy, node pool, `/tmp` on the tenant volume: rejected. Runbook `docs/operations/TENANT_DISK_LIMITS.md` |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
 | [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | ✅ **Largely shipped in v2026.10.6** — per-node nft counters split the wire into internet and node-to-node (by class), with tenant-ingress and off-site-backup subsets; residual: the rest of internet traffic (mail, image pulls, platform HTTP) is not labelled |
@@ -2004,6 +2004,56 @@ when recovering a half-broken node; the danger is only that they currently
 read as the primary path.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
+
+**DECISION (operator, 2026-10-07): bound it, don't charge it — the smallest
+mechanism that closes "unbounded", using the kubelet's own enforcement.**
+Built 2026-10-07; runbook [TENANT_DISK_LIMITS.md](../operations/TENANT_DISK_LIMITS.md).
+
+- Every tenant container and init container gets `limits.ephemeral-storage`
+  (Platform → Limits & Regional: **2048 MiB** apps, **8192 MiB** database
+  components) and an explicit **64Mi** request (without it Kubernetes copies
+  the limit into the request and the scheduler would call nodes full). Every
+  disk-backed tenant emptyDir gets a `sizeLimit`. One function,
+  `boundTenantPodDisk`, on every tenant pod builder; CI guard
+  `ci-tenant-disk-bounds.sh`.
+- Applies on each workload's **next deploy** — no reconciler re-renders tenant
+  pods, so neither saving the setting nor upgrading restarts anything.
+- At the limit the kubelet restarts the pod on a clean filesystem; the tenant
+  gets `tenant.workload_disk_limit`, the operator the existing node
+  memory-event alert (cause `pod-storage-limit`).
+- Node disk alert critical **90 → 80 %**: 90 was the kubelet's own eviction
+  point, so it never warned first.
+
+**Considered and rejected**, after measuring rather than assuming:
+
+- *Measure first, enforce later* — operator: the current cluster is not a
+  baseline for other operators' clusters (small VPS disks, bring-your-own
+  images, unknown tenants); for an OSS hosting platform bounded-by-default is
+  the requirement.
+- *Quota on `limits.ephemeral-storage` + admission policy + a per-node scratch
+  pool via kubelet `system-reserved`* (≈6.5 engineer-weeks) — charges and
+  reserves, but needs k3s restarts on every node, a Longhorn reservation
+  change and new plan fields every operator must understand. Note for later:
+  a ResourceQuota does NOT force ephemeral-storage declarations (only cpu and
+  memory are in the quota evaluator's validation set) — every builder already
+  declares one now, so a quota can be added cheaply if billing ever needs it.
+- *`/tmp` on the tenant volume* — would make scratch charged, but measured on
+  DEV (Longhorn 1 replica vs node disk, same disk): large temp writes 4–6×
+  slower (~170 vs 700–1,100 MB/s), uncached re-reads ~7.5× slower, small
+  temp files no difference, a full 256 MiB upload about even. It would also
+  tie temp-file performance to whatever storage class an operator runs, and
+  reverses the earlier decision to keep sessions off the tenant volume. The
+  limit already caps `/tmp`.
+- *Read-only root filesystem for catalog images* — kept as a later hardening
+  item, not needed for the bound (production tenant containers held at most
+  1.3 MiB in their own filesystem).
+
+**Residual, documented** (runbook): container images (image GC + pressure
+watcher), the sum of overlapping limits (kubelet node-pressure eviction +
+the 75/80 % alerts), platform-run proxies in tenant namespaces, platform Jobs
+with their own large staging caps, the mail-archive Job.
+
+The original analysis follows.
 
 **The gap.** A tenant deployment pod carries no `ephemeral-storage` request or
 limit, and the tenant `ResourceQuota` bounds only CPU and memory:
