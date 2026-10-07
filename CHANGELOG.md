@@ -29,8 +29,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 - **A cross-cluster migration imports each tenant's newest backup.** Picking the newest bundle
   compared a field the backup metadata does not have, so it imported whichever bundle the source
-  listed first — an arbitrary, often older, copy — and Migration showed no capture time. It now
-  compares capture times and shows the right one.
+  listed first — an arbitrary, often older, copy. It now compares capture times, and Backups →
+  Disaster Recovery → Migrate Tenants shows under each tenant's latest bundle when it was captured (exact
+  time on hover), so the operator can see how old the copy is before importing it.
 
 ### Removed
 
