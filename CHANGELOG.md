@@ -90,6 +90,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A mail failover that escalated to a restic restore no longer empties the mail store right
+  afterwards.** When the restored standby copy missed something just created (a new domain, say),
+  the failover correctly escalated to a restic restore of the newest snapshot and cut over — then
+  cleared only `allow-restore`, leaving `restore-snapshot-id: latest` on the Stalwart pod template.
+  That very patch restarted Stalwart; its init container did not recognise `latest` as already
+  applied (it recorded the concrete snapshot id), wiped the restored store and, without
+  `allow-restore`, started empty. Found on a VM failover drill (the probe message was lost; TLS and
+  inbound mail broke with it). The migration now clears both annotations; the init records the
+  requested id, and it never wipes an existing store it is not allowed and able to replace.
 - **A mail failover no longer starts with an empty mail store when the standby copy is old.** On an
   install without a restic backup, a failover onto a standby whose copy was older than
   `FAST_PATH_MAX_AGE_SECONDS` (30 min), or that was mid-sync, started Stalwart and Bulwark fresh — no

@@ -1697,13 +1697,17 @@ async function runMigrationStateMachine(
     }
   }
 
-  // Step 7: Clear the allow-restore annotation so subsequent pod
-  // restarts don't re-trigger the restore-state init. (The init also
-  // short-circuits on existing CURRENT, so this is belt-and-suspenders.)
+  // Step 7: Clear BOTH restore annotations so later pod restarts don't
+  // re-trigger the restore-state init. Clearing only allow-restore left a
+  // restic escalation's `restore-snapshot-id: latest` on the template: this
+  // very patch rolled the pod, the init saw a per-snapshot request it had
+  // "not applied yet" (it records the concrete snapshot id, never 'latest'),
+  // wiped the just-restored DataStore and — allow-restore now gone —
+  // fresh-started an empty mail store right after a successful failover.
   try {
-    await clearAllowRestoreAnnotation(apps);
+    await clearRestoreAnnotations(apps);
   } catch (annotErr) {
-    log.warn('[migration] failed to clear allow-restore annotation (non-fatal):', annotErr);
+    log.warn('[migration] failed to clear the restore annotations (non-fatal):', annotErr);
   }
 
   // Step 7a: destination verified — the retained source PV is
@@ -3092,14 +3096,19 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
  * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
  * Stalwart-only — Bulwark has no restore-state init container today.
  */
-async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
+export async function clearRestoreAnnotations(apps: AppsV1Api): Promise<void> {
   // Fix #4: clear from spec.template.metadata.annotations (pod
   // template) to match the location applyDeploymentAffinityOne now
   // writes to. Belt-and-braces: also clear from metadata.annotations
   // (Deployment) so legacy clusters that have the pre-fix annotation
   // sitting there get cleaned up too.
+  //
+  // restore-snapshot-id goes with allow-restore: one template patch, so no
+  // extra rollout, and no per-snapshot request outlives the migration that
+  // made it.
   const nullAnnotations = {
     [ALLOW_RESTORE_ANNOTATION]: null,
+    [RESTORE_SNAPSHOT_ID_ANNOTATION]: null,
   };
   await apps.patchNamespacedDeployment(
     {

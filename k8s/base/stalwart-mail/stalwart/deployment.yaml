@@ -323,6 +323,18 @@ spec:
                 echo "restore-state: per-snapshot restore '$$PRE_RESTORE_ID' already applied on this DataStore — no-op"
                 exit 0
               fi
+              # NEVER wipe a DataStore this pod cannot replace. A per-snapshot
+              # request without allow-restore (or without a restic repository)
+              # used to wipe first and only THEN find it could not restore —
+              # fresh-starting an empty mail store. Seen on a VM failover drill:
+              # a restic escalation's `latest` outlived the migration (which
+              # cleared allow-restore), and the next restart emptied the
+              # just-restored store. The request is left for an operator.
+              if [ -n "$$PRE_RESTORE_ID" ] && [ -f "$$SENTINEL" ] \
+                 && { [ "$$ALLOW_RESTORE" != "true" ] || [ -z "$$RESTIC_REPOSITORY" ]; }; then
+                echo "restore-state: per-snapshot restore '$$PRE_RESTORE_ID' requested, but allow-restore is not set (or no restic repository) — KEEPING the existing DataStore instead of wiping it"
+                exit 0
+              fi
               if [ -n "$$PRE_RESTORE_ID" ]; then
                 echo "restore-state: per-snapshot restore requested (id='$$PRE_RESTORE_ID', last applied='$$APPLIED_ID') — wiping any existing DataStore before restic"
                 # Remove every file + hidden file under the mount, but NOT
@@ -556,13 +568,13 @@ spec:
                 exit 1
               fi
               echo "restore-state: restore complete from snapshot '$$CHOSEN_ID' ($$(ls /var/lib/stalwart/data | wc -l) files)"
-              # Idempotency marker: record WHICH snapshot id we just restored. On
-              # the next pod restart (same annotation in place) this short-circuits
-              # the wipe + restic at the top. Skipped for the floating 'latest'
-              # alias (not a stable id) — subsequent restarts hit the SENTINEL skip.
-              if [ "$$CHOSEN_ID" != "latest" ]; then
-                echo "$$CHOSEN_ID" > /var/lib/stalwart/data/.restore-applied-at
-              fi
+              # Idempotency marker: line 1 is the REQUESTED id (the annotation
+              # value, compared at the top — 'latest' included), line 2 the
+              # snapshot actually restored. Recording only the concrete id meant a
+              # `latest` request never read as applied: every restart wiped the
+              # restored store and restored again (or, without allow-restore,
+              # fresh-started it empty).
+              printf '%s\n%s\n' "$${PRE_RESTORE_ID:-$$CHOSEN_ID}" "$$CHOSEN_ID" > /var/lib/stalwart/data/.restore-applied-at
           envFrom:
             - secretRef:
                 name: stalwart-snapshot-restic-repo

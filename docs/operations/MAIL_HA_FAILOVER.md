@@ -329,6 +329,24 @@ Same state machine as auto-failover but:
 
 ## Edge cases observed during E2E testing
 
+### 0. A restic escalation must not outlive the migration
+
+When the restored copy fails the post-restore check (`verifyRestoreContent` — e.g. a domain
+created after the standby's last sync), the migration escalates to a restic restore by stamping
+`mail.platform/restore-snapshot-id: latest` with `allow-restore`. Step 7 clears **both**
+annotations on success. It used to clear only `allow-restore`: that patch restarted Stalwart, and
+the init container — which recorded the concrete snapshot id, never `latest` — wiped the restored
+store and, without `allow-restore`, fresh-started it empty (VM failover drill, 2026-10-07: the probe
+message was lost, TLS and inbound mail broke with it). Now:
+
+- the init records the **requested** id (`latest` included) in `.restore-applied-at`, so a restart
+  with the same annotation is a no-op;
+- a per-snapshot request is never allowed to wipe an existing DataStore unless `allow-restore` is
+  set and a restic repository is configured — the init logs `KEEPING the existing DataStore`.
+
+Check after any failover: `kubectl -n mail get deploy stalwart-mail -o
+jsonpath='{.spec.template.metadata.annotations}'` shows neither annotation.
+
 ### 1. Source-node pods stuck Terminating
 
 When kubelet on the source node is dead, pods sit `Terminating` forever

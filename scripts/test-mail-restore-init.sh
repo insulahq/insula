@@ -81,9 +81,14 @@ cat > "$WORK/scenario.sh" <<'SCEN'
 # Env passes through to the init script (RESTIC_REPOSITORY, FAKE_*, …).
 which="$1" standby="$2" existing="${3:-}"
 now=$(date +%s)
-rm -rf /standby-data /var/lib/stalwart/data /app/data /restore-tmp /podinfo
+# KEEP_DATA=1: a pod RESTART — the data volumes keep what the previous run left.
+if [ -z "${KEEP_DATA:-}" ]; then
+  rm -rf /var/lib/stalwart/data /app/data
+fi
+rm -rf /standby-data /restore-tmp /podinfo
 mkdir -p /standby-data /var/lib/stalwart/data /app/data /podinfo
-echo true > /podinfo/allow-restore
+# NO_ALLOW=1: the allow-restore annotation is not on the pod.
+[ -z "${NO_ALLOW:-}" ] && echo true > /podinfo/allow-restore
 [ -n "${RESTORE_ID:-}" ] && echo "$RESTORE_ID" > /podinfo/restore-snapshot-id
 mk_copy() {  # <dir> — a standby copy of both halves, tagged as such
   mkdir -p "$1/stalwart" "$1/bulwark/admin"
@@ -164,6 +169,15 @@ check "no standby copy, no backup → fresh start (as before)" "rc=0 src=empty f
 check "per-snapshot restore ignores the standby copy" "rc=0 src=restic -" "$(run stalwart gen RESTIC_REPOSITORY=r "$OLDER" RESTORE_ID=abcdef12)"
 check "the old in-place standby layout still restores" "rc=0 src=standby -" "$(run stalwart legacy)"
 check "an existing DataStore is left alone" "rc=0 src=existing -" "$(run stalwart gen existing)"
+check "a leftover per-snapshot request WITHOUT allow-restore keeps the existing DataStore (was: wiped, empty start)" \
+  "rc=0 src=existing -" "$(run stalwart none existing RESTORE_ID=latest NO_ALLOW=1 RESTIC_REPOSITORY=r "$NEWER")"
+log_has "KEEPING the existing DataStore" && ok "…and says so" || bad "…and says so"
+check "an escalation WITH allow-restore onto an existing DataStore still wipes and restores from restic" \
+  "rc=0 src=restic -" "$(run stalwart none existing RESTORE_ID=latest RESTIC_REPOSITORY=r "$NEWER")"
+check "a 'latest' restore completes from restic" "rc=0 src=restic -" "$(run stalwart none RESTIC_REPOSITORY=r "$NEWER" RESTORE_ID=latest)"
+check "…and a restart with the same annotation is a no-op, even with restic now failing (was: wiped and re-restored)" \
+  "rc=0 src=restic -" "$(run stalwart none RESTIC_REPOSITORY=r "$NEWER" RESTORE_ID=latest KEEP_DATA=1 FAKE_RESTORE_RC=1)"
+log_has "already applied on this DataStore" && ok "…the init recognised the request as applied" || bad "…the init recognised the request as applied"
 
 echo "── Bulwark restore-state ──"
 check "fresh standby copy, no backup → FAST PATH" "rc=0 src=standby -" "$(run bulwark gen)"
