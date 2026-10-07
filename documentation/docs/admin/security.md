@@ -72,7 +72,9 @@ or *Read Only*; `super_admin` is the elevated system role.
     *App code* (admin users here, tenant users under **Tenants → Users**, column
     *2FA*). The user then signs in with their password alone and can set the
     app up again. The emergency CLI password reset
-    (`scripts/admin-password-reset.sh`) also removes it.
+    (`scripts/admin-password-reset.sh`) also removes it. The emergency
+    (break-glass) sign-in form asks for the authenticator code too, when the
+    account has one.
 
 ## Posture (super_admin)
 

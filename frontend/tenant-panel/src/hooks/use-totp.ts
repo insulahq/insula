@@ -5,11 +5,11 @@
  * codes shown once).
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { TotpBackupCodesResponse, TotpSetupResponse, TotpStatus } from '@insula/api-contracts';
+import type { TotpBackupCodesResponse, TotpDisableInput, TotpSetupResponse, TotpStatus } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-/** A live code from the app, or one backup code. */
-export type TotpProofInput = { readonly code: string } | { readonly backup_code: string };
+/** A live code from the app, or one backup code — the contract's request type. */
+export type TotpProofInput = TotpDisableInput;
 
 const STATUS_KEY = ['totp-status'] as const;
 

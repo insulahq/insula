@@ -13,9 +13,12 @@
  *   • The secret is encrypted at rest (PLATFORM_ENCRYPTION_KEY, AES-256-GCM).
  *   • A code is good once: the accepted time step is recorded with an atomic
  *     "step greater than the last one" update, which holds across replicas.
- *   • Wrong codes are counted per USER in the database (not per IP, not per
- *     replica): MAX_FAILED_ATTEMPTS inside FAILED_WINDOW_MS locks the factor
- *     until the window ends, and a locked factor is not even evaluated.
+ *   • Attempts are counted per USER in the database (not per IP, not per
+ *     replica), and RESERVED before a code is looked at: one conditional
+ *     UPDATE takes an attempt from the allowance or refuses, so even
+ *     concurrent requests on one pre-auth token never get more than
+ *     MAX_FAILED_ATTEMPTS evaluated inside FAILED_WINDOW_MS. A right code
+ *     gives the attempt back; a locked factor is not evaluated at all.
  *   • Backup codes are random, shown once, stored as HMAC-SHA256 under a key
  *     derived from PLATFORM_ENCRYPTION_KEY, and burned with an atomic update.
  */
@@ -37,7 +40,7 @@ export const MAX_FAILED_ATTEMPTS = 10;
 export const FAILED_WINDOW_MS = 15 * 60 * 1000;
 export const BACKUP_CODE_COUNT = 10;
 const BACKUP_CODE_LENGTH = 10;
-/** No 0/O, 1/I/L: codes get typed from paper. 32 symbols × 10 = 50 bits each. */
+/** No 0/O, 1/I/L: codes get typed from paper. 31 symbols × 10 ≈ 49.5 bits each. */
 const BACKUP_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 export type TotpProof = { readonly code: string } | { readonly backupCode: string };
@@ -111,23 +114,39 @@ export async function beginTotpSetup(
   return { secret: secretB32, otpauthUri: otpauthUri({ issuer: input.issuer, account: input.account, secret }) };
 }
 
-/** Throws TOTP_LOCKED when the user has used up their wrong guesses for this window. */
-function assertNotLocked(row: { failedAttempts: number; failedWindowStartedAt: Date | null }, nowMs: number): void {
-  const windowStart = row.failedWindowStartedAt?.getTime() ?? 0;
-  if (row.failedAttempts >= MAX_FAILED_ATTEMPTS && nowMs - windowStart < FAILED_WINDOW_MS) {
-    const retryAfter = Math.ceil((windowStart + FAILED_WINDOW_MS - nowMs) / 1000);
-    throw new ApiError('TOTP_LOCKED', 'Too many wrong codes. Try again later.', 429, { retry_after: retryAfter });
-  }
-}
-
-async function recordFailure(db: Database, userId: string, nowMs: number): Promise<void> {
+/**
+ * Take one attempt from the user's allowance — atomically, BEFORE the code is
+ * evaluated. Postgres re-checks the WHERE against the newest row version after
+ * waiting on the row lock, so concurrent requests serialise here and at most
+ * MAX_FAILED_ATTEMPTS pass per window. (Checking first and counting a failure
+ * afterwards let 30 parallel guesses all through.) Returns false when locked.
+ */
+async function reserveAttempt(db: Database, userId: string, nowMs: number): Promise<boolean> {
   const now = new Date(nowMs);
   const windowFloor = new Date(nowMs - FAILED_WINDOW_MS);
-  await db.update(userTotp).set({
-    failedAttempts: sql`CASE WHEN ${userTotp.failedWindowStartedAt} IS NULL OR ${userTotp.failedWindowStartedAt} < ${windowFloor} THEN 1 ELSE ${userTotp.failedAttempts} + 1 END`,
-    failedWindowStartedAt: sql`CASE WHEN ${userTotp.failedWindowStartedAt} IS NULL OR ${userTotp.failedWindowStartedAt} < ${windowFloor} THEN ${now} ELSE ${userTotp.failedWindowStartedAt} END`,
+  const windowOver = sql`(${userTotp.failedWindowStartedAt} IS NULL OR ${userTotp.failedWindowStartedAt} < ${windowFloor})`;
+  const rows = await db.update(userTotp).set({
+    failedAttempts: sql`CASE WHEN ${windowOver} THEN 1 ELSE ${userTotp.failedAttempts} + 1 END`,
+    failedWindowStartedAt: sql`CASE WHEN ${windowOver} THEN ${now} ELSE ${userTotp.failedWindowStartedAt} END`,
     updatedAt: now,
-  }).where(eq(userTotp.userId, userId));
+  }).where(and(
+    eq(userTotp.userId, userId),
+    sql`(${windowOver} OR ${userTotp.failedAttempts} < ${MAX_FAILED_ATTEMPTS})`,
+  )).returning({ userId: userTotp.userId });
+  return rows.length === 1;
+}
+
+async function lockedError(db: Database, userId: string, nowMs: number): Promise<ApiError> {
+  const row = await loadRow(db, userId);
+  const windowStart = row?.failedWindowStartedAt?.getTime() ?? nowMs;
+  const retryAfter = Math.max(1, Math.ceil((windowStart + FAILED_WINDOW_MS - nowMs) / 1000));
+  return new ApiError('TOTP_LOCKED', 'Too many wrong codes. Try again later.', 429, { retry_after: retryAfter });
+}
+
+/** A right code gives back the attempts this window used. */
+async function clearAttempts(db: Database, userId: string, nowMs: number): Promise<void> {
+  await db.update(userTotp).set({ failedAttempts: 0, failedWindowStartedAt: null, updatedAt: new Date(nowMs) })
+    .where(eq(userTotp.userId, userId));
 }
 
 const wrongCode = () => new ApiError('TOTP_CODE_INVALID', 'That code is not right. Check the app and try again.', 401);
@@ -160,16 +179,13 @@ export async function verifyTotpFactor(
   if (!row?.enabledAt) {
     throw new ApiError('TOTP_NOT_ENABLED', 'Two-step sign-in is not on for this account.', 409);
   }
-  assertNotLocked(row, nowMs);
+  if (!(await reserveAttempt(db, userId, nowMs))) throw await lockedError(db, userId, nowMs);
 
   if ('code' in proof) {
     const secret = base32Decode(decrypt(row.secretEncrypted, encryptionKey));
     const step = matchTotp(secret, proof.code, nowMs);
-    if (step === null || !(await claimStep(db, userId, step, nowMs))) {
-      // A replayed code counts as a wrong one: it proves nothing new.
-      await recordFailure(db, userId, nowMs);
-      throw wrongCode();
-    }
+    // claimStep also clears the attempts. A replayed code stays counted: it proves nothing new.
+    if (step === null || !(await claimStep(db, userId, step, nowMs))) throw wrongCode();
     return 'code';
   }
 
@@ -181,12 +197,8 @@ export async function verifyTotpFactor(
       isNull(userTotpBackupCodes.usedAt),
     ))
     .returning({ id: userTotpBackupCodes.id });
-  if (burned.length !== 1) {
-    await recordFailure(db, userId, nowMs);
-    throw wrongCode();
-  }
-  await db.update(userTotp).set({ failedAttempts: 0, failedWindowStartedAt: null, updatedAt: new Date(nowMs) })
-    .where(eq(userTotp.userId, userId));
+  if (burned.length !== 1) throw wrongCode();
+  await clearAttempts(db, userId, nowMs);
   return 'backup_code';
 }
 
@@ -201,13 +213,10 @@ export async function enableTotp(
   const row = await loadRow(db, userId);
   if (!row) throw new ApiError('TOTP_SETUP_REQUIRED', 'Start the setup first.', 409);
   if (row.enabledAt) throw new ApiError('TOTP_ALREADY_ENABLED', 'Two-step sign-in is already on.', 409);
-  assertNotLocked(row, nowMs);
+  if (!(await reserveAttempt(db, userId, nowMs))) throw await lockedError(db, userId, nowMs);
   const secret = base32Decode(decrypt(row.secretEncrypted, encryptionKey));
   const step = matchTotp(secret, code, nowMs);
-  if (step === null) {
-    await recordFailure(db, userId, nowMs);
-    throw wrongCode();
-  }
+  if (step === null) throw wrongCode();
   const turnedOn = await db.update(userTotp)
     .set({ enabledAt: new Date(nowMs), lastUsedStep: step, failedAttempts: 0, failedWindowStartedAt: null, updatedAt: new Date(nowMs) })
     .where(and(eq(userTotp.userId, userId), isNull(userTotp.enabledAt)))

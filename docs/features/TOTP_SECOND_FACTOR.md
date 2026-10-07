@@ -31,6 +31,9 @@ migration during a rolling upgrade) treats it the same. Nobody is required to en
 - Admin: `DELETE /admin/users/:userId/totp` (super_admin) and `totpEnabled` on both user lists.
 - Recovery: `platform-ops admin reset-password` (`cli/admin-reset-password.ts`) and
   `scripts/admin-password-reset.sh` remove TOTP with the password reset.
+- Break-glass (`POST /auth/break-glass`, `oidc/routes.ts`) is a password sign-in too: a TOTP user must
+  send `code` or `backup_code` (else `TOTP_REQUIRED`), checked by the same `verifyTotpFactor`. Disabled
+  accounts are refused there as everywhere else.
 
 ## Invariants (totp-service.ts)
 
@@ -40,9 +43,12 @@ migration during a rolling upgrade) treats it the same. Nobody is required to en
 - **A code works once**: accepting a code is one conditional UPDATE — `last_used_step` must be lower
   than the code's step — so two replicas cannot both accept it, and an older step in the window is
   refused after a newer one. A replayed code counts as a wrong one.
-- **Lockout per user, in the DB**: 10 wrong codes in 15 minutes lock the factor until the window
-  ends; a locked factor is not evaluated (`TOTP_LOCKED`, 429, `retry_after`). Per IP, the verify
-  route is also rate-limited.
+- **Lockout per user, in the DB, reserved first**: every attempt takes one slot from a 10-per-15-minute
+  allowance in a single conditional UPDATE *before* the code is evaluated (`reserveAttempt`); Postgres
+  re-checks the WHERE after the row lock, so concurrent requests on one pre-auth token cannot get more
+  than 10 evaluated (checking first and counting afterwards let 30 parallel guesses through — the
+  integration test fires 30 at once). A right code gives the attempts back. A locked factor is not
+  evaluated (`TOTP_LOCKED`, 429, `retry_after`). Per IP, the verify route is also rate-limited.
 - **Backup codes**: 10 × 10 characters (no 0/O/1/I/L), shown once, stored as HMAC-SHA256 under a key
   derived (HKDF) from `PLATFORM_ENCRYPTION_KEY`, burned with an atomic `used_at IS NULL` update.
   Input is normalised (case, spaces, dashes).

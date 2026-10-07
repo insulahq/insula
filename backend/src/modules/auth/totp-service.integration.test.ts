@@ -93,6 +93,18 @@ describe.skipIf(skipIntegration)('TOTP second factor (integration)', () => {
     expect(await verifyTotpFactor(db, KEY, userId, { code: totpAt(secret, later) }, later)).toBe('code');
   });
 
+  it('concurrent wrong codes cannot outrun the lockout — at most MAX are ever evaluated', async () => {
+    await enableTotp(db, KEY, userId, totpAt(secret, T0), T0);
+    const t = T0 + 120_000;
+    const results = await Promise.all(Array.from({ length: 30 }, (_, i) =>
+      errCode(verifyTotpFactor(db, KEY, userId, { code: '000000' }, t + i))));
+    const evaluated = results.filter((c) => c === 'TOTP_CODE_INVALID').length;
+    expect(evaluated).toBeLessThanOrEqual(MAX_FAILED_ATTEMPTS);
+    expect(results.filter((c) => c === 'TOTP_LOCKED').length).toBe(30 - evaluated);
+    const [row] = await db.select().from(userTotp).where(eq(userTotp.userId, userId));
+    expect(row.failedAttempts).toBe(MAX_FAILED_ATTEMPTS);
+  });
+
   it('refuses a new setup while on; disabling needs a factor and removes everything', async () => {
     const codes = await enableTotp(db, KEY, userId, totpAt(secret, T0), T0);
     expect(await errCode(beginTotpSetup(db, KEY, { userId, account: 'a', issuer: 'b' }))).toBe('TOTP_ALREADY_ENABLED');

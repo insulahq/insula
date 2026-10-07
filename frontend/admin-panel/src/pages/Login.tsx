@@ -59,6 +59,8 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [breakGlassSecret, setBreakGlassSecret] = useState('');
+  const [breakGlassCode, setBreakGlassCode] = useState('');
+  const [breakGlassError, setBreakGlassError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // The provider list AND the API-reachability signal come from one request —
   // see use-auth-status.ts. `null` while loading keeps the pre-gate rendering
@@ -157,14 +159,22 @@ export default function Login() {
   const handleBreakGlass = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setBreakGlassError(null);
+    // An account with an authenticator app needs its code here too: six digits
+    // are a live code, anything else typed is a backup code.
+    const factor = breakGlassCode.trim() === ''
+      ? {}
+      : /^\d{3}\s?\d{3}$/.test(breakGlassCode.trim()) ? { code: breakGlassCode.trim() } : { backup_code: breakGlassCode.trim() };
     try {
       const res = await apiFetch<{ data: { token: string; user: { id: string; email: string; fullName: string; role: string } } }>('/api/v1/auth/break-glass', {
         method: 'POST',
-        body: JSON.stringify({ email, password, break_glass_secret: breakGlassSecret }),
+        body: JSON.stringify({ email, password, break_glass_secret: breakGlassSecret, ...factor }),
       });
       setTokenAndUser(res.data.token, res.data.user);
       goToTarget(redirectTarget, navigate);
-    } catch { /* error shown */ } finally { setSubmitting(false); }
+    } catch (err) {
+      setBreakGlassError(err instanceof ApiError ? err.message : 'Emergency sign-in failed.');
+    } finally { setSubmitting(false); }
   };
 
   const handleSso = (providerId: string) => {
@@ -236,6 +246,10 @@ export default function Login() {
             <div><label htmlFor="bg-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="bg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" data-testid="email-input" /></div>
             <div><label htmlFor="bg-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label><input id="bg-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" data-testid="password-input" /></div>
             <div><label htmlFor="bg-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Emergency Secret</label><input id="bg-secret" type="password" required value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} className="mt-1 w-full rounded-lg border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm" data-testid="break-glass-secret-input" /></div>
+            <div><label htmlFor="bg-code" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Authenticator code <span className="font-normal text-gray-500 dark:text-gray-400">(if you use one — or a backup code)</span></label><input id="bg-code" type="text" inputMode="numeric" autoComplete="one-time-code" value={breakGlassCode} onChange={(e) => setBreakGlassCode(e.target.value)} className="mt-1 w-full rounded-lg border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 font-mono text-sm" placeholder="123 456" data-testid="break-glass-code-input" /></div>
+            {breakGlassError && (
+              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="break-glass-error">{breakGlassError}</div>
+            )}
             <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50" data-testid="break-glass-button">
               {submitting && <Loader2 size={16} className="animate-spin" />}<KeyRound size={16} /> Emergency Sign In
             </button>

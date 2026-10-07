@@ -35,6 +35,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Security
 
+- **The emergency (break-glass) sign-in no longer skips a second factor or a disabled account.** It
+  checked the break-glass secret and the password, then signed the admin in — without the
+  authenticator-app code a user turned on, and even for an account that had been disabled. It now
+  asks for the code (or a backup code) like the normal sign-in, refuses disabled accounts, and
+  shows why it refused instead of failing without a message.
+
 - **The security probe no longer has the platform's credential files mounted.** It mounted the
   host directory `/etc/hosting-platform` to read the node's firewall posture. Since the 2026.7.4
   rebrand that directory is `/etc/insula`, which also holds the admin, Stalwart, Valkey and
