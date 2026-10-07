@@ -100,6 +100,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   ingress. An edit that would leave a route with no port to reach is refused (`PORT_IN_USE_BY_ROUTE`)
   instead of turning that hostname into a 404. When Kubernetes does reject a deployment, the message
   now names the rejected fields (never their values) instead of a generic error.
+- **A stuck certificate renewal no longer keeps mail on a self-signed certificate.** The platform
+  waits for a certificate order Stalwart already has queued rather than placing another (that
+  guard stops a Let's Encrypt rate-limit storm). An order Stalwart never runs — seen on a VM
+  cluster: queued, three hours past due, never attempted — therefore kept IMAP/SMTP on Stalwart's
+  self-signed certificate indefinitely, breaking every client that verifies TLS. A queued order more
+  than 90 minutes past due (Stalwart's own task lock lasts an hour) is now discarded and a fresh
+  one placed; on that cluster the fresh order was issued in two seconds.
 - **A mail failover that escalated to a restic restore no longer empties the mail store right
   afterwards.** When the restored standby copy missed something just created (a new domain, say),
   the failover correctly escalated to a restic restore of the newest snapshot and cut over — then

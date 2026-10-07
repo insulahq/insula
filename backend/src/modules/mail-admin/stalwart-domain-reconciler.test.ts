@@ -157,6 +157,12 @@ function buildJmapMock(behavior: JmapMockBehavior) {
       return wrap({ created, notCreated: null });
     }
     if (method === 'x:Task/set') {
+      const destroy = args.destroy as string[] | undefined;
+      if (destroy) {
+        const destroyed = destroy.filter((tid) => liveTasks.some((t) => t.id === tid));
+        for (const tid of destroyed) liveTasks.splice(liveTasks.findIndex((t) => t.id === tid), 1);
+        return wrap({ destroyed, notDestroyed: null });
+      }
       const create = args.create as Record<string, Record<string, unknown>> | undefined;
       const id = `task${nextTaskSerial++}`;
       if (create?.r) {
@@ -818,6 +824,33 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     expect(calls.filter((c) => c.method === 'x:Domain/set' && c.args.update !== undefined)).toEqual([]);
     expect(result.notes.find((n) => /AcmeRenewal task is already pending\/retrying/.test(n))).toBeDefined();
   });
+
+  it('(g) self-signed + a long-overdue AcmeRenewal ⇒ discards it and forces a fresh order', async () => {
+    // Seen on a VM cluster: a Pending task 3h past due that Stalwart never ran.
+    // Deferring to it kept the mail listener on its self-signed cert forever.
+    const { transport, calls } = fullyConfigured({
+      tasks: [{
+        id: 'stuck1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        due: new Date(Date.now() - 3 * 3600_000).toISOString(),
+        status: { '@type': 'Pending' },
+      }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(result.acmeOrderForced).toBe(true);
+    const taskSets = calls.filter((c) => c.method === 'x:Task/set');
+    expect(taskSets.map((c) => c.args.destroy ?? 'create')).toEqual([['stuck1'], 'create']);
+    expect(result.notes.find((n) => /discarded 1 stale AcmeRenewal/.test(n))).toBeDefined();
+  });
 });
 
 describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step 8)', () => {
@@ -893,6 +926,89 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
     expect(result.acmeRenewalFired).toBe(false);
     expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     expect(result.notes.find((n) => /already pending\/retrying/.test(n))).toBeDefined();
+  });
+
+  it('discards an AcmeRenewal overdue past the stale bound, then fires a fresh one', async () => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      tasks: [{
+        id: 'stuck1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        due: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        status: { '@type': 'Pending', due: new Date(Date.now() - 2 * 3600_000).toISOString() },
+      }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(true);
+    const taskSets = calls.filter((c) => c.method === 'x:Task/set');
+    expect(taskSets.map((c) => c.args.destroy ?? 'create')).toEqual([['stuck1'], 'create']);
+  });
+
+  it.each([
+    ['due later (a rate-limited Retry)', 'Retry', +3600_000],
+    ['overdue by less than the bound (Stalwart lock window)', 'Pending', -60 * 60_000],
+  ])('still defers to a task %s', async (_label, state, offsetMs) => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      tasks: [{
+        id: 'queued1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        due: new Date(Date.now() + offsetMs).toISOString(),
+        status: { '@type': state },
+      }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(false);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+  });
+
+  it('defers when Stalwart did not confirm the discard (another replica got there first)', async () => {
+    // Two replicas ticking on the same stuck task: the second destroy finds it
+    // gone. Firing anyway would place a second upstream order.
+    const { transport: inner, calls } = buildJmapMock({
+      ...base,
+      tasks: [{
+        id: 'stuck1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        due: new Date(Date.now() - 3 * 3600_000).toISOString(),
+        status: { '@type': 'Pending' },
+      }],
+    });
+    const transport: typeof inner = async (auth, body) => {
+      const [method, args] = (body as { methodCalls: [[string, Record<string, unknown>, string]] }).methodCalls[0];
+      if (method === 'x:Task/set' && args.destroy) {
+        calls.push({ method, args });
+        return { methodResponses: [[method, { destroyed: [], notDestroyed: { stuck1: { type: 'notFound' } } }, 'c0']] };
+      }
+      return inner(auth, body);
+    };
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(false);
+    expect(calls.filter((c) => c.method === 'x:Task/set' && c.args.create)).toHaveLength(0);
   });
 
   it('ignores pending AcmeRenewal tasks for OTHER domains and unrelated task types', async () => {

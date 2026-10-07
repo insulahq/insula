@@ -687,7 +687,9 @@ export async function runStalwartDomainReconcilerTick(
   //          issuance is done; RENEWALS are Stalwart's own job
   //          (AcmeProvider.renewBefore), not ours.
   //      (b) an AcmeRenewal task for this domain is already pending or
-  //          retrying — firing again only queues a duplicate order.
+  //          retrying — firing again only queues a duplicate order. One
+  //          more than STALE_ACME_TASK_MS past due is stuck, not pending:
+  //          it is discarded and a fresh order fires.
   //          This also collapses the cross-replica race: replica B's
   //          tick sees replica A's freshly-created task and skips.
   let acmeRenewalFired = false;
@@ -697,7 +699,7 @@ export async function runStalwartDomainReconcilerTick(
         `AcmeRenewal skipped — stored certificate already covers ${matchedDomain.name} `
         + `(renewals are Stalwart-scheduled via AcmeProvider.renewBefore)`,
       );
-    } else if (await hasPendingAcmeRenewalTask(jmapCall, auth, matchedDomain.id, log)) {
+    } else if (await hasLiveAcmeRenewalTask(jmapCall, auth, matchedDomain.id, notes, log)) {
       notes.push(
         'AcmeRenewal skipped — an AcmeRenewal task for this domain is already pending/retrying '
         + '(firing again would queue a duplicate LE order)',
@@ -1011,16 +1013,75 @@ async function ensureDomainCertManagement(
 const PENDING_TASK_STATES = new Set(['Pending', 'Retry', 'Running', 'Scheduled']);
 
 /**
- * True when an AcmeRenewal task for `domainId` is already pending or
- * retrying in Stalwart's task queue (x:Task/query + x:Task/get — both
- * proven against live 0.16.5). Fail-OPEN: any transport/JMAP error ⇒
- * false (callers then behave exactly as before this gate existed), so
- * an old Stalwart without these methods can't brick first-issuance.
+ * How far past its due time a pending AcmeRenewal may be before it counts as
+ * STUCK rather than queued. Stalwart rescans its queue at least every 5 min and
+ * holds a per-task lock for 1h, so a live task is overdue by ~1h10m at worst (a
+ * lock left by a killed process, plus the rescan). Past this it will not run on
+ * its own: a VM cluster carried a Pending task 3h past due that Stalwart never
+ * executed, and deferring to it kept the mail listener self-signed indefinitely.
+ * Nor is it one being executed: Stalwart 0.16's task states are Pending, Retry
+ * and Failed — a running task stays Pending with its due in the past — and an
+ * ACME run is bounded at minutes (three attempts, 32/64/128 s apart).
  */
-async function hasPendingAcmeRenewalTask(
+const STALE_ACME_TASK_MS = 90 * 60 * 1000;
+
+/** A task's due instant (top-level `due`, else `status.due`); null when unreadable. */
+function taskDueMs(task: Record<string, unknown>): number | null {
+  const status = task['status'] as Record<string, unknown> | undefined;
+  const raw = task['due'] ?? status?.['due'];
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Destroy stuck AcmeRenewal tasks so a fresh order is the only one queued.
+ * Returns how many Stalwart confirmed destroyed. Only those count as gone: when
+ * two platform-api replicas tick on the same stuck task, the second one's
+ * destroy finds it already gone, so that replica defers this tick (and sees the
+ * first replica's fresh order on its next one) instead of placing a second order.
+ */
+async function discardStaleAcmeRenewalTasks(
+  jmapCall: JmapCall,
+  auth: string,
+  stale: ReadonlyArray<Record<string, unknown>>,
+  notes: string[],
+  log: { warn: (...args: unknown[]) => void },
+): Promise<number> {
+  const ids = stale.map((t) => String(t['id']));
+  const res = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [['x:Task/set', { accountId: ADMIN_ACCOUNT_ID, destroy: ids }, 'c0']],
+  });
+  const args = res.methodResponses[0]?.[1] as
+    | { destroyed?: ReadonlyArray<string>; notDestroyed?: Record<string, unknown> | null }
+    | undefined;
+  const destroyed = Array.isArray(args?.destroyed) ? args.destroyed : [];
+  const dues = stale.map((t) => String(t['due'] ?? (t['status'] as Record<string, unknown> | undefined)?.['due'])).join(', ');
+  notes.push(
+    `discarded ${destroyed.length} stale AcmeRenewal task(s) (due ${dues}, never executed by Stalwart)`,
+  );
+  if (destroyed.length < ids.length) {
+    log.warn('Stalwart stale AcmeRenewal destroy incomplete:', JSON.stringify(args?.notDestroyed ?? {}));
+  }
+  return ids.filter((id) => destroyed.includes(id)).length;
+}
+
+/**
+ * True when a LIVE AcmeRenewal task for `domainId` is pending or retrying in
+ * Stalwart's task queue (x:Task/query + x:Task/get — both proven against live
+ * 0.16.5). A pending task more than STALE_ACME_TASK_MS past due is stuck, not
+ * live: it is discarded here (the callers fire a fresh order next) instead of
+ * gating issuance forever — once Stalwart confirms the destroy; until then it
+ * still gates. A task with no readable due counts as live.
+ * Fail-OPEN: any transport/JMAP error ⇒ false (callers then behave exactly as
+ * before this gate existed), so an old Stalwart without these methods can't
+ * brick first-issuance.
+ */
+async function hasLiveAcmeRenewalTask(
   jmapCall: JmapCall,
   auth: string,
   domainId: string,
+  notes: string[],
   log: { warn: (...args: unknown[]) => void },
 ): Promise<boolean> {
   try {
@@ -1041,11 +1102,20 @@ async function hasPendingAcmeRenewalTask(
       | { list?: ReadonlyArray<Record<string, unknown>> }
       | undefined;
     const list = Array.isArray(gArgs?.list) ? gArgs.list : [];
-    return list.some((t) => {
+    const pending = list.filter((t) => {
       if (t['@type'] !== 'AcmeRenewal' || t['domainId'] !== domainId) return false;
       const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
       return typeof statusType === 'string' && PENDING_TASK_STATES.has(statusType);
     });
+    const staleBefore = Date.now() - STALE_ACME_TASK_MS;
+    const stale = pending.filter((t) => {
+      const due = taskDueMs(t);
+      return due !== null && due < staleBefore;
+    });
+    const discarded = stale.length > 0
+      ? await discardStaleAcmeRenewalTasks(jmapCall, auth, stale, notes, log)
+      : 0;
+    return pending.length > discarded;
   } catch (err) {
     log.warn(
       'Stalwart pending-AcmeRenewal-task check failed (fail-open, treating as none):',
@@ -1253,7 +1323,7 @@ async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
   // forceFreshAcmeOrder is only useful WITH a fresh fire, so defer the
   // whole force. Fail-open: an unreadable task queue must not disable
   // the self-heal.
-  if (await hasPendingAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.log)) {
+  if (await hasLiveAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.notes, args.log)) {
     args.notes.push(
       'served cert self-signed but an AcmeRenewal task is already pending/retrying — '
       + 'deferring force (Stalwart will execute the queued order)',
