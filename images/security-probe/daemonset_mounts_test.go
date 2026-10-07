@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -92,9 +93,11 @@ func TestDaemonSetMountsNoPlatformRoot(t *testing.T) {
 		"/etc/insula", "/etc/platform", "/etc/hosting-platform",
 		"/var/lib/insula", "/var/lib/platform", "/var/lib/hosting-platform",
 	} {
+		// Block style (`path: /etc/insula`) and flow style
+		// (`hostPath: {path: /etc/insula, type: Directory}`).
+		re := regexp.MustCompile(`(^|[{,])\s*path:\s*["']?` + regexp.QuoteMeta(root) + `/?["']?\s*([,}#]|$)`)
 		for _, line := range strings.Split(yaml, "\n") {
-			l := strings.TrimSpace(line)
-			if l == "path: "+root || l == "path: "+root+"/" {
+			if re.MatchString(strings.TrimSpace(line)) {
 				t.Errorf("security-probe mounts the platform root %s — mount the one file or subdirectory it reads", root)
 			}
 		}

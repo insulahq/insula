@@ -38,6 +38,11 @@ fi
 # (hostPath DirectoryOrCreate, mode 0755) — install -d leaves it as it is.
 install -d -m 0755 "$DIR"
 
+if [[ -e "$NEW" && ! -f "$NEW" ]]; then
+  echo "${MIG}: $NEW exists and is not a regular file — refusing to move firewall.conf onto it." >&2
+  exit 1
+fi
+
 if [[ -f "$OLD" && ! -L "$OLD" ]]; then
   # A regular file at the old path is the newest copy: either this node was
   # never converted, or something rewrote the symlink in place (GNU `sed -i`
@@ -57,8 +62,15 @@ elif [[ -e "$NEW" ]]; then
   echo "${MIG}: $OLD now links to $LINK_TARGET"
 fi
 
-# Proof, not a self-report: the old path must still read the same bytes.
-if [[ -e "$NEW" ]] && ! cmp -s "$OLD" "$NEW"; then
+# Proof, not a self-report.
+if [[ ! -e "$NEW" ]]; then
+  # Nothing to move and nothing to prove: this node has no posture file
+  # anywhere (or only a link to one that was deleted). The probe reports the
+  # posture as unknown; bootstrap's firewall phase is what writes the file.
+  echo "${MIG}: no firewall.conf on this node — the security probe will report its SSH posture as unknown until bootstrap's firewall phase rewrites it."
+  exit 0
+fi
+if ! cmp -s "$OLD" "$NEW"; then
   echo "${MIG}: $OLD does not resolve to $NEW after the move." >&2
   exit 1
 fi

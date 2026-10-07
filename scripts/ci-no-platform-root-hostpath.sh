@@ -24,8 +24,9 @@
 #
 # What is checked
 # ---------------
-#   * every `path:` line in k8s/**/*.yaml and in shell heredocs under scripts/
-#     whose value is exactly one of the six roots (optional quotes / trailing /)
+#   * every `path:` in k8s/**/*.yaml and in shell heredocs under scripts/ —
+#     block or flow style — whose value is exactly one of the six roots
+#     (optional quotes / trailing /)
 #   * every TypeScript string literal under backend/src that is exactly one of
 #     them on a line that also says `hostPath` or `path:`
 #
@@ -36,7 +37,8 @@ set -euo pipefail
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 ROOTS_RE='/(etc|var/lib)/(insula|platform|hosting-platform)/?'
-YAML_RE="^[[:space:]-]*path:[[:space:]]*[\"']?${ROOTS_RE}[\"']?[[:space:]]*(#.*)?$"
+# Block style (`path: /etc/insula`) and flow style (`hostPath: {path: /etc/insula, type: …}`).
+YAML_RE="(^[[:space:]-]*|[{,][[:space:]]*)path:[[:space:]]*[\"']?${ROOTS_RE}[\"']?[[:space:]]*([,}#]|$)"
 TS_RE="(hostPath|path:).*[\"'\`]${ROOTS_RE}[\"'\`]"
 
 violations=0
