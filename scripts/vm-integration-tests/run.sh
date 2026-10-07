@@ -836,6 +836,9 @@ mkdir -p /root/insula/scripts
   echo "MAIL_PORT_IMAPS=993"
 } > /root/insula/scripts/vmtier.env
 export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=/root/insula/scripts/vmtier.env
+# The Pebble root trusted on the runner (step 3b), for suites whose curls run ON a node —
+# a node trusts only the system store (integration-mail-mobility-e2e.sh ships it in).
+export INTEGRATION_CA_FILE=\$(ls /usr/local/share/ca-certificates/pebble-root.crt /etc/pki/ca-trust/source/anchors/pebble-root.pem 2>/dev/null | head -1)
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
 # CONTROL_HOST point at the first control-plane node; SSH_KEY is present so ssh_cp uses SSH.

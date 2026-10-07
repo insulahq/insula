@@ -187,7 +187,11 @@ MAILHOST=$(AH "$API/admin/email-settings/ssl-status" | jg "d['data']['host']")
 # "healthy" while serving a self-signed cert for days).
 cert_valid(){
   local ip="$1" out
-  out=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "$MAILHOST" 2>/dev/null | openssl x509 -noout -issuer -ext subjectAltName 2>/dev/null)
+  # stdin </dev/null, NOT `echo |`: the newline is an unknown SMTP command from an
+  # unauthenticated client, which Stalwart counts as port scanning — this loop got
+  # the runner PERMANENTLY banned (BlockedIp, no expiry), and the ban rode the store
+  # onto the next failover target, failing reachability + delivery there.
+  out=$(timeout 10 openssl s_client -connect "$ip:465" -servername "$MAILHOST" </dev/null 2>/dev/null | openssl x509 -noout -issuer -ext subjectAltName 2>/dev/null)
   echo "$out" | grep -qiE 'rcgen|self.?signed|CN *= *localhost' && return 1
   echo "$out" | grep -qi "DNS:$MAILHOST" && return 0
   return 1
