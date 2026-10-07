@@ -1053,6 +1053,19 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    id: 'tenant.workload_disk_limit',
+    cls: 'availability',
+    reportsOn: 'storage',
+    displayName: 'Application restarted: local disk limit',
+    description: "One of your applications wrote more to its own container filesystem (temporary files, caches, logs written outside your storage) than the platform's per-application limit allows, so it was restarted on a clean filesystem. Your files and databases on your storage were not touched. If it keeps happening, the application is writing where it should not: move that data to your storage, or ask the platform operator to raise the limit. Without this limit one application could fill the server's disk for everyone on it.",
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    // Every channel, like every other source (default-channels.test.ts).
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'tenant.resource_saturation_warning',
     cls: 'action',
     reportsOn: 'storage',
