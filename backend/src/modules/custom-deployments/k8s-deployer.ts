@@ -35,6 +35,7 @@ import type {
   CustomDeploymentService,
 } from './schema.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { boundTenantPodDisk } from '../tenant-disk/pod-bounds.js';
 
 const CLIENT_PVC_VOLUME_NAME = 'tenant-storage';
 
@@ -56,6 +57,12 @@ function filterServiceLabels(raw: Record<string, string> | undefined): Record<st
 }
 
 export interface DeployCustomInput {
+  /**
+   * Node-disk limit for every container in the stack, MiB (R37) — the app
+   * value from the admin Limits page. A bring-your-own image can write
+   * anywhere in its own filesystem; this is the bound. Required: no default.
+   */
+  readonly diskLimitMb: number;
   readonly deploymentId: string;
   readonly deploymentName: string;
   readonly namespace: string;
@@ -263,7 +270,7 @@ async function applyDeployment(
   initContainers.push(...dependsOnInits);
   if (initDirs) initContainers.push(initDirs);
 
-  const podSpec: Record<string, unknown> = {
+  const podSpec: Record<string, unknown> & { containers: unknown[] } = {
     containers: [container],
     priorityClassName: TENANT_DEFAULT_PRIORITY_CLASS,
     securityContext: buildPodSecurityContext(service, input.spec),
@@ -326,7 +333,7 @@ async function applyDeployment(
             ? { annotations: { 'insula.host/rolled-at': input.spec.rolledAt } }
             : {}),
         },
-        spec: podSpec,
+        spec: boundTenantPodDisk(podSpec, input.diskLimitMb),
       },
     },
   };

@@ -43,6 +43,7 @@ function fakeK8s() {
 }
 
 const RUNTIME_INPUT = {
+  diskLimits: { appMb: 2048, databaseMb: 8192 },
   deploymentName: 'site',
   namespace: 'tenant-x',
   storagePath: 'runtime/apache-php/site',

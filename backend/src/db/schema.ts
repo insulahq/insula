@@ -3075,6 +3075,9 @@ export const systemSettings = pgTable('system_settings', {
   // does not drift-check env, so a pod-baked value would freeze at creation and
   // never see a change here. The backend reads it and passes it per purge call.
   fileTrashRetentionDays: integer('file_trash_retention_days').notNull().default(14),
+  // R37: node-disk ceiling per tenant container (writable layer + /tmp + logs), MiB.
+  tenantAppDiskLimitMb: integer('tenant_app_disk_limit_mb').notNull().default(2048),
+  tenantDatabaseDiskLimitMb: integer('tenant_database_disk_limit_mb').notNull().default(8192),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   // ISO 4217 currency code (USD, EUR, GBP, …). Drives Intl.NumberFormat
   // across both panels for any monetary amount display. The older

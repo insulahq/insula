@@ -13,6 +13,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import { reconcileCustomRow, applyReconcileOutcome } from '../custom-deployments/reconcile.js';
 import { buildWorkloadSnapshot, type WorkloadSnapshot } from './workload-snapshot.js';
+import { componentDiskClass } from '../tenant-disk/pod-bounds.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ function resolveComponentsForReconcile(
     ports?: Array<{ port: number; protocol: string; ingress?: boolean }>;
     optional?: boolean;
     schedule?: string;
+    database?: string;
   }>;
 
   if (baseComponents.length === 0) {
@@ -83,6 +85,8 @@ function resolveComponentsForReconcile(
       image: entry.image ?? `${entry.code}:latest`,
       ports: [{ port: 8080, protocol: 'tcp', ingress: true }],
       optional: false,
+      // Status only — never rendered into a pod here — but kept truthful.
+      diskClass: componentDiskClass(entry.type, undefined),
     }];
   }
 
@@ -93,6 +97,7 @@ function resolveComponentsForReconcile(
     ports: comp.ports ?? [],
     optional: comp.optional ?? false,
     schedule: comp.schedule,
+    diskClass: componentDiskClass(entry.type, comp.database),
   }));
 }
 

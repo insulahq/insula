@@ -51,6 +51,7 @@ import {
 import { CUSTOM_SPEC_VERSION } from './schema.js';
 import { parseCompose } from './compose-parser.js';
 import { withResolvedLines } from './yaml-line-map.js';
+import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 
 type CallerRole = ValidatorContext['callerRole'];
 
@@ -1063,6 +1064,7 @@ async function deployToCluster(
 
   try {
     await deployCustomDeployment(k8s, {
+      diskLimitMb: (await getTenantDiskLimits(db)).appMb,
       deploymentId,
       deploymentName,
       namespace,

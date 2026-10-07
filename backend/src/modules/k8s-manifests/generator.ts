@@ -5,6 +5,8 @@ import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
+import { componentDiskClass, diskLimitMbFor, TENANT_DISK_REQUEST } from '../tenant-disk/pod-bounds.js';
+import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 // SYSTEM_CPU_RESERVE / SYSTEM_MEMORY_RESERVE removed — quota is now
 // plan-exact and file-manager is exempt via priorityClassName.
 import type { GenerateManifestInput } from '@insula/api-contracts';
@@ -192,6 +194,9 @@ export async function generateTenantManifests(
   }));
 
   // 5. Deployments + Services (one per deployment)
+  // The export carries the same node-disk limit the deployer renders (R37), so
+  // a cluster built from it is bounded too.
+  const diskLimits = await getTenantDiskLimits(db);
   for (const deployment of tenantDeployments) {
     // Custom deployments (ADR-036) render via the custom-deployments
     // module in PR-2, not the catalog-manifests path. Skip them here.
@@ -202,6 +207,7 @@ export async function generateTenantManifests(
     const primaryComponent = entry?.components?.[0];
     const containerImage = primaryComponent?.image ?? entry?.image ?? 'nginx:1.27-alpine';
     const containerPort = primaryComponent?.ports?.[0]?.port ?? 8080;
+    const diskLimitMb = diskLimitMbFor(diskLimits, componentDiskClass(entry?.type, (primaryComponent as { database?: string } | undefined)?.database));
 
     manifests.push(buildManifest(`deployment-${deployment.name}.yaml`, {
       apiVersion: 'apps/v1',
@@ -239,6 +245,10 @@ export async function generateTenantManifests(
                   requests: {
                     cpu: deployment.cpuRequest,
                     memory: deployment.memoryRequest,
+                    'ephemeral-storage': TENANT_DISK_REQUEST,
+                  },
+                  limits: {
+                    'ephemeral-storage': `${diskLimitMb}Mi`,
                   },
                 },
               },

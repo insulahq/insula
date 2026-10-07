@@ -41,6 +41,7 @@ import {
 } from '../deployments/k8s-deployer.js';
 import { renderSites, isMultihostFlavour, type MultihostCapability, type MultihostFlavour, type RenderResult, type SiteRoute } from './renderer.js';
 import type { MultihostMounts } from '../deployments/k8s-deployer.js';
+import { TENANT_EMPTYDIR_SIZE_LIMIT } from '../tenant-disk/pod-bounds.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
@@ -552,7 +553,7 @@ export async function ensureSiteMounts(
   if (podSpec) {
     podSpec.volumes = podSpec.volumes ?? [];
     if (!podSpec.volumes.some((v) => v.name === MULTIHOST_SESSION_VOLUME)) {
-      podSpec.volumes.push({ name: MULTIHOST_SESSION_VOLUME, emptyDir: {} });
+      podSpec.volumes.push({ name: MULTIHOST_SESSION_VOLUME, emptyDir: { sizeLimit: TENANT_EMPTYDIR_SIZE_LIMIT } });
     }
   }
 
