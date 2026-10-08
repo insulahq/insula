@@ -125,7 +125,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   order left behind by a replaced mail-server process is now recognised as stuck once the new
   process has been up twenty minutes (twice the longest a live order can still be running), and
   the platform checks again just past that after every mail-server restart it causes — a fresh
-  install gets its mail certificate about 20 minutes in.
+  install gets its mail certificate about 25 minutes in.
 - **The security probe now runs on Ubuntu nodes.** It mounted the host's `/proc/net/nf_conntrack`,
   which kernels built without the legacy conntrack procfs table (Ubuntu 22.04 and 24.04) do not
   have — the kubelet tried to create the file in `/proc`, failed, and the probe pod never started,

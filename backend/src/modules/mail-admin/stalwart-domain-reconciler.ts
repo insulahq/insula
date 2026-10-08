@@ -415,7 +415,11 @@ export interface StalwartReconcileResult {
  * grace closes that.
  */
 export function followUpTickDelayMs(result: Pick<StalwartReconcileResult, 'stalwartRecycled'>): number | null {
-  return result.stalwartRecycled ? ORPHAN_GRACE_MS + 60_000 : null;
+  // Counted from the end of the tick that recycled, while the grace counts from
+  // the NEW container's start — which comes later by however long the pod takes
+  // to come up. Five minutes of slack keep a slow start from landing the
+  // follow-up just short of the grace.
+  return result.stalwartRecycled ? ORPHAN_GRACE_MS + 5 * 60_000 : null;
 }
 
 /** Start the reconciler. Returns a stop function for onClose. */
