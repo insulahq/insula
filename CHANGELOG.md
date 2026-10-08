@@ -117,6 +117,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   have — the kubelet tried to create the file in `/proc`, failed, and the probe pod never started,
   so those nodes had no entry under Security Hardening. The probe now reads the table from its own
   view of the host network and reports conntrack as unavailable where the kernel has no table.
+- **`bootstrap.sh --trust-ca` now also covers the mail server.** A private certificate authority
+  given with `--trust-ca` (and `--acme-server`) was trusted by platform-api and Bulwark but not by
+  Stalwart, so the install could not create Stalwart's ACME account and mail stayed on a
+  self-signed certificate. The root now reaches Stalwart before it starts, on overlays that carry
+  the `stalwart-extra-ca` component.
 - **The cluster-internal mail ban purge now actually lets those addresses back in.** After an admin
   password rotation the platform removes mail-server bans its own components collected — but it only
   deleted the stored entries, while the running mail server kept enforcing its in-memory ban list

@@ -690,7 +690,9 @@ ACME_CA_FILE=""
 # https clients (e.g. platform-api → Dex OIDC discovery). Populates the imperatively-created
 # platform-extra-ca-trust secret (mounted into platform-api via NODE_EXTRA_CA_CERTS). Needed
 # when ingress certs are signed by a private/test CA a public trust store lacks (bootstrap
-# --acme-server, e.g. the VM integration tier's Pebble). Empty by default → built-in roots only.
+# --acme-server, e.g. the VM integration tier's Pebble). Also seeds Stalwart's trust (Secret
+# stalwart-extra-ca, used by overlays carrying the stalwart-extra-ca component), so a private
+# ACME CA can issue the MAIL certificate too. Empty by default → built-in roots only.
 TRUST_CA_FILE=""
 SKIP_FLUX=false
 SKIP_HARDENING=false
@@ -7719,6 +7721,20 @@ create_platform_configmap() {
   kctl create secret generic platform-extra-ca-trust --namespace=mail \
     --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1 || true
   log "platform-extra-ca-trust secret ready ($([[ "$extra_ca_src" == /dev/null ]] && echo 'empty — built-in roots only' || echo "seeded from ${TRUST_CA_FILE}"))."
+  # Stalwart trusts only its system store, rebuilt from this Secret by the stalwart-extra-ca
+  # component's init container. It must exist BEFORE the Stalwart pod first starts: the
+  # bootstrap's own Stalwart configure creates the ACME provider, and that fails with a
+  # transport error ("error sending request for url …/directory") when Stalwart cannot
+  # verify a private ACME CA — leaving the mail listener on a self-signed certificate.
+  # Only with --trust-ca: without the Secret the component stays inert (image roots only).
+  if [[ "$extra_ca_src" != /dev/null ]]; then
+    if kctl create secret generic stalwart-extra-ca --namespace=mail \
+         --from-file=trust-ca.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1; then
+      log "stalwart-extra-ca secret seeded from ${TRUST_CA_FILE} (Stalwart trusts it for its ACME CA)."
+    else
+      warn "could not create stalwart-extra-ca in the mail namespace — Stalwart will not trust ${TRUST_CA_FILE}; the mail certificate cannot come from that CA."
+    fi
+  fi
 
   # Support-email default: reuse the operator's ACME email if available —
   # that's already a verified contact address, and the operator typically
