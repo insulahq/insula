@@ -212,8 +212,8 @@ lab's. `run.sh` stops older throw-away runs before it starts — it never touche
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Routed networking through the LAN router; reachability from the operator's tooling | verified (lab → internet, tooling → lab); LAN-client check pending |
-| 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | in progress |
-| 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | — |
+| 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | done — services VM and DEV built and checked live |
+| 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | done for the install path — Flux running, all public certificates (incl. mail) from the lab CA; `bootstrap.sh --trust-ca` now seeds Stalwart's trust too |
 | 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | — |
 | 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | — |
 | 5 | Cutover: docs (ADR-053's DEV description, this tier's docs), retire the remote DEV server | — |

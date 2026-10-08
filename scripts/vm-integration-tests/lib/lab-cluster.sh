@@ -154,11 +154,18 @@ _lab_bootstrap() {
 # _lab_post_install <ip> — what bootstrap does not do for a private CA.
 _lab_post_install() {
   local ip="$1" pw
-  # Stalwart orders the mail certificate from the lab CA: its trust store gets the
-  # root through the stalwart-extra-ca component (inert until this Secret exists).
-  _vssh "$ip" "k3s kubectl -n mail create secret generic stalwart-extra-ca --from-file=lab-ca.crt=/etc/insula-lab/ca.pem \
-      --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null \
-    && k3s kubectl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null" \
+  # Stalwart orders the mail certificate from the lab CA, which it trusts through the
+  # stalwart-extra-ca Secret. bootstrap.sh --trust-ca seeds it before Stalwart starts; a
+  # bootstrap that predates that leaves it out — then create it, restart Stalwart to
+  # rebuild its trust store, and restart platform-api: only its start-up re-creates the
+  # ACME provider the install's own Stalwart configure could not.
+  _vssh "$ip" "K='k3s kubectl'; \$K -n mail get secret stalwart-extra-ca >/dev/null 2>&1 && exit 0; \
+      echo '  stalwart-extra-ca missing (older bootstrap) — adding it, restarting Stalwart and platform-api' >&2; \
+      \$K -n mail create secret generic stalwart-extra-ca --from-file=trust-ca.crt=/etc/insula-lab/ca.pem && \
+      \$K -n mail delete pod -l app=stalwart-mail >/dev/null && \
+      \$K -n mail rollout status deploy/stalwart-mail --timeout=300s >/dev/null && \
+      \$K -n platform delete pod -l app=platform-api >/dev/null && \
+      \$K -n platform rollout status deploy/platform-api --timeout=300s >/dev/null" \
     || echo "  WARN: could not give Stalwart the lab CA — the mail certificate stays self-signed" >&2
   # A known admin password, kept in the lab state (0600) — never printed.
   pw="$(lab_state_secret "LAB_${CL_NAME^^}_ADMIN_PASSWORD" 24)"
