@@ -237,5 +237,5 @@ services VM) or trim `VMTEST_RAM_MB`; drop to `VMTEST_SERVERS=1` only when *not*
 
 - Not replacing DinD (Tier 0) or staging (Tier 2) — three tiers, distinct jobs.
 - Not cross-platform — Unraid/libvirt only.
-- Not a persistent dev cluster — that's [`LOCAL_MULTINODE_VM_SETUP.md`](./LOCAL_MULTINODE_VM_SETUP.md).
+- Not a persistent dev cluster — that's the [local VM lab](./LOCAL_VM_LAB.md) (retained DEV + staging).
 - No live orchestration until the operator picks a `VMTEST_DRIVER` enablement path.
