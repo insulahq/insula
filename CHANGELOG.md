@@ -112,6 +112,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The security probe now runs on Ubuntu nodes.** It mounted the host's `/proc/net/nf_conntrack`,
+  which kernels built without the legacy conntrack procfs table (Ubuntu 22.04 and 24.04) do not
+  have — the kubelet tried to create the file in `/proc`, failed, and the probe pod never started,
+  so those nodes had no entry under Security Hardening. The probe now reads the table from its own
+  view of the host network and reports conntrack as unavailable where the kernel has no table.
 - **The cluster-internal mail ban purge now actually lets those addresses back in.** After an admin
   password rotation the platform removes mail-server bans its own components collected — but it only
   deleted the stored entries, while the running mail server kept enforcing its in-memory ban list

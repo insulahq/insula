@@ -5,7 +5,9 @@
 #   2. enumerates /sys/class/net for mesh interfaces (wt0,
 #      tailscale0, wg0) and reports peer counts via WireGuard
 #      proc (when present),
-#   3. samples /proc/net/nf_conntrack for recent denies,
+#   3. samples /proc/net/nf_conntrack for recent denies — from its
+#      OWN procfs (hostNetwork: true shows the host's table; no
+#      hostPath, which kernels without the procfs table cannot mount),
 #   4. reads /etc/os-release, /proc/sys/kernel/osrelease,
 #      /proc/1 boot time, presence of fail2ban/sshguard, and
 #      whether OS security updates actually install (package +
@@ -154,9 +156,6 @@ spec:
             # counts simply report null when unavailable. Operators
             # using WireGuard mesh on every node can re-add this
             # mount with a `type: File` to assert presence.
-            - name: proc-net-conntrack
-              mountPath: /host/proc/net/nf_conntrack
-              readOnly: true
             - name: proc-stat
               mountPath: /host/proc/stat
               readOnly: true
@@ -256,10 +255,6 @@ spec:
           hostPath:
             path: /proc/sys/kernel/osrelease
             type: File
-        - name: proc-net-conntrack
-          hostPath:
-            path: /proc/net/nf_conntrack
-            type: FileOrCreate
         - name: proc-stat
           hostPath:
             path: /proc/stat

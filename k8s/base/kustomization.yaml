@@ -57,8 +57,8 @@ resources:
   - firewall-reconciler/
   # security-probe — read-only host posture probe. Writes one
   # ConfigMap per node (security-probe-<node>) into platform-system
-  # with SSH config, mesh interface detection, /proc/net/nf_conntrack
-  # sample, and CIS-style hardening flags. Backend
+  # with SSH config, mesh interface detection, a conntrack sample, and
+  # CIS-style hardening flags. Backend
   # `security-hardening` module reads these for the
   # /settings/security-hardening admin page.
   - security-probe/

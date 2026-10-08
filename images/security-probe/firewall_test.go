@@ -165,3 +165,34 @@ func TestReadFirewallConf_EmptyNewFileFallsThroughToOld(t *testing.T) {
 		t.Fatalf("want the old file's posture, got %+v", fw)
 	}
 }
+
+// The probe runs with hostNetwork, so it reads the conntrack table from its OWN
+// procfs (/proc/net/nf_conntrack shows the host network namespace) — never through
+// a hostPath. Kernels built without CONFIG_NF_CONNTRACK_PROCFS (Ubuntu 22.04/24.04)
+// have no such file: that must read as "unavailable", not stop the probe.
+func TestCollectConntrackCountsInvalidFlows(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nf_conntrack")
+	body := "ipv4 2 tcp 6 117 SYN_SENT src=192.0.2.1 dst=192.0.2.2 [UNREPLIED] mark=0 use=1\n" +
+		"ipv4 2 tcp 6 10 INVALID src=192.0.2.3 dst=192.0.2.4 mark=0 use=1\n" +
+		"ipv4 2 udp 17 29 INVALID src=192.0.2.5 dst=192.0.2.6 mark=0 use=1\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := collectConntrack(p)
+	if !got.Available || got.Denies == nil || *got.Denies != 2 {
+		t.Fatalf("want available with 2 INVALID flows, got %+v", got)
+	}
+}
+
+func TestCollectConntrackWithoutProcfsTableIsUnavailable(t *testing.T) {
+	got := collectConntrack(filepath.Join(t.TempDir(), "nf_conntrack"))
+	if got.Available || got.Reason == nil {
+		t.Fatalf("a kernel without the procfs table must read as unavailable with a reason, got %+v", got)
+	}
+}
+
+func TestConntrackIsReadFromTheProbesOwnProcfs(t *testing.T) {
+	if conntrackPath != "/proc/net/nf_conntrack" {
+		t.Fatalf("conntrackPath = %q; the hostNetwork pod's own procfs is the host's table", conntrackPath)
+	}
+}

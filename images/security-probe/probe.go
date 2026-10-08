@@ -39,7 +39,7 @@ func (c *collector) collect() (Snapshot, error) {
 		snap.CollectErrors = append(snap.CollectErrors, "firewall.conf: not present (assuming SSH public)")
 	}
 	mesh := detectMesh(c.hostRoot)
-	conntrack := collectConntrack(c.hostRoot)
+	conntrack := collectConntrack(conntrackPath)
 	hardening := collectHardening(c.hostRoot, sshView, fw.ssh22IsPublic)
 
 	snap.Mesh = mesh

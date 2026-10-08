@@ -159,17 +159,23 @@ func classifySSHRestriction(fw firewallConf) string {
 	return "mesh-and-trusted"
 }
 
-// collectConntrack samples /proc/net/nf_conntrack for recently
+// conntrackPath is the conntrack table the probe samples — in its OWN procfs.
+// The pod runs with hostNetwork, so /proc/net here is the host's network
+// namespace and no hostPath is needed. A hostPath could not even be mounted on a
+// kernel built without CONFIG_NF_CONNTRACK_PROCFS (Ubuntu 22.04/24.04): kubelet's
+// FileOrCreate tries to create the file in procfs and the pod never starts.
+const conntrackPath = "/proc/net/nf_conntrack"
+
+// collectConntrack samples the conntrack table at path for recently
 // dropped/invalid flows. Cheap but not authoritative — Felix iptables
 // drop logs are the gold standard, but we don't ship a Felix log
 // scraper today. Counts INVALID-state entries only; absence of the
-// file => available:false.
+// file (a kernel without the procfs table) => available:false.
 //
 // Phase 2.3 will extend this to a rolling top-N source-IP report;
 // for Phase 1 we return only the count + window.
-func collectConntrack(hostRoot string) ConntrackSnapshot {
-	p := filepath.Join(hostRoot, "proc/net/nf_conntrack")
-	f, err := os.Open(p)
+func collectConntrack(path string) ConntrackSnapshot {
+	f, err := os.Open(path)
 	if err != nil {
 		reason := err.Error()
 		return ConntrackSnapshot{Available: false, WindowSeconds: 60, Reason: &reason}

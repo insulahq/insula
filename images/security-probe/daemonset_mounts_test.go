@@ -113,3 +113,18 @@ func readProbeManifest(t *testing.T) string {
 	}
 	return string(b)
 }
+
+// A hostPath of /proc/net/nf_conntrack cannot be mounted on a kernel without
+// CONFIG_NF_CONNTRACK_PROCFS: kubelet's FileOrCreate tries to create the file in
+// procfs, fails, and the pod sits in ContainerCreating forever (seen on an Ubuntu
+// 24.04 node). The probe reads the table from its own procfs (hostNetwork), so the
+// mount must not come back.
+func TestDaemonSetDoesNotHostMountTheConntrackTable(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "k8s", "base", "security-probe", "daemonset.yaml"))
+	if err != nil {
+		t.Fatalf("cannot read the DaemonSet manifest: %v", err)
+	}
+	if strings.Contains(string(b), "path: /proc/net/nf_conntrack") {
+		t.Fatal("the DaemonSet host-mounts /proc/net/nf_conntrack again — it blocks the pod on kernels without the procfs table")
+	}
+}
