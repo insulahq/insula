@@ -24,5 +24,6 @@ resources:
   - vmsingle.yaml
   - vmsingle-recycler.yaml
   - streamaggr-config.yaml
+  - read-driven-relabel.yaml
   - vmui-ingressroute.yaml
   - netpol.yaml

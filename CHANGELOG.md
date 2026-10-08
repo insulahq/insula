@@ -49,6 +49,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **The metrics store keeps only the metrics the platform reads (read-driven ingestion).** Before,
+  39–64% of stored series had no reader anywhere in the platform, and the series that are read
+  carried per-container and per-status-code detail far beyond any query — all growing with every
+  container, volume, database replica and tenant route, which is what made vmsingle's memory scale
+  with cluster size. Every panel, alert rule and traffic chart is unchanged; series now scale with
+  what the platform shows (nodes, tenant routes, pods' traffic). A build check fails when a backend
+  query needs a metric or label that is not stored, or when one is stored that nothing reads.
+  Operators who explore metrics in VMUI or Grafana can opt back into storing everything with the
+  `monitoring-full-metrics` kustomize component. Known effect: Traefik-counted traffic misses about
+  one scrape interval per vmsingle restart (~0.1%/day with the daily recycle) — an under-count, never
+  an over-count. See `docs/operations/MONITORING_OBSERVABILITY.md` → Read-driven ingestion.
 - **A mail standby always holds a complete copy, and a failover restores the fresher of it and the
   backup.** The standby sync now builds each copy beside the previous one (unchanged files are hard
   links, so a pass costs only what changed) and switches over in one step when it completes. Every

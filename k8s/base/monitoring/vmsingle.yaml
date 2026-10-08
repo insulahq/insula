@@ -202,6 +202,10 @@ spec:
             # Matched samples are aggregated and DROPPED (VM's default);
             # unmatched samples are stored untouched.
             - -streamAggr.config=/streamaggr/streamaggr.yaml
+            # Read-driven ingestion: store only families something reads,
+            # without the dimensions nothing reads. Runs before stream
+            # aggregation. See read-driven-relabel.yaml.
+            - -relabelConfig=/relabel/relabel.yml
             # 4 → 2. The -memory.allowedBytes note above records
             # that the failure mode is "a single cache-warming query could OOM
             # the pod outright"; this is the flag that bounds how many of those
@@ -338,6 +342,9 @@ spec:
             - name: streamaggr-config
               mountPath: /streamaggr
               readOnly: true
+            - name: read-driven-relabel
+              mountPath: /relabel
+              readOnly: true
           readinessProbe:
             httpGet:
               # -http.pathPrefix moves every endpoint under /metrics.
@@ -404,6 +411,9 @@ spec:
         - name: streamaggr-config
           configMap:
             name: vmsingle-streamaggr-config
+        - name: read-driven-relabel
+          configMap:
+            name: vmsingle-read-driven
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

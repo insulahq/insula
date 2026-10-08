@@ -32,6 +32,21 @@
 # `by:` IS THE CONTRACT. It must list every label the readers above group by or
 # filter on. Adding a query that filters these histograms on `code`, `method`
 # or `protocol` requires changing this file first — the label will not exist.
+#
+# READ-DRIVEN COUNTERS (second block below). The same reasoning applies to
+# Traefik's request/byte/duration COUNTERS, which carry code x method x
+# protocol per service: every reader (traffic charts, the bandwidth meter,
+# the 5xx SLO rule) groups or filters only by `service` and `node`, or by
+# `entrypoint` and `code`. They were 5.8-10.5x more series than any query
+# uses, and they grow with every tenant route. See read-driven-relabel.yaml
+# for the rest of the read-driven policy.
+#
+# One known cost, accepted: aggregation state lives in memory, so after each
+# vmsingle restart (daily, by the recycler) the first sample of every input is
+# a baseline, not an increase — about one scrape interval of Traefik-counted
+# traffic per restart is not counted (~0.1%/day). It under-counts, never
+# over-counts, which is the safe direction for figures tenants are billed
+# against; the bandwidth meter also clamps against measured network bytes.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -56,6 +71,48 @@ data:
     - match: 'traefik_service_request_duration_seconds_bucket'
       interval: 60s
       by: [service, le]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+
+    # ── Read-driven counters (see header) ──────────────────────────────────
+    # Traffic charts, request-rate and latency charts, and the bandwidth meter
+    # filter on `service` (and `node` for the node scope) and nothing else.
+    - match: 'traefik_service_requests_total'
+      interval: 60s
+      by: [service, node]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+    - match: 'traefik_service_requests_bytes_total'
+      interval: 60s
+      by: [service, node]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+    - match: 'traefik_service_responses_bytes_total'
+      interval: 60s
+      by: [service, node]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+    - match: 'traefik_service_request_duration_seconds_sum'
+      interval: 60s
+      by: [service, node]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+    - match: 'traefik_service_request_duration_seconds_count'
+      interval: 60s
+      by: [service, node]
+      outputs: [total]
+      keep_metric_names: true
+      ignore_first_intervals: 1
+
+    # 5xx error-rate SLO rule and panel: `entrypoint` and `code` only.
+    - match: 'traefik_entrypoint_requests_total'
+      interval: 60s
+      by: [entrypoint, code]
       outputs: [total]
       keep_metric_names: true
       ignore_first_intervals: 1

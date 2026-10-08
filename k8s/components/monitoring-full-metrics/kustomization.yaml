@@ -1,0 +1,64 @@
+# monitoring-full-metrics — Kustomize Component (opt-in)
+#
+# Turns OFF read-driven ingestion (k8s/base/monitoring/read-driven-relabel.yaml)
+# for operators who explore metrics beyond what the platform itself reads — in
+# VMUI at admin.<apex>/metrics/ or an external Grafana. With it, vmsingle again
+# stores:
+#   - every family the scrape jobs collect, including those no platform feature
+#     reads (Flux, Longhorn per-volume, CNPG pg_stat, CoreDNS, …), and
+#   - Traefik's request/byte/duration counters per status code, method and
+#     protocol instead of summed per service and node.
+# The per-job hygiene drops in scrape-config.yaml still apply, and the two
+# Traefik latency histograms stay aggregated (they were before read-driven
+# ingestion existed).
+#
+# COST: this is the configuration that grows with every container, volume,
+# database replica and tenant route — several times the stored series of
+# read-driven ingestion. Raise vmsingle's memory limit in the same overlay
+# before enabling it on a cluster of any size.
+#
+# Enable in an overlay:
+#   components:
+#     - ../../components/monitoring-full-metrics
+# Takes effect when vmsingle next starts (the daily recycle, a rollout, or
+# deleting the pod).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: vmsingle-read-driven
+        namespace: monitoring
+      data:
+        relabel.yml: |
+          # monitoring-full-metrics: read-driven ingestion disabled — store
+          # everything the scrape jobs collect.
+          []
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: vmsingle-streamaggr-config
+        namespace: monitoring
+      data:
+        streamaggr.yaml: |
+          # monitoring-full-metrics: only the two latency-histogram rules from
+          # the base config (must stay identical to them — checked by
+          # backend/src/modules/monitoring/read-driven-ingestion.test.ts); the
+          # read-driven counter aggregation is left out so per-code series
+          # are stored.
+          - match: 'traefik_entrypoint_request_duration_seconds_bucket'
+            interval: 60s
+            by: [entrypoint, le]
+            outputs: [total]
+            keep_metric_names: true
+            ignore_first_intervals: 1
+          - match: 'traefik_service_request_duration_seconds_bucket'
+            interval: 60s
+            by: [service, le]
+            outputs: [total]
+            keep_metric_names: true
+            ignore_first_intervals: 1
