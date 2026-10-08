@@ -57,8 +57,9 @@ export default function MailBanExpirySection({ draft, onChange, disabled }: Mail
         The mail server blocks an address on its own after repeated failed
         logins, port scans or exploit probes, idle connections, or mail to
         unknown recipients — on every mail port and webmail. Choose how long such
-        a ban lasts. Manual bans are not affected, and bans that already exist
-        keep the lifetime they were created with.
+        a ban lasts, counted from when it was made — bans that are already
+        there included, so older ones are lifted once they are past it. Manual
+        bans are not affected.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="mail-ban-expiry-hours" className="text-sm text-gray-700 dark:text-gray-300">

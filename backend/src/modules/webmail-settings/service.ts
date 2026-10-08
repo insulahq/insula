@@ -360,8 +360,10 @@ export async function updateWebmailSettings(
     // setting (which reads as the default).
     await setSetting(db, MAIL_BAN_EXPIRY_KEY, serializeMailBanExpiry(input.mailBanExpiryHours));
     // Applied now, not on the next 5-minute tick — same reasoning as the DMARC
-    // sender above. Never throws; logs its own outcome.
-    await ensureMailBanExpiry(db, logger ?? console);
+    // sender above. Never throws; logs its own outcome. Existing bans are
+    // given the new lifetime in the background: that lists every ban, and the
+    // save need not wait for it.
+    await ensureMailBanExpiry(db, logger ?? console, { detachBackfill: true });
   }
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {

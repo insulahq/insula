@@ -155,10 +155,14 @@ mobile carrier, a monitoring probe, your own test machine) locks it out for
 good, and nothing in the panel shows that it happened. A new value applies to
 the next ban within seconds, without restarting mail.
 
-Bans that already exist keep the lifetime they were created with, and bans
-you add by hand in the Stalwart admin UI are never touched. The setting is
-re-applied every five minutes, so a mail store restored from a snapshot or
-moved by a failover picks it up again.
+Bans that were already there get the same lifetime, **counted from when each
+was created**: a ban older than the lifetime is lifted at once, a younger one
+runs out on schedule. That includes bans from before this setting existed,
+bans made while it was set to *never* (once you choose hours), and permanent
+bans a restored mail store brings back — the platform checks every hour, and
+at once whenever the lifetime changes. Bans you add by hand in the Stalwart
+admin UI are never touched. The setting is re-applied every five minutes, so a
+mail store restored from a snapshot or moved by a failover picks it up again.
 
 !!! tip "Testing from your own machine"
 

@@ -50,6 +50,8 @@ describe('updateWebmailSettings — mailBanExpiryHours', () => {
     await updateWebmailSettings(db, { mailBanExpiryHours: 48 }, logger);
     expect(writes).toEqual([{ key: 'mail_ban_expiry_hours', value: '48' }]);
     expect(ensureMailBanExpiry).toHaveBeenCalledTimes(1);
+    // The save does not wait while existing bans are listed and given the lifetime.
+    expect(ensureMailBanExpiry).toHaveBeenCalledWith(db, logger, { detachBackfill: true });
   });
 
   it('stores "never" for null — a decision, not an absent setting', async () => {

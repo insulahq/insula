@@ -14,8 +14,13 @@
  *
  * The platform therefore sets an expiry on all four reasons — 24 hours unless
  * the operator chooses otherwise (Mail Settings), or "never" to keep Stalwart's
- * behaviour. Manual bans are not touched. Bans that already exist keep the
- * expiry they were created with.
+ * behaviour. Manual bans are not touched.
+ *
+ * Bans that are already there get the same lifetime, counted from when each
+ * was created (backfillBanLifetimes): automatic bans with no expiry — made
+ * before this setting existed, while it was "never", or brought back by a
+ * restored store — are given `createdAt + lifetime`, and the ones whose
+ * lifetime is already over are lifted on the spot.
  *
  * Applied like the other Stalwart settings groups: the COMPLETE `x:Security`
  * group is committed (a partial write to a never-written group is accepted and
@@ -34,12 +39,17 @@ import {
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
+  actionReloadBlockedIps,
   actionReloadSettings,
+  blockedIpGet,
+  blockedIpQuery,
+  blockedIpUpdate,
   securityGet,
   securityUpdate,
   type StalwartSecurityRow,
 } from '../stalwart-jmap/client.js';
 import { commitSettingsGroup } from '../stalwart-jmap/settings-group.js';
+import { claimBanBackfillSlot, releaseBanBackfillSlot } from './ban-backfill-slot.js';
 
 /** platform_settings key: a whole number of hours, or MAIL_BAN_EXPIRY_NEVER. */
 export const MAIL_BAN_EXPIRY_KEY = 'mail_ban_expiry_hours';
@@ -112,6 +122,150 @@ export interface MailBanExpiryResult {
   /** The ban lifetime now wanted, in ms; null = never expires. */
   readonly periodMs: number | null;
   readonly reason?: string;
+  /** Existing bans given the lifetime this run (absent when the backfill did not run). */
+  readonly backfill?: BanBackfillResult;
+}
+
+// ── Existing bans ────────────────────────────────────────────────────────
+
+/** Stalwart's own automatic ban reasons (BlockReason, camelCase on the wire). Never `manual` / `other`. */
+const AUTOMATIC_BAN_REASONS = new Set(['rcptToFailure', 'authFailure', 'loitering', 'portScanning']);
+
+/** Bans per `/query` page, `/get` and `/set` call — well inside Stalwart's per-request limits. */
+const BAN_PAGE = 200;
+
+export interface BanBackfillResult {
+  /** Automatic bans that had no expiry and now have one. */
+  readonly given: number;
+  /** Of those, how many were already past their lifetime — lifted now. */
+  readonly lifted: number;
+}
+
+const toUtc = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/**
+ * Give every automatic ban without an expiry the lifetime `periodMs`, counted
+ * from its creation, then have Stalwart re-read its ban list: bans still
+ * within their lifetime keep blocking until it ends, bans already past it are
+ * deleted and the address is let back in. Idempotent — a ban that has an
+ * expiry is never touched again.
+ */
+export async function backfillBanLifetimes(
+  periodMs: number,
+  logger: MailBanExpiryLogger,
+  opts: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {},
+  now: number = Date.now(),
+): Promise<BanBackfillResult> {
+  // Offset paging: a ban that expires or is purged mid-scan shifts the later
+  // positions, so a run can miss a few. Harmless — they keep their old state
+  // until the next hourly run, which finds them.
+  const ids: string[] = [];
+  for (let position = 0; ; position += BAN_PAGE) {
+    const page = await blockedIpQuery({ position, limit: BAN_PAGE, ...opts });
+    ids.push(...page);
+    if (page.length < BAN_PAGE) break;
+  }
+
+  const expiry = new Map<string, number>();
+  const unreadable: string[] = [];
+  // A ban the store already counts as expired is one the running server never
+  // re-read (a run whose reload failed, or that failed mid-way): only a
+  // reload lifts it, and nothing else would trigger one.
+  let stale = 0;
+  for (let i = 0; i < ids.length; i += BAN_PAGE) {
+    for (const ban of await blockedIpGet({ ids: ids.slice(i, i + BAN_PAGE), ...opts })) {
+      if (!AUTOMATIC_BAN_REASONS.has(ban.reason ?? '')) continue;
+      if (ban.expiresAt != null) {
+        if (Date.parse(ban.expiresAt) <= now) stale++;
+        continue;
+      }
+      const created = Date.parse(ban.createdAt ?? '');
+      if (Number.isFinite(created)) expiry.set(ban.id, created + periodMs);
+      else unreadable.push(ban.id);
+    }
+  }
+  if (unreadable.length > 0) {
+    logger.warn({ ids: unreadable }, 'mail ban expiry: some bans have no readable creation time — left as they are');
+  }
+
+  const pending = [...expiry.keys()];
+  const updated: string[] = [];
+  try {
+    for (let i = 0; i < pending.length; i += BAN_PAGE) {
+      const chunk = pending.slice(i, i + BAN_PAGE);
+      const res = await blockedIpUpdate({
+        update: Object.fromEntries(chunk.map((id) => [id, { expiresAt: toUtc(expiry.get(id)!) }])),
+        ...opts,
+      });
+      updated.push(...Object.keys(res.updated ?? {}));
+      if (res.notUpdated && Object.keys(res.notUpdated).length > 0) {
+        logger.warn({ notUpdated: res.notUpdated }, 'mail ban expiry: Stalwart refused to give some existing bans a lifetime');
+      }
+    }
+  } finally {
+    // Also after a failed chunk: the chunks before it are stored, and the next
+    // run skips them (they have an expiry now) — without the reload the
+    // running server would keep enforcing them as permanent. A chunk whose
+    // reply was lost may be stored too, so reload on any attempt.
+    if (pending.length > 0 || stale > 0) {
+      try {
+        await actionReloadBlockedIps(opts);
+      } catch (err) {
+        logger.error({ err }, 'mail ban expiry: ReloadBlockedIps failed — bans past their lifetime stay blocked until the next run or Stalwart restart');
+      }
+    }
+  }
+  const lifted = updated.filter((id) => expiry.get(id)! <= now).length;
+  if (updated.length > 0 || stale > 0) {
+    logger.info(
+      { given: updated.length, lifted, stale },
+      `mail ban expiry: gave ${updated.length} existing ban(s) the lifetime; ${lifted} were already past it and are lifted`
+        + (stale > 0 ? `; re-read ${stale} expired ban(s) the server still held` : ''),
+    );
+  }
+  return { given: updated.length, lifted };
+}
+
+/** Advisory-lock key serializing backfill runs, across replicas ('MBBF'). */
+const BACKFILL_LOCK_KEY = 0x4d424246;
+
+/**
+ * Run the backfill when this caller wins the shared slot (ban-backfill-slot.ts):
+ * at once after the lifetime changed, otherwise at most hourly across every
+ * replica. Never throws; a failed run gives the slot back so the next tick
+ * retries.
+ */
+async function runBanBackfill(
+  db: Database,
+  periodMs: number | null,
+  logger: MailBanExpiryLogger,
+  opts: { baseUrl?: string; env?: NodeJS.ProcessEnv },
+): Promise<BanBackfillResult | undefined> {
+  if (periodMs === null) return undefined; // "never": permanent bans are what the operator chose
+  try {
+    if (!(await claimBanBackfillSlot(db, periodMs))) return undefined;
+  } catch (err) {
+    logger.warn({ err }, 'mail ban expiry: could not check when existing bans were last checked — retried on the next tick');
+    return undefined;
+  }
+  try {
+    // One run at a time: two saves with different lifetimes both win the slot
+    // (the value changed), and two concurrent scans could each stamp part of
+    // the bans. Under the lock the setting is read again, so a run started for
+    // a lifetime a newer save has replaced gives the newer one.
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${BACKFILL_LOCK_KEY})`);
+      const hours = await getMailBanExpiryHours(db);
+      if (hours === null) return undefined;
+      return backfillBanLifetimes(hours * HOUR_MS, logger, opts);
+    });
+  } catch (err) {
+    logger.warn({ err }, 'mail ban expiry: could not check existing bans — retried on the next tick');
+    await releaseBanBackfillSlot(db).catch((releaseErr: unknown) => {
+      logger.warn({ err: releaseErr }, 'mail ban expiry: could not release the backfill slot — retried within the hour');
+    });
+    return undefined;
+  }
 }
 
 const periodsMatch = (row: StalwartSecurityRow, periodMs: number | null): boolean =>
@@ -121,29 +275,47 @@ const periodsMatch = (row: StalwartSecurityRow, periodMs: number | null): boolea
 const APPLY_LOCK_KEY = 0x4d42414e;
 
 /**
- * Push the configured ban lifetime into Stalwart. Never throws: the outcome is
- * returned and logged, so a save or a reconcile tick cannot fail on it.
+ * Push the configured ban lifetime into Stalwart, then give existing bans the
+ * same lifetime (runBanBackfill). Never throws: the outcome is returned and
+ * logged, so a save or a reconcile tick cannot fail on it.
  *
- * Serialized cluster-wide: a save applies at once on the replica that took it
- * while the 5-minute tick runs on another, and a tick that read the setting
- * just before the save could otherwise commit the OLD lifetime right after the
- * save committed the new one. Under the lock the second caller re-reads both
- * the setting and Stalwart, so it applies the latest value or finds it in sync.
+ * The apply is serialized cluster-wide: a save applies at once on the replica
+ * that took it while the 5-minute tick runs on another, and a tick that read
+ * the setting just before the save could otherwise commit the OLD lifetime
+ * right after the save committed the new one. Under the lock the second caller
+ * re-reads both the setting and Stalwart, so it applies the latest value or
+ * finds it in sync.
+ *
+ * The backfill runs after the lock is released — it lists every ban, which
+ * takes as long as the ban list is long, and the shared slot already keeps it
+ * to one run at a time. With `detachBackfill` (the save path) it runs in the
+ * background, so an operator's save does not wait on it.
  */
 export async function ensureMailBanExpiry(
   db: Database,
   logger: MailBanExpiryLogger,
-  opts: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { baseUrl?: string; env?: NodeJS.ProcessEnv; detachBackfill?: boolean } = {},
 ): Promise<MailBanExpiryResult> {
+  const { detachBackfill = false, ...stalwart } = opts;
+  let result: MailBanExpiryResult;
   try {
-    return await db.transaction(async (tx) => {
+    result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${APPLY_LOCK_KEY})`);
-      return applyMailBanExpiry(db, logger, opts);
+      return applyMailBanExpiry(db, logger, stalwart);
     });
   } catch (err) {
     logger.warn({ err }, 'mail ban expiry: could not take the apply lock — retried on the next tick');
     return { state: 'skipped', periodMs: null, reason: 'database unavailable' };
   }
+  // Only once Stalwart holds the lifetime: a ban given it now must not
+  // outlive what new bans get.
+  if (result.state !== 'in-sync' && result.state !== 'committed') return result;
+  if (detachBackfill) {
+    void runBanBackfill(db, result.periodMs, logger, stalwart);
+    return result;
+  }
+  const backfill = await runBanBackfill(db, result.periodMs, logger, stalwart);
+  return backfill ? { ...result, backfill } : result;
 }
 
 async function applyMailBanExpiry(

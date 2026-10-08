@@ -21,8 +21,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   mail port and webmail for good, with nothing in the panel to show it. Mail Settings → Automatic
   IP Bans sets the lifetime (1 hour to 1 year, or *never* for the old behaviour). It applies to new
   bans within seconds, without a mail restart, and is re-applied every five minutes so a restored
-  or failed-over mail store picks it up again. Existing bans keep their lifetime; manual bans are
-  not touched.
+  or failed-over mail store picks it up again. Bans that were already there get the same lifetime,
+  counted from when each was created — the ones already past it are lifted at once, the rest run
+  out on schedule (checked hourly, and at once whenever the lifetime changes, so bans made while it
+  was *never* follow a later change). Manual bans are not touched.
 - **The mail health check now covers capacity: standby copies and disk headroom.** Since Stalwart
   v0.16.10, the mail store rewrites all of its message files roughly every 128 MiB of new mail
   (blob garbage collection is hard-coded to treat every file as old; only an upstream change can fix it). Two things
