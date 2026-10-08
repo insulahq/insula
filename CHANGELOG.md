@@ -110,6 +110,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The cluster-internal mail ban purge now actually lets those addresses back in.** After an admin
+  password rotation the platform removes mail-server bans its own components collected — but it only
+  deleted the stored entries, while the running mail server kept enforcing its in-memory ban list
+  until its next restart. The purge now has the server re-read the list right away.
 - **A platform restart no longer marks another replica's running mail migration as failed.** In a
   multi-replica (HA) install, every platform-api replica that started up marked any mail migration
   older than a minute as failed — including one still running on another replica. That happens on
