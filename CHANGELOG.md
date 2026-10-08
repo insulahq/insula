@@ -99,6 +99,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   once a day — it flushes all data to disk first, so nothing stored is lost; the cost is one missed
   scrape per day. The memory limit is unchanged. Both are configurable (`GOMAXPROCS`,
   `RECYCLE_AT_UTC` or `off`); see `docs/operations/MONITORING_OBSERVABILITY.md` → Memory budget.
+- **During a mail migration, the active mail node is no longer recorded early.** The platform
+  records which node serves mail when a migration succeeds, and also corrects the record from the
+  running Stalwart pod when the two disagree. That correction ran on every mail health check, wrote
+  any running pod's node — even a migration target not yet ready, or one about to be rolled back —
+  and so could point the failover watcher and the next failback at a node mail was no longer on (a
+  VM drill's failback started from the node mail had just left). It now records a pod's node only
+  when the pod is ready and no migration is running, like every other path that reads it.
 - **Changing a custom container's port no longer fails with "An unexpected error occurred".**
   Saving the edit re-applied the deployment with a strategic merge, which keeps every list entry the
   new version leaves out: the old port number stayed beside the new one under the same name, and

@@ -39,7 +39,7 @@ vi.mock('@kubernetes/client-node', () => ({
   CoreV1Api: { name: 'CoreV1Api' },
 }));
 
-function buildDb(storedActiveNode: string | null = null) {
+function buildDb(storedActiveNode: string | null = null, inFlightRun: string | null = null) {
   const updateSetWhere = vi.fn().mockResolvedValue(undefined);
   const update = vi.fn(() => ({
     set: vi.fn(() => ({ where: updateSetWhere })),
@@ -61,6 +61,8 @@ function buildDb(storedActiveNode: string | null = null) {
           }]),
         })),
       })),
+      // mail_migration_runs in-flight probe (active-node.ts reads it itself).
+      execute: vi.fn(async () => ({ rows: inFlightRun ? [{ id: inFlightRun }] : [] })),
       update,
     } as unknown as import('../../db/index.js').Database,
     update,
@@ -68,24 +70,23 @@ function buildDb(storedActiveNode: string | null = null) {
   };
 }
 
+const readyPod = (name: string, nodeName: string, extra: Record<string, unknown> = {}) => ({
+  metadata: { name, ...extra },
+  spec: { nodeName },
+  status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+});
+
 describe('mail-admin/placement.getMailPlacement self-heal', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockListNode.mockResolvedValue({ items: [] });
-    // Reset the per-process debounce cache between tests so each test
-    // sees a fresh "never written" state.
-    const { _resetPlacementSelfHealCache } = await import('./placement.js');
-    _resetPlacementSelfHealCache();
+    // Reset the per-process persist debounce so each test starts unwritten.
+    const { __resetActiveNodePersistForTest } = await import('./active-node.js');
+    __resetActiveNodePersistForTest();
   });
 
-  it('writes mailActiveNode to DB when live pod differs from stored value', async () => {
-    mockListNamespacedPod.mockResolvedValue({
-      items: [{
-        metadata: { name: 'stalwart-mail-abc' },
-        spec: { nodeName: 'staging3' },
-        status: { phase: 'Running' },
-      }],
-    });
+  it('writes mailActiveNode to DB when the Ready live pod differs from the stored value', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [readyPod('stalwart-mail-abc', 'staging3')] });
     const { db, update } = buildDb(null);
     const { getMailPlacement } = await import('./placement.js');
     const r = await getMailPlacement(db, { kubeconfigPath: undefined });
@@ -93,14 +94,33 @@ describe('mail-admin/placement.getMailPlacement self-heal', () => {
     expect(update).toHaveBeenCalled();
   });
 
-  it('does NOT write when live and stored agree (avoid pointless writes)', async () => {
+  // The mail health check calls this every tick, so it runs MID-MIGRATION: a
+  // migration records the new active node itself, on success only. Writing the
+  // target early leaves the DR watcher on the wrong node after a rollback — a
+  // VM drill's failback found the column back on the node mail had just left.
+  // Node names are unique per negative case so no write debounce can mask a write.
+  it('does NOT write while a mail migration is in flight (still answers with the live node)', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [readyPod('stalwart-mail-abc', 'staging5')] });
+    const { db, update } = buildDb('staging1', 'run-7');
+    const { getMailPlacement } = await import('./placement.js');
+    const r = await getMailPlacement(db, { kubeconfigPath: undefined });
+    expect(r.activeNode).toBe('staging5');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does NOT write a Running pod that is not Ready yet (a migration target binds hostPort 25 first)', async () => {
     mockListNamespacedPod.mockResolvedValue({
-      items: [{
-        metadata: { name: 'stalwart-mail-abc' },
-        spec: { nodeName: 'staging3' },
-        status: { phase: 'Running' },
-      }],
+      items: [{ metadata: { name: 'stalwart-mail-abc' }, spec: { nodeName: 'staging6' }, status: { phase: 'Running' } }],
     });
+    const { db, update } = buildDb('staging1');
+    const { getMailPlacement } = await import('./placement.js');
+    const r = await getMailPlacement(db, { kubeconfigPath: undefined });
+    expect(r.activeNode).toBe('staging6');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does NOT write when live and stored agree (avoid pointless writes)', async () => {
+    mockListNamespacedPod.mockResolvedValue({ items: [readyPod('stalwart-mail-abc', 'staging3')] });
     const { db, update } = buildDb('staging3');
     const { getMailPlacement } = await import('./placement.js');
     const r = await getMailPlacement(db, { kubeconfigPath: undefined });
@@ -112,17 +132,9 @@ describe('mail-admin/placement.getMailPlacement self-heal', () => {
     mockListNamespacedPod.mockResolvedValue({
       items: [
         // Old terminating pod on staging3 — should be ignored
-        {
-          metadata: { name: 'stalwart-mail-old', deletionTimestamp: '2026-05-14T18:00:00Z' },
-          spec: { nodeName: 'staging3' },
-          status: { phase: 'Running' },
-        },
+        readyPod('stalwart-mail-old', 'staging3', { deletionTimestamp: '2026-05-14T18:00:00Z' }),
         // New running pod on staging1 — should be picked
-        {
-          metadata: { name: 'stalwart-mail-new' },
-          spec: { nodeName: 'staging1' },
-          status: { phase: 'Running' },
-        },
+        readyPod('stalwart-mail-new', 'staging1'),
       ],
     });
     const { db } = buildDb('staging3');
@@ -146,24 +158,15 @@ describe('mail-admin/placement.getMailPlacement self-heal', () => {
   });
 
   it('debounces consecutive identical self-heal writes (within 10s)', async () => {
-    // Two GET /admin/mail/placement calls landing on the same
-    // platform-api pod within the 10s window MUST result in only one
-    // DB write — avoid log spam during rollover polling. After 10s,
-    // a third call with the same value would write again, but that's
-    // outside this test's window.
-    mockListNamespacedPod.mockResolvedValue({
-      items: [{
-        metadata: { name: 'stalwart-mail-abc' },
-        spec: { nodeName: 'staging3' },
-        status: { phase: 'Running' },
-      }],
-    });
+    // Several polls landing on the same platform-api pod within the 10s
+    // window MUST result in only one DB write — avoid log spam during
+    // rollover polling.
+    mockListNamespacedPod.mockResolvedValue({ items: [readyPod('stalwart-mail-abc', 'staging3')] });
     const { db, update } = buildDb(null);
     const { getMailPlacement } = await import('./placement.js');
     await getMailPlacement(db, { kubeconfigPath: undefined });
     await getMailPlacement(db, { kubeconfigPath: undefined });
     await getMailPlacement(db, { kubeconfigPath: undefined });
-    // First call writes; subsequent two within debounce window skip.
     expect(update).toHaveBeenCalledTimes(1);
   });
 
