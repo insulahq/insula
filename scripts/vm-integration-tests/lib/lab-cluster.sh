@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 # scripts/vm-integration-tests/lib/lab-cluster.sh — the lab's long-lived clusters.
 #
-#   dev  1 node, `bootstrap.sh --env dev`: Flux follows the development branch.
-#   stg  production-mode install (Phase 4 of docs/development/LOCAL_VM_LAB.md).
+#   dev  1 node, `bootstrap.sh --env dev`: Flux follows the development branch; always
+#        on (autostarts with the host).
+#   stg  LAB_STG_SERVERS servers installed like production — `--env production` from a
+#        checkout of LAB_STG_RELEASE_TAG (production's version) — and opted into release
+#        candidates, so every RC is an in-place upgrade from where production is. On
+#        demand (no autostart).
 #
-# A cluster is created ONCE (VM from the golden image, bootstrap.sh run verbatim
-# with the lab's certificate settings) and from then on only started and stopped:
-# Flux keeps it current. Requires the other lab libs (see lab.sh).
+# A cluster is created ONCE (VMs from the golden images, then lib/lab-install.sh) and
+# from then on only started and stopped. Requires the other lab libs (see lab.sh).
 
-# lab_cluster_def <name> — CL_* settings for a cluster.
+# lab_cluster_def <name> — CL_* settings for a cluster (read by lib/lab-install.sh too).
+# shellcheck disable=SC2034
 lab_cluster_def() {
+  local i
   case "$1" in
     dev)
       CL_NAME=dev; CL_NET=insula-lab-dev; CL_PREFIX="$LAB_DEV_NET"; CL_APEX="dev.${LAB_APEX}"
-      CL_ENV=dev; CL_VCPU="$LAB_DEV_VCPU"; CL_RAM="$LAB_DEV_RAM_MB"; CL_DISK="$LAB_DEV_DISK_GB"
+      CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART=1
+      CL_VCPU="$LAB_DEV_VCPU"; CL_RAM="$LAB_DEV_RAM_MB"; CL_DISK="$LAB_DEV_DISK_GB"
       CL_NODES=("lab-dev-1 11") ;;
     stg)
-      echo "lab: the staging cluster is Phase 4 of docs/development/LOCAL_VM_LAB.md — not built yet" >&2
-      return 1 ;;
+      [[ -n "${LAB_STG_RELEASE_TAG:-}" ]] || { echo "lab: set LAB_STG_RELEASE_TAG to the release production runs (e.g. v2026.10.6)" >&2; return 1; }
+      CL_NAME=stg; CL_NET=insula-lab-stg; CL_PREFIX="$LAB_STG_NET"; CL_APEX="stg.${LAB_APEX}"
+      CL_ENV=production; CL_RELEASE_TAG="$LAB_STG_RELEASE_TAG"; CL_AUTOSTART=0
+      CL_VCPU="$LAB_STG_VCPU"; CL_RAM="$LAB_STG_RAM_MB"; CL_DISK="$LAB_STG_DISK_GB"
+      CL_NODES=()
+      for i in $(seq 1 "${LAB_STG_SERVERS:-3}"); do CL_NODES+=("lab-stg-s${i} $((10 + i))"); done ;;
     *) echo "lab: unknown cluster '$1' (dev|stg)" >&2; return 1 ;;
   esac
 }
@@ -132,141 +142,62 @@ _lab_node_create() {
   vm_create "$vm" "$overlay" "$seed" "$CL_NET" "$CL_VCPU" "$CL_RAM" "$(lab_mac "$CL_PREFIX" "$host")" >&2
 }
 
-# _lab_bootstrap <vm> <ip> — CREATE the cluster on its first server: bootstrap.sh run
-# verbatim with the lab CA as the ACME server (platform + Stalwart) and as an extra
-# trusted root, the cluster's own subnet as the trusted network.
-_lab_bootstrap() {
-  local vm="$1" ip="$2" rc=0 gate=0 extra=()
-  # shellcheck disable=SC2206
-  [[ -n "${LAB_BOOTSTRAP_EXTRA_ARGS:-}" ]] && extra=(${LAB_BOOTSTRAP_EXTRA_ARGS})
-  echo "── bootstrapping ${vm} @ ${ip}: --env ${CL_ENV} --domain ${CL_APEX} ──" >&2
-  "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --domain "$CL_APEX" --env "$CL_ENV" --acme-email "admin@${CL_APEX}" \
-    --acme-server "$(lab_acme_directory)" --acme-ca /etc/insula-lab/ca.pem --trust-ca /etc/insula-lab/ca.pem \
-    --stalwart-acme-directory "$(lab_acme_directory)" \
-    --cluster-network-cidr "${CL_PREFIX}.0/24" ${extra[@]+"${extra[@]}"} || rc=$?
-  # Judge the install by what it said as well as its exit code (lib/log-gate.sh).
-  log_gate_fetch_and_scan "$ip" "$vm" || gate=$?
-  (( rc == 0 )) || { echo "lab: bootstrap of ${vm} exited ${rc}" >&2; return "$rc"; }
-  (( gate != 1 )) || { echo "lab: ${vm} installed with output that indicates a script defect (above)" >&2; return 1; }
-}
-
-# _lab_post_install <ip> — what bootstrap does not do for a private CA.
-_lab_post_install() {
-  local ip="$1" pw
-  # Stalwart orders the mail certificate from the lab CA, which it trusts through the
-  # stalwart-extra-ca Secret. bootstrap.sh --trust-ca seeds it before Stalwart starts; a
-  # bootstrap that predates that leaves it out — then create it, restart Stalwart to
-  # rebuild its trust store, and restart platform-api: only its start-up re-creates the
-  # ACME provider the install's own Stalwart configure could not.
-  _vssh "$ip" "K='k3s kubectl'; \$K -n mail get secret stalwart-extra-ca >/dev/null 2>&1 && exit 0; \
-      echo '  stalwart-extra-ca missing (older bootstrap) — adding it, restarting Stalwart and platform-api' >&2; \
-      \$K -n mail create secret generic stalwart-extra-ca --from-file=trust-ca.crt=/etc/insula-lab/ca.pem && \
-      \$K -n mail delete pod -l app=stalwart-mail >/dev/null && \
-      \$K -n mail rollout status deploy/stalwart-mail --timeout=300s >/dev/null && \
-      \$K -n platform delete pod -l app=platform-api >/dev/null && \
-      \$K -n platform rollout status deploy/platform-api --timeout=300s >/dev/null" \
-    || echo "  WARN: could not give Stalwart the lab CA — the mail certificate stays self-signed" >&2
-  # A known admin password, kept in the lab state (0600) — never printed.
-  pw="$(lab_state_secret "LAB_${CL_NAME^^}_ADMIN_PASSWORD" 24)"
-  scp -q -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    "$REPO/scripts/admin-password-reset.sh" "root@${ip}:/tmp/admin-password-reset.sh"
-  # Without --password the script reads it (twice) from stdin — kept off every command line.
-  _vssh "$ip" "bash /tmp/admin-password-reset.sh --email $(printf %q "admin@${CL_APEX}") >/dev/null 2>&1; rc=\$?; rm -f /tmp/admin-password-reset.sh; exit \$rc" \
-    <<<"$(printf '%s\n%s' "$pw" "$pw")" || echo "  WARN: admin password reset failed on ${ip}" >&2
-}
-
-# _lab_register <ip> — bind the services VM to the platform through its own API: the
-# svc PowerDNS as the DNS provider group (so the platform's DNS write path runs against
-# a real server) and the svc S3 as the backup target for every class. Same scripts the
-# throw-away tier uses; run ON the node, which resolves lab names through the services
-# VM and trusts the lab CA — the path the cluster itself uses.
-_lab_register() {
-  local ip="$1" svc pw s3_user s3_pw f
-  svc="$(lab_svc_ip)"
-  pw="$(lab_state_secret "LAB_${CL_NAME^^}_ADMIN_PASSWORD" 24)"
-  s3_user="lab$(lab_state_secret LAB_S3_USER_SUFFIX 16)"; s3_pw="$(lab_state_secret LAB_S3_PW)"
-  for f in setup-dns-provider.sh setup-backup-targets.sh; do
-    scp -q -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$HERE/$f" "root@${ip}:/tmp/$f"
-  done
-  # Credentials travel on stdin, not the command line (the remote ps would show them).
-  _vssh "$ip" "set -a; . /dev/stdin; set +a; bash /tmp/setup-dns-provider.sh; bash /tmp/setup-backup-targets.sh; \
-    rm -f /tmp/setup-dns-provider.sh /tmp/setup-backup-targets.sh" <<ENV
-ADMIN_HOST=$(printf %q "https://admin.${CL_APEX}")
-ADMIN_EMAIL=$(printf %q "admin@${CL_APEX}")
-ADMIN_PASSWORD=$(printf %q "$pw")
-VMTEST_APEX=$(printf %q "$CL_APEX")
-VMTEST_DNS_IP=$(printf %q "$svc")
-VMTEST_PDNS_API_KEY=$(printf %q "$(lab_state_secret LAB_PDNS_API_KEY)")
-VMTEST_DNS_NS_HOSTNAMES=$(printf %q "ns1.${LAB_APEX}")
-BACKUP_S3_ENDPOINT=$(printf %q "http://s3.${CL_APEX}:9000")
-BACKUP_S3_BUCKET=$(printf %q "${CL_NAME}-backups")
-BACKUP_S3_ACCESS_KEY=$(printf %q "$s3_user")
-BACKUP_S3_SECRET_KEY=$(printf %q "$s3_pw")
-ENV
-}
-
-# _lab_wipe <vm> <ip> — remove a half-installed platform, keep the OS: the same
-# destroy-cluster.sh an operator runs before re-bootstrapping. It deletes /etc/rancher,
-# so the registry mirrors are written back before k3s is installed again.
-_lab_wipe() {
-  local vm="$1" ip="$2" inv="${VMTEST_TMP_DIR}/inventory-${1}.txt"
-  echo "${vm} ${ip}" > "$inv"
-  "$REPO/scripts/destroy-cluster.sh" --inventory "$inv" --ssh-key "$VMTEST_SSH_KEY" --confirm >&2 \
-    || { echo "lab: could not wipe ${vm}" >&2; return 1; }
-  if [[ -n "${VMTEST_REGISTRY_MIRROR:-}" ]]; then
-    registry_mirrors_yaml | _vssh "$ip" "mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml" \
-      || { echo "lab: could not restore the registry mirrors on ${vm}" >&2; return 1; }
-  fi
-}
-
 # lab_cluster_up <name> — create the cluster, or start it if it exists.
 #
 # "Installed" is a marker in the lab state, set only once the install, k3s and the
-# post-install steps have succeeded. A VM that exists without it is a failed install:
-# its platform is wiped (OS kept) and installed again, instead of being started and
+# post-install steps have succeeded. VMs that exist without it are a failed install:
+# their platform is wiped (OS kept) and installed again, instead of being started and
 # then timing out on a k3s that was never there.
 lab_cluster_up() {
   lab_cluster_def "$1" || return 1
-  local entry vm host ip ca_b64 install=0 marker="LAB_${1^^}_INSTALLED"
+  local entry vm host ip s1 ca_b64 install=0 marker="LAB_${1^^}_INSTALLED" missing=() stopped=()
   lab_net_ensure "$CL_NET" "$CL_PREFIX" "$(lab_svc_ip)"
   for entry in "${CL_NODES[@]}"; do
     read -r vm host <<<"$entry"; lab_net_reserve "$CL_NET" "$CL_PREFIX" "$vm" "$host"
+    if ! VIRSH dominfo "$vm" >/dev/null 2>&1; then missing+=("$entry")
+    elif [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" != running ]]; then stopped+=("$entry"); fi
   done
   # The zone exists before the install: the lab CA validates HTTP-01 against these names.
-  read -r vm host <<<"${CL_NODES[0]}"; ip="${CL_PREFIX}.${host}"
-  lab_zone_ensure "$CL_APEX" "@ A $ip" "* A $ip" "ns1 A $(lab_svc_ip)" \
+  read -r vm host <<<"${CL_NODES[0]}"; s1="${CL_PREFIX}.${host}"
+  lab_zone_ensure "$CL_APEX" "@ A $s1" "* A $s1" "ns1 A $(lab_svc_ip)" \
     "s3 A $(lab_svc_ip)" "sftp A $(lab_svc_ip)" "cifs A $(lab_svc_ip)"
   lab_state_load
 
-  if ! VIRSH dominfo "$vm" >/dev/null 2>&1; then
-    _lab_mem_guard $(( CL_RAM * ${#CL_NODES[@]} )) || return 1
+  if (( ${#missing[@]} > 0 )); then
+    if [[ "${!marker:-}" == 1 ]]; then
+      echo "lab: ${CL_NAME} is installed but VM(s) are missing: ${missing[*]} — tear the cluster down or restore them" >&2
+      return 1
+    fi
+    _lab_mem_guard $(( CL_RAM * (${#missing[@]} + ${#stopped[@]}) )) || return 1
     ca_b64="$(lab_ca_root | base64 -w0)"
     [[ -n "$ca_b64" ]] || { echo "lab: no CA root on the services VM" >&2; return 1; }
-    echo "── creating ${vm} @ ${ip} (${CL_VCPU} vCPU, ${CL_RAM} MB, ${CL_DISK} GB, $(lab_node_os "$vm")) ──" >&2
-    _lab_node_create "$vm" "$host" "$ca_b64"
-    VIRSH autostart "$vm" >&2
-    wait_ssh "$ip" 600 >&2 && wait_cloudinit "$ip" 1200 >&2
+    for entry in "${missing[@]}"; do
+      read -r vm host <<<"$entry"
+      echo "── creating ${vm} @ ${CL_PREFIX}.${host} (${CL_VCPU} vCPU, ${CL_RAM} MB, ${CL_DISK} GB, $(lab_node_os "$vm")) ──" >&2
+      _lab_node_create "$vm" "$host" "$ca_b64" || return 1
+      (( CL_AUTOSTART == 0 )) || VIRSH autostart "$vm" >&2
+    done
     install=1
-  else
-    [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] || { _lab_mem_guard "$CL_RAM" && VIRSH start "$vm" >&2; }
-    wait_ssh "$ip" 300 >&2
-    if [[ "${!marker:-}" != 1 ]]; then
-      echo "── ${vm} exists but its install never finished — wiping the platform (OS kept) and installing again ──" >&2
-      _lab_wipe "$vm" "$ip" || return 1
-      install=1
-    fi
+  elif (( ${#stopped[@]} > 0 )); then
+    _lab_mem_guard $(( CL_RAM * ${#stopped[@]} )) || return 1
+  fi
+  for entry in "${stopped[@]}"; do read -r vm host <<<"$entry"; VIRSH start "$vm" >&2; done
+  for entry in "${CL_NODES[@]}"; do
+    read -r vm host <<<"$entry"; ip="${CL_PREFIX}.${host}"
+    wait_ssh "$ip" 600 >&2 || return 1
+    (( install == 0 )) || wait_cloudinit "$ip" 1200 >&2
+  done
+  if (( install == 0 )) && [[ "${!marker:-}" != 1 ]]; then
+    echo "── ${CL_NAME}: VMs exist but the install never finished — wiping the platform (OS kept) and installing again ──" >&2
+    _lab_wipe || return 1
+    install=1
   fi
   if (( install == 1 )); then
-    _lab_bootstrap "$vm" "$ip" || return 1
-    wait_k3s_ready "$ip" 600 >&2 || return 1
-    _lab_post_install "$ip"
-    lab_state_set "$marker" 1
-    _lab_register "$ip"
+    lab_install_cluster || return 1
   else
-    wait_k3s_ready "$ip" 600 >&2 || return 1
+    wait_k3s_ready "$s1" 600 >&2 || return 1
   fi
-  echo "${CL_NAME} cluster up: https://admin.${CL_APEX}  (node ${vm} @ ${ip}; admin@${CL_APEX}, password in ${LAB_STATE_FILE})"
+  echo "${CL_NAME} cluster up: https://admin.${CL_APEX}  (${#CL_NODES[@]} node(s), first @ ${s1}; admin@${CL_APEX}, password in ${LAB_STATE_FILE})"
 }
 
 # lab_cluster_down <name> — graceful stop; VMs, OS and platform kept.

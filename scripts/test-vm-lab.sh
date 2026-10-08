@@ -7,7 +7,8 @@
 # resolver and no services, which surfaces minutes later as "no ssh".
 # Checks are single-quoted on purpose (evaluated by check()); the LAB_* settings are
 # read by the sourced libraries, some indirectly.
-# shellcheck disable=SC2016,SC2034
+# `check-cmd && ok … || bad …` is safe: ok() always succeeds.
+# shellcheck disable=SC2016,SC2034,SC2015
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/scripts/vm-integration-tests/lib"
@@ -24,7 +25,7 @@ yaml_ok() { python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); as
 source "$LIB/os-registry.sh"
 VMTEST_DRIVER=ssh-host; VMTEST_HOST_SSH=root@lab-host.example.test   # driver.sh refuses to load without a driver
 # shellcheck source=/dev/null
-for l in driver mirrors lab-net lab-state lab-svc lab-cluster; do source "$LIB/$l.sh"; done
+for l in driver mirrors lab-net lab-state lab-svc lab-cluster lab-install; do source "$LIB/$l.sh"; done
 
 LAB_APEX=lab.example.test LAB_SVC_NET=10.98.100 LAB_DEV_NET=10.98.110 LAB_STG_NET=10.98.120
 LAB_UPSTREAM_DNS=192.0.2.53 LAB_STATE_FILE="$T/state.env"
@@ -56,6 +57,28 @@ check "LAB_NODE_OS pins NEW nodes only" '[[ "$c" == rocky-9 && "$d" == "$a" ]]'
 check "an unknown OS is refused" '! ( LAB_NODE_OS=no-such-os lab_node_os lab-x-1 ) 2>/dev/null'
 draws="$(for i in $(seq 1 12); do LAB_NODE_OS_POOL="ubuntu-24.04 alma-9" lab_node_os "lab-p-$i"; echo; done | sort -u | xargs)"
 check "the pool restricts the draw" '[[ "$draws" == "alma-9 ubuntu-24.04" || "$draws" == alma-9 || "$draws" == ubuntu-24.04 ]]'
+
+# ── cluster definitions ──
+check "staging refuses to exist without a release tag" '! ( LAB_STG_RELEASE_TAG= lab_cluster_def stg ) 2>/dev/null'
+LAB_STG_VCPU=4 LAB_STG_RAM_MB=6144 LAB_STG_DISK_GB=60
+( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_SERVERS=3; lab_cluster_def stg
+  [[ "$CL_ENV" == production && "$CL_RELEASE_TAG" == v2026.10.6 && "$CL_AUTOSTART" == 0 \
+     && "${CL_NODES[*]}" == "lab-stg-s1 11 lab-stg-s2 12 lab-stg-s3 13" && "$CL_APEX" == stg.lab.example.test ]] ) \
+  && ok "staging: production mode at its release, 3 servers, on demand" || bad "staging definition"
+( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_SERVERS=1; lab_cluster_def stg; [[ ${#CL_NODES[@]} == 1 ]] ) \
+  && ok "LAB_STG_SERVERS sizes staging" || bad "LAB_STG_SERVERS"
+( lab_cluster_def dev; [[ "$CL_ENV" == dev && -z "$CL_RELEASE_TAG" && "$CL_AUTOSTART" == 1 && "${CL_NODES[*]}" == "lab-dev-1 11" ]] ) \
+  && ok "dev: this checkout, always on, one node" || bad "dev definition"
+
+# ── release checkouts (cached tree; a tree that is not the tag is refused) ──
+LAB_CACHE_DIR="$T/cache"; mkdir -p "$LAB_CACHE_DIR/rel-v9.9.9/scripts" "$LAB_CACHE_DIR/rel-v9.9.9/platform"
+touch "$LAB_CACHE_DIR/rel-v9.9.9/scripts/bootstrap.sh"; echo "9.9.9" > "$LAB_CACHE_DIR/rel-v9.9.9/platform/VERSION"
+check "a cached release checkout is used as is" '[[ "$(lab_release_checkout v9.9.9)" == "$LAB_CACHE_DIR/rel-v9.9.9" ]]'
+echo "9.9.8" > "$LAB_CACHE_DIR/rel-v9.9.9/platform/VERSION"
+check "a checkout whose platform/VERSION is not the tag is refused" '! lab_release_checkout v9.9.9 >/dev/null 2>&1'
+check "staging installs with ITS release's bootstrap.sh" \
+  '[[ "$(CL_RELEASE_TAG=v9.9.7 REPO=/nonexistent; mkdir -p "$LAB_CACHE_DIR/rel-v9.9.7/scripts" "$LAB_CACHE_DIR/rel-v9.9.7/platform"; touch "$LAB_CACHE_DIR/rel-v9.9.7/scripts/bootstrap.sh"; echo 9.9.7 > "$LAB_CACHE_DIR/rel-v9.9.7/platform/VERSION"; _lab_bootstrap_sh)" == "$LAB_CACHE_DIR/rel-v9.9.7/scripts/bootstrap.sh" ]]'
+check "dev installs with this checkout's bootstrap.sh" '[[ "$(CL_RELEASE_TAG= REPO=/repo; _lab_bootstrap_sh)" == /repo/scripts/bootstrap.sh ]]'
 
 # ── registry mirrors ──
 expected='mirrors:
