@@ -978,6 +978,67 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
     expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
   });
 
+  // A task created by a Stalwart process that has since been replaced (platform-api's
+  // first start recycles Stalwart to bind its PROXY listeners, right after the
+  // install's configure queued the first order) keeps that process's 1-hour lock
+  // and does not run. Once the NEW process has been up longer than a rescan plus an
+  // ACME run, such a task is orphaned: discard it and order afresh, instead of
+  // waiting out the 90-minute bound with mail on a self-signed certificate.
+  describe('orphaned by a Stalwart restart', () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    const orphanTask = (state: string, createdMinutesAgo: number) => ({
+      id: 'orphan1',
+      '@type': 'AcmeRenewal',
+      domainId: 'd1',
+      due: minutesAgo(createdMinutesAgo),
+      status: { '@type': state, createdAt: minutesAgo(createdMinutesAgo), due: minutesAgo(createdMinutesAgo) },
+    });
+    const tick = (tasks: unknown[], startedMinutesAgo: number | null) => {
+      const mock = buildJmapMock({ ...base, tasks });
+      return runStalwartDomainReconcilerTick({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        core: {} as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        db: dbStub('mail.example.net') as any,
+        jmapTransport: mock.transport,
+        stalwartStartedAtMs: startedMinutesAgo === null ? null : Date.now() - startedMinutesAgo * 60_000,
+        logger,
+      }).then((result) => ({ result, calls: mock.calls }));
+    };
+
+    it('discards a Pending task the previous process created, then orders afresh', async () => {
+      const { result, calls } = await tick([orphanTask('Pending', 25)], 20);
+      expect(result.acmeRenewalFired).toBe(true);
+      expect(calls.filter((c) => c.method === 'x:Task/set').map((c) => c.args.destroy ?? 'create'))
+        .toEqual([['orphan1'], 'create']);
+      expect(result.notes.find((n) => /orphaned by a Stalwart restart/.test(n))).toBeDefined();
+    });
+
+    it('waits while the new process may still pick it up (up less than a rescan + an ACME run)', async () => {
+      const { result, calls } = await tick([orphanTask('Pending', 8)], 5);
+      expect(result.acmeRenewalFired).toBe(false);
+      expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    });
+
+    it('defers to a task the running process created', async () => {
+      const { result, calls } = await tick([orphanTask('Pending', 15)], 30);
+      expect(result.acmeRenewalFired).toBe(false);
+      expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    });
+
+    it('leaves a Retry alone — it waits for its due, it is not held by a lock', async () => {
+      const { result, calls } = await tick([{ ...orphanTask('Retry', 25), due: new Date(Date.now() + 3600_000).toISOString() }], 20);
+      expect(result.acmeRenewalFired).toBe(false);
+      expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    });
+
+    it('without a known start time it keeps the 90-minute rule', async () => {
+      const { result, calls } = await tick([orphanTask('Pending', 25)], null);
+      expect(result.acmeRenewalFired).toBe(false);
+      expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    });
+  });
+
   it('defers when Stalwart did not confirm the discard (another replica got there first)', async () => {
     // Two replicas ticking on the same stuck task: the second destroy finds it
     // gone. Firing anyway would place a second upstream order.

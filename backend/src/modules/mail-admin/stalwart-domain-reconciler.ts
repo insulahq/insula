@@ -330,6 +330,12 @@ export interface StalwartDomainReconcilerDeps {
   };
   /** Tests inject a stub; production uses exec-into-Stalwart-pod transport. */
   readonly jmapTransport?: JmapCall;
+  /**
+   * When the running Stalwart container started (ms epoch; null = unknown). Tests
+   * inject it; production reads it from the pod the tick resolves. Lets a renewal
+   * task orphaned by a Stalwart restart be recognised (see ORPHAN_GRACE_MS).
+   */
+  readonly stalwartStartedAtMs?: number | null;
   /** Override for tests — defaults to process.env. */
   readonly env?: NodeJS.ProcessEnv;
   /**
@@ -511,13 +517,16 @@ export async function runStalwartDomainReconcilerTick(
   // probe relies on the injected servedCertProbe instead.
   let jmapCall: JmapCall;
   let podName: string | null = null;
+  let stalwartStartedAtMs: number | null = deps.stalwartStartedAtMs ?? null;
   if (deps.jmapTransport) {
     jmapCall = deps.jmapTransport;
   } else {
-    podName = await findStalwartPodName(deps.core, log);
+    const pod = await findStalwartPod(deps.core, log);
+    podName = pod?.name ?? null;
     if (!podName) {
       return empty({ mailHostname: trimmedHost }, 'no Running Stalwart pod found');
     }
+    stalwartStartedAtMs = deps.stalwartStartedAtMs ?? pod?.startedAtMs ?? null;
     const transport: ExecTransport = {
       core: deps.core,
       podName,
@@ -699,7 +708,7 @@ export async function runStalwartDomainReconcilerTick(
         `AcmeRenewal skipped — stored certificate already covers ${matchedDomain.name} `
         + `(renewals are Stalwart-scheduled via AcmeProvider.renewBefore)`,
       );
-    } else if (await hasLiveAcmeRenewalTask(jmapCall, auth, matchedDomain.id, notes, log)) {
+    } else if (await hasLiveAcmeRenewalTask(jmapCall, auth, matchedDomain.id, notes, log, stalwartStartedAtMs)) {
       notes.push(
         'AcmeRenewal skipped — an AcmeRenewal task for this domain is already pending/retrying '
         + '(firing again would queue a duplicate LE order)',
@@ -727,7 +736,7 @@ export async function runStalwartDomainReconcilerTick(
   //
   //    This step closes that gap: probe the cert Stalwart is ACTUALLY
   //    serving; if it's self-signed (and the pod is Ready — implied by
-  //    reaching here past findStalwartPodName — and the CRs are wired,
+  //    reaching here past findStalwartPod — and the CRs are wired,
   //    which they are by steps 3-7), FORCE a fresh order via
   //    forceFreshAcmeOrder (unconditional certificateManagement
   //    re-assert + AcmeRenewal task).
@@ -747,6 +756,7 @@ export async function runStalwartDomainReconcilerTick(
         kubeconfigPath: deps.kubeconfigPath,
         servedCertProbe: deps.servedCertProbe,
         podName,
+        stalwartStartedAtMs,
         domainId: matchedDomain.id,
         mailHostname: matchedDomain.name,
         acmeProviderId,
@@ -1025,6 +1035,29 @@ const PENDING_TASK_STATES = new Set(['Pending', 'Retry', 'Running', 'Scheduled']
  */
 const STALE_ACME_TASK_MS = 90 * 60 * 1000;
 
+/**
+ * How long the CURRENT Stalwart process must have been up before a Pending
+ * AcmeRenewal created by an EARLIER process counts as orphaned. That task was
+ * picked up — and locked for an hour — by the process that created it; when that
+ * process was replaced (platform-api's first start recycles Stalwart to bind its
+ * PROXY listeners, moments after the install queued the first order) the lock
+ * outlives it and the task sits Pending until STALE_ACME_TASK_MS — measured: a
+ * fresh lab install served a self-signed mail certificate for that long. A task
+ * the new process found unlocked runs within one rescan (5 min) and finishes
+ * within an ACME run (minutes), so past this grace a still-Pending task from
+ * before the restart is held by a dead process's lock and cannot be one the live
+ * process is running.
+ */
+const ORPHAN_GRACE_MS = 10 * 60 * 1000;
+
+/** When a task was queued (`status.createdAt`, else top-level `createdAt`); null when unreadable. */
+function taskCreatedMs(task: Record<string, unknown>): number | null {
+  const status = task['status'] as Record<string, unknown> | undefined;
+  const raw = status?.['createdAt'] ?? task['createdAt'];
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /** A task's due instant (top-level `due`, else `status.due`); null when unreadable. */
 function taskDueMs(task: Record<string, unknown>): number | null {
   const status = task['status'] as Record<string, unknown> | undefined;
@@ -1083,6 +1116,7 @@ async function hasLiveAcmeRenewalTask(
   domainId: string,
   notes: string[],
   log: { warn: (...args: unknown[]) => void },
+  stalwartStartedAtMs: number | null = null,
 ): Promise<boolean> {
   try {
     const qRes = await jmapCall(auth, {
@@ -1107,11 +1141,24 @@ async function hasLiveAcmeRenewalTask(
       const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
       return typeof statusType === 'string' && PENDING_TASK_STATES.has(statusType);
     });
-    const staleBefore = Date.now() - STALE_ACME_TASK_MS;
+    const now = Date.now();
+    const staleBefore = now - STALE_ACME_TASK_MS;
+    // Orphaned: Pending, queued before the running process started, and that
+    // process has been up past the grace (only when its start time is known).
+    const orphanCheck = stalwartStartedAtMs !== null && now - stalwartStartedAtMs >= ORPHAN_GRACE_MS;
+    const isOrphan = (t: Record<string, unknown>): boolean => {
+      if (!orphanCheck) return false;
+      const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
+      const created = taskCreatedMs(t);
+      return statusType === 'Pending' && created !== null && created < (stalwartStartedAtMs as number);
+    };
     const stale = pending.filter((t) => {
       const due = taskDueMs(t);
-      return due !== null && due < staleBefore;
+      return (due !== null && due < staleBefore) || isOrphan(t);
     });
+    if (stale.some(isOrphan)) {
+      notes.push('AcmeRenewal task orphaned by a Stalwart restart (queued by the previous process, still locked by it)');
+    }
     const discarded = stale.length > 0
       ? await discardStaleAcmeRenewalTasks(jmapCall, auth, stale, notes, log)
       : 0;
@@ -1247,6 +1294,8 @@ interface ForceArgs {
   readonly kubeconfigPath?: string;
   readonly servedCertProbe?: ServedCertProbe;
   readonly podName: string | null;
+  /** When the running Stalwart container started (ms epoch; null = unknown). */
+  readonly stalwartStartedAtMs?: number | null;
   readonly domainId: string;
   readonly mailHostname: string;
   readonly acmeProviderId: string;
@@ -1323,7 +1372,7 @@ async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
   // forceFreshAcmeOrder is only useful WITH a fresh fire, so defer the
   // whole force. Fail-open: an unreadable task queue must not disable
   // the self-heal.
-  if (await hasLiveAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.notes, args.log)) {
+  if (await hasLiveAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.notes, args.log, args.stalwartStartedAtMs ?? null)) {
     args.notes.push(
       'served cert self-signed but an AcmeRenewal task is already pending/retrying — '
       + 'deferring force (Stalwart will execute the queued order)',
@@ -1766,10 +1815,10 @@ interface JmapInvocationResponse {
 
 type JmapCall = (auth: string, body: unknown) => Promise<JmapInvocationResponse>;
 
-async function findStalwartPodName(
+async function findStalwartPod(
   core: CoreV1Api,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<string | null> {
+): Promise<{ readonly name: string; readonly startedAtMs: number | null } | null> {
   try {
     const pods = await core.listNamespacedPod({
       namespace: 'mail',
@@ -1783,7 +1832,10 @@ async function findStalwartPodName(
       log.warn('No Running Stalwart pod found — skipping tick (will retry).');
       return null;
     }
-    return ready.metadata.name;
+    const startedAt = ready.status?.containerStatuses
+      ?.find((cs) => cs.name === 'stalwart')?.state?.running?.startedAt;
+    const startedAtMs = startedAt ? new Date(startedAt).getTime() : NaN;
+    return { name: ready.metadata.name, startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null };
   } catch (err) {
     log.warn('Failed to list Stalwart pods:', err);
     return null;

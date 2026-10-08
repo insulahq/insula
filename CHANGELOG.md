@@ -112,6 +112,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A fresh install no longer serves mail on a self-signed certificate for up to 90 minutes.**
+  The platform's first start restarts the mail server once to open its proxy listeners — moments
+  after the install queued the first certificate order. The order died with the old process, which
+  kept a one-hour lock on it, and the platform waited 90 minutes before ordering again. A pending
+  order left behind by a replaced mail-server process is now recognised as stuck once the new
+  process has been up ten minutes, and replaced right away.
 - **The security probe now runs on Ubuntu nodes.** It mounted the host's `/proc/net/nf_conntrack`,
   which kernels built without the legacy conntrack procfs table (Ubuntu 22.04 and 24.04) do not
   have — the kubelet tried to create the file in `/proc`, failed, and the probe pod never started,
