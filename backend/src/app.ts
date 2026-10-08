@@ -1450,6 +1450,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureStalwartStdoutTracer } = await import('./modules/mail-events/tracer-reconciler.js');
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
+        const { ensureMailBanExpiry } = await import('./modules/mail-admin/mail-ban-expiry.js');
         const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { pollAbuseReports } = await import('./modules/mail-events/abuse-reports.js');
@@ -1493,6 +1494,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           // reintroduce reports whose DSNs bounce.
           ensureDmarcReportSender(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc report sender ensure failed');
+          });
+          // Automatic IP bans expire (24 h unless the operator chose otherwise).
+          // Reconciled every tick: the setting lives in the mail store, and a
+          // restore or failover brings back the store as it was — including
+          // Stalwart's own default, which is a ban that never expires.
+          ensureMailBanExpiry(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'mail ban expiry ensure failed');
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');

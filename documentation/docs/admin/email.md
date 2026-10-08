@@ -139,6 +139,34 @@ Two consequences worth knowing:
   queued behind a dead sender. The card then shows the old address marked
   *no longer available*, so you know to pick another one.
 
+### Automatic IP bans
+
+The mail server blocks an address by itself when it collects too many strikes
+for one of four reasons: **failed logins**, **port scanning** (invalid commands,
+probing for web exploits), **loitering** (connections that sit idle), and
+**mail to unknown recipients**. A blocked address can no longer reach any mail
+port or webmail.
+
+The **Automatic IP Bans** card on the Server sub-tab sets how long such a ban
+lasts — **24 hours** by default. Tick **Never lift them** for permanent bans,
+which is the mail server's own default; Insula does not use it by default
+because a permanent ban of a shared or reassigned address (an office NAT, a
+mobile carrier, a monitoring probe, your own test machine) locks it out for
+good, and nothing in the panel shows that it happened. A new value applies to
+the next ban within seconds, without restarting mail.
+
+Bans that already exist keep the lifetime they were created with, and bans
+you add by hand in the Stalwart admin UI are never touched. The setting is
+re-applied every five minutes, so a mail store restored from a snapshot or
+moved by a failover picks it up again.
+
+!!! tip "Testing from your own machine"
+
+    Probing mail ports with tools that send a stray line — `echo | openssl
+    s_client …` sends an empty line, which the server counts as an invalid
+    command — collects port-scanning strikes. Use `openssl s_client … </dev/null`
+    instead, which only does the TLS handshake.
+
 The collapsible **Stalwart admin UI** card embeds the upstream Stalwart
 web admin for everything the panel doesn't surface natively — advanced
 filters, log inspection, manual DKIM rotation.

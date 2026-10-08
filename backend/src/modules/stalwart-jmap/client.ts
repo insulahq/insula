@@ -1242,6 +1242,61 @@ export async function queuedMessageCount(params: {
   return typeof q.total === 'number' ? q.total : (q.ids?.length ?? 0);
 }
 
+// ── Security (automatic IP bans) ───────────────────────────────────────────
+//
+// The `x:Security` singleton holds Stalwart's fail2ban: per-reason strike
+// rates and how long the resulting ban lasts. Durations travel as integer
+// MILLISECONDS; a null period means the ban never expires (Stalwart's default).
+// Like every settings group it is cold until written — see settings-group.ts.
+
+/** A fail2ban strike rate: `count` strikes within `period` milliseconds. */
+export interface StalwartRate {
+  readonly count: number;
+  readonly period: number;
+}
+
+export interface StalwartSecurityRow {
+  readonly abuseBanRate?: StalwartRate | null;
+  readonly abuseBanPeriod?: number | null;
+  readonly authBanRate?: StalwartRate | null;
+  readonly authBanPeriod?: number | null;
+  readonly loiterBanRate?: StalwartRate | null;
+  readonly loiterBanPeriod?: number | null;
+  /** Request-path patterns that ban an HTTP client on sight, as a `{pattern: true}` map. */
+  readonly scanBanPaths?: Record<string, boolean> | null;
+  readonly scanBanRate?: StalwartRate | null;
+  readonly scanBanPeriod?: number | null;
+}
+
+export async function securityGet(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<StalwartSecurityRow | null> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<{ list?: readonly StalwartSecurityRow[] }>(
+    JMAP_STALWART,
+    'x:Security/get',
+    {},
+    baseUrl, env,
+  );
+  // An empty list is the UNWRITTEN state (built-in defaults live), not an error.
+  return res.list?.[0] ?? null;
+}
+
+export async function securityUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartSecurityRow>> {
+  const { patch, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartSecurityRow>>(
+    JMAP_STALWART,
+    'x:Security/set',
+    { update: { singleton: patch } },
+    baseUrl, env,
+  );
+}
+
 // ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
 //
 // Stalwart loads most registry config (MTA throttles/quotas, report

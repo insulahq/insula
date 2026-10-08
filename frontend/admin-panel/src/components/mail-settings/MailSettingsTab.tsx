@@ -3,6 +3,11 @@ import { Save, Loader2, CheckCircle, Server, AlertTriangle, RotateCcw } from 'lu
 import { useWebmailSettings, useUpdateWebmailSettings } from '@/hooks/use-webmail-settings';
 import { usePlatformUrls, useUpdatePlatformUrls } from '@/hooks/use-platform-urls';
 import DmarcReportSenderSelect from './DmarcReportSenderSelect';
+import MailBanExpirySection, {
+  draftFromSetting,
+  settingFromDraft,
+  type MailBanExpiryDraft,
+} from './MailBanExpirySection';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -71,6 +76,7 @@ export default function MailSettingsTab() {
   // Distinct from `null`, which IS a choice — "turn reporting off" — and must
   // be savable. Collapsing the two would make disabling impossible.
   const [dmarcSender, setDmarcSender] = useState<string | null | undefined>(undefined);
+  const [banDraft, setBanDraft] = useState<MailBanExpiryDraft>(() => draftFromSetting(undefined));
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -79,6 +85,7 @@ export default function MailSettingsTab() {
       setMailServerHostname(settings.mailServerHostname ?? '');
       setEnforcementMode(settings.mailEnforcementMode ?? 'notify');
       setDmarcSender(undefined);
+      setBanDraft(draftFromSetting(settings.mailBanExpiryHours));
     }
   }, [settings]);
 
@@ -99,6 +106,10 @@ export default function MailSettingsTab() {
     dmarcSender !== undefined && dmarcSender !== (settings?.dmarcReportSender ?? null);
   const effectiveDmarcSender =
     dmarcSender !== undefined ? dmarcSender : (settings?.dmarcReportSender ?? null);
+  // undefined = the typed hours are not valid; null = never lift.
+  const banExpiry = settingFromDraft(banDraft);
+  const banExpiryChanged =
+    banExpiry !== undefined && settings !== undefined && banExpiry !== settings.mailBanExpiryHours;
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -109,6 +120,10 @@ export default function MailSettingsTab() {
     // half-applied save (hostname rejected, but Stalwart URL committed).
     if (hostnameChanged && !hostnameLooksValid) {
       setSaveError('Mail server hostname must be a valid FQDN (e.g. mail.example.com).');
+      return;
+    }
+    if (banExpiry === undefined) {
+      setSaveError('Automatic bans: enter a whole number of hours, or choose to never lift them.');
       return;
     }
 
@@ -127,6 +142,11 @@ export default function MailSettingsTab() {
     if (dmarcSenderChanged) {
       tasks.push(
         updateWebmail.mutateAsync({ dmarcReportSender: dmarcSender ?? null }),
+      );
+    }
+    if (banExpiryChanged) {
+      tasks.push(
+        updateWebmail.mutateAsync({ mailBanExpiryHours: banExpiry }),
       );
     }
     if (stalwartUrlChanged) {
@@ -262,6 +282,8 @@ export default function MailSettingsTab() {
           disabled={saving}
         />
       </fieldset>
+
+      <MailBanExpirySection draft={banDraft} onChange={setBanDraft} disabled={saving} />
 
       <div>
         <label
