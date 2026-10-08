@@ -368,13 +368,20 @@ spec:
             # "HH:MM" in UTC, or "off". Override with an overlay patch.
             - name: RECYCLE_AT_UTC
               value: "22:30"
-          # A shell asleep in `sleep`: ~1 MiB resident.
+          # Steady state is a shell asleep in `sleep`, ~1 MiB resident. The
+          # limit is NOT sized from that: `kubectl exec` into this container
+          # starts `runc init` inside the container's own memory cgroup
+          # (~7 MiB anon + ~7 MiB file measured). At an 8Mi limit one exec
+          # OOM-killed the sidecar, and since a pod is Ready only while EVERY
+          # container is, vmsingle dropped out of its Service until the
+          # sidecar came back. 32Mi leaves room for an exec session; the
+          # request stays at what it actually uses.
           resources:
             requests:
               cpu: 1m
-              memory: 2Mi
+              memory: 4Mi
             limits:
-              memory: 8Mi
+              memory: 32Mi
           volumeMounts:
             - name: recycler-script
               mountPath: /recycler
