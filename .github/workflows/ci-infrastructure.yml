@@ -228,6 +228,9 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
+      # The retained VM lab's pure logic and cloud-init seeds (no libvirt needed).
+      - run: python3 -m pip install --user pyyaml
+      - run: ./scripts/test-vm-lab.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-standby-replicate.sh

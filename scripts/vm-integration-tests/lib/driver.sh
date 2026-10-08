@@ -222,6 +222,16 @@ vm_net_destroy() {
   VIRSH net-undefine "$name" >/dev/null 2>&1 || true
 }
 
+# _vm_net_name <run-or-net> — the libvirt network a VM attaches to. A throw-away
+# run passes its run id (hex) and gets `insula-test-<run>`; the retained lab
+# passes the full network name (`insula-lab-*`, see lib/lab-net.sh).
+_vm_net_name() {
+  case "$1" in
+    insula-*) printf '%s' "$1" ;;
+    *)        printf 'insula-test-%s' "$1" ;;
+  esac
+}
+
 # ── domains ─────────────────────────────────────────────────────────
 # vm_create <name> <overlay> <seed_iso> <net> <vcpu> <ram_mb> <mac>
 vm_create() {
@@ -255,7 +265,12 @@ vm_create() {
            RAM, worsening the real bottleneck (host memory pressure → postgres/CNPG stalls,
            502s, flaky cascades) — tried in run10, reverted. The honest constraint here is
            RAM, not disk speed. -->
-      <driver name='qemu' type='qcow2' io='threads'/>
+      <!-- discard='unmap': a trim inside the guest (fstrim.timer, or a filesystem
+           mounted with discard) punches the freed blocks out of the qcow2 file. Without
+           it an overlay only ever grows: three long-lived 40 GB servers each reached
+           ~38 GB and filled the shared backing filesystem, and libvirt paused the VMs on
+           the failed write. detect_zeroes='unmap' turns guest zero-writes into holes. -->
+      <driver name='qemu' type='qcow2' io='threads' discard='unmap' detect_zeroes='unmap'/>
       <source file='${overlay}'/><target dev='vda' bus='virtio'/>
     </disk>
     <!-- cidata seed on VIRTIO-BLK, not a SATA CD-ROM. A SATA cdrom enumerates late
@@ -272,7 +287,7 @@ vm_create() {
       <source file='${seed}'/><target dev='vdb' bus='virtio'/><readonly/>
     </disk>
     <interface type='network'>
-      <source network='insula-test-${net}'/><model type='virtio'/>
+      <source network='$(_vm_net_name "$net")'/><model type='virtio'/>
       <mac address='${mac}'/>
     </interface>
     <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
@@ -314,7 +329,8 @@ XML
 # tens of seconds on some libvirt builds (observed on Unraid libvirt 12.2) — that lag
 # is what made the harness spuriously report "no lease".
 vm_ip() {
-  local name="$1" net="insula-test-${2}" mac
+  local name="$1" net mac
+  net="$(_vm_net_name "$2")"
   mac=$(VIRSH domiflist "$name" 2>/dev/null | awk '$2=="network"{print $5}' | head -1)
   [[ -n "$mac" ]] || return 0
   VIRSH net-dhcp-leases "$net" 2>/dev/null | awk -v m="$mac" 'tolower($0) ~ tolower(m){

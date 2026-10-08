@@ -28,7 +28,7 @@ from where production is*.
                     │
                <lab-host>  (libvirt/KVM; routes between the lab networks)
      ┌──────────────┼──────────────────────────┬──────────────────────────┐
- lab-svc 10.98.1.0/24        lab-dev 10.98.10.0/24          lab-stg 10.98.20.0/24
+ lab-svc 10.98.100.0/24      lab-dev 10.98.110.0/24         lab-stg 10.98.120.0/24
   svc     .10 (always on)     dev-1  .11 (always on)          stg-s1..s3 .11-.13 (on demand)
   runner  .11 (on demand)                                     stg-w1     .21 (optional)
 ```
@@ -42,7 +42,14 @@ from where production is*.
 | `lab-stg-w1` | 4 / 8 GB / 40 GB | OS installed; joined and removed on demand |
 
 Fixed addresses come from DHCP host reservations in each network's definition, keyed on a MAC
-derived from the VM name, so a VM always gets the same address back.
+derived from the network and host octet, so a VM always gets the same address back. The third
+octets (100+) stay clear of the throw-away tier, whose run networks use `10.98.<1..90>`.
+
+**Operating systems.** Every cluster node runs a **random supported OS** (`lib/os-registry.sh` —
+Debian, Ubuntu, Rocky, Alma, CentOS Stream), drawn once when the VM is created and kept for its
+life, so a cluster is mixed the way real installs grow node by node. `LAB_NODE_OS` pins new nodes
+to one OS when a failure needs to be reproduced. The services VM and the runner are infrastructure
+and stay on one fixed OS (Debian).
 
 ### Why three networks
 
@@ -145,7 +152,12 @@ Every lab VM uses the host's caches when they answer and the origin when they do
 | Cache | Where | Fallback |
 |---|---|---|
 | Registry pull-through mirrors (docker.io, ghcr.io, quay.io, registry.k8s.io) | the host (existing) | containerd falls back to the upstream registry on its own when a mirror does not answer |
-| apt | `lab-svc` (apt-cacher-ng) | apt proxy auto-detect: an unreachable proxy is skipped |
+| apt (Debian/Ubuntu nodes) | `lab-svc` (apt-cacher-ng) | apt proxy auto-detect: an unreachable proxy is skipped |
+
+apt-cacher-ng only caches plain http, while Debian's images ship https sources; lab nodes switch
+`deb.debian.org`/`security.debian.org` to http before their first package install (apt verifies every
+package against the signed Release file, so http costs no integrity). dnf-family nodes fetch from
+their distribution mirrors directly.
 
 A fallback is silent by nature, and a silent fallback is a bandwidth bill nobody sees. `lab.sh
 status` therefore reports which caches answer and whether the nodes are configured to use them;

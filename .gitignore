@@ -31,6 +31,7 @@ scripts/dr-drill.env
 # host-SSH coordinates. Local-only; committed template is
 # scripts/vm-integration-tests/config.example.env (placeholders only).
 scripts/vm-integration-tests/config.env
+scripts/vm-integration-tests/lab.env
 
 # Vite
 frontend/*/dist/

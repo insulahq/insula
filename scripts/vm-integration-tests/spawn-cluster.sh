@@ -25,6 +25,7 @@ source "$HERE/lib/driver.sh"
 source "$HERE/lib/waitfor.sh"
 source "$HERE/lib/log-gate.sh"
 source "$HERE/lib/join-invariance.sh"
+source "$HERE/lib/mirrors.sh"
 
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
@@ -82,43 +83,9 @@ ensure_golden() {
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q
 PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
-# ── Pull-through registry mirrors (bandwidth, not behaviour) ────────────────
-#
-# Every k3s node runs its own containerd with no shared cache, so a 4-node run
-# fetches the SAME ~3.6 GB image set four times over the WAN (measured on run
-# 097668f8: docker.io 2037 MB · ghcr.io 1078 MB · quay.io 497 MB ·
-# registry.k8s.io 35 MB). Pointing containerd at LAN caches makes the internet
-# fetch happen once.
-#
-# Written via cloud-init write_files, NOT runcmd: registries.yaml must exist
-# BEFORE k3s first starts, and bootstrap.sh runs well after cloud-init.
-#
-# Safe by construction:
-#   * opt-in — unset VMTEST_REGISTRY_MIRROR and the seed is byte-identical to
-#     before, so a host without the caches is unaffected;
-#   * containerd falls back to the real upstream when a mirror is unreachable,
-#     so a stopped cache degrades to today's behaviour instead of breaking runs;
-#   * digests are still verified end-to-end by containerd — a cache cannot serve
-#     tampered content. This is a bandwidth optimisation, never a trust boundary.
+# ── Pull-through registry mirrors (bandwidth, not behaviour) — lib/mirrors.sh ──
+# Opt-in: unset VMTEST_REGISTRY_MIRROR and the seed is byte-identical to before.
 VMTEST_REGISTRY_MIRROR="${VMTEST_REGISTRY_MIRROR:-}"
-# The k3s registries.yaml body — ONE definition for both writers: the cloud-init
-# seed of a fresh VM, and the reuse path (rebootstrap.sh), whose destroy-cluster.sh
-# `rm -rf /etc/rancher` deletes the file the seed wrote. Before the reuse writer
-# existed every rebootstrapped run silently pulled the full image set over the WAN
-# on every node — containerd falls back to upstream when no mirror is configured.
-registry_mirrors_yaml() {
-  cat <<YAML
-mirrors:
-  docker.io:
-    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_DOCKER:-4000}"]
-  ghcr.io:
-    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_GHCR:-4001}"]
-  quay.io:
-    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_QUAY:-4002}"]
-  registry.k8s.io:
-    endpoint: ["http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_K8S:-4003}"]
-YAML
-}
 REGISTRY_MIRROR_WRITE_FILES=""
 if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
   # PREFLIGHT the mirror before seeding it into every node.
@@ -129,15 +96,13 @@ if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
   # registry, so the run still passes while pulling everything over the WAN —
   # the failure mode is invisible and the only symptom is the bandwidth bill the
   # mirror exists to avoid. Fail loudly at spawn instead.
-  for _mp in "${VMTEST_MIRROR_PORT_DOCKER:-4000}" "${VMTEST_MIRROR_PORT_GHCR:-4001}" \
-             "${VMTEST_MIRROR_PORT_QUAY:-4002}" "${VMTEST_MIRROR_PORT_K8S:-4003}"; do
-    if ! curl -sf -o /dev/null --max-time 5 "http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/"; then
-      echo "spawn-cluster: registry mirror http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/ is not answering." >&2
-      echo "  VMTEST_REGISTRY_MIRROR must be the mirror HOST (e.g. 10.0.0.5), not a flag." >&2
-      echo "  Unset it to run without mirrors." >&2
-      exit 2
-    fi
-  done
+  if ! _probe="$(mirror_probe)"; then
+    echo "$_probe" >&2
+    echo "spawn-cluster: a registry mirror on ${VMTEST_REGISTRY_MIRROR} is not answering (above)." >&2
+    echo "  VMTEST_REGISTRY_MIRROR must be the mirror HOST (e.g. 10.0.0.5), not a flag." >&2
+    echo "  Unset it to run without mirrors." >&2
+    exit 2
+  fi
   # cloud-init write_files for a FRESH VM; the reuse path writes the same body
   # over ssh (see below) because destroy-cluster.sh wipes /etc/rancher.
   REGISTRY_MIRROR_WRITE_FILES="write_files:
