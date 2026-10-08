@@ -1093,6 +1093,15 @@ const STALE_ACME_TASK_MS = 90 * 60 * 1000;
  */
 const ORPHAN_GRACE_MS = 20 * 60 * 1000;
 
+/**
+ * A Pending AcmeRenewal due further out than this is Stalwart's own SCHEDULED
+ * renewal (queued after issuance, due ~renewBefore ahead of expiry — seen on the
+ * lab: due 60 days out), not an order in flight. It has not run, so it holds no
+ * lock and is never an orphan; and the reconciler does not defer to it, or a
+ * missing certificate would wait for the scheduled date.
+ */
+const SCHEDULED_RENEWAL_HORIZON_MS = 60 * 60 * 1000;
+
 /** When a task was queued (`status.createdAt`, else top-level `createdAt`); null when unreadable. */
 function taskCreatedMs(task: Record<string, unknown>): number | null {
   const status = task['status'] as Record<string, unknown> | undefined;
@@ -1186,16 +1195,28 @@ async function hasLiveAcmeRenewalTask(
     });
     const now = Date.now();
     const staleBefore = now - STALE_ACME_TASK_MS;
-    // Orphaned: Pending, queued before the running process started, and that
-    // process has been up past the grace (only when its start time is known).
+    const isPendingState = (t: Record<string, unknown>): boolean =>
+      (t['status'] as Record<string, unknown> | undefined)?.['@type'] === 'Pending';
+    // Scheduled renewals are neither live orders nor orphans: left alone, not deferred to.
+    const inFlight = pending.filter((t) => {
+      const due = taskDueMs(t);
+      return !(isPendingState(t) && due !== null && due > now + SCHEDULED_RENEWAL_HORIZON_MS);
+    });
+    if (inFlight.length < pending.length) {
+      notes.push(`ignored ${pending.length - inFlight.length} scheduled AcmeRenewal(s) (due later; not an order in flight)`);
+    }
+    // Orphaned: Pending, fell due while the PREVIOUS process ran (only then could it
+    // have locked it), and the running process has been up past the grace (only when
+    // its start time is known).
     const orphanCheck = stalwartStartedAtMs !== null && now - stalwartStartedAtMs >= ORPHAN_GRACE_MS;
     const isOrphan = (t: Record<string, unknown>): boolean => {
-      if (!orphanCheck) return false;
-      const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
+      if (!orphanCheck || !isPendingState(t)) return false;
+      const due = taskDueMs(t);
       const created = taskCreatedMs(t);
-      return statusType === 'Pending' && created !== null && created < (stalwartStartedAtMs as number);
+      const started = stalwartStartedAtMs as number;
+      return due !== null && due < started && (created === null || created < started);
     };
-    const stale = pending.filter((t) => {
+    const stale = inFlight.filter((t) => {
       const due = taskDueMs(t);
       return (due !== null && due < staleBefore) || isOrphan(t);
     });
@@ -1205,7 +1226,7 @@ async function hasLiveAcmeRenewalTask(
     const discarded = stale.length > 0
       ? await discardStaleAcmeRenewalTasks(jmapCall, auth, stale, notes, log)
       : 0;
-    return pending.length > discarded;
+    return inFlight.length > discarded;
   } catch (err) {
     log.warn(
       'Stalwart pending-AcmeRenewal-task check failed (fail-open, treating as none):',

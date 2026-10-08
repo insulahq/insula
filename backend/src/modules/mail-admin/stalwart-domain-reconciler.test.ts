@@ -1042,6 +1042,31 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
       expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     });
 
+    it("never destroys Stalwart's own scheduled renewal (due weeks out) — and does not defer to it", async () => {
+      // Seen on the lab: after issuance Stalwart queues the next renewal (Pending,
+      // due ~60 days out). It holds no lock — it has not run — so it is not an orphan;
+      // and it is not an order in flight, so with no stored certificate it must not
+      // keep the reconciler from ordering one.
+      const scheduled = {
+        id: 'renewal-dec', '@type': 'AcmeRenewal', domainId: 'd1',
+        due: new Date(Date.now() + 60 * 86_400_000).toISOString(),
+        status: { '@type': 'Pending', createdAt: minutesAgo(140), due: new Date(Date.now() + 60 * 86_400_000).toISOString() },
+      };
+      const { result, calls } = await tick([scheduled, orphanTask('Pending', 30)], 25);
+      expect(result.acmeRenewalFired).toBe(true);
+      expect(calls.filter((c) => c.method === 'x:Task/set').map((c) => c.args.destroy ?? 'create'))
+        .toEqual([['orphan1'], 'create']);
+    });
+
+    it('a task that fell due only after the restart is the live process\'s to run', async () => {
+      // Queued before the restart, due after it: the old process never ran it, so no
+      // dead lock holds it.
+      const task = { ...orphanTask('Pending', 30), due: minutesAgo(5), status: { '@type': 'Pending', createdAt: minutesAgo(30), due: minutesAgo(5) } };
+      const { result, calls } = await tick([task], 25);
+      expect(result.acmeRenewalFired).toBe(false);
+      expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    });
+
     it('without a known start time it keeps the 90-minute rule', async () => {
       const { result, calls } = await tick([orphanTask('Pending', 30)], null);
       expect(result.acmeRenewalFired).toBe(false);
