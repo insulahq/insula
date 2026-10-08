@@ -30,7 +30,8 @@
 #     sshd_config and /proc/sys/kernel/* are root-readable on
 #     most distros; we cannot run as non-root and still read
 #     them. allowPrivilegeEscalation: false enforces no setuid.
-#   * privileged: false. hostNetwork: false. hostPID: false.
+#   * privileged: false. hostPID: false. hostNetwork: true (mesh
+#     interface detection — see the comment on the field below).
 #     hostIPC: false. No /var/run/docker.sock, no kubeconfig.
 #   * readOnlyRootFilesystem: true so container can't drop
 #     unintended files even if compromised.

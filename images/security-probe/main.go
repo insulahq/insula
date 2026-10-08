@@ -7,7 +7,8 @@
 //  2. enumerates /host/sys/class/net for mesh interfaces (wt0,
 //     tailscale0, wg0) and reads peer counts via WireGuard proc
 //     (when present),
-//  3. samples /host/proc/net/nf_conntrack for recent denied flows,
+//  3. samples /proc/net/nf_conntrack (its own procfs — the host's table,
+//     since the pod runs with hostNetwork) for recent denied flows,
 //  4. reads /host/etc/os-release, /host/proc/sys/kernel/osrelease,
 //     /host/proc/stat boot time, and presence of fail2ban /
 //     sshguard / unattended-upgrades binaries on the host,
@@ -18,7 +19,8 @@
 //
 // Security posture (see daemonset.yaml for the corresponding
 // SecurityContext): readOnlyRootFilesystem, capabilities drop ALL,
-// no privileged, no hostNetwork, no hostPID. Every hostPath mount is
+// no privileged, no hostPID; hostNetwork IS on (mesh interface detection —
+// see the DaemonSet). Every hostPath mount is
 // readOnly. The only mutation the probe performs is to its own
 // ConfigMap via the apiserver (RBAC-scoped).
 package main
