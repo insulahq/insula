@@ -72,6 +72,12 @@ components:
   # supported configuration, not a pending cutover step. Without one
   # of these the ci-admin-auth-check.sh guardrail fails the build.
   - ../../components/admin-auth-gate-cookie
+  # Stalwart trusts an extra CA when Secret `stalwart-extra-ca` exists (bootstrap
+  # --trust-ca creates it), so a production-mode install with a private or air-gapped
+  # ACME CA gets its MAIL certificate from that CA too. Inert without the Secret: the
+  # initContainer reproduces the image's trust store byte-for-byte. Trust only — no
+  # extra egress port (a private CA on 443 needs none).
+  - ../../components/stalwart-extra-ca-trust
 
 patches:
   # ── platform-critical eviction protection ──

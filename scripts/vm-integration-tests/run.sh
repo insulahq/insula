@@ -386,7 +386,7 @@ WAITCERT
   # /roots/0, which signs the certs Pebble issues. Stalwart needs both.
   # The patch lives in the repo; the block below runs on the CP node.
   scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -q \
-      "$REPO/k8s/components/stalwart-extra-ca/extra-ca-patch.yaml" \
+      "$REPO/k8s/components/stalwart-extra-ca-trust/extra-ca-patch.yaml" \
       "root@${VMTEST_CP_IP}:/tmp/stalwart-extra-ca-patch.yaml" 2>/dev/null \
     || echo "  WARN: could not copy the stalwart-extra-ca patch to the control plane" >&2
   PEBBLE_MINICA_B64=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
@@ -494,10 +494,9 @@ spec:
       ports: [{port: 14000, protocol: TCP}]
 PEBSVC
     # Ensure the trust-store initContainer actually EXISTS before restarting.
-    # k8s/components/stalwart-extra-ca is wired into the DEVELOPMENT overlay only
-    # (staging and production carry zero references to it, correctly: production
-    # reaches the real Let's Encrypt, whose roots the image already trusts). On
-    # the release tier the env is staging/production, so the secret above was
+    # Releases before the production overlay carried stalwart-extra-ca-trust had
+    # the trust merge in the DEVELOPMENT overlay only. A release-tier run of such a
+    # release is staging/production, so the secret above was
     # created and then mounted by nobody: Stalwart never trusted Pebble, its ACME
     # account registration failed, x:AcmeProvider was never created and mail kept
     # the rcgen self-signed cert. Proven on run 621500bc — the running Deployment

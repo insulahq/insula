@@ -125,7 +125,8 @@ components:
   # INERT until Secret `stalwart-extra-ca` exists in the mail namespace: the
   # volume is optional and the initContainer then just reproduces the image's own
   # trust store. Dev clusters that keep using public LE are unaffected.
-  # Deliberately NOT in staging/production, whose apexes resolve publicly.
+  # Production carries only the trust half (stalwart-extra-ca-trust); this full
+  # component adds the egress to Pebble's port 14000 the throw-away VM tier needs.
   - ../../components/stalwart-extra-ca
 
 patches:

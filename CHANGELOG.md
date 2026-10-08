@@ -60,6 +60,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Production installs can let the mail server trust a private certificate authority.** The
+  production overlay now carries the trust step the development overlay already had, so
+  `bootstrap.sh --trust-ca` (with `--acme-server`) gives Stalwart the root as well, and the mail
+  certificate comes from that CA — for air-gapped installs and private CAs. Without `--trust-ca`
+  nothing changes: Stalwart's trust store stays exactly the image's own. **Upgrade note:** the mail
+  server restarts once when this release rolls out (it gains one start-up step).
 - **The metrics store keeps only the metrics the platform reads (read-driven ingestion).** Before,
   39–64% of stored series had no reader anywhere in the platform, and the series that are read
   carried per-container and per-status-code detail far beyond any query — all growing with every
