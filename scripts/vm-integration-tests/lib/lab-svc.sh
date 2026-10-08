@@ -201,19 +201,42 @@ lab_svc_ensure() {
     [[ "$state" == running ]] || VIRSH start "$LAB_SVC_VM" >&2
     wait_ssh "$ip" 300 >&2
     # Converge: the current settings + script, then run it (fills in anything missing).
-    _vssh "$ip" "umask 077; mkdir -p /etc/insula-lab && echo '$env_b64' | base64 -d > /etc/insula-lab/svc.env \
-      && echo '$script_b64' | base64 -d > /usr/local/sbin/lab-services.sh && chmod 0755 /usr/local/sbin/lab-services.sh \
-      && /usr/local/sbin/lab-services.sh" >&2
+    # Over stdin, never the command line: the env carries every service credential, and
+    # a command line is readable in `ps` on both ends while ssh runs.
+    _vssh "$ip" bash -s >&2 <<CONVERGE
+set -e
+umask 077
+mkdir -p /etc/insula-lab
+base64 -d > /etc/insula-lab/svc.env <<'B64'
+${env_b64}
+B64
+base64 -d > /usr/local/sbin/lab-services.sh <<'B64'
+${script_b64}
+B64
+chmod 0755 /usr/local/sbin/lab-services.sh
+/usr/local/sbin/lab-services.sh
+CONVERGE
   fi
   lab_zone_ensure "$LAB_APEX" "ns1 A $ip" "ca A $ip" "s3 A $ip" "sftp A $ip" "cifs A $ip" "apt A $ip"
 }
 
 # lab_pdns <method> <path> [json] — the PowerDNS API on the services VM (loopback).
+# The API key is read ON the VM and handed to curl as a header file, so it appears on
+# no command line; the body (zone records, no secrets) travels on stdin too.
 lab_pdns() {
-  local method="$1" path="$2" body="${3:-}" key
-  key="$(lab_state_secret LAB_PDNS_API_KEY)"
-  _vssh "$(lab_svc_ip)" "curl -s -X $method -H 'X-API-Key: ${key}' -H 'Content-Type: application/json' \
-    http://127.0.0.1:8081/api/v1/servers/localhost${path} ${body:+--data-binary $(printf %q "$body")} -w '\n%{http_code}'"
+  local method="$1" path="$2" body="${3:-}" has_body=0
+  [[ -n "$body" ]] && has_body=1
+  _vssh "$(lab_svc_ip)" bash -s <<PDNS
+set -e
+. /etc/insula-lab/svc.env
+body=\$(mktemp); trap 'rm -f "\$body"' EXIT
+cat > "\$body" <<'JSON'
+${body}
+JSON
+args=(); [ "${has_body}" = 1 ] && args=(--data-binary "@\$body")
+curl -s -X ${method} -H @<(printf 'X-API-Key: %s\nContent-Type: application/json\n' "\$PDNS_API_KEY") \
+  "\${args[@]}" "http://127.0.0.1:8081/api/v1/servers/localhost${path}" -w '\n%{http_code}'
+PDNS
 }
 
 # lab_zone_ensure <zone> "<label> <type> <content>"… — create the zone if absent, then

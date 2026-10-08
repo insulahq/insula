@@ -164,8 +164,9 @@ _lab_post_install() {
   pw="$(lab_state_secret "LAB_${CL_NAME^^}_ADMIN_PASSWORD" 24)"
   scp -q -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     "$REPO/scripts/admin-password-reset.sh" "root@${ip}:/tmp/admin-password-reset.sh"
-  _vssh "$ip" "bash /tmp/admin-password-reset.sh --email $(printf %q "admin@${CL_APEX}") --password $(printf %q "$pw") >/dev/null 2>&1; rm -f /tmp/admin-password-reset.sh" \
-    || echo "  WARN: admin password reset failed on ${ip}" >&2
+  # Without --password the script reads it (twice) from stdin — kept off every command line.
+  _vssh "$ip" "bash /tmp/admin-password-reset.sh --email $(printf %q "admin@${CL_APEX}") >/dev/null 2>&1; rc=\$?; rm -f /tmp/admin-password-reset.sh; exit \$rc" \
+    <<<"$(printf '%s\n%s' "$pw" "$pw")" || echo "  WARN: admin password reset failed on ${ip}" >&2
 }
 
 # _lab_register <ip> — bind the services VM to the platform through its own API: the
@@ -198,10 +199,29 @@ BACKUP_S3_SECRET_KEY=$(printf %q "$s3_pw")
 ENV
 }
 
+# _lab_wipe <vm> <ip> — remove a half-installed platform, keep the OS: the same
+# destroy-cluster.sh an operator runs before re-bootstrapping. It deletes /etc/rancher,
+# so the registry mirrors are written back before k3s is installed again.
+_lab_wipe() {
+  local vm="$1" ip="$2" inv="${VMTEST_TMP_DIR}/inventory-${1}.txt"
+  echo "${vm} ${ip}" > "$inv"
+  "$REPO/scripts/destroy-cluster.sh" --inventory "$inv" --ssh-key "$VMTEST_SSH_KEY" --confirm >&2 \
+    || { echo "lab: could not wipe ${vm}" >&2; return 1; }
+  if [[ -n "${VMTEST_REGISTRY_MIRROR:-}" ]]; then
+    registry_mirrors_yaml | _vssh "$ip" "mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml" \
+      || { echo "lab: could not restore the registry mirrors on ${vm}" >&2; return 1; }
+  fi
+}
+
 # lab_cluster_up <name> — create the cluster, or start it if it exists.
+#
+# "Installed" is a marker in the lab state, set only once the install, k3s and the
+# post-install steps have succeeded. A VM that exists without it is a failed install:
+# its platform is wiped (OS kept) and installed again, instead of being started and
+# then timing out on a k3s that was never there.
 lab_cluster_up() {
   lab_cluster_def "$1" || return 1
-  local entry vm host ip ca_b64 created=0
+  local entry vm host ip ca_b64 install=0 marker="LAB_${1^^}_INSTALLED"
   lab_net_ensure "$CL_NET" "$CL_PREFIX" "$(lab_svc_ip)"
   for entry in "${CL_NODES[@]}"; do
     read -r vm host <<<"$entry"; lab_net_reserve "$CL_NET" "$CL_PREFIX" "$vm" "$host"
@@ -210,6 +230,7 @@ lab_cluster_up() {
   read -r vm host <<<"${CL_NODES[0]}"; ip="${CL_PREFIX}.${host}"
   lab_zone_ensure "$CL_APEX" "@ A $ip" "* A $ip" "ns1 A $(lab_svc_ip)" \
     "s3 A $(lab_svc_ip)" "sftp A $(lab_svc_ip)" "cifs A $(lab_svc_ip)"
+  lab_state_load
 
   if ! VIRSH dominfo "$vm" >/dev/null 2>&1; then
     _lab_mem_guard $(( CL_RAM * ${#CL_NODES[@]} )) || return 1
@@ -219,14 +240,25 @@ lab_cluster_up() {
     _lab_node_create "$vm" "$host" "$ca_b64"
     VIRSH autostart "$vm" >&2
     wait_ssh "$ip" 600 >&2 && wait_cloudinit "$ip" 1200 >&2
-    _lab_bootstrap "$vm" "$ip" || return 1
-    created=1
+    install=1
   else
     [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] || { _lab_mem_guard "$CL_RAM" && VIRSH start "$vm" >&2; }
     wait_ssh "$ip" 300 >&2
+    if [[ "${!marker:-}" != 1 ]]; then
+      echo "── ${vm} exists but its install never finished — wiping the platform (OS kept) and installing again ──" >&2
+      _lab_wipe "$vm" "$ip" || return 1
+      install=1
+    fi
   fi
-  wait_k3s_ready "$ip" 600 >&2 || return 1
-  if (( created == 1 )); then _lab_post_install "$ip"; _lab_register "$ip"; fi
+  if (( install == 1 )); then
+    _lab_bootstrap "$vm" "$ip" || return 1
+    wait_k3s_ready "$ip" 600 >&2 || return 1
+    _lab_post_install "$ip"
+    lab_state_set "$marker" 1
+    _lab_register "$ip"
+  else
+    wait_k3s_ready "$ip" 600 >&2 || return 1
+  fi
   echo "${CL_NAME} cluster up: https://admin.${CL_APEX}  (node ${vm} @ ${ip}; admin@${CL_APEX}, password in ${LAB_STATE_FILE})"
 }
 

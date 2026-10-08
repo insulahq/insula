@@ -227,7 +227,7 @@ vm_net_destroy() {
 # passes the full network name (`insula-lab-*`, see lib/lab-net.sh).
 _vm_net_name() {
   case "$1" in
-    insula-*) printf '%s' "$1" ;;
+    insula-lab-*) printf '%s' "$1" ;;   # a run id is hex (run.sh), never this prefix
     *)        printf 'insula-test-%s' "$1" ;;
   esac
 }
