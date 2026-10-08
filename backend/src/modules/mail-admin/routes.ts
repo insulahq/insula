@@ -36,6 +36,7 @@ import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-maste
 import { getMailPvcStorage } from './mail-pvc.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
 import { mailCapacityReader } from './health-capacity.js';
+import { withMailTaskLiveness } from './task-liveness.js';
 import {
   startMailArchive,
   startMailArchiveRestore,
@@ -1895,7 +1896,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // Background execution: the response below returns immediately
       // with the taskId; this promise runs to completion (or failure)
       // independently and updates the task row as it goes.
-      void (async () => {
+      // The task row stays "running" only while this replica holds its liveness
+      // lease — the orphan reaper fails it once the lease runs out (task-liveness.ts).
+      void withMailTaskLiveness(app.db, [taskId], async () => {
         const stepNames = steps.map((s) => s.key);
         const stepStates: Record<string, 'pending' | 'running' | 'done' | 'failed'> = {};
         for (const k of stepNames) stepStates[k] = 'pending';
@@ -1963,7 +1966,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           }
           app.log.error({ err, userId }, 'mail-admin: port-exposure update failed');
         }
-      })();
+      }, { warn: (...a: unknown[]) => app.log.warn(a.map(String).join(' ')) });
 
       // Synchronous response — the work is now running in the background.
       return success({ updated: true, taskId });

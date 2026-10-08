@@ -627,12 +627,12 @@ export async function ensureMailStackPlacementApplied(
  * Label exactly the nodes that should stage a standby copy for a stack running
  * on `activeNode` (deriveStandbyNodes), de-electing the rest. Returns that set.
  *
- * A migration calls this once it has moved the stack. The startup reconcile
- * above skips while a migration is in flight — and the migration's own admin
- * credential rotation restarts platform-api inside that window — so after a
- * failover or failback the label stayed on the node that had just become
- * ACTIVE (a replicator copying from its own pod) while the real standby got
- * nothing, and the next failure restored from a stale copy or restic.
+ * A migration calls this once it has moved the stack. Before that, only the
+ * start-up reconcile above (which skips while a migration is in flight) and a
+ * placement save re-derived the labels, so after a failover or failback the
+ * label stayed on the node that had just become ACTIVE (a replicator copying
+ * from its own pod) while the real standby got nothing, and the next failure
+ * restored from a stale copy or restic.
  */
 export async function applyMailStandbyLabels(
   core: import('@kubernetes/client-node').CoreV1Api,

@@ -2613,19 +2613,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // port-exposure DB-level guard refuses for up to 24h). Runs
         // BEFORE the port-exposure / placement reconcilers so they see
         // the cleaned state.
+        // It reaps only rows whose owner is gone (no live liveness lease), so it
+        // also runs periodically: an owner that dies after this replica booted
+        // (the old pod of a rolling restart) is caught within the lease TTL.
         try {
-          const { reapMailTaskOrphansOnBoot } = await import(
+          const { reapMailTaskOrphans, MAIL_TASK_REAPER_INTERVAL_MS } = await import(
             './modules/mail-admin/orphan-reaper.js'
           );
-          const reaped = await reapMailTaskOrphansOnBoot(app.db);
-          if (reaped.tasksReaped > 0 || reaped.runsReaped > 0) {
-            app.log.warn(
-              { ...reaped },
-              'mail-task orphan reaper: cleared stale running rows on boot',
-            );
-          }
+          const reapOnce = async (when: string): Promise<void> => {
+            try {
+              const reaped = await reapMailTaskOrphans(app.db);
+              if (reaped.tasksReaped > 0 || reaped.runsReaped > 0) {
+                app.log.warn({ ...reaped }, `mail-task orphan reaper: cleared rows whose owner is gone (${when})`);
+              }
+            } catch (err) {
+              app.log.warn({ err }, `mail-task orphan reaper failed (${when}, non-fatal)`);
+            }
+          };
+          await reapOnce('boot');
+          const reaperTimer = setInterval(() => { void reapOnce('periodic'); }, MAIL_TASK_REAPER_INTERVAL_MS);
+          reaperTimer.unref?.();
+          app.addHook('onClose', () => clearInterval(reaperTimer));
         } catch (err) {
-          app.log.warn({ err }, 'mail-task orphan reaper failed on boot (non-fatal)');
+          app.log.warn({ err }, 'mail-task orphan reaper could not start (non-fatal)');
         }
 
         // Phase 2 streamline: on first install the DB default is

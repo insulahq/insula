@@ -53,6 +53,7 @@ import type { Database } from '../../db/index.js';
 // binding.
 import { parseQuantity } from './mail-pvc.js';
 import { readStalwartCredentials } from './credentials.js';
+import { withMailTaskLiveness } from './task-liveness.js';
 
 const MAIL_NAMESPACE = 'mail';
 const SETTINGS_ID = 'system';
@@ -308,8 +309,11 @@ export async function startMailMigration(
     }
   }
 
-  // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
-  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, effectiveOpts, taskId).catch(async (err) => {
+  // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId.
+  // The run and its task row count as in flight only while this process holds
+  // their liveness leases (task-liveness.ts) — held until the failure write
+  // below has landed too, so the orphan reaper never races it.
+  void withMailTaskLiveness(db, [runId, taskId], () => runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, effectiveOpts, taskId).catch(async (err) => {
     const isCancelled = err instanceof MigrationCancelledError;
     const errMsg = isCancelled
       ? `cancelled by operator at step '${err.cancelledAtStep}'`
@@ -328,7 +332,7 @@ export async function startMailMigration(
         });
       } catch { /* best-effort */ }
     }
-  });
+  }), deps.logger);
 
   return { runId, taskId };
 }
@@ -546,42 +550,48 @@ export async function triggerRestoreBasedFailover(
   // mailDrState='degraded' so the next tick retries.
   //
   // DR-mode flag: skip the on-demand snapshot (source unreachable).
-  try {
-    await runMigrationStateMachine(runId, sourceNode, targetNode, {
-      ...deps,
-      kubeconfigPath: deps.kubeconfigPath,
-      logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
-    } as MigrationDeps, undefined, { skipFreshSnapshot: true, abortOnApiLoss: true });
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    // Retried: if this write is lost the run stays 'running', which blocks
-    // every later failover attempt until a platform-api restart reaps it.
-    await withDbRetry(() => db.execute(sql`
-      UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
-      WHERE id = ${runId}
-    `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
-    throw err;
-  }
+  //
+  // The liveness lease (task-liveness.ts) keeps the run "in flight" for the
+  // orphan reaper until the outcome below is written — a replica booting
+  // mid-failover (the dead node's own replica, rescheduled) must not fail it.
+  await withMailTaskLiveness(db, [runId], async () => {
+    try {
+      await runMigrationStateMachine(runId, sourceNode, targetNode, {
+        ...deps,
+        kubeconfigPath: deps.kubeconfigPath,
+        logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
+      } as MigrationDeps, undefined, { skipFreshSnapshot: true, abortOnApiLoss: true });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      // Retried: if this write is lost the run stays 'running', which blocks
+      // every later failover attempt until a platform-api restart reaps it.
+      await withDbRetry(() => db.execute(sql`
+        UPDATE mail_migration_runs
+        SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
+        WHERE id = ${runId}
+      `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
+      throw err;
+    }
 
-  // Check the post-run state in DB to catch the `failRun + return`
-  // path that intermediate failures use. Without this check, a
-  // PVC-delete timeout silently returns from the state machine
-  // and execution falls through to the success-path stamp below.
-  const stateRows = await withDbRetry(() => db.execute(sql`
-    SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
-  `)) as { rows?: Array<{ state: string; error_message: string | null }> };
-  const stateRow = stateRows.rows?.[0];
-  if (stateRow && stateRow.state === 'failed') {
-    throw new Error(
-      `mail migration run ${runId} ended in 'failed' state: ${stateRow.error_message ?? 'no error message recorded'}`,
-    );
-  }
+    // Check the post-run state in DB to catch the `failRun + return`
+    // path that intermediate failures use. Without this check, a
+    // PVC-delete timeout silently returns from the state machine
+    // and execution falls through to the success-path stamp below.
+    const stateRows = await withDbRetry(() => db.execute(sql`
+      SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
+    `)) as { rows?: Array<{ state: string; error_message: string | null }> };
+    const stateRow = stateRows.rows?.[0];
+    if (stateRow && stateRow.state === 'failed') {
+      throw new Error(
+        `mail migration run ${runId} ended in 'failed' state: ${stateRow.error_message ?? 'no error message recorded'}`,
+      );
+    }
 
-  // Only reached on success — stamp the new active node + state.
-  await withDbRetry(() => db.update(systemSettings)
-    .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
-    .where(eq(systemSettings.id, SETTINGS_ID)));
+    // Only reached on success — stamp the new active node + state.
+    await withDbRetry(() => db.update(systemSettings)
+      .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
+      .where(eq(systemSettings.id, SETTINGS_ID)));
+  }, log);
 }
 
 // ── State machine internals ───────────────────────────────────────────────────
@@ -1998,26 +2008,14 @@ async function runMigrationStateMachine(
 }
 
 /**
- * Read the `mail_auto_rotate_on_migration` flag from platform_settings.
- * Default ON (true) when the key is absent — security-conservative
- * default: rotate password whenever mail relocates, because the most
- * common migration trigger is "node compromised / drained for security
- * reasons" and the rotated key blocks any leaked credential from being
- * usable on the new node.
- *
- * Operators can opt out by setting `mail_auto_rotate_on_migration = false`
- * (e.g., they pre-share the password to a monitoring tool that they
- * don't want to re-configure on every migration).
- */
-/**
  * Step 8a: re-derive the mail-standby labels for the node the stack now runs on.
- * Nothing else does it after a migration: the platform-api startup reconcile
- * skips while a migration is in flight, and Step 8b1's credential rotation
- * restarts platform-api inside exactly that window. A VM failover drill ended
- * with the label on the node that had just become active (its replicator copying
- * from its own pod) and none on the secondary, so the next failure would have
- * restored from a stale copy or restic. Non-fatal: the cutover already
- * succeeded, and the next platform-api start or placement save re-derives them.
+ * Nothing else did it after a migration: the labels were re-derived only at
+ * platform-api start-up (which skips while a migration is in flight) and on a
+ * placement save. A VM failover drill ended with the label on the node that had
+ * just become active (its replicator copying from its own pod) and none on the
+ * secondary, so the next failure would have restored from a stale copy or
+ * restic. Non-fatal: the cutover already succeeded, and the next platform-api
+ * start or placement save re-derives them.
  */
 export async function moveStandbyLabelsWithStack(
   deps: Pick<MigrationDeps, 'db' | 'core' | 'batch'>,
@@ -2044,6 +2042,18 @@ export async function moveStandbyLabelsWithStack(
   }
 }
 
+/**
+ * Read the `mail_auto_rotate_on_migration` flag from platform_settings.
+ * Default ON (true) when the key is absent — security-conservative
+ * default: rotate password whenever mail relocates, because the most
+ * common migration trigger is "node compromised / drained for security
+ * reasons" and the rotated key blocks any leaked credential from being
+ * usable on the new node.
+ *
+ * Operators can opt out by setting `mail_auto_rotate_on_migration = false`
+ * (e.g., they pre-share the password to a monitoring tool that they
+ * don't want to re-configure on every migration).
+ */
 async function readAutoRotateOnMigrationFlag(db: Database): Promise<boolean> {
   const [row] = await db
     .select({ value: platformSettings.value })

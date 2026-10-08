@@ -101,6 +101,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A platform restart no longer marks another replica's running mail migration as failed.** In a
+  multi-replica (HA) install, every platform-api replica that started up marked any mail migration
+  older than a minute as failed — including one still running on another replica. That happens on
+  every deploy, and during a DR failover itself: the replica the failed node took down restarts
+  elsewhere while the failover runs. The failover carried on, but its run read as failed, a second
+  migration could be started beside it, and the safeguards that wait for a running migration
+  stopped waiting. The replica running a migration (or a mail port-exposure change) now holds a
+  liveness lease on it, and the cleanup marks a run failed only when that lease has run out — also
+  checked every two minutes, so a run whose replica really died is no longer left "running" until
+  the next restart. A run without a lease (started by the previous release during the upgrade) is
+  given ten minutes before it counts as abandoned.
 - **The metrics store (vmsingle) no longer runs out of memory over time, on any cluster size.** It
   was killed at its memory limit twice in eight days. Part of its memory does not depend on load
   at all: it reserves an 8 MiB write buffer per CPU core of whatever node it runs on, doubles that
@@ -135,9 +146,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   than 90 minutes past due (Stalwart's own task lock lasts an hour) is now discarded and a fresh
   one placed; on that cluster the fresh order was issued in two seconds.
 - **After a mail failover or failback, the standby copy is kept on the right node.** The nodes that
-  stage a standby copy are re-chosen when the mail stack moves — but only at platform start-up or
-  when placement is saved, and the start-up pass waits out a running migration, which restarts the
-  platform itself mid-run. After a failover or failback the standby label therefore stayed on the
+  stage a standby copy were re-chosen only at platform start-up (which waits out a running
+  migration) or when placement is saved — never when a migration moved the stack. After a failover
+  or failback the standby label therefore stayed on the
   node that had just become active (copying from its own pod) while the real standby received
   nothing, so the next failure restored from an old copy or the last backup. A migration now
   re-chooses the standby nodes as soon as it has moved the stack.
