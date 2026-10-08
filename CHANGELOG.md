@@ -90,6 +90,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The metrics store (vmsingle) no longer runs out of memory over time, on any cluster size.** It
+  was killed at its memory limit twice in eight days. Part of its memory does not depend on load
+  at all: it reserves an 8 MiB write buffer per CPU core of whatever node it runs on, doubles that
+  when it lives across a month boundary, and its heap creeps upward with uptime alone (1.8–3.8 MiB
+  per day measured at constant load). `GOMAXPROCS=2` now fixes the per-core part at 16 MiB on every
+  node (it was 64 MiB on 8 cores, 256 MiB on 32), and a small sidecar restarts vmsingle gracefully
+  once a day — it flushes all data to disk first, so nothing stored is lost; the cost is one missed
+  scrape per day. The memory limit is unchanged. Both are configurable (`GOMAXPROCS`,
+  `RECYCLE_AT_UTC` or `off`); see `docs/operations/MONITORING_OBSERVABILITY.md` → Memory budget.
 - **Changing a custom container's port no longer fails with "An unexpected error occurred".**
   Saving the edit re-applied the deployment with a strategic merge, which keeps every list entry the
   new version leaves out: the old port number stayed beside the new one under the same name, and

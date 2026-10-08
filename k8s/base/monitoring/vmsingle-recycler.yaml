@@ -1,0 +1,87 @@
+# Daily graceful recycle of vmsingle — the `recycler` sidecar in vmsingle.yaml
+# runs this script.
+#
+# WHY: vmsingle's resident memory grows with UPTIME, independently of load.
+# Two mechanisms are known, more may exist; recycling bounds all of them by
+# the interval instead of by how long the process happens to live:
+#   - Write buffers are allocated per CPU shard PER MONTHLY PARTITION and
+#     kept until that partition ages out of retention, so a process that
+#     lives across a month boundary holds two sets (v1.148.0
+#     lib/storage/raw_row.go: 8 MiB per shard). Measured: +32.7 MiB at
+#     00:00 UTC on the 1st with 4 shards.
+#   - The live Go heap creeps upward at constant series count and constant
+#     scrape targets (measured 1.8-3.8 MiB/day, not yet attributed).
+# Without a ceiling on uptime, either one eventually meets the memory limit,
+# and the kill erases the unflushed tail of data that would explain it.
+#
+# HOW: SIGTERM to the vmsingle process. vmsingle shuts down gracefully on
+# SIGTERM — stops scraping, then vmstorage.Stop() flushes every in-memory
+# row to disk (partition.MustClose -> flushInmemoryRowsToFiles) — and exits
+# 0. The kubelet restarts the CONTAINER in place: same pod, same volume,
+# same node. Deleting the pod instead would start a second vmsingle against
+# the RWO volume before the first released the storage lock, and a
+# `kubectl rollout restart` is reverted by Flux.
+#
+# Cost: one scrape interval with no samples per day. Stored data is not lost.
+# The pod's restart counter rises by one per day; the container's last state
+# reads `Completed`, exit 0 — distinct from an OOM (137).
+#
+# CONFIGURE: RECYCLE_AT_UTC on the sidecar (vmsingle.yaml), "HH:MM" in UTC.
+# "off" (or empty) disables recycling; the sidecar then idles. Override it
+# with a kustomize patch in your overlay. Default 22:30 — before 23:00 UTC,
+# when vmsingle pre-builds the NEXT day's per-day index for every active
+# series (VictoriaMetrics days are UTC on every install), so that hour of
+# extra index work runs on a fresh process.
+#
+# The script NEVER exits on bad input: the pod has no readiness probe on this
+# container, but a crash-looping sidecar still churns restarts and logs. It
+# reports the problem and idles instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmsingle-recycler
+  namespace: monitoring
+  labels:
+    app: vmsingle
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  recycle.sh: |
+    #!/bin/sh
+    # Escaping note: this file is rendered by Flux postBuild substitution,
+    # which rewrites the braced form of shell variables. Use plain $VAR only.
+    # No `set -u`: an unset RECYCLE_AT_UTC must idle, not kill the sidecar.
+    PROC=victoria-metrics-prod
+    AT=$(printf '%s' "$RECYCLE_AT_UTC" | tr -d ' ')
+
+    idle() {
+      echo "recycler: $1 — not recycling"
+      while :; do sleep 86400; done
+    }
+
+    case "$AT" in
+      ''|off|OFF|Off) idle "RECYCLE_AT_UTC is off" ;;
+    esac
+    case "$AT" in
+      [0-1][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+      *) idle "RECYCLE_AT_UTC='$AT' is not HH:MM (00:00-23:59, UTC)" ;;
+    esac
+
+    echo "recycler: will recycle $PROC daily at $AT UTC"
+    while :; do
+      now=$(date -u +%s)
+      target=$(date -u -d "$(date -u +%Y-%m-%d) $AT" +%s) || idle "cannot parse '$AT'"
+      # Strictly in the future, with a minute of margin so a recycle that has
+      # just happened can never be scheduled again for the same minute.
+      while [ "$target" -le $((now + 60)) ]; do target=$((target + 86400)); done
+      echo "recycler: next recycle $(date -u -d "@$target" '+%Y-%m-%d %H:%M') UTC"
+      sleep $((target - now))
+
+      pid=$(pidof "$PROC" || true)
+      if [ -z "$pid" ]; then
+        echo "recycler: $PROC is not running — skipping this recycle"
+        continue
+      fi
+      echo "recycler: sending SIGTERM to $PROC (pid $pid); it flushes to disk and exits 0, the kubelet restarts it in place"
+      kill -TERM $pid || echo "recycler: kill failed for pid $pid"
+      sleep 120
+    done

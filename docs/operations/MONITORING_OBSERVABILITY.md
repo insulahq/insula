@@ -145,6 +145,59 @@ cluster until 2026-08-30.
 | VM caches | `-memory.allowedBytes=64MiB` | fastcache — anonymous mmap **outside** the Go heap |
 | Go runtime | `GOGC=40`, `GOMEMLIMIT=192Mi` | heap + runtime; cannot see the caches |
 | Ingest volume | `metric_relabel_configs` in `scrape-config.yaml` | series never stored at all |
+| CPU count | `GOMAXPROCS=2` | write buffers, which vmsingle sizes per CPU core |
+| Uptime | `recycler` sidecar, `RECYCLE_AT_UTC=22:30` | memory that grows with how long the process lives |
+
+### Two terms that do not depend on load
+
+Neither the cache flags nor `GOMEMLIMIT` see these, and both used to make the
+footprint differ between installs running the same workload.
+
+**Write buffers scale with the node's CPU count.** vmsingle keeps an 8 MiB
+buffer per CPU shard for each monthly partition it writes to, and keeps it
+until that partition ages out of retention (v1.148.0
+`lib/storage/raw_row.go`). The pod has no CPU limit, so the shard count was the
+node's core count: 64 MiB on 8 cores, 256 MiB on 32 — and twice that once the
+process lives across a month boundary. On DEV (4 cores) the heap floor stepped
+68 → 101 MiB at 00:00 UTC on the 1st. `GOMAXPROCS=2` makes it 16 MiB (32 across a
+boundary) everywhere; vmsingle honours an explicit `GOMAXPROCS`. Two cores are
+far more than this workload uses. Raise it in an overlay patch only if a very
+large cluster shows ingestion or query latency — each step costs 8 MiB per
+partition.
+
+**Some memory grows with uptime alone.** At constant series count and constant
+scrape targets, the live heap still rose 1.8–3.8 MiB/day (DEV over 7 days, and
+one production run over 17), not yet attributed to a structure. The `recycler`
+sidecar bounds it — and the month-boundary buffers, and whatever else
+accumulates — by restarting vmsingle gracefully once a day. It sends SIGTERM;
+vmsingle flushes every in-memory row to disk and exits 0, and the kubelet
+restarts the container in place (same pod, volume and node). The cost is one
+scrape interval without samples per day; stored data is kept. The pod's restart
+counter rises by one per day, with last state `Completed`, exit 0 — not an OOM.
+
+Configure it with `RECYCLE_AT_UTC` on the `recycler` container, `HH:MM` in UTC,
+or `off`:
+
+```yaml
+# overlay patch (strategic merge — containers and env merge by name)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: vmsingle, namespace: monitoring }
+spec:
+  template:
+    spec:
+      containers:
+        - name: recycler
+          env:
+            - name: RECYCLE_AT_UTC
+              value: "03:00"   # or "off"
+```
+
+The default 22:30 is chosen for every install, not one cluster: at 23:00 UTC
+vmsingle pre-builds the next day's per-day index entry for every active series,
+the heaviest index work of its day, and this way it runs on a fresh process.
+A bad value is reported in the sidecar's log and disables recycling; the sidecar
+never exits on its own.
 
 `GOMEMLIMIT` is **derived**, not chosen. It must leave room for everything in
 the cgroup that the Go runtime cannot see:
