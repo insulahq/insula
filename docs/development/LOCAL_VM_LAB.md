@@ -38,7 +38,7 @@ from where production is*.
 | `lab-svc` | 2 / 2 GB / 30 GB | always on, autostarts with the host |
 | `lab-runner` | 2 / 2 GB / 20 GB | on demand (integration suites, browser checks) |
 | `lab-dev-1` | 6 / 12 GB / 80 GB | always on, autostarts with the host |
-| `lab-stg-s1..s3` | 4 / 8 GB / 60 GB each | on for release and multi-node work, stopped otherwise |
+| `lab-stg-s1..s3` | 4 / 6 GB / 60 GB each | on for release and multi-node work, stopped otherwise |
 | `lab-stg-w1` | 4 / 8 GB / 40 GB | OS installed; joined and removed on demand |
 
 Fixed addresses come from DHCP host reservations in each network's definition, keyed on a MAC
@@ -177,8 +177,10 @@ creation and rewritten after any platform reinstall on the same VM.
 
 ## Capacity
 
-Host: 20 cores, 62 GB RAM, ~22 GB used by the host's own services. Always on: DEV + svc ≈ 14 GB
-(ceilings). Staging adds 24 GB (+8 worker, +2 runner) while it runs. Free-page reporting and KSM
+Host: 20 cores, 62 GB RAM. VMs hold their full allocation (guest page cache keeps it; free-page
+reporting only returns truly free pages — measured: DEV's qemu at 12.3 of 12 GB). Always on: DEV +
+svc = 14 GB. Staging adds 18 GB (3 × 6 GB; three 8 GB servers would have left ~3 GB free) while it
+runs; measured with everything up: 11.8 GB of the host still available. Free-page reporting and KSM
 return well below the ceilings in practice, but staging stays on-demand, and `lab.sh up stg`
 refuses to start when the host's available memory minus staging's ceilings would drop below the
 margin (default 8 GB).
@@ -187,7 +189,9 @@ margin (default 8 GB).
 
 1. A static route on the LAN router: `10.98.0.0/16 → <lab-host>`, with the router NATing it to the
    internet (most routers do for any routed internal subnet — the Phase 0 check proves it).
-2. Conditional forwarding of `<lab-apex>` on the LAN resolver to the svc address.
+2. Conditional forwarding of `<lab-apex>` on the LAN resolver to the svc address — an upstream
+   entry such as AdGuard's `[/<lab-apex>/]<svc-ip>`, NOT a DNS rewrite: a rewrite answers every lab
+   name with the svc address, while each cluster's names must reach that cluster.
 3. The lab CA root imported on the operator's devices (once; `lab.sh ca-root` prints it).
 
 ## Lifecycle — `scripts/vm-integration-tests/lab.sh`
@@ -214,8 +218,8 @@ lab's. `run.sh` stops older throw-away runs before it starts — it never touche
 | 0 | Routed networking through the LAN router; reachability from the operator's tooling | verified (lab → internet, tooling → lab); LAN-client check pending |
 | 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | done — services VM and DEV built and checked live |
 | 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | done for the install path — Flux running, all public certificates (incl. mail) from the lab CA; `bootstrap.sh --trust-ca` now seeds Stalwart's trust too |
-| 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | — |
-| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | — |
+| 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | done (smoke 46/0, browser, auto-deploy of a real push, mail TLS, backups, DNS) — soak running |
+| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | install done (3 servers: Ubuntu 24.04 / Debian 12 / Rocky 9 at v2026.10.6, smoke 46/0); worker join/leave and the first RC upgrade open |
 | 5 | Cutover: docs (ADR-053's DEV description, this tier's docs), retire the remote DEV server | — |
 
 ## Non-goals
