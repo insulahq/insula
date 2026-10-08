@@ -132,7 +132,9 @@ What this means for an install, whatever its size:
 Only an upstream change can fix this: Stalwart would need to lower the cutoff (RocksDB's
 default is 0.25) or make it configurable. Reported with a reproduction and measurements:
 [support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887).
-RocksDB itself is working on garbage-ratio-driven
+Upstream has answered that it is fixed in **v0.16.26** (not yet released on 2026-10-08).
+Insula will move to it once the release is out and the rewrite measured above is
+re-measured against it; until then the guidance on this page stands. RocksDB itself is working on garbage-ratio-driven
 blob GC ([facebook/rocksdb#15301](https://github.com/facebook/rocksdb/issues/15301)). Until
 then there is nothing to tune on the platform side: keep the headroom, and watch the two
 health checks.
