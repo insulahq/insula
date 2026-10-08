@@ -231,14 +231,14 @@ cleanup(){
   [ -n "$PROBE_PID" ] && kill "$PROBE_PID" 2>/dev/null
   ssh $SSH_OPTS "$ACTIVE_ADDR" 'systemctl start k3s' 2>&1 | head -1 || true
   # best-effort failback to primary if we're still on the standby
-  local onnode; onnode=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
+  local onnode; onnode=$(kc "get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
   if [ "$onnode" = "$STANDBY" ]; then
     echo "failing back $STANDBY → $ACTIVE (retry x3)"
     local a; for a in 1 2 3; do
       # only fire once the target is Ready
       [ "$(kc "get node $ACTIVE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'" 2>/dev/null)" = True ] || sleep 20
       AH -X POST "$API/admin/mail/failback" -H 'Content-Type: application/json' -d '{"confirm":true}' -o /dev/null
-      local b st; for b in $(seq 1 40); do st=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null); [ "$st" = "$ACTIVE" ] && break; sleep 10; done
+      local b st; for b in $(seq 1 40); do st=$(kc "get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null); [ "$st" = "$ACTIVE" ] && break; sleep 10; done
       [ "$st" = "$ACTIVE" ] && break
     done
   fi
@@ -343,7 +343,7 @@ while [ $(date +%s) -lt $END ]; do
   [ "$R" = done ] && break; sleep 5
 done
 [ "$ATTEMPTS" -gt 1 ] && metric "failover needed $ATTEMPTS attempts (earlier ones failed; dr-watcher retried)"
-sleep 5; NODE_NOW=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
+sleep 5; NODE_NOW=$(kc "get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
 [ "$NODE_NOW" = "$STANDBY" ] && ok "failover relocated stalwart → $STANDBY (attempt $ATTEMPTS)" || no "stalwart not on standby (on $NODE_NOW; latest run: $R after $ATTEMPTS attempt(s))"
 kill "$PROBE_PID" 2>/dev/null; PROBE_PID=""
 
@@ -420,7 +420,7 @@ for attempt in 1 2 3; do
   PODST=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].status.phase}@{.items[0].spec.nodeName}'" 2>/dev/null)
   echo "  failback attempt $attempt = ${S:-timeout} step=${STEP:-?} pod=${PODST:-?} err=${ERR:-?}; retrying"
 done
-NODE_FB=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
+NODE_FB=$(kc "get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
 [ "$NODE_FB" = "$ACTIVE" ] && ok "failback relocated stalwart → $ACTIVE" || no "failback did not return to $ACTIVE (on $NODE_FB)"
 wait_auth || no "master-auth did not heal post-failback"
 SUBS=$(jmap read "$ADDR")

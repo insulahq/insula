@@ -310,7 +310,7 @@ phase_B() {
   # Verify PVC bound on target + stalwart pod Running on target
   local pvc_node pod_node
   pvc_node=$(kubectl get pvc -n mail mail-stack-data -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}')
-  pod_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
+  pod_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}')
   if [ "$pvc_node" = "$to" ] && [ "$pod_node" = "$to" ]; then
     green "  PVC + pod both on $to: ✓"
   else
@@ -378,7 +378,7 @@ phase_C() {
   fi
   # Verify BOTH stalwart and bulwark on worker (they must co-locate on the PVC)
   local s_node b_node
-  s_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
+  s_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}')
   b_node=$(kubectl get pod -n mail -l app=bulwark -o jsonpath='{.items[0].spec.nodeName}')
   if [ "$s_node" = "$to" ] && [ "$b_node" = "$to" ]; then
     green "  stalwart + bulwark both on worker $to: ✓"
@@ -769,7 +769,7 @@ phase_H() {
   # Verify stalwart pod is Running on the standby candidate (NOT on original active)
   sleep 5
   local final_node
-  final_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+  final_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
   echo "  post-failover stalwart pod on: $final_node"
   ACTIVE_NODE=$final_node
   pass_phase H "DR failover completed — stalwart moved from (downed) original-active to $final_node"

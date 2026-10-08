@@ -190,9 +190,19 @@ fi
 [ "$ATTEMPTS" -gt 1 ] && amber "  METRIC: failover needed ${ATTEMPTS} attempts (earlier ones failed and were retried by the dr-watcher)"
 
 hdr "STEP 4: verify mail-stack pod on new active"
-sleep 5
-FINAL_NODE=$(run_kubectl "kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null" | head -1)
-echo "stalwart pod now on: $FINAL_NODE"
+# A Running pod, polled: "done" can precede the pod reaching Running, and an
+# empty read must never pass as "moved" (it is no mail at all).
+FINAL_NODE=""
+for _ in $(seq 1 24); do
+  FINAL_NODE=$(run_kubectl "kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null" | head -1)
+  [ -n "$FINAL_NODE" ] && break
+  sleep 5
+done
+echo "stalwart pod now on: ${FINAL_NODE:-<no Running pod>}"
+if [ -z "$FINAL_NODE" ]; then
+  red "FAIL: no Running stalwart pod 2 min after the failover reported done"
+  exit 1
+fi
 if [ "$FINAL_NODE" = "$ACTIVE_NODE" ]; then
   red "FAIL: stalwart still on (downed) active $ACTIVE_NODE — failover didn't move"
   exit 1
