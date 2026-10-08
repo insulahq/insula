@@ -393,10 +393,29 @@ export interface StalwartReconcileResult {
    * + module-local backoff/max-attempts. Counts as "acted" in noOp.
    */
   readonly acmeOrderForced: boolean;
+  /**
+   * True when this tick recycled the Stalwart pod (step 7b). An order Stalwart had
+   * in flight died with the old process; the scheduler runs one follow-up tick once
+   * that order counts as orphaned (followUpTickDelayMs) instead of waiting a full
+   * tick interval.
+   */
+  readonly stalwartRecycled: boolean;
   /** Free-form per-step notes for the UI. */
   readonly notes: ReadonlyArray<string>;
   /** True when no Stalwart state was changed this tick. */
   readonly noOp: boolean;
+}
+
+/**
+ * When to run an extra tick after this one, or null. After a Stalwart recycle the
+ * order the old process had in flight is orphaned (locked by the dead process); it
+ * counts as such once the new process has been up ORPHAN_GRACE_MS, and the next
+ * tick then replaces it. A full interval later is up to half an hour of mail on a
+ * self-signed certificate after every fresh install — one extra tick just past the
+ * grace closes that.
+ */
+export function followUpTickDelayMs(result: Pick<StalwartReconcileResult, 'stalwartRecycled'>): number | null {
+  return result.stalwartRecycled ? ORPHAN_GRACE_MS + 60_000 : null;
 }
 
 /** Start the reconciler. Returns a stop function for onClose. */
@@ -404,17 +423,28 @@ export function startStalwartDomainReconciler(
   deps: StalwartDomainReconcilerDeps,
 ): () => void {
   const tickMs = deps.tickMs ?? STALWART_DOMAIN_RECONCILER_TICK_MS;
+  let followUp: ReturnType<typeof setTimeout> | null = null;
   // One replica reconciles. The forced-ACME-order backoff is per process, so
   // three replicas could place three times MAX_FORCE_ATTEMPTS orders against
   // Let's Encrypt's per-domain weekly limit; the sticky lease keeps the
-  // backoff with the one replica that places them.
+  // backoff with the one replica that places them — the follow-up tick runs on
+  // that same replica, so it still holds the lease.
   const tick = (): void => {
     void withSchedulerLease(deps.db, 'stalwart-domain-reconciler', tickMs * 1.5, () => runStalwartDomainReconcilerTick(deps))
+      .then((outcome) => {
+        const delay = outcome.ran ? followUpTickDelayMs(outcome.value) : null;
+        if (delay !== null && followUp === null) {
+          followUp = setTimeout(() => { followUp = null; tick(); }, delay);
+        }
+      })
       .catch(() => undefined); // the tick never throws; a lease read failure skips this tick
   };
   tick(); // one tick immediately
   const timer = setInterval(tick, tickMs);
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    if (followUp) clearTimeout(followUp);
+  };
 }
 
 /**
@@ -450,6 +480,7 @@ export async function runStalwartDomainReconcilerTick(
       listenersCreated: [],
       acmeRenewalFired: false,
       acmeOrderForced: false,
+      stalwartRecycled: false,
       notes,
       noOp: true,
       ...overrides,
@@ -658,6 +689,7 @@ export async function runStalwartDomainReconcilerTick(
   //     Skipped when there is no real pod handle (podName null ⇒ tests
   //     inject a JMAP transport). Best-effort: a recycle failure is logged;
   //     the next tick re-creates/re-changes nothing and re-attempts the bind.
+  let stalwartRecycled = false;
   if (podName && (listenersCreated.some((n) => n.endsWith('-proxy')) || mtaAuthChanged)) {
     try {
       await recycleStalwartPods({
@@ -666,6 +698,7 @@ export async function runStalwartDomainReconcilerTick(
         labelSelector: 'app=stalwart-mail',
         gracePeriodSeconds: 15,
       });
+      stalwartRecycled = true;
       notes.push('recycled Stalwart once to bind newly-created PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
       log.info('Recycled Stalwart to bind newly-created dedicated PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
     } catch (err) {
@@ -790,6 +823,7 @@ export async function runStalwartDomainReconcilerTick(
     listenersCreated,
     acmeRenewalFired,
     acmeOrderForced,
+    stalwartRecycled,
     notes,
     noOp,
   };
@@ -1042,13 +1076,18 @@ const STALE_ACME_TASK_MS = 90 * 60 * 1000;
  * process was replaced (platform-api's first start recycles Stalwart to bind its
  * PROXY listeners, moments after the install queued the first order) the lock
  * outlives it and the task sits Pending until STALE_ACME_TASK_MS — measured: a
- * fresh lab install served a self-signed mail certificate for that long. A task
- * the new process found unlocked runs within one rescan (5 min) and finishes
- * within an ACME run (minutes), so past this grace a still-Pending task from
- * before the restart is held by a dead process's lock and cannot be one the live
- * process is running.
+ * fresh lab install served a self-signed mail certificate for that long.
+ *
+ * Measured on Stalwart 0.16.24 (lab, CA unreachable = the slowest run): a task
+ * stays "Pending" WHILE it executes, the run takes 230 s (three attempts, 32/64/128
+ * s apart) before turning "Retry", and x:Task/set destroy succeeds on a running
+ * task. So status cannot tell a running task from a stuck one, and destroying a
+ * running one would place a second order. A task the new process found unlocked
+ * starts within one rescan (5 min) and ends within ~4 min — by ~9 min of uptime.
+ * The grace is twice that: past it, a still-Pending task from before the restart
+ * is held by a dead process's lock and cannot be one the live process is running.
  */
-const ORPHAN_GRACE_MS = 10 * 60 * 1000;
+const ORPHAN_GRACE_MS = 20 * 60 * 1000;
 
 /** When a task was queued (`status.createdAt`, else top-level `createdAt`); null when unreadable. */
 function taskCreatedMs(task: Record<string, unknown>): number | null {

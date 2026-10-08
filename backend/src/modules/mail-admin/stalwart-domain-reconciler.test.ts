@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   runStalwartDomainReconcilerTick,
+  followUpTickDelayMs,
   issuerIsSelfSigned,
   __resetStalwartForceStateForTest,
   STALWART_DOMAIN_RECONCILER_TICK_MS,
@@ -984,6 +985,15 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
   // and does not run. Once the NEW process has been up longer than a rescan plus an
   // ACME run, such a task is orphaned: discard it and order afresh, instead of
   // waiting out the 90-minute bound with mail on a self-signed certificate.
+  it('schedules one follow-up tick just past the orphan grace after a Stalwart recycle', () => {
+    const delay = followUpTickDelayMs({ stalwartRecycled: true });
+    expect(delay).not.toBeNull();
+    // Past the grace (the orphan rule fires), still inside a 30-min interval.
+    expect(delay!).toBeGreaterThan(20 * 60_000);
+    expect(delay!).toBeLessThan(30 * 60_000);
+    expect(followUpTickDelayMs({ stalwartRecycled: false })).toBeNull();
+  });
+
   describe('orphaned by a Stalwart restart', () => {
     const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
     const orphanTask = (state: string, createdMinutesAgo: number) => ({
@@ -1007,33 +1017,33 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
     };
 
     it('discards a Pending task the previous process created, then orders afresh', async () => {
-      const { result, calls } = await tick([orphanTask('Pending', 25)], 20);
+      const { result, calls } = await tick([orphanTask('Pending', 30)], 25);
       expect(result.acmeRenewalFired).toBe(true);
       expect(calls.filter((c) => c.method === 'x:Task/set').map((c) => c.args.destroy ?? 'create'))
         .toEqual([['orphan1'], 'create']);
       expect(result.notes.find((n) => /orphaned by a Stalwart restart/.test(n))).toBeDefined();
     });
 
-    it('waits while the new process may still pick it up (up less than a rescan + an ACME run)', async () => {
-      const { result, calls } = await tick([orphanTask('Pending', 8)], 5);
+    it('waits while the new process may still be running it (up less than twice a rescan + an ACME run)', async () => {
+      const { result, calls } = await tick([orphanTask('Pending', 16)], 15);
       expect(result.acmeRenewalFired).toBe(false);
       expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     });
 
     it('defers to a task the running process created', async () => {
-      const { result, calls } = await tick([orphanTask('Pending', 15)], 30);
+      const { result, calls } = await tick([orphanTask('Pending', 15)], 40);
       expect(result.acmeRenewalFired).toBe(false);
       expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     });
 
     it('leaves a Retry alone — it waits for its due, it is not held by a lock', async () => {
-      const { result, calls } = await tick([{ ...orphanTask('Retry', 25), due: new Date(Date.now() + 3600_000).toISOString() }], 20);
+      const { result, calls } = await tick([{ ...orphanTask('Retry', 30), due: new Date(Date.now() + 3600_000).toISOString() }], 25);
       expect(result.acmeRenewalFired).toBe(false);
       expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     });
 
     it('without a known start time it keeps the 90-minute rule', async () => {
-      const { result, calls } = await tick([orphanTask('Pending', 25)], null);
+      const { result, calls } = await tick([orphanTask('Pending', 30)], null);
       expect(result.acmeRenewalFired).toBe(false);
       expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     });
