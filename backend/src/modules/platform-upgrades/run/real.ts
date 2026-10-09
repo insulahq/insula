@@ -13,7 +13,8 @@ import { dbSettings, runUpgrade } from '../orchestrate.js';
 import { captureUpgradeRescue, realRollbackDeps } from '../rollback.js';
 import { readHostMigrationStatus } from '../host-migration-status.js';
 import { buildNodePlan, NODE_PLAN_KINDS, type NodePlanKind } from './node-plan.js';
-import { applyNodePlan, deleteNodePlan, listNodeFacts, listPlanJobs } from './k8s.js';
+import { applyNodePlan, deleteNodePlan, deletePlanNamed, listJobsForPlans, listNodeFacts, listPlanJobs, planExists } from './k8s.js';
+import { K3S_PLAN_NAMES, buildRunK3sPlans, lowestKubelet } from './k8s-step.js';
 import { updateRun, createRun, getActiveRun, transitionRun, type NewRunInput } from './store.js';
 import { ApiError } from '../../../shared/errors.js';
 import type { RunMachineDeps } from './machine.js';
@@ -87,6 +88,25 @@ export function realRunMachineDeps(db: Database, k8s: K8sClients, run: PlatformU
     },
     progress: (pct, text) => progressByRef(db, 'platform.upgrade', run.toVersion, { pct, text: toSafeText(text) })
       .catch(() => { /* best-effort */ }),
+    applyKubernetesPlans: async () => {
+      if (!run.kubernetesVersion) return { ok: false, reason: 'no Kubernetes target' };
+      const excluded = run.excludedNodes ?? [];
+      const current = lowestKubelet((await listNodeFacts(k8s)).filter((n) => !excluded.includes(n.name)));
+      if (!current) return { ok: false, reason: 'the nodes\' Kubernetes version could not be read' };
+      const built = buildRunK3sPlans(run.kubernetesVersion, current, excluded);
+      if (!built.ok) return { ok: false, reason: built.reason };
+      try {
+        for (const plan of built.plans) await applyNodePlan(k8s, plan);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message.split('\n')[0]?.slice(0, 200) };
+      }
+    },
+    deleteKubernetesPlans: async () => {
+      for (const name of K3S_PLAN_NAMES) await deletePlanNamed(k8s, name);
+    },
+    kubernetesJobs: (sinceMs) => listJobsForPlans(k8s, K3S_PLAN_NAMES, sinceMs),
+    kubernetesPlansExist: async () => (await Promise.all(K3S_PLAN_NAMES.map((n) => planExists(k8s, n)))).every(Boolean),
   };
 }
 
@@ -153,6 +173,13 @@ async function endRun(
   if (!(await transitionRun(db, run.id, fromStep, { status, message, finishedAt }))) return null;
   for (const kind of NODE_PLAN_KINDS) {
     await deleteNodePlan(k8s, kind).catch((err) => console.error(`[upgrade-run] could not delete the ${kind} plan:`, (err as Error).message));
+  }
+  // The k3s Plans share their names with `insula cluster upgrade` — only a run in
+  // its own Kubernetes step owns them.
+  if (run.step === 'upgrade-kubernetes' && run.kubernetesVersion) {
+    for (const name of K3S_PLAN_NAMES) {
+      await deletePlanNamed(k8s, name).catch((err) => console.error(`[upgrade-run] could not delete ${name}:`, (err as Error).message));
+    }
   }
   await realRunMachineDeps(db, k8s, run).finalize('cancelled', message);
   return { ...run, status, message, finishedAt };

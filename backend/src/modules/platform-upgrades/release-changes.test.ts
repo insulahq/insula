@@ -62,4 +62,12 @@ describe('computeUpgradeChanges', () => {
     expect(r.known).toBe(false);
     expect(r.hostChanges).toEqual([]);
   });
+
+  it('offers the Kubernetes step from the release\'s k3s pin and the lowest kubelet', () => {
+    const r = computeUpgradeChanges(input({ contents: { ...contents, k3sVersion: 'v1.36.5+k3s1' }, kubelet: 'v1.36.2+k3s1' }));
+    expect(r.kubernetes).toEqual({ current: 'v1.36.2+k3s1', target: 'v1.36.5+k3s1', offer: true, reason: null });
+    const none = computeUpgradeChanges(input({ kubelet: 'v1.36.2+k3s1' }));
+    expect(none.kubernetes).toEqual({ current: 'v1.36.2+k3s1', target: null, offer: false, reason: null });
+  });
 });
+

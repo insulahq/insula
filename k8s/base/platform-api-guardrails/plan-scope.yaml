@@ -1,4 +1,5 @@
-# What node Plans platform-api may write (ADR-064).
+# What Plans platform-api may write (ADR-064) — the node Plans of an upgrade run
+# and, for its opt-in Kubernetes step (§8), the k3s Plans.
 #
 # An upgrade run pushes the release to every node through the
 # system-upgrade-controller, which runs each Plan as a PRIVILEGED, hostPID job on
@@ -20,8 +21,11 @@
 # override; one node at a time, tolerating every taint, selected only by OS and
 # by excluded hostnames.
 #
-# Plans for k3s upgrades are created host-side by `insula cluster upgrade` with
-# the node's admin kubeconfig, not by platform-api, and are not affected.
+# The k3s Plans (k3s-server-upgrade / k3s-agent-upgrade) are written by platform-api
+# only for a run's opt-in Kubernetes step (§8), in exactly the shape the CLI's
+# builder produces: the rancher/k3s-upgrade image at a k3s version, its own
+# command, cordoned; agents drained after the servers. `insula cluster upgrade`
+# writes the same Plans with the node's admin kubeconfig and is not affected.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -42,7 +46,13 @@ spec:
   variables:
     - name: isDelete
       expression: "request.operation == 'DELETE'"
-    # The one argument each Plan may carry (raw strings: no escape processing).
+    - name: isNodePlan
+      expression: "request.name in ['insula-node-update', 'insula-node-finish']"
+    # ADR-064 §8: the opt-in Kubernetes step writes the k3s Plans `insula cluster
+    # upgrade` writes (same names, same shape — run/k8s-step.ts reuses its builder).
+    - name: isK3sPlan
+      expression: "request.name in ['k3s-server-upgrade', 'k3s-agent-upgrade']"
+    # The one argument each node Plan may carry (raw strings: no escape processing).
     - name: updateArg
       expression: >-
         r"^exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '/usr/local/bin/insula self-upgrade --version [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]{1,40})? && /usr/bin/env systemctl start platform-ops-host-config\.service'$"
@@ -53,12 +63,17 @@ spec:
     - name: versionRe
       expression: >-
         r"^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]{1,40})?-run\.[0-9a-f]{12}$"
+    # A k3s release; the controller appends it as the tag of the name-only k3s-upgrade image.
+    - name: k3sVersionRe
+      expression: >-
+        r"^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$"
   validations:
-    - expression: "request.namespace == 'system-upgrade' && request.name in ['insula-node-update', 'insula-node-finish']"
-      message: "platform-api may only write the insula-node-update / insula-node-finish Plans in system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
+    - expression: "request.namespace == 'system-upgrade' && (variables.isNodePlan || variables.isK3sPlan)"
+      message: "platform-api may only write the insula-node-update / insula-node-finish Plans and the k3s-server-upgrade / k3s-agent-upgrade Plans in system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
       reason: Forbidden
+    # ── node Plans ──
     - expression: >-
-        variables.isDelete ||
+        variables.isDelete || !variables.isNodePlan ||
         (object.spec.upgrade.image.matches(r"^ghcr\.io/insulahq/insula/node-terminal(:[A-Za-z0-9._-]{1,128}(@sha256:[a-f0-9]{64})?|@sha256:[a-f0-9]{64})$") &&
           has(object.spec.version) && object.spec.version.matches(variables.versionRe) &&
           has(object.spec.upgrade.command) && object.spec.upgrade.command == ['/bin/sh', '-c'] &&
@@ -67,31 +82,65 @@ spec:
       message: "a node Plan must run the platform's node-terminal image (tag or digest) with the fixed node-update command and a run version (ValidatingAdmissionPolicy platform-api-plan-scope)"
       reason: Forbidden
     - expression: >-
-        variables.isDelete ||
-        (!has(object.spec.upgrade.envs) && !has(object.spec.upgrade.envFrom) && !has(object.spec.upgrade.volumes) &&
-          !has(object.spec.upgrade.securityContext) &&
-          !has(object.spec.prepare) && !has(object.spec.drain) && !has(object.spec.channel) &&
-          (!has(object.spec.secrets) || size(object.spec.secrets) == 0) &&
-          (!has(object.spec.imagePullSecrets) || size(object.spec.imagePullSecrets) == 0) &&
-          !has(object.spec.postCompleteLabels) && !has(object.spec.postCompleteDelay) &&
-          !has(object.spec.priorityClassName) && !has(object.spec.window) &&
-          !has(object.spec.jobActiveDeadlineSecs) &&
-          (!has(object.spec.exclusive) || !object.spec.exclusive) &&
+        variables.isDelete || !variables.isNodePlan ||
+        (!has(object.spec.prepare) && !has(object.spec.drain) &&
           (!has(object.spec.cordon) || !object.spec.cordon) &&
-          has(object.spec.concurrency) && object.spec.concurrency == 1 &&
-          has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'system-upgrade')
-      message: "a node Plan may not add a prepare/drain step, a channel, secrets, pull secrets, volumes, env, a security context, node labels, a priority, a window or a deadline, and runs one node at a time as system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
-      reason: Forbidden
-    - expression: >-
-        variables.isDelete ||
-        (has(object.spec.tolerations) && object.spec.tolerations == [{'operator': 'Exists'}] &&
+          has(object.spec.tolerations) && object.spec.tolerations == [{'operator': 'Exists'}] &&
           has(object.spec.nodeSelector) && !has(object.spec.nodeSelector.matchLabels) &&
           has(object.spec.nodeSelector.matchExpressions) &&
           object.spec.nodeSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/os' && e.operator == 'In' && e.values == ['linux']) &&
           object.spec.nodeSelector.matchExpressions.all(e,
             (e.key == 'kubernetes.io/os' && e.operator == 'In' && e.values == ['linux']) ||
             (e.key == 'kubernetes.io/hostname' && e.operator == 'NotIn')))
-      message: "a node Plan selects every Linux node except excluded hostnames, tolerating every taint (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      message: "a node Plan has no prepare/drain/cordon step and selects every Linux node except excluded hostnames, tolerating every taint (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+    # ── k3s Plans ──
+    - expression: >-
+        variables.isDelete || !variables.isK3sPlan ||
+        (object.spec.upgrade.image == 'rancher/k3s-upgrade' &&
+          has(object.spec.version) && object.spec.version.matches(variables.k3sVersionRe) &&
+          !has(object.spec.upgrade.command) && !has(object.spec.upgrade.args) &&
+          has(object.spec.cordon) && object.spec.cordon &&
+          !has(object.spec.tolerations) &&
+          has(object.spec.nodeSelector) && !has(object.spec.nodeSelector.matchLabels) &&
+          has(object.spec.nodeSelector.matchExpressions) &&
+          (request.name == 'k3s-server-upgrade'
+            ? (!has(object.spec.drain) && !has(object.spec.prepare) &&
+               object.spec.nodeSelector.matchExpressions.exists(e, e.key == 'node-role.kubernetes.io/control-plane' && e.operator == 'In' && e.values == ['true']) &&
+               object.spec.nodeSelector.matchExpressions.all(e,
+                 (e.key == 'node-role.kubernetes.io/control-plane' && e.operator == 'In' && e.values == ['true']) ||
+                 (e.key == 'kubernetes.io/hostname' && e.operator == 'NotIn')))
+            : (has(object.spec.drain) &&
+               has(object.spec.drain.force) && object.spec.drain.force &&
+               has(object.spec.drain.skipWaitForDeleteTimeout) && object.spec.drain.skipWaitForDeleteTimeout == 60 &&
+               !has(object.spec.drain.podSelector) && !has(object.spec.drain.timeout) &&
+               !has(object.spec.drain.gracePeriod) && !has(object.spec.drain.disableEviction) &&
+               !has(object.spec.drain.ignoreDaemonSets) && !has(object.spec.drain.deleteEmptydirData) &&
+               !has(object.spec.drain.deleteLocalData) &&
+               has(object.spec.prepare) && object.spec.prepare.image == 'rancher/k3s-upgrade' &&
+               has(object.spec.prepare.args) && object.spec.prepare.args == ['prepare', 'k3s-server-upgrade'] &&
+               !has(object.spec.prepare.command) && !has(object.spec.prepare.envs) && !has(object.spec.prepare.envFrom) &&
+               !has(object.spec.prepare.volumes) && !has(object.spec.prepare.securityContext) &&
+               object.spec.nodeSelector.matchExpressions.exists(e, e.key == 'node-role.kubernetes.io/control-plane' && e.operator == 'DoesNotExist') &&
+               object.spec.nodeSelector.matchExpressions.all(e,
+                 (e.key == 'node-role.kubernetes.io/control-plane' && e.operator == 'DoesNotExist') ||
+                 (e.key == 'kubernetes.io/hostname' && e.operator == 'NotIn')))))
+      message: "a k3s Plan runs rancher/k3s-upgrade at a k3s version with its own command, cordoned; servers by control-plane role without drain/prepare, agents drained exactly as the builder drains them (force, 60 s) after the servers (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+    # ── every Plan ──
+    - expression: >-
+        variables.isDelete ||
+        (!has(object.spec.upgrade.envs) && !has(object.spec.upgrade.envFrom) && !has(object.spec.upgrade.volumes) &&
+          !has(object.spec.upgrade.securityContext) && !has(object.spec.channel) &&
+          (!has(object.spec.secrets) || size(object.spec.secrets) == 0) &&
+          (!has(object.spec.imagePullSecrets) || size(object.spec.imagePullSecrets) == 0) &&
+          !has(object.spec.postCompleteLabels) && !has(object.spec.postCompleteDelay) &&
+          !has(object.spec.priorityClassName) && !has(object.spec.window) &&
+          !has(object.spec.jobActiveDeadlineSecs) &&
+          (!has(object.spec.exclusive) || !object.spec.exclusive) &&
+          has(object.spec.concurrency) && object.spec.concurrency == 1 &&
+          has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'system-upgrade')
+      message: "a Plan may not add a channel, secrets, pull secrets, volumes, env, a security context, node labels, a priority, a window or a deadline, and runs one node at a time as system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

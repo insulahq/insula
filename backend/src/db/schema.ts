@@ -4696,7 +4696,9 @@ export const platformUpgradeRuns = pgTable('platform_upgrade_runs', {
   toVersion: text('to_version').notNull(),
   mode: text('mode').notNull().default('manual'), // manual | auto
   status: text('status').notNull().default('running'), // running | succeeded | failed | cancelled | rolled-back
-  step: text('step').notNull().default('prepare-nodes'), // prepare-nodes | update-services | finish | done
+  step: text('step').notNull().default('prepare-nodes'), // prepare-nodes | update-services | finish | upgrade-kubernetes | done
+  /** ADR-064 §8: the k3s version the opt-in Kubernetes step takes the cluster to (null = no such step). */
+  kubernetesVersion: text('kubernetes_version'),
   excludedNodes: jsonb('excluded_nodes').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   nodes: jsonb('nodes').$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   message: text('message'),

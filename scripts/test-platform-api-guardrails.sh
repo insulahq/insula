@@ -266,6 +266,50 @@ else
     plan_with PLAN_SELECTOR="{ matchLabels: { kubernetes.io/hostname: $NODE } }" insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
   expect denied  "update Plan with narrowed tolerations" \
     plan_with PLAN_TOLERATIONS="[{ key: x, operator: Exists }]" insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
+
+  # ADR-064 §8 — the Kubernetes step's k3s Plans, in the builder's exact shape.
+  DEFAULT_K3S_UPGRADE='{ image: "rancher/k3s-upgrade" }'
+  k3s_plan() {  # k3s_plan <name> [extra spec lines] — PLAN_K3S_* override parts
+    local sel upgrade
+    upgrade="${PLAN_K3S_UPGRADE:-$DEFAULT_K3S_UPGRADE}"
+    if [[ "$1" == k3s-server-upgrade ]]; then
+      sel='{ matchExpressions: [{ key: node-role.kubernetes.io/control-plane, operator: In, values: ["true"] }, { key: kubernetes.io/hostname, operator: NotIn, values: [gone-1] }] }'
+    else
+      sel='{ matchExpressions: [{ key: node-role.kubernetes.io/control-plane, operator: DoesNotExist }] }'
+    fi
+    as_dry create -f - <<YAML
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata: { name: $1, namespace: system-upgrade }
+spec:
+  concurrency: 1
+  cordon: true
+  serviceAccountName: system-upgrade
+  version: ${PLAN_K3S_VERSION:-v1.36.5+k3s1}
+  nodeSelector: ${PLAN_K3S_SELECTOR:-$sel}
+  upgrade: $upgrade
+${2:-}
+YAML
+  }
+  k3s_plan_with() { local kv="$1"; shift; ( export "${kv?}"; k3s_plan "$@" ); }
+  AGENT_EXTRA=$'  drain: { force: true, skipWaitForDeleteTimeout: 60 }\n  prepare: { image: rancher/k3s-upgrade, args: [prepare, k3s-server-upgrade] }'
+  expect created "k3s-server-upgrade in the builder's shape" k3s_plan k3s-server-upgrade
+  expect created "k3s-agent-upgrade in the builder's shape" k3s_plan k3s-agent-upgrade "$AGENT_EXTRA"
+  expect denied  "k3s Plan with another image" k3s_plan_with PLAN_K3S_UPGRADE='{ image: "busybox:1.36" }' k3s-server-upgrade
+  expect denied  "k3s Plan with a free-form version" k3s_plan_with PLAN_K3S_VERSION=latest k3s-server-upgrade
+  expect denied  "k3s server Plan with a command" \
+    k3s_plan_with PLAN_K3S_UPGRADE='{ image: "rancher/k3s-upgrade", command: [/bin/sh], args: [-c, id] }' k3s-server-upgrade
+  expect denied  "k3s agent Plan with another prepare step" k3s_plan k3s-agent-upgrade \
+    $'  drain: { force: true, skipWaitForDeleteTimeout: 60 }\n  prepare: { image: rancher/k3s-upgrade, args: [sh, -c, id] }'
+  # The drain is pinned whole: every other DrainSpec field could turn the agent
+  # pass into an ungraceful, PDB-ignoring eviction of every tenant pod.
+  K3S_PREP=$'\n  prepare: { image: rancher/k3s-upgrade, args: [prepare, k3s-server-upgrade] }'
+  for d in 'disableEviction: true' 'deleteEmptydirData: true' 'gracePeriod: 0' 'ignoreDaemonSets: true' 'timeout: 1' 'deleteLocalData: true' 'podSelector: { matchLabels: { app: x } }'; do
+    expect denied "k3s agent Plan draining with $d" k3s_plan k3s-agent-upgrade "  drain: { force: true, skipWaitForDeleteTimeout: 60, $d }$K3S_PREP"
+  done
+  expect denied  "k3s agent Plan with another drain timeout" k3s_plan k3s-agent-upgrade "  drain: { force: true, skipWaitForDeleteTimeout: 0 }$K3S_PREP"
+  expect denied  "k3s server Plan selecting one node by name" \
+    k3s_plan_with PLAN_K3S_SELECTOR="{ matchLabels: { kubernetes.io/hostname: $NODE } }" k3s-server-upgrade
 fi
 
 total=$((pass + failed))

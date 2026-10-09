@@ -26,7 +26,7 @@ platform-ops <command> [args]
 | `version [--json]` | Installed / running / available platform version |
 | `cluster status` | Node + control-plane health at a glance |
 | `cluster diagnostics` | Best-effort support bundle (nodes, pods, events, flux) |
-| `cluster upgrade --version vX.Y.Z+k3sN [--apply]` | Generate k3s upgrade plans; dry-run by default, `--apply` rolls the nodes. Skipping a k3s minor is refused |
+| `cluster upgrade --version vX.Y.Z+k3sN [--apply]` | Generate k3s upgrade plans; dry-run by default, `--apply` rolls the nodes. Skipping a k3s minor is refused. For a one-hop upgrade prefer the upgrade review's **Also upgrade Kubernetes** step, and never run this while an upgrade run is in its Kubernetes step: both write the same `k3s-server-upgrade` / `k3s-agent-upgrade` Plans |
 | `node cordon\|uncordon <name>` | Node maintenance without the panel |
 | `upgrade [--version X.Y.Z] [--apply] [--exclude-node N]… [--direct]` | Plan or start a **platform** upgrade. The dry-run prints the plan and the pre-flight; `--apply` runs the same pre-flight and starts the same run as the admin panel (every node first, then the services). `--exclude-node` upgrades without a node that is down. `--direct` is break-glass for when platform-api is down: it re-pins the services only, and the nodes catch up on their hourly check |
 | `upgrade --status` | Show the upgrade run in flight, or the last one, with each node's state |
@@ -51,6 +51,24 @@ platform-ops <command> [args]
     `rollback`, `dr restore`, `dr rescue`, and `snapshot capture` are designed
     to function when platform-api is unavailable — they are your recovery
     toolkit. `dr verify` even works with the **whole cluster** down.
+
+### Commands that read the platform database
+
+`upgrade`, `upgrade --status`, `rollback` and `migrations list|apply` read the
+platform database, so they need `DATABASE_URL`. On a server node, forward the
+database's read-write service and take the URL from the platform's own secret:
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+k3s kubectl -n platform port-forward svc/system-db-rw 15432:5432 >/dev/null 2>&1 &
+export DATABASE_URL="$(k3s kubectl -n platform get secret platform-db-credentials \
+  -o jsonpath='{.data.url}' | base64 -d | sed -E 's#@[^/]+/#@127.0.0.1:15432/#')"
+insula upgrade --status
+```
+
+Without it `migrations list` falls back to the registry compiled into the binary
+(applied state unknown), and the other commands stop with `NO_DATABASE_URL`.
+Stop the port-forward (`kill %1`) when you are done.
 
 See the [updates & releases](../operator/updates-and-releases.md) and
 [system backups & DR](../operator/system-backups-dr.md) guides for the

@@ -11,6 +11,8 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { dbSettings } from './orchestrate.js';
 import { listMigrationStatus } from './index.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
+import { listNodeFacts } from './run/k8s.js';
+import { kubernetesOffer, lowestKubelet } from './run/k8s-step.js';
 
 /** A node has this host change behind it — run, already present, or skipped by an operator. */
 const DONE = new Set(['applied', 'already-applied', 'skipped']);
@@ -19,6 +21,8 @@ export interface ChangesInput {
   readonly fromVersion: string | null;
   readonly toVersion: string | null;
   readonly contents: ReleaseContents | null;
+  /** The cluster's lowest kubelet (k3s) version, for the opt-in Kubernetes step. */
+  readonly kubelet?: string | null;
   readonly sqlApplied: ReadonlySet<string>;
   readonly platformApplied: ReadonlySet<string>;
   readonly nodes: readonly HostMigrationNodeStatus[];
@@ -31,7 +35,9 @@ export interface ChangesInput {
  * is listed apart: unknown is not "nothing to do".
  */
 export function computeUpgradeChanges(input: ChangesInput): UpgradeChangesResponse {
-  const base = { fromVersion: input.fromVersion, toVersion: input.toVersion };
+  const target = input.contents?.k3sVersion ?? null;
+  const kubernetes = { current: input.kubelet ?? null, target, ...kubernetesOffer(input.kubelet ?? null, target) };
+  const base = { fromVersion: input.fromVersion, toVersion: input.toVersion, kubernetes };
   if (!input.contents) {
     return { ...base, known: false, databaseMigrations: 0, platformMigrations: 0, hostChanges: [], unreportedNodes: [] };
   }
@@ -61,17 +67,24 @@ function parseContents(raw: string | null): ReleaseContents | null {
   }
 }
 
-export async function readUpgradeChanges(db: Database, k8s: K8sClients, runningVersion: string | null): Promise<UpgradeChangesResponse> {
+export async function readUpgradeChanges(
+  db: Database,
+  k8s: K8sClients,
+  runningVersion: string | null,
+  /** Nodes the operator leaves out: not judged for the Kubernetes offer. */
+  excluded: readonly string[] = [],
+): Promise<UpgradeChangesResponse> {
   const settings = dbSettings(db);
   const [available, installed, rawContents] = await Promise.all([
     settings.get('available_version'),
     settings.get('installed_platform_version'),
     settings.get('available_release_contents'),
   ]);
-  const [ledger, platform, hosts] = await Promise.all([
+  const [ledger, platform, hosts, nodes] = await Promise.all([
     db.execute(sql`SELECT filename FROM public.__platform_migrations`) as Promise<{ rows?: Array<{ filename: string }> }>,
     listMigrationStatus(db),
     readHostMigrationStatus(k8s, runningVersion),
+    listNodeFacts(k8s).catch(() => []),
   ]);
   const rows = ledger.rows ?? [];
   return computeUpgradeChanges({
@@ -81,5 +94,6 @@ export async function readUpgradeChanges(db: Database, k8s: K8sClients, runningV
     sqlApplied: new Set(rows.map((r) => r.filename)),
     platformApplied: new Set(platform.filter((m) => m.status !== 'pending').map((m) => m.id)),
     nodes: hosts.nodes,
+    kubelet: lowestKubelet(nodes.filter((n) => !excluded.includes(n.name))),
   });
 }

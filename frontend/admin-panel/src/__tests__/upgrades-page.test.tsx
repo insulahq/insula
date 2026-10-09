@@ -310,3 +310,26 @@ describe('UpgradesPage — a refused Approve says so by the buttons', () => {
   });
 });
 
+describe('UpgradesPage — the opt-in Kubernetes step (ADR-064 §8)', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; applyMutate.mockClear(); });
+  const base = { fromVersion: '2026.6.2', toVersion: '2026.7.0', known: true, databaseMigrations: 0, platformMigrations: 0, hostChanges: [], unreportedNodes: [] };
+
+  it('offered for the release\'s safe hop; ticking it carries upgradeKubernetes into the apply', async () => {
+    changes = { ...base, kubernetes: { current: 'v1.36.2+k3s1', target: 'v1.36.5+k3s1', offer: true, reason: null } };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-kubernetes-option')).toHaveTextContent(/Also upgrade Kubernetes v1\.36\.2\+k3s1 → v1\.36\.5\+k3s1/);
+    fireEvent.click(screen.getByTestId('upgrade-kubernetes-toggle'));
+    const approve = screen.getByTestId('approve-upgrade-btn');
+    await vi.waitFor(() => expect(approve).toBeEnabled());
+    fireEvent.click(approve);
+    await vi.waitFor(() => expect(applyMutate).toHaveBeenCalledWith(expect.objectContaining({ apply: true, upgradeKubernetes: true })));
+  });
+
+  it('not offered → no option, and the reason when there is one', async () => {
+    changes = { ...base, kubernetes: { current: 'v1.34.1+k3s1', target: 'v1.36.5+k3s1', offer: false, reason: 'skips a minor version' } };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-kubernetes-unavailable')).toHaveTextContent(/skips a minor version/);
+    expect(screen.queryByTestId('upgrade-kubernetes-option')).toBeNull();
+  });
+});
+

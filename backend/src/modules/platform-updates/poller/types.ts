@@ -31,6 +31,8 @@ export interface ReleaseManifest {
   /** ADR-064 §6: what the release brings — validated against releaseContentsSchema before use. */
   readonly hostMigrations?: unknown;
   readonly migrations?: unknown;
+  /** ADR-064 §8: { k3s: "v1.36.5+k3s1" } — the release's k3s pin. */
+  readonly kubernetes?: unknown;
 }
 
 /**
