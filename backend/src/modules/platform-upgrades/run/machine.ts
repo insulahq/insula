@@ -103,6 +103,21 @@ async function nodeView(run: PlatformUpgradeRunRow, deps: RunMachineDeps, step: 
   return { view, included, ready: included.filter((v) => v.state === 'ready'), failed: included.filter((v) => v.state === 'failed') };
 }
 
+/**
+ * The node rows for a step about to start, written with the claim of that step —
+ * so its first tick does not show the previous step's verdicts (every node
+ * "Ready", "4/4") as if they were this step's.
+ */
+async function enteringView(run: PlatformUpgradeRunRow, deps: RunMachineDeps, step: 'finish' | 'upgrade-kubernetes'): Promise<Array<Record<string, unknown>>> {
+  const excluded = run.excludedNodes ?? [];
+  if (step === 'upgrade-kubernetes') {
+    const nodes = await deps.nodes();
+    return nodes.map((n) => assessKubernetesNode(n, undefined, run.kubernetesVersion ?? '', excluded, new Map())) as unknown as Array<Record<string, unknown>>;
+  }
+  const [nodes, statuses] = await Promise.all([deps.nodes(), deps.nodeStatuses()]);
+  return nodes.map((n) => assessRunNode('finish', n, statuses.get(n.name), undefined, run.toVersion, excluded)) as unknown as Array<Record<string, unknown>>;
+}
+
 async function fail(deps: RunMachineDeps, message: string): Promise<void> {
   // A cancel may have ended the run meanwhile — then it already said why.
   if (await deps.transition(null, { status: 'failed', message, finishedAt: new Date(deps.now()) })) {
@@ -172,7 +187,8 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
       await fail(deps, `The services run ${target}, but the after-services host changes could not be started: ${p.reason ?? 'unknown'}.`);
       return run.step;
     }
-    return (await deps.transition('update-services', { step: 'finish', stepStartedAt: new Date(deps.now()), message: null }))
+    const nodes = await enteringView(run, deps, 'finish');
+    return (await deps.transition('update-services', { step: 'finish', stepStartedAt: new Date(deps.now()), message: null, nodes }))
       ? 'finish' : run.step;
   }
 
@@ -190,7 +206,8 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
       await deps.deletePlan('finish');
       if (run.kubernetesVersion) {
         // Claim the step first (a rollback may end the run meanwhile), then start it.
-        if (!(await deps.transition('finish', { step: 'upgrade-kubernetes', stepStartedAt: new Date(deps.now()), message: null }))) {
+        const nodes = await enteringView(run, deps, 'upgrade-kubernetes');
+        if (!(await deps.transition('finish', { step: 'upgrade-kubernetes', stepStartedAt: new Date(deps.now()), message: null, nodes }))) {
           return run.step;
         }
         const p = await deps.applyKubernetesPlans();
