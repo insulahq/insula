@@ -451,6 +451,8 @@ export function buildHostMigrationStatusDoc(
       failingSince: i.failingSince ?? null,
       skipReason: i.skipReason ?? null,
       baseline: i.baseline ?? null,
+      // ADR-064: lets the upgrade tell "before-services done" from "waits for the services".
+      phase: i.phase ?? null,
     })),
   };
 }
@@ -576,6 +578,28 @@ async function readHostMigrationMode(env: NodeJS.ProcessEnv): Promise<string | n
       namespace: DESIRED_NS,
     } as unknown as Parameters<typeof k8s.core.readNamespacedConfigMap>[0])) as { data?: Record<string, string> };
     return (cm.data?.['mode'] ?? '').trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ADR-064 §3. The release the services run: the platform-version ConfigMap,
+ * which Flux applies together with the containers (workers may read it — see
+ * k8s/base/host-config-reader/rbac.yaml). null when unreadable, which defers
+ * every after-services script rather than guessing.
+ */
+async function readServicesVersion(env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
+    const cm = (await k8s.core.readNamespacedConfigMap({
+      name: 'platform-version',
+      namespace: 'platform',
+    } as unknown as Parameters<typeof k8s.core.readNamespacedConfigMap>[0])) as { data?: Record<string, string> };
+    const v = (cm.data?.['version'] ?? '').trim();
+    return v || null;
   } catch {
     return null;
   }
@@ -803,7 +827,8 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
       // Same opt-in gating, against the host-migrations policy's own mode.
       const mode = await hmDeps.readMode();
       const enforcing = opts.apply || (!opts.dryRun && (mode ?? '').toLowerCase() === 'enforce');
-      const result = runHostMigrations(catalog.scripts, enforcing, hmDeps);
+      const servicesVersion = await readServicesVersion(env);
+      const result = runHostMigrations(catalog.scripts, enforcing, { ...hmDeps, servicesVersion });
       writeHostMigrationStatusFile(result);
       return result;
     },

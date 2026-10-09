@@ -8,7 +8,7 @@
  * (per the PR-18 spike) — it does not need to survive its own re-pin.
  */
 import type { FastifyInstance } from 'fastify';
-import { upgradeApplyRequestSchema, rollbackRequestSchema, toSafeText } from '@insula/api-contracts';
+import { upgradeApplyRequestSchema, upgradePreflightQuerySchema, rollbackRequestSchema, toSafeText } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as taskCenter from '../tasks/service.js';
 import { success } from '../../shared/response.js';
@@ -17,14 +17,88 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectPreflightFacts } from './collect-preflight.js';
 import { evaluatePreflight } from './preflight.js';
 import { runUpgrade, dbSettings } from './orchestrate.js';
-import { captureUpgradeRescue, runRollback, realRollbackDeps } from './rollback.js';
+import { runRollback, realRollbackDeps } from './rollback.js';
 import { readPostflightState } from './collect-postflight.js';
 import { readHostMigrationsPreview } from './host-migrations-preview.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
+import { startUpgradeRun, abortActiveRun, cancelPreparingRun } from './run/real.js';
+import { getActiveRun, getRun, listRuns, toUpgradeRun } from './run/store.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 // The release this pod serves — what each node's CLI is compared against.
 const RUNNING_VERSION = (process.env.PLATFORM_VERSION ?? '').trim().replace(/^v/, '') || null;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// An upgrade run as the API returns it (ADR-064). Every field is declared: the
+// response serializer drops anything that is not.
+const runJsonSchema = {
+  type: 'object', nullable: true, properties: {
+    id: { type: 'string' }, fromVersion: { type: 'string', nullable: true }, toVersion: { type: 'string' },
+    mode: { type: 'string' }, status: { type: 'string' }, step: { type: 'string' },
+    excludedNodes: { type: 'array', items: { type: 'string' } },
+    nodes: { type: 'array', items: { type: 'object', properties: {
+      node: { type: 'string' }, state: { type: 'string' }, cliVersion: { type: 'string', nullable: true }, detail: { type: 'string' },
+    } } },
+    message: { type: 'string', nullable: true }, startedAt: { type: 'string' }, stepStartedAt: { type: 'string' },
+    finishedAt: { type: 'string', nullable: true },
+  },
+} as const;
+
+/** Start an upgrade run for a decided target, and the Task Center task that tracks it. */
+async function startRunFor(
+  db: FastifyInstance['db'],
+  k8s: ReturnType<typeof createK8sClients>,
+  sub: string | null,
+  r: Awaited<ReturnType<typeof runUpgrade>>,
+  excluded: string[],
+  log: FastifyInstance['log'],
+) {
+  const target = r.decision.target as string;
+  const installed = (await dbSettings(db).get('installed_platform_version'))?.trim() || null;
+  const run = await startUpgradeRun(db, k8s, {
+    fromVersion: installed,
+    toVersion: target,
+    mode: 'manual',
+    excludedNodes: excluded,
+    initiatedBy: sub && UUID_RE.test(sub) ? sub : null,
+  });
+  const started = run.status === 'running';
+  // A re-openable Task Center task for the run, so the operator can close the
+  // page and reopen live progress from the Tasks chip. refId = target version.
+  // The run finalizes it. Best-effort: a task-center failure must NEVER fail an
+  // upgrade that already started.
+  if (started) {
+    try {
+      await taskCenter.start(db, {
+        kind: 'platform.upgrade',
+        refId: target,
+        scope: 'system',
+        userId: null,
+        label: toSafeText(`Platform upgrade → ${target}`),
+        target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: target } },
+        progressPct: 0,
+        progressText: toSafeText('Preparing nodes'),
+        details: { toVersion: target, runId: run.id, excludedNodes: excluded, initiatedBy: sub },
+      });
+    } catch (err) {
+      log.error({ err }, 'platform-upgrade task-center start failed (upgrade still started)');
+    }
+  }
+  return {
+    action: r.decision.action,
+    target,
+    reason: r.decision.reason,
+    proceed: r.decision.proceed,
+    applied: started,
+    gitRepository: r.gitRepository,
+    environment: r.environment,
+    summary: started
+      ? `Upgrade to ${target} started: every node takes the release first, then the services roll.`
+      : run.message ?? 'the upgrade could not be started',
+    interruption: null,
+    runId: run.id,
+  };
+}
 
 export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -42,11 +116,15 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   app.get('/admin/platform/upgrade/preflight', {
     schema: {
       tags: ['Platform Updates'], summary: 'Evaluate upgrade pre-flight gates', security: [{ bearerAuth: [] }],
+      querystring: { type: 'object', properties: { exclude: { type: 'string' } } },
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: gateProps } } } },
     },
-  }, async () => {
+  }, async (request) => {
+    // ?exclude=a,b — judge the nodes the way the apply with those exclusions would.
+    const q = upgradePreflightQuerySchema.safeParse(request.query ?? {});
+    if (!q.success) throw new ApiError('VALIDATION_ERROR', q.error.issues[0]?.message ?? 'invalid query', 400);
     const k8s = createK8sClients(kubeconfigPath());
-    const facts = await collectPreflightFacts(app.db, k8s, Date.now());
+    const facts = await collectPreflightFacts(app.db, k8s, Date.now(), q.data.exclude);
     const result = evaluatePreflight(facts);
     return success({ ...result, environment: ENVIRONMENT });
   });
@@ -180,7 +258,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
         action: { type: 'string' }, target: { type: 'string', nullable: true }, reason: { type: 'string' },
         proceed: { type: 'boolean' }, applied: { type: 'boolean' }, gitRepository: { type: 'string', nullable: true },
-        environment: { type: 'string' }, summary: { type: 'string' },
+        environment: { type: 'string' }, summary: { type: 'string' }, runId: { type: 'string', nullable: true },
         // Interruption preview — populated on a DRY-RUN so the confirm modal can
         // tell the operator what will restart before they commit.
         interruption: {
@@ -198,21 +276,27 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     const parsed = upgradeApplyRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid request', 400);
     const apply = parsed.data.apply ?? false;
-    const k8s = createK8sClients(kubeconfigPath()); // one client for both the gate + the re-pin
+    const excludeNodes = [...new Set(parsed.data.excludeNodes ?? [])];
+    const k8s = createK8sClients(kubeconfigPath()); // one client for both the gate + the run
 
     // An APPLY must pass pre-flight (no hard failures) — a dry-run plan does not.
     if (apply) {
-      const pf = evaluatePreflight(await collectPreflightFacts(app.db, k8s, Date.now()));
+      const pf = evaluatePreflight(await collectPreflightFacts(app.db, k8s, Date.now(), excludeNodes));
       if (!pf.ok) {
-        throw new ApiError('UPGRADE_PREFLIGHT_FAILED', `pre-flight has ${pf.failures} blocking failure(s); resolve them or run a dry-run first`, 409);
+        const first = pf.gates.find((g) => g.status === 'fail');
+        throw new ApiError('UPGRADE_PREFLIGHT_FAILED', `pre-flight has ${pf.failures} blocking failure(s)${first ? ` — ${first.label}: ${first.detail}` : ''}`, 409);
       }
     }
 
     try {
-      // On an apply, a rescue snapshot + rollback manifest is captured before the
-      // re-pin (W16); a failed capture aborts the upgrade inside runUpgrade.
-      const rollback = apply ? { capture: (input: { fromVersion: string | null; toVersion: string }) => captureUpgradeRescue(realRollbackDeps(app.db, k8s), input).then((c) => ({ ok: c.ok, reason: c.reason })) } : undefined;
-      const r = await runUpgrade(dbSettings(app.db), k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply, rollback });
+      // The decision is the same for a plan and an apply. An apply then starts a
+      // RUN (ADR-064): the nodes take the release first; the run re-pins Flux (with
+      // the rescue capture) only once every included node is ready.
+      const settings = dbSettings(app.db);
+      const r = await runUpgrade(settings, k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply: false });
+      if (apply && r.decision.proceed && r.decision.target) {
+        return success(await startRunFor(app.db, k8s, request.user?.sub ?? null, r, excludeNodes, app.log));
+      }
       // Attach the interruption preview to a DRY-RUN so the confirm modal can
       // show it before the operator applies. Best-effort — a preview failure must
       // never block the plan.
@@ -223,46 +307,77 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
           interruption = await computeInterruptionPreview(k8s);
         } catch { interruption = null; }
       }
-      // Record a re-openable Task Center task for an APPLIED upgrade so the
-      // operator can close the Upgrades page and reopen live progress from the
-      // Tasks chip. refId = target version → idempotent per target. The
-      // post-flight reconciler finalizes it (succeeded on convergence).
-      // Best-effort: a task-center failure must NEVER fail an upgrade that
-      // already re-pinned.
-      if (apply && r.applied && r.decision.target) {
-        try {
-          await taskCenter.start(app.db, {
-            kind: 'platform.upgrade',
-            refId: r.decision.target,
-            scope: 'system',
-            userId: null,
-            label: toSafeText(`Platform upgrade → ${r.decision.target}`),
-            target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: r.decision.target } },
-            progressPct: 0,
-            progressText: toSafeText(r.summary.slice(0, 200)),
-            details: { toVersion: r.decision.target, gitRepository: r.gitRepository, initiatedBy: request.user?.sub ?? null },
-          });
-        } catch (err) {
-          app.log.error({ err }, 'platform-upgrade task-center start failed (upgrade still applied)');
-        }
-      }
       return success({
         action: r.decision.action,
         target: r.decision.target,
         reason: r.decision.reason,
         proceed: r.decision.proceed,
-        applied: r.applied,
+        applied: false,
         gitRepository: r.gitRepository,
         environment: r.environment,
         summary: r.summary,
         interruption,
+        runId: null,
       });
     } catch (err) {
-      // A k8s patch / API error must not propagate raw to the client (could leak
+      if (err instanceof ApiError) throw err;
+      // A k8s / API error must not propagate raw to the client (could leak
       // internal topology) — log server-side, return a clean error.
       app.log.error({ err }, 'platform upgrade apply failed');
-      throw new ApiError('UPGRADE_FAILED', 'the upgrade re-pin could not be applied (see server logs)', 502);
+      throw new ApiError('UPGRADE_FAILED', 'the upgrade could not be started (see server logs)', 502);
     }
+  });
+
+  // GET /api/v1/admin/platform/upgrade/run — the run in flight, else the latest
+  // one (so a reopened page can show how the last upgrade ended).
+  app.get('/admin/platform/upgrade/run', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'The current (or latest) upgrade run', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: { run: runJsonSchema } } } } },
+    },
+  }, async () => {
+    const active = await getActiveRun(app.db);
+    const row = active ?? (await listRuns(app.db, 1))[0] ?? null;
+    return success({ run: row ? toUpgradeRun(row) : null });
+  });
+
+  // POST /api/v1/admin/platform/upgrade/run/cancel — stop a run that is still
+  // preparing nodes. Nothing has changed for the services yet, so this is safe;
+  // once the services roll, the way back is the rollback.
+  app.post('/admin/platform/upgrade/run/cancel', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Cancel an upgrade run that is still preparing nodes', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: { run: runJsonSchema } } } } },
+    },
+  }, async () => {
+    const k8s = createK8sClients(kubeconfigPath());
+    const row = await cancelPreparingRun(app.db, k8s);
+    return success({ run: toUpgradeRun(row) });
+  });
+
+  // GET /api/v1/admin/platform/upgrade/runs?limit= — run history, newest first.
+  app.get('/admin/platform/upgrade/runs', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Upgrade run history', security: [{ bearerAuth: [] }],
+      querystring: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } } },
+      response: { 200: { type: 'object', properties: { data: { type: 'array', items: runJsonSchema } } } },
+    },
+  }, async (request) => {
+    const limit = (request.query as { limit?: number }).limit ?? 20;
+    return success((await listRuns(app.db, limit)).map(toUpgradeRun));
+  });
+
+  // GET /api/v1/admin/platform/upgrade/runs/:id
+  app.get('/admin/platform/upgrade/runs/:id', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'One upgrade run', security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } },
+      response: { 200: { type: 'object', properties: { data: runJsonSchema } } },
+    },
+  }, async (request) => {
+    const row = await getRun(app.db, (request.params as { id: string }).id);
+    if (!row) throw new ApiError('UPGRADE_RUN_NOT_FOUND', 'no such upgrade run', 404);
+    return success(toUpgradeRun(row));
   });
 
   // POST /api/v1/admin/platform/rollback  { apply?, restoreData? }
@@ -277,9 +392,21 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   }, async (request) => {
     const parsed = rollbackRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'invalid request', 400);
+    // A run still preparing nodes has not changed the services: a rollback now
+    // would undo the PREVIOUS upgrade. Cancel the run instead.
+    const active = await getActiveRun(app.db);
+    if (active && active.step === 'prepare-nodes') {
+      throw new ApiError('UPGRADE_RUN_PREPARING', 'The upgrade has not changed the services yet — cancel it instead of rolling back.', 409);
+    }
     const k8s = createK8sClients(kubeconfigPath());
     try {
       const r = await runRollback(realRollbackDeps(app.db, k8s), { apply: parsed.data.apply === true, restoreData: parsed.data.restoreData === true });
+      // A rollback ends the run in flight (ADR-064): its node Plans stop, and the
+      // rollback's own convergence tracking takes over from here.
+      if (parsed.data.apply === true && r.ok) {
+        await abortActiveRun(app.db, k8s, 'Rolled back by an operator.').catch((err) =>
+          app.log.error({ err }, 'could not close the upgrade run after a rollback'));
+      }
       // On an APPLIED rollback, drive the SAME progress / post-flight / Task
       // Center machinery an upgrade uses: record the roll-back target as the
       // in-flight `pending_update_version` and enrol a re-openable task. The

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runHostMigrations, orderHostMigrations, hostMigrationValid } from './host-migrations.js';
-import { hostMigrationBlocksOnFailure } from './types.js';
+import { runHostMigrations, orderHostMigrations, hostMigrationValid, servicesReachedRelease } from './host-migrations.js';
+import { hostMigrationBlocksOnFailure, hostMigrationPhase } from './types.js';
 import type { HostMigrationDeps, HostMigrationScript } from './types.js';
 
 function script(version: string, name: string, body = 'echo ok'): HostMigrationScript {
@@ -257,7 +257,7 @@ describe('host-migration .baseline marker', () => {
   it('treats a baselined script as already-applied with baseline:true — and never runs it', () => {
     const { deps, ran } = baselineDeps({ readBaseline: (k) => k === '2026.6.3/0001-a.sh' });
     const r = runHostMigrations([s('2026.6.3/0001-a.sh'), s('2026.6.3/0002-b.sh')], true, deps);
-    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied', baseline: true });
+    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied', baseline: true, phase: 'before-services' });
     expect(r.items[1]?.state).toBe('applied');
     expect(ran).toEqual(['2026.6.3/0002-b.sh']);
     expect(r.appliedCount).toBe(1); // a baseline is not something this pass applied
@@ -274,7 +274,7 @@ describe('host-migration .baseline marker', () => {
   it('.done wins over .baseline — a script that really ran is reported without the baseline flag', () => {
     const { deps } = baselineDeps({ isApplied: () => true, readBaseline: () => true });
     const r = runHostMigrations([s('2026.6.3/0001-a.sh')], true, deps);
-    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied' });
+    expect(r.items[0]).toEqual({ key: '2026.6.3/0001-a.sh', state: 'already-applied', phase: 'before-services' });
     expect(r.items[0]).not.toHaveProperty('baseline');
   });
 
@@ -300,5 +300,86 @@ describe('host-migration .baseline marker', () => {
     const r = runHostMigrations([s('2026.6.3/0001-a.sh')], true, deps);
     expect(r.items[0]?.state).toBe('applied');
     expect(ran).toEqual(['2026.6.3/0001-a.sh']);
+  });
+});
+
+// ── ADR-064 §3: the phase header ──────────────────────────────────────────────
+// A before-services script runs as soon as the node has the release's CLI —
+// during an upgrade, before the services roll. An after-services script waits
+// until the services run its release, and the wait is neither a failure nor a
+// block.
+
+describe('host-migration phase', () => {
+  const sc = (key: string, phase?: string) => ({
+    version: key.split('/')[0] as string,
+    name: key.split('/')[1] as string,
+    key,
+    body: `#!/usr/bin/env bash\n# idempotent: test\n${phase ? `# phase: ${phase}\n` : ''}true\n`,
+  });
+  const run = (scripts: ReturnType<typeof sc>[], servicesVersion: string | null, enforcing = true) => {
+    const ran: string[] = [];
+    const r = runHostMigrations(scripts, enforcing, {
+      readMode: async () => 'enforce',
+      isApplied: () => false,
+      markApplied: () => {},
+      runScript: (x) => { ran.push(x.key); },
+      source: 'embedded',
+      servicesVersion,
+    });
+    return { r, ran };
+  };
+
+  it('parses the header; absent means before-services; anything else is invalid', () => {
+    expect(hostMigrationPhase('# phase: after-services')).toBe('after-services');
+    expect(hostMigrationPhase('#phase:BEFORE-SERVICES')).toBe('before-services');
+    expect(hostMigrationPhase('#!/bin/bash\ntrue')).toBe('before-services');
+    expect(hostMigrationPhase('# phase: whenever')).toBeNull();
+  });
+
+  it('runs a before-services script while the services are still on the previous release', () => {
+    const { r, ran } = run([sc('2026.10.8/0001-a.sh', 'before-services')], '2026.10.7');
+    expect(ran).toEqual(['2026.10.8/0001-a.sh']);
+    expect(r.items[0]).toMatchObject({ state: 'applied', phase: 'before-services' });
+  });
+
+  it('defers an after-services script until the services run its release — without blocking later ones', () => {
+    const { r, ran } = run([
+      sc('2026.10.8/0001-a.sh', 'after-services'),
+      sc('2026.10.8/0002-b.sh', 'before-services'),
+    ], '2026.10.7');
+    expect(r.items[0]).toMatchObject({ state: 'deferred', phase: 'after-services' });
+    expect(ran).toEqual(['2026.10.8/0002-b.sh']);
+    expect(r.ok).toBe(true);
+  });
+
+  it('runs an after-services script once the services reach its release — a candidate counts', () => {
+    // `2026.10.8-rc.3` sorts below `2026.10.8` in SemVer; the RC ships 2026.10.8's scripts.
+    expect(run([sc('2026.10.8/0001-a.sh', 'after-services')], '2026.10.8-rc.3').ran).toEqual(['2026.10.8/0001-a.sh']);
+    expect(run([sc('2026.10.8/0001-a.sh', 'after-services')], '2026.10.8-ad8fe1a').ran).toEqual(['2026.10.8/0001-a.sh']);
+    expect(run([sc('2026.10.8/0001-a.sh', 'after-services')], '2026.10.9').ran).toEqual(['2026.10.8/0001-a.sh']);
+  });
+
+  it('defers every after-services script when the services version is unknown', () => {
+    const { r, ran } = run([sc('2026.10.8/0001-a.sh', 'after-services')], null);
+    expect(r.items[0]?.state).toBe('deferred');
+    expect(ran).toEqual([]);
+  });
+
+  it('never runs a script with an unrecognised phase', () => {
+    const { r, ran } = run([sc('2026.10.8/0001-a.sh', 'sometime')], '2026.10.8');
+    expect(r.items[0]?.state).toBe('invalid');
+    expect(ran).toEqual([]);
+  });
+
+  it('reports deferral in a dry-run too, rather than "would-run"', () => {
+    const { r } = run([sc('2026.10.8/0001-a.sh', 'after-services')], '2026.10.7', false);
+    expect(r.items[0]?.state).toBe('deferred');
+  });
+
+  it('servicesReachedRelease compares the base release', () => {
+    expect(servicesReachedRelease('2026.10.8-rc.1', '2026.10.8')).toBe(true);
+    expect(servicesReachedRelease('2026.10.7', '2026.10.8')).toBe(false);
+    expect(servicesReachedRelease('v2026.10.8', '2026.10.8')).toBe(true);
+    expect(servicesReachedRelease('garbage', '2026.10.8')).toBe(false);
   });
 });

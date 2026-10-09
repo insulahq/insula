@@ -14,6 +14,8 @@
 #      - lives under a CalVer version dir; name matches ^[0-9]{3,}-[a-z0-9-]+\.sh$
 #      - starts with `#!/usr/bin/env bash` + `set -euo pipefail`
 #      - carries `# idempotent:` and `# allow-paths:` header contracts
+#      - from release PHASE_REQUIRED_FROM on, declares `# phase: before-services`
+#        or `# phase: after-services` (ADR-064 §3); a present value must be valid
 #      - passes shellcheck (when shellcheck is available)
 #   A catalog with ZERO scripts is valid (the runner is dormant by default).
 
@@ -53,6 +55,7 @@ fi
   || fail "build-platform-ops.sh must embed the host-migration catalog (host-migrations/manifest.json asset)"
 
 # (3) every shipped script obeys the authoring contract
+PHASE_REQUIRED_FROM="2026.10.7"
 SCRIPT_COUNT=0
 if [[ -d "$HM_ROOT" ]]; then
   while IFS= read -r -d '' f; do
@@ -75,6 +78,19 @@ if [[ -d "$HM_ROOT" ]]; then
         yes|no) : ;;
         *) fail "$rel: '# blocks-on-failure: $v' — must be exactly 'yes' or 'no' (absent means yes)" ;;
       esac
+    fi
+    # ADR-064 §3: WHEN a script runs relative to the services' roll. Required from
+    # PHASE_REQUIRED_FROM on (older scripts are applied or baselined everywhere and
+    # read as before-services); a present value must be exact — the runner treats
+    # anything else as invalid and never runs it.
+    if grep -q '^# phase:' "$f"; then
+      p=$(grep -m1 '^# phase:' "$f" | sed -E 's/^# phase:[[:space:]]*([^[:space:]]+).*/\1/' | tr 'A-Z' 'a-z')
+      case "$p" in
+        before-services|after-services) : ;;
+        *) fail "$rel: '# phase: $p' — must be exactly 'before-services' or 'after-services'" ;;
+      esac
+    elif [[ "$(printf '%s\n%s\n' "$PHASE_REQUIRED_FROM" "$version" | sort -V | head -n1)" == "$PHASE_REQUIRED_FROM" ]]; then
+      fail "$rel: missing '# phase: before-services|after-services' (required from ${PHASE_REQUIRED_FROM}, ADR-064)"
     fi
     if command -v shellcheck >/dev/null 2>&1; then
       shellcheck -S warning "$f" || fail "$rel: shellcheck reported issues"

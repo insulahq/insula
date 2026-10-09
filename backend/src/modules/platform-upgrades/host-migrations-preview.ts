@@ -3,9 +3,9 @@
  * embedded in the platform-ops binary (they travel with each release), so the
  * backend cannot list the actual pending scripts. It surfaces the one thing it
  * CAN read from the cluster: the `host-migrations-desired` ConfigMap mode, i.e.
- * whether nodes apply host-migrations at all — and says WHEN they do. They do not
- * run during the upgrade: a node applies a release's host changes once its own
- * CLI updates to that release, on the node's daily update timer.
+ * whether nodes apply host-migrations at all — and says WHEN they do. The upgrade
+ * updates every node's CLI first (ADR-064): host changes marked before-services
+ * apply then, after-services ones once the services run the release.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { HostMigrationsPreviewResponse } from '@insula/api-contracts';
@@ -23,8 +23,9 @@ export function interpretHostMigrationMode(rawMode: string | null): HostMigratio
     return {
       mode: 'enforce',
       willRun: true,
-      note: 'Enabled — each node applies this release\'s host changes when its own CLI updates to the release, '
-        + 'on the node\'s daily update timer (up to ~25 h after the services). The Host migrations card shows each node.',
+      note: 'Enabled — the upgrade updates each node first and applies this release\'s host changes before the services '
+        + 'roll (changes that need the new services run right after). An excluded node catches up on its hourly update timer. '
+        + 'The Host migrations card shows each node.',
     };
   }
   if (mode === 'observe' || mode === '') {

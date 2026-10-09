@@ -10,6 +10,8 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PreflightFacts } from './preflight.js';
 import { readFluxSuspension } from './flux-repin.js';
+import { listNodeFacts } from './run/k8s.js';
+import { getActiveRun } from './run/store.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 const CNPG_NS = 'platform';
@@ -144,14 +146,21 @@ async function freshestBackupAgeHours(k8s: K8sClients, nowMs: number): Promise<n
   }
 }
 
-export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs: number): Promise<PreflightFacts> {
-  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended] = await Promise.all([
+export async function collectPreflightFacts(
+  db: Database,
+  k8s: K8sClients,
+  nowMs: number,
+  excludedNodes: readonly string[] = [],
+): Promise<PreflightFacts> {
+  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended, nodes, activeRun] = await Promise.all([
     cnpgReady(k8s),
     longhornAtRiskVolumes(k8s),
     inFlightTransitions(db),
     nodeDiskFacts(db),
     freshestBackupAgeHours(k8s, nowMs),
     readFluxSuspension(k8s),
+    listNodeFacts(k8s).catch(() => null),
+    getActiveRun(db).then((r) => r !== null).catch(() => null),
   ]);
   return {
     environment: ENVIRONMENT,
@@ -163,5 +172,8 @@ export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs
     nodesWithDiskPressure: disk.nodesWithDiskPressure,
     freshestBackupAgeHours: backupAge,
     fluxSuspended,
+    nodes,
+    excludedNodes,
+    upgradeRunning: activeRun,
   };
 }

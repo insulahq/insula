@@ -38,10 +38,13 @@ nothing is pushed at it.
    (installed → available) and the pre-flight checks. The *update available*
    banner's **Review & apply** takes you straight into the review dialog rather
    than dropping you on the page to find it again.
-3. You **Preview**, then **Apply** the upgrade. Apply re-pins the cluster's
-   GitOps source to the verified release tag; the platform rolls every
-   workload to the new version.
-4. **Post-flight** checks watch the cluster converge on the new version.
+3. You **Preview**, then **Apply** the upgrade. Apply starts an **upgrade run**
+   in three steps: every node first fetches and verifies the release's
+   `insula` CLI, then the cluster's GitOps source is re-pinned to the verified
+   release tag and the platform rolls every workload, and finally the nodes
+   apply the host changes that need the new services.
+4. **Post-flight** checks watch the services converge on the new version; the
+   run reports done once the nodes have finished too.
 
 !!! note "Non-production clusters auto-follow their branch"
     Production is manual and gated, as above. Non-production environments follow
@@ -61,10 +64,9 @@ On **Platform Settings → Upgrades** (`super_admin`):
    after a manual rollback) — the upgrade only re-pins the release Flux applies,
    so it would change nothing. Resume them first:
    `flux resume source git <name>` and `flux resume kustomization platform`.
-3. **Host migrations** — shows whether the release carries host-level migration
-   scripts. They do **not** run as part of Apply: each node applies them after its
-   own `platform-ops` CLI has updated to the release (see
-   [Host migration state](#host-migration-state-per-node)).
+3. **Host migrations** — whether nodes apply the release's host-level
+   migration scripts. The upgrade applies them on every node as part of the run
+   (see [The upgrade run](#the-upgrade-run)).
    The dialog also names the services that run a **single replica**. Those see a
    short gap while they restart, even on a multi-node cluster. Services with more
    than one replica roll over without one.
@@ -94,13 +96,11 @@ Convergence is **not** just "every workload restarted". Post-flight also gates o
 **Platform migrations applied**: a release whose platform migrations are stuck is
 reported as an incomplete upgrade, even when every pod runs the new image.
 
-**Host migrations** appear in post-flight too, but they never fail the upgrade.
-The services roll first. Each node then updates its own `platform-ops` CLI on its
-update timer, which may be some hours later, and applies the release's host
-migrations. Until then the row reads **Catching up** and names the nodes still on
-an older CLI. That is the expected state right after an upgrade, not a fault. The
-row reads **Needs attention** only when a node actually reports a failed or
-blocked migration.
+**Host migrations** appear in post-flight too, but they never fail the services'
+convergence. The run applies them on the nodes (next section). A node the run left
+out, because you upgraded without it, reads **Catching up** until it has updated
+on its own. That is expected, not a fault. The row reads **Needs attention** only
+when a node actually reports a failed or blocked migration.
 
 !!! note "Why migrations gate the verdict"
     One failed platform migration halts every later one indefinitely. Without
@@ -117,10 +117,49 @@ blocked migration.
     rolling restarts. Pick a low-traffic window for production and watch
     post-flight to completion.
 
+## The upgrade run
+
+Apply starts one **run**, shown step by step in the progress dialog. You can
+close the dialog and reopen it from the Tasks chip.
+
+1. **Update the nodes.** Each node, one at a time, fetches the release's
+   `insula` CLI, verifies its signature against the key the node pins, and
+   applies the release's host migrations marked *before the services*. The
+   services keep running the current release meanwhile.
+2. **Roll the services.** Only once every node is ready does the platform take a
+   rescue snapshot and re-pin the GitOps source, as described above.
+3. **Finish host changes.** Each node applies the host migrations that need the
+   new services, then reports the release.
+
+Each node row says where it stands: *Queued*, *Updating*, *Ready*,
+*Waiting for node*, *Upgraded without* or *Failed*, with one line on why.
+
+- **A failure in step 1 stops the run before the services change.** The services
+  still run the previous release. The nodes that did update keep the new CLI
+  and its before-services changes, which work with the previous release by design.
+- **Cancel upgrade** is offered during step 1, with the same result: nothing
+  changed for the services. Once the services roll, the way back is the rollback
+  below.
+- A node that does not get ready within 25 minutes, or one whose node update
+  fails three times, stops the run the same way. The row names the host
+  migration that failed. The job log is in the `system-upgrade` namespace.
+
+### Upgrading with a node down
+
+The run updates **every** node, so a node that is not Ready blocks the upgrade:
+the pre-flight check **Every node can take part** fails and names it. If the node
+will not be back soon, tick **Upgrade without** next to it in the review dialog.
+The run then leaves it out, and the node updates itself through its own hourly
+update check once it is back. It runs no release ahead of the cluster: the check
+only ever fetches the release the cluster runs. If a node goes down *during* step 1,
+the run waits for it. Cancel, then start the upgrade again without it.
+
 ## Rolling back
 
 The Upgrades page also has **Roll back the last upgrade**. It re-pins the GitOps
-source to the reference recorded *before* the last upgrade. A rescue snapshot is
+source to the reference recorded *before* the last upgrade, and ends a run that is
+still finishing. While a run is still updating the nodes, the rollback is refused:
+the services have not changed, so cancel the run instead. A rescue snapshot is
 taken before every upgrade, so the code re-pin is safe on its own.
 
 - **Preview rollback** shows the target and how many rescue snapshots exist.
@@ -135,6 +174,10 @@ taken before every upgrade, so the code re-pin is safe on its own.
 Some releases carry **host migrations** — small scripts that change the host
 itself (a version pin, a systemd unit, a firewall shape). They cannot travel
 through GitOps, so each node applies them locally on its own hourly converge.
+
+Outside an upgrade, each node also re-checks its host migrations every hour, and
+its CLI checks every hour for the release the cluster runs. That is how a node the
+run left out, or one that joins later, catches up.
 
 The **Host migrations** card on the same page shows what each node has done:
 applied, pending, failed, blocked, or skipped.

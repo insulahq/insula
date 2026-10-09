@@ -2,8 +2,8 @@
  * Production wiring for `platform-ops self-upgrade` (ADR-045 W11.5).
  *
  * `realSelfUpgradeOps` binds the pure orchestrator (upgrade.ts) to real I/O: the
- * platform-version ConfigMap (cluster-up), the GitHub Releases API (cluster-down
- * fallback), GitHub release-asset downloads (host-allowlisted, size-capped), the
+ * platform-version ConfigMap (the target; no fallback when the cluster is down),
+ * GitHub release-asset downloads (host-allowlisted, size-capped), the
  * pinned host cosign key (/etc/platform/cosign.pub), the W11 verifier (pure Node
  * crypto), and an atomic same-dir-temp + rename binary replacement.
  *
@@ -15,7 +15,6 @@
 import { readFileSync, writeFileSync, renameSync, rmSync, existsSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { verifyCosignSignature } from '../../../modules/platform-updates/poller/verify.js';
-import { parseVersion } from '../../../modules/platform-updates/poller/semver.js';
 import { releaseTagFor } from './release-tag.js';
 import type { SelfUpgradeOps } from '../deps.js';
 import { runSelfUpgrade } from './upgrade.js';
@@ -29,7 +28,6 @@ const DEFAULT_PUBKEY = '/etc/platform/cosign.pub';
 // /usr/local/bin/platform-ops, or a PLATFORM_OPS_BIN pointing there) is never
 // stranded. New installs are `insula`.
 const BINARY_NAME_RE = /(^|[-/])(insula|platform-ops)$/;
-const GITHUB_API = 'https://api.github.com';
 // Release assets must come from GitHub (SSRF guard on the download URL).
 // github.com 302s a release-asset download to a pre-signed CDN URL; GitHub
 // migrated that CDN from objects.githubusercontent.com to
@@ -41,7 +39,6 @@ const ASSET_HOST_ALLOWLIST = [
   'objects.githubusercontent.com',
   'release-assets.githubusercontent.com',
 ];
-const RELEASE_FETCH_TIMEOUT_MS = 15_000;
 // The binary download is large; give it a generous timeout + a hard size cap so
 // a hostile/oversize asset can't exhaust memory.
 const DOWNLOAD_TIMEOUT_MS = 180_000;
@@ -133,23 +130,7 @@ async function readRunningVersion(env: NodeJS.ProcessEnv): Promise<string | null
     const v = cm.data?.['version']?.trim().replace(/^v/, '');
     return v ?? null;
   } catch {
-    return null; // cluster unreachable / no kubeconfig → caller falls back to Releases
-  }
-}
-
-async function fetchLatestReleaseVersion(env: NodeJS.ProcessEnv): Promise<string | null> {
-  const repo = resolveRepo(env);
-  try {
-    const resp = await fetch(`${GITHUB_API}/repos/${repo}/releases/latest`, {
-      signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
-      headers: githubHeaders(env, 'application/vnd.github+json'),
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { tag_name?: string };
-    const tag = (data.tag_name ?? '').trim().replace(/^v/, '');
-    return parseVersion(tag) ? tag : null;
-  } catch {
-    return null;
+    return null; // cluster unreachable / no kubeconfig → no target (never a guess)
   }
 }
 
@@ -284,7 +265,6 @@ export function realSelfUpgradeDeps(env: NodeJS.ProcessEnv, buildVersion: string
     currentVersion: () => currentVersion(buildVersion),
     arch: archToken,
     readRunningVersion: () => readRunningVersion(env),
-    fetchLatestReleaseVersion: () => fetchLatestReleaseVersion(env),
     downloadAsset: (version, arch, kind) => downloadAsset(env, version, arch, kind),
     readPublicKey: () => readPublicKey(env),
     verify: (binary, sigB64, pubPem) => verifyCosignSignature(binary, sigB64, pubPem),

@@ -71,8 +71,12 @@ Step 1 creates (or patches) a system-upgrade-controller Plan, `insula-node-updat
 release. Its per-node Job runs on the host:
 
 ```
-insula self-upgrade --version <X> --then-converge before-services
+insula self-upgrade --version <X> && systemctl start platform-ops-host-config.service
 ```
+
+(The converge runs as the node's own unit, under its own sandbox; while the services still run
+the previous release it defers every `after-services` script. Step 3's `insula-node-finish` Plan
+runs only the converge.)
 
 - **The push carries only a version.** The node downloads the release CLI and verifies it against
   its own pinned `/etc/platform/cosign.pub`, failing closed, exactly as today. A downgrade is still
@@ -81,7 +85,11 @@ insula self-upgrade --version <X> --then-converge before-services
   already the k3s upgrade path. It brings per-node status, concurrency control, and catch-up for a
   node that returns later. Servers update one at a time; workers in small batches.
 - **The jobs are privileged**, as the k3s upgrade jobs are today. platform-api gains RBAC to create
-  and patch Plans in `system-upgrade`; `ci-system-upgrade-check.sh` learns the new Plan.
+  and patch Plans in `system-upgrade` (a namespaced Role); `ci-system-upgrade-check.sh` learns the
+  new Plan. **Implemented:** the ValidatingAdmissionPolicy `platform-api-plan-scope` limits
+  platform-api to the two Plan names, the node-terminal image with a tag or digest, the one fixed
+  command each, a run-shaped `spec.version`, and no other field that could change what runs, where,
+  or with which credentials.
 - **The timer stays as a safety net**, but becomes an hourly *check*: it compares the node's CLI with
   the `platform-version` ConfigMap and downloads only on a change. The fallback to the latest GitHub
   release is removed: a node that cannot read the cluster's version does nothing and reports why.

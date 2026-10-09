@@ -181,7 +181,11 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
             </p>
           )}
           {interesting.length === 0 && !node.note && !node.reason && (
-            <p className="py-1 text-xs text-gray-500 dark:text-gray-400">All shipped migrations are applied.</p>
+            <p className="py-1 text-xs text-gray-500 dark:text-gray-400">
+              {node.cliBehind === true
+                ? 'Everything its CLI carries is applied. This release\'s host changes arrive with its CLI update.'
+                : 'All shipped migrations are applied.'}
+            </p>
           )}
           {interesting.length > 0 && (
             <ul className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -244,7 +248,7 @@ export default function HostMigrationsCard() {
       {res && res.nodes.some((n) => n.cliBehind === true) && (
         <p className="mb-2 text-xs text-gray-600 dark:text-gray-300" data-testid="host-migrations-catching-up">
           {res.nodes.filter((n) => n.cliBehind === true).length} node(s) still run an older CLI. Each applies
-          {res.targetVersion ? ` ${res.targetVersion}'s` : " this release's"} host changes when its daily update
+          {res.targetVersion ? ` ${res.targetVersion}'s` : " this release's"} host changes when its hourly update
           runs — nothing to do.
         </p>
       )}

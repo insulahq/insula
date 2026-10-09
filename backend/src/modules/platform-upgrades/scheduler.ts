@@ -23,6 +23,9 @@ import { runPostflight, checkConvergence, readPostflightState, type PostflightSt
 import { collectUpgradeProgress } from './progress.js';
 import { finalizeByRef, progressByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
+import { getActiveRun } from './run/store.js';
+import { advanceRun } from './run/machine.js';
+import { realRunMachineDeps } from './run/real.js';
 
 // Dormant cadence — a cheap no-op tick that just reads `pending_update_version`.
 const IDLE_TICK_MS = 30 * 1000;
@@ -160,8 +163,15 @@ async function notifyUpgradeStuck(db: Database, state: PostflightState): Promise
     .catch(() => { /* notification failure must not break the reconciler */ });
 }
 
-export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): UpgradeReconcilerDeps {
+export function realUpgradeReconcilerDeps(
+  db: Database,
+  k8s: K8sClients,
+  /** ADR-064: a run owns the task — it finishes only after the finish step, and the
+   *  services' roll is the middle third of its progress bar. */
+  opts: { readonly runActive?: boolean } = {},
+): UpgradeReconcilerDeps {
   const settings = dbSettings(db);
+  const runActive = opts.runActive === true;
   return {
     getPending: () => settings.get('pending_update_version'),
     readPrevVerdict: async () => (await readPostflightState(db)).verdict,
@@ -169,12 +179,14 @@ export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): Upgrad
     // postflight degrades to the deployment-only gates it had before.
     observe: (nowMs) => runPostflight(settings, k8s, nowMs, db),
     notifyStuck: (state) => notifyUpgradeStuck(db, state),
-    finalizeConverged: (target) => finalizeUpgradeTask(db, target),
+    finalizeConverged: (target) => (runActive ? Promise.resolve() : finalizeUpgradeTask(db, target)),
     liveProgress: async (target) => {
       const p = await collectUpgradeProgress(k8s, target);
       return { pct: p.percent, atTarget: p.atTarget, total: p.total };
     },
-    updateProgress: (target, pct, text) => progressByRef(db, 'platform.upgrade', target, { pct, text: toSafeText(text) }),
+    updateProgress: (target, pct, text) => progressByRef(db, 'platform.upgrade', target, runActive
+      ? { pct: 33 + Math.round(pct / 3), text: toSafeText(`Updating services: ${text}`) }
+      : { pct, text: toSafeText(text) }),
     checkConvergence: (nowMs) => checkConvergence(settings, k8s, nowMs, db),
     // Claim the slow streak slot at most once per STREAK_ADVANCE_MS (shared clock
     // setting → HA-safe). Returns true (and stamps the clock) only when due.
@@ -229,13 +241,26 @@ export function startUpgradeReconciler(db: Database, k8s: K8sClients): { readonl
       // share it, so a slow claim can't skew lastCheckedAt vs the lease window.
       const nowMs = Date.now();
       const pending = (await dbSettings(db).get('pending_update_version'))?.trim();
-      const busy = !!pending;
+      // ADR-064: an upgrade run in flight (preparing nodes, or finishing them)
+      // keeps the reconciler busy even while no Flux re-pin is pending.
+      const run = await getActiveRun(db).catch(() => null);
+      const busy = !!pending || !!run;
       nextDelay = busy ? BUSY_TICK_MS : IDLE_TICK_MS;
       // Only claim the lease + do work when there's an upgrade in flight; an idle
-      // tick is a pure no-op (just the pending read above — no lease churn).
+      // tick is a pure no-op (just the reads above — no lease churn).
       if (busy && (await claimLease(db, nowMs, leaseTtlFor(nextDelay)))) {
-        const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s), nowMs);
-        if (r.notified) console.log('[upgrade-reconciler] in-flight upgrade is not converging → notified admins');
+        if (run) {
+          try {
+            await advanceRun(run, realRunMachineDeps(db, k8s, run));
+          } catch (err) {
+            console.error('[upgrade-run] advance failed:', (err as Error).message);
+          }
+        }
+        const pendingNow = (await dbSettings(db).get('pending_update_version'))?.trim();
+        if (pendingNow) {
+          const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s, { runActive: !!run }), nowMs);
+          if (r.notified) console.log('[upgrade-reconciler] in-flight upgrade is not converging → notified admins');
+        }
       }
     } catch (err) {
       console.error('[upgrade-reconciler] tick failed:', (err as Error).message);

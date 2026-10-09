@@ -21,8 +21,8 @@
  *     whole backlog in the same order it would have applied incrementally.
  */
 
-import { compareVersions, isValidVersion } from '../../../modules/platform-updates/poller/semver.js';
-import { hostMigrationBlocksOnFailure } from './types.js';
+import { compareVersions, isValidVersion, parseVersion } from '../../../modules/platform-updates/poller/semver.js';
+import { hostMigrationBlocksOnFailure, hostMigrationPhase } from './types.js';
 import type {
   HostMigrationDeps,
   HostMigrationItem,
@@ -48,6 +48,20 @@ export function orderHostMigrations(scripts: readonly HostMigrationScript[]): Ho
     const v = compareVersions(a.version, b.version);
     return v !== 0 ? v : a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * ADR-064 §3. Have the services reached the release a script belongs to? Script
+ * directories are plain CalVer (`2026.10.7`) while the services may run a
+ * candidate or a DEV build of it (`2026.10.7-rc.4`, `2026.10.7-ad8fe1a`) — which
+ * SemVer sorts BELOW `2026.10.7`. Compare the services' base version, or an
+ * after-services script would never run on a release-candidate cluster.
+ */
+export function servicesReachedRelease(servicesVersion: string | null | undefined, scriptVersion: string): boolean {
+  if (!servicesVersion) return false;
+  const p = parseVersion(servicesVersion.trim().replace(/^v/, ''));
+  if (!p) return false;
+  return compareVersions(`${p.major}.${p.minor}.${p.patch}`, scriptVersion) >= 0;
 }
 
 export function runHostMigrations(
@@ -80,35 +94,42 @@ export function runHostMigrations(
   let ok = true;
 
   for (const s of ordered) {
-    if (!hostMigrationValid(s)) {
+    const phase = hostMigrationValid(s) ? hostMigrationPhase(s.body) : null;
+    if (phase === null) {
       items.push({ key: s.key, state: 'invalid' });
-      continue; // never run a script whose version/name didn't validate
+      continue; // never run a script whose version/name/phase didn't validate
     }
     if (deps.isApplied(s.key)) {
-      items.push({ key: s.key, state: 'already-applied' });
+      items.push({ key: s.key, state: 'already-applied', phase });
       continue;
     }
     // ADR-056 §2: an operator-recorded skip. Reported as `skipped`, never
     // `applied` — the node's state stays honest — and it does not block.
     const skip = deps.readSkip?.(s.key) ?? null;
     if (skip) {
-      items.push({ key: s.key, state: 'skipped', skipReason: skip.reason });
+      items.push({ key: s.key, state: 'skipped', skipReason: skip.reason, phase });
       continue;
     }
     // ADR-056 §5: a fresh bootstrap of this release already produced the end
     // state, so it is treated as applied and never run — but reported with
     // `baseline: true`, never as if it ran. `.done` (checked above) wins.
     if (deps.readBaseline?.(s.key)) {
-      items.push({ key: s.key, state: 'already-applied', baseline: true });
+      items.push({ key: s.key, state: 'already-applied', baseline: true, phase });
+      continue;
+    }
+    // ADR-064 §3: an after-services script waits for the services to run its
+    // release. Not a failure and not blocking — the next converge picks it up.
+    if (phase === 'after-services' && !servicesReachedRelease(deps.servicesVersion, s.version)) {
+      items.push({ key: s.key, state: 'deferred', phase });
       continue;
     }
     if (!enforcing) {
-      items.push({ key: s.key, state: 'would-run' });
+      items.push({ key: s.key, state: 'would-run', phase });
       continue;
     }
     if (halted) {
       // A prior script failed — refuse to advance past a half-migrated state.
-      items.push({ key: s.key, state: 'blocked' });
+      items.push({ key: s.key, state: 'blocked', phase });
       continue;
     }
     try {
@@ -125,6 +146,7 @@ export function runHostMigrations(
         key: s.key,
         state: 'run-failed',
         error: message,
+        phase,
         ...(f ? { attempt: f.attempt, failingSince: f.failingSince } : {}),
       });
       continue;
@@ -142,12 +164,13 @@ export function runHostMigrations(
         key: s.key,
         state: 'run-failed',
         error: `applied but marker write failed: ${message}`,
+        phase,
         ...(f ? { attempt: f.attempt, failingSince: f.failingSince } : {}),
       });
       continue;
     }
     deps.clearFailure?.(s.key);
-    items.push({ key: s.key, state: 'applied' });
+    items.push({ key: s.key, state: 'applied', phase });
     appliedCount++;
   }
   return { ok, mode, source: deps.source, items, appliedCount };

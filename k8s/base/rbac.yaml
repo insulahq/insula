@@ -427,6 +427,42 @@ subjects:
     name: platform-api
     namespace: platform
 ---
+# ─── platform-api: node Plans for an upgrade run (ADR-064) ─────────
+#
+# An upgrade updates every node before the services: platform-api creates the
+# insula-node-update / insula-node-finish Plans, and the system-upgrade-controller
+# runs one privileged job per node. Namespaced to system-upgrade only, and the
+# Plan content is pinned by ValidatingAdmissionPolicy platform-api-plan-scope
+# (platform-api-guardrails/plan-scope.yaml). The per-node jobs are read through
+# the ClusterRole's batch rule.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-api-node-upgrade
+  namespace: system-upgrade
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: ["upgrade.cattle.io"]
+    resources: ["plans"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-api-node-upgrade
+  namespace: system-upgrade
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-api-node-upgrade
+subjects:
+  - kind: ServiceAccount
+    name: platform-api
+    namespace: platform
+---
 # ─── pg-dump-job SA (System Backup Phase 2.4b) ─────────────────────
 #
 # Runs the per-CNPG-cluster pg_dump Job (backend/src/cli/pg-dump-job.ts).

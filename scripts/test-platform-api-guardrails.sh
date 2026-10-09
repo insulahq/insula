@@ -34,15 +34,17 @@ trap cleanup EXIT
 as_dry() { kubectl --as="$AS" "$@" --dry-run=server; }
 as_read() { kubectl --as="$AS" "$@"; }
 
-# expect <allowed|denied> <label> <command…>
+# expect <allowed|created|denied> <label> <command…>
 # "denied" = refused by a platform-api guardrail policy. "allowed" = admission
 # let it through: whatever happened afterwards (a container without `true`, a
-# proxied 404) is not the policy's doing. RBAC refusals are reported apart —
+# proxied 404) is not the policy's doing. "created" = the dry-run create went all
+# the way through — use it where a malformed request must not read as a pass. RBAC refusals are reported apart —
 # they mean the case never reached the policy at all.
 expect() {
   local want="$1" label="$2" out got; shift 2
   out="$("$@" 2>&1)"
   if [[ "$out" == *"$MARK"* ]]; then got=denied
+  elif [[ "$want" == created && "$out" == *"created (server dry run)"* ]]; then got=created
   elif [[ "$out" == *"is forbidden: User"* || "$out" == *"attempting to grant RBAC"* ]]; then got=rbac-forbidden
   else got=allowed; fi
   if [[ "$got" == "$want" ]]; then
@@ -199,6 +201,71 @@ fi
 expect denied  "platform Deployment: change ServiceAccount" as_dry -n platform patch deployment admin-panel --type merge -p '{"spec":{"template":{"spec":{"serviceAccountName":"platform-api"}}}}'
 if kubectl -n flux-system get deployment kustomize-controller >/dev/null 2>&1; then
   expect denied "flux-system Deployment: any change" as_dry -n flux-system patch deployment kustomize-controller --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"insula.host/probe":"1"}}}}}'
+fi
+
+# ── node Plans (ADR-064) ────────────────────────────────────────────────────
+echo "== upgrade.cattle.io Plans (platform-api-plan-scope)"
+NT_IMAGE="ghcr.io/insulahq/insula/node-terminal:latest"
+UPDATE_ARG="exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '/usr/local/bin/insula self-upgrade --version 2026.10.7 && /usr/bin/env systemctl start platform-ops-host-config.service'"
+FINISH_ARG="exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '/usr/bin/env systemctl start platform-ops-host-config.service'"
+# plan <name> <image> <arg> [extra spec lines] — a Plan AS platform-api, dry run.
+# PLAN_VERSION / PLAN_SELECTOR / PLAN_TOLERATIONS override the run-shaped defaults
+# (set them through plan_with, which scopes them to one call).
+DEFAULT_TOLERATIONS='[{ operator: Exists }]'
+DEFAULT_SELECTOR='{ matchExpressions: [{ key: kubernetes.io/os, operator: In, values: [linux] }, { key: kubernetes.io/hostname, operator: NotIn, values: [gone-1] }] }'
+plan() {
+  local arg_json version selector tolerations
+  arg_json="$(printf '%s' "$3" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  version="${PLAN_VERSION:-2026.10.7-run.0123456789ab}"
+  selector="${PLAN_SELECTOR:-$DEFAULT_SELECTOR}"
+  tolerations="${PLAN_TOLERATIONS:-$DEFAULT_TOLERATIONS}"
+  as_dry create -f - <<YAML
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata: { name: $1, namespace: system-upgrade }
+spec:
+  concurrency: 1
+  serviceAccountName: system-upgrade
+  version: $version
+  nodeSelector: $selector
+  tolerations: $tolerations
+  upgrade:
+    image: "$2"
+    command: ["/bin/sh", "-c"]
+    args: ["$arg_json"]
+${4:-}
+YAML
+}
+# plan_with VAR=value <plan args…>
+plan_with() { local kv="$1"; shift; ( export "${kv?}"; plan "$@" ); }
+if ! kubectl get crd plans.upgrade.cattle.io >/dev/null 2>&1; then
+  skip "node Plans" "system-upgrade-controller CRD not installed"
+elif ! kubectl get validatingadmissionpolicy platform-api-plan-scope >/dev/null 2>&1; then
+  printf 'FAIL  %-62s %s\n' "node Plans" "policy platform-api-plan-scope is not installed"; failed=$((failed + 1))
+else
+  expect created "insula-node-update with the fixed command" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
+  expect created "insula-node-finish with the fixed command" plan insula-node-finish "$NT_IMAGE" "$FINISH_ARG"
+  expect denied  "any other Plan name" plan "k3s-${PROBE}" "$NT_IMAGE" "$UPDATE_ARG"
+  expect denied  "update Plan running an extra command" plan insula-node-update "$NT_IMAGE" "${UPDATE_ARG%\'}; id'"
+  expect denied  "finish Plan running self-upgrade" plan insula-node-finish "$NT_IMAGE" "$UPDATE_ARG"
+  expect denied  "update Plan with another image" plan insula-node-update busybox:1.36 "$UPDATE_ARG"
+  expect denied  "update Plan with a prepare step" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG" \
+    "  prepare: { image: busybox:1.36, args: [id] }"
+  expect denied  "update Plan with a channel" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG" \
+    "  channel: https://example.test/latest"
+  expect denied  "update Plan mounting secrets" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG" \
+    "  secrets: [{ name: k3s-token, path: /host/secret }]"
+  # The controller tags a name-only image with spec.version — both are pinned.
+  expect denied  "update Plan with a name-only image" plan insula-node-update ghcr.io/insulahq/insula/node-terminal "$UPDATE_ARG"
+  expect denied  "update Plan with a free-form version" plan_with PLAN_VERSION=latest insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
+  expect denied  "update Plan labelling nodes on completion" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG" \
+    "  postCompleteLabels: { node-role.kubernetes.io/control-plane: \"true\" }"
+  expect denied  "update Plan with a priority class" plan insula-node-update "$NT_IMAGE" "$UPDATE_ARG" \
+    "  priorityClassName: system-node-critical"
+  expect denied  "update Plan selecting one node by name" \
+    plan_with PLAN_SELECTOR="{ matchLabels: { kubernetes.io/hostname: $NODE } }" insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
+  expect denied  "update Plan with narrowed tolerations" \
+    plan_with PLAN_TOLERATIONS="[{ key: x, operator: Exists }]" insula-node-update "$NT_IMAGE" "$UPDATE_ARG"
 fi
 
 total=$((pass + failed))

@@ -150,8 +150,8 @@ describe('convergence gates — an upgrade is not done when its images are', () 
   });
 
   it('reports nodes still catching up as scheduled, and does NOT hold the services back', () => {
-    // A node applies the release's host changes on its own daily timer, hours
-    // after the services. That is the normal state right after an upgrade; holding
+    // A node the run left out applies the release's host changes on its own
+    // hourly timer, after the services. That is the normal state right after an upgrade; holding
     // the run open on it made every upgrade "not converging".
     const r = evaluatePostflight({
       ...rolled, migrationsReadable: true, migrationsPending: 0,
