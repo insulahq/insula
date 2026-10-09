@@ -83,13 +83,21 @@ log_gate_scan() {
 # log_gate_fetch_and_scan <ip> <label> [ssh-key] — pull a node's bootstrap
 # transcript and scan it. Keeps the copy on failure so it can be read after the
 # VMs are gone, which is exactly when it is wanted.
+#
+# bootstrap.sh run directly (or --remote) writes hosting-platform-bootstrap.log;
+# `insula bootstrap` — the admin panel's join script — writes insula-bootstrap.log.
+# The newer of the two is this run's.
 log_gate_fetch_and_scan() {
-  local ip="$1" label="${2:-$1}" key="${3:-$VMTEST_SSH_KEY}"
+  local ip="$1" label="${2:-$1}" key="${3:-$VMTEST_SSH_KEY}" src
   local dest="${VMTEST_TMP_DIR:-/tmp}/bootstrap-${label}.log"
-  scp -q -i "$key" -o StrictHostKeyChecking=no \
-      "root@${ip}:/var/log/hosting-platform-bootstrap.log" "$dest" 2>/dev/null || {
+  src="$(ssh -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+      -o ConnectTimeout=8 "root@${ip}" \
+      'ls -t /var/log/hosting-platform-bootstrap.log /var/log/insula-bootstrap.log 2>/dev/null | head -n 1' \
+      2>/dev/null)" || true
+  if [[ -z "$src" ]] || ! scp -q -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      "root@${ip}:${src}" "$dest" 2>/dev/null; then
     echo "  log-gate(${label}): could not fetch the transcript from ${ip}" >&2
     return 2
-  }
+  fi
   log_gate_scan "$dest" "$label"
 }

@@ -3,6 +3,7 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Loader2, Shield, Fingerprint } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { usePasskey } from '@/hooks/use-passkey';
+import TotpStep from '@/components/auth/TotpStep';
 import { useAuthStatus } from '@/hooks/use-auth-status';
 import ApiUnavailable from '@/components/ApiUnavailable';
 import { API_BASE, ApiError } from '@/lib/api-client';
@@ -27,7 +28,7 @@ export default function Login() {
   const { state: authState, retryNow } = useAuthStatus('tenant');
   const authStatus = authState.kind === 'ready' ? authState.status : null;
 
-  const { login, error, setTokenAndUser, passkeyChallenge, clearPasskeyChallenge } = useAuth();
+  const { login, error, setTokenAndUser, totpChallenge, clearTotpChallenge } = useAuth();
   const passkey = usePasskey();
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -67,7 +68,9 @@ export default function Login() {
     setPasskeyError(null);
     try {
       await login(email, password);
-      if (!useAuth.getState().passkeyChallenge) {
+      // With an authenticator app on, the store now holds totpChallenge and
+      // the page shows the code step instead — don't navigate yet.
+      if (!useAuth.getState().totpChallenge) {
         navigate(from, { replace: true });
       }
     } catch { /* error in store */ } finally { setSubmitting(false); }
@@ -93,26 +96,6 @@ export default function Login() {
     } finally { setSubmitting(false); }
   };
 
-  const handle2FA = async () => {
-    if (!passkeyChallenge) return;
-    setSubmitting(true);
-    setPasskeyError(null);
-    try {
-      const result = await passkey.complete2FA(passkeyChallenge.preAuthToken);
-      setTokenAndUser(result.token, result.user);
-      localStorage.setItem('auth_refresh_token', result.refreshToken);
-      navigate(from, { replace: true });
-    } catch (err) {
-      const msg = err instanceof ApiError
-        ? err.message
-        : err instanceof Error
-          ? (err.name === 'NotAllowedError' || err.name === 'AbortError'
-            ? 'Passkey verification cancelled.'
-            : err.message)
-          : '2FA verification failed.';
-      setPasskeyError(msg);
-    } finally { setSubmitting(false); }
-  };
 
   const handleSso = (providerId: string) => {
     const callbackUrl = `${window.location.origin}/login`;
@@ -168,7 +151,8 @@ export default function Login() {
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Sign in to manage your hosting</p>
         </div>
 
-        {(error || oidcError) && (
+        {/* During the code step, TotpStep shows the store's error itself. */}
+        {((error && !totpChallenge) || oidcError) && (
           <div className="mb-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="login-error">
             {error ?? (oidcMessage ? decodeURIComponent(oidcMessage) : 'Authentication failed. Please contact your administrator.')}
           </div>
@@ -190,23 +174,14 @@ export default function Login() {
           <div className="my-4 flex items-center gap-3"><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /><span className="text-xs text-gray-400 dark:text-gray-500">or</span><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /></div>
         )}
 
-        {showLocalAuth && passkeyChallenge && (
-          <div className="space-y-4" data-testid="passkey-2fa-prompt">
-            <div className="rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-900 dark:text-blue-100">
-              Almost there. Verify with your passkey to complete sign-in for <strong>{passkeyChallenge.user.email}</strong>.
-            </div>
-            {passkeyError && (
-              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="passkey-2fa-error">{passkeyError}</div>
-            )}
-            <button type="button" onClick={handle2FA} disabled={submitting || !passkey.supported} className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="passkey-2fa-button">
-              {submitting ? <Loader2 size={16} className="animate-spin" /> : <Fingerprint size={16} />} Verify with passkey
-            </button>
-            <button type="button" onClick={() => { clearPasskeyChallenge(); setPasskeyError(null); }} className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid="passkey-2fa-cancel">
-              Cancel
-            </button>
-          </div>
+        {showLocalAuth && totpChallenge && (
+          <TotpStep
+            email={totpChallenge.user.email}
+            onDone={() => navigate(from, { replace: true })}
+            onCancel={clearTotpChallenge}
+          />
         )}
-        {showLocalAuth && !passkeyChallenge && (
+        {showLocalAuth && !totpChallenge && (
           <form onSubmit={handleSubmit} className="space-y-4" data-testid="login-form">
             <div><label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="email" type="email" required autoComplete="email webauthn" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm dark:bg-gray-700 dark:text-gray-100" placeholder="you@example.com" data-testid="email-input" /></div>
             <div><label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label><input id="password" type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm dark:bg-gray-700 dark:text-gray-100" placeholder="Enter your password" data-testid="password-input" /></div>

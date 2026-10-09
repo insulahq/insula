@@ -86,7 +86,7 @@ grep -q '^SSH_VIA_MESH_INTERFACE=tailscale0' "$TMPDIR/firewall.ts.conf" \
 EXPECTED_KEYS='PUBLIC_TCP_PORTS PUBLIC_UDP_PORTS SSH_VIA_MESH SSH_VIA_MESH_INTERFACE'
 for k in $EXPECTED_KEYS; do
   if ! grep -q "^${k}=" "$SCRIPT"; then
-    echo "FAIL [drift]: bootstrap.sh missing the ${k}= line in /etc/hosting-platform/firewall.conf heredoc"
+    echo "FAIL [drift]: bootstrap.sh missing the ${k}= line in /etc/hosting-platform/firewall/firewall.conf heredoc"
     exit 1
   fi
 done

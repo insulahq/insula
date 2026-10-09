@@ -29,8 +29,13 @@
 #   ./scripts/integration-mail-mobility-e2e.sh
 #
 # Exit codes:
-#   0  — all selected phases passed
-#   1+ — first failing phase
+#   0  — every phase that ran passed
+#   1  — at least one phase failed (or the remote session failed)
+#   77 — nothing ran: every selected phase skipped
+#
+# INTEGRATION_CA_FILE (optional): a CA PEM for the platform's certificates when they
+# are not publicly trusted (the VM tier's Pebble root). The phases run ON a node, which
+# trusts only the system store, so the file is shipped into the session for curl.
 #
 # Each phase prints PASS/FAIL on its own line and a one-line reason.
 set -u
@@ -52,10 +57,20 @@ fail=0
 mark_pass() { ok=$((ok+1)); green "PASS  Phase $1: $2"; }
 mark_fail() { fail=$((fail+1)); red   "FAIL  Phase $1: $2"; }
 
+CA_B64=""
+if [ -n "${INTEGRATION_CA_FILE:-}" ]; then
+  [ -r "$INTEGRATION_CA_FILE" ] || { red "INTEGRATION_CA_FILE=$INTEGRATION_CA_FILE is not readable"; exit 2; }
+  CA_B64=$(base64 -w0 < "$INTEGRATION_CA_FILE")
+fi
+SESSION_OUT=$(mktemp)
+trap 'rm -f "$SESSION_OUT"' EXIT
+
 # All work happens inside one SSH session so we don't pay reconnect overhead
-# between phases. Bash-script-over-stdin pattern.
+# between phases. Bash-script-over-stdin pattern. The verdict comes from the
+# PHASE_* lines, not the session's exit code: the session ends in an echo, so it
+# exits 0 however many phases failed (it did — every phase failing read as PASSED).
 ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_HOST" \
-  "PHASES='$PHASES' MIGRATION_TIMEOUT='$MIGRATION_TIMEOUT' DR_FAILOVER_BUDGET='$DR_FAILOVER_BUDGET' RETENTION_WAIT='$RETENTION_WAIT' ADMIN_HOST='$ADMIN_HOST' bash -s" <<'REMOTE'
+  "PHASES='$PHASES' MIGRATION_TIMEOUT='$MIGRATION_TIMEOUT' DR_FAILOVER_BUDGET='$DR_FAILOVER_BUDGET' RETENTION_WAIT='$RETENTION_WAIT' ADMIN_HOST='$ADMIN_HOST' CA_B64='$CA_B64' bash -s" <<'REMOTE' | tee "$SESSION_OUT"
 set -u
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 # Defaults if not exported through the parent env
@@ -64,6 +79,14 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 : "${RETENTION_WAIT:=200}"
 : "${PHASES:=ABCDEFGH}"
 : "${ADMIN_HOST:=}"
+: "${CA_B64:=}"
+CURL_CA=()
+if [ -n "$CA_B64" ]; then
+  CA_FILE=$(mktemp)
+  trap 'rm -f "$CA_FILE"' EXIT
+  printf '%s' "$CA_B64" | base64 -d > "$CA_FILE"
+  CURL_CA=(--cacert "$CA_FILE")
+fi
 
 # ── shared helpers ──────────────────────────────────────────────────────────
 red()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -72,6 +95,7 @@ amber() { printf '\033[33m%s\033[0m\n' "$*"; }
 hdr()   { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
 fail_phase() { echo "PHASE_FAIL:$1:$2"; }
 pass_phase() { echo "PHASE_PASS:$1:$2"; }
+skip_phase() { echo "PHASE_SKIP:$1:$2"; }
 
 # Mint admin JWT once
 PGPOD=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
@@ -102,11 +126,11 @@ echo "API endpoint: ${ADMIN_HOST:-<UNRESOLVED>}"
 api() {
   local method="${1:-GET}" path="$2" body="${3:-}" maxtime="${4:-30}"
   if [ -n "$body" ]; then
-    curl -sS --max-time "$maxtime" -X "$method" \
+    curl -sS "${CURL_CA[@]}" --max-time "$maxtime" -X "$method" \
       -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
       -d "$body" "${ADMIN_HOST}/api/v1${path}"
   else
-    curl -sS --max-time "$maxtime" -X "$method" \
+    curl -sS "${CURL_CA[@]}" --max-time "$maxtime" -X "$method" \
       -H "Authorization: Bearer ${TOKEN}" "${ADMIN_HOST}/api/v1${path}"
   fi
 }
@@ -149,7 +173,7 @@ wait_pod_ready() {
 NODES_SERVER=$(kubectl get node -l insula.host/node-role=server -o jsonpath='{.items[*].metadata.name}')
 NODES_WORKER=$(kubectl get node -l insula.host/node-role!=server -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 ACTIVE_NODE=$(kubectl exec -n platform "$PGPOD" -- psql -U postgres -d platform -tA -c "SELECT mail_active_node FROM system_settings;" 2>/dev/null | head -1)
-OTHER_SERVER=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
+OTHER_SERVER=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -x -F "$ACTIVE_NODE" | head -1)
 
 echo "Topology: server-role=[$NODES_SERVER] worker-role=[$NODES_WORKER] active=$ACTIVE_NODE other-server=$OTHER_SERVER"
 
@@ -286,7 +310,7 @@ phase_B() {
   # Verify PVC bound on target + stalwart pod Running on target
   local pvc_node pod_node
   pvc_node=$(kubectl get pvc -n mail mail-stack-data -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}')
-  pod_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
+  pod_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}')
   if [ "$pvc_node" = "$to" ] && [ "$pod_node" = "$to" ]; then
     green "  PVC + pod both on $to: ✓"
   else
@@ -334,7 +358,7 @@ phase_C() {
   worker=$(echo "$NODES_WORKER" | tr ' ' '\n' | head -1)
   if [ -z "$worker" ]; then
     amber "  PHASE C SKIP: no worker-role node available"
-    pass_phase C "skipped (no worker)"
+    skip_phase C "no worker-role node"
     return
   fi
   local from=$ACTIVE_NODE to=$worker
@@ -354,7 +378,7 @@ phase_C() {
   fi
   # Verify BOTH stalwart and bulwark on worker (they must co-locate on the PVC)
   local s_node b_node
-  s_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}')
+  s_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}')
   b_node=$(kubectl get pod -n mail -l app=bulwark -o jsonpath='{.items[0].spec.nodeName}')
   if [ "$s_node" = "$to" ] && [ "$b_node" = "$to" ]; then
     green "  stalwart + bulwark both on worker $to: ✓"
@@ -501,7 +525,7 @@ phase_F() {
   echo "  Pre: active=$current pvc=$pvc_node"
   # Pick a different node to point at
   local other_node
-  other_node=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -F "$pvc_node" | head -1)
+  other_node=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -x -F "$pvc_node" | head -1)
   if [ -z "$other_node" ]; then
     amber "  PHASE F SKIP: no node other than $pvc_node to fake broken state"
     pass_phase F "skipped (single server node)"
@@ -653,10 +677,10 @@ phase_H() {
   done
   local configured_secondary=0
   if [ -z "$standby_candidate" ]; then
-    standby_candidate=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
+    standby_candidate=$(echo "$NODES_SERVER" | tr ' ' '\n' | grep -v -x -F "$ACTIVE_NODE" | head -1)
     if [ -z "$standby_candidate" ]; then
       amber "  PHASE H SKIP: no server-role node other than active ($ACTIVE_NODE) — single-node cluster"
-      pass_phase H "skipped (no server-role standby)"
+      skip_phase H "no server-role standby"
       return
     fi
     pgx "UPDATE system_settings SET mail_secondary_node='$standby_candidate' WHERE mail_secondary_node IS NULL OR mail_secondary_node='';"
@@ -679,6 +703,24 @@ phase_H() {
       pgx "UPDATE system_settings SET mail_secondary_node=NULL WHERE mail_secondary_node='$standby_candidate';"
   }
 
+  # Reach the active node by its InternalIP (node names rarely resolve). Stopping
+  # k3s on the node THIS session runs on would cut off its own kubectl, and a
+  # session host without node-to-node SSH cannot reach the others — both are
+  # harness limits, not product failures: skip, and let integration-mail-dr-failover.sh
+  # (which drives the same flow from the runner) cover it.
+  local active_addr
+  active_addr=$(kubectl get node "$ACTIVE_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
+  if [ "$(hostname)" = "$ACTIVE_NODE" ] || { [ -n "$active_addr" ] && hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx -F "$active_addr"; }; then
+    restore_dr_settings
+    skip_phase H "active node $ACTIVE_NODE is this session's host — run integration-mail-dr-failover.sh"
+    return
+  fi
+  if [ -z "$active_addr" ] || ! ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 "$active_addr" true 2>/dev/null; then
+    restore_dr_settings
+    skip_phase H "no SSH from this session host to $ACTIVE_NODE (${active_addr:-no InternalIP}) — run integration-mail-dr-failover.sh"
+    return
+  fi
+
   # Baseline migration count so we can detect a new dr-watcher-launched run.
   local pre_runs
   pre_runs=$(pgq "SELECT COUNT(*) FROM mail_migration_runs;" | tr -d ' ')
@@ -687,7 +729,7 @@ phase_H() {
   # after the node-monitor-grace-period (~40s default). dr-watcher detects it
   # on the next tick, once threshold_seconds elapses.
   echo "  stopping k3s on $ACTIVE_NODE (will restart at end of test)"
-  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "${ACTIVE_NODE}.example.test" 'systemctl stop k3s' 2>&1 | head -3
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$active_addr" 'systemctl stop k3s' 2>&1 | head -3
 
   echo "  waiting up to ${DR_FAILOVER_BUDGET}s for dr-watcher to launch failover migration…"
   local end=$(( $(date +%s) + DR_FAILOVER_BUDGET ))
@@ -709,7 +751,7 @@ phase_H() {
 
   # Restart k3s + restore DB truth no matter what (so the cluster recovers).
   echo "  restarting k3s on $ACTIVE_NODE"
-  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "${ACTIVE_NODE}.example.test" 'systemctl start k3s' 2>&1 | head -3
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$active_addr" 'systemctl start k3s' 2>&1 | head -3
   restore_dr_settings
 
   if [ -z "$new_run" ]; then
@@ -727,7 +769,7 @@ phase_H() {
   # Verify stalwart pod is Running on the standby candidate (NOT on original active)
   sleep 5
   local final_node
-  final_node=$(kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+  final_node=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
   echo "  post-failover stalwart pod on: $final_node"
   ACTIVE_NODE=$final_node
   pass_phase H "DR failover completed — stalwart moved from (downed) original-active to $final_node"
@@ -756,7 +798,16 @@ echo ""
 echo "===== HARNESS SUMMARY ====="
 REMOTE
 
-rc=$?
+rc=${PIPESTATUS[0]}
+n_pass=$(grep -c '^PHASE_PASS:' "$SESSION_OUT")
+n_fail=$(grep -c '^PHASE_FAIL:' "$SESSION_OUT")
+n_skip=$(grep -c '^PHASE_SKIP:' "$SESSION_OUT")
 echo ""
-echo "Overall harness exit code: $rc"
-exit $rc
+echo "Phases: $n_pass passed, $n_fail failed, $n_skip skipped (session exit $rc)"
+if [ "$rc" -ne 0 ] || [ "$n_fail" -gt 0 ]; then exit 1; fi
+if [ "$n_pass" -eq 0 ]; then
+  [ "$n_skip" -gt 0 ] && exit 77
+  red "no phase reported a result"
+  exit 1
+fi
+exit 0

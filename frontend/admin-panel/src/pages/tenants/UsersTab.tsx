@@ -7,6 +7,7 @@ import { useTenantUsers } from '@/hooks/use-tenant-users';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import TotpResetCell from '@/components/users/TotpResetCell';
 
 function RoleBadge({ role }: { readonly role: string }) {
   const isPrimary = role === 'primary';
@@ -106,6 +107,7 @@ export default function UsersTab() {
                     <SortableHeader label="Tenant" sortKey="tenantName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Role" sortKey="roleName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <th className="hidden px-5 py-3 md:table-cell">2FA</th>
                     <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                     <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
@@ -136,6 +138,9 @@ export default function UsersTab() {
                       <td className="px-5 py-3.5">
                         <StatusPill status={user.status} />
                       </td>
+                      <td className="hidden px-5 py-3.5 md:table-cell">
+                        <TotpResetCell userId={user.id} enabled={user.totpEnabled} />
+                      </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                         {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '—'}
                       </td>
@@ -146,7 +151,7 @@ export default function UsersTab() {
                   ))}
                   {users.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No tenant users found matching your search.'
                           : 'No tenant users found.'}

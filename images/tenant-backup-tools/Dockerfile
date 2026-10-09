@@ -159,6 +159,10 @@ RUN chmod 755 /usr/local/bin/snapshot-upload.sh
 # (avoids restic-restore latency at takeover time).
 COPY standby-replicate.sh /usr/local/bin/standby-replicate.sh
 RUN chmod 755 /usr/local/bin/standby-replicate.sh
+# Which source a mail restore uses (standby copy vs restic, fresher wins) —
+# called by the Stalwart and Bulwark restore-state init containers.
+COPY standby-restore-pick.sh /usr/local/bin/standby-restore-pick.sh
+RUN chmod 755 /usr/local/bin/standby-restore-pick.sh
 
 # 2026-05-13: Stalwart-native, app-level archive uploader/downloader.
 # Two modes, dispatched on ARCHIVE_MODE env:

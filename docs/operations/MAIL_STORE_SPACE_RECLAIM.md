@@ -81,6 +81,64 @@ kubectl -n mail exec deploy/stalwart-mail -- curl -s \
 
 `holdSamplesFor` is in **milliseconds** (30 d = `2592000000`).
 
+## The cost of blob GC: periodic full rewrites
+
+Stalwart turns blob GC on with `blob_gc_age_cutoff = 1.0` (hard-coded in
+`crates/store/src/backend/rocksdb/main.rs`, not configurable). That cutoff treats
+**every** blob file as old, so each compaction rewrites every live message body it
+touches, whether or not the file holds any garbage. On the blobs column family that
+means the **whole store**:
+
+- The CF's SST data is tiny next to its blobs (keys and blob indexes, under 1 % on
+  real mail), so it sits in one level until it outgrows 256 MiB.
+- Keys are content hashes, so every new L0 file spans the whole key range, and the
+  L0→L6 compaction that follows merges all of L6.
+- That compaction runs after roughly every **128 MiB of new message bodies** (32 MiB
+  write buffer × 4 L0 files at Stalwart's default `bufferSize`).
+
+The amount rewritten grows with the store, not with the garbage. The RocksDB
+`LOG` shows it as a `compaction_started` on `"cf_name": "t"` with
+`"compaction_reason": "LevelL0FilesNum"`, followed by a `compaction_finished` whose
+`total_blob_output_size` is about the size of the store.
+
+Measured on v0.16.25 (local Docker, upstream defaults), with RocksDB's default cutoff
+0.25 for comparison (build with the options made settable):
+
+| | cutoff 1.0 (shipped) | cutoff 0.25 |
+|---|---|---|
+| Loading 2.75 GiB into an empty store | 15.9 GiB rewritten | 6.9 GiB |
+| 2 GiB of new mail on a 10.8 GB store | 59 GiB rewritten (29×) | 1.3 GiB (0.7×) |
+| Peak disk during a rewrite | up to ~2× the store | ~1× |
+| Deleted mail reclaimed | yes | yes (never less than 1.0 in our runs) |
+
+What this means for an install, whatever its size:
+
+- **Disk headroom:** old blob files are deleted only when the rewrite finishes, so a
+  mail node needs **free space at least the size of its mail data**. The mail health
+  check reports this as **Disk headroom** and alerts when a node falls short.
+- **Disk writes:** the whole store is written again on every cycle, which wears SSDs
+  and can stall shared or HDD-backed storage.
+- **Standby replication and backups** copy whole files. After a rewrite the standby
+  sync re-transfers the entire store across the network. The standby keeps its
+  previous complete copy until that sync finishes, so the copy ages but never
+  disappears; the **Standby copies** health check alerts when it is older than the
+  target (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)). Count a store-sized transfer
+  every few days in traffic budgets on metered links; the sync's bandwidth can be
+  capped (`mail-standby-settings` ConfigMap, same page).
+- **Imports and migrations** cost roughly quadratic writes, because each ~128 MiB step
+  rewrites everything imported so far. Expect a large mailbox import to keep the disk
+  busy, and the standby copy ageing, for longer than the copy itself would suggest.
+
+Only an upstream change can fix this: Stalwart would need to lower the cutoff (RocksDB's
+default is 0.25) or make it configurable. Reported with a reproduction and measurements:
+[support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887).
+Upstream has answered that it is fixed in **v0.16.26** (not yet released on 2026-10-08).
+Insula will move to it once the release is out and the rewrite measured above is
+re-measured against it; until then the guidance on this page stands. RocksDB itself is working on garbage-ratio-driven
+blob GC ([facebook/rocksdb#15301](https://github.com/facebook/rocksdb/issues/15301)). Until
+then there is nothing to tune on the platform side: keep the headroom, and watch the two
+health checks.
+
 ## Do not set `holdSamplesFor` too low
 
 It is a disk knob with an anti-spam cost:

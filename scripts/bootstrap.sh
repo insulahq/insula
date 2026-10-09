@@ -413,7 +413,7 @@ cluster_cidr_args() { # -> "<pod-cidrs> <svc-cidrs>"
 # So operators with the workstation IP in --allow-source still get in
 # via the trusted_ranges path even when the mesh agent is down.
 #
-# Surfaces via /etc/hosting-platform/firewall.conf for the
+# Surfaces via /etc/hosting-platform/firewall/firewall.conf for the
 # security-probe DaemonSet to read.
 SSH_VIA_MESH_IFACE=""
 
@@ -690,7 +690,9 @@ ACME_CA_FILE=""
 # https clients (e.g. platform-api → Dex OIDC discovery). Populates the imperatively-created
 # platform-extra-ca-trust secret (mounted into platform-api via NODE_EXTRA_CA_CERTS). Needed
 # when ingress certs are signed by a private/test CA a public trust store lacks (bootstrap
-# --acme-server, e.g. the VM integration tier's Pebble). Empty by default → built-in roots only.
+# --acme-server, e.g. the VM integration tier's Pebble). Also seeds Stalwart's trust (Secret
+# stalwart-extra-ca, used by overlays carrying the stalwart-extra-ca component), so a private
+# ACME CA can issue the MAIL certificate too. Empty by default → built-in roots only.
 TRUST_CA_FILE=""
 SKIP_FLUX=false
 SKIP_HARDENING=false
@@ -994,7 +996,7 @@ FIREWALL TRUST (always-on set mode):
                            --ssh-via-mesh wt0
                            --ssh-via-mesh tailscale0
                            --ssh-via-mesh wg0
-                         Persists to /etc/hosting-platform/firewall.conf
+                         Persists to /etc/hosting-platform/firewall/firewall.conf
                          so the security-probe DaemonSet reports it
                          via the admin panel.
 
@@ -2997,10 +2999,17 @@ NFT
   log "Firewall configured (always-on set mode)."
 
   # Persist operator-declared posture for the security-probe
-  # DaemonSet. Key-value format, KEY=val per line; the probe reads
-  # this via a hostPath mount at /host/etc/hosting-platform/.
-  mkdir -p /etc/hosting-platform
-  cat > /etc/hosting-platform/firewall.conf <<HPFW
+  # DaemonSet. Key-value format, KEY=val per line. The file has a
+  # directory of its own because the probe mounts that directory —
+  # /etc/hosting-platform is /etc/insula, which holds credentials. The
+  # old path stays as a RELATIVE symlink for older readers (same layout
+  # as host-migration 2026.10.7/0001-firewall-conf-own-directory).
+  install -d -m 0755 /etc/hosting-platform/firewall
+  if [[ -f /etc/hosting-platform/firewall.conf && ! -L /etc/hosting-platform/firewall.conf ]]; then
+    rm -f /etc/hosting-platform/firewall.conf
+  fi
+  ln -sfn firewall/firewall.conf /etc/hosting-platform/firewall.conf
+  cat > /etc/hosting-platform/firewall/firewall.conf <<HPFW
 # Written by bootstrap.sh — DO NOT EDIT BY HAND.
 # Re-run bootstrap with appropriate flags to change posture.
 PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190 23022
@@ -3008,7 +3017,7 @@ PUBLIC_UDP_PORTS=51820 29899
 SSH_VIA_MESH=${ssh_via_mesh_persist}
 SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}
 HPFW
-  chmod 0644 /etc/hosting-platform/firewall.conf
+  chmod 0644 /etc/hosting-platform/firewall/firewall.conf
 
   # Always seed the firewall sets — set mode is the only mode now.
   seed_firewall_sets
@@ -3062,16 +3071,23 @@ seed_firewall_sets() {
       warn "  failed to seed cluster_peers_v4 join target ${K3S_SERVER_IP}; manual intervention may be required"
     fi
     log ""
-    log "  IMPORTANT — joining an existing cluster requires this node's"
-    log "  IP to be pre-authorised on every existing peer. Either:"
-    log "    (a) Pass --pre-enroll-peer ${local_v4} to the FIRST server's bootstrap"
-    log "        (seeds cluster_peers_v4 up front; joining bootstraps succeed without"
-    log "         further operator action)."
-    log "    (b) Settings → Cluster Networking → Pre-Enroll Node (post-install UI path)"
-    log "    (c) On each existing peer, run BEFORE this bootstrap:"
-    log "          /usr/local/bin/peer-firewall-add ${local_v4}"
-    log "  Otherwise this node cannot reach :6443 and the join will hang"
-    log "  (k3s.service auto-retries every ~5s; we'll poll for up to 600s)."
+    # The advice below is for a node nobody pre-authorised. Printed on a join that was
+    # pre-enrolled (the admin panel's own join script), it read as a failure warning.
+    if timeout 5 bash -c "</dev/tcp/${K3S_SERVER_IP}/6443" 2>/dev/null; then
+      log "  Join target ${K3S_SERVER_IP}:6443 answers this node — it is pre-authorised there."
+    else
+      log "  IMPORTANT — the join target ${K3S_SERVER_IP}:6443 does not answer this node yet."
+      log "  Joining an existing cluster requires this node's IP to be pre-authorised"
+      log "  on every existing peer. Either:"
+      log "    (a) Pass --pre-enroll-peer ${local_v4} to the FIRST server's bootstrap"
+      log "        (seeds cluster_peers_v4 up front; joining bootstraps succeed without"
+      log "         further operator action)."
+      log "    (b) Settings → Cluster Networking → Pre-Enroll Node (post-install UI path)"
+      log "    (c) On each existing peer, run BEFORE this bootstrap:"
+      log "          /usr/local/bin/peer-firewall-add ${local_v4}"
+      log "  Otherwise this node cannot reach :6443 and the join will hang"
+      log "  (k3s.service auto-retries every ~5s; we'll poll for up to 600s)."
+    fi
     log ""
   fi
   # Pre-enroll peers from --pre-enroll-peer flag (first-server bootstrap
@@ -7712,6 +7728,20 @@ create_platform_configmap() {
   kctl create secret generic platform-extra-ca-trust --namespace=mail \
     --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1 || true
   log "platform-extra-ca-trust secret ready ($([[ "$extra_ca_src" == /dev/null ]] && echo 'empty — built-in roots only' || echo "seeded from ${TRUST_CA_FILE}"))."
+  # Stalwart trusts only its system store, rebuilt from this Secret by the stalwart-extra-ca
+  # component's init container. It must exist BEFORE the Stalwart pod first starts: the
+  # bootstrap's own Stalwart configure creates the ACME provider, and that fails with a
+  # transport error ("error sending request for url …/directory") when Stalwart cannot
+  # verify a private ACME CA — leaving the mail listener on a self-signed certificate.
+  # Only with --trust-ca: without the Secret the component stays inert (image roots only).
+  if [[ "$extra_ca_src" != /dev/null ]]; then
+    if kctl create secret generic stalwart-extra-ca --namespace=mail \
+         --from-file=trust-ca.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1; then
+      log "stalwart-extra-ca secret seeded from ${TRUST_CA_FILE} (Stalwart trusts it for its ACME CA)."
+    else
+      warn "could not create stalwart-extra-ca in the mail namespace — Stalwart will not trust ${TRUST_CA_FILE}; the mail certificate cannot come from that CA."
+    fi
+  fi
 
   # Support-email default: reuse the operator's ACME email if available —
   # that's already a verified contact address, and the operator typically

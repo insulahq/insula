@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { customDeploymentImageAudit, deployments, tenants, hostingPlans } from '../../db/schema.js';
+import { customDeploymentImageAudit, deployments, ingressRoutes, tenants, hostingPlans } from '../../db/schema.js';
 import { newWorkloadCpuFor } from '../cpu-migration/new-workload.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
@@ -51,6 +51,8 @@ import {
 import { CUSTOM_SPEC_VERSION } from './schema.js';
 import { parseCompose } from './compose-parser.js';
 import { withResolvedLines } from './yaml-line-map.js';
+import { getTenantDiskLimits } from '../tenant-disk/limits.js';
+import { planRoutesForPortEdit } from './route-port.js';
 
 type CallerRole = ValidatorContext['callerRole'];
 
@@ -592,6 +594,24 @@ export async function updateCustomDeployment(
     );
   }
 
+  // A port edit moves what the deployment's routes land on. Plan it before
+  // anything is written: the ingress reconciler silently skips a route it
+  // cannot resolve, so a stranded route would 404 with no error anywhere.
+  const boundRoutes = patch.ports !== undefined
+    ? await db.select({ id: ingressRoutes.id, hostname: ingressRoutes.hostname, servicePort: ingressRoutes.servicePort })
+      .from(ingressRoutes)
+      .where(eq(ingressRoutes.deploymentId, id))
+    : [];
+  const routePlan = planRoutesForPortEdit(current.customSpec, nextSpec, boundRoutes);
+  if (routePlan.stranded.length > 0) {
+    throw new ApiError(
+      'PORT_IN_USE_BY_ROUTE',
+      `This port change leaves ${routePlan.stranded.join(', ')} with no port to route to. Keep an exposed, ingress-eligible port, or point those routes elsewhere first.`,
+      409,
+      { hostnames: routePlan.stranded },
+    );
+  }
+
   // Row-level totals: compose stacks sum across services, simple
   // mode uses the (only) service's own values directly. Keeps the
   // row's cpu/memory request aligned with the actual cluster
@@ -603,19 +623,38 @@ export async function updateCustomDeployment(
       cpuRequest: updatedService.resources.cpuRequest,
       memoryRequest: updatedService.resources.memoryRequest,
     };
-  await db.update(deployments)
-    .set({
-      customSpec: nextSpec as unknown as Record<string, unknown>,
-      cpuRequest: totals.cpuRequest,
-      memoryRequest: totals.memoryRequest,
-      status: 'deploying',
-      statusMessage: null,
-      lastError: null,
-    })
-    .where(eq(deployments.id, id));
+  await db.transaction(async (tx) => {
+    await tx.update(deployments)
+      .set({
+        customSpec: nextSpec as unknown as Record<string, unknown>,
+        cpuRequest: totals.cpuRequest,
+        memoryRequest: totals.memoryRequest,
+        status: 'deploying',
+        statusMessage: null,
+        lastError: null,
+      })
+      .where(eq(deployments.id, id));
+    for (const repin of routePlan.repins) {
+      await tx.update(ingressRoutes)
+        .set({ servicePort: repin.servicePort })
+        .where(eq(ingressRoutes.id, repin.routeId));
+    }
+  });
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
   await deployToCluster(db, k8s, id, namespace, current.name, current.storagePath ?? `custom-deployment/${current.name}`, nextSpec, nodeName, storageTier);
+
+  // The IngressRoute names the Service and port, and both can have just
+  // changed (the old Service may even be gone). Nothing else rebuilds it
+  // on a port edit.
+  if (boundRoutes.length > 0) {
+    try {
+      const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+      await reconcileIngress(db, k8s, tenantId, namespace);
+    } catch (err) {
+      console.warn(`[custom-deployments] reconcileIngress after port edit of ${current.name} failed: ${(err as Error).message}`);
+    }
+  }
 
   return getCustomDeployment(db, tenantId, id);
 }
@@ -1063,6 +1102,7 @@ async function deployToCluster(
 
   try {
     await deployCustomDeployment(k8s, {
+      diskLimitMb: (await getTenantDiskLimits(db)).appMb,
       deploymentId,
       deploymentName,
       namespace,

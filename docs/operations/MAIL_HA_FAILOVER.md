@@ -33,9 +33,13 @@ of restore, NOT from the PVC moving:
 
 | Layer | Trigger | Latency | Source |
 |---|---|---|---|
-| **1. A3 standby DaemonSet FAST PATH** (default) | failover lands on a standby-labelled node with fresh `.standby-complete` | sub-second local copy | `/var/lib/mail-stack-standby/{stalwart,bulwark}/` on the new node |
-| **2. restic restore** (fallback) | FAST PATH unavailable or stale (>30 min) | seconds-to-minutes via shim → upstream | restic repo (offsite per operator's BackupStore config) |
-| **3. Fresh-start** (last resort) | both above fail | instant | empty PVC; Stalwart RocksDB initialises fresh, Bulwark generates a new admin.json |
+| **1. A3 standby DaemonSet FAST PATH** (default) | failover lands on a standby-labelled node with a complete copy, and no backup snapshot is newer | sub-second local copy | the current generation under `/var/lib/mail-stack-standby/` on the new node |
+| **2. restic restore** | no standby copy, or the newest snapshot is newer than it | seconds-to-minutes via shim → upstream | restic repo (offsite per operator's BackupStore config) |
+| **3. Fresh-start** (last resort) | neither exists | instant | empty PVC; Stalwart RocksDB initialises fresh, Bulwark generates a new admin.json |
+
+If the restic restore that was preferred over a standby copy fails, both init
+containers fall back to that copy instead of crash-looping (Stalwart) or
+fresh-starting (Bulwark).
 
 For Bulwark specifically: if it lands in fresh-start mode, the
 admin password is a new scrypt hash → operator must reset via the
@@ -96,6 +100,55 @@ the stack is currently running on** — operators never label nodes manually.
 > at all. On staging the primary's sentinel was two months old, so the
 > max-age gate correctly rejected it and every failback fell through to the
 > slow restic path.
+
+## The standby copy: generations, and which source a restore uses
+
+`standby-replicate.sh` keeps the copy in **generations**:
+
+```
+/var/lib/mail-stack-standby/
+  gen/<epoch>/{stalwart,bulwark}/   complete copies (the current one, and the previous
+                                    one while a restore may still be reading it)
+  gen/next/                         the copy being built; kept across a failed pass
+  current -> gen/<epoch>            swapped in one rename when a pass succeeds
+  stalwart -> current/stalwart      stable paths (also for the pre-generation readers)
+  bulwark  -> current/bulwark
+  .standby-complete                 epoch the current copy's data dates from
+  .lock / .writer.lock              restore readers (shared) / one pass at a time
+```
+
+Each pass builds `gen/next` with `rsync --link-dest` on the current copy, so
+unchanged files are hard links and a pass costs only what changed. `current` and the
+marker move only when the pass succeeds. **A complete copy therefore exists at all
+times**, also while a long pass runs (a large import, or the mail store rewriting its
+files — every ~128 MiB of new mail on Stalwart v0.16.10+, see
+[MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
+The copy ages during such a pass; it never disappears. A failed pass leaves `current`
+alone and the next pass resumes `gen/next`. The old in-place layout is adopted on the
+first pass after an upgrade (renames only, no copy).
+
+**Disk:** after a full rewrite the new generation shares nothing with the old one, so
+a standby briefly holds about twice the store — the same headroom the active node
+needs. The **Disk headroom** health check covers standby nodes.
+
+**Which source a restore uses** — `standby-restore-pick.sh`, shared by the Stalwart and
+Bulwark restore-state init containers so both halves agree: the **fresher** of the
+standby copy and the newest restic snapshot. A standby copy older than
+`FAST_PATH_MAX_AGE_SECONDS` (default 1800 s) is still used when nothing fresher exists
+(it loses less than a fresh start); the init log says how old it is. The **Standby
+copies** health check alerts when a copy is older than that target.
+
+**Speed limit (optional):** on a metered or slow link, cap the DaemonSet's sync —
+re-read every pass, no restart needed:
+
+```bash
+kubectl -n mail create configmap mail-standby-settings --from-literal=bwlimit=30m   # 30 MiB/s
+kubectl -n mail delete configmap mail-standby-settings                               # no limit
+```
+
+With generations a slower sync only lets the copy age; it never leaves the node
+without one. The planned-move final sync ignores the limit (mail is down while it
+runs).
 
 ## Initial setup (new cluster)
 
@@ -158,10 +211,11 @@ the source, and the run is `failed` (or cancelled) with the reason. Skipped for 
 failover (source down — the ≤5 min standby RPO applies), recovery mode,
 restoring a chosen snapshot, and same-node restores (`shouldRunFinalSync`).
 
-The replicate script only invalidates the standby copy once the publisher
-answers: while Stalwart is at 0 (any migration, or the source node lost) a
-DaemonSet tick used to delete `.standby-complete` before a pull that could only
-fail, and the restore then fell back to the older restic backup.
+The replicate script only touches the standby copy once the publisher
+answers: while Stalwart is at 0 (any migration, or the source node lost) nothing
+moves, so a restore reading the copy is never disturbed. The final sync and the
+DaemonSet share a writer lock; the final sync waits for a running pass, then
+refreshes the copy itself.
 
 ## Failover scenarios
 
@@ -275,6 +329,24 @@ Same state machine as auto-failover but:
 
 ## Edge cases observed during E2E testing
 
+### 0. A restic escalation must not outlive the migration
+
+When the restored copy fails the post-restore check (`verifyRestoreContent` — e.g. a domain
+created after the standby's last sync), the migration escalates to a restic restore by stamping
+`mail.platform/restore-snapshot-id: latest` with `allow-restore`. Step 7 clears **both**
+annotations on success. It used to clear only `allow-restore`: that patch restarted Stalwart, and
+the init container — which recorded the concrete snapshot id, never `latest` — wiped the restored
+store and, without `allow-restore`, fresh-started it empty (VM failover drill, 2026-10-07: the probe
+message was lost, TLS and inbound mail broke with it). Now:
+
+- the init records the **requested** id (`latest` included) in `.restore-applied-at`, so a restart
+  with the same annotation is a no-op;
+- a per-snapshot request is never allowed to wipe an existing DataStore unless `allow-restore` is
+  set and a restic repository is configured — the init logs `KEEPING the existing DataStore`.
+
+Check after any failover: `kubectl -n mail get deploy stalwart-mail -o
+jsonpath='{.spec.template.metadata.annotations}'` shows neither annotation.
+
 ### 1. Source-node pods stuck Terminating
 
 When kubelet on the source node is dead, pods sit `Terminating` forever
@@ -314,33 +386,38 @@ A run stuck in `state='failed'` paired with `mail_dr_state='failed-over'`
 is the legacy bug. Manual recovery: `UPDATE system_settings SET
 mail_dr_state='degraded' WHERE id='system'` → dr-watcher retries.
 
-### 3. Standby data stale (max-age gate)
+### 3. Standby data stale
 
-The FAST PATH gates on the `.standby-complete` sentinel written by
-`standby-replicate.sh` only after both `stalwart/` and `bulwark/`
-subtrees finish copying. Partial restores (DaemonSet killed
-mid-cp) are invisible to the failover code.
+The FAST PATH needs the `.standby-complete` marker and the copy's sentinel (RocksDB
+`CURRENT`, Bulwark `admin/admin.json`); the marker belongs to the current generation,
+which is only ever a complete copy.
 
-If the standby DaemonSet has been down for a long time, the sentinel
-would remain stale. **Max-age gate** (added 2026-05-25): the sentinel
-stores epoch-seconds; both init containers reject the FAST PATH if
-`now - sentinel_epoch > FAST_PATH_MAX_AGE_SECONDS` (default 1800s =
-30 min, 6× the DaemonSet's 5-min cadence). Stalwart then falls
-through to restic restore; Bulwark falls through to fresh-start.
+If the standby DaemonSet has been down for hours, or a long sync is running, the copy
+is old. The restore then compares it with the newest restic snapshot and takes the
+fresher one (`standby-restore-pick.sh`). An old copy is still restored when no newer
+snapshot exists, with a log line saying how old it is:
 
-Verified by live destructive test 2026-05-25: backdated sentinel
-to 7268s old, triggered failover. Init logged:
 ```
-restore-state: standby marker is 7268s old (limit 1800s) — rejecting FAST PATH, falling through to restic
+standby-restore-pick: standby copy dates from 1791348152 (7268s ago) — OLDER than the 1800s target; mail since then is not in it
 ```
 
-**Operator awareness**: if a node was offline for hours, the failover
-correctly falls through. No silent stale-data restore.
+> Changed 2026-10-07. A copy older than `FAST_PATH_MAX_AGE_SECONDS` used to be
+> rejected outright: Stalwart then restored restic even when the snapshot was older
+> still, and with no restic repository configured both init containers fell
+> through to a FRESH START — an empty mail store, while a complete copy sat on the
+> node. Bulwark also never compared against the snapshot, so its half could restore
+> from a different point in time than Stalwart's. Both are covered by
+> `scripts/test-mail-restore-init.sh` (CI job *Mail restore init scripts*).
+
+**Operator awareness:** the **Standby copies** component of the mail health check
+(Email → health banner, and an admin alert) reports any standby node whose newest
+complete copy is older than the target. It reads the target from the Deployment's
+`FAST_PATH_MAX_AGE_SECONDS`, so an override is judged correctly.
 
 ### 4. Bulwark fresh-start on failover with no standby data
 
-If `/standby-data/bulwark/admin/admin.json` is absent AND no
-`.standby-complete` marker exists, Bulwark falls through to "fresh
+If the standby copy has no `bulwark/admin/admin.json` (or no `.standby-complete`
+marker) and restic has nothing either, Bulwark falls through to "fresh
 start" — new admin password generated. Operator must reset via the
 admin panel or the bulwark-secrets reset flow. Stalwart data is
 unaffected (separate restore path).
@@ -479,8 +556,8 @@ fresh-started even when a valid restic snapshot existed.
 Now Bulwark's restore-state init container mirrors Stalwart's
 cascade:
 1. SENTINEL exists (admin.json already on PVC) → skip
-2. FAST PATH from `/standby-data/bulwark/` (with `.standby-complete`
-   age gate)
+2. FAST PATH from the standby copy (current generation), when no restic snapshot
+   is newer (`standby-restore-pick.sh`, the same choice as Stalwart's)
 3. **restic restore** from `RESTIC_REPOSITORY` (Secret
    `stalwart-snapshot-restic-repo`, shared with Stalwart)
 4. Fresh-start (writes `.fresh-started-at` sentinel)

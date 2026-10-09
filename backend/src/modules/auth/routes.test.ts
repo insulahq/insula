@@ -54,11 +54,18 @@ vi.mock('./service.js', async (importOriginal) => {
   };
 });
 
+vi.mock('./totp-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./totp-service.js')>()),
+  isTotpEnabled: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('../oidc/service.js', () => ({
   isLocalAuthDisabled: vi.fn().mockResolvedValue(false),
 }));
 
 const { authRoutes } = await import('./routes.js');
+const authService = await import('./service.js');
+const totpService = await import('./totp-service.js');
 
 describe('auth routes', () => {
   let app: FastifyInstance;
@@ -89,6 +96,30 @@ describe('auth routes', () => {
     expect(body.data.token).toBeDefined();
     expect(body.data.user.email).toBe('admin@example.com');
     expect(body.data.user.role).toBe('admin');
+  });
+
+  // The route's 200 response SCHEMA must name the challenge fields: Fastify
+  // drops every property a schema does not name, and a missing field here
+  // once left second-factor users unable to finish a password sign-in.
+  // Asserted through the real route + schema, the layer that bug lived in.
+  it('POST /api/v1/auth/login hands a TOTP user the second-step challenge, not a session', async () => {
+    vi.mocked(totpService.isTotpEnabled).mockResolvedValueOnce(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'admin@example.com', password: 'correct-password' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const { data } = res.json();
+    expect(data.requires_totp).toBe(true);
+    expect(typeof data.pre_auth_token).toBe('string');
+    expect(app.jwt.decode<{ step: string }>(data.pre_auth_token)?.step).toBe('totp_2fa');
+    expect(data.expires_in).toBeGreaterThan(0);
+    expect(data.user).toMatchObject({ id: 'u1', email: 'admin@example.com' });
+    expect(data.token).toBeUndefined();
+    expect(data.refreshToken).toBeUndefined();
+    expect(res.headers['set-cookie']).toBeUndefined();
   });
 
   it('POST /api/v1/auth/login should reject invalid email format', async () => {

@@ -23,12 +23,14 @@
 # via the FAST PATH restore-state init containers on stalwart-mail +
 # bulwark Deployments.
 #
-# Failure mode: the script (standby-replicate.sh) always returns 0
-# from its inner run_once() function. The outer loop sleeps then
-# retries, so transient rsync failures roll up as one stale generation
-# rather than a Pod restart storm. The .standby-complete sentinel is
-# cleared at iteration start + re-written only on rsync success, so
-# failover readers never see a partial generation.
+# Generations: each pass builds a new copy beside the current one
+# (unchanged files hard-linked, so it costs only what changed) and swaps
+# `current` to it atomically when the pass succeeds. A complete copy and
+# its .standby-complete marker therefore exist even while a long sync runs
+# (a large import, or the mail store rewriting its files). A failed pass
+# leaves the current copy untouched and is resumed by the next one; the
+# outer loop sleeps and retries rather than restarting the Pod. Layout and
+# locking: images/tenant-backup-tools/standby-replicate.sh.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -92,9 +94,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # Optional per-cluster settings, re-read every pass (see
+            # standby-replicate.sh): `bwlimit` caps the sync's bandwidth,
+            # e.g. 30m = 30 MiB/s. Absent ConfigMap = no limit. Create with
+            #   kubectl -n mail create configmap mail-standby-settings --from-literal=bwlimit=30m
+            # The planned-move final sync never applies it (mail is down
+            # while it runs).
+            - name: STANDBY_SETTINGS_DIR
+              value: /etc/mail-standby
           volumeMounts:
             - name: standby-data
               mountPath: /standby-data
+            - name: settings
+              mountPath: /etc/mail-standby
+              readOnly: true
           resources:
             requests:
               cpu: 50m
@@ -107,3 +120,7 @@ spec:
           hostPath:
             path: /var/lib/mail-stack-standby
             type: DirectoryOrCreate
+        - name: settings
+          configMap:
+            name: mail-standby-settings
+            optional: true

@@ -28,6 +28,10 @@ import { pleskInventorySchema, type PleskInventory } from '@insula/api-contracts
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+// /tmp is HOME, ssh known_hosts and error logs only — dumps and rsync stream
+// straight to MariaDB / the tenant volume. The root filesystem is read-only, so
+// this capped emptyDir is the job's only node-disk write (R37).
+import { TENANT_EMPTYDIR_SIZE_LIMIT } from '../tenant-disk/pod-bounds.js';
 
 export const PLESK_MIGRATION_NAMESPACE = 'plesk-migration';
 // Parity with the existing Job-spawning code (backup-restore
@@ -287,7 +291,7 @@ export function buildDiscoveryJob({ jobName, secretName, cmName, source }: Build
           volumes: [
             ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'plesk-scripts', configMap: { name: cmName } },
-            { name: 'tmp', emptyDir: {} },
+            { name: 'tmp', emptyDir: { sizeLimit: TENANT_EMPTYDIR_SIZE_LIMIT } },
           ],
         },
       },

@@ -316,7 +316,9 @@ describe('the deployer and the reconciler agree on the mount set', () => {
     // quota or land in their backups.
     for (const s of sessions) expect(s.name).toBe('multihost-sessions');
     const vol = volumes.find((v) => v.name === 'multihost-sessions');
-    expect(vol?.emptyDir).toEqual({});
+    // Pod-local AND bounded: node disk is shared with every other tenant (R37).
+    expect(vol?.emptyDir).toEqual({ sizeLimit: '256Mi' });
+    expect(vol).not.toHaveProperty('persistentVolumeClaim');
     // And nothing session-related may sit under a document root.
     for (const s of sessions) expect(String(s.mountPath).startsWith('/var/www/sites')).toBe(false);
   });

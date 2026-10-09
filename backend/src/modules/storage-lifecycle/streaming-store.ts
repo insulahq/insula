@@ -128,7 +128,8 @@ export class S3StreamingStore implements StreamingSnapshotStore {
    */
   mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
     return {
-      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: {} },
+      // Never mounted (no caller reads it); the cap makes that enforceable (R37).
+      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: { sizeLimit: '1Mi' } },
       mountPath: '/dev/null-mount',
       relativePath: 'unused',
     };
@@ -268,7 +269,8 @@ export class SshStreamingStore implements StreamingSnapshotStore {
     // multi-line PEM is awkward in env). The Job spec adds the volume
     // separately via the envelope's hint.
     return {
-      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: {} },
+      // Never mounted (no caller reads it); the cap makes that enforceable (R37).
+      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: { sizeLimit: '1Mi' } },
       mountPath: '/dev/null-mount',
       relativePath: 'unused',
     };
@@ -478,7 +480,8 @@ export class CifsStreamingStore implements StreamingSnapshotStore {
 
   mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
     return {
-      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: {} },
+      // Never mounted (no caller reads it); the cap makes that enforceable (R37).
+      volumeSpec: { name: 'streaming-store-no-mount', emptyDir: { sizeLimit: '1Mi' } },
       mountPath: '/dev/null-mount',
       relativePath: 'unused',
     };

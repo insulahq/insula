@@ -1802,9 +1802,10 @@ phase_j_cert_acquisition() {
 
   echo "  Probing TLS on ${mail_host}:465 (SMTPS)..."
   local cert_info
-  cert_info=$(echo | timeout 10 openssl s_client \
+  # </dev/null, not `echo |`: a bare newline counts toward Stalwart's scan ban.
+  cert_info=$(timeout 10 openssl s_client \
     -connect "${mail_host}:465" \
-    -servername "${mail_host}" 2>/dev/null \
+    -servername "${mail_host}" </dev/null 2>/dev/null \
     | openssl x509 -noout -subject -issuer -dates 2>/dev/null || echo '')
 
   if [[ -z "$cert_info" ]]; then
@@ -2034,8 +2035,8 @@ except: print('')" 2>/dev/null)"
 
   # K7. Mail TLS still serves a cert after the relocation.
   local k7_cert
-  k7_cert="$(echo | timeout 10 openssl s_client \
-    -connect "${STALWART_DOMAIN}:465" -servername "${STALWART_DOMAIN}" 2>/dev/null \
+  k7_cert="$(timeout 10 openssl s_client \
+    -connect "${STALWART_DOMAIN}:465" -servername "${STALWART_DOMAIN}" </dev/null 2>/dev/null \
     | openssl x509 -noout -subject 2>/dev/null || echo '')"
   if echo "$k7_cert" | grep -qE "CN ?= ?${STALWART_DOMAIN}"; then
     note_pass "K7. ${STALWART_DOMAIN}:465 still serves cert post-migration"

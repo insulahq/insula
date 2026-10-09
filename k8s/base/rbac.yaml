@@ -270,16 +270,28 @@ rules:
   # Secret into the longhorn-system namespace AND patches the
   # BackupTarget/default CR. Keep these narrow — list/patch on the
   # BackupTarget, get/list for read-only inventory (Phase D).
+  # engines: the node-sync reconciler removes a gone node's Longhorn node only
+  # when no replica AND no engine is left on it (nodes/longhorn-node-reap.ts).
   - apiGroups: ["longhorn.io"]
-    resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs", "replicas"]
+    resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs", "replicas", "engines"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
     verbs: ["update", "patch"]
   # Mirror node-role label → Longhorn node tag "system" (M-NS-2).
   # Lets the platform StorageClass restrict replicas to system servers.
+  # delete: a removed node's Longhorn Node CR, which deleting the Kubernetes
+  # node leaves behind, is removed by the node-sync reconciler
+  # (nodes/longhorn-node-reap.ts). Without it every removed node's Longhorn node
+  # lingered NotReady forever (found removing a lab worker).
   - apiGroups: ["longhorn.io"]
     resources: ["nodes"]
+    verbs: ["patch", "delete"]
+  # nodes/status: a node removed before its Longhorn manager synced its disk status
+  # cannot be updated at all (the webhook refuses until disk spec and status match);
+  # with the node and its manager gone, the reconciler aligns that status itself.
+  - apiGroups: ["longhorn.io"]
+    resources: ["nodes/status"]
     verbs: ["patch"]
   # M13: platform-storage-policy patches volume.spec.numberOfReplicas
   # live on Longhorn Volume CRs to switch the platform's StatefulSets

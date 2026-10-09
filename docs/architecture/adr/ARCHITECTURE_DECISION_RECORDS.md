@@ -2586,7 +2586,7 @@ about). Validated E2E on DEV: no-cert rejected, valid accepted, revoked → 403.
 
 See [ADR-055-insula-single-binary-install-and-branding.md](ADR-055-insula-single-binary-install-and-branding.md).
 
-Proposed (2026-07-26): fold the bash `bootstrap.sh` into the signed `platform-ops`
+Implemented in v2026.7.4 (proposed and shipped 2026-07-26; leftovers in ROADMAP R23b): fold the bash `bootstrap.sh` into the signed `platform-ops`
 SEA as an `insula bootstrap` subcommand (embed + `exec`, no TypeScript rewrite),
 rename the user-facing artifact `platform-ops`→`insula` (keeping the internal
 module), and consolidate five inconsistent host roots into `/var/lib/insula` +

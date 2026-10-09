@@ -30,6 +30,12 @@ const webmailUrlSchema = z
     }
   }, 'must be an http(s) URL with a valid DNS hostname');
 
+/** Default lifetime of an automatic mail-server ban (see `mailBanExpiryHours`). */
+export const MAIL_BAN_EXPIRY_HOURS_DEFAULT = 24;
+export const MAIL_BAN_EXPIRY_HOURS_MIN = 1;
+/** One year — beyond that, "never" says what is meant. */
+export const MAIL_BAN_EXPIRY_HOURS_MAX = 8760;
+
 export const updateWebmailSettingsSchema = z.object({
   defaultWebmailUrl: webmailUrlSchema.optional(),
   // Phase 3.A.1: the platform-wide mail server hostname Stalwart
@@ -86,6 +92,23 @@ export const updateWebmailSettingsSchema = z.object({
    * original bug behind a text box.
    */
   dmarcReportSender: z.string().email().max(320).nullable().optional(),
+  /**
+   * How long the mail server keeps an AUTOMATIC ban — an address it blocked for
+   * repeated failed logins, port scanning, loitering or hammering unknown
+   * recipients — in hours, or `null` to keep such bans forever.
+   *
+   * Stalwart's own default is forever, and a permanent ban of a shared or
+   * reassigned address (a NAT, a monitoring probe, the operator's own office)
+   * locks it out for good with no visible trace in the panel. The platform
+   * default is 24 hours. Manual bans are not affected.
+   */
+  mailBanExpiryHours: z
+    .number()
+    .int()
+    .min(MAIL_BAN_EXPIRY_HOURS_MIN)
+    .max(MAIL_BAN_EXPIRY_HOURS_MAX)
+    .nullable()
+    .optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -142,6 +165,8 @@ export const webmailSettingsResponseSchema = z.object({
    * the panel cannot render a selection that is no longer selectable.
    */
   dmarcReportSenderOptions: z.array(dmarcReportSenderOptionSchema),
+  /** Automatic-ban lifetime in hours, or null = bans never expire. See the update schema. */
+  mailBanExpiryHours: z.number().int().nullable(),
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;

@@ -312,6 +312,10 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   planName: { type: ['string', 'null'] },
                   regionId: { type: 'string' },
                   status: { type: 'string' },
+                  // Whether the namespace exists — the Plesk migration target
+                  // picker offers provisioned tenants only (it was always empty
+                  // while this was stripped).
+                  provisioningStatus: { type: 'string' },
                   storageLifecycleState: { type: 'string' },
                   isSystem: { type: 'boolean' },
                   createdBy: { type: ['string', 'null'] },

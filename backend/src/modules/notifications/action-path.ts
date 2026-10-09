@@ -115,6 +115,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.tenant_workloads_down': '/tenants',
   // Tenant side: the page that lists their applications and shows which is down.
   'tenant.workloads_down': '/applications',
+  // The applications page, where the restarted app's status and logs are.
+  'tenant.workload_disk_limit': '/applications',
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
   'tenant.mail_event': '/email',

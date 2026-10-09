@@ -18,12 +18,16 @@
 #               in the dependent pod.
 #   pat       — PUT /pull-credentials → assert `image-pull-<id>`
 #               Secret in ns. DELETE → assert Secret gone.
+#   ports     — PATCH a live deployment's port number + env → assert
+#               200, the Deployment/Service carry ONLY the new values,
+#               the Service answers, and a renamed port's old Service
+#               is removed.
 #   delete    — DELETE the simple + compose rows → assert all
 #               owned k8s resources are reaped by label.
 #
 # USAGE
 #   ADMIN_PASSWORD=<...> ./scripts/integration-custom-deployments.sh [scenario]
-#   scenario: simple | upgrade | updates | compose | pat | delete | all
+#   scenario: simple | upgrade | updates | compose | pat | ports | delete | all
 #
 # PREREQ
 #   - integration-staging.sh's preflight (admin login, DNS) must pass.
@@ -521,6 +525,74 @@ scenario_pat() {
   fi
 }
 
+# ─── Scenario: port + env edit on a live deployment ────────────────────────
+#
+# The edit modal sends image/env/ports/resources as one PATCH. Re-applying
+# used to strategic-merge the Deployment and Service, which keeps the old
+# list entries: a new port number collided with the old one's name
+# (`Duplicate value: "http"` → "An unexpected error occurred"), and a removed
+# env var stayed on the pod. Declares the WRONG port first and corrects it —
+# the realistic way a tenant meets this — then proves the Service answers.
+
+scenario_ports() {
+  scenario_start "port + env edit"
+  local name="cd-port-$STAMP" id status
+  id=$(api POST "/tenants/$TENANT_ID/custom-deployments" "{
+    \"mode\": \"simple\", \"name\": \"$name\", \"image\": \"nginx:1.27-alpine\",
+    \"env\": [{\"name\": \"KEEP\", \"value\": \"1\"}, {\"name\": \"DROP_ME\", \"value\": \"1\"}],
+    \"ports\": [{\"containerPort\": 8080, \"name\": \"http\", \"protocol\": \"TCP\", \"exposeAsService\": true, \"ingressEligible\": true}]
+  }" | python3 -c "import json,sys
+try: print(json.load(sys.stdin)['data']['id'])
+except Exception: pass" 2>/dev/null)
+  [[ -z "$id" ]] && { fail "create $name returned no id"; return 1; }
+  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+    fail "Pod app=$name did not reach Running in 120s"
+    api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "" >/dev/null
+    return 1
+  fi
+
+  status=$(api_status PATCH "/tenants/$TENANT_ID/custom-deployments/$id" "{
+    \"image\": \"nginx:1.27-alpine\",
+    \"env\": [{\"name\": \"KEEP\", \"value\": \"1\"}],
+    \"ports\": [{\"containerPort\": 80, \"name\": \"http\", \"protocol\": \"TCP\", \"exposeAsService\": true, \"ingressEligible\": true}],
+    \"resources\": {\"cpuRequest\": \"100m\", \"memoryRequest\": \"128Mi\"}
+  }")
+  if [[ "$status" == "200" ]]; then
+    pass "PATCH port 8080 → 80 (same name) + drop an env var → 200"
+  else
+    fail "PATCH port 8080 → 80 → $status (expected 200)"
+  fi
+
+  local ports envs svc_port
+  ports=$(remote_kubectl get deploy -n "$TENANT_NS" "$name" -o jsonpath='{.spec.template.spec.containers[0].ports[*].containerPort}' 2>/dev/null)
+  envs=$(remote_kubectl get deploy -n "$TENANT_NS" "$name" -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' 2>/dev/null)
+  svc_port=$(remote_kubectl get svc -n "$TENANT_NS" "$name-http" -o jsonpath='{.spec.ports[*].port}' 2>/dev/null)
+  [[ "$ports" == "80" ]] && pass "container declares only :80" || fail "container ports '$ports' (expected '80')"
+  [[ " $envs " != *" DROP_ME "* && " $envs " == *" KEEP "* ]] \
+    && pass "removed env var gone from the pod template" || fail "pod template env '$envs' (expected KEEP without DROP_ME)"
+  [[ "$svc_port" == "80" ]] && pass "Service $name-http now :80 only" || fail "Service $name-http ports '$svc_port' (expected '80')"
+
+  # User-visible: the corrected port answers through the Service.
+  if remote_kubectl rollout status -n "$TENANT_NS" "deploy/$name" --timeout=120s >/dev/null 2>&1 \
+    && remote_kubectl exec -n "$TENANT_NS" "deploy/$name" -- wget -qO- -T 5 "http://$name-http:80/" 2>/dev/null | grep -q "nginx"; then
+    pass "http://$name-http:80/ serves nginx after the edit"
+  else
+    fail "http://$name-http:80/ did not serve nginx after the edit"
+  fi
+
+  # Renaming the port renames its Service; the old one must not linger.
+  status=$(api_status PATCH "/tenants/$TENANT_ID/custom-deployments/$id" "{
+    \"ports\": [{\"containerPort\": 80, \"name\": \"web\", \"protocol\": \"TCP\", \"exposeAsService\": true, \"ingressEligible\": true}]
+  }")
+  [[ "$status" == "200" ]] && pass "PATCH rename port http → web → 200" || fail "PATCH rename port → $status (expected 200)"
+  local svcs
+  svcs=$(remote_kubectl get svc -n "$TENANT_NS" -l "insula.host/deployment-id=$id" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+  [[ "$svcs" == "$name-web" ]] && pass "only Service $name-web remains" || fail "Services after rename: '$svcs' (expected '$name-web')"
+
+  status=$(api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "")
+  [[ "$status" == "204" ]] || fail "DELETE $name → $status"
+}
+
 # ─── Scenario: delete (reaps everything by label) ──────────────────────────
 
 scenario_delete() {
@@ -571,6 +643,7 @@ case "$SCENARIO" in
   updates)  scenario_simple; scenario_updates ;;
   compose)  scenario_compose ;;
   pat)      scenario_simple; scenario_pat ;;
+  ports)    scenario_ports ;;
   delete)   scenario_simple; scenario_compose; scenario_delete ;;
   all)
     scenario_simple
@@ -578,10 +651,11 @@ case "$SCENARIO" in
     scenario_updates
     scenario_compose
     scenario_pat
+    scenario_ports
     scenario_delete
     ;;
   *)
-    echo "Unknown scenario: $SCENARIO (valid: simple|upgrade|updates|compose|pat|delete|all)" >&2
+    echo "Unknown scenario: $SCENARIO (valid: simple|upgrade|updates|compose|pat|ports|delete|all)" >&2
     exit 2
     ;;
 esac

@@ -330,6 +330,12 @@ export interface StalwartDomainReconcilerDeps {
   };
   /** Tests inject a stub; production uses exec-into-Stalwart-pod transport. */
   readonly jmapTransport?: JmapCall;
+  /**
+   * When the running Stalwart container started (ms epoch; null = unknown). Tests
+   * inject it; production reads it from the pod the tick resolves. Lets a renewal
+   * task orphaned by a Stalwart restart be recognised (see ORPHAN_GRACE_MS).
+   */
+  readonly stalwartStartedAtMs?: number | null;
   /** Override for tests — defaults to process.env. */
   readonly env?: NodeJS.ProcessEnv;
   /**
@@ -387,10 +393,33 @@ export interface StalwartReconcileResult {
    * + module-local backoff/max-attempts. Counts as "acted" in noOp.
    */
   readonly acmeOrderForced: boolean;
+  /**
+   * True when this tick recycled the Stalwart pod (step 7b). An order Stalwart had
+   * in flight died with the old process; the scheduler runs one follow-up tick once
+   * that order counts as orphaned (followUpTickDelayMs) instead of waiting a full
+   * tick interval.
+   */
+  readonly stalwartRecycled: boolean;
   /** Free-form per-step notes for the UI. */
   readonly notes: ReadonlyArray<string>;
   /** True when no Stalwart state was changed this tick. */
   readonly noOp: boolean;
+}
+
+/**
+ * When to run an extra tick after this one, or null. After a Stalwart recycle the
+ * order the old process had in flight is orphaned (locked by the dead process); it
+ * counts as such once the new process has been up ORPHAN_GRACE_MS, and the next
+ * tick then replaces it. A full interval later is up to half an hour of mail on a
+ * self-signed certificate after every fresh install — one extra tick just past the
+ * grace closes that.
+ */
+export function followUpTickDelayMs(result: Pick<StalwartReconcileResult, 'stalwartRecycled'>): number | null {
+  // Counted from the end of the tick that recycled, while the grace counts from
+  // the NEW container's start — which comes later by however long the pod takes
+  // to come up. Five minutes of slack keep a slow start from landing the
+  // follow-up just short of the grace.
+  return result.stalwartRecycled ? ORPHAN_GRACE_MS + 5 * 60_000 : null;
 }
 
 /** Start the reconciler. Returns a stop function for onClose. */
@@ -398,17 +427,28 @@ export function startStalwartDomainReconciler(
   deps: StalwartDomainReconcilerDeps,
 ): () => void {
   const tickMs = deps.tickMs ?? STALWART_DOMAIN_RECONCILER_TICK_MS;
+  let followUp: ReturnType<typeof setTimeout> | null = null;
   // One replica reconciles. The forced-ACME-order backoff is per process, so
   // three replicas could place three times MAX_FORCE_ATTEMPTS orders against
   // Let's Encrypt's per-domain weekly limit; the sticky lease keeps the
-  // backoff with the one replica that places them.
+  // backoff with the one replica that places them — the follow-up tick runs on
+  // that same replica, so it still holds the lease.
   const tick = (): void => {
     void withSchedulerLease(deps.db, 'stalwart-domain-reconciler', tickMs * 1.5, () => runStalwartDomainReconcilerTick(deps))
+      .then((outcome) => {
+        const delay = outcome.ran ? followUpTickDelayMs(outcome.value) : null;
+        if (delay !== null && followUp === null) {
+          followUp = setTimeout(() => { followUp = null; tick(); }, delay);
+        }
+      })
       .catch(() => undefined); // the tick never throws; a lease read failure skips this tick
   };
   tick(); // one tick immediately
   const timer = setInterval(tick, tickMs);
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    if (followUp) clearTimeout(followUp);
+  };
 }
 
 /**
@@ -444,6 +484,7 @@ export async function runStalwartDomainReconcilerTick(
       listenersCreated: [],
       acmeRenewalFired: false,
       acmeOrderForced: false,
+      stalwartRecycled: false,
       notes,
       noOp: true,
       ...overrides,
@@ -511,13 +552,16 @@ export async function runStalwartDomainReconcilerTick(
   // probe relies on the injected servedCertProbe instead.
   let jmapCall: JmapCall;
   let podName: string | null = null;
+  let stalwartStartedAtMs: number | null = deps.stalwartStartedAtMs ?? null;
   if (deps.jmapTransport) {
     jmapCall = deps.jmapTransport;
   } else {
-    podName = await findStalwartPodName(deps.core, log);
+    const pod = await findStalwartPod(deps.core, log);
+    podName = pod?.name ?? null;
     if (!podName) {
       return empty({ mailHostname: trimmedHost }, 'no Running Stalwart pod found');
     }
+    stalwartStartedAtMs = deps.stalwartStartedAtMs ?? pod?.startedAtMs ?? null;
     const transport: ExecTransport = {
       core: deps.core,
       podName,
@@ -649,6 +693,7 @@ export async function runStalwartDomainReconcilerTick(
   //     Skipped when there is no real pod handle (podName null ⇒ tests
   //     inject a JMAP transport). Best-effort: a recycle failure is logged;
   //     the next tick re-creates/re-changes nothing and re-attempts the bind.
+  let stalwartRecycled = false;
   if (podName && (listenersCreated.some((n) => n.endsWith('-proxy')) || mtaAuthChanged)) {
     try {
       await recycleStalwartPods({
@@ -657,6 +702,7 @@ export async function runStalwartDomainReconcilerTick(
         labelSelector: 'app=stalwart-mail',
         gracePeriodSeconds: 15,
       });
+      stalwartRecycled = true;
       notes.push('recycled Stalwart once to bind newly-created PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
       log.info('Recycled Stalwart to bind newly-created dedicated PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
     } catch (err) {
@@ -687,7 +733,9 @@ export async function runStalwartDomainReconcilerTick(
   //          issuance is done; RENEWALS are Stalwart's own job
   //          (AcmeProvider.renewBefore), not ours.
   //      (b) an AcmeRenewal task for this domain is already pending or
-  //          retrying — firing again only queues a duplicate order.
+  //          retrying — firing again only queues a duplicate order. One
+  //          more than STALE_ACME_TASK_MS past due is stuck, not pending:
+  //          it is discarded and a fresh order fires.
   //          This also collapses the cross-replica race: replica B's
   //          tick sees replica A's freshly-created task and skips.
   let acmeRenewalFired = false;
@@ -697,7 +745,7 @@ export async function runStalwartDomainReconcilerTick(
         `AcmeRenewal skipped — stored certificate already covers ${matchedDomain.name} `
         + `(renewals are Stalwart-scheduled via AcmeProvider.renewBefore)`,
       );
-    } else if (await hasPendingAcmeRenewalTask(jmapCall, auth, matchedDomain.id, log)) {
+    } else if (await hasLiveAcmeRenewalTask(jmapCall, auth, matchedDomain.id, notes, log, stalwartStartedAtMs)) {
       notes.push(
         'AcmeRenewal skipped — an AcmeRenewal task for this domain is already pending/retrying '
         + '(firing again would queue a duplicate LE order)',
@@ -725,7 +773,7 @@ export async function runStalwartDomainReconcilerTick(
   //
   //    This step closes that gap: probe the cert Stalwart is ACTUALLY
   //    serving; if it's self-signed (and the pod is Ready — implied by
-  //    reaching here past findStalwartPodName — and the CRs are wired,
+  //    reaching here past findStalwartPod — and the CRs are wired,
   //    which they are by steps 3-7), FORCE a fresh order via
   //    forceFreshAcmeOrder (unconditional certificateManagement
   //    re-assert + AcmeRenewal task).
@@ -745,6 +793,7 @@ export async function runStalwartDomainReconcilerTick(
         kubeconfigPath: deps.kubeconfigPath,
         servedCertProbe: deps.servedCertProbe,
         podName,
+        stalwartStartedAtMs,
         domainId: matchedDomain.id,
         mailHostname: matchedDomain.name,
         acmeProviderId,
@@ -778,6 +827,7 @@ export async function runStalwartDomainReconcilerTick(
     listenersCreated,
     acmeRenewalFired,
     acmeOrderForced,
+    stalwartRecycled,
     notes,
     noOp,
   };
@@ -1011,17 +1061,114 @@ async function ensureDomainCertManagement(
 const PENDING_TASK_STATES = new Set(['Pending', 'Retry', 'Running', 'Scheduled']);
 
 /**
- * True when an AcmeRenewal task for `domainId` is already pending or
- * retrying in Stalwart's task queue (x:Task/query + x:Task/get — both
- * proven against live 0.16.5). Fail-OPEN: any transport/JMAP error ⇒
- * false (callers then behave exactly as before this gate existed), so
- * an old Stalwart without these methods can't brick first-issuance.
+ * How far past its due time a pending AcmeRenewal may be before it counts as
+ * STUCK rather than queued. Stalwart rescans its queue at least every 5 min and
+ * holds a per-task lock for 1h, so a live task is overdue by ~1h10m at worst (a
+ * lock left by a killed process, plus the rescan). Past this it will not run on
+ * its own: a VM cluster carried a Pending task 3h past due that Stalwart never
+ * executed, and deferring to it kept the mail listener self-signed indefinitely.
+ * Nor is it one being executed: Stalwart 0.16's task states are Pending, Retry
+ * and Failed — a running task stays Pending with its due in the past — and an
+ * ACME run is bounded at minutes (three attempts, 32/64/128 s apart).
  */
-async function hasPendingAcmeRenewalTask(
+const STALE_ACME_TASK_MS = 90 * 60 * 1000;
+
+/**
+ * How long the CURRENT Stalwart process must have been up before a Pending
+ * AcmeRenewal created by an EARLIER process counts as orphaned. That task was
+ * picked up — and locked for an hour — by the process that created it; when that
+ * process was replaced (platform-api's first start recycles Stalwart to bind its
+ * PROXY listeners, moments after the install queued the first order) the lock
+ * outlives it and the task sits Pending until STALE_ACME_TASK_MS — measured: a
+ * fresh lab install served a self-signed mail certificate for that long.
+ *
+ * Measured on Stalwart 0.16.24 (lab, CA unreachable = the slowest run): a task
+ * stays "Pending" WHILE it executes, the run takes 230 s (three attempts, 32/64/128
+ * s apart) before turning "Retry", and x:Task/set destroy succeeds on a running
+ * task. So status cannot tell a running task from a stuck one, and destroying a
+ * running one would place a second order. A task the new process found unlocked
+ * starts within one rescan (5 min) and ends within ~4 min — by ~9 min of uptime.
+ * The grace is twice that: past it, a still-Pending task from before the restart
+ * is held by a dead process's lock and cannot be one the live process is running.
+ */
+const ORPHAN_GRACE_MS = 20 * 60 * 1000;
+
+/**
+ * A Pending AcmeRenewal due further out than this is Stalwart's own SCHEDULED
+ * renewal (queued after issuance, due ~renewBefore ahead of expiry — seen on the
+ * lab: due 60 days out), not an order in flight. It has not run, so it holds no
+ * lock and is never an orphan; and the reconciler does not defer to it, or a
+ * missing certificate would wait for the scheduled date.
+ */
+const SCHEDULED_RENEWAL_HORIZON_MS = 60 * 60 * 1000;
+
+/** When a task was queued (`status.createdAt`, else top-level `createdAt`); null when unreadable. */
+function taskCreatedMs(task: Record<string, unknown>): number | null {
+  const status = task['status'] as Record<string, unknown> | undefined;
+  const raw = status?.['createdAt'] ?? task['createdAt'];
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** A task's due instant (top-level `due`, else `status.due`); null when unreadable. */
+function taskDueMs(task: Record<string, unknown>): number | null {
+  const status = task['status'] as Record<string, unknown> | undefined;
+  const raw = task['due'] ?? status?.['due'];
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Destroy stuck AcmeRenewal tasks so a fresh order is the only one queued.
+ * Returns how many Stalwart confirmed destroyed. Only those count as gone: when
+ * two platform-api replicas tick on the same stuck task, the second one's
+ * destroy finds it already gone, so that replica defers this tick (and sees the
+ * first replica's fresh order on its next one) instead of placing a second order.
+ */
+async function discardStaleAcmeRenewalTasks(
+  jmapCall: JmapCall,
+  auth: string,
+  stale: ReadonlyArray<Record<string, unknown>>,
+  notes: string[],
+  log: { warn: (...args: unknown[]) => void },
+): Promise<number> {
+  const ids = stale.map((t) => String(t['id']));
+  const res = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [['x:Task/set', { accountId: ADMIN_ACCOUNT_ID, destroy: ids }, 'c0']],
+  });
+  const args = res.methodResponses[0]?.[1] as
+    | { destroyed?: ReadonlyArray<string>; notDestroyed?: Record<string, unknown> | null }
+    | undefined;
+  const destroyed = Array.isArray(args?.destroyed) ? args.destroyed : [];
+  const dues = stale.map((t) => String(t['due'] ?? (t['status'] as Record<string, unknown> | undefined)?.['due'])).join(', ');
+  notes.push(
+    `discarded ${destroyed.length} stale AcmeRenewal task(s) (due ${dues}, never executed by Stalwart)`,
+  );
+  if (destroyed.length < ids.length) {
+    log.warn('Stalwart stale AcmeRenewal destroy incomplete:', JSON.stringify(args?.notDestroyed ?? {}));
+  }
+  return ids.filter((id) => destroyed.includes(id)).length;
+}
+
+/**
+ * True when a LIVE AcmeRenewal task for `domainId` is pending or retrying in
+ * Stalwart's task queue (x:Task/query + x:Task/get — both proven against live
+ * 0.16.5). A pending task more than STALE_ACME_TASK_MS past due is stuck, not
+ * live: it is discarded here (the callers fire a fresh order next) instead of
+ * gating issuance forever — once Stalwart confirms the destroy; until then it
+ * still gates. A task with no readable due counts as live.
+ * Fail-OPEN: any transport/JMAP error ⇒ false (callers then behave exactly as
+ * before this gate existed), so an old Stalwart without these methods can't
+ * brick first-issuance.
+ */
+async function hasLiveAcmeRenewalTask(
   jmapCall: JmapCall,
   auth: string,
   domainId: string,
+  notes: string[],
   log: { warn: (...args: unknown[]) => void },
+  stalwartStartedAtMs: number | null = null,
 ): Promise<boolean> {
   try {
     const qRes = await jmapCall(auth, {
@@ -1041,11 +1188,45 @@ async function hasPendingAcmeRenewalTask(
       | { list?: ReadonlyArray<Record<string, unknown>> }
       | undefined;
     const list = Array.isArray(gArgs?.list) ? gArgs.list : [];
-    return list.some((t) => {
+    const pending = list.filter((t) => {
       if (t['@type'] !== 'AcmeRenewal' || t['domainId'] !== domainId) return false;
       const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
       return typeof statusType === 'string' && PENDING_TASK_STATES.has(statusType);
     });
+    const now = Date.now();
+    const staleBefore = now - STALE_ACME_TASK_MS;
+    const isPendingState = (t: Record<string, unknown>): boolean =>
+      (t['status'] as Record<string, unknown> | undefined)?.['@type'] === 'Pending';
+    // Scheduled renewals are neither live orders nor orphans: left alone, not deferred to.
+    const inFlight = pending.filter((t) => {
+      const due = taskDueMs(t);
+      return !(isPendingState(t) && due !== null && due > now + SCHEDULED_RENEWAL_HORIZON_MS);
+    });
+    if (inFlight.length < pending.length) {
+      notes.push(`ignored ${pending.length - inFlight.length} scheduled AcmeRenewal(s) (due later; not an order in flight)`);
+    }
+    // Orphaned: Pending, fell due while the PREVIOUS process ran (only then could it
+    // have locked it), and the running process has been up past the grace (only when
+    // its start time is known).
+    const orphanCheck = stalwartStartedAtMs !== null && now - stalwartStartedAtMs >= ORPHAN_GRACE_MS;
+    const isOrphan = (t: Record<string, unknown>): boolean => {
+      if (!orphanCheck || !isPendingState(t)) return false;
+      const due = taskDueMs(t);
+      const created = taskCreatedMs(t);
+      const started = stalwartStartedAtMs as number;
+      return due !== null && due < started && (created === null || created < started);
+    };
+    const stale = inFlight.filter((t) => {
+      const due = taskDueMs(t);
+      return (due !== null && due < staleBefore) || isOrphan(t);
+    });
+    if (stale.some(isOrphan)) {
+      notes.push('AcmeRenewal task orphaned by a Stalwart restart (queued by the previous process, still locked by it)');
+    }
+    const discarded = stale.length > 0
+      ? await discardStaleAcmeRenewalTasks(jmapCall, auth, stale, notes, log)
+      : 0;
+    return inFlight.length > discarded;
   } catch (err) {
     log.warn(
       'Stalwart pending-AcmeRenewal-task check failed (fail-open, treating as none):',
@@ -1177,6 +1358,8 @@ interface ForceArgs {
   readonly kubeconfigPath?: string;
   readonly servedCertProbe?: ServedCertProbe;
   readonly podName: string | null;
+  /** When the running Stalwart container started (ms epoch; null = unknown). */
+  readonly stalwartStartedAtMs?: number | null;
   readonly domainId: string;
   readonly mailHostname: string;
   readonly acmeProviderId: string;
@@ -1253,7 +1436,7 @@ async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
   // forceFreshAcmeOrder is only useful WITH a fresh fire, so defer the
   // whole force. Fail-open: an unreadable task queue must not disable
   // the self-heal.
-  if (await hasPendingAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.log)) {
+  if (await hasLiveAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.notes, args.log, args.stalwartStartedAtMs ?? null)) {
     args.notes.push(
       'served cert self-signed but an AcmeRenewal task is already pending/retrying — '
       + 'deferring force (Stalwart will execute the queued order)',
@@ -1696,10 +1879,10 @@ interface JmapInvocationResponse {
 
 type JmapCall = (auth: string, body: unknown) => Promise<JmapInvocationResponse>;
 
-async function findStalwartPodName(
+async function findStalwartPod(
   core: CoreV1Api,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<string | null> {
+): Promise<{ readonly name: string; readonly startedAtMs: number | null } | null> {
   try {
     const pods = await core.listNamespacedPod({
       namespace: 'mail',
@@ -1713,7 +1896,10 @@ async function findStalwartPodName(
       log.warn('No Running Stalwart pod found — skipping tick (will retry).');
       return null;
     }
-    return ready.metadata.name;
+    const startedAt = ready.status?.containerStatuses
+      ?.find((cs) => cs.name === 'stalwart')?.state?.running?.startedAt;
+    const startedAtMs = startedAt ? new Date(startedAt).getTime() : NaN;
+    return { name: ready.metadata.name, startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null };
   } catch (err) {
     log.warn('Failed to list Stalwart pods:', err);
     return null;

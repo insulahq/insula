@@ -4,7 +4,15 @@ import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-s
 import { formatCurrency } from '@/lib/format-currency';
 import CurrencySelect from '@/components/CurrencySelect';
 import TimezoneSelect from '@/components/TimezoneSelect';
-import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS, DEFAULT_TRASH_RETENTION_DAYS } from '@insula/api-contracts';
+import {
+  MIN_TRASH_RETENTION_DAYS,
+  MAX_TRASH_RETENTION_DAYS,
+  DEFAULT_TRASH_RETENTION_DAYS,
+  DEFAULT_TENANT_APP_DISK_LIMIT_MB,
+  DEFAULT_TENANT_DATABASE_DISK_LIMIT_MB,
+  MIN_TENANT_DISK_LIMIT_MB,
+  MAX_TENANT_DISK_LIMIT_MB,
+} from '@insula/api-contracts';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -22,6 +30,8 @@ export default function LimitsPage() {
   const [snapshotExpiryHours, setSnapshotExpiryHours] = useState(48);
   const [deletedTenantBundleRetentionDays, setDeletedTenantBundleRetentionDays] = useState(30);
   const [fileTrashRetentionDays, setFileTrashRetentionDays] = useState(DEFAULT_TRASH_RETENTION_DAYS);
+  const [tenantAppDiskLimitMb, setTenantAppDiskLimitMb] = useState(DEFAULT_TENANT_APP_DISK_LIMIT_MB);
+  const [tenantDatabaseDiskLimitMb, setTenantDatabaseDiskLimitMb] = useState(DEFAULT_TENANT_DATABASE_DISK_LIMIT_MB);
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
@@ -33,6 +43,8 @@ export default function LimitsPage() {
       setSnapshotExpiryHours(settings.snapshotExpiryHours);
       setDeletedTenantBundleRetentionDays(settings.deletedTenantBundleRetentionDays ?? 30);
       setFileTrashRetentionDays(settings.fileTrashRetentionDays ?? DEFAULT_TRASH_RETENTION_DAYS);
+      setTenantAppDiskLimitMb(settings.tenantAppDiskLimitMb ?? DEFAULT_TENANT_APP_DISK_LIMIT_MB);
+      setTenantDatabaseDiskLimitMb(settings.tenantDatabaseDiskLimitMb ?? DEFAULT_TENANT_DATABASE_DISK_LIMIT_MB);
       setTimezone(settings.timezone ?? 'UTC');
       setCurrency(settings.currency ?? 'USD');
     }
@@ -42,7 +54,16 @@ export default function LimitsPage() {
     setSaved(false);
     setSaveError(null);
     updateSettings.mutate(
-      { apiRateLimit, snapshotExpiryHours, deletedTenantBundleRetentionDays, fileTrashRetentionDays, timezone, currency },
+      {
+        apiRateLimit,
+        snapshotExpiryHours,
+        deletedTenantBundleRetentionDays,
+        fileTrashRetentionDays,
+        tenantAppDiskLimitMb,
+        tenantDatabaseDiskLimitMb,
+        timezone,
+        currency,
+      },
       {
         onSuccess: () => {
           setSaved(true);
@@ -79,7 +100,7 @@ export default function LimitsPage() {
     <div className="space-y-6" data-testid="limits-page">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Limits &amp; Regional</h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400">API rate limit, default timezone, currency</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">API rate limit, retention, tenant disk limits, default timezone, currency</p>
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
@@ -153,6 +174,20 @@ export default function LimitsPage() {
               Files deleted in the tenant file manager move to a recycle bin on the tenant&apos;s own volume and are permanently removed after this many days. The bin is <strong>not</strong> free space — it keeps counting against the tenant&apos;s storage quota until it expires or they empty it ({MIN_TRASH_RETENTION_DAYS}–{MAX_TRASH_RETENTION_DAYS} days).
             </p>
           </div>
+          <DiskLimitInput
+            label="Tenant App Disk Limit"
+            testId="tenant-app-disk-limit-input"
+            value={tenantAppDiskLimitMb}
+            onChange={setTenantAppDiskLimitMb}
+            help="Most a tenant application may write to its own container filesystem on the server — temporary files, caches and logs written outside the tenant's storage. Past it the application is restarted on a clean filesystem and the tenant is told; their storage is untouched. Without it one tenant could fill a server's disk for everyone on it. Applies to each application when it is next deployed."
+          />
+          <DiskLimitInput
+            label="Tenant Database Disk Limit"
+            testId="tenant-database-disk-limit-input"
+            value={tenantDatabaseDiskLimitMb}
+            onChange={setTenantDatabaseDiskLimitMb}
+            help="The same limit for database components (MariaDB, PostgreSQL, …), which write sorts and temporary tables that do not fit in memory to disk — so it is larger."
+          />
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">System Timezone</label>
             <TimezoneSelect value={timezone} onChange={setTimezone} />
@@ -192,6 +227,40 @@ export default function LimitsPage() {
           Save
         </button>
       </div>
+    </div>
+  );
+}
+
+function DiskLimitInput({ label, testId, value, onChange, help }: {
+  label: string;
+  testId: string;
+  value: number;
+  onChange: (mb: number) => void;
+  help: string;
+}) {
+  const gib = value / 1024;
+  return (
+    <div>
+      <label htmlFor={testId} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>
+      <div className="flex items-center gap-2">
+        <input
+          id={testId}
+          type="number"
+          value={value}
+          onChange={(e) => onChange(Math.max(MIN_TENANT_DISK_LIMIT_MB, Math.min(MAX_TENANT_DISK_LIMIT_MB, Math.floor(Number(e.target.value)) || MIN_TENANT_DISK_LIMIT_MB)))}
+          className={INPUT_CLASS}
+          min={MIN_TENANT_DISK_LIMIT_MB}
+          max={MAX_TENANT_DISK_LIMIT_MB}
+          step={256}
+          data-testid={testId}
+        />
+        <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400" data-testid={`${testId}-gib`}>
+          MiB ({Number.isInteger(gib) ? gib : gib.toFixed(2)} GiB)
+        </span>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        {help} ({MIN_TENANT_DISK_LIMIT_MB}–{MAX_TENANT_DISK_LIMIT_MB} MiB)
+      </p>
     </div>
   );
 }

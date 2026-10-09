@@ -13,7 +13,6 @@ const PANEL = 'tenant' as const;
  * Top-level hook for the tenant panel. Provides:
  *   • register(nickname)       — enroll a new passkey on the current user
  *   • loginUserless()          — sign in with passkey only (no email field)
- *   • complete2FA(token)       — finish a 2FA flow that started with password
  *   • list / remove / setMode  — manage existing credentials
  *
  * Backend-aligned errors propagate via the apiFetch ApiError envelope.
@@ -64,33 +63,6 @@ export function usePasskey() {
     return verifyResp.data;
   }, []);
 
-  /** Finish a 2FA login. Caller already obtained pre_auth_token from /auth/login. */
-  const complete2FA = useCallback(async (preAuthToken: string) => {
-    const optionsResp = await apiFetch<{ data: unknown }>('/api/v1/auth/passkey/login/options', {
-      method: 'POST',
-      body: JSON.stringify({ panel: PANEL, pre_auth_token: preAuthToken }),
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const assertion = await startAuthentication({ optionsJSON: optionsResp.data as any });
-    const verifyResp = await apiFetch<{
-      data: {
-        token: string;
-        refreshToken: string;
-        user: {
-          id: string; email: string; fullName: string; role: string;
-          panel?: string; tenantId?: string | null;
-        };
-      };
-    }>('/api/v1/auth/passkey/login/verify', {
-      method: 'POST',
-      body: JSON.stringify({
-        panel: PANEL,
-        pre_auth_token: preAuthToken,
-        response: assertion,
-      }),
-    });
-    return verifyResp.data;
-  }, []);
 
   /** List the current user's passkeys + their mode. */
   const list = useCallback(async (): Promise<{ passkeys: PasskeySummary[]; mode: PasskeyMode }> => {
@@ -111,5 +83,5 @@ export function usePasskey() {
     });
   }, []);
 
-  return { supported, register, loginUserless, complete2FA, list, remove, setMode };
+  return { supported, register, loginUserless, list, remove, setMode };
 }

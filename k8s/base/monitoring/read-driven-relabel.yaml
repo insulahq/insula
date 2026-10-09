@@ -1,0 +1,80 @@
+# Read-driven ingestion for vmsingle (-relabelConfig) — store what the platform
+# READS, in the shape it reads it, and nothing else.
+#
+# WHY
+# vmsingle's memory follows the number of active series. Before this file,
+# 39-64% of them (measured on two clusters) had no reader anywhere in the
+# platform, and among the families that ARE read, the per-container and
+# per-status-code dimensions multiplied series 6-200x past what any query
+# uses. Both grow with the cluster — every container, volume, database replica
+# and tenant route added series that nothing looked at — so no fixed memory
+# limit could hold on a large install, and capping or dropping series at random
+# would lose data features depend on. Filtering by READER instead keeps every
+# panel, rule and chart intact while series then scale with what the platform
+# shows: nodes, tenant routes, pods' traffic.
+#
+# HOW
+# Applied to every ingested sample, scraped ones included, BEFORE stream
+# aggregation (v1.148.0 app/vminsert/prompush -> relabel -> FlushBufs ->
+# streamaggr). The per-job metric_relabel_configs in scrape-config.yaml still
+# run first; they predate this file and are now mostly redundant with it.
+#   1. keep   — families with a reader, plus a small self-diagnosis set
+#   2. drop   — dimensions of read families that no reader uses
+# Label-collapsing of COUNTERS (Traefik's per-status-code series) cannot be
+# done here — dropping a label off a counter merges series and keeps an
+# arbitrary sample — so it lives in streamaggr-config.yaml, which sums them.
+#
+# THE CONTRACT
+# Every metric name a backend reader queries must be in the READ list below,
+# with every label it filters or groups by surviving rule 2. Adding a reader
+# without adding its family here means the query silently finds nothing.
+# `backend/src/modules/monitoring/read-driven-ingestion.test.ts` fails the
+# build in both directions: a read family missing here, or a family kept here
+# that nothing reads (and is not in the diagnostic list).
+#
+# OPT OUT
+# Operators who explore metrics in VMUI or an external Grafana can include the
+# kustomize component k8s/components/monitoring-full-metrics, which stores
+# everything again (at the memory cost this file exists to avoid).
+#
+# Takes effect when vmsingle starts — at the next daily recycle
+# (vmsingle-recycler.yaml) or rollout. vmsingle re-reads it on SIGHUP only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmsingle-read-driven
+  namespace: monitoring
+  labels:
+    app: vmsingle
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  relabel.yml: |
+    # 1. Keep only what something reads. Two selectors, OR-ed:
+    #    READ        — every family a backend reader queries (all jobs)
+    #    DIAGNOSTIC  — vmsingle's own memory/GC/index health. No code reads
+    #                  these, but they are how vmsingle's memory incidents are
+    #                  diagnosed (docs/operations/MONITORING_OBSERVABILITY.md,
+    #                  Memory budget), and they are a few dozen series.
+    # `up` is generated per target by the scraper and read by the target-down
+    # rule; the other generated scrape_* series have no reader and go.
+    - action: keep
+      if:
+        # READ
+        - '{__name__=~"up|container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_oom_events_total|container_network_transmit_bytes_total|container_network_receive_bytes_total|machine_memory_bytes|machine_cpu_cores|kubelet_volume_stats_used_bytes|traefik_entrypoint_requests_total|traefik_entrypoint_request_duration_seconds_bucket|traefik_service_requests_total|traefik_service_requests_bytes_total|traefik_service_responses_bytes_total|traefik_service_request_duration_seconds_sum|traefik_service_request_duration_seconds_count|traefik_service_request_duration_seconds_bucket|certmanager_certificate_expiration_timestamp_seconds|certmanager_certificate_ready_status|longhorn_node_storage_usage_bytes|longhorn_node_storage_capacity_bytes|cnpg_pg_replication_lag|platform_migration_failed|platform_migrations_pending|platform_ingress_router_up|platform_flux_unready_resources|platform_acme_renewals_total|platform_stalwart_acme_task_queue_depth|platform_mail_server_up|platform_mail_platform_origin_queue_depth|platform_mail_drift_unresolved_age_hours|platform_mail_tls_cert_expiry_seconds|platform_mail_tls_cert_self_signed|platform_node_traffic_bytes|platform_node_traffic_packets"}'
+        # DIAGNOSTIC (vmsingle's own job only)
+        - '{job="vmsingle",__name__=~"go_memstats_alloc_bytes|go_memstats_heap_inuse_bytes|go_memstats_heap_sys_bytes|go_memstats_heap_released_bytes|go_memstats_next_gc_bytes|go_memstats_sys_bytes|go_gc_duration_seconds_count|go_memlimit_bytes|go_gomaxprocs|go_goroutines|process_resident_memory_bytes|process_resident_memory_anon_bytes|process_cpu_seconds_user_total|process_cpu_seconds_system_total|process_major_pagefaults_total|process_start_time_seconds|vm_cache_size_bytes|vm_cache_size_max_bytes|vm_cache_entries|vm_new_timeseries_created_total|vm_rows_inserted_total|vm_slow_per_day_index_inserts_total|vm_slow_row_inserts_total|vm_data_size_bytes|vm_concurrent_select_current|vm_memory_intensive_queries_total|vm_slow_queries_total|vm_relabel_config_last_reload_successful"}'
+
+    # 2. Within read families, drop the dimensions no reader uses.
+    #
+    # Node CPU and memory ratios read only the root cgroup (id="/"), the
+    # CrowdSec liveness rule reads one container, and the system-OOM rule reads
+    # the platform's own namespaces. Per-container series for every other pod
+    # in the cluster — the part that grows with every tenant workload — are
+    # never queried. The namespace list below MUST equal the one in the
+    # system-OOM rule (monitoring/rules.ts); the test above checks it.
+    - action: drop
+      if:
+        - 'container_cpu_usage_seconds_total{id!="/"}'
+        - 'container_memory_working_set_bytes{id!="/",namespace!="crowdsec"}'
+        - 'container_memory_working_set_bytes{id!="/",namespace="crowdsec",container!="crowdsec"}'
+        - 'container_oom_events_total{id!="/",namespace!~"platform|platform-system|platform-tenant-ops|mail|kube-system|flux-system|longhorn-system|cert-manager|cnpg-system"}'

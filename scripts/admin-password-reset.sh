@@ -202,25 +202,6 @@ BEGIN;
 WITH updated AS (
   UPDATE users
     SET password_hash = '${HASH_ESC}',
-        -- Operator escape-hatch is scoped to second_factor mode only:
-        --   * passkey_mode = 'second_factor' → cleared (user locked
-        --     into 2FA + lost passkeys; CLI reset must be enough to
-        --     log them back in with a password alone).
-        --   * passkey_mode = 'alternative'   → preserved (passkey is
-        --     an additional sign-in path, not a gate; resetting the
-        --     password shouldn't disturb that, the user still has
-        --     their passkey login working).
-        --   * passkey_mode IS NULL           → no-op.
-        --
-        -- The earlier revision compared against the placeholder literal
-        -- '2fa' (per migration 0061's docstring style) but the canonical
-        -- column value is 'second_factor'. That mismatch silently turned
-        -- the CASE into a no-op for every value — alternative was
-        -- accidentally preserved (intended behaviour), but second_factor
-        -- was ALSO preserved (broken: the operator could never use the
-        -- CLI to recover a 2FA-locked-out user). Fixed by switching to
-        -- the real enum value.
-        passkey_mode = CASE WHEN passkey_mode = 'second_factor' THEN NULL ELSE passkey_mode END,
         updated_at = NOW()
     WHERE email = '${EMAIL_ESC}'
     RETURNING id
@@ -230,6 +211,19 @@ INSERT INTO audit_logs(id, actor_id, "actorType", action_type, resource_type, re
          id, 'CLI', '/scripts/admin-password-reset.sh', 200
   FROM updated
   RETURNING actor_id;
+-- Operator escape-hatch: a user who lost their authenticator app must be able
+-- to sign in with the new password alone, so the reset also removes TOTP and
+-- its backup codes (they can set it up again). Passkeys are untouched — a
+-- passkey never gates a password. Guarded for databases from before
+-- migration 0151. \$\$ — this heredoc is unquoted (it interpolates the hash).
+DO \$\$
+BEGIN
+  IF to_regclass('public.user_totp') IS NOT NULL THEN
+    DELETE FROM user_totp_backup_codes WHERE user_id IN (SELECT id FROM users WHERE email = '${EMAIL_ESC}');
+    DELETE FROM user_totp WHERE user_id IN (SELECT id FROM users WHERE email = '${EMAIL_ESC}');
+  END IF;
+END
+\$\$;
 COMMIT;
 EOF
 )

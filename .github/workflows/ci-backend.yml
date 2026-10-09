@@ -67,6 +67,13 @@ jobs:
       # actual subject.
       - name: Verify no JS array is interpolated into ANY()/IN()
         run: ./scripts/ci-drizzle-array-binding-check.sh
+      # Also in Infrastructure CI (manifests). Here for the same reason as the
+      # step above: a pod spec built in backend code can live in any module.
+      - name: Verify no backend-built pod mounts a whole platform root
+        run: ./scripts/ci-no-platform-root-hostpath.sh
+      # R37: every tenant pod builder bounds node-disk use; no unbounded emptyDir.
+      - name: Verify tenant pods stay bounded on node disk
+        run: ./scripts/ci-tenant-disk-bounds.sh
 
   dns-powerdns-live:
     name: DNS record types against a live PowerDNS

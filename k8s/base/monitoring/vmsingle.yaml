@@ -9,6 +9,10 @@
 #   -memory.allowedBytes  VM's own caches, allocated OUTSIDE the Go heap
 #   GOGC / GOMEMLIMIT     the Go runtime, which allowedBytes cannot see
 #   metric_relabel_configs in scrape-config.yaml — series never ingested
+# plus two terms that do not depend on load and that no budget above sees:
+#   GOMAXPROCS            write buffers sized per CPU core (pinned below)
+#   recycler sidecar      memory that grows with UPTIME, bounded by a daily
+#                         graceful restart (vmsingle-recycler.yaml)
 # The original comment claimed allowedBytes capped the caches "well under
 # the limit". True of the caches (192MiB of 384Mi) and irrelevant to the
 # outcome: allowedBytes budgets ONLY the caches, while the Go runtime
@@ -81,6 +85,11 @@ spec:
       serviceAccountName: vmsingle
       # Needed for kubernetes_sd_configs + kubelet bearer-token scrape.
       automountServiceAccountToken: true
+      # Lets the `recycler` sidecar signal vmsingle for its daily graceful
+      # restart (vmsingle-recycler.yaml). Both containers run as the same
+      # unprivileged UID with no capabilities; the sidecar gains nothing it
+      # does not already have (it mounts the same service-account token).
+      shareProcessNamespace: true
       # Pin to server nodes: the system-node-affinity component only
       # patches the platform/platform-system/mail namespaces, so this
       # Deployment carries its own selector + toleration inline.
@@ -193,6 +202,10 @@ spec:
             # Matched samples are aggregated and DROPPED (VM's default);
             # unmatched samples are stored untouched.
             - -streamAggr.config=/streamaggr/streamaggr.yaml
+            # Read-driven ingestion: store only families something reads,
+            # without the dimensions nothing reads. Runs before stream
+            # aggregation. See read-driven-relabel.yaml.
+            - -relabelConfig=/relabel/relabel.yml
             # 4 → 2. The -memory.allowedBytes note above records
             # that the failure mode is "a single cache-warming query could OOM
             # the pod outright"; this is the flag that bounds how many of those
@@ -293,6 +306,24 @@ spec:
             # this value, is what needs attention.
             - name: GOMEMLIMIT
               value: "201326592"
+            # Pins vmsingle's parallelism — and with it a fixed slice of its
+            # memory — so the footprint no longer depends on the node it lands
+            # on. VictoriaMetrics sizes its write buffers by CPU count
+            # (v1.148.0 lib/storage/raw_row.go: numRawRowsShards =
+            # cgroup.AvailableCPUs(), 8 MiB per shard, PER MONTHLY PARTITION).
+            # This pod has no CPU limit, so without this it takes every core
+            # of the node: 64 MiB on 8 cores, 256 MiB on 32 cores, twice that
+            # once a process lives across a month boundary. With 2 it is
+            # 16 MiB (32 across a boundary) on every install.
+            #
+            # vmsingle honours an explicit GOMAXPROCS instead of deriving one
+            # (lib/cgroup/cpu.go). Two cores are far beyond this workload's
+            # need (it ingests a few thousand samples per minute and uses
+            # ~0.01-0.2 cores). Raise it with an overlay patch only if a very
+            # large cluster shows ingestion or query latency; every step
+            # costs 8 MiB per partition.
+            - name: GOMAXPROCS
+              value: "2"
           ports:
             - name: http
               containerPort: 8428
@@ -310,6 +341,9 @@ spec:
               readOnly: true
             - name: streamaggr-config
               mountPath: /streamaggr
+              readOnly: true
+            - name: read-driven-relabel
+              mountPath: /relabel
               readOnly: true
           readinessProbe:
             httpGet:
@@ -329,16 +363,57 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+        # Daily graceful restart of vmsingle, so memory that accumulates with
+        # uptime is bounded by a day instead of by how long the process lives.
+        # Why, how and how to configure: vmsingle-recycler.yaml.
+        - name: recycler
+          # Same digest-pinned busybox as host-config-reader
+          # (security/components.yaml `busybox`).
+          image: busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+          command: ["/bin/sh", "/recycler/recycle.sh"]
+          env:
+            # "HH:MM" in UTC, or "off". Override with an overlay patch.
+            - name: RECYCLE_AT_UTC
+              value: "22:30"
+          # Steady state is a shell asleep in `sleep`, ~1 MiB resident. The
+          # limit is NOT sized from that: `kubectl exec` into this container
+          # starts `runc init` inside the container's own memory cgroup
+          # (~7 MiB anon + ~7 MiB file measured). At an 8Mi limit one exec
+          # OOM-killed the sidecar, and since a pod is Ready only while EVERY
+          # container is, vmsingle dropped out of its Service until the
+          # sidecar came back. 32Mi leaves room for an exec session; the
+          # request stays at what it actually uses.
+          resources:
+            requests:
+              cpu: 1m
+              memory: 4Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: recycler-script
+              mountPath: /recycler
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       volumes:
         - name: storage
           persistentVolumeClaim:
             claimName: vmsingle-storage
+        - name: recycler-script
+          configMap:
+            name: vmsingle-recycler
         - name: scrape-config
           configMap:
             name: vmsingle-scrape-config
         - name: streamaggr-config
           configMap:
             name: vmsingle-streamaggr-config
+        - name: read-driven-relabel
+          configMap:
+            name: vmsingle-read-driven
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

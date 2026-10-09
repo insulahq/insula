@@ -34,27 +34,28 @@
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | ✅ Shipped 2026-07-08 — mount source read-only → list → import (single/all) + guided UI; DEV E2E 11/0 |
 | [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
-| [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
+| [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | — | ✅ **SHIPPED in v2026.7.4** (ADR-055) — bootstrap embedded in the signed `insula` binary, branded host paths, rebrand host-migration; this row said "Proposed" until 2026-10-07. Leftovers → [R23b](#r23b--adr-055-leftovers) |
+| [R23b](#r23b--adr-055-leftovers) | ADR-055 leftovers | P2 | Open — probe credential exposure **fixed 2026-10-07**; compat `platform-ops` link on every install path, drop the legacy release asset name, CLI help/version text, VM tier through `insula bootstrap`, retire the probe's legacy firewall.conf mount |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
-| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ Mostly shipped — §1 + §2 were already built (roadmap was stale); §3 bundle preflight + skipped-tenant reporting shipped 2026-09-13; §4 up-front key check remains |
+| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | ✅ §1–§3 shipped; **§4 half done** — the key check gates recover-all only, cross-cluster migration import has none, and a wrong key breaks every data restore (the restic password derives from it). Fleet migration importing an arbitrary, often older, bundle per tenant **fixed 2026-10-07** |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | **SHIPPED 2026-09-28.** Operator decision recorded: KEEP — the new host was already a hard dependency (Calico, Helm, CSI snapshotter) and `k3s.io` is now contacted not at all |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 | [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | ✅ **CLOSED 2026-08-24** — auto-reply (vacation), aliases (Stalwart MailingList per alias, fan-out to local + external destinations) and the domain catch-all (native Domain.catchAllAddress) all enforced by the mail server, DB authoritative with boot reconcile |
 | [R29](#r29--schema-validate-the-rest-of-the-api-surface) | Schema-validate the rest of the API surface | **P2** | ✅ **R29a SHIPPED 2026-09-13** — 19 of 43 converted, 24 classified + frozen by a CI guard; R29b not started |
-| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — affects multi-node (staging) only; needs measurement first |
-| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30 |
+| [R30](#r30--crowdsec-scenario-buckets-dilute-across-nodes) | CrowdSec scenario buckets dilute across nodes | P3 | Not started — **affects production** since it went 3-node with one A record per node (2026-10); needs measurement first |
+| [R31](#r31--per-node-identity-for-the-crowdsec-agents) | Per-node identity for the CrowdSec agents | P3 | Not started — prerequisite for R30; production's agents now share one machine identity across 3 nodes |
 | [R32](#r32--oauth2-proxy-401-dead-end--resolved-2026-09-05) | oauth2-proxy 401 dead-end | — | ✅ RESOLVED 2026-09-05 |
 | [R33](#r33--dex-configmap-changes-never-reached-the-process--resolved-2026-09-05) | Dex ConfigMap changes never reached the process | — | ✅ RESOLVED 2026-09-05 — residual: other ConfigMap-driven Deployments unaudited |
 | [R34](#r34--decide-the-config-reload-mechanism-deliberately) | Decide the config-reload mechanism, deliberately | P2 | Proposed — three mechanisms in use; wants an ADR + a CI guard |
 | [R35](#r35--the-crowdsec-lapi-is-a-single-point-of-failure-that-no-longer-needs-to-be) | CrowdSec LAPI single point of failure | P2 | ✅ **SHIPPED** — Postgres + RollingUpdate + reconciler-owned 2 replicas (verified 2/2 Ready on DEV) |
 | [R36](#r36--every-per-service-postgres-role-can-connect-to-the-platform-database) | Per-service roles can connect to the `platform` database | **P2** | ✅ **SHIPPED 2026-09-13** — `db-isolation` converger + bootstrap + Security→Hardening card; verified on DEV against a real role |
-| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | Not started — needs a hosting-plan policy decision (an `ephemeral-storage` limit EVICTS) |
+| [R37](#r37--tenant-pods-can-fill-a-nodes-disk-and-nothing-charges-them-for-it) | Tenant pods can fill a node's disk | P2 | ✅ **Decided + built 2026-10-07** — bounded, not charged: a per-container `ephemeral-storage` limit on every tenant pod (2 GiB apps / 8 GiB databases, operator setting), size caps on every tenant emptyDir, tenant + admin eviction notices, node disk critical alert 90 → 80 %. Quotas, admission policy, node pool, `/tmp` on the tenant volume: rejected. Runbook `docs/operations/TENANT_DISK_LIMITS.md` |
 | [R38](#r38--mail-dns-is-written-once-and-never-reconciled-deliberate) | Mail DNS is written once, never reconciled | — | ✅ **DECIDED 2026-09-14** — dead `dns-sync` deleted; blind reconciliation would delete a tenant's own MX/SPF |
 | [R39](#r39--the-ha-and-upgrade-runbooks-install-k3s-by-hand-bypassing-bootstrapsh) | HA/upgrade runbooks bypass `bootstrap.sh` | P2 | Not started — 16 hand-written `curl \| sh` k3s installs across two ACTIVE runbooks; needs someone who can exercise an HA join and a k3s upgrade |
-| [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | Not started — the two biggest unexplained sources (backup read-ahead, per-run mail prune) are fixed; attribution needs a host-side counter |
+| [R40](#r40--cluster-traffic-shows-a-wire-total-it-does-not-explain) | Cluster traffic shows a wire total it does not explain | P2 | ✅ **Largely shipped in v2026.10.6** — per-node nft counters split the wire into internet and node-to-node (by class), with tenant-ingress and off-site-backup subsets; residual: the rest of internet traffic (mail, image pulls, platform HTTP) is not labelled |
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
-| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | Waiting — code retired with the AI code editor (migration 0148, v2026.10.6); operator 2026-10-06: drop it in the next full release after that |
+| [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
 
 ---
 
@@ -969,7 +970,17 @@ exercises cosign verify + migrations + the k3s stepping before a stable cut.
 
 ## R23 — `insula` single-binary install + branding
 
-**Proposed 2026-07-26 — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+**✅ SHIPPED in v2026.7.4 (2026-07-26) — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+Re-checked against the code 2026-10-07: `insula bootstrap` extracts and runs the
+embedded `bootstrap.sh` + `scripts/lib` + `k8s/` tree (`backend/src/cli/platform-ops/deps.ts`
+`realRunBootstrap`, embedded by `scripts/build-platform-ops.sh`); release assets
+are `insula-linux-*`; `/var/lib/insula` + `/etc/insula` are the real roots with
+the four generic roots symlinked to them (`configure_branded_paths`; existing
+nodes via `platform/host-migrations/2026.7.4/0001-rebrand-to-insula.sh`, which
+moves each old directory's contents and leaves a symlink). Production was
+installed fresh with `insula bootstrap`. `platform-ops` is a TypeScript SEA,
+not Go. What was left over is tracked as [R23b](#r23b--adr-055-leftovers); the
+text below is the original proposal.
 
 > **Re-scope needed before this starts (noted 2026-09-13).** The plan below
 > sequences the three changes together "while the installed base is a single
@@ -1013,6 +1024,47 @@ node's self-upgrade can still fetch it. Host-migration markers are
 name-independent, so the binary rename cannot re-trigger migrations; the path
 rebrand preserves that invariant only because it uses symlinks — load-bearing,
 CI-guardable. Full design + risks: ADR-055.
+
+## R23b — ADR-055 leftovers
+
+Found 2026-10-07 while re-checking R23 against the code.
+
+1. ✅ **The security-probe had the platform's credential files mounted — fixed
+   2026-10-07.** It mounted `/etc/hosting-platform` to read `firewall.conf`.
+   The rebrand made that path a symlink to `/etc/insula`, which also holds the
+   admin, Stalwart, Valkey and Roundcube credential files; the probe runs as
+   uid 0, so dropping every capability did not stop it reading those root-owned
+   0600 files (verified on DEV through the running pod's mountinfo — the files
+   were not opened). `firewall.conf` now has a directory of its own
+   (`/etc/hosting-platform/firewall/`, bootstrap + host-migration
+   `2026.10.7/0001-firewall-conf-own-directory`), the probe mounts only that,
+   and `scripts/ci-no-platform-root-hostpath.sh` fails any manifest, script
+   heredoc or backend pod spec that mounts one of the six roots.
+2. **Retire the probe's legacy single-file mount** of
+   `/etc/hosting-platform/firewall.conf`. It covers nodes that have not run the
+   host-migration above yet; drop it once every supported upgrade path has.
+3. **`/usr/local/bin/platform-ops` compat link on every install path.**
+   `phase_platform_ops` (`scripts/lib/bootstrap-phases.sh`) creates it only
+   after fetching a release; the documented install puts the binary in place
+   first, takes the "already at <version>" early return and never reaches it.
+   Runbooks and integration scripts still call `platform-ops`.
+4. **Stop publishing `platform-ops-linux-*`.** `release.yml` still signs and
+   ships both names; ADR-055 planned one transition release. No binary older
+   than 2026.7.4 remains in the field.
+5. **CLI text:** help (`dispatch.ts`), `version` and the fatal-error prefix
+   still say `platform-ops`.
+6. **The VM tier never installs through `insula bootstrap`** —
+   `vm-integration-tests/spawn-cluster.sh` runs `bootstrap.sh --remote`, so the
+   path operators actually use has no automated end-to-end run.
+7. **First-binary trust:** the install docs fetch the binary and `cosign.pub`
+   from the same GitHub origin. Publish the key fingerprint out of band and add
+   a fingerprint check to the install docs.
+
+**Keep, deliberately:** the four generic-root symlinks (code still reads the
+old paths, and a rollback to an older binary needs them), and the systemd unit
+names `platform-ops-{update,host-config}` — the old binary restarts
+`platform-ops-host-config.service` by name right after swapping in the new
+one, so renaming it breaks the upgrade that ships the rename.
 
 ## R24 — PROXY-protocol support for cloud load balancers
 
@@ -1153,12 +1205,34 @@ The resolver now returns `{ targets, skipped }`:
    components. `list-tenants` already surfaces newest-bundle metadata — this is
    a presentation + hard-gate change, not new machinery.
 
-4. ~~**Encryption-key mismatch is discovered late.**~~ **Done 2026-09-14** —
-   `dr-recover/encryption-preflight.ts`, wired into `recover-all` on both the
-   preview and the run.
+4. **Encryption-key mismatch is discovered late — half done.**
+   `dr-recover/encryption-preflight.ts` (2026-09-14) is wired into `recover-all`
+   on both the preview and the run. **Still open (re-checked 2026-10-07):**
+   - The cross-cluster migration import (`migration/service.ts`) calls the
+     per-tenant recover route directly and runs no key check at all.
+   - The correction below is itself wrong about data: every tenant's restic
+     repository password is `HKDF(PLATFORM_ENCRYPTION_KEY, "restic-tenant-<id>")`
+     (`tenant-bundles/restic-driver.ts` `deriveResticPassword`, used by the
+     files, mailboxes and databases restore executors). With a different key
+     every **data** restore fails with a wrong-password error, after the
+     namespace, PVC and quota already exist — not only the encrypted columns.
+     So `allowEncryptionKeyMismatch` produces empty tenants, and its remedy text
+     undersells that.
+   - The up-front check needs evidence from the BUNDLE: a key-check value
+     stamped into `meta.json` at capture, and for older bundles a read-only
+     `restic snapshots` probe (exit 12 = wrong password). Design notes:
+     2026-10-07 analysis.
 
-   The premise needed correcting first. A key mismatch does not fail the restore
-   at all: the `secrets` component is never restored (`drRecoverComponentSchema`
+   **Fixed alongside (2026-10-07):** the migration scan picked each tenant's
+   "newest" bundle by `meta.createdAt`, which the meta schema does not have
+   (it is `capturedAt`; Zod strips unknown keys). Every comparison tied and
+   the first bundle the store listed won — bundle ids are random, so a fleet
+   migration imported an arbitrary, often older, copy of each tenant, and the
+   UI showed no capture time. Now `migration/bundle-pick.ts`, typed from the
+   meta contract, compares instants.
+
+   The 2026-09-14 write-up said the premise needed correcting first. A key
+   mismatch does not fail the restore at all: the `secrets` component is never restored (`drRecoverComponentSchema`
    excludes it — TLS secrets are re-issued by provisioning), and `config-tables`
    inserts encrypted columns verbatim without reading them. What actually
    happens is quieter and worse — the recover *succeeds*, and every encrypted
@@ -1457,8 +1531,8 @@ section (2) means "nothing found in the covered slice", never "no drift".
 ## R30 — CrowdSec scenario buckets dilute across nodes
 
 Scenario evaluation happens **in the agent**, per node: only finished alerts ship to
-the LAPI, never raw events. Where ingress is fronted by round-robin DNS (staging today
-publishes 3 A records), one client's requests spread across nodes and each agent sees
+the LAPI, never raw events. Where ingress is fronted by round-robin DNS (production
+publishes one A record per node), one client's requests spread across nodes and each agent sees
 roughly 1/N of them. A burst that would trip `http-probing` on a single node can fail
 to trip it on any of three.
 
@@ -1466,8 +1540,11 @@ to trip it on any of three.
 simply fewer alerts than the traffic warrants. Detection sensitivity drops as the
 cluster grows, with no error anywhere — the worst shape a regression can take.
 
-Unaffected today: production and DEV are single-node. **Staging is 3-node and is
-affected.**
+**Production is affected** (updated 2026-10-06): it became a 3-node HA cluster in
+October 2026 and its platform names (apex, admin, mail) resolve to all three nodes;
+whether tenant routes do depends on how many ingress addresses each was provisioned
+with — measure that too. DEV is single-node and unaffected. (This
+entry was written when only the since-retired staging cluster was multi-node.)
 
 CrowdSec has no distributed-bucket mode, so the options are:
 
@@ -1480,8 +1557,9 @@ CrowdSec has no distributed-bucket mode, so the options are:
 3. **Accept reduced sensitivity** on multi-node and rely on the community blocklist
    plus ModSecurity for those clusters.
 
-Pick against **measured** traffic, not assumption: instrument the alert rate on staging
-first and compare it with the same traffic replayed single-node. The hub scenarios'
+Pick against **measured** traffic, not assumption: instrument the alert rate on a
+multi-node cluster (production, or a 3-node cluster on the local VM tier with a replayed
+log) and compare it with the same traffic replayed single-node. The hub scenarios'
 `capacity`/`leakspeed` values decide how much dilution actually matters, and guessing
 at them is how you end up with either a silent detector or a page every hour.
 
@@ -1927,6 +2005,56 @@ read as the primary path.
 
 ## R37 — Tenant pods can fill a node's disk, and nothing charges them for it
 
+**DECISION (operator, 2026-10-07): bound it, don't charge it — the smallest
+mechanism that closes "unbounded", using the kubelet's own enforcement.**
+Built 2026-10-07; runbook [TENANT_DISK_LIMITS.md](../operations/TENANT_DISK_LIMITS.md).
+
+- Every tenant container and init container gets `limits.ephemeral-storage`
+  (Platform → Limits & Regional: **2048 MiB** apps, **8192 MiB** database
+  components) and an explicit **64Mi** request (without it Kubernetes copies
+  the limit into the request and the scheduler would call nodes full). Every
+  disk-backed tenant emptyDir gets a `sizeLimit`. One function,
+  `boundTenantPodDisk`, on every tenant pod builder; CI guard
+  `ci-tenant-disk-bounds.sh`.
+- Applies on each workload's **next deploy** — no reconciler re-renders tenant
+  pods, so neither saving the setting nor upgrading restarts anything.
+- At the limit the kubelet restarts the pod on a clean filesystem; the tenant
+  gets `tenant.workload_disk_limit`, the operator the existing node
+  memory-event alert (cause `pod-storage-limit`).
+- Node disk alert critical **90 → 80 %**: 90 was the kubelet's own eviction
+  point, so it never warned first.
+
+**Considered and rejected**, after measuring rather than assuming:
+
+- *Measure first, enforce later* — operator: the current cluster is not a
+  baseline for other operators' clusters (small VPS disks, bring-your-own
+  images, unknown tenants); for an OSS hosting platform bounded-by-default is
+  the requirement.
+- *Quota on `limits.ephemeral-storage` + admission policy + a per-node scratch
+  pool via kubelet `system-reserved`* (≈6.5 engineer-weeks) — charges and
+  reserves, but needs k3s restarts on every node, a Longhorn reservation
+  change and new plan fields every operator must understand. Note for later:
+  a ResourceQuota does NOT force ephemeral-storage declarations (only cpu and
+  memory are in the quota evaluator's validation set) — every builder already
+  declares one now, so a quota can be added cheaply if billing ever needs it.
+- *`/tmp` on the tenant volume* — would make scratch charged, but measured on
+  DEV (Longhorn 1 replica vs node disk, same disk): large temp writes 4–6×
+  slower (~170 vs 700–1,100 MB/s), uncached re-reads ~7.5× slower, small
+  temp files no difference, a full 256 MiB upload about even. It would also
+  tie temp-file performance to whatever storage class an operator runs, and
+  reverses the earlier decision to keep sessions off the tenant volume. The
+  limit already caps `/tmp`.
+- *Read-only root filesystem for catalog images* — kept as a later hardening
+  item, not needed for the bound (production tenant containers held at most
+  1.3 MiB in their own filesystem).
+
+**Residual, documented** (runbook): container images (image GC + pressure
+watcher), the sum of overlapping limits (kubelet node-pressure eviction +
+the 75/80 % alerts), platform-run proxies in tenant namespaces, platform Jobs
+with their own large staging caps, the mail-archive Job.
+
+The original analysis follows.
+
 **The gap.** A tenant deployment pod carries no `ephemeral-storage` request or
 limit, and the tenant `ResourceQuota` bounds only CPU and memory:
 
@@ -1978,7 +2106,25 @@ low?" during the multi-host isolation work (ADR-059).
 
 ## R40 — Cluster traffic shows a wire total it does not explain
 
-**Status:** Not started. **Priority:** P2.
+**Status:** ✅ Largely shipped in v2026.10.6 (2026-10-06). **Priority:** P2 (residual only).
+
+**As shipped** (details: `docs/features/TRAFFIC_MONITORING.md`): the
+`firewall-reconciler` DaemonSet keeps an nft table `inet insula_traffic` on every
+node and publishes per-node counters; platform-api re-exports them. Monitoring →
+Traffic → Cluster now shows **Internet** (in/out) and **Node-to-node** (counted
+once, split into Kubernetes API, etcd, kubelet, pod network, other), which add up
+to the wire, plus two subsets of it: **All tenants** (Traefik tenant services) and
+**Backups** (the backup shim's off-site bytes, by nft — the host-side counter of
+point 2 below, delivered by the DaemonSet, so no host-migration was needed). The
+old NIC sum stays as **All NICs**. What the original entry did not anticipate:
+on the 3-node production cluster ~94% of the NIC sum was node-to-node, counted
+twice.
+
+**Residual:** point 3 — the part of internet traffic that is neither tenants nor
+backups (mail, image pulls, Git, DNS, platform HTTP, overhead) is not a labelled
+row yet.
+
+The original entry follows.
 
 The cluster view of **Traffic** reports the node NIC (cAdvisor's root cgroup —
 every byte that crossed the wire). The tenant view reports what the ingress
@@ -2075,8 +2221,22 @@ database: dropping it there would have broken the old backend pods during the
 rolling deploy (their schema selects it by name on every plan read). Same
 expand/contract rule as migration 0046.
 
-**To do, in the first release after the one carrying 0148:** a migration with
+**✅ Done on `development` 2026-10-06:** `0150_drop_plan_ai_budget.sql` runs
 `ALTER TABLE "hosting_plans" DROP COLUMN IF EXISTS "weekly_ai_budget_cents";`.
-Before writing it, check that a tenant-bundle `config` restore of a
-`hosting_plans` row captured by an older version does not insert the column by
-name (it must restore only the columns the current schema knows).
+The bundle check came out clean: a `config` restore does insert rows by the
+dump's own column names (`backup-restore/executors/_shared.ts:upsertRow`), but
+`hosting_plans` is in neither `CONFIG_DUMP_TABLES` nor the config-tables restore
+allow-list, and the admin export/import inserts named fields only.
+
+**Upgrade path:** ADR-045 allows skipping releases. A cluster that jumps from
+v2026.10.5 straight to the release carrying 0150 still runs v2026.10.5 pods
+until the rollout replaces them, and their plan reads fail with
+`undefined_column` for that window. Pull v2026.10.6 first. There is no
+version-floor gate in the upgrade preflight to enforce this.
+
+**Sibling, not done:** migration 0046 deferred the same contract step for
+`system_settings.mail_hostname` and no later migration took it. Unlike this
+column it is still written: `scripts/admin-domain-rewrite.sh` sets it (a dead
+write — the canonical value is `platform_settings.mail_server_hostname`, which
+the same script also sets). Dropping it means removing that line in the same
+release.

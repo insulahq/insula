@@ -31,6 +31,10 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LegItem, MigrationLogger } from './provision.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+// /tmp is HOME, ssh known_hosts and error logs only — dumps and rsync stream
+// straight to MariaDB / the tenant volume. The root filesystem is read-only, so
+// this capped emptyDir is the job's only node-disk write (R37).
+import { TENANT_EMPTYDIR_SIZE_LIMIT } from '../tenant-disk/pod-bounds.js';
 
 const MIGRATION_TOOLS_IMAGE =
   resolvePlatformImage('migration-tools');
@@ -369,7 +373,7 @@ export function buildContentSyncJob({ jobName, secretName, namespace, pvcName, s
           volumes: [
             ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'data', persistentVolumeClaim: { claimName: pvcName } },
-            { name: 'tmp', emptyDir: {} },
+            { name: 'tmp', emptyDir: { sizeLimit: TENANT_EMPTYDIR_SIZE_LIMIT } },
           ],
         },
       },

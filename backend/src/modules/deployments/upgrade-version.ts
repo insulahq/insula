@@ -21,6 +21,7 @@ import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
 import { deployCatalogEntry } from './k8s-deployer.js';
+import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 import {
   getTenantNamespace,
   tenantPlacementOf,
@@ -406,6 +407,7 @@ export async function upgradeDeploymentVersion(
 
   try {
     await deployCatalogEntry(k8s, {
+      diskLimits: await getTenantDiskLimits(db),
       // The pin rides along on an upgrade too — see TenantPlacement.
       ...tenantPlacementOf(tenant),
       deploymentName: deployment.name,
@@ -758,6 +760,7 @@ export async function rollbackDeploymentVersion(
 
   try {
     await deployCatalogEntry(k8s, {
+      diskLimits: await getTenantDiskLimits(db),
       // The pin rides along on an upgrade too — see TenantPlacement.
       ...tenantPlacementOf(tenant),
       deploymentName: deployment.name,

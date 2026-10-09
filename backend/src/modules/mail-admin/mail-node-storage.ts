@@ -159,7 +159,12 @@ export async function getMailNodeStorage(
       mailUsedBytes = activeMailUsed;
       mailUsedReportedAt = new Date().toISOString();
     } else {
-      const r = standbyReports[nodeName];
+      // The DaemonSet reports under spec.nodeName (the Node object's name);
+      // cards are keyed by the kubernetes.io/hostname label. They match on
+      // stock k3s but not everywhere (a hostname override, a cloud provider
+      // naming nodes by private DNS), so look under both.
+      const kubeName = node?.metadata?.name;
+      const r = standbyReports[nodeName] ?? (kubeName ? standbyReports[kubeName] : undefined);
       if (r) {
         mailUsedBytes = r.sizeBytes;
         mailUsedReportedAt = r.reportedAt;

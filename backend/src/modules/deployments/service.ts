@@ -58,6 +58,8 @@ import {
   deleteDeploymentResources,
 } from './k8s-deployer.js';
 import type { DeployComponentInput } from './k8s-deployer.js';
+import { componentDiskClass } from '../tenant-disk/pod-bounds.js';
+import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDeploymentInput, UpdateDeploymentInput } from './schema.js';
@@ -159,6 +161,7 @@ function resolveComponents(
     args?: string[];
     resources?: { cpu?: string; memory?: string };
     resourceShare?: { weight: number; minCpu?: string; minMemory?: string };
+    database?: string;
   }>;
 
   if (baseComponents.length === 0) {
@@ -170,6 +173,7 @@ function resolveComponents(
       image,
       ports: resolveIngressPorts(entry),
       optional: false,
+      diskClass: componentDiskClass(entry.type, undefined),
     }];
   }
 
@@ -189,6 +193,7 @@ function resolveComponents(
       args: comp.args,
       resources: comp.resources,
       resourceShare: comp.resourceShare,
+      diskClass: componentDiskClass(entry.type, comp.database),
     };
   });
 }
@@ -641,6 +646,7 @@ export async function createDeployment(
       const passwordEnvVar = findAdminPasswordEnvVar(generatedEnvKeys);
 
       await deployCatalogEntry(k8s, {
+        diskLimits: await getTenantDiskLimits(db),
         deploymentName: input.name,
         storagePath,
         namespace,
@@ -1529,6 +1535,7 @@ export async function updateDeploymentResources(
       assertExtraMountsDoNotCollide(deployment.extraMounts, resolved.volumes);
 
       await deployCatalogEntry(k8s, {
+        diskLimits: await getTenantDiskLimits(db),
         // The pin rides along on every redeploy — see TenantPlacement.
         ...(await loadTenantPlacement(db, tenantId)),
         deploymentName: deployment.name,
@@ -1835,6 +1842,7 @@ export async function redeployWithCurrentConfig(
     : undefined;
 
   await deployCatalogEntry(k8s, {
+    diskLimits: await getTenantDiskLimits(db),
     // The pin rides along on every redeploy — see TenantPlacement.
     ...(await loadTenantPlacement(db, deployment.tenantId)),
     deploymentName: deployment.name,

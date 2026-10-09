@@ -830,7 +830,8 @@ export async function breakGlassLogin(db: Database, email: string, password: str
 
   // Now verify email+password as normal
   const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  if (!user || !user.passwordHash || user.panel !== 'admin') {
+  // A disabled account stays out, emergency or not.
+  if (!user || !user.passwordHash || user.panel !== 'admin' || user.status !== 'active') {
     throw new ApiError('INVALID_TOKEN', 'Invalid credentials', 401);
   }
 

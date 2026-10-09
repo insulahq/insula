@@ -31,6 +31,17 @@ export const adminUserResponseSchema = z.object({
 
 export type AdminUserResponse = z.infer<typeof adminUserResponseSchema>;
 
+/** A row of GET /admin/users: the user plus the sign-in facts the table shows. */
+export const adminUserListItemSchema = adminUserResponseSchema.extend({
+  /** IP of the most recent sign-in (refresh-token issuance); null when never signed in. */
+  lastLoginIp: z.string().nullable(),
+  /** Registered passkeys. */
+  passkeyCount: z.number().int(),
+  /** Whether a password sign-in also needs an authenticator-app code. */
+  totpEnabled: z.boolean(),
+});
+export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
+
 // ─── Tenant-Users (cross-tenant admin list) ─────────────────────────────────
 //
 // Tenant-panel users (panel='tenant') and sub-users joined to their owning
@@ -47,6 +58,8 @@ export const tenantUserResponseSchema = z.object({
   tenantName: z.string().nullable(),
   lastLoginAt: z.string().nullable(),
   createdAt: z.string(),
+  /** Whether a password sign-in also needs an authenticator-app code. */
+  totpEnabled: z.boolean(),
 });
 
 export type TenantUserResponse = z.infer<typeof tenantUserResponseSchema>;

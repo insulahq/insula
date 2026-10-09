@@ -26,7 +26,8 @@ verified: 2026.6.7
 | **DR bundle** | The encrypted whole-platform recovery bundle (secrets, configuration, recovery pointers) for cold restore onto fresh hardware |
 | **platform-ops** | The signed on-node CLI for upgrades, migrations, diagnostics, and disaster recovery — works with the platform down ([reference](cli.md)) |
 | **Webmail engine** | The webmail app served to users: Bulwark (JMAP-native, the default) or Roundcube (legacy alternative); selectable platform-wide |
-| **Passkey** | Phishing-resistant WebAuthn credential usable for sign-in or as second factor |
+| **Passkey** | Phishing-resistant WebAuthn credential that signs a user in on its own |
+| **TOTP** | Time-based one-time password: the 6-digit code from an authenticator app, the optional second step of a password sign-in |
 | **Step-up authentication** | A fresh credential check required just before sensitive actions (e.g. opening a node terminal) |
 | **SYSTEM tenant** | The built-in tenant that owns the platform's own hostnames and transactional mailboxes; cannot be suspended or deleted |
 | **CalVer** | The release numbering scheme: `YYYY.M.PATCH`, e.g. `2026.6.7` |

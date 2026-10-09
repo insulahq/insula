@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS } from './file-trash.js';
+import { MIN_TENANT_DISK_LIMIT_MB, MAX_TENANT_DISK_LIMIT_MB } from './tenant-disk.js';
 
 /**
  * PATCH /admin/system-settings.
@@ -36,6 +37,11 @@ export const updateSystemSettingsSchema = z.object({
   // File-manager recycle-bin retention. Bounded below at 1 day: a 0 would make
   // every delete permanent while both panels still said "Move to Trash".
   fileTrashRetentionDays: z.number().int().min(MIN_TRASH_RETENTION_DAYS).max(MAX_TRASH_RETENTION_DAYS).optional(),
+  // Node-disk ceiling per tenant container (ROADMAP R37), in MiB: writable
+  // layer + /tmp + logs. Applied when a workload is next deployed.
+  tenantAppDiskLimitMb: z.number().int().min(MIN_TENANT_DISK_LIMIT_MB).max(MAX_TENANT_DISK_LIMIT_MB).optional(),
+  // Same, for database components (sorts and temp tables spill to disk).
+  tenantDatabaseDiskLimitMb: z.number().int().min(MIN_TENANT_DISK_LIMIT_MB).max(MAX_TENANT_DISK_LIMIT_MB).optional(),
   // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.

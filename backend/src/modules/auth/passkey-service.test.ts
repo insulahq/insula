@@ -56,14 +56,11 @@ describe('loadPasskeyConfig', () => {
   });
 });
 
-// ─── deletePasskey safety check ──────────────────────────────────────
-// We test the lockout guard at a higher level — when the user is in
-// 'second_factor' mode and removing the LAST passkey would lock them
-// out, the service must reject with LAST_PASSKEY_IN_2FA_MODE. The
-// integration test (E2E) exercises the full DB path; here we verify
-// the decision logic directly with a chainable mock db.
+// ─── deletePasskey ───────────────────────────────────────────────────
+// Removing the last passkey switches passkey sign-in off. Verified here
+// with a chainable mock db; the E2E exercises the full DB path.
 
-describe('deletePasskey lockout guard', () => {
+describe('deletePasskey', () => {
   beforeEach(() => {
     vi.resetModules();
   });
@@ -100,7 +97,7 @@ describe('deletePasskey lockout guard', () => {
     return { ...txDb, transaction, _deleteWhere: deleteWhere, _updateSet: updateSet };
   }
 
-  it('rejects last-passkey delete when user is in second_factor mode', async () => {
+  it('treats a legacy second_factor row like passkey sign-in: last delete switches it off', async () => {
     const { deletePasskey } = await import('./passkey-service.js');
     const db = makeDb({
       passkey: { id: 'pk1', userId: 'u1' },
@@ -108,11 +105,9 @@ describe('deletePasskey lockout guard', () => {
       user: { passkeyMode: 'second_factor' },
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(deletePasskey(db as any, 'u1', 'pk1')).rejects.toMatchObject({
-      code: 'LAST_PASSKEY_IN_2FA_MODE',
-      status: 409,
-    });
-    expect(db._deleteWhere).not.toHaveBeenCalled();
+    await deletePasskey(db as any, 'u1', 'pk1');
+    expect(db._updateSet).toHaveBeenCalledWith(expect.objectContaining({ passkeyMode: null }));
+    expect(db._deleteWhere).toHaveBeenCalled();
   });
 
   it('downgrades alternative→null when the last passkey is removed', async () => {
@@ -158,22 +153,15 @@ describe('deletePasskey lockout guard', () => {
 
 // ─── setPasskeyMode guard ────────────────────────────────────────────
 
-describe('setPasskeyMode guard', () => {
-  it('rejects second_factor when user has zero passkeys', async () => {
+describe('setPasskeyMode', () => {
+  it('switches passkey sign-in on', async () => {
     const { setPasskeyMode } = await import('./passkey-service.js');
-    const limit = vi.fn(() => Promise.resolve([])); // no passkeys
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    const select = vi.fn(() => ({ from }));
     const updateWhere = vi.fn(() => Promise.resolve());
     const updateSet = vi.fn(() => ({ where: updateWhere }));
-    const update = vi.fn(() => ({ set: updateSet }));
-    const db = { select, update };
+    const db = { update: vi.fn(() => ({ set: updateSet })) };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(setPasskeyMode(db as any, 'u1', 'second_factor')).rejects.toMatchObject({
-      code: 'PASSKEY_REQUIRED_FIRST',
-    });
-    expect(updateSet).not.toHaveBeenCalled();
+    await setPasskeyMode(db as any, 'u1', 'alternative');
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ passkeyMode: 'alternative' }));
   });
 
   it('accepts null mode without checking passkeys', async () => {

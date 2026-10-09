@@ -316,13 +316,18 @@ export async function purgeClusterInternalBlockedIps(
     return { purgedCount: 0, ran: true, errorMessage: null };
   }
 
-  // DESTROY filtered entries.
+  // DESTROY filtered entries, then have the running server re-read its ban
+  // list. Destroying the rows only edits the store: Stalwart keeps enforcing
+  // its in-memory list until ReloadBlockedIps (or a restart) — measured on a VM
+  // cluster, where a destroyed ban kept refusing the address. Same request, so
+  // the reload runs right after the destroy.
   let setRes: JmapResponse;
   try {
     setRes = await execJmap(podName, opts.kubeconfigPath, authHeader, {
       using: [JMAP_CORE, JMAP_STALWART],
       methodCalls: [
         ['x:BlockedIp/set', { accountId: ADMIN_ACCOUNT_ID, destroy: idsToDestroy }, 'c0'],
+        ['x:Action/set', { accountId: ADMIN_ACCOUNT_ID, create: { reload: { '@type': 'ReloadBlockedIps' } } }, 'c1'],
       ],
     });
   } catch (err) {
@@ -339,6 +344,11 @@ export async function purgeClusterInternalBlockedIps(
   } | undefined;
   const destroyed = setArgs?.destroyed ?? [];
   const notDestroyed = Object.keys(setArgs?.notDestroyed ?? {});
+  const reloadArgs = setRes.methodResponses[1]?.[1] as { notCreated?: Record<string, unknown> | null } | undefined;
+  if (!reloadArgs || (reloadArgs.notCreated && Object.keys(reloadArgs.notCreated).length > 0)) {
+    log.warn({ reload: setRes.methodResponses[1] ?? null },
+      'purge-blocked-ips: ReloadBlockedIps did not run — purged addresses stay blocked until the next Stalwart restart');
+  }
 
   if (notDestroyed.length > 0) {
     log.warn({

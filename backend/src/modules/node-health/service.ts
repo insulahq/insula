@@ -32,12 +32,15 @@ export const EVICTION_CRITICAL_THRESHOLD = 10;
 
 /**
  * Disk-fill percentage for severity transitions when the kubelet's
- * own DiskPressure condition hasn't fired yet. Kubelet eviction-hard
- * is at 85-90% usually; we want to alert sooner so the operator has
- * time to respond before pods get evicted.
+ * own DiskPressure condition hasn't fired yet. The point is to alert
+ * BEFORE the kubelet acts, so these sit below its thresholds as
+ * bootstrap.sh sets them: image GC from 70 % used, `imagefs.available<15%`
+ * (k3s keeps images on the root filesystem, so evictions start at 85 %
+ * used) and `nodefs.available<10%` (90 %). Critical used to be 90 — the
+ * exact point the kubelet starts evicting, so it never warned first (R37).
  */
 export const DISK_USED_PCT_WARNING = 75;
-export const DISK_USED_PCT_CRITICAL = 90;
+export const DISK_USED_PCT_CRITICAL = 80;
 
 /**
  * Raw subset of v1.Node we read from the K8s API.

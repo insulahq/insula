@@ -60,7 +60,7 @@ export const nodeSshExposureSchema = z.object({
   nodeName: z.string().min(1).max(253),
   /** Inferred from nft rules: what does the firewall actually allow on :22? */
   restrictionMode: sshRestrictionModeSchema,
-  /** True when bootstrap.sh was invoked with --ssh-via-mesh (persisted in /etc/hosting-platform/firewall.conf). */
+  /** True when bootstrap.sh was invoked with --ssh-via-mesh (persisted in /etc/hosting-platform/firewall/firewall.conf). */
   sshViaMeshFlag: z.boolean(),
   /** Mesh interface enforced (if sshViaMeshFlag); empty when public. */
   enforcedInterface: z.string().nullable(),

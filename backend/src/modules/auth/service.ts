@@ -90,9 +90,8 @@ export async function authenticateUser(
     role: user.roleName,
     panel: user.panel ?? 'admin',
     tenantId: user.tenantId ?? undefined,
-    // Passkey integration: caller decides whether to issue tokens
-    // immediately (NULL or 'alternative') or to require a second
-    // factor ('second_factor').
+    // Whether passkey sign-in is on; a password sign-in's second factor is
+    // TOTP, checked by the login route (totp-service.ts).
     passkeyMode: user.passkeyMode as 'alternative' | 'second_factor' | null,
   };
 }

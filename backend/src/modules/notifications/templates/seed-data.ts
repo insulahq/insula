@@ -2146,6 +2146,39 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
   {
+    categoryId: 'tenant.workload_disk_limit',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Restarted after reaching its disk limit: {{workloads}}',
+    bodyTemplate: emailMjml(
+      'An application was restarted',
+      'These applications wrote more to their own container filesystem than the per-application '
+        + 'limit allows, so the platform restarted them on a clean filesystem: {{workloads}} '
+        + 'Your files and databases on your storage were not touched. Temporary files, caches and '
+        + 'logs written outside your storage count towards this limit. If it happens again, move '
+        + 'that data to your storage, or ask your platform operator to raise the limit.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.workload_disk_limit',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Restarted after reaching its disk limit: {{workloads}}',
+    bodyTemplate: 'Restarted on a clean filesystem after writing more than its local disk limit:{{workloads}}\n'
+      + 'Files and databases on your storage were not touched. Move temporary data to your storage, '
+      + 'or ask your platform operator to raise the limit.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+    ],
+  },
+  {
     categoryId: 'admin.wal_archive_failing',
     channel: 'email',
     locale: 'en',

@@ -13,38 +13,12 @@ import { inArray, eq } from 'drizzle-orm';
 import { tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type {
+  BackupMetaV2,
   MigrationTenant,
   MigrationImportResult,
 } from '@insula/api-contracts';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
-
-/** Effective resource limits resolved at capture (override ?? plan baseline). */
-interface EffectiveResources {
-  readonly cpuLimit: number;
-  readonly memoryLimit: number;
-  readonly storageLimit: number;
-  readonly maxSubUsers: number;
-  readonly maxMailboxes: number;
-  readonly maxMailboxSizeMb: number;
-  readonly emailHourlySendLimit: number;
-  readonly emailDailySendLimit: number;
-  readonly monthlyPriceUsd: number;
-}
-
-/** The subset of meta.json (v2) the migration scan reads. */
-interface SourceMeta {
-  readonly bundleId?: string;
-  readonly tenantId?: string;
-  readonly tenantName?: string;
-  readonly createdAt?: string;
-  readonly platformVersion?: string;
-  readonly tenant?: {
-    readonly name?: string;
-    readonly primaryEmail?: string | null;
-    readonly effectiveResources?: EffectiveResources | null;
-  };
-  readonly components?: Readonly<Record<string, { readonly sizeBytes?: number } | undefined>>;
-}
+import { pickNewestPerTenant, type ScannedBundle } from './bundle-pick.js';
 
 async function openSourceStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   const { resolveDirectStoreForBundle } = await import('../backup-restore/shared.js');
@@ -89,30 +63,21 @@ export async function listMigrationTenants(
     );
   }
 
-  const byTenant = new Map<string, { meta: SourceMeta; latestBundleId: string; count: number }>();
+  const found: ScannedBundle<BackupMetaV2>[] = [];
   let scanned = 0;
   let skipped = 0;
   for (const bundleId of bundleIds) {
     scanned++;
-    let meta: SourceMeta;
+    let meta: BackupMetaV2;
     try {
       const handle = await store.open(bundleId);
       if (!handle) { skipped++; continue; }
-      meta = (await store.getMeta(handle)) as unknown as SourceMeta;
+      meta = await store.getMeta(handle);
     } catch { skipped++; continue; }   // in-flight / foreign / invalid meta
-    const tid = meta.tenantId;
-    if (!tid) { skipped++; continue; }
-    const cur = byTenant.get(tid);
-    if (!cur) {
-      byTenant.set(tid, { meta, latestBundleId: meta.bundleId ?? bundleId, count: 1 });
-    } else {
-      cur.count++;
-      if ((meta.createdAt ?? '') > (cur.meta.createdAt ?? '')) {
-        cur.meta = meta;
-        cur.latestBundleId = meta.bundleId ?? bundleId;
-      }
-    }
+    if (!meta.tenantId) { skipped++; continue; }
+    found.push({ bundleId, meta });
   }
+  const byTenant = pickNewestPerTenant(found);
 
   const ids = [...byTenant.keys()];
   const present = ids.length
@@ -121,15 +86,15 @@ export async function listMigrationTenants(
   const presentSet = new Set(present.map((r) => r.id));
 
   const out: MigrationTenant[] = [...byTenant.entries()].map(([tid, v]) => {
-    const comps = v.meta.components ?? {};
-    const componentNames = Object.keys(comps).filter((k) => comps[k]);
-    const totalSizeBytes = componentNames.reduce((s, k) => s + Number(comps[k]?.sizeBytes ?? 0), 0);
+    const present = Object.entries(v.meta.components ?? {}).filter(([, c]) => c);
+    const componentNames = present.map(([k]) => k);
+    const totalSizeBytes = present.reduce((s, [, c]) => s + Number(c?.sizeBytes ?? 0), 0);
     return {
       tenantId: tid,
-      tenantName: v.meta.tenantName ?? v.meta.tenant?.name ?? '(unknown)',
+      tenantName: v.meta.tenant?.name ?? '(unknown)',
       primaryEmail: v.meta.tenant?.primaryEmail ?? null,
-      latestBundleId: v.latestBundleId,
-      latestCreatedAt: v.meta.createdAt ?? '',
+      latestBundleId: v.bundleId,
+      latestCreatedAt: v.capturedAt,
       bundleCount: v.count,
       totalSizeBytes,
       components: componentNames,

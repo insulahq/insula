@@ -1242,6 +1242,124 @@ export async function queuedMessageCount(params: {
   return typeof q.total === 'number' ? q.total : (q.ids?.length ?? 0);
 }
 
+// ── Security (automatic IP bans) ───────────────────────────────────────────
+//
+// The `x:Security` singleton holds Stalwart's fail2ban: per-reason strike
+// rates and how long the resulting ban lasts. Durations travel as integer
+// MILLISECONDS; a null period means the ban never expires (Stalwart's default).
+// Like every settings group it is cold until written — see settings-group.ts.
+
+/** A fail2ban strike rate: `count` strikes within `period` milliseconds. */
+export interface StalwartRate {
+  readonly count: number;
+  readonly period: number;
+}
+
+export interface StalwartSecurityRow {
+  readonly abuseBanRate?: StalwartRate | null;
+  readonly abuseBanPeriod?: number | null;
+  readonly authBanRate?: StalwartRate | null;
+  readonly authBanPeriod?: number | null;
+  readonly loiterBanRate?: StalwartRate | null;
+  readonly loiterBanPeriod?: number | null;
+  /** Request-path patterns that ban an HTTP client on sight, as a `{pattern: true}` map. */
+  readonly scanBanPaths?: Record<string, boolean> | null;
+  readonly scanBanRate?: StalwartRate | null;
+  readonly scanBanPeriod?: number | null;
+}
+
+export async function securityGet(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<StalwartSecurityRow | null> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<{ list?: readonly StalwartSecurityRow[] }>(
+    JMAP_STALWART,
+    'x:Security/get',
+    {},
+    baseUrl, env,
+  );
+  // An empty list is the UNWRITTEN state (built-in defaults live), not an error.
+  return res.list?.[0] ?? null;
+}
+
+export async function securityUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartSecurityRow>> {
+  const { patch, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartSecurityRow>>(
+    JMAP_STALWART,
+    'x:Security/set',
+    { update: { singleton: patch } },
+    baseUrl, env,
+  );
+}
+
+// ── BlockedIp (the ban list) ────────────────────────────────────────────────
+//
+// One row per banned address. `reason` is camelCase (`portScanning`,
+// `authFailure`, `loitering`, `rcptToFailure` for Stalwart's own automatic
+// bans; `manual`/`other` otherwise); `expiresAt` null = never expires. A
+// `/get` with `ids: null` returns at most the server's per-request maximum,
+// so list through `/query` pages. Writes reach the RUNNING server's block list
+// only after `actionReloadBlockedIps`. Account-agnostic like the other
+// registry objects here (no accountId; read live on v0.16.24).
+
+export interface StalwartBlockedIpRow {
+  readonly id: string;
+  readonly address?: unknown;
+  readonly reason?: string;
+  readonly createdAt?: string;
+  readonly expiresAt?: string | null;
+}
+
+export async function blockedIpQuery(params: {
+  position: number;
+  limit: number;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<readonly string[]> {
+  const { position, limit, baseUrl, env } = params;
+  const res = await _xCall<{ ids?: readonly string[] }>(
+    JMAP_STALWART,
+    'x:BlockedIp/query',
+    { position, limit },
+    baseUrl, env,
+  );
+  return res.ids ?? [];
+}
+
+export async function blockedIpGet(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<readonly StalwartBlockedIpRow[]> {
+  const { ids, baseUrl, env } = params;
+  const res = await _xCall<{ list?: readonly StalwartBlockedIpRow[] }>(
+    JMAP_STALWART,
+    'x:BlockedIp/get',
+    { ids },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+export async function blockedIpUpdate(params: {
+  update: Record<string, Record<string, unknown>>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartBlockedIpRow>> {
+  const { update, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartBlockedIpRow>>(
+    JMAP_STALWART,
+    'x:BlockedIp/set',
+    { update },
+    baseUrl, env,
+  );
+}
+
 // ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
 //
 // Stalwart loads most registry config (MTA throttles/quotas, report
@@ -1264,6 +1382,28 @@ export async function actionReloadSettings(params: {
   );
   if (res.notCreated && Object.keys(res.notCreated).length > 0) {
     throw new Error(`Stalwart ReloadSettings rejected: ${JSON.stringify(res.notCreated)}`);
+  }
+}
+
+/**
+ * Re-read the ban list into the running server (and the cluster): bans whose
+ * `expiresAt` has passed are deleted, the rest take their current lifetime.
+ * Without it, a ban destroyed or shortened over JMAP stays enforced in memory
+ * until the next Stalwart restart.
+ */
+export async function actionReloadBlockedIps(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<void> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:Action/set',
+    { create: { reload: { '@type': 'ReloadBlockedIps' } } },
+    baseUrl, env,
+  );
+  if (res.notCreated && Object.keys(res.notCreated).length > 0) {
+    throw new Error(`Stalwart ReloadBlockedIps rejected: ${JSON.stringify(res.notCreated)}`);
   }
 }
 
