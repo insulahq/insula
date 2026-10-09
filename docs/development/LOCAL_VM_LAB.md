@@ -1,7 +1,7 @@
 # Local VM Lab — retained DEV and staging clusters on one host
 
-> **Status:** built — services VM, local DEV and local staging (with its worker) run; the first
-> release candidate through staging and the LAN-client checks are open (see *Phases*).
+> **Status:** built — services VM, local DEV and local staging (with its worker) run, reachable from
+> the LAN by name; the first release candidate through staging is open (see *Phases*).
 > **Supersedes:** [`LOCAL_MULTINODE_VM_SETUP.md`](./LOCAL_MULTINODE_VM_SETUP.md) (never built).
 > **Related:** [`EPHEMERAL_VM_INTEGRATION_TESTING.md`](./EPHEMERAL_VM_INTEGRATION_TESTING.md) — the
 > throw-away per-run tier (`scripts/vm-integration-tests/run.sh`). The lab reuses its machinery
@@ -229,7 +229,7 @@ lab's. `run.sh` stops older throw-away runs before it starts — it never touche
 
 | Phase | Content | Status |
 |---|---|---|
-| 0 | Routed networking through the LAN router; reachability from the operator's tooling | verified (lab → internet, tooling → lab); LAN-client check pending |
+| 0 | Routed networking through the LAN router; reachability from the operator's tooling | verified (lab → internet, tooling → lab, a LAN laptop → DEV by name through the LAN resolver's forward) |
 | 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | done — services VM and DEV built and checked live |
 | 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | done for the install path — Flux running, all public certificates (incl. mail) from the lab CA; `bootstrap.sh --trust-ca` now seeds Stalwart's trust too |
 | 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | done (smoke 46/0, browser, auto-deploy of a real push, mail TLS, backups, DNS) — soak running |
