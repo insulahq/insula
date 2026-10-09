@@ -6,7 +6,8 @@
 #   stg  LAB_STG_SERVERS servers installed like production — `--env production` from a
 #        checkout of LAB_STG_RELEASE_TAG (production's version) — and opted into release
 #        candidates, so every RC is an in-place upgrade from where production is. On
-#        demand (no autostart).
+#        demand (no autostart). Its optional worker (lib/lab-worker.sh) is a VM with the
+#        OS only, joined and removed through the platform's own flows.
 #
 # A cluster is created ONCE (VMs from the golden images, then lib/lab-install.sh) and
 # from then on only started and stopped. Requires the other lab libs (see lab.sh).
@@ -20,14 +21,16 @@ lab_cluster_def() {
       CL_NAME=dev; CL_NET=insula-lab-dev; CL_PREFIX="$LAB_DEV_NET"; CL_APEX="dev.${LAB_APEX}"
       CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART=1
       CL_VCPU="$LAB_DEV_VCPU"; CL_RAM="$LAB_DEV_RAM_MB"; CL_DISK="$LAB_DEV_DISK_GB"
-      CL_NODES=("lab-dev-1 11") ;;
+      CL_NODES=("lab-dev-1 11"); CL_WORKER="" ;;
     stg)
       [[ -n "${LAB_STG_RELEASE_TAG:-}" ]] || { echo "lab: set LAB_STG_RELEASE_TAG to the release production runs (e.g. v2026.10.6)" >&2; return 1; }
       CL_NAME=stg; CL_NET=insula-lab-stg; CL_PREFIX="$LAB_STG_NET"; CL_APEX="stg.${LAB_APEX}"
       CL_ENV=production; CL_RELEASE_TAG="$LAB_STG_RELEASE_TAG"; CL_AUTOSTART=0
       CL_VCPU="$LAB_STG_VCPU"; CL_RAM="$LAB_STG_RAM_MB"; CL_DISK="$LAB_STG_DISK_GB"
       CL_NODES=()
-      for i in $(seq 1 "${LAB_STG_SERVERS:-3}"); do CL_NODES+=("lab-stg-s${i} $((10 + i))"); done ;;
+      for i in $(seq 1 "${LAB_STG_SERVERS:-3}"); do CL_NODES+=("lab-stg-s${i} $((10 + i))"); done
+      CL_WORKER="lab-stg-w1 21"
+      CL_W_VCPU="${LAB_STG_WORKER_VCPU:-4}"; CL_W_RAM="${LAB_STG_WORKER_RAM_MB:-6144}"; CL_W_DISK="${LAB_STG_WORKER_DISK_GB:-40}" ;;
     *) echo "lab: unknown cluster '$1' (dev|stg)" >&2; return 1 ;;
   esac
 }
@@ -125,9 +128,10 @@ _lab_mem_guard() {
   fi
 }
 
-# _lab_node_create <vm> <host-octet> <ca-pem-b64> — VM from its OS's golden image, booted.
+# _lab_node_create <vm> <host-octet> <ca-pem-b64> [vcpu ram-mb disk-gb] — VM from its OS's
+# golden image, booted. Sized like the cluster's servers unless told otherwise.
 _lab_node_create() {
-  local vm="$1" host="$2" ca_b64="$3" os url golden overlay seed
+  local vm="$1" host="$2" ca_b64="$3" vcpu="${4:-$CL_VCPU}" ram="${5:-$CL_RAM}" disk="${6:-$CL_DISK}" os url golden overlay seed
   os="$(lab_node_os "$vm")" || return 1
   url="$(os_url "$os")"
   [[ "$url" != PIN_* ]] || { echo "lab: no pinned image for ${os}" >&2; return 1; }
@@ -138,8 +142,8 @@ _lab_node_create() {
   _lab_node_userdata "$vm" "$(cat "${VMTEST_SSH_KEY}.pub")" "$ca_b64" > "${VMTEST_TMP_DIR}/ud-${vm}.yaml"
   printf 'instance-id: %s\nlocal-hostname: %s\n' "$vm" "$vm" > "${VMTEST_TMP_DIR}/md-${vm}.yaml"
   seed_iso "" "${VMTEST_TMP_DIR}/ud-${vm}.yaml" "${VMTEST_TMP_DIR}/md-${vm}.yaml" "$seed" >&2
-  img_clone "$golden" "$overlay" "$CL_DISK" >&2
-  vm_create "$vm" "$overlay" "$seed" "$CL_NET" "$CL_VCPU" "$CL_RAM" "$(lab_mac "$CL_PREFIX" "$host")" >&2
+  img_clone "$golden" "$overlay" "$disk" >&2
+  vm_create "$vm" "$overlay" "$seed" "$CL_NET" "$vcpu" "$ram" "$(lab_mac "$CL_PREFIX" "$host")" >&2
 }
 
 # lab_cluster_up <name> — create the cluster, or start it if it exists.
@@ -197,23 +201,78 @@ lab_cluster_up() {
   else
     wait_k3s_ready "$s1" 600 >&2 || return 1
   fi
+  _lab_wait_platform "$s1" 900 || return 1
+  # A joined worker is part of the cluster: it comes back with it.
+  if [[ -n "${CL_WORKER:-}" ]] && [[ "$(lab_state_get "LAB_${CL_NAME^^}_WORKER_JOINED")" == 1 ]]; then
+    read -r vm host <<<"$CL_WORKER"
+    if [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" != running ]]; then
+      _lab_mem_guard "$CL_W_RAM" || return 1
+      VIRSH start "$vm" >&2
+      wait_ssh "${CL_PREFIX}.${host}" 600 >&2 || return 1
+    fi
+  fi
   echo "${CL_NAME} cluster up: https://admin.${CL_APEX}  (${#CL_NODES[@]} node(s), first @ ${s1}; admin@${CL_APEX}, password in ${LAB_STATE_FILE})"
 }
 
-# lab_cluster_down <name> — graceful stop; VMs, OS and platform kept.
+# _lab_wait_platform <first-server-ip> <timeout-s> — until the platform API answers through
+# the cluster's ingress. Nodes Ready is not a usable cluster: after a cold start Longhorn
+# re-attaches the database volume and platform-api waits for Postgres (measured: minutes).
+_lab_wait_platform() {
+  local s1="$1" timeout="$2" ca waited=0 code=""
+  ca="${VMTEST_TMP_DIR}/lab-ca-wait.pem"
+  lab_ca_root > "$ca" || true
+  while (( waited < timeout )); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 --cacert "$ca" \
+      --resolve "admin.${CL_APEX}:443:${s1}" "https://admin.${CL_APEX}/api/v1/healthz" || true)"
+    [[ "$code" == 200 ]] && { echo "  platform API answers (${waited}s)" >&2; return 0; }
+    sleep 10; waited=$((waited + 10))
+  done
+  echo "lab: the ${CL_NAME} platform API did not answer within ${timeout}s (last HTTP ${code:-none})" >&2
+  return 1
+}
+
+# lab_cluster_down <name> — graceful stop of every node, the worker included; VMs, OS and
+# platform kept.
 lab_cluster_down() {
   lab_cluster_def "$1" || return 1
-  local entry vm host waited=0
-  for entry in "${CL_NODES[@]}"; do
+  local entry vm host waited=0 vms=("${CL_NODES[@]}")
+  [[ -z "${CL_WORKER:-}" ]] || vms+=("$CL_WORKER")
+  for entry in "${vms[@]}"; do
     read -r vm host <<<"$entry"
     [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] && VIRSH shutdown "$vm" >/dev/null
   done
-  for entry in "${CL_NODES[@]}"; do
+  for entry in "${vms[@]}"; do
     read -r vm host <<<"$entry"
+    VIRSH dominfo "$vm" >/dev/null 2>&1 || continue
     while [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] && (( waited < ${VMTEST_STOP_TIMEOUT:-180} )); do
       sleep 5; waited=$((waited + 5))
     done
     [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] && { echo "  ${vm} did not shut down — powering off"; VIRSH destroy "$vm" >/dev/null; }
     printf '  %-14s %s\n' "$vm" "$(VIRSH domstate "$vm" 2>/dev/null || true)"
   done
+}
+
+# DEV and staging take turns on the host (operator rule): it holds one of them with the
+# memory margin, not both. `up stg` stops a running DEV and remembers that; `down stg`
+# starts it again; `up dev` is refused while staging runs.
+
+# _lab_running <dev|stg> — any VM of that cluster is running.
+_lab_running() {
+  local running
+  running="$(VIRSH list --name 2>/dev/null || true)"   # capture, then match: pipefail race
+  grep -q "^lab-$1-" <<<"$running"
+}
+
+lab_dev_yield() {
+  _lab_running dev || return 0
+  echo "── stopping local DEV first: DEV and staging take turns on this host ──" >&2
+  lab_cluster_down dev >&2 || return 1
+  lab_state_set LAB_DEV_PAUSED_FOR_STG 1
+}
+
+lab_dev_resume() {
+  [[ "$(lab_state_get LAB_DEV_PAUSED_FOR_STG)" == 1 ]] || return 0
+  echo "── starting local DEV again (it was stopped for the staging run) ──" >&2
+  lab_cluster_up dev || return 1
+  lab_state_set LAB_DEV_PAUSED_FOR_STG 0
 }

@@ -13,6 +13,12 @@ lab_state_load() {
   return 0
 }
 
+# lab_state_get <name> — the stored value, empty when unset.
+lab_state_get() {
+  lab_state_load
+  printf '%s' "${!1:-}"
+}
+
 # lab_state_set <name> <value> — set (or replace) one entry, keep the file 0600.
 lab_state_set() {
   local name="$1" value="$2" tmp

@@ -8,7 +8,8 @@
 # Checks are single-quoted on purpose (evaluated by check()); the LAB_* settings are
 # read by the sourced libraries, some indirectly.
 # `check-cmd && ok … || bad …` is safe: ok() always succeeds.
-# shellcheck disable=SC2016,SC2034,SC2015
+# Stubs defined inside subshells are called indirectly (SC2317).
+# shellcheck disable=SC2016,SC2034,SC2015,SC2317
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/scripts/vm-integration-tests/lib"
@@ -25,7 +26,7 @@ yaml_ok() { python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); as
 source "$LIB/os-registry.sh"
 VMTEST_DRIVER=ssh-host; VMTEST_HOST_SSH=root@lab-host.example.test   # driver.sh refuses to load without a driver
 # shellcheck source=/dev/null
-for l in driver mirrors lab-net lab-state lab-svc lab-cluster lab-install; do source "$LIB/$l.sh"; done
+for l in driver mirrors lab-net lab-state lab-svc lab-cluster lab-install lab-api lab-worker lab-smoke; do source "$LIB/$l.sh"; done
 
 LAB_APEX=lab.example.test LAB_SVC_NET=10.98.100 LAB_DEV_NET=10.98.110 LAB_STG_NET=10.98.120
 LAB_UPSTREAM_DNS=192.0.2.53 LAB_STATE_FILE="$T/state.env"
@@ -47,6 +48,8 @@ s1="$(lab_state_secret SEC 24)"; s2="$(lab_state_secret SEC 24)"
 check "a secret is generated once, then kept" '[[ ${#s1} == 24 && "$s1" == "$s2" ]]'
 lab_state_set ODD replaced
 check "set replaces, never duplicates" '[[ $(grep -c "^ODD=" "$LAB_STATE_FILE") == 1 ]]'
+check "get reads a stored value" '[[ "$(lab_state_get ODD)" == replaced ]]'
+check "get of an unset name is empty" '[[ -z "$(lab_state_get NEVER_SET)" ]]'
 
 # ── OS draw ──
 a="$(lab_node_os lab-dev-1)"; b="$(lab_node_os lab-dev-1)"
@@ -69,6 +72,46 @@ LAB_STG_VCPU=4 LAB_STG_RAM_MB=6144 LAB_STG_DISK_GB=60
   && ok "LAB_STG_SERVERS sizes staging" || bad "LAB_STG_SERVERS"
 ( lab_cluster_def dev; [[ "$CL_ENV" == dev && -z "$CL_RELEASE_TAG" && "$CL_AUTOSTART" == 1 && "${CL_NODES[*]}" == "lab-dev-1 11" ]] ) \
   && ok "dev: this checkout, always on, one node" || bad "dev definition"
+( lab_cluster_def dev; [[ -z "$CL_WORKER" ]] ) && ok "dev has no worker" || bad "dev worker"
+( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_SERVERS=3; lab_cluster_def stg
+  [[ "$CL_WORKER" == "lab-stg-w1 21" && "$CL_W_VCPU" == 4 && "$CL_W_RAM" == 6144 && "$CL_W_DISK" == 40 ]] ) \
+  && ok "staging's worker: lab-stg-w1 at .21, default size" || bad "staging worker definition"
+( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_WORKER_RAM_MB=4096; lab_cluster_def stg; [[ "$CL_W_RAM" == 4096 ]] ) \
+  && ok "LAB_STG_WORKER_RAM_MB sizes the worker" || bad "worker sizing"
+
+# ── DEV and staging take turns on the host ──
+turns() {   # <running VMs> <paused marker> <fn> → the cluster calls the fn made, then the marker
+  : > "$T/calls"
+  ( VIRSH() { [[ "$1" == list ]] && tr ' ' '\n' <<<"$RUNNING"; return 0; }
+    lab_cluster_down() { echo "down $1" >> "$T/calls"; }
+    lab_cluster_up() { echo "up $1" >> "$T/calls"; }
+    RUNNING="$1"; lab_state_set LAB_DEV_PAUSED_FOR_STG "$2"
+    "$3" 2>/dev/null; cat "$T/calls"; echo "paused=$(lab_state_get LAB_DEV_PAUSED_FOR_STG)" ) | xargs
+}
+check "up stg stops a running DEV and remembers it" '[[ "$(turns "lab-svc lab-dev-1" 0 lab_dev_yield)" == "down dev paused=1" ]]'
+check "up stg leaves a stopped DEV alone" '[[ "$(turns "lab-svc" 0 lab_dev_yield)" == "paused=0" ]]'
+check "down stg starts the DEV it stopped" '[[ "$(turns "lab-svc" 1 lab_dev_resume)" == "up dev paused=0" ]]'
+check "down stg does not start a DEV it never stopped" '[[ "$(turns "lab-svc" 0 lab_dev_resume)" == "paused=0" ]]'
+check "staging counts as running from any of its VMs" '( VIRSH() { printf "lab-svc\nlab-stg-s2\n"; }; _lab_running stg && ! _lab_running dev )'
+
+# ── the join script's one operator edit (lab_join_script_cidr) ──
+cat > "$T/join-private.sh" <<'JOIN'
+(
+set -eu
+# This cluster's servers are pinned to a private network (bootstrapped with
+# --cluster-network-cidr; their InternalIP differs from their ExternalIP). The
+# cluster does not record that CIDR: append the SAME --cluster-network-cidr <cidr>
+# to the insula bootstrap line below before running it.
+insula bootstrap --join-as worker --server '10.98.120.11' --token 'K10abc::tok'
+)
+JOIN
+grep -v '^#' "$T/join-private.sh" > "$T/join-public.sh"; cp "$T/join-public.sh" "$T/join-public.orig"
+lab_join_script_cidr "$T/join-private.sh" 10.98.120.0/24 2>/dev/null
+check "the private-network note gets the cluster CIDR on the join line" \
+  'grep -qx "insula bootstrap --join-as worker --server '"'"'10.98.120.11'"'"' --token '"'"'K10abc::tok'"'"' --cluster-network-cidr 10.98.120.0/24" "$T/join-private.sh"'
+check "the CIDR edit touches only the join line" '[[ $(grep -c -- "--cluster-network-cidr 10.98.120.0/24" "$T/join-private.sh") == 1 ]]'
+lab_join_script_cidr "$T/join-public.sh" 10.98.120.0/24 2>/dev/null
+check "no note, no edit" 'cmp -s "$T/join-public.sh" "$T/join-public.orig"'
 
 # ── release checkouts (cached tree; a tree that is not the tag is refused) ──
 LAB_CACHE_DIR="$T/cache"; mkdir -p "$LAB_CACHE_DIR/rel-v9.9.9/scripts" "$LAB_CACHE_DIR/rel-v9.9.9/platform"

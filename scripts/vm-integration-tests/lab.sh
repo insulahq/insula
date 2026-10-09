@@ -4,9 +4,12 @@
 #
 #   lab.sh up svc            networks + the services VM (DNS, ACME CA, backup targets, apt cache)
 #   lab.sh up dev            the local DEV cluster: create it, or start it if it exists
-#   lab.sh up stg            the local staging cluster (production mode at LAB_STG_RELEASE_TAG)
-#   lab.sh down dev|stg      stop it (VMs, OS and platform kept)
+#   lab.sh up stg            the local staging cluster (production mode at LAB_STG_RELEASE_TAG);
+#                            stops a running DEV first — the host holds one of them at a time
+#   lab.sh down dev|stg      stop it (VMs, OS and platform kept); `down stg` restarts DEV
 #   lab.sh down svc          stop the services VM (refused while a lab cluster runs)
+#   lab.sh worker join|leave staging's worker, through the platform's join / node-removal flows
+#   lab.sh smoke dev|stg [api|network]   post-deploy checks against a running cluster
 #   lab.sh status            VMs, addresses, services, caches, host headroom
 #   lab.sh ca-root           print the lab CA root certificate (import it once on your devices)
 #
@@ -22,7 +25,8 @@ LAB_CONFIG="${LAB_CONFIG:-$HERE/lab.env}"
 [[ -r "$LAB_CONFIG" ]] || { echo "lab: ${LAB_CONFIG} not found — copy lab.example.env to it" >&2; exit 2; }
 # shellcheck source=/dev/null
 source "$LAB_CONFIG"
-for _lib in os-registry driver waitfor log-gate join-invariance mirrors lab-net lab-state lab-svc lab-cluster lab-install; do
+for _lib in os-registry driver waitfor log-gate join-invariance mirrors lab-net lab-state lab-svc lab-cluster lab-install \
+            lab-api lab-worker lab-smoke; do
   # shellcheck source=/dev/null
   source "$HERE/lib/${_lib}.sh"
 done
@@ -33,7 +37,7 @@ export VMTEST_TMP_DIR
 trap 'rm -rf "$VMTEST_TMP_DIR"' EXIT
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q
 
-usage() { sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # lab_svc_check — prove each service answers on the services VM (not just "container up").
 lab_svc_check() {
@@ -72,10 +76,18 @@ lab_status() {
 
 case "${1:-} ${2:-}" in
   "up svc")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_svc_check ;;
-  "up dev")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_cluster_up dev ;;
-  "up stg")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_cluster_up stg ;;
+  "up dev")
+    if _lab_running stg; then
+      echo "lab: staging is running — DEV and staging take turns on this host; lab.sh down stg starts DEV again" >&2
+      exit 1
+    fi
+    ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_cluster_up dev ;;
+  "up stg")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_dev_yield; lab_cluster_up stg ;;
   "down dev") lab_cluster_down dev ;;
-  "down stg") lab_cluster_down stg ;;
+  "down stg") lab_cluster_down stg; lab_dev_resume ;;
+  "worker join") lab_worker_join ;;
+  "worker leave") lab_worker_leave ;;
+  "smoke dev"|"smoke stg") lab_smoke "$2" "${3:-all}" ;;
   "down svc")
     # Capture, then match: `virsh … | grep -q` races under pipefail.
     _running="$(VIRSH list --name 2>/dev/null || true)"
