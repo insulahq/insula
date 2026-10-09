@@ -62,7 +62,12 @@ On **Platform Settings → Upgrades** (`super_admin`):
    so it would change nothing. Resume them first:
    `flux resume source git <name>` and `flux resume kustomization platform`.
 3. **Host migrations** — shows whether the release carries host-level migration
-   scripts and whether they will run on each node.
+   scripts. They do **not** run as part of Apply: each node applies them after its
+   own `platform-ops` CLI has updated to the release (see
+   [Host migration state](#host-migration-state-per-node)).
+   The dialog also names the services that run a **single replica**. Those see a
+   short gap while they restart, even on a multi-node cluster. Services with more
+   than one replica roll over without one.
 4. **Run upgrade** — leave the version box blank to take the latest, or type a
    specific version (e.g. `2026.7.0`). Click **Preview** to see the decision
    and target, then **Apply upgrade →**. Apply is a deliberate two-click
@@ -86,9 +91,16 @@ consecutive checks, the verdict turns to **abort-recommended** and you are
 prompted to roll back.
 
 Convergence is **not** just "every workload restarted". Post-flight also gates on
-**Platform migrations applied** and **Host migrations applied**, and the upgrade
-is not reported as complete while either is failing — a release whose migrations
-are stuck is an incomplete upgrade, even when every pod is running the new image.
+**Platform migrations applied**: a release whose platform migrations are stuck is
+reported as an incomplete upgrade, even when every pod runs the new image.
+
+**Host migrations** appear in post-flight too, but they never fail the upgrade.
+The services roll first. Each node then updates its own `platform-ops` CLI on its
+update timer, which may be some hours later, and applies the release's host
+migrations. Until then the row reads **Catching up** and names the nodes still on
+an older CLI. That is the expected state right after an upgrade, not a fault. The
+row reads **Needs attention** only when a node actually reports a failed or
+blocked migration.
 
 !!! note "Why migrations gate the verdict"
     One failed platform migration halts every later one indefinitely. Without
@@ -155,10 +167,13 @@ When a node needs attention it expands itself and shows:
     A newly added node stays quiet for its first couple of hours — that is a
     normal wait, not this.
 
+Each node row also shows the node's **CLI version**. A node whose CLI is older
+than the release running in the cluster reads **Catching up**. It has not received
+that release's host migrations yet, so none of them count as pending or failed.
+
 !!! note "There is no Retry button, on purpose"
     Migrations re-run **automatically every hour** on each node, and a node also
-    converges immediately after it self-upgrades — so host state does not lag the
-    platform version by up to an hour any more. A transient failure clears itself
+    converges immediately after it self-upgrades. A transient failure clears itself
     and a fixed cause is picked up without you doing anything; a button would only
     wait for that same converge. Fix the cause on the node, then run
     `insula host-config apply` if you don't want to wait out the hour.
