@@ -43,6 +43,8 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   // ADR-064: the upgrade updates every node before the services, so a node that is
   // not Ready blocks it — unless the operator chooses to upgrade without it.
   const [excluded, setExcluded] = useState<string[]>([]);
+  // ADR-064 §8: opt-in — Kubernetes restarts k3s on every node and drains the workers.
+  const [upgradeKubernetes, setUpgradeKubernetes] = useState(false);
   const nodesQ = useClusterNodes();
   const notReady = useMemo(
     () => (nodesQ.data?.data ?? [])
@@ -53,7 +55,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   );
   const preflight = usePreflight(true, excluded);
   const hostMigrations = useHostMigrationsPreview();
-  const changesQ = useUpgradeChanges();
+  const changesQ = useUpgradeChanges(true, excluded);
   const apply = useUpgradeApply();
   const [preview, setPreview] = useState<UpgradeApplyData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,7 +89,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   const onApproveClick = async () => {
     setApplying(true);
     try {
-      await apply.mutateAsync({ version: targetVersion, apply: true, excludeNodes: excluded });
+      await apply.mutateAsync({ version: targetVersion, apply: true, excludeNodes: excluded, upgradeKubernetes });
       onApprove(resolvedTarget ?? undefined);
     } catch {
       setApplying(false); // stay open; error shows below
@@ -111,6 +113,30 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
             <>
               {/* What changes (ADR-064 §6) */}
               {changesQ.data?.data && <UpgradeChangesSection changes={changesQ.data.data} target={resolvedTarget ?? undefined} />}
+
+              {/* The opt-in Kubernetes step (ADR-064 §8) */}
+              {changesQ.data?.data.kubernetes?.offer && changesQ.data.data.toVersion === resolvedTarget && (
+                <label className="flex items-start gap-2 rounded border border-gray-200 p-3 text-xs dark:border-gray-700" data-testid="upgrade-kubernetes-option">
+                  <input
+                    type="checkbox" checked={upgradeKubernetes} disabled={applying}
+                    onChange={(e) => setUpgradeKubernetes(e.target.checked)} data-testid="upgrade-kubernetes-toggle"
+                    className="mt-0.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700"
+                  />
+                  <span className="text-gray-700 dark:text-gray-300">
+                    <span className="font-medium text-gray-900 dark:text-gray-100">
+                      Also upgrade Kubernetes {changesQ.data.data.kubernetes.current} → {changesQ.data.data.kubernetes.target}
+                    </span>
+                    <br />
+                    A fourth step after the host changes: servers one at a time, then each worker drained and upgraded.
+                    Tenant sites on a worker move while it is drained.
+                  </span>
+                </label>
+              )}
+              {changesQ.data?.data.kubernetes && !changesQ.data.data.kubernetes.offer && changesQ.data.data.kubernetes.reason && (
+                <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="upgrade-kubernetes-unavailable">
+                  Kubernetes: {changesQ.data.data.kubernetes.reason}
+                </p>
+              )}
 
               {/* Interruption preview */}
               {preview?.interruption && (

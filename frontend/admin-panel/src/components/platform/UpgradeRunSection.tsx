@@ -12,12 +12,19 @@ import NodeName from '@/components/nodes/NodeName';
 
 type RunNode = UpgradeRun['nodes'][number];
 
-const STEPS = [
+const BASE_STEPS = [
   { id: 'prepare-nodes', label: 'Update the nodes' },
   { id: 'update-services', label: 'Roll the services' },
   { id: 'finish', label: 'Finish host changes' },
 ] as const;
-const ORDER = ['prepare-nodes', 'update-services', 'finish', 'done'] as const;
+const ORDER = ['prepare-nodes', 'update-services', 'finish', 'upgrade-kubernetes', 'done'] as const;
+
+/** The run's steps: three, or four with the opt-in Kubernetes step (ADR-064 §8). */
+function stepsOf(run: UpgradeRun): ReadonlyArray<{ readonly id: (typeof ORDER)[number]; readonly label: string }> {
+  return run.kubernetesVersion
+    ? [...BASE_STEPS, { id: 'upgrade-kubernetes', label: `Upgrade Kubernetes to ${run.kubernetesVersion}` }]
+    : BASE_STEPS;
+}
 
 const NODE_STATE: Record<RunNode['state'], { text: string; cls: string; icon: ReactElement }> = {
   queued: { text: 'Queued', cls: 'text-gray-600 dark:text-gray-300', icon: <Clock size={13} className="text-gray-500 dark:text-gray-400" /> },
@@ -28,14 +35,18 @@ const NODE_STATE: Record<RunNode['state'], { text: string; cls: string; icon: Re
   failed: { text: 'Failed', cls: 'text-red-600 dark:text-red-400', icon: <XCircle size={13} className="text-red-500" /> },
 };
 
-/** Pure: overall percent of a run. The services' third follows their live roll. */
+/** Pure: overall percent of a run — thirds, or quarters with the Kubernetes step
+ *  (the same bands the backend's task progress uses). The services' band follows their live roll. */
 export function runPercent(run: UpgradeRun, servicesPercent: number | null): number {
   if (run.status === 'succeeded') return 100;
   const included = run.nodes.filter((n) => n.state !== 'excluded');
   const share = included.length > 0 ? included.filter((n) => n.state === 'ready').length / included.length : 0;
-  if (run.step === 'prepare-nodes') return Math.round(share * 33);
-  if (run.step === 'update-services') return 33 + Math.round((servicesPercent ?? 0) / 3);
-  if (run.step === 'finish') return 67 + Math.round(share * 33);
+  const quarters = !!run.kubernetesVersion;
+  const band = (i: number, s: number) => quarters ? Math.round(25 * i + 25 * s) : Math.round([0, 33, 67][i]! + [33, 34, 33][i]! * s);
+  if (run.step === 'prepare-nodes') return band(0, share);
+  if (run.step === 'update-services') return band(1, (servicesPercent ?? 0) / 100);
+  if (run.step === 'finish') return band(2, share);
+  if (run.step === 'upgrade-kubernetes') return Math.round(75 + 25 * share);
   return 100;
 }
 
@@ -52,6 +63,7 @@ export function runStatusLine(run: UpgradeRun, target: string): string {
     return `Updating the nodes to ${target}${count} — the services keep running the current release.`;
   }
   if (run.step === 'update-services') return `Rolling the services to ${target}…`;
+  if (run.step === 'upgrade-kubernetes') return `Upgrading Kubernetes to ${run.kubernetesVersion ?? '?'}${count} — servers one at a time, then the workers.`;
   return `Finishing host changes on the nodes${count}…`;
 }
 
@@ -64,7 +76,7 @@ export default function UpgradeRunSection({ run }: { readonly run: UpgradeRun })
   return (
     <div className="space-y-3" data-testid="upgrade-run">
       <ol className="space-y-1">
-        {STEPS.map((s, i) => {
+        {stepsOf(run).map((s, i) => {
           const isDone = run.status === 'succeeded' || i < at;
           const isCurrent = i === at && run.status === 'running';
           const isFailed = i === at && run.status === 'failed';

@@ -129,6 +129,8 @@ export const upgradeApplyRequestSchema = z.object({
     .array(z.string().max(253).regex(NODE_NAME_RE, 'not a node name'))
     .max(100)
     .optional(),
+  /** ADR-064 §8: also take Kubernetes to the release's k3s pin, as a fourth step. */
+  upgradeKubernetes: z.boolean().optional(),
 });
 
 /** GET …/upgrade/preflight?exclude=a,b — the same exclusions the apply would carry. */
@@ -156,12 +158,16 @@ export const releaseHostMigrationSchema = z.object({
 });
 export const releaseSqlMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0-9_]+\.sql$/);
 export const releasePlatformMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0-9_]+$/);
+/** A k3s release version: v1.36.5+k3s1. */
+export const K3S_VERSION_RE = /^v\d+\.\d+\.\d+\+k3s\d+$/;
 export const releaseContentsSchema = z.object({
   hostMigrations: z.array(releaseHostMigrationSchema).max(1000),
   migrations: z.object({
     sql: z.array(releaseSqlMigrationSchema).max(5000),
     platform: z.array(releasePlatformMigrationSchema).max(1000),
   }),
+  /** ADR-064 §8: the k3s version the release's bootstrap pins (absent before 2026.10.7). */
+  k3sVersion: z.string().max(40).regex(K3S_VERSION_RE).nullable().optional(),
 });
 export type ReleaseContents = z.infer<typeof releaseContentsSchema>;
 
@@ -182,11 +188,22 @@ export const upgradeChangesResponseSchema = z.object({
   })),
   /** Nodes that have not reported their host-migration state: unknown, not "nothing to do". */
   unreportedNodes: z.array(z.string()),
+  /**
+   * ADR-064 §8: the opt-in Kubernetes step. `current` = the lowest kubelet in the
+   * cluster; `target` = the release's k3s pin; `offer` only for a safe hop (newer,
+   * same or next minor); `reason` says why not otherwise.
+   */
+  kubernetes: z.object({
+    current: z.string().nullable(),
+    target: z.string().nullable(),
+    offer: z.boolean(),
+    reason: z.string().nullable(),
+  }).optional(),
 });
 export type UpgradeChangesResponse = z.infer<typeof upgradeChangesResponseSchema>;
 
 // ── Upgrade runs (ADR-064) ─────────────────────────────────────────────────────
-export const upgradeRunStepSchema = z.enum(['prepare-nodes', 'update-services', 'finish', 'done']);
+export const upgradeRunStepSchema = z.enum(['prepare-nodes', 'update-services', 'finish', 'upgrade-kubernetes', 'done']);
 export type UpgradeRunStep = z.infer<typeof upgradeRunStepSchema>;
 
 /**
@@ -221,6 +238,8 @@ export const upgradeRunSchema = z.object({
   status: z.enum(['running', 'succeeded', 'failed', 'cancelled', 'rolled-back']),
   step: upgradeRunStepSchema,
   excludedNodes: z.array(z.string()),
+  /** ADR-064 §8: the k3s version the run's Kubernetes step targets (null = no such step). */
+  kubernetesVersion: z.string().nullable().optional(),
   nodes: z.array(upgradeRunNodeSchema),
   message: z.string().nullable(),
   startedAt: z.string(),

@@ -241,11 +241,22 @@ describe('pollAvailableVersion — release contents (ADR-064 §6)', () => {
   };
   const release = () => releaseWithSignedManifest('v2026.6.5', priv).release;
 
+  it('carries the release\'s k3s pin; a malformed one is dropped, the rest kept', async () => {
+    for (const [k3s, want] of [['v1.36.5+k3s1', 'v1.36.5+k3s1'], ['1.36.5; rm', null]] as const) {
+      const { manifest, sig } = signed({ ...contents, kubernetes: { k3s } });
+      const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+      await pollAvailableVersion(h.deps);
+      const stored = JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null');
+      expect(stored.k3sVersion).toBe(want);
+      expect(stored.hostMigrations).toEqual(contents.hostMigrations);
+    }
+  });
+
   it('stores what the release brings, once verified', async () => {
     const { manifest, sig } = signed(contents);
     const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
     await pollAvailableVersion(h.deps);
-    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual(contents);
+    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual({ ...contents, k3sVersion: null });
   });
 
   it('an older manifest without contents stores none (not stale contents of another release)', async () => {
@@ -263,7 +274,7 @@ describe('pollAvailableVersion — release contents (ADR-064 §6)', () => {
     });
     const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
     await pollAvailableVersion(h.deps);
-    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual(contents);
+    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual({ ...contents, k3sVersion: null });
     expect(h.settings.get(SETTING_KEYS.availableVersion)).toBe('2026.6.5');
     expect(h.logs.some((l) => /dropped 1 malformed/.test(l.msg))).toBe(true);
   });

@@ -33,7 +33,7 @@ render_summary() {
     source '"$REPO_ROOT"'/scripts/bootstrap.sh >/dev/null 2>&1
     UI_MODE=rich; ui_init
     PLATFORM_DOMAIN=example.test; PLATFORM_ENV=production
-    KUBECONFIG=/etc/rancher/k3s/k3s.yaml; K3S_VERSION=v1.36.2+k3s1; SKIP_FLUX=false
+    KUBECONFIG=/etc/rancher/k3s/k3s.yaml; K3S_VERSION=v1.36.5+k3s1; SKIP_FLUX=false
     SMOKE_VERDICT="$SUMMARY_VERDICT"; SMOKE_ADVICE="$SUMMARY_ADVICE"
     print_summary
   ' 2>&1

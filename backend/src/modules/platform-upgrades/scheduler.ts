@@ -24,7 +24,7 @@ import { collectUpgradeProgress } from './progress.js';
 import { finalizeByRef, progressByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
 import { getActiveRun } from './run/store.js';
-import { advanceRun } from './run/machine.js';
+import { advanceRun, atBand, progressBands } from './run/machine.js';
 import { realRunMachineDeps } from './run/real.js';
 
 // Dormant cadence — a cheap no-op tick that just reads `pending_update_version`.
@@ -168,10 +168,11 @@ export function realUpgradeReconcilerDeps(
   k8s: K8sClients,
   /** ADR-064: a run owns the task — it finishes only after the finish step, and the
    *  services' roll is the middle third of its progress bar. */
-  opts: { readonly runActive?: boolean } = {},
+  opts: { readonly runActive?: boolean; readonly run?: { readonly kubernetesVersion?: string | null } | null } = {},
 ): UpgradeReconcilerDeps {
   const settings = dbSettings(db);
-  const runActive = opts.runActive === true;
+  const runActive = opts.runActive === true || !!opts.run;
+  const servicesBand = progressBands(opts.run ?? {}).services;
   return {
     getPending: () => settings.get('pending_update_version'),
     readPrevVerdict: async () => (await readPostflightState(db)).verdict,
@@ -185,7 +186,7 @@ export function realUpgradeReconcilerDeps(
       return { pct: p.percent, atTarget: p.atTarget, total: p.total };
     },
     updateProgress: (target, pct, text) => progressByRef(db, 'platform.upgrade', target, runActive
-      ? { pct: 33 + Math.round(pct / 3), text: toSafeText(`Updating services: ${text}`) }
+      ? { pct: atBand(servicesBand, pct / 100), text: toSafeText(`Updating services: ${text}`) }
       : { pct, text: toSafeText(text) }),
     checkConvergence: (nowMs) => checkConvergence(settings, k8s, nowMs, db),
     // Claim the slow streak slot at most once per STREAK_ADVANCE_MS (shared clock
@@ -258,7 +259,7 @@ export function startUpgradeReconciler(db: Database, k8s: K8sClients): { readonl
         }
         const pendingNow = (await dbSettings(db).get('pending_update_version'))?.trim();
         if (pendingNow) {
-          const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s, { runActive: !!run }), nowMs);
+          const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s, { runActive: !!run, run }), nowMs);
           if (r.notified) console.log('[upgrade-reconciler] in-flight upgrade is not converging → notified admins');
         }
       }

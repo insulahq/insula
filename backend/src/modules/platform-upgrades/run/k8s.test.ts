@@ -21,7 +21,7 @@ describe('listPlanJobs', () => {
       ] };
     } } } as unknown as K8sClients;
     const m = await listPlanJobs(k8s, 'update', Date.parse('2026-10-09T10:00:00Z'));
-    expect(selector).toBe('upgrade.cattle.io/plan=insula-node-update');
+    expect(selector).toBe('upgrade.cattle.io/plan in (insula-node-update)');
     expect(m.get('sv1')).toEqual({ active: 1, failed: 1, succeeded: 0 });
     expect(m.get('sv2')).toEqual({ active: 0, failed: 0, succeeded: 1 });
     expect(m.size).toBe(2);
@@ -35,7 +35,7 @@ describe('listNodeFacts', () => {
       { metadata: { name: 'sv1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } },
       { metadata: {}, status: {} },
     ] }) } } as unknown as K8sClients;
-    expect(await listNodeFacts(k8s)).toEqual([{ name: 'sv1', ready: true }, { name: 'sv2', ready: false }]);
+    expect(await listNodeFacts(k8s)).toEqual([{ name: 'sv1', ready: true, kubeletVersion: null }, { name: 'sv2', ready: false, kubeletVersion: null }]);
   });
 });
 

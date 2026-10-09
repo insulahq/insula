@@ -106,7 +106,9 @@ if [[ -f "$PLAN_VAP" ]]; then
   grep -q "system:serviceaccount:platform:platform-api" "$PLAN_VAP" || fail "plan-scope must match the platform-api ServiceAccount"
   for token in "insula-node-update" "insula-node-finish" "node-terminal" "self-upgrade --version" "platform-ops-host-config" \
       "!has(object.spec.prepare)" "!has(object.spec.drain)" "!has(object.spec.channel)" "!has(object.spec.postCompleteLabels)" \
-      "object.spec.version.matches(variables.versionRe)" "object.spec.tolerations == [{'operator': 'Exists'}]"; do
+      "object.spec.version.matches(variables.versionRe)" "object.spec.tolerations == [{'operator': 'Exists'}]" \
+      "object.spec.upgrade.image == 'rancher/k3s-upgrade'" "object.spec.prepare.args == ['prepare', 'k3s-server-upgrade']" \
+      "object.spec.version.matches(variables.k3sVersionRe)" "object.spec.drain.skipWaitForDeleteTimeout == 60" "!has(object.spec.drain.disableEviction)" "!has(object.spec.drain.deleteEmptydirData)"; do
     grep -qF -- "$token" "$PLAN_VAP" || fail "plan-scope.yaml must pin '$token'"
   done
   grep -q 'plan-scope.yaml' "$REPO_ROOT/k8s/base/platform-api-guardrails/kustomization.yaml" \

@@ -33,6 +33,9 @@ interface World {
   /** The run's step as the database holds it (a Cancel ends it). */
   dbStatus: string;
   dbStep: string;
+  k8sApplyOk: boolean;
+  k8sJobs: Record<string, NodeJobFacts>;
+  k8sPlansExist: boolean;
 }
 
 function harness(w: Partial<World> = {}) {
@@ -41,9 +44,9 @@ function harness(w: Partial<World> = {}) {
     nodes: [{ name: 'sv1', ready: true }, { name: 'sv2', ready: true }],
     statuses: [st('sv1', '2026.10.7-rc.3'), st('sv2', '2026.10.7-rc.3')],
     jobs: {}, pending: null, installed: '2026.10.7-rc.3', servicesApplied: true, applyOk: true,
-    dbStatus: 'running', dbStep: 'prepare-nodes', ...w,
+    dbStatus: 'running', dbStep: 'prepare-nodes', k8sApplyOk: true, k8sJobs: {}, k8sPlansExist: true, ...w,
   };
-  const calls = { patches: [] as RunPatch[], applied: [] as string[], deleted: [] as string[], services: 0, finalized: [] as Array<[string, string | null]>, progress: [] as Array<[number, string]> };
+  const calls = { patches: [] as RunPatch[], applied: [] as string[], deleted: [] as string[], services: 0, finalized: [] as Array<[string, string | null]>, progress: [] as Array<[number, string]>, k8sApplied: 0, k8sDeleted: 0 };
   const deps: RunMachineDeps = {
     now: () => world.now,
     nodes: async () => world.nodes,
@@ -67,6 +70,10 @@ function harness(w: Partial<World> = {}) {
     },
     finalize: async (s, m) => { calls.finalized.push([s, m]); },
     progress: async (pct, text) => { calls.progress.push([pct, text]); },
+    applyKubernetesPlans: async () => { calls.k8sApplied += 1; return world.k8sApplyOk ? { ok: true } : { ok: false, reason: 'refusing skip-a-minor' }; },
+    deleteKubernetesPlans: async () => { calls.k8sDeleted += 1; },
+    kubernetesJobs: async () => new Map(Object.entries(world.k8sJobs)),
+    kubernetesPlansExist: async () => world.k8sPlansExist,
   };
   return { world, calls, deps };
 }
@@ -214,3 +221,74 @@ describe('advanceRun — update-services and finish', () => {
     expect(h.calls.patches).toHaveLength(0);
   });
 });
+
+describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
+  const K = 'v1.36.5+k3s1';
+  const kNodes = (v1: string, v2: string) => [{ name: 'sv1', ready: true, kubeletVersion: v1 }, { name: 'sv2', ready: true, kubeletVersion: v2 }];
+
+  it('host changes finished + a Kubernetes target → starts the k3s Plans and enters the step (not done)', async () => {
+    const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish' });
+    expect(await advanceRun(run({ step: 'finish', kubernetesVersion: K }), h.deps)).toBe('upgrade-kubernetes');
+    expect(h.calls.k8sApplied).toBe(1);
+    expect(h.calls.finalized).toEqual([]);
+    // Quarters: finishing the host changes ends at 75 %.
+    expect(h.calls.progress.at(-1)?.[0]).toBe(75);
+  });
+
+  it('a Kubernetes step that cannot start fails the run, saying the services and host changes are done', async () => {
+    const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish', k8sApplyOk: false });
+    await advanceRun(run({ step: 'finish', kubernetesVersion: K }), h.deps);
+    expect(h.calls.finalized[0]?.[1]).toMatch(/services and host changes run 2026\.10\.7-rc\.4.*Kubernetes step could not start: refusing skip-a-minor/);
+  });
+
+  it('every node on the target kubelet → plans deleted, succeeded', async () => {
+    const h = harness({ nodes: kNodes(K, K), dbStep: 'upgrade-kubernetes' });
+    expect(await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps)).toBe('done');
+    expect(h.calls.k8sDeleted).toBe(1);
+    expect(h.calls.finalized).toEqual([['succeeded', null]]);
+  });
+
+  it('waits while a node still runs the old kubelet; a node failing its job stops the run with plans deleted', async () => {
+    const waiting = harness({ nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 0, succeeded: 0 } } });
+    expect(await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), waiting.deps)).toBe('upgrade-kubernetes');
+    expect(waiting.calls.progress.at(-1)?.[0]).toBe(88);
+    const failing = harness({ nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 0, failed: 3, succeeded: 0 } } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), failing.deps);
+    expect(failing.calls.k8sDeleted).toBe(1);
+    expect(failing.calls.finalized[0]?.[1]).toMatch(/Kubernetes upgrade to v1\.36\.5\+k3s1 stopped on sv2/);
+  });
+
+  it('no Kubernetes target → the run ends at finish as before', async () => {
+    const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish' });
+    expect(await advanceRun(run({ step: 'finish' }), h.deps)).toBe('done');
+    expect(h.calls.k8sApplied).toBe(0);
+  });
+
+  it('resumable: claimed but no Plans (a crash in between) → creates them on the next tick', async () => {
+    const h = harness({ nodes: kNodes('v1.36.2+k3s1', 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sPlansExist: false });
+    expect(await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps)).toBe('upgrade-kubernetes');
+    expect(h.calls.k8sApplied).toBe(1);
+    const present = harness({ nodes: kNodes('v1.36.2+k3s1', 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes' });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), present.deps);
+    expect(present.calls.k8sApplied).toBe(0);
+  });
+
+  it('never times out while a node is mid-upgrade — only once nothing is in flight', async () => {
+    const late = T0 + 61 * 60 * 1000;
+    const busy = harness({ now: late, nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 0, succeeded: 0 } } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), busy.deps);
+    expect(busy.calls.finalized).toEqual([]);
+    expect(busy.calls.k8sDeleted).toBe(0);
+    const idle = harness({ now: late, nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes' });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), idle.deps);
+    expect(idle.calls.finalized[0]?.[1]).toMatch(/did not reach v1\.36\.5\+k3s1 within 60 minutes on sv2/);
+  });
+
+  it('a node still retrying after failures is updating, not failed — the Plans are not deleted under it', async () => {
+    const h = harness({ nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 4, succeeded: 0 } } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps);
+    expect(h.calls.k8sDeleted).toBe(0);
+    expect(h.calls.finalized).toEqual([]);
+  });
+});
+

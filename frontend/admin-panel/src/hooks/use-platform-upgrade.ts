@@ -182,7 +182,7 @@ export function useUpgradeProgress(active: boolean) {
 export function useUpgradeApply() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { version?: string; apply: boolean; excludeNodes?: readonly string[] }) =>
+    mutationFn: (vars: { version?: string; apply: boolean; excludeNodes?: readonly string[]; upgradeKubernetes?: boolean }) =>
       apiFetch<UpgradeApplyResponse>('/api/v1/admin/platform/upgrade', {
         method: 'POST',
         body: JSON.stringify(vars),
@@ -219,10 +219,11 @@ export function useUpgradeRun(enabled = true) {
 }
 
 /** What an upgrade to the available release changes (ADR-064 §6). */
-export function useUpgradeChanges(enabled = true) {
+export function useUpgradeChanges(enabled = true, exclude: readonly string[] = []) {
+  const qs = exclude.length > 0 ? `?exclude=${encodeURIComponent(exclude.join(','))}` : '';
   return useQuery({
-    queryKey: ['upgrade-changes'],
-    queryFn: () => apiFetch<{ readonly data: UpgradeChangesResponse }>('/api/v1/admin/platform/upgrade/changes'),
+    queryKey: ['upgrade-changes', exclude.join(',')],
+    queryFn: () => apiFetch<{ readonly data: UpgradeChangesResponse }>(`/api/v1/admin/platform/upgrade/changes${qs}`),
     enabled,
     staleTime: 30 * 1000,
   });
