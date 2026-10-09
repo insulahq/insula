@@ -20,8 +20,9 @@ export function toUpgradeRun(row: PlatformUpgradeRunRow): UpgradeRun {
     toVersion: row.toVersion,
     mode: row.mode === 'auto' ? 'auto' : 'manual',
     status: (['succeeded', 'failed', 'cancelled', 'rolled-back'] as const).find((s) => s === row.status) ?? 'running',
-    step: (['prepare-nodes', 'update-services', 'finish', 'done'] as const).find((s) => s === row.step) ?? 'prepare-nodes',
+    step: (['prepare-nodes', 'update-services', 'finish', 'upgrade-kubernetes', 'done'] as const).find((s) => s === row.step) ?? 'prepare-nodes',
     excludedNodes: Array.isArray(row.excludedNodes) ? row.excludedNodes : [],
+    kubernetesVersion: row.kubernetesVersion ?? null,
     nodes: (Array.isArray(row.nodes) ? row.nodes : []) as unknown as UpgradeRunNode[],
     message: row.message ?? null,
     startedAt: iso(row.startedAt) ?? new Date(0).toISOString(),
@@ -50,6 +51,8 @@ export interface NewRunInput {
   readonly mode: 'manual' | 'auto';
   readonly excludedNodes: readonly string[];
   readonly initiatedBy: string | null;
+  /** ADR-064 §8: the opt-in Kubernetes step's k3s target. */
+  readonly kubernetesVersion?: string | null;
 }
 
 /** Create the run. At most one runs at a time (partial unique index) — a second is a 409. */
@@ -61,6 +64,7 @@ export async function createRun(db: Database, input: NewRunInput): Promise<Platf
       mode: input.mode,
       excludedNodes: [...input.excludedNodes],
       initiatedBy: input.initiatedBy,
+      kubernetesVersion: input.kubernetesVersion ?? null,
     }).returning();
     const row = rows[0];
     if (!row) throw new Error('insert returned no row');

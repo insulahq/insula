@@ -162,6 +162,18 @@ marked *update pending* while it is older than the release the cluster runs.
   fails three times, stops the run the same way. The row names the host
   migration that failed. The job log is in the `system-upgrade` namespace.
 
+### Upgrading Kubernetes in the same run
+
+Each release pins a k3s (Kubernetes) version for fresh installs. When that version
+is newer than your nodes run, the review offers **Also upgrade Kubernetes x → y**.
+It is off by default. Ticked, the run gets a fourth step after the host changes:
+servers one at a time, then each worker drained (its tenant sites move while it
+is drained) and upgraded. Its node rows show each node's Kubernetes version. The
+step is offered only for a safe hop: a newer patch, or the next minor version.
+A cluster further behind is told to use `insula cluster upgrade`, which steps
+one minor version at a time. If the step fails, the services and host changes
+are already done; the run says on which node the Kubernetes upgrade stopped.
+
 ### Upgrading with a node down
 
 The run updates **every** node, so a node that is not Ready blocks the upgrade:

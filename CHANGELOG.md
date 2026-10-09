@@ -12,10 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.7-rc.5] - 2026-10-09
-
 ### Added
 
+- **Kubernetes joins the upgrade.** When a release pins a newer k3s than the nodes run, the
+  review offers **Also upgrade Kubernetes x → y**, off by default. Ticked, the run gets a fourth
+  step after the host changes, through the same k3s Plans as `insula cluster upgrade`: servers one
+  at a time, then each worker drained and upgraded. Each node row shows its Kubernetes version.
+  It is offered only for a newer patch or the next minor; anything further is pointed at
+  `insula cluster upgrade`. The signed release manifest now carries the release's k3s pin, and
+  the platform-api admission policy allows the two k3s Plans only in exactly that shape.
+  ([ADR-064](docs/architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md) §8)
 - **Automatic updates are real.** The toggle used to be stored and read by nothing. Now it applies
   a verified **stable**, non-BREAKING release through the same run and pre-flight as a manual
   upgrade, and only inside a **maintenance window** you set (weekdays, start and end, time zone).
@@ -83,6 +89,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **k3s v1.36.5+k3s1** for fresh installs (was v1.36.2+k3s1; the installer script is byte-identical).
+  Existing clusters take it through the upgrade run's opt-in Kubernetes step. Not 1.37: a k3s minor
+  needs its own Longhorn, Calico, CNPG and system-upgrade-controller compatibility check.
 - **An upgrade now updates the nodes first, then the services, as one tracked run.** Until now
   Apply rolled the containers at once, and each node fetched the release's `insula` CLI, and with
   it the release's host changes, on its own daily timer, up to a day later. Now Apply starts a run

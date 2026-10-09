@@ -6,7 +6,7 @@
  */
 import type { ReleaseContents } from '@insula/api-contracts';
 import {
-  releaseHostMigrationSchema, releasePlatformMigrationSchema, releaseSqlMigrationSchema,
+  K3S_VERSION_RE, releaseHostMigrationSchema, releasePlatformMigrationSchema, releaseSqlMigrationSchema,
 } from '@insula/api-contracts';
 
 const MAX_HOST = 1000;
@@ -24,15 +24,17 @@ function keep<T>(items: unknown, schema: { safeParse: (v: unknown) => { success:
 }
 
 /** null = the manifest carries no contents at all (a release cut before they existed). */
-export function releaseContentsFrom(manifest: { readonly hostMigrations?: unknown; readonly migrations?: unknown }):
+export function releaseContentsFrom(manifest: { readonly hostMigrations?: unknown; readonly migrations?: unknown; readonly kubernetes?: unknown }):
   { readonly contents: ReleaseContents; readonly dropped: number } | null {
   const migrations = (manifest.migrations ?? null) as { sql?: unknown; platform?: unknown } | null;
   if (!Array.isArray(manifest.hostMigrations) && (migrations === null || typeof migrations !== 'object')) return null;
   const host = keep(manifest.hostMigrations, releaseHostMigrationSchema, MAX_HOST);
   const sql = keep(migrations?.sql, releaseSqlMigrationSchema, MAX_SQL);
   const platform = keep(migrations?.platform, releasePlatformMigrationSchema, MAX_PLATFORM);
+  const k3s = (manifest.kubernetes as { k3s?: unknown } | null | undefined)?.k3s;
+  const k3sVersion = typeof k3s === 'string' && k3s.length <= 40 && K3S_VERSION_RE.test(k3s) ? k3s : null;
   return {
-    contents: { hostMigrations: host.kept, migrations: { sql: sql.kept, platform: platform.kept } },
+    contents: { hostMigrations: host.kept, migrations: { sql: sql.kept, platform: platform.kept }, k3sVersion },
     dropped: host.dropped + sql.dropped + platform.dropped,
   };
 }

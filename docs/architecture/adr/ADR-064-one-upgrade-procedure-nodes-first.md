@@ -158,6 +158,11 @@ the nodes' kubelets, the review offers a fourth, opt-in step, *Kubernetes x → 
 the existing k3s Plans (servers one at a time, agents drained), with the same per-node rows. That
 retires the CLI-only path as the operator's tool (R39).
 
+*Implemented:* the release manifest carries `kubernetes.k3s`. The review offers the step only for
+a newer patch or the next minor (`insula cluster upgrade` keeps stepping one minor at a time for
+anything further). Agents are drained after every server. The admission policy
+`platform-api-plan-scope` allows the two k3s Plans only in the shape the CLI's builder produces.
+
 ### 9. Same procedure everywhere
 
 - **`insula upgrade --apply`** runs the same run, including the pre-flight.

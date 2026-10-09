@@ -140,6 +140,13 @@ describe('PlatformUpgradeProgressModal', () => {
       expect(screen.queryByTestId('cancel-upgrade-btn')).not.toBeInTheDocument();
     });
 
+    it('a run with a Kubernetes target shows the fourth step and its status', () => {
+      run = runOf({ step: 'upgrade-kubernetes', kubernetesVersion: 'v1.36.5+k3s1' });
+      renderModal();
+      expect(screen.getByTestId('run-step-upgrade-kubernetes')).toHaveTextContent('4. Upgrade Kubernetes to v1.36.5+k3s1');
+      expect(screen.getByTestId('upgrade-run-status')).toHaveTextContent(/Upgrading Kubernetes to v1\.36\.5\+k3s1 \(1\/2\)/);
+    });
+
     it('an excluded node reads as upgraded without, not as a fault', () => {
       run = runOf({ excludedNodes: ['s3'], nodes: [{ node: 's3', state: 'excluded', cliVersion: null, detail: 'Upgraded without it — it updates on its own timer when it is back.' }] });
       renderModal();

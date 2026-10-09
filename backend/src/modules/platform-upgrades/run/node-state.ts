@@ -18,6 +18,8 @@ export const JOB_FAILURE_THRESHOLD = 3;
 export interface NodeFacts {
   readonly name: string;
   readonly ready: boolean;
+  /** The kubelet's version (status.nodeInfo), for the Kubernetes step. */
+  readonly kubeletVersion?: string | null;
 }
 
 export interface NodeJobFacts {

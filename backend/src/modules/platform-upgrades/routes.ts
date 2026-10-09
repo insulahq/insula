@@ -37,6 +37,7 @@ const runJsonSchema = {
     id: { type: 'string' }, fromVersion: { type: 'string', nullable: true }, toVersion: { type: 'string' },
     mode: { type: 'string' }, status: { type: 'string' }, step: { type: 'string' },
     excludedNodes: { type: 'array', items: { type: 'string' } },
+    kubernetesVersion: { type: 'string', nullable: true },
     nodes: { type: 'array', items: { type: 'object', properties: {
       node: { type: 'string' }, state: { type: 'string' }, cliVersion: { type: 'string', nullable: true }, detail: { type: 'string' },
       hostChanges: { type: 'object', nullable: true, properties: { done: { type: 'number' }, total: { type: 'number' } } },
@@ -53,6 +54,7 @@ async function startRunFor(
   sub: string | null,
   r: Awaited<ReturnType<typeof runUpgrade>>,
   excluded: string[],
+  kubernetesVersion: string | null = null,
 ) {
   const target = r.decision.target as string;
   const installed = (await dbSettings(db).get('installed_platform_version'))?.trim() || null;
@@ -62,6 +64,7 @@ async function startRunFor(
     mode: 'manual',
     excludedNodes: excluded,
     initiatedBy: sub && UUID_RE.test(sub) ? sub : null,
+    kubernetesVersion,
   });
   const started = run.status === 'running';
   return {
@@ -214,6 +217,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   app.get('/admin/platform/upgrade/changes', {
     schema: {
       tags: ['Platform Updates'], summary: 'What an upgrade to the available release changes', security: [{ bearerAuth: [] }],
+      querystring: { type: 'object', properties: { exclude: { type: 'string' } } },
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
         fromVersion: { type: 'string', nullable: true }, toVersion: { type: 'string', nullable: true },
         known: { type: 'boolean' }, databaseMigrations: { type: 'number' }, platformMigrations: { type: 'number' },
@@ -222,11 +226,18 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
           nodes: { type: 'array', items: { type: 'string' } },
         } } },
         unreportedNodes: { type: 'array', items: { type: 'string' } },
+        kubernetes: { type: 'object', properties: {
+          current: { type: 'string', nullable: true }, target: { type: 'string', nullable: true },
+          offer: { type: 'boolean' }, reason: { type: 'string', nullable: true },
+        } },
       } } } } },
     },
-  }, async () => {
+  }, async (request) => {
+    // ?exclude=a,b — the Kubernetes offer is judged on the nodes that would take part.
+    const q = upgradePreflightQuerySchema.safeParse(request.query ?? {});
+    if (!q.success) throw new ApiError('VALIDATION_ERROR', q.error.issues[0]?.message ?? 'invalid query', 400);
     const k8s = createK8sClients(kubeconfigPath());
-    return success(await readUpgradeChanges(app.db, k8s, RUNNING_VERSION));
+    return success(await readUpgradeChanges(app.db, k8s, RUNNING_VERSION, q.data.exclude));
   });
 
   // GET /api/v1/admin/platform/host-migrations/status — per-node applied /
@@ -265,6 +276,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
           version: { type: 'string' },
           apply: { type: 'boolean' },
           excludeNodes: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+          upgradeKubernetes: { type: 'boolean' },
         },
         additionalProperties: false,
       },
@@ -308,7 +320,19 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       const settings = dbSettings(app.db);
       const r = await runUpgrade(settings, k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply: false });
       if (apply && r.decision.proceed && r.decision.target) {
-        return success(await startRunFor(app.db, k8s, request.user?.sub ?? null, r, excludeNodes));
+        // ADR-064 §8: the Kubernetes step only for the release whose pin it is, and
+        // only for a safe hop — the same offer the review shows.
+        let kubernetesVersion: string | null = null;
+        if (parsed.data.upgradeKubernetes === true) {
+          const changes = await readUpgradeChanges(app.db, k8s, RUNNING_VERSION, excludeNodes);
+          const k = changes.kubernetes;
+          if (!k?.offer || !k.target || changes.toVersion !== r.decision.target) {
+            throw new ApiError('KUBERNETES_STEP_UNAVAILABLE',
+              k?.reason ?? `there is no Kubernetes upgrade to take with ${r.decision.target}`, 409);
+          }
+          kubernetesVersion = k.target;
+        }
+        return success(await startRunFor(app.db, k8s, request.user?.sub ?? null, r, excludeNodes, kubernetesVersion));
       }
       // Attach the interruption preview to a DRY-RUN so the confirm modal can
       // show it before the operator applies. Best-effort — a preview failure must
@@ -410,6 +434,10 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     const active = await getActiveRun(app.db);
     if (active && active.step === 'prepare-nodes') {
       throw new ApiError('UPGRADE_RUN_PREPARING', 'The upgrade has not changed the services yet — cancel it instead of rolling back.', 409);
+    }
+    // A rollback would delete the k3s Plans under a node that may be mid-restart.
+    if (active && active.step === 'upgrade-kubernetes') {
+      throw new ApiError('UPGRADE_RUN_KUBERNETES', 'The Kubernetes step is running — wait for it to finish or stop before rolling back the services.', 409);
     }
     const k8s = createK8sClients(kubeconfigPath());
     try {

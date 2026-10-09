@@ -175,6 +175,9 @@ jobs:
               if len(desc) < 10:  # the manifest schema's floor — a short slug still reads
                   desc = f"Host change: {desc}"
               host_migrations.append({"key": rel, "phase": phase, "description": desc[:200]})
+          # ADR-064 §8: the k3s version this release's bootstrap pins — the
+          # target of the review's opt-in Kubernetes step.
+          k3s_pin = re.search(r'^K3S_VERSION="(v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+)"', open("scripts/bootstrap.sh", encoding="utf-8").read(), re.M)
           sql_migrations = sorted(os.path.basename(p) for p in glob.glob("backend/src/db/migrations/*.sql"))
           platform_migrations = sorted(
               os.path.basename(p)[:-3] for p in glob.glob("backend/src/modules/platform-upgrades/migrations/[0-9]*.ts")
@@ -191,6 +194,7 @@ jobs:
               "releasedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "hostMigrations": host_migrations,
               "migrations": {"sql": sql_migrations, "platform": platform_migrations},
+              "kubernetes": {"k3s": k3s_pin.group(1)} if k3s_pin else None,
           }, separators=(",", ":")))
           PY
           echo "manifest: $(cat dist-release/release-manifest.json)"

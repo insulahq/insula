@@ -65,4 +65,14 @@ describe.skipIf(skipIntegration)('upgrade runs (integration)', () => {
     await expect(transitionRun(db, run.id, null, { status: 'bogus' })).rejects.toThrow();
     await expect(transitionRun(db, run.id, null, { step: 'nope' })).rejects.toThrow();
   });
+
+  it('records a Kubernetes target and allows the Kubernetes step (migration 0155)', async () => {
+    const active = await getActiveRun(db);
+    if (active) await transitionRun(db, active.id, null, { status: 'cancelled', finishedAt: new Date() });
+    const run = await createRun(db, { ...input, initiatedBy: null, kubernetesVersion: 'v1.36.5+k3s1' });
+    expect(run.kubernetesVersion).toBe('v1.36.5+k3s1');
+    expect(await transitionRun(db, run.id, 'prepare-nodes', { step: 'upgrade-kubernetes' })).toBe(true);
+    expect((await getRun(db, run.id))?.step).toBe('upgrade-kubernetes');
+  });
 });
+

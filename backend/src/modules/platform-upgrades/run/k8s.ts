@@ -31,8 +31,23 @@ export async function applyNodePlan(k8s: K8sClients, plan: Record<string, unknow
 
 /** Delete a Plan; absent is fine. Deleting stops the controller from retrying its jobs. */
 export async function deleteNodePlan(k8s: K8sClients, kind: NodePlanKind): Promise<void> {
+  await deletePlanNamed(k8s, planNameFor(kind));
+}
+
+export async function planExists(k8s: K8sClients, name: string): Promise<boolean> {
   try {
-    await custom(k8s).deleteNamespacedCustomObject({ ...SUC, name: planNameFor(kind) });
+    await (k8s.custom as unknown as { getNamespacedCustomObject: (r: Record<string, unknown>) => Promise<unknown> })
+      .getNamespacedCustomObject({ ...SUC, name });
+    return true;
+  } catch (err) {
+    if (httpStatusOf(err) === 404) return false;
+    throw err;
+  }
+}
+
+export async function deletePlanNamed(k8s: K8sClients, name: string): Promise<void> {
+  try {
+    await custom(k8s).deleteNamespacedCustomObject({ ...SUC, name });
   } catch (err) {
     if (httpStatusOf(err) !== 404) throw err;
   }
@@ -50,10 +65,15 @@ interface RawJob {
  * new job, but a re-created job is a new object.
  */
 export async function listPlanJobs(k8s: K8sClients, kind: NodePlanKind, sinceMs: number): Promise<Map<string, NodeJobFacts>> {
+  return listJobsForPlans(k8s, [planNameFor(kind)], sinceMs);
+}
+
+/** Per-node job facts across the given Plans (the Kubernetes step has two). */
+export async function listJobsForPlans(k8s: K8sClients, planNames: readonly string[], sinceMs: number): Promise<Map<string, NodeJobFacts>> {
   const out = new Map<string, NodeJobFacts>();
   const list = (await k8s.batch.listNamespacedJob({
     namespace: SUC_NAMESPACE,
-    labelSelector: `upgrade.cattle.io/plan=${planNameFor(kind)}`,
+    labelSelector: `upgrade.cattle.io/plan in (${planNames.join(',')})`,
   } as unknown as Parameters<typeof k8s.batch.listNamespacedJob>[0])) as { items?: RawJob[] };
   for (const j of list.items ?? []) {
     const node = j.metadata?.labels?.['upgrade.cattle.io/node'];
@@ -72,7 +92,7 @@ export async function listPlanJobs(k8s: K8sClients, kind: NodePlanKind, sinceMs:
 
 interface RawNode {
   metadata?: { name?: string };
-  status?: { conditions?: Array<{ type?: string; status?: string }> };
+  status?: { conditions?: Array<{ type?: string; status?: string }>; nodeInfo?: { kubeletVersion?: string } };
 }
 
 export async function listNodeFacts(k8s: K8sClients): Promise<NodeFacts[]> {
@@ -81,6 +101,7 @@ export async function listNodeFacts(k8s: K8sClients): Promise<NodeFacts[]> {
     .map((n) => ({
       name: n.metadata?.name ?? '',
       ready: (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'),
+      kubeletVersion: n.status?.nodeInfo?.kubeletVersion ?? null,
     }))
     .filter((n) => n.name !== '')
     .sort((a, b) => a.name.localeCompare(b.name));

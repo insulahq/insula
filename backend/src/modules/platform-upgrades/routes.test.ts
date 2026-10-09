@@ -13,6 +13,13 @@ import { registerAuth } from '../../middleware/auth.js';
 
 const collectPreflightFacts = vi.fn();
 const startRunWithTask = vi.fn();
+const readUpgradeChanges = vi.fn();
+const getActiveRun = vi.fn().mockResolvedValue(null);
+vi.mock('./run/store.js', () => ({
+  getActiveRun: (...a: unknown[]) => getActiveRun(...a),
+  getRun: vi.fn(), listRuns: vi.fn(async () => []), toUpgradeRun: (r: unknown) => r,
+}));
+vi.mock('./release-changes.js', () => ({ readUpgradeChanges: (...a: unknown[]) => readUpgradeChanges(...a) }));
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({ createK8sClients: () => ({}) }));
 vi.mock('./collect-preflight.js', () => ({ collectPreflightFacts: (...a: unknown[]) => collectPreflightFacts(...a) }));
 vi.mock('./orchestrate.js', () => ({
@@ -88,4 +95,45 @@ describe('platform-upgrade routes (Fastify validation)', () => {
     expect(collectPreflightFacts.mock.calls[0]?.[3]).toEqual(['w1']);
     expect(res.json().data.ok).toBe(true);
   });
+
+  it('upgradeKubernetes takes the release\'s k3s pin into the run — only when the review offers it', async () => {
+    readUpgradeChanges.mockResolvedValue({ toVersion: '2026.10.7-rc.4', kubernetes: { current: 'v1.36.2+k3s1', target: 'v1.36.5+k3s1', offer: true, reason: null } });
+    const ok = await app.inject({
+      method: 'POST', url: '/api/v1/admin/platform/upgrade', headers: { authorization: `Bearer ${token}` },
+      payload: { version: '2026.10.7-rc.4', apply: true, excludeNodes: ['w1'], upgradeKubernetes: true },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(startRunWithTask.mock.calls[0]?.[2]).toMatchObject({ kubernetesVersion: 'v1.36.5+k3s1' });
+
+    startRunWithTask.mockClear();
+    readUpgradeChanges.mockResolvedValue({ toVersion: '2026.10.7-rc.4', kubernetes: { current: 'v1.34.1+k3s1', target: 'v1.36.5+k3s1', offer: false, reason: 'skips a minor version' } });
+    const refused = await app.inject({
+      method: 'POST', url: '/api/v1/admin/platform/upgrade', headers: { authorization: `Bearer ${token}` },
+      payload: { version: '2026.10.7-rc.4', apply: true, excludeNodes: ['w1'], upgradeKubernetes: true },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe('KUBERNETES_STEP_UNAVAILABLE');
+    expect(startRunWithTask).not.toHaveBeenCalled();
+  });
+
+  it('rollback is refused while the run\'s Kubernetes step runs (k3s may be mid-restart on a node)', async () => {
+    getActiveRun.mockResolvedValue({ id: 'run-1', step: 'upgrade-kubernetes', status: 'running' });
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/admin/platform/rollback', headers: { authorization: `Bearer ${token}` },
+      payload: { apply: true },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('UPGRADE_RUN_KUBERNETES');
+    getActiveRun.mockResolvedValue(null);
+  });
+
+  it('the changes endpoint judges the Kubernetes offer without the excluded nodes', async () => {
+    readUpgradeChanges.mockResolvedValue({ toVersion: null, kubernetes: { current: null, target: null, offer: false, reason: null } });
+    const res = await app.inject({
+      method: 'GET', url: '/api/v1/admin/platform/upgrade/changes?exclude=w1', headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(readUpgradeChanges.mock.calls.at(-1)?.[3]).toEqual(['w1']);
+  });
 });
+

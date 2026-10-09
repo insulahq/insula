@@ -13,7 +13,7 @@ describe('toUpgradeRun', () => {
   it('maps a row to the API shape with ISO timestamps', () => {
     expect(toUpgradeRun(row())).toEqual({
       id: 'r1', fromVersion: '2026.10.6', toVersion: '2026.10.7', mode: 'manual', status: 'running', step: 'prepare-nodes',
-      excludedNodes: ['sv3'], nodes: [{ node: 'sv1', state: 'ready', cliVersion: '2026.10.7', detail: 'ok' }], message: null,
+      excludedNodes: ['sv3'], kubernetesVersion: null, nodes: [{ node: 'sv1', state: 'ready', cliVersion: '2026.10.7', detail: 'ok' }], message: null,
       startedAt: '2026-10-09T10:00:00.000Z', stepStartedAt: '2026-10-09T10:05:00.000Z', finishedAt: null,
     });
   });
