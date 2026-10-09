@@ -34,7 +34,11 @@ type SysctlItem struct {
 // the admin panel can show a failed or blocked chain instead of it being
 // invisible until someone SSHes in.
 type MigrationStatus struct {
-	Schema       int             `json:"schema"`
+	Schema int `json:"schema"`
+	// The node CLI's own version: the release whose host-migrations it carries.
+	// A node on an older CLI cannot know a newer release's migrations exist, so
+	// without this it reads exactly like an up-to-date node.
+	CliVersion   string          `json:"cliVersion,omitempty"`
 	CollectedAt  string          `json:"collectedAt"`
 	Mode         string          `json:"mode"`
 	Source       string          `json:"source"`

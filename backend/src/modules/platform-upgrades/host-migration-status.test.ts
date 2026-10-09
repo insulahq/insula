@@ -6,7 +6,15 @@
  * fastest way to get an alert ignored.
  */
 import { describe, it, expect } from 'vitest';
-import { interpretNodeSnapshot, isDegraded } from './host-migration-status.js';
+import type { HostMigrationNodeStatus } from '@insula/api-contracts';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import {
+  interpretNodeSnapshot,
+  isDegraded,
+  cliBehindTarget,
+  assessHostMigrations,
+  readHostMigrationStatus,
+} from './host-migration-status.js';
 
 const snap = (hostMigrations: unknown) => JSON.stringify({ node: 'n1', hostMigrations });
 
@@ -230,5 +238,152 @@ describe('never-converged detection', () => {
     const r = interpretNodeSnapshot('n1', healthy, OLD);
     expect(r.neverConverged).toBeFalsy();
     expect(isDegraded([r])).toBe(false);
+  });
+});
+
+// ── The node CLI version (P0 of ADR-064) ────────────────────────────────────
+//
+// A release's host-migrations ship inside the node CLI, so a node on an older
+// CLI has not seen them — and reports exactly what an up-to-date node reports.
+// These pin the comparison and the gate wording built on it.
+
+const reported = (cliVersion: string | null) => JSON.stringify({
+  node: 'n1',
+  hostMigrations: { collectedAt: '2026-10-09T10:00:00Z', ok: true, appliedCount: 40, items: [], ...(cliVersion ? { cliVersion } : {}) },
+});
+
+describe('the node CLI version', () => {
+  it('is read from the relayed status', () => {
+    expect(interpretNodeSnapshot('n1', reported('2026.10.7-rc.2')).cliVersion).toBe('2026.10.7-rc.2');
+  });
+
+  it('believes only a well-formed version (the value is node-supplied and displayed)', () => {
+    expect(interpretNodeSnapshot('n1', reported('<b>2026.10.7</b> totally fine')).cliVersion).toBeNull();
+    expect(interpretNodeSnapshot('n1', reported('9'.repeat(80))).cliVersion).toBeNull();
+  });
+
+  it('is null — never a guess — when an older CLI did not report one', () => {
+    expect(interpretNodeSnapshot('n1', reported(null)).cliVersion).toBeNull();
+    expect(interpretNodeSnapshot('n1', undefined).cliVersion).toBeNull();
+  });
+});
+
+describe('cliBehindTarget', () => {
+  it('flags a CLI older than the cluster release', () => {
+    expect(cliBehindTarget('2026.10.6', '2026.10.7-rc.2')).toBe(true);
+    expect(cliBehindTarget('2026.10.7-rc.1', '2026.10.7-rc.2')).toBe(true);
+  });
+
+  it('accepts the same or a newer CLI', () => {
+    expect(cliBehindTarget('2026.10.7-rc.2', '2026.10.7-rc.2')).toBe(false);
+    expect(cliBehindTarget('2026.10.7', '2026.10.7-rc.2')).toBe(false);
+  });
+
+  it('maps a DEV build stamp to the release that publishes its CLI', () => {
+    // DEV's platform-version is `<VERSION>-<sha>`; its nodes run the `<VERSION>` CLI.
+    expect(cliBehindTarget('2026.10.6', '2026.10.6-ad8fe1a')).toBe(false);
+    expect(cliBehindTarget('2026.10.5', '2026.10.6-ad8fe1a')).toBe(true);
+  });
+
+  it('is null when either side is unknown or not a version', () => {
+    expect(cliBehindTarget(null, '2026.10.7')).toBeNull();
+    expect(cliBehindTarget('2026.10.7', null)).toBeNull();
+    expect(cliBehindTarget('unknown', '2026.10.7')).toBeNull();
+  });
+});
+
+const node = (over: Partial<HostMigrationNodeStatus> & { node: string }): HostMigrationNodeStatus => ({
+  collectedAt: '2026-10-09T10:00:00Z', mode: 'enforce', source: 'embedded', ok: true,
+  appliedCount: 40, failedCount: 0, blockedCount: 0, pendingCount: 0, skippedCount: 0, invalidCount: 0,
+  reason: null, items: [], cliVersion: '2026.10.7-rc.2', cliBehind: false, ...over,
+});
+
+describe('assessHostMigrations', () => {
+  it('passes only when every node runs the release CLI and nothing needs attention', () => {
+    const a = assessHostMigrations([node({ node: 's1' }), node({ node: 's2' })], '2026.10.7-rc.2');
+    expect(a.status).toBe('pass');
+    expect(a.detail).toMatch(/All 2 node\(s\) on CLI 2026\.10\.7-rc\.2/);
+  });
+
+  it('reports nodes behind the release as catching up — scheduled, not a fault', () => {
+    const a = assessHostMigrations(
+      [node({ node: 's1' }), node({ node: 's2', cliVersion: '2026.10.6', cliBehind: true })],
+      '2026.10.7-rc.2',
+    );
+    expect(a.status).toBe('warn');
+    expect(a.scheduled).toBe(true);
+    expect(a.detail).toMatch(/1 of 2 node\(s\) still on an older CLI \(s2\)/);
+    expect(a.detail).toMatch(/daily update/);
+    // The old wording — the one this replaces — called such a node "converged".
+    expect(a.detail).not.toMatch(/converged/);
+  });
+
+  it('never says "converged" for a node whose CLI predates version reporting', () => {
+    const a = assessHostMigrations([node({ node: 's1', cliVersion: null, cliBehind: null })], '2026.10.7-rc.2');
+    expect(a.status).toBe('warn');
+    expect(a.scheduled).toBe(true);
+    expect(a.detail).toMatch(/s1 has not reported a CLI version/);
+  });
+
+  it('names nodes that need attention and does NOT call that scheduled', () => {
+    const a = assessHostMigrations(
+      [node({ node: 's1', failedCount: 1 }), node({ node: 's2', cliVersion: '2026.10.6', cliBehind: true })],
+      '2026.10.7-rc.2',
+    );
+    expect(a.status).toBe('warn');
+    expect(a.scheduled).toBe(false);
+    expect(a.detail).toMatch(/needs attention on s1/);
+    expect(a.detail).toMatch(/s2/);
+  });
+
+  it.each([
+    ['blocked', { blockedCount: 2 }],
+    ['invalid', { invalidCount: 1 }],
+    ['refused run', { ok: false }],
+    ['never converged', { neverConverged: true }],
+    ['reconciler missing', { reconcilerMissing: true }],
+  ])('treats a %s node as needing attention', (_label, over) => {
+    const a = assessHostMigrations([node({ node: 'w1', ...over })], '2026.10.7');
+    expect(a.scheduled).toBe(false);
+    expect(a.detail).toMatch(/needs attention on w1/);
+  });
+
+  it('is a scheduled warn, not a pass, before any node has reported', () => {
+    const a = assessHostMigrations([], '2026.10.7');
+    expect(a).toMatchObject({ status: 'warn', scheduled: true });
+  });
+
+  it('never fails — host state is reported, it does not decide the services converged', () => {
+    const a = assessHostMigrations([node({ node: 's1', failedCount: 3, blockedCount: 9 })], '2026.10.7');
+    expect(a.status).not.toBe('fail');
+  });
+});
+
+describe('readHostMigrationStatus', () => {
+  const k8sWith = (nodes: Record<string, string>): K8sClients => ({
+    core: {
+      listNamespacedConfigMap: async () => ({
+        items: Object.entries(nodes).map(([n, raw]) => ({ metadata: { name: `host-config-drift-${n}` }, data: { snapshot: raw } })),
+      }),
+      listNode: async () => ({ items: Object.keys(nodes).map((n) => ({ metadata: { name: n, creationTimestamp: '2026-01-01T00:00:00Z' } })) }),
+    },
+  } as unknown as K8sClients);
+
+  it('judges every node against the cluster release and reports that target', async () => {
+    const res = await readHostMigrationStatus(
+      k8sWith({ s1: reported('2026.10.7-rc.2'), s2: reported('2026.10.6') }),
+      '2026.10.7-rc.2',
+    );
+    expect(res.targetVersion).toBe('2026.10.7-rc.2');
+    expect(res.nodes.find((n) => n.node === 's1')?.cliBehind).toBe(false);
+    expect(res.nodes.find((n) => n.node === 's2')?.cliBehind).toBe(true);
+    // Behind is not degraded: the card's red alert stays for real faults.
+    expect(res.degraded).toBe(false);
+  });
+
+  it('reports a DEV build stamp target as the release its nodes run', async () => {
+    const res = await readHostMigrationStatus(k8sWith({ s1: reported('2026.10.6') }), '2026.10.6-ad8fe1a');
+    expect(res.targetVersion).toBe('2026.10.6');
+    expect(res.nodes[0]?.cliBehind).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runPostflight, checkConvergence, readPostflightState, type PostflightState } from './collect-postflight.js';
+import { runPostflight, checkConvergence, readPostflightState, collectPostflightFacts, type PostflightState } from './collect-postflight.js';
 import type { SettingsIO } from './orchestrate.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -199,3 +199,42 @@ describe('readPostflightState (reader) — reconcile against the live pending ma
     expect((await readPostflightState(db)).phase).toBe('reconciling');
   });
 });
+
+describe('collectPostflightFacts — the nodes against the upgrade target', () => {
+  const drift = (node: string, cliVersion: string) => ({
+    metadata: { name: `host-config-drift-${node}` },
+    data: { snapshot: JSON.stringify({ node, hostMigrations: { collectedAt: '2026-10-09T10:00:00Z', ok: true, appliedCount: 40, items: [], cliVersion } }) },
+  });
+  const withNodes = (versions: Record<string, string>): K8sClients => {
+    const base = fakeK8s() as unknown as { core: Record<string, unknown> };
+    return {
+      ...base,
+      core: {
+        ...base.core,
+        listNamespacedConfigMap: async () => ({ items: Object.entries(versions).map(([n, v]) => drift(n, v)) }),
+        listNode: async () => ({ items: Object.keys(versions).map((n) => ({ metadata: { name: n, creationTimestamp: '2026-01-01T00:00:00Z' } })) }),
+      },
+    } as unknown as K8sClients;
+  };
+
+  it('judges the nodes against the in-flight target, not the running pod', async () => {
+    const f = await collectPostflightFacts(withNodes({ s1: '2026.10.7-rc.2', s2: '2026.10.6' }), '2026.10.7-rc.2');
+    expect(f.hostMigrations).toMatchObject({ status: 'warn', scheduled: true });
+    expect(f.hostMigrations?.detail).toMatch(/1 of 2 node\(s\) still on an older CLI \(s2\)/);
+  });
+
+  it('passes once every node runs the target CLI', async () => {
+    const f = await collectPostflightFacts(withNodes({ s1: '2026.10.7-rc.2', s2: '2026.10.7-rc.2' }), '2026.10.7-rc.2');
+    expect(f.hostMigrations).toMatchObject({ status: 'pass' });
+    expect(f.hostMigrations?.detail).toMatch(/All 2 node\(s\) on CLI 2026\.10\.7-rc\.2/);
+  });
+
+  it('says the relay could not be read rather than inventing a state', async () => {
+    const k8s = fakeK8s();
+    const f = await collectPostflightFacts(k8s, '2026.10.7');
+    // No ConfigMap/Node API on this fake: the nodes are unknown, never "converged".
+    expect(f.hostMigrations?.status).toBe('warn');
+    expect(f.hostMigrations?.detail).not.toMatch(/converged|applied/i);
+  });
+});
+

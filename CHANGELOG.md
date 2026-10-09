@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.7-rc.1] - 2026-10-09
-
 ### Added
 
 - **Automatic mail-server bans now expire — after 24 hours by default.** The mail server blocks
@@ -120,6 +118,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The upgrade view tells the truth about the nodes.** A node applies a release's host changes
+  when its own `insula` CLI updates to that release, which it does on a daily timer — up to about 25
+  hours after the containers. The review said those changes run "during the upgrade", and the
+  progress view reported *Host migrations: Applied · 3 node(s) converged* thirty seconds in, while
+  every node still ran the previous CLI. Nodes now report their CLI version: the Host migrations card
+  shows it for each node, a node behind the release is shown as *update pending* (neutral, not a
+  fault), and the progress view says *Catching up* for those nodes. A node whose host migrations
+  really failed is shown as *Needs attention*. Host state no longer holds an upgrade open: one old
+  failure on one node used to keep every later upgrade from ever finishing. The review's
+  interruption preview now reads each service's replicas and rollout strategy instead of the
+  node count, so a multi-node cluster without HA no longer promises a second replica it does not
+  have.
 - **Removing a node no longer leaves its storage node behind.** Longhorn keeps its own record of
   every node, and removing a node through the admin panel (Drain, then Delete) left that record
   in place for good: listed as not ready, a host that no longer existed. The platform tried to
@@ -134,7 +144,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "ingress → backend broken" and "pod → pod broken"; it now probes running pods only. Its HA check
   failed every multi-node cluster that had not applied HA; it now checks only when HA is applied.
   And on production installs it probed, and counted as missing, the test sign-in service (Dex),
-  which production does not run; it now checks only what is installed.
+  which production does not run; it now checks only what is installed. Its network-plugin log
+  check also failed after any node was removed, reading the routine "remove peer" notices of the
+  departing node as errors; it now ignores those notices.
 - **A joining node no longer prints a pre-authorisation warning when it is pre-authorised.** The
   node join always printed "IMPORTANT — joining requires this node's IP to be pre-authorised …
   otherwise the join will hang", including on joins run from the admin panel's own join script

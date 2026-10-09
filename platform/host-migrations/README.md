@@ -11,7 +11,10 @@ config file, relabelling a mount, a one-time data move.
 - The build **embeds** them into the `platform-ops` binary as SEA assets, so they
   travel with every binary — a node that self-upgrades automatically receives the
   new release's scripts (no separate sync).
-- On each daily `host-config apply`, the runner walks all shipped scripts in
+- On each `host-config apply` — hourly from `platform-ops-host-config.timer`, and
+  right after a self-upgrade (which itself runs on the daily
+  `platform-ops-update.timer`, so a release's scripts reach a node 0–25 h after its
+  containers; ADR-064 plans to move this into the upgrade) — the runner walks all shipped scripts in
   `(version, name)` order, **skips** any already applied (per-node marker at
   `/var/lib/platform/host-migrations/<version>/<name>.done`), and runs the rest.
 - A **fresh** node does not replay history: bootstrap stamps every script ≤ the

@@ -418,7 +418,7 @@ describe('selfUpgrade', () => {
       convergeAfterSelfUpgrade: converge,
     });
     expect(await selfUpgrade(['--check'], deps)).toBe(0);
-    expect(err.join('\n')).toMatch(/host-migration converge exited 1 \(the daily host-config timer will retry\)$/m);
+    expect(err.join('\n')).toMatch(/host-migration converge exited 1 \(the hourly host-config timer will retry\)$/m);
   });
 
   it('apply-on-Apply: NOT triggered when already-current (no upgrade happened)', async () => {

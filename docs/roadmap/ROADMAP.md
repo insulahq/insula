@@ -56,6 +56,7 @@
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 | [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
+| [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | Planned 2026-10-09 (ADR-064) — P0 truthful status ships in v2026.10.7-rc.2; P1 node push + hosts-first order, P2 UX, P3 auto-update + parity, P4 Kubernetes step |
 
 ---
 
@@ -2240,3 +2241,30 @@ column it is still written: `scripts/admin-domain-rewrite.sh` sets it (a dead
 write — the canonical value is `platform_settings.mail_server_hostname`, which
 the same script also sets). Dropping it means removing that line in the same
 release.
+
+## R44 — One upgrade procedure: nodes first, pushed, "done" means done
+
+Design: [ADR-064](../architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md). A platform upgrade
+re-pins Flux and rolls the services in about a minute, while each node fetches the release's CLI —
+and with it the release's host-migrations — on its own daily timer, 0–25 hours later. The review and
+progress views report the host side as done when it has not started, nothing can see a lagging node,
+host changes cannot be ordered before the containers that need them, and rollback says nothing about
+hosts. Found driving v2026.10.7-rc.1 through the local lab staging.
+
+Operator decisions (2026-10-09): push nodes through the system-upgrade-controller (an
+`insula-node-update` Plan); hosts first, with a `# phase: before-services | after-services` header on
+every host-migration; an offline node blocks the upgrade unless the operator explicitly excludes it;
+the Automatic-updates toggle becomes real (stable only, never BREAKING, inside a maintenance window);
+Kubernetes (k3s) upgrades join the same flow; P0 ships first in v2026.10.7-rc.2.
+
+| Phase | Content | Status |
+|---|---|---|
+| P0 | Truthful status: nodes report their CLI version, the gate compares it with the target, gate-detail bugs fixed, review/remediation/interruption texts corrected, stale docs fixed | Not started |
+| P1 | Node push (`insula-node-update` Plan), `phase:` header + CI guard + phase selection, hourly check timer without the GitHub-latest fallback, `platform_upgrade_runs`, per-node progress, `nodes-ready` gate + override | Not started |
+| P2 | Review and progress redesign, resumable progress page, run history, CLI version on the Nodes page, progress-view tests | Not started |
+| P3 | Auto-update scheduler + maintenance window, CLI parity (pre-flight), staging-channel handling, ADR-045/056 alignment | Not started |
+| P4 | Kubernetes step in the same run (supersedes the CLI-only path, R39) | Not started |
+
+Every phase is proven as an in-place upgrade on the local lab staging from production's release,
+driven in a browser, with a worker joined.
+

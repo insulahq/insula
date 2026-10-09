@@ -244,8 +244,13 @@ this host — record a `.skipped` with the reason (above).
   Expect `OnCalendar=hourly` from v2026.8.3 onward. An operator-customised
   schedule is deliberately left alone by the migration that changes it.
 - **`platform-ops` self-upgrade also converges** immediately after replacing the
-  binary, so a release's migrations normally land at upgrade time rather than
-  waiting for the timer.
+  binary. But a release's migrations ship INSIDE that binary, and a node fetches
+  it on its own `platform-ops-update.timer` — daily, with up to an hour of jitter
+  — so they land 0–25 h after the release's containers, not at upgrade time.
+  Until then the node reports its older CLI (`cliVersion`) and the admin panel
+  shows it as catching up. To apply a release's host changes on a node now:
+  `systemctl start platform-ops-update.service`. (ADR-064 plans for the upgrade
+  itself to push this to every node; until that ships, this is the way.)
 
 ## Deliberate opt-out
 

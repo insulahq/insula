@@ -126,24 +126,18 @@ async function migrationFacts(db: Database | null): Promise<PostflightMigrationF
   }
 }
 
-/** Per-node host-migration convergence, via the existing read-only relay. */
-async function hostMigrationFacts(k8s: K8sClients): Promise<PostflightMigrationFacts> {
+/**
+ * Per-node host-migration state, via the existing read-only relay, judged against
+ * the release the cluster is upgrading to (or runs). Reported, never blocking —
+ * see assessHostMigrations. An unreadable relay is said as such.
+ */
+async function hostMigrationFacts(k8s: K8sClients, targetVersion: string | null): Promise<PostflightMigrationFacts> {
   try {
-    const { readHostMigrationStatus } = await import('./host-migration-status.js');
-    const status = await readHostMigrationStatus(k8s);
-    const nodes = status.nodes ?? [];
-    // No node has reported yet → leave undefined so the gate is omitted rather
-    // than blocking an otherwise healthy upgrade on missing data.
-    if (nodes.length === 0) return {};
-    const bad = nodes.filter((n) => (n.failedCount ?? 0) > 0 || (n.blockedCount ?? 0) > 0);
-    return {
-      hostMigrationsDegraded: status.degraded === true || bad.length > 0,
-      hostMigrationsDetail: bad.length > 0
-        ? `${bad.length}/${nodes.length} node(s) blocked: ${bad.map((n) => n.node).join(', ')}`
-        : `${nodes.length} node(s) converged`,
-    };
+    const { readHostMigrationStatus, assessHostMigrations } = await import('./host-migration-status.js');
+    const status = await readHostMigrationStatus(k8s, targetVersion);
+    return { hostMigrations: assessHostMigrations(status.nodes ?? [], targetVersion) };
   } catch {
-    return {};
+    return { hostMigrations: { status: 'warn', scheduled: false, detail: 'host-migration state could not be read' } };
   }
 }
 
@@ -157,7 +151,7 @@ export async function collectPostflightFacts(
     deploymentHealth(k8s),
     crashloopingPods(k8s),
     migrationFacts(db),
-    hostMigrationFacts(k8s),
+    hostMigrationFacts(k8s, pendingVersion ?? RUNNING_VERSION),
   ]);
   return {
     ...migrations,
