@@ -3071,16 +3071,23 @@ seed_firewall_sets() {
       warn "  failed to seed cluster_peers_v4 join target ${K3S_SERVER_IP}; manual intervention may be required"
     fi
     log ""
-    log "  IMPORTANT — joining an existing cluster requires this node's"
-    log "  IP to be pre-authorised on every existing peer. Either:"
-    log "    (a) Pass --pre-enroll-peer ${local_v4} to the FIRST server's bootstrap"
-    log "        (seeds cluster_peers_v4 up front; joining bootstraps succeed without"
-    log "         further operator action)."
-    log "    (b) Settings → Cluster Networking → Pre-Enroll Node (post-install UI path)"
-    log "    (c) On each existing peer, run BEFORE this bootstrap:"
-    log "          /usr/local/bin/peer-firewall-add ${local_v4}"
-    log "  Otherwise this node cannot reach :6443 and the join will hang"
-    log "  (k3s.service auto-retries every ~5s; we'll poll for up to 600s)."
+    # The advice below is for a node nobody pre-authorised. Printed on a join that was
+    # pre-enrolled (the admin panel's own join script), it read as a failure warning.
+    if timeout 5 bash -c "</dev/tcp/${K3S_SERVER_IP}/6443" 2>/dev/null; then
+      log "  Join target ${K3S_SERVER_IP}:6443 answers this node — it is pre-authorised there."
+    else
+      log "  IMPORTANT — the join target ${K3S_SERVER_IP}:6443 does not answer this node yet."
+      log "  Joining an existing cluster requires this node's IP to be pre-authorised"
+      log "  on every existing peer. Either:"
+      log "    (a) Pass --pre-enroll-peer ${local_v4} to the FIRST server's bootstrap"
+      log "        (seeds cluster_peers_v4 up front; joining bootstraps succeed without"
+      log "         further operator action)."
+      log "    (b) Settings → Cluster Networking → Pre-Enroll Node (post-install UI path)"
+      log "    (c) On each existing peer, run BEFORE this bootstrap:"
+      log "          /usr/local/bin/peer-firewall-add ${local_v4}"
+      log "  Otherwise this node cannot reach :6443 and the join will hang"
+      log "  (k3s.service auto-retries every ~5s; we'll poll for up to 600s)."
+    fi
     log ""
   fi
   # Pre-enroll peers from --pre-enroll-peer flag (first-server bootstrap
