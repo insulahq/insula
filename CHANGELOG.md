@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.7-rc.4] - 2026-10-09
+
 ### Added
 
 - **The upgrade review says what changes, and every upgrade run keeps a page.** The review
