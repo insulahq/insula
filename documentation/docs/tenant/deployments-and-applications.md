@@ -264,6 +264,24 @@ of those — nothing changes until something is freed — so no button is offere
     A message describes the attempt it came from. Re-deploying clears it, and
     opening one app never shows you an error left over from another.
 
+## When an app restarts on its own: the local disk limit
+
+Each application may write only so much to its **own container filesystem** —
+temporary files, caches, and logs written anywhere other than your storage
+folders. The server's disk is shared with everyone hosted on it, so the
+platform caps it per application.
+
+When an application goes past its limit, it is restarted on a clean
+filesystem and you get a notification, **Application restarted: local disk
+limit**, naming it and the limit it reached. **Your files and databases on
+your storage are not touched** — only what the application wrote into its own
+container is cleared, which is temporary by nature anyway.
+
+If it keeps happening, the application is writing something it should keep on
+your storage instead: point its upload, cache or log directory at one of its
+storage folders (or an [extra mount](#extra-mounts)). If it genuinely needs
+more scratch space, ask your provider to raise the limit.
+
 ## Manage an installed app
 
 Each deployment is a card on the **Installed Apps** tab showing live CPU,

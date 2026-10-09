@@ -4,12 +4,14 @@ vi.mock('../notifications/events.js', () => ({
   notifyAdminNodeMemoryEvents: vi.fn(async () => undefined),
   notifyAdminTenantOom: vi.fn(async () => undefined),
   notifyAdminSystemPodOom: vi.fn(async () => undefined),
+  notifyTenantWorkloadDiskLimit: vi.fn(async () => undefined),
 }));
 
 import {
   notifyAdminNodeMemoryEvents,
   notifyAdminSystemPodOom,
   notifyAdminTenantOom,
+  notifyTenantWorkloadDiskLimit,
 } from '../notifications/events.js';
 import { describeContainerKill, notifyMemoryEvents, summarizeNodeEvents } from './memory-event-notify.js';
 import { normalizeMemoryEvents, type NormalizedMemoryEvent } from './memory-events.js';
@@ -55,6 +57,7 @@ beforeEach(() => {
   vi.mocked(notifyAdminNodeMemoryEvents).mockClear();
   vi.mocked(notifyAdminTenantOom).mockClear();
   vi.mocked(notifyAdminSystemPodOom).mockClear();
+  vi.mocked(notifyTenantWorkloadDiskLimit).mockClear();
 });
 
 describe('notifyMemoryEvents — one alert per kill, in the category it belongs to', () => {
@@ -223,5 +226,37 @@ describe('summarizeNodeEvents — evictions and node OOMs only', () => {
       'platform (pod platform-api-x) — evicted (node memory pressure)',
     ]);
     expect(s.advice).toContain('investigate node memory now');
+  });
+});
+
+describe('notifyMemoryEvents — the tenant is told when its app hit its local disk limit (R37)', () => {
+  const limitMsg = 'Container wordpress exceeded its local ephemeral storage limit "2048Mi". ';
+
+  it('sends the tenant one notice listing each restarted app, deduped per tenant per hour', async () => {
+    const events = normalizeMemoryEvents([
+      evicted('a1', limitMsg, 'tenant-acme', 'blog-7d4b9c8f6-x2x9z'),
+      evicted('a2', limitMsg, 'tenant-acme', 'blog-7d4b9c8f6-b8b8b'),
+      evicted('a3', 'Usage of EmptyDir volume "multihost-sessions" exceeds the limit "256Mi". ', 'tenant-acme', 'shop-6c5d4f7b8-q4q4q'),
+    ], [], NOW);
+    await notifyMemoryEvents(db, events, ctx);
+    expect(notifyTenantWorkloadDiskLimit).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(notifyTenantWorkloadDiskLimit).mock.calls[0]).toEqual([
+      db, 'tenant-uuid-acme', { workloads: ['blog (2048Mi limit)', 'shop (256Mi limit)'] }, 'disk-limit:tenant-uuid-acme:2026-10-02T13',
+    ]);
+    // The admin side still gets its node alert.
+    expect(notifyAdminNodeMemoryEvents).toHaveBeenCalled();
+  });
+
+  it('does not tell a tenant about node pressure, nor anyone about a non-tenant namespace', async () => {
+    await notifyMemoryEvents(db, normalizeMemoryEvents([
+      evicted('p1', 'The node was low on resource: ephemeral-storage. ', 'tenant-acme'),
+      evicted('p2', limitMsg, 'platform', 'platform-api-5f9c7b6d4-xb24c'),
+    ], [], NOW), ctx);
+    expect(notifyTenantWorkloadDiskLimit).not.toHaveBeenCalled();
+  });
+
+  it('holds the tenant notice on a joining node too', async () => {
+    await notifyMemoryEvents(db, normalizeMemoryEvents([evicted('j1', limitMsg)], [], NOW), { ...ctx, isNotificationSuppressed: () => true });
+    expect(notifyTenantWorkloadDiskLimit).not.toHaveBeenCalled();
   });
 });

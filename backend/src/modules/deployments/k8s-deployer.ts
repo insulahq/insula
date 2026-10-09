@@ -22,6 +22,13 @@ import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { describeTermination, isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
+import {
+  boundTenantPodDisk,
+  diskLimitMbFor,
+  TENANT_EMPTYDIR_SIZE_LIMIT,
+  type TenantDiskClass,
+  type TenantDiskLimits,
+} from '../tenant-disk/pod-bounds.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import {
   deploymentKey,
@@ -40,6 +47,14 @@ export interface DeployComponentInput {
   readonly ports: Array<{ port: number; protocol: string; ingress?: boolean }>;
   readonly optional?: boolean;
   readonly schedule?: string;
+  /**
+   * Which node-disk limit the component's containers get (R37): `database`
+   * for a component that declares a `database:` engine or belongs to a
+   * database catalog entry, else `app`. Required, not defaulted — a resolver
+   * that forgot it would quietly give every database the smaller app limit,
+   * and the first large sort would be evicted.
+   */
+  readonly diskClass: TenantDiskClass;
   /**
    * Per-component volume scoping. Each entry must match a top-level volume's
    * `local_path` basename (e.g. `content`, `database`). Unset = legacy behavior
@@ -82,6 +97,12 @@ export interface DeployComponentInput {
 }
 
 export interface DeployCatalogEntryInput {
+  /**
+   * Node-disk limits from the admin Limits page (`getTenantDiskLimits`), read
+   * at render time. Required so every caller threads the operator's value;
+   * there is no silent default.
+   */
+  readonly diskLimits: TenantDiskLimits;
   readonly deploymentName: string;
   readonly storagePath: string;
   readonly namespace: string;
@@ -737,10 +758,11 @@ export async function deployCatalogEntry(
     // the same set so the reconciler is consistent regardless of which
     // component the host-port lands in.
     const firewallAnnotations = buildFirewallAnnotations(input.firewall);
+    const diskLimitMb = diskLimitMbFor(input.diskLimits, component.diskClass);
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations, component === primaryComponent ? input.multihost : null);
+        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations, component === primaryComponent ? input.multihost : null);
         break;
 
       case 'statefulset':
@@ -751,16 +773,16 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'cronjob':
-        await deployK8sCronJob(k8s, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent);
+        await deployK8sCronJob(k8s, diskLimitMb, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent);
         break;
 
       case 'job':
         // Jobs are one-shot; create only
-        await deployK8sJob(k8s, namespace, name, labels, container, input.storagePath, mountsForComponent);
+        await deployK8sJob(k8s, diskLimitMb, namespace, name, labels, container, input.storagePath, mountsForComponent);
         break;
     }
 
@@ -1116,8 +1138,9 @@ export function buildMultihostMounts(
     volumes: [
       { name: 'multihost-sites', configMap: { name: multihost.configMapName, optional: true } },
       // emptyDir: dies with the pod, costs the tenant nothing, and is invisible
-      // to their file manager and backups.
-      { name: MULTIHOST_SESSION_VOLUME, emptyDir: {} },
+      // to their file manager and backups. Size-capped like every tenant
+      // emptyDir (R37) — session files are tiny; 256 MiB is ~250k sessions.
+      { name: MULTIHOST_SESSION_VOLUME, emptyDir: { sizeLimit: TENANT_EMPTYDIR_SIZE_LIMIT } },
       // Only needed when the component mounts no catalog volumes at all;
       // otherwise buildVolumeMountSpec already declared `tenant-storage`.
       { name: 'tenant-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } },
@@ -1127,6 +1150,10 @@ export function buildMultihostMounts(
 
 async function deployK8sDeployment(
   k8s: K8sClients,
+  // Node-disk limit for every container in the pod (R37). Second, before the
+  // strings, so a call that forgets it fails to compile instead of shifting a
+  // number into the wrong slot.
+  diskLimitMb: number,
   namespace: string,
   name: string,
   labels: Record<string, string>,
@@ -1280,7 +1307,7 @@ async function deployK8sDeployment(
       strategy: { type: 'Recreate' },
       template: {
         metadata: templateMetadata,
-        spec: podSpec,
+        spec: boundTenantPodDisk(podSpec as Record<string, unknown> & { containers: unknown[] }, diskLimitMb),
       },
     },
   } as Record<string, unknown>;
@@ -1298,6 +1325,7 @@ async function deployK8sDeployment(
 
 async function deployK8sCronJob(
   k8s: K8sClients,
+  diskLimitMb: number,
   namespace: string,
   name: string,
   labels: Record<string, string>,
@@ -1319,14 +1347,14 @@ async function deployK8sCronJob(
         spec: {
           template: {
             metadata: { labels },
-            spec: {
+            spec: boundTenantPodDisk({
               ...(initContainers ? { initContainers } : {}),
               containers: [containerWithMounts],
               // M9: tenant cron pods never call the Kubernetes API.
               automountServiceAccountToken: false,
               restartPolicy: 'OnFailure',
               ...(spec ? { volumes: spec.podVolumes } : {}),
-            },
+            }, diskLimitMb),
           },
         },
       },
@@ -1346,6 +1374,7 @@ async function deployK8sCronJob(
 
 async function deployK8sJob(
   k8s: K8sClients,
+  diskLimitMb: number,
   namespace: string,
   name: string,
   labels: Record<string, string>,
@@ -1362,14 +1391,14 @@ async function deployK8sJob(
     spec: {
       template: {
         metadata: { labels },
-        spec: {
+        spec: boundTenantPodDisk({
           ...(initContainers ? { initContainers } : {}),
           containers: [containerWithMounts],
           // M9: tenant job pods never call the Kubernetes API.
           automountServiceAccountToken: false,
           restartPolicy: 'Never',
           ...(spec ? { volumes: spec.podVolumes } : {}),
-        },
+        }, diskLimitMb),
       },
       backoffLimit: 3,
     },

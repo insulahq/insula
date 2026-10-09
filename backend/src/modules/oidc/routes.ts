@@ -14,6 +14,7 @@ import { syncPanelProxies, panelProxySyncConfig } from './panel-proxy-sync.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { oidcPkceState } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { isTotpEnabled, verifyTotpFactor } from '../auth/totp-service.js';
 
 interface PkceEntry {
   codeVerifier: string;
@@ -218,12 +219,27 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.post('/auth/break-glass', {
     config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
-    const body = request.body as { email?: string; password?: string; break_glass_secret?: string };
+    const body = request.body as {
+      email?: string; password?: string; break_glass_secret?: string; code?: string; backup_code?: string;
+    };
     if (!body.email || !body.password || !body.break_glass_secret) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'email, password, and break_glass_secret are required', 400);
     }
 
     const user = await service.breakGlassLogin(app.db, body.email, body.password, body.break_glass_secret);
+
+    // An emergency sign-in is still a PASSWORD sign-in: a user who turned on
+    // an authenticator app needs its code (or a backup code) here too, or the
+    // break-glass secret would quietly bypass their second factor.
+    if (await isTotpEnabled(app.db, user.id)) {
+      const code = typeof body.code === 'string' && body.code.trim() !== '' ? body.code : undefined;
+      const backupCode = typeof body.backup_code === 'string' && body.backup_code.trim() !== '' ? body.backup_code : undefined;
+      if (!code && !backupCode) {
+        throw new ApiError('TOTP_REQUIRED', 'This account uses an authenticator app. Enter its code (or a backup code).', 401);
+      }
+      const encryptionKey = (app.config as unknown as { PLATFORM_ENCRYPTION_KEY: string }).PLATFORM_ENCRYPTION_KEY;
+      await verifyTotpFactor(app.db, encryptionKey, user.id, code ? { code } : { backupCode: backupCode as string });
+    }
 
     const jwtPayload: Record<string, unknown> = {
       sub: user.id, role: user.role, panel: 'admin',

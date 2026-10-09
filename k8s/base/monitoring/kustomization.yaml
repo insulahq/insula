@@ -5,7 +5,8 @@ kind: Kustomization
 #
 # ONE pod does everything: scraping (built-in -promscrape.config — no
 # vmagent), TSDB storage, the PromQL/MetricsQL query API, and the VMUI
-# web UI. Requests 128Mi / limit 384Mi TOTAL — chosen over
+# web UI. Requests 128Mi / limit 384Mi (+ 4Mi request / 32Mi limit for the
+# recycler sidecar, a shell asleep in `sleep`) — chosen over
 # kube-prometheus-stack (~1.5-2.5Gi) for the lean-budget node sizes.
 # Alert evaluation deliberately lives in platform-api (zero extra pods,
 # reuses the existing notification system) — see
@@ -21,6 +22,8 @@ resources:
   - rbac.yaml
   - scrape-config.yaml
   - vmsingle.yaml
+  - vmsingle-recycler.yaml
   - streamaggr-config.yaml
+  - read-driven-relabel.yaml
   - vmui-ingressroute.yaml
   - netpol.yaml

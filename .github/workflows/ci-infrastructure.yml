@@ -202,6 +202,21 @@ jobs:
 
   # Self-contained shell test harnesses — regression guards for the logic in
   # scripts/ (image-org fork-safety, release cutting). No DinD / root needed.
+  mail-restore-init:
+    # Runs the real Stalwart + Bulwark restore-state init scripts (rendered from
+    # the manifests the way Flux renders them) inside a tenant-backup-tools
+    # image built from this commit, across the failover restore scenarios.
+    # These scripts decide whether a mail failover restores the standby copy,
+    # the backup, or starts empty — nothing else executes them before a real
+    # failover does.
+    name: Mail restore init scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 -m pip install --user pyyaml
+      - run: docker build -t local/tenant-backup-tools:ci images/tenant-backup-tools
+      - run: TOOLS_IMAGE=local/tenant-backup-tools:ci ./scripts/test-mail-restore-init.sh
+
   shell-unit-tests:
     name: Shell unit tests
     runs-on: ubuntu-latest
@@ -213,9 +228,16 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
+      # `make smoke` false alarms (dead pods probed, HA asserted where not applied, AAAA).
+      - run: ./scripts/test-smoke-ha-and-running.sh
+      - run: ./scripts/test-smoke-aaaa-guard.sh
+      # The retained VM lab's pure logic and cloud-init seeds (no libvirt needed).
+      - run: python3 -m pip install --user pyyaml
+      - run: ./scripts/test-vm-lab.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-standby-replicate.sh
+      - run: ./scripts/test-standby-restore-pick.sh
       - run: ./scripts/test-host-migration-k3s-token.sh
       - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-stall-watch.sh
@@ -351,6 +373,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
+
+  platform-root-hostpath-check:
+    name: No pod mounts a whole platform root (credentials, operator key)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no hostPath mounts /etc/insula, /var/lib/insula or their aliases
+        run: ./scripts/ci-no-platform-root-hostpath.sh
 
   mail-image-pin-check:
     name: Mail image pins agree (Stalwart + stalwart-cli)

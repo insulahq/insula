@@ -26,6 +26,18 @@ check, TLS certificate, ports, and deliverability (rDNS / PTR, DNSBL
 listing, banner, certificate SAN). Click it for the full per-component
 details modal, or refresh to bypass the cache and probe again.
 
+Two **Capacity** checks sit in the same modal and raise an admin alert when they fail:
+
+- **Standby copies.** Each standby node keeps a complete copy of the mail data, and
+  the check fails when the newest one is older than 30 minutes (by default). A failover
+  restores the fresher of that copy and the newest backup snapshot, so an old copy
+  means mail received since would be lost. Copies age while a standby re-copies the
+  whole store, after a large import or after the mail store rewrites its files; the
+  previous copy stays in place until the new one is complete.
+- **Disk headroom.** Every mail node needs free space at least the size of its mail
+  data. The mail store periodically rewrites its message files and holds the old and
+  new files until it finishes.
+
 ## Domains & Relays
 
 **Email → Domains & Relays** is the daily-driver page. It has two tabs.
@@ -127,6 +139,38 @@ Two consequences worth knowing:
   queued behind a dead sender. The card then shows the old address marked
   *no longer available*, so you know to pick another one.
 
+### Automatic IP bans
+
+The mail server blocks an address by itself when it collects too many strikes
+for one of four reasons: **failed logins**, **port scanning** (invalid commands,
+probing for web exploits), **loitering** (connections that sit idle), and
+**mail to unknown recipients**. A blocked address can no longer reach any mail
+port or webmail.
+
+The **Automatic IP Bans** card on the Server sub-tab sets how long such a ban
+lasts — **24 hours** by default. Tick **Never lift them** for permanent bans,
+which is the mail server's own default; Insula does not use it by default
+because a permanent ban of a shared or reassigned address (an office NAT, a
+mobile carrier, a monitoring probe, your own test machine) locks it out for
+good, and nothing in the panel shows that it happened. A new value applies to
+the next ban within seconds, without restarting mail.
+
+Bans that were already there get the same lifetime, **counted from when each
+was created**: a ban older than the lifetime is lifted at once, a younger one
+runs out on schedule. That includes bans from before this setting existed,
+bans made while it was set to *never* (once you choose hours), and permanent
+bans a restored mail store brings back — the platform checks every hour, and
+at once whenever the lifetime changes. Bans you add by hand in the Stalwart
+admin UI are never touched. The setting is re-applied every five minutes, so a
+mail store restored from a snapshot or moved by a failover picks it up again.
+
+!!! tip "Testing from your own machine"
+
+    Probing mail ports with tools that send a stray line — `echo | openssl
+    s_client …` sends an empty line, which the server counts as an invalid
+    command — collects port-scanning strikes. Use `openssl s_client … </dev/null`
+    instead, which only does the TLS handshake.
+
 The collapsible **Stalwart admin UI** card embeds the upstream Stalwart
 web admin for everything the panel doesn't surface natively — advanced
 filters, log inspection, manual DKIM rotation.
@@ -206,6 +250,10 @@ that feature in the webmail UI.
     | **Total disk** | The node's capacity as the kubelet reports it |
     | **Mail data used** | What the mail data actually occupies — measured live on the active node, and from the last replication report on a standby |
     | **Free space** | What the node filesystem actually has left, colour-coded by percentage: green above 20%, amber above 10%, red below |
+
+    Keep **free space at least as large as the mail data** on every mail node: the
+    mail store periodically rewrites its message files and briefly holds about twice
+    its size. The **Disk headroom** health check alerts when a node falls short.
 
     **Free space is the whole node's**, not mail's private allowance. Mail runs
     on `local-path`, which provisions a plain directory and enforces no quota —

@@ -29,7 +29,7 @@ interface CrList {
 
 export interface FirewallPostureInputs {
   /** From the probe — per-node public TCP/UDP ports inferred from
-   *  /etc/hosting-platform/firewall.conf. */
+   *  /etc/hosting-platform/firewall/firewall.conf. */
   readonly publicPortsPerNode: ReadonlyArray<PublicPortsPerNode>;
 }
 

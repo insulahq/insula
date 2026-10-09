@@ -12,6 +12,236 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic mail-server bans now expire — after 24 hours by default.** The mail server blocks
+  an address on its own after repeated failed logins, port scans or exploit probes, idle
+  connections, or mail to unknown recipients, and until now such a ban lasted forever: an office
+  NAT, a monitoring probe or an operator's own machine that tripped it stayed locked out of every
+  mail port and webmail for good, with nothing in the panel to show it. Mail Settings → Automatic
+  IP Bans sets the lifetime (1 hour to 1 year, or *never* for the old behaviour). It applies to new
+  bans within seconds, without a mail restart, and is re-applied every five minutes so a restored
+  or failed-over mail store picks it up again. Bans that were already there get the same lifetime,
+  counted from when each was created — the ones already past it are lifted at once, the rest run
+  out on schedule (checked hourly, and at once whenever the lifetime changes, so bans made while it
+  was *never* follow a later change). Manual bans are not touched.
+- **The mail health check now covers capacity: standby copies and disk headroom.** Since Stalwart
+  v0.16.10, the mail store rewrites all of its message files roughly every 128 MiB of new mail
+  (blob garbage collection is hard-coded to treat every file as old; only an upstream change can fix it). Two things
+  can go wrong quietly on any install, and both now show in Email → health details and raise an
+  admin alert. **Standby copies:** a standby re-copying the whole store keeps its previous copy, which
+  ages meanwhile; the check reports any standby whose newest complete copy is older than the target
+  (`FAST_PATH_MAX_AGE_SECONDS`, read from the Deployment, 30 min by default). **Disk headroom:** during a rewrite a node briefly holds about
+  twice its mail data, so the check reports any mail node with less free space than its mail data.
+  Operator notes, with measurements: `docs/operations/MAIL_STORE_SPACE_RECLAIM.md`.
+- **Every tenant application now has a limit on the server disk it can use.** An application's
+  temporary files, caches and logs written outside the tenant's storage live on the server's own
+  disk, shared with every other tenant and the platform — until now one application could fill it
+  for everyone. Each tenant container is now limited (Platform → Limits & Regional: **2 GiB** for
+  applications, **8 GiB** for database components, which spill large sorts to disk); past it the
+  server restarts the application on a clean filesystem. The tenant's files and databases on their
+  storage are never touched. The tenant is told (*Application restarted: local disk limit*, naming
+  the application and the limit) and the operator sees the event in Node health. The limit reaches
+  each application the next time it is deployed — saving the setting or upgrading the platform
+  restarts nothing. Small pod-local volumes (PHP sessions, migration scratch) are size-capped too.
+  Container images and the sum of all limits remain bounded by the server's own cleanup and disk
+  alerts; see `docs/operations/TENANT_DISK_LIMITS.md`.
+
+- **Two-step sign-in with an authenticator app (TOTP), in both panels.** Under User Settings →
+  Authenticator app, a user can add a 6-digit code from any authenticator app to their password
+  sign-in: scan the QR code (drawn in the browser), confirm with a code, and store the ten
+  single-use backup codes shown once. Signing in is then email + password + code (or a backup
+  code); a passkey still signs in on its own. Optional for everyone, admins included. The panel
+  shows the backup codes left and warns when few remain; making new ones or turning the app off
+  needs a current code. A code works once, and wrong codes lock the step for 15 minutes after
+  ten tries. A super_admin can remove a user's app (Identity & Sessions → MFA column; Tenants →
+  Users → 2FA) for someone who lost their phone and backup codes, and the emergency CLI password
+  reset removes it too.
+
+### Changed
+
+- **Production installs can let the mail server trust a private certificate authority.** The
+  production overlay now carries the trust step the development overlay already had, so
+  `bootstrap.sh --trust-ca` (with `--acme-server`) gives Stalwart the root as well, and the mail
+  certificate comes from that CA — for air-gapped installs and private CAs. Without `--trust-ca`
+  nothing changes: Stalwart's trust store stays exactly the image's own. **Upgrade note:** the mail
+  server restarts once when this release rolls out (it gains one start-up step).
+- **The metrics store keeps only the metrics the platform reads (read-driven ingestion).** Before,
+  39–64% of stored series had no reader anywhere in the platform, and the series that are read
+  carried per-container and per-status-code detail far beyond any query — all growing with every
+  container, volume, database replica and tenant route, which is what made vmsingle's memory scale
+  with cluster size. Every panel, alert rule and traffic chart is unchanged; series now scale with
+  what the platform shows (nodes, tenant routes, pods' traffic). A build check fails when a backend
+  query needs a metric or label that is not stored, or when one is stored that nothing reads.
+  Operators who explore metrics in VMUI or Grafana can opt back into storing everything with the
+  `monitoring-full-metrics` kustomize component. Known effect: Traefik-counted traffic misses about
+  one scrape interval per vmsingle restart (~0.1%/day with the daily recycle) — an under-count, never
+  an over-count. See `docs/operations/MONITORING_OBSERVABILITY.md` → Read-driven ingestion.
+- **A mail standby always holds a complete copy, and a failover restores the fresher of it and the
+  backup.** The standby sync now builds each copy beside the previous one (unchanged files are hard
+  links, so a pass costs only what changed) and switches over in one step when it completes. Every
+  sync used to delete the copy's completeness marker first, so for the length of a long sync — after
+  a large import, or each time the mail store rewrites its files — a failover found no copy at all. A
+  restore now picks the fresher of the standby copy and the newest backup snapshot, Stalwart and
+  Bulwark making the same choice; if a preferred backup restore fails, it falls back to the standby
+  copy. The sync's bandwidth can be capped per cluster (`mail-standby-settings` ConfigMap, key
+  `bwlimit`); the planned-move final sync ignores the cap. Existing standby copies are adopted on the
+  first sync after the upgrade, without copying. Operator notes: `docs/operations/MAIL_HA_FAILOVER.md`.
+- **The node "disk critical" alert fires at 80 % instead of 90 %.** 90 % is the moment the server
+  starts evicting workloads on its own, so the alert never came first; 80 % leaves time to act
+  (warning stays at 75 %).
+
+- **A passkey signs in on its own — the "Password + passkey (2FA)" mode is gone.** A passkey is
+  already two factors (the device plus its PIN or biometric); the second factor for a password is
+  now the authenticator app. Accounts that had the 2FA mode now use passkey sign-in, and could
+  not finish signing in before anyway (the password step answered without the passkey prompt,
+  and passkey-only sign-in was refused for that mode).
+
+### Security
+
+- **The emergency (break-glass) sign-in no longer skips a second factor or a disabled account.** It
+  checked the break-glass secret and the password, then signed the admin in — without the
+  authenticator-app code a user turned on, and even for an account that had been disabled. It now
+  asks for the code (or a backup code) like the normal sign-in, refuses disabled accounts, and
+  shows why it refused instead of failing without a message.
+
+- **The security probe no longer has the platform's credential files mounted.** It mounted the
+  host directory `/etc/hosting-platform` to read the node's firewall posture. Since the 2026.7.4
+  rebrand that directory is `/etc/insula`, which also holds the admin, Stalwart, Valkey and
+  Roundcube credential files, and the probe runs as root inside its container, so those files were
+  readable to it. The posture file now has a directory of its own
+  (`/etc/hosting-platform/firewall/firewall.conf`; the old path stays as a link to it), and the
+  probe mounts only that. Existing nodes move the file with a host migration; until a node has run
+  it, the probe still reads the old file, so the security page shows the real SSH posture
+  throughout. A CI check now fails any pod that mounts a whole platform directory. Nothing to do
+  for operators beyond pulling the release.
+
+### Fixed
+
+- **Removing a node no longer leaves its storage node behind.** Longhorn keeps its own record of
+  every node, and removing a node through the admin panel (Drain, then Delete) left that record
+  in place for good: listed as not ready, a host that no longer existed. The platform tried to
+  remove it, but lacked the permission, and Longhorn would have refused anyway — it only lets go
+  of a node whose scheduling is turned off, which no step of the removal did. The node sync now
+  finishes the removal itself about a minute after the node is gone, once Longhorn agrees it is
+  gone and no volume data is left on it, and also clears records that earlier removals left
+  behind. A node removed within a minute or so of joining, before Longhorn had registered its
+  disk, is covered too.
+- **`make smoke` no longer reports a healthy cluster as broken.** After any node restart it probed
+  the leftover records of pods the shutdown had stopped (they have no address), and reported
+  "ingress → backend broken" and "pod → pod broken"; it now probes running pods only. Its HA check
+  failed every multi-node cluster that had not applied HA; it now checks only when HA is applied.
+  And on production installs it probed, and counted as missing, the test sign-in service (Dex),
+  which production does not run; it now checks only what is installed.
+- **A joining node no longer prints a pre-authorisation warning when it is pre-authorised.** The
+  node join always printed "IMPORTANT — joining requires this node's IP to be pre-authorised …
+  otherwise the join will hang", including on joins run from the admin panel's own join script
+  for a pre-enrolled node. The join now checks whether the server it joins answers it, and gives
+  that advice only when it does not.
+- **A fresh install no longer serves mail on a self-signed certificate for up to 90 minutes.**
+  The platform's first start restarts the mail server once to open its proxy listeners — moments
+  after the install queued the first certificate order. The order died with the old process, which
+  kept a one-hour lock on it, and the platform waited 90 minutes before ordering again. A pending
+  order left behind by a replaced mail-server process is now recognised as stuck once the new
+  process has been up twenty minutes (twice the longest a live order can still be running), and
+  the platform checks again just past that after every mail-server restart it causes — a fresh
+  install gets its mail certificate about 25 minutes in.
+- **The security probe now runs on Ubuntu nodes.** It mounted the host's `/proc/net/nf_conntrack`,
+  which kernels built without the legacy conntrack procfs table (Ubuntu 22.04 and 24.04) do not
+  have — the kubelet tried to create the file in `/proc`, failed, and the probe pod never started,
+  so those nodes had no entry under Security Hardening. The probe now reads the table from its own
+  view of the host network and reports conntrack as unavailable where the kernel has no table.
+- **`bootstrap.sh --trust-ca` now also covers the mail server.** A private certificate authority
+  given with `--trust-ca` (and `--acme-server`) was trusted by platform-api and Bulwark but not by
+  Stalwart, so the install could not create Stalwart's ACME account and mail stayed on a
+  self-signed certificate. The root now reaches Stalwart before it starts, on overlays that carry
+  the `stalwart-extra-ca` component.
+- **The cluster-internal mail ban purge now actually lets those addresses back in.** After an admin
+  password rotation the platform removes mail-server bans its own components collected — but it only
+  deleted the stored entries, while the running mail server kept enforcing its in-memory ban list
+  until its next restart. The purge now has the server re-read the list right away.
+- **A platform restart no longer marks another replica's running mail migration as failed.** In a
+  multi-replica (HA) install, every platform-api replica that started up marked any mail migration
+  older than a minute as failed — including one still running on another replica. That happens on
+  every deploy, and during a DR failover itself: the replica the failed node took down restarts
+  elsewhere while the failover runs. The failover carried on, but its run read as failed, a second
+  migration could be started beside it, and the safeguards that wait for a running migration
+  stopped waiting. The replica running a migration (or a mail port-exposure change) now holds a
+  liveness lease on it, and the cleanup marks a run failed only when that lease has run out — also
+  checked every two minutes, so a run whose replica really died is no longer left "running" until
+  the next restart. A run without a lease (started by the previous release during the upgrade) is
+  given ten minutes before it counts as abandoned.
+- **The metrics store (vmsingle) no longer runs out of memory over time, on any cluster size.** It
+  was killed at its memory limit twice in eight days. Part of its memory does not depend on load
+  at all: it reserves an 8 MiB write buffer per CPU core of whatever node it runs on, doubles that
+  when it lives across a month boundary, and its heap creeps upward with uptime alone (1.8–3.8 MiB
+  per day measured at constant load). `GOMAXPROCS=2` now fixes the per-core part at 16 MiB on every
+  node (it was 64 MiB on 8 cores, 256 MiB on 32), and a small sidecar restarts vmsingle gracefully
+  once a day — it flushes all data to disk first, so nothing stored is lost; the cost is one missed
+  scrape per day. The memory limit is unchanged. Both are configurable (`GOMAXPROCS`,
+  `RECYCLE_AT_UTC` or `off`); see `docs/operations/MONITORING_OBSERVABILITY.md` → Memory budget.
+- **During a mail migration, the active mail node is no longer recorded early.** The platform
+  records which node serves mail when a migration succeeds, and also corrects the record from the
+  running Stalwart pod when the two disagree. That correction ran on every mail health check, wrote
+  any running pod's node — even a migration target not yet ready, or one about to be rolled back —
+  and so could point the failover watcher and the next failback at a node mail was no longer on (a
+  VM drill's failback started from the node mail had just left). It now records a pod's node only
+  when the pod is ready and no migration is running, like every other path that reads it.
+- **Changing a custom container's port no longer fails with "An unexpected error occurred".**
+  Saving the edit re-applied the deployment with a strategic merge, which keeps every list entry the
+  new version leaves out: the old port number stayed beside the new one under the same name, and
+  Kubernetes refused the result (`Duplicate value: "http"`). The same merge meant a removed
+  environment variable, volume or registry credential quietly stayed on the running container. The
+  edit now replaces the container definition and the Service's port list, removes the Service of a
+  renamed or removed port, moves pinned routes to the port's new number and rebuilds the tenant's
+  ingress. An edit that would leave a route with no port to reach is refused (`PORT_IN_USE_BY_ROUTE`)
+  instead of turning that hostname into a 404. When Kubernetes does reject a deployment, the message
+  now names the rejected fields (never their values) instead of a generic error.
+- **A stuck certificate renewal no longer keeps mail on a self-signed certificate.** The platform
+  waits for a certificate order Stalwart already has queued rather than placing another (that
+  guard stops a Let's Encrypt rate-limit storm). An order Stalwart never runs — seen on a VM
+  cluster: queued, three hours past due, never attempted — therefore kept IMAP/SMTP on Stalwart's
+  self-signed certificate indefinitely, breaking every client that verifies TLS. A queued order more
+  than 90 minutes past due (Stalwart's own task lock lasts an hour) is now discarded and a fresh
+  one placed; on that cluster the fresh order was issued in two seconds.
+- **After a mail failover or failback, the standby copy is kept on the right node.** The nodes that
+  stage a standby copy were re-chosen only at platform start-up (which waits out a running
+  migration) or when placement is saved — never when a migration moved the stack. After a failover
+  or failback the standby label therefore stayed on the
+  node that had just become active (copying from its own pod) while the real standby received
+  nothing, so the next failure restored from an old copy or the last backup. A migration now
+  re-chooses the standby nodes as soon as it has moved the stack.
+- **A mail failover that escalated to a restic restore no longer empties the mail store right
+  afterwards.** When the restored standby copy missed something just created (a new domain, say),
+  the failover correctly escalated to a restic restore of the newest snapshot and cut over — then
+  cleared only `allow-restore`, leaving `restore-snapshot-id: latest` on the Stalwart pod template.
+  That very patch restarted Stalwart; its init container did not recognise `latest` as already
+  applied (it recorded the concrete snapshot id), wiped the restored store and, without
+  `allow-restore`, started empty. Found on a VM failover drill (the probe message was lost; TLS and
+  inbound mail broke with it). The migration now clears both annotations; the init records the
+  requested id, and it never wipes an existing store it is not allowed and able to replace.
+- **A mail failover no longer starts with an empty mail store when the standby copy is old.** On an
+  install without a restic backup, a failover onto a standby whose copy was older than
+  `FAST_PATH_MAX_AGE_SECONDS` (30 min), or that was mid-sync, started Stalwart and Bulwark fresh — no
+  mail, a new webmail admin — while a complete copy sat on the node. It now restores that copy and
+  logs how old it is.
+- **Plesk migration: the "Target tenant" list is no longer empty.** It offers tenants whose
+  namespace is provisioned, but the tenant list the API returns left that field out, so no
+  tenant ever qualified and a migration could not be started from the dialog.
+- **A cross-cluster migration imports each tenant's newest backup.** Picking the newest bundle
+  compared a field the backup metadata does not have, so it imported whichever bundle the source
+  listed first — an arbitrary, often older, copy. It now compares capture times, and Backups →
+  Disaster Recovery → Migrate Tenants shows under each tenant's latest bundle when it was captured (exact
+  time on hover), so the operator can see how old the copy is before importing it.
+
+### Removed
+
+- **The hosting-plan AI budget is gone from the database too.** v2026.10.6 retired the AI code
+  editor and stopped using the plan's weekly AI spend cap; this release drops its column
+  (`hosting_plans.weekly_ai_budget_cents`). Upgrade from v2026.10.6 or later: a cluster jumping
+  straight from v2026.10.5 has plan pages and plan lookups fail on its old pods until the rollout
+  has replaced them.
+
 ## [2026.10.6] - 2026-10-06
 
 ### Added

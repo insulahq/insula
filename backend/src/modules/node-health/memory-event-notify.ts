@@ -18,6 +18,10 @@
  *                                          PID pressure, storage limit, node OOM)
  *   tenant container kill                → admin.tenant_pod_oom, one per kill
  *   platform container kill              → admin.system_pod_oom, one per kill
+ *   tenant pod over its local disk limit → ALSO tenant.workload_disk_limit to
+ *                                          the tenant, one per tenant per hour
+ *                                          (R37: else the limit reads as
+ *                                          unexplained restarts)
  *
  * and this is the ONLY sender of any of them (the hourly metrics-scheduler
  * scan is gone). The tenant dedupe key is the one that scan used, so a kill it
@@ -30,8 +34,10 @@ import {
   notifyAdminNodeMemoryEvents,
   notifyAdminSystemPodOom,
   notifyAdminTenantOom,
+  notifyTenantWorkloadDiskLimit,
 } from '../notifications/events.js';
 import type { NormalizedMemoryEvent, ReportedKillCause, TenantRef } from './memory-events.js';
+import { summarizeTenantDiskEvictions } from './tenant-disk-evictions.js';
 
 export interface NotifyContext {
   readonly now: Date;
@@ -58,6 +64,13 @@ export async function notifyMemoryEvents(
     await notifyAdminNodeMemoryEvents(db, n.severity,
       { nodeName: n.nodeName, headline: n.headline, summary: n.summary, advice: n.advice },
       `node-memory:${n.severity}:${n.nodeName}:${n.kinds.join('+')}:${hour}`);
+  }
+
+  // The tenant's own copy of a local-disk-limit eviction. Held on a joining
+  // node like everything else here: a join is when spurious events happen.
+  const tenantVisible = nodeLevel.filter((e) => !ctx.isNotificationSuppressed(e.nodeName));
+  for (const t of summarizeTenantDiskEvictions(tenantVisible, ctx.tenantFor)) {
+    await notifyTenantWorkloadDiskLimit(db, t.tenantId, { workloads: t.apps }, `disk-limit:${t.tenantId}:${hour}`);
   }
 
   for (const e of inserted) {
@@ -180,7 +193,7 @@ function evictionAdvice(cause: NodeMemoryEventCause, system: boolean): string {
     case 'node-pid-pressure':
       return 'The node is running out of process IDs - look for a process leak.';
     case 'pod-storage-limit':
-      return "The pod wrote more local (ephemeral) storage than its own limit allows - the node itself is fine; raise the pod's ephemeral-storage limit or move the data to a volume.";
+      return "The pod wrote more local (ephemeral) storage than its own limit allows - the node itself is fine, and the tenant has been told. A tenant app that keeps hitting it is writing outside its volume; raise the limit under Platform -> Limits & Regional (applies on the app's next deploy) only if the workload genuinely needs it.";
     default:
       return 'The kubelet message (Node health -> Memory events) says why.';
   }

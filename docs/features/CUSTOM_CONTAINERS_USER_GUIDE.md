@@ -37,6 +37,12 @@ The form has six sections:
    **Ingress** to make it eligible for an external Route (see
    Routes documentation). Phase 1 cap: one Ingress-eligible port
    per deployment.
+
+   Ports can be changed later with **Edit**. Changing a number keeps
+   the Service (named after the port) and moves any route on that
+   port with it; renaming a port replaces its Service. An edit that
+   would leave a route with no exposed port to reach is refused with
+   `PORT_IN_USE_BY_ROUTE` — point the route elsewhere first.
 3. **Volumes.** Named only — `data:/var/lib/data`. The platform
    stores them as subPaths on your tenant PVC under
    `custom/<deployment-name>/<volume-name>`. Bind mounts
@@ -245,6 +251,8 @@ source — the first *untrusted* address from the right wins.
 | `lastError: ENCRYPTION_KEY_MISSING` | Platform misconfiguration | Ask your operator — the OIDC encryption key must be set for PAT use. |
 | `lastError: NOT_SUPPORTED_FOR_COMPOSE` | Tried to PATCH `image` / `env` / `resources` on a compose stack | Edit the YAML and redeploy. |
 | Validate returns `BIND_MOUNT_NOT_PERMITTED` | You used `./path` or `/abs` in a compose volume | Declare a named volume + reference it (`data:/in-container`). |
+| Edit refused with `PORT_IN_USE_BY_ROUTE` | The new ports leave a route (named in the message) with nothing to reach: its port was removed, un-exposed, or no port is Ingress-eligible any more | Keep an exposed, Ingress-eligible port, or reassign / remove that route under Domains first. |
+| Save fails with `K8S_SPEC_REJECTED` | Kubernetes refused the rendered container; the message names the rejected fields | Correct the named field and save again. If it is not one you set, send the message to your operator. |
 | Validate returns `MULTI_SERVICE_NAME_TOO_LONG` | Your deployment name + service name + port name combined exceeds 63 chars (k8s DNS-label cap) | Shorten the deployment or service names. |
 
 ## See also

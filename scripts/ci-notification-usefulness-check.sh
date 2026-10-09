@@ -119,6 +119,11 @@ const SUBJECT_VARS = new Set([
   // vocabulary and the panel calls these applications. Added with
   // admin.tenant_workloads_down / tenant.workloads_down.
   "workload",
+  // `workloads` is the same subject as a LIST — every application a tenant
+  // had restarted for exceeding its local disk limit in one notice
+  // (tenant.workload_disk_limit, R37). A list on every channel, per the
+  // standing rule that several items are never one paragraph.
+  "workloads",
 ]);
 // NOT in that list, deliberately: `userName`, `contactName` and `greeting`.
 // They name the RECIPIENT, not the subject, and the shared email wrapper

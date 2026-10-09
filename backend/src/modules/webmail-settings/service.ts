@@ -29,6 +29,12 @@ import {
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
+import {
+  MAIL_BAN_EXPIRY_KEY,
+  ensureMailBanExpiry,
+  getMailBanExpiryHours,
+  serializeMailBanExpiry,
+} from '../mail-admin/mail-ban-expiry.js';
 import { readStalwartCredentials } from '../mail-admin/credentials.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -277,6 +283,9 @@ export async function getWebmailSettings(db: Database) {
     // selectable.
     dmarcReportSenderOptions: await eligibleReportSenders(db),
     defaultWebmailEngine: await getDefaultWebmailEngine(db),
+    // The EFFECTIVE lifetime: an unset row reads as the 24 h default, so the
+    // panel shows what the mail server is actually told.
+    mailBanExpiryHours: await getMailBanExpiryHours(db),
     ...visibility,
   };
 }
@@ -290,6 +299,8 @@ export async function updateWebmailSettings(
     defaultWebmailEngine?: WebmailEngine;
     /** An eligible postmaster@ address, or null to stop sending reports. */
     dmarcReportSender?: string | null;
+    /** Automatic-ban lifetime in whole hours, or null = bans never expire. */
+    mailBanExpiryHours?: number | null;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;
     webmailShowFiles?: boolean;
@@ -342,6 +353,17 @@ export async function updateWebmailSettings(
     // write, never throws, and logs its own outcome, so awaiting it here makes
     // the response describe reality without being able to fail the save.
     await ensureDmarcReportSender(db, logger ?? console);
+  }
+  if (input.mailBanExpiryHours !== undefined) {
+    // Range-checked by the contract schema. "never" is stored explicitly so an
+    // operator's choice of permanent bans is distinguishable from an untouched
+    // setting (which reads as the default).
+    await setSetting(db, MAIL_BAN_EXPIRY_KEY, serializeMailBanExpiry(input.mailBanExpiryHours));
+    // Applied now, not on the next 5-minute tick — same reasoning as the DMARC
+    // sender above. Never throws; logs its own outcome. Existing bans are
+    // given the new lifetime in the background: that lists every ban, and the
+    // save need not wait for it.
+    await ensureMailBanExpiry(db, logger ?? console, { detachBackfill: true });
   }
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {

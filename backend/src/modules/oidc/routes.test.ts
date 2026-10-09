@@ -26,6 +26,12 @@ vi.mock('./service.js', () => ({
   saveGlobalSettings: vi.fn().mockResolvedValue({ enforceOidc: false }),
 }));
 
+const totp = vi.hoisted(() => ({
+  isTotpEnabled: vi.fn().mockResolvedValue(false),
+  verifyTotpFactor: vi.fn().mockResolvedValue('code'),
+}));
+vi.mock('../auth/totp-service.js', () => totp);
+
 const { oidcRoutes } = await import('./routes.js');
 
 describe('oidc routes', () => {
@@ -101,6 +107,31 @@ describe('oidc routes', () => {
     expect(body.data.token).toBeDefined();
     expect(body.data.breakGlass).toBe(true);
     expect(body.data.user).toBeDefined();
+  });
+
+  // An emergency sign-in is still a password sign-in: the authenticator app
+  // a user turned on must not be bypassed by the break-glass secret.
+  it('POST /auth/break-glass asks a TOTP user for the code, and checks it', async () => {
+    const payload = { email: 'admin@example.com', password: 'secret123', break_glass_secret: 'emergency-key' };
+    totp.isTotpEnabled.mockResolvedValue(true);
+    try {
+      const without = await app.inject({ method: 'POST', url: '/api/v1/auth/break-glass', payload });
+      expect(without.statusCode).toBe(401);
+      expect(without.json().error.code).toBe('TOTP_REQUIRED');
+      expect(totp.verifyTotpFactor).not.toHaveBeenCalled();
+
+      totp.verifyTotpFactor.mockRejectedValueOnce(Object.assign(new Error('no'), { code: 'TOTP_CODE_INVALID', statusCode: 401 }));
+      const wrong = await app.inject({ method: 'POST', url: '/api/v1/auth/break-glass', payload: { ...payload, code: '000000' } });
+      expect(wrong.statusCode).toBe(401);
+      expect(wrong.json().data).toBeUndefined();
+
+      const ok = await app.inject({ method: 'POST', url: '/api/v1/auth/break-glass', payload: { ...payload, backup_code: 'AAAAA-BBBBB' } });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().data.token).toBeDefined();
+      expect(totp.verifyTotpFactor).toHaveBeenLastCalledWith({}, '0'.repeat(64), 'u1', { backupCode: 'AAAAA-BBBBB' });
+    } finally {
+      totp.isTotpEnabled.mockResolvedValue(false);
+    }
   });
 
   // ─── Admin routes: Auth enforcement ─────────────────────────────────────

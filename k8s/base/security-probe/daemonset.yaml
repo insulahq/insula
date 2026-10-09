@@ -5,7 +5,9 @@
 #   2. enumerates /sys/class/net for mesh interfaces (wt0,
 #      tailscale0, wg0) and reports peer counts via WireGuard
 #      proc (when present),
-#   3. samples /proc/net/nf_conntrack for recent denies,
+#   3. samples /proc/net/nf_conntrack for recent denies — from its
+#      OWN procfs (hostNetwork: true shows the host's table; no
+#      hostPath, which kernels without the procfs table cannot mount),
 #   4. reads /etc/os-release, /proc/sys/kernel/osrelease,
 #      /proc/1 boot time, presence of fail2ban/sshguard, and
 #      whether OS security updates actually install (package +
@@ -28,7 +30,8 @@
 #     sshd_config and /proc/sys/kernel/* are root-readable on
 #     most distros; we cannot run as non-root and still read
 #     them. allowPrivilegeEscalation: false enforces no setuid.
-#   * privileged: false. hostNetwork: false. hostPID: false.
+#   * privileged: false. hostPID: false. hostNetwork: true (mesh
+#     interface detection — see the comment on the field below).
 #     hostIPC: false. No /var/run/docker.sock, no kubeconfig.
 #   * readOnlyRootFilesystem: true so container can't drop
 #     unintended files even if compromised.
@@ -154,9 +157,6 @@ spec:
             # counts simply report null when unavailable. Operators
             # using WireGuard mesh on every node can re-add this
             # mount with a `type: File` to assert presence.
-            - name: proc-net-conntrack
-              mountPath: /host/proc/net/nf_conntrack
-              readOnly: true
             - name: proc-stat
               mountPath: /host/proc/stat
               readOnly: true
@@ -199,8 +199,17 @@ spec:
             - name: usr-lib-modules
               mountPath: /host/usr/lib/modules
               readOnly: true
-            - name: etc-hosting-platform
-              mountPath: /host/etc/hosting-platform
+            # firewall.conf ONLY. /etc/hosting-platform is /etc/insula, which
+            # holds the platform's credential files — never mount the root.
+            # Its own directory (2026.10.7+), plus the old single file as a
+            # fallback for a node that has not run host-migration
+            # 2026.10.7/0001 yet. Drop the fallback once every supported
+            # upgrade path has run it (ROADMAP R23b).
+            - name: firewall-conf-dir
+              mountPath: /host/etc/hosting-platform/firewall
+              readOnly: true
+            - name: firewall-conf-legacy
+              mountPath: /host/etc/hosting-platform/firewall.conf
               readOnly: true
             # fail2ban sqlite state — READ-ONLY; the probe opens it with
             # mode=ro&immutable=1 (no locks, no -wal/-shm). We never mount
@@ -247,10 +256,6 @@ spec:
           hostPath:
             path: /proc/sys/kernel/osrelease
             type: File
-        - name: proc-net-conntrack
-          hostPath:
-            path: /proc/net/nf_conntrack
-            type: FileOrCreate
         - name: proc-stat
           hostPath:
             path: /proc/stat
@@ -292,7 +297,13 @@ spec:
           hostPath:
             path: /usr/lib/modules
             type: DirectoryOrCreate
-        - name: etc-hosting-platform
+        - name: firewall-conf-dir
           hostPath:
-            path: /etc/hosting-platform
+            path: /etc/hosting-platform/firewall
             type: DirectoryOrCreate
+        # FileOrCreate: the kubelet creates an EMPTY file when the source is
+        # missing; the probe reads an empty file as "no posture on record".
+        - name: firewall-conf-legacy
+          hostPath:
+            path: /etc/hosting-platform/firewall.conf
+            type: FileOrCreate

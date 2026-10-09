@@ -22,6 +22,7 @@
  * Exit:   0 ok · 1 user-not-found / runtime · 2 setup error (no DATABASE_URL/email).
  */
 import { eq } from 'drizzle-orm';
+import { clearTotp } from '../modules/auth/totp-service.js';
 import { randomUUID } from 'node:crypto';
 import { getDb, closeDb } from '../db/index.js';
 import { users, auditLogs } from '../db/schema.js';
@@ -58,26 +59,22 @@ async function main(): Promise<void> {
   const db = getDb(url);
   try {
     const [user] = await db
-      .select({ id: users.id, passkeyMode: users.passkeyMode })
+      .select({ id: users.id })
       .from(users)
       .where(eq(users.email, email))
       .limit(1);
     if (!user) fail(1, `no user with email '${email}'`);
 
     const passwordHash = await hashNewPassword(password);
-    // Operator escape-hatch (mirrors the bash reset): a user locked into
-    // 'second_factor' 2FA who lost their passkeys must be able to sign in with a
-    // password alone after a CLI reset → clear passkey_mode ONLY in that mode.
-    // 'alternative' is preserved (passkey is an extra path, not a gate).
-    const clearPasskey = user.passkeyMode === 'second_factor';
     await db
       .update(users)
-      .set({
-        passwordHash,
-        ...(clearPasskey ? { passkeyMode: null } : {}),
-        updatedAt: new Date(),
-      })
+      .set({ passwordHash, updatedAt: new Date() })
       .where(eq(users.id, user.id));
+    // Operator escape-hatch (mirrors the bash reset): a user who lost their
+    // authenticator app must be able to sign in with the new password alone,
+    // so the reset also removes TOTP and its backup codes. They can set it up
+    // again. Passkeys are untouched — a passkey never gates a password.
+    const totpCleared = await clearTotp(db, user.id);
 
     // Best-effort audit row (fire-and-forget, matching middleware/audit.ts). The
     // password change has already committed; a failed audit insert must NOT make
@@ -95,10 +92,11 @@ async function main(): Promise<void> {
         httpMethod: 'CLI',
         httpPath: '/platform-ops/admin/reset-password',
         httpStatus: 200,
+        changes: { totpCleared },
       })
       .catch(() => undefined);
 
-    process.stdout.write(`${JSON.stringify({ ok: true, userId: user.id, email })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, userId: user.id, email, totpCleared })}\n`);
   } finally {
     await closeDb().catch(() => undefined);
   }

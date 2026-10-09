@@ -50,10 +50,19 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 amber() { printf '\033[33m%s\033[0m\n' "$*"; }
 hdr()   { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
 
+# Node names from MAIL_DR_NODE_MAP, one per line.
+mapped_nodes() { printf '%s' "$MAIL_DR_NODE_MAP" | tr ',' '\n' | cut -d= -f1 | grep .; }
+
 # Pick any node to run kubectl through — prefer one that ISN'T the active
 # mail node (so we still have kubectl access after stopping k3s on active).
-# Default to staging2 as the kubectl bastion.
-BASTION_NODE="${MAIL_DR_BASTION_NODE:-staging2}"
+# Default: the first mapped node (re-picked below if it is the active one). The
+# old default was a fixed node name of a cluster that no longer exists; every
+# read then came back empty and the suite "skipped" on no standby — as a PASS.
+BASTION_NODE="${MAIL_DR_BASTION_NODE:-$(mapped_nodes | head -1)}"
+if [ -z "$BASTION_NODE" ]; then
+  red "set MAIL_DR_NODE_MAP (name=ip,...) or MAIL_DR_BASTION_NODE"
+  exit 2
+fi
 BASTION_HOST="root@$(node_addr "$BASTION_NODE")"
 KUBECTL="ssh $SSH_OPTS $BASTION_HOST 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml &&'"
 
@@ -81,10 +90,14 @@ hdr "DR FAILOVER LIVE TEST"
 
 ACTIVE_NODE=$(db_q "SELECT mail_active_node FROM system_settings;" | head -1)
 echo "active_mail_node=$ACTIVE_NODE"
+if [ -z "$ACTIVE_NODE" ]; then
+  red "could not read mail_active_node through $BASTION_HOST — check MAIL_DR_NODE_MAP and SSH_KEY"
+  exit 1
+fi
 
 if [ "$ACTIVE_NODE" = "$BASTION_NODE" ]; then
   amber "active is the bastion ($ACTIVE_NODE) — switching bastion to another server-role node"
-  for try in staging1 staging2 staging3; do
+  for try in $(mapped_nodes); do
     if [ "$try" != "$ACTIVE_NODE" ]; then
       BASTION_NODE="$try"
       BASTION_HOST="root@$(node_addr "$try")"
@@ -94,7 +107,7 @@ if [ "$ACTIVE_NODE" = "$BASTION_NODE" ]; then
   done
 fi
 
-STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -F "$ACTIVE_NODE" | head -1)
+STANDBY_CANDIDATE=$(run_kubectl "kubectl get node -l 'insula.host/mail-standby=true,insula.host/node-role=server' -o jsonpath='{.items[*].metadata.name}' 2>/dev/null" | tr ' ' '\n' | grep -v -x -F "$ACTIVE_NODE" | head -1)
 echo "standby_candidate=$STANDBY_CANDIDATE"
 
 THRESHOLD=$(db_q "SELECT mail_failover_threshold_seconds FROM system_settings;" | head -1)
@@ -102,7 +115,7 @@ echo "failover_threshold=${THRESHOLD}s, total budget=${DR_FAILOVER_BUDGET}s"
 
 if [ -z "$STANDBY_CANDIDATE" ]; then
   red "SKIP: no server-role standby candidate (need a different node than active)"
-  exit 0
+  exit 77
 fi
 
 PRE_RUNS=$(db_q "SELECT COUNT(*) FROM mail_migration_runs;" | head -1 | tr -d ' ')
@@ -177,9 +190,19 @@ fi
 [ "$ATTEMPTS" -gt 1 ] && amber "  METRIC: failover needed ${ATTEMPTS} attempts (earlier ones failed and were retried by the dr-watcher)"
 
 hdr "STEP 4: verify mail-stack pod on new active"
-sleep 5
-FINAL_NODE=$(run_kubectl "kubectl get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null" | head -1)
-echo "stalwart pod now on: $FINAL_NODE"
+# A Running pod, polled: "done" can precede the pod reaching Running, and an
+# empty read must never pass as "moved" (it is no mail at all).
+FINAL_NODE=""
+for _ in $(seq 1 24); do
+  FINAL_NODE=$(run_kubectl "kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null" | head -1)
+  [ -n "$FINAL_NODE" ] && break
+  sleep 5
+done
+echo "stalwart pod now on: ${FINAL_NODE:-<no Running pod>}"
+if [ -z "$FINAL_NODE" ]; then
+  red "FAIL: no Running stalwart pod 2 min after the failover reported done"
+  exit 1
+fi
 if [ "$FINAL_NODE" = "$ACTIVE_NODE" ]; then
   red "FAIL: stalwart still on (downed) active $ACTIVE_NODE — failover didn't move"
   exit 1

@@ -21,6 +21,7 @@ import { useMigrationListTenants, useMigrationImport } from '@/hooks/use-migrati
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import type {
   MigrationTenant, MigrationImportResult, MigrationImportRequest,
 } from '@insula/api-contracts';
@@ -38,6 +39,25 @@ function humanizeBytes(n: number): string {
   }
   const rounded = value >= 10 || unit === 0 ? Math.round(value).toString() : value.toFixed(1);
   return `${rounded} ${units[unit]}`;
+}
+
+/**
+ * When the bundle this row would import was captured — the scan imports each
+ * tenant's newest bundle, and the operator needs to see how old that copy is.
+ * Renders nothing for a source that reports no (or an unparseable) time.
+ */
+function CapturedAt({ tenantId, capturedAt }: { tenantId: string; capturedAt: string }) {
+  const at = new Date(capturedAt);
+  if (!capturedAt || Number.isNaN(at.getTime())) return null;
+  return (
+    <div
+      data-testid={`migration-captured-${tenantId}`}
+      title={`Captured ${at.toLocaleString()}`}
+      className="text-[11px] text-gray-500 dark:text-gray-400"
+    >
+      captured {formatRelativeTime(capturedAt)}
+    </div>
+  );
 }
 
 export default function MigrationTab() {
@@ -383,7 +403,10 @@ function TenantTable({
                 <td className="px-3 py-2 text-gray-600 dark:text-gray-300">
                   {t.primaryEmail ?? <span className="text-gray-400 dark:text-gray-500">—</span>}
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{t.latestBundleId.slice(0, 12)}…</td>
+                <td className="px-3 py-2">
+                  <div className="font-mono text-xs text-gray-500 dark:text-gray-400">{t.latestBundleId.slice(0, 12)}…</div>
+                  <CapturedAt tenantId={t.tenantId} capturedAt={t.latestCreatedAt} />
+                </td>
                 <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{t.bundleCount}</td>
                 <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{humanizeBytes(t.totalSizeBytes)}</td>
                 <td className="px-3 py-2">

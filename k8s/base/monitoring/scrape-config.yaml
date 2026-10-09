@@ -368,9 +368,11 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app]
             target_label: controller
         metric_relabel_configs:
-          # Same client-go queue internals as the Longhorn job. Flux's
-          # actual reconcile health (gotk_reconcile_*) is what the SLO
-          # rules read and is kept.
+          # Same client-go queue internals as the Longhorn job.
+          # NOTE: no platform reader uses any Flux family — the Flux SLO rule
+          # reads platform-api's platform_flux_unready_resources — so
+          # read-driven-relabel.yaml stores only `up` for this job. These drops
+          # still save the relabel work.
           - source_labels: [__name__]
             regex: 'workqueue_.*|rest_client_.*'
             action: drop
@@ -383,8 +385,6 @@ data:
             regex: 'go_.*_bucket'
             action: drop
           # controller-runtime's own reconcile-duration histogram (82 series).
-          # gotk_reconcile_* — what the SLO rules actually read — is a
-          # different family and is kept, as is controller_runtime_reconcile_total.
           - source_labels: [__name__]
             regex: 'controller_runtime_reconcile_time_seconds_bucket'
             action: drop

@@ -3,7 +3,8 @@
 #
 # We exercise everything that doesn't require a real WebAuthn ceremony:
 #   1. GET /auth/passkey on a fresh user → empty list, mode=NULL
-#   2. PATCH /auth/passkey-mode mode=second_factor with no creds → 409 PASSKEY_REQUIRED_FIRST
+#   2. PATCH /auth/passkey-mode mode=second_factor → 400 VALIDATION_ERROR (the password+passkey
+#      mode is retired: a passkey signs in on its own; a password's second factor is TOTP)
 #   3. POST /auth/passkey/registration/options without Bearer token → 401
 #   4. POST /auth/passkey/registration/options with cookie-only auth → 401 (CSRF defense)
 #   5. POST /auth/passkey/login/options userless (no body) → 200 + opaque options
@@ -93,8 +94,7 @@ run_panel_suite() {
 
   # Pre-test cleanup: a previous run / manual probe / parallel session
   # may have left passkeys on this user. The suite assumes "fresh user"
-  # state. Drop mode first (so we don't trip the LAST_PASSKEY_IN_2FA_MODE
-  # guard), then iterate every credential.
+  # state. Switch passkey sign-in off, then delete every credential.
   api "$HOST" PATCH "/auth/passkey-mode" '{"mode":null}' "$TOKEN" >/dev/null
   local STALE_IDS
   STALE_IDS=$(api "$HOST" GET "/auth/passkey" "" "$TOKEN" | python3 -c "
@@ -124,15 +124,15 @@ except Exception:
     fail "GET /auth/passkey unexpected: mode=$LIST_MODE count=$LIST_COUNT — body: $(echo "$LIST_RESP" | head -c 200)"
   fi
 
-  # 2. PATCH /auth/passkey-mode mode=second_factor (without registered creds)
+  # 2. PATCH /auth/passkey-mode mode=second_factor — retired, refused outright
   local MODE_RESP
   MODE_RESP=$(api "$HOST" PATCH "/auth/passkey-mode" '{"mode":"second_factor"}' "$TOKEN")
   local MODE_CODE
   MODE_CODE=$(echo "$MODE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null || echo "")
-  if [[ "$MODE_CODE" == "PASSKEY_REQUIRED_FIRST" ]]; then
-    ok "PATCH passkey-mode=second_factor without passkeys → PASSKEY_REQUIRED_FIRST"
+  if [[ "$MODE_CODE" == "VALIDATION_ERROR" ]]; then
+    ok "PATCH passkey-mode=second_factor → VALIDATION_ERROR (mode retired)"
   else
-    fail "expected PASSKEY_REQUIRED_FIRST, got code=$MODE_CODE"
+    fail "expected VALIDATION_ERROR for the retired second_factor mode, got code=$MODE_CODE"
   fi
 
   # 3. Unauthenticated registration options

@@ -3,7 +3,8 @@ import { eq, and, inArray, sql, desc, lt, or, ilike } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { auditLogs, refreshTokens, users, userPasskeys, tenants } from '../../db/schema.js';
+import { auditLogs, refreshTokens, users, userPasskeys, userTotp, tenants } from '../../db/schema.js';
+import { clearTotp } from '../auth/totp-service.js';
 import { createAdminUserSchema, updateAdminUserSchema,
   bulkDeleteAdminUsersSchema,
 } from '@insula/api-contracts';
@@ -84,6 +85,11 @@ function pickRefreshTokenFromRequest(request: FastifyRequest): string | undefine
   return undefined;
 }
 
+/** Whether the user's password sign-in also needs an authenticator-app code. */
+function totpEnabledColumn() {
+  return sql<boolean>`EXISTS (SELECT 1 FROM ${userTotp} WHERE ${userTotp.userId} = ${users.id} AND ${userTotp.enabledAt} IS NOT NULL)`;
+}
+
 export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
@@ -120,6 +126,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
         )`,
         createdAt: users.createdAt,
         passkeyCount: sql<number>`(SELECT COUNT(*)::int FROM ${userPasskeys} WHERE ${userPasskeys.userId} = ${users.id})`,
+        totpEnabled: totpEnabledColumn(),
       })
       .from(users)
       .where(eq(users.panel, 'admin'));
@@ -168,6 +175,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
         tenantName: tenants.name,
         lastLoginAt: users.lastLoginAt,
         createdAt: users.createdAt,
+        totpEnabled: totpEnabledColumn(),
       })
       .from(users)
       .leftJoin(tenants, eq(users.tenantId, tenants.id))
@@ -258,6 +266,21 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
       app, request, request.user.sub, userId, sessionId,
     );
     reply.status(204).send();
+  });
+
+  // DELETE /api/v1/admin/users/:userId/totp — remove a user's authenticator-app
+  // second factor, for someone who lost both the phone and the backup codes.
+  // super_admin only, like session revocation. Admin AND tenant users; they
+  // can set it up again once signed in. Audited by the audit middleware.
+  app.delete('/admin/users/:userId/totp', {
+    onRequest: [requireRole('super_admin')],
+  }, async (request) => {
+    const { userId } = request.params as { userId: string };
+    if (!UUID_RE.test(userId)) throw new ApiError('INVALID_ID', 'userId must be a UUID', 400);
+    const [target] = await app.db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!target) throw new ApiError('USER_NOT_FOUND', `User ${userId} not found`, 404);
+    const wasEnabled = await clearTotp(app.db, userId);
+    return success({ wasEnabled });
   });
 
   // DELETE /api/v1/admin/users/:userId/sessions — bulk revoke active

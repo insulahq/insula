@@ -685,6 +685,31 @@ export async function notifyTenantWorkloadsDown(
   return dispatchReporting(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
+export interface TenantWorkloadDiskLimitPayload {
+  /**
+   * One item per restarted application, as the tenant names it, with the
+   * limit it reached — e.g. "blog (2048Mi limit)". A list on every channel.
+   */
+  readonly workloads: readonly string[];
+}
+/**
+ * The tenant's own copy of "the kubelet evicted your pod for exceeding its
+ * local disk limit" (R37). Without it the limit looks like random restarts:
+ * the replacement pod comes up healthy and the evicted record is filtered out
+ * of the application's status. The admin side is the node memory-event alert.
+ *
+ * dedupeKey is per (tenant x hour): an application in an eviction loop is
+ * announced once an hour, not once per restart.
+ */
+export async function notifyTenantWorkloadDiskLimit(
+  db: Database,
+  tenantId: string,
+  payload: TenantWorkloadDiskLimitPayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.workload_disk_limit', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
 export interface AdminTenantWorkloadsDownPayload {
   readonly tenantName: string;
   readonly namespace: string;

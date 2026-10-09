@@ -1685,22 +1685,11 @@ export async function deleteNode(
   // the request over leftover bookkeeping would be worse than the leftovers.
   const residue: string[] = [];
 
-  // (a) Longhorn keeps its own Node CR. Deleting the Kubernetes node does not
-  //     remove it, so it lingers as a stale object advertising a host that no
-  //     longer exists.
-  try {
-    await k8s.custom.deleteNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'nodes', name,
-    } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
-    residue.push('longhorn node CR');
-  } catch (err) {
-    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
-    // 404 = already gone (Longhorn reaped it, or never knew the node).
-    if (status !== 404) {
-      console.warn(`[nodes] could not delete Longhorn node CR for ${name}:`, (err as Error).message);
-    }
-  }
+  // (a) Longhorn keeps its own Node CR, which deleting the Kubernetes node does
+  //     not remove. It cannot be removed HERE: the host still runs (the panel
+  //     says so), Longhorn still sees a Ready node, and its webhook refuses. The
+  //     node-sync reconciler removes it once Longhorn has seen the node go
+  //     (longhorn-node-reap.ts) — this request used to try, and always failed.
 
   // (b) Mail placement can still name the deleted node as primary, secondary
   //     or tertiary. Failover walks the candidate list and skips unreadable

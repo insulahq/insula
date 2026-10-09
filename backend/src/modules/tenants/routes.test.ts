@@ -190,6 +190,24 @@ describe('tenant routes', () => {
     expect(body.pagination).toBeDefined();
   });
 
+  // The list's response schema is an allowlist: Fastify drops every property
+  // it does not name. It once left out provisioningStatus, so the Plesk
+  // migration dialog's target picker (which offers provisioned tenants only)
+  // was always empty. Secrets on the row must stay dropped.
+  it('GET /api/v1/tenants carries provisioningStatus, never a row secret', async () => {
+    const { listTenants } = await import('./service.js');
+    vi.mocked(listTenants).mockResolvedValueOnce({
+      data: [{ ...mockTenant, planName: 'Starter', provisioningStatus: 'provisioned', privateWorkerSharedSecret: 's3cret' }],
+      pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
+    } as never);
+    const res = await app.inject({ method: 'GET', url: '/api/v1/tenants', headers: { authorization: `Bearer ${adminToken}` } });
+    expect(res.statusCode).toBe(200);
+    const [row] = res.json().data as Array<Record<string, unknown>>;
+    expect(row.provisioningStatus).toBe('provisioned');
+    expect(row).not.toHaveProperty('privateWorkerSharedSecret');
+    expect(res.body).not.toContain('s3cret');
+  });
+
   it('GET /api/v1/tenants carries each row\'s placement, so the column can turn red', async () => {
     placementStore.listPlacements.mockResolvedValueOnce(new Map([['c1', {
       tenantId: 'c1', status: 'misplaced', primaryNode: 'node-a', storageTier: 'local',

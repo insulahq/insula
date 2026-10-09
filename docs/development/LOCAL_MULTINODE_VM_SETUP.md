@@ -1,5 +1,8 @@
 # Local Multi-Node VM Setup (Unraid)
 
+> **Superseded by [`LOCAL_VM_LAB.md`](./LOCAL_VM_LAB.md)** — the retained local DEV and staging
+> clusters. This plan was never built; it is kept for its history only.
+
 > **Scope note (2026-07-10):** this doc is the **persistent dev-iteration** cluster
 > (keep-the-VMs, `br0`+DHCP). For the **throw-away, fresh-per-run integration-test**
 > substrate — the CI/nightly gate — see

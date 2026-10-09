@@ -125,7 +125,8 @@ components:
   # INERT until Secret `stalwart-extra-ca` exists in the mail namespace: the
   # volume is optional and the initContainer then just reproduces the image's own
   # trust store. Dev clusters that keep using public LE are unaffected.
-  # Deliberately NOT in staging/production, whose apexes resolve publicly.
+  # Production carries only the trust half (stalwart-extra-ca-trust); this full
+  # component adds the egress to Pebble's port 14000 the throw-away VM tier needs.
   - ../../components/stalwart-extra-ca
 
 patches:
@@ -209,11 +210,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20261006102145-a5329fd" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20261009010414-ad8fe1a" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20261006102149-a5329fd" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20261009010411-ad8fe1a" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20261006102150-a5329fd" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20261009010413-ad8fe1a" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
@@ -222,7 +223,7 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20261002161721-a8d6d7b"
+    newTag: "20261008182327-c3ab1db"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
     newTag: "20261006072227-8ddea50"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
@@ -232,4 +233,4 @@ images:
   - name: ghcr.io/insulahq/insula/sftp-gateway
     newTag: "20260926013638-aa51607"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20261002170850-284f8a6"
+    newTag: "20261007164459-fcb74be"

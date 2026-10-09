@@ -53,6 +53,7 @@ function makeK8sMock() {
 
 function baseInput(overrides: Partial<DeployCatalogEntryInput> = {}): DeployCatalogEntryInput {
   return {
+    diskLimits: { appMb: 2048, databaseMb: 8192 },
     deploymentName: 'my-wp',
     namespace: 'tenant-test-abcd',
     storagePath: 'applications/wordpress/my-wp',
@@ -557,8 +558,9 @@ describe('deployCatalogEntry: asymmetric QoS resource block (ADR-037)', () => {
       components: [makeComponent('deployment', { name: 'web' })],
     }));
     const resources = getContainerResources(calls.createDeployment.mock.calls[0][0]);
-    expect(resources.requests).toEqual({ cpu: '500m', memory: '512Mi' });
-    expect(resources.limits).toEqual({ memory: '512Mi' });
+    // R37: plus a node-disk limit and a small explicit disk request.
+    expect(resources.requests).toEqual({ cpu: '500m', memory: '512Mi', 'ephemeral-storage': '64Mi' });
+    expect(resources.limits).toEqual({ memory: '512Mi', 'ephemeral-storage': '2048Mi' });
     expect(resources.limits).not.toHaveProperty('cpu');
   });
 
@@ -649,8 +651,9 @@ describe('deployCatalogEntry: asymmetric QoS resource block (ADR-037)', () => {
     // Drill into CronJob's nested job template.
     const body = (calls.createCronJob.mock.calls[0][0] as { body: { spec: { jobTemplate: { spec: { template: { spec: { containers: Array<{ resources: { requests: Record<string, string>; limits: Record<string, string> } }> } } } } } } }).body;
     const r = body.spec.jobTemplate.spec.template.spec.containers[0].resources;
-    expect(r.requests).toEqual({ cpu: '500m', memory: '512Mi' });
-    expect(r.limits).toEqual({ memory: '512Mi' });
+    // R37: plus a node-disk limit and a small explicit disk request.
+    expect(r.requests).toEqual({ cpu: '500m', memory: '512Mi', 'ephemeral-storage': '64Mi' });
+    expect(r.limits).toEqual({ memory: '512Mi', 'ephemeral-storage': '2048Mi' });
     expect(r.limits).not.toHaveProperty('cpu');
   });
 });

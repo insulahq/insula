@@ -32,7 +32,9 @@ export interface LeaseDb {
 /** This process. A restarted pod is a new holder: its old lease simply expires. */
 export const REPLICA_ID = `${hostname()}:${process.pid}:${randomBytes(4).toString('hex')}`;
 
-const KEY_PREFIX = 'scheduler-lease:';
+/** Every lease's platform_settings key is this prefix + the job name. */
+export const SCHEDULER_LEASE_KEY_PREFIX = 'scheduler-lease:';
+const KEY_PREFIX = SCHEDULER_LEASE_KEY_PREFIX;
 
 /**
  * Jobs whose `fn` is running in this process right now, by lease name. A

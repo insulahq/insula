@@ -51,10 +51,9 @@ fi
 [[ -n "$TARGET_ID" ]] || { echo "  WARN: no backup target id — skipping bind" >&2; exit 0; }
 echo "  backup target $CFG_NAME id=$TARGET_ID (S3 → $BACKUP_S3_ENDPOINT)"
 
-# 2) activate it (cluster's active Longhorn backup target — snapshot-before-shrink etc.)
-A=$(api POST "/api/v1/admin/backup-configs/$TARGET_ID/activate"); echo "  activate → HTTP $(code "$A")"
-
-# 3) bind it to each backup class so class-scoped suites (grow=tenant, dr-drill=system, mail) pass.
+# 2) bind it to each backup class so class-scoped suites (grow=tenant, dr-drill=system, mail) pass.
+#    Binding IS the routing: the old per-target "activate" endpoint is retired (backup-config
+#    service: backup routing is the 3-class shim assignments) and only answered 404.
 for cls in system tenant mail; do
   R=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/$cls" "{\"targetId\":\"$TARGET_ID\",\"force\":false}")
   echo "  bind class '$cls' → HTTP $(code "$R")"

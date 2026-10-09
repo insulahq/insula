@@ -25,6 +25,7 @@ import {
 } from './lifecycle.js';
 import type { ArrivalFacts } from './lifecycle-announce.js';
 import { parseK8sTime } from '../node-health/join-grace.js';
+import { reapOrphanLonghornNodes } from './longhorn-node-reap.js';
 
 interface NodeUsageAggregate {
   pods: number;
@@ -73,6 +74,15 @@ export async function syncNodesOnce(
   // demoted a server). Best-effort — Longhorn may not be installed yet
   // (fresh dev cluster) — failures are logged and ignored.
   await reconcileLonghornNodeTags(k8s, items);
+
+  // Longhorn keeps its own node objects: one whose Kubernetes node is gone is
+  // removed once Longhorn agrees it is gone and nothing of Longhorn's is left on
+  // it — the half of a node removal the admin panel's Delete cannot finish while
+  // the host still runs. Best-effort, never throws.
+  await reapOrphanLonghornNodes(
+    k8s,
+    items.map((n) => n.metadata?.name).filter((n): n is string => Boolean(n)),
+  );
 
   // Same kind of mirror for the mail proxy: in the HA mail port-exposure modes
   // the haproxy node label follows the node set, so a server that joins (or is

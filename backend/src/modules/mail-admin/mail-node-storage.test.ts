@@ -223,3 +223,18 @@ describe('mail-node-storage', () => {
     expect(cards[0].mailUsedReportedAt).toBeNull();
   });
 });
+
+describe('mail-node-storage — standby report key', () => {
+  it('finds a report filed under the Node name when the hostname label differs', async () => {
+    const n = node('sb-host', { standby: true });
+    const renamed = { ...n, metadata: { ...n.metadata, name: 'sb-node.example.test' } };
+    const cards = await getMailNodeStorage(buildDeps({
+      nodes: [node('active1'), renamed],
+      pvs: [],
+      standbyReports: { 'sb-node.example.test': { sizeBytes: 4242, reportedAt: '2026-10-01T00:00:00Z' } },
+      placement: { activeNode: 'active1', primaryNode: null, secondaryNode: null, tertiaryNode: null },
+    }));
+    const standby = cards.find((c) => c.nodeName === 'sb-host');
+    expect(standby).toMatchObject({ isStandby: true, mailUsedBytes: 4242, mailUsedReportedAt: '2026-10-01T00:00:00Z' });
+  });
+});

@@ -32,11 +32,11 @@ Enter your **current password**, then your **new password** twice, and submit.
     Use a long, unique passphrase. Even better, add a **passkey** (below) so you
     can sign in without typing a password at all.
 
-## Passkeys (and two-factor sign-in)
+## Passkeys
 
 A **passkey** lets you sign in with your device's fingerprint, face, or PIN
-instead of a password. It can't be guessed or phished, which makes it both
-easier and safer.
+instead of a password. It can't be guessed or phished, and it is already two
+factors on its own (the device, plus the fingerprint or PIN that unlocks it).
 
 Manage passkeys under **User Settings** → **Passkeys**.
 
@@ -48,25 +48,49 @@ Manage passkeys under **User Settings** → **Passkeys**.
 The passkey appears in **Registered passkeys** with whether it's synced across
 devices and when it was last used. Delete one anytime.
 
-**Choose a sign-in mode**
+**Turn on passkey sign-in**
 
-Once you have at least one passkey, pick how you sign in:
-
-| Mode | What happens at sign-in |
-|---|---|
-| **Password only** | Email and password, as usual. |
-| **Passkey alternative** | Either your password **or** a passkey works. |
-| **Password + passkey (2FA)** | Both are required every time — your strongest option. |
-
-!!! note "This is the two-factor option"
-    Two-factor protection here is provided by the **Password + passkey (2FA)**
-    mode. There is no separate authenticator-app/SMS code setup — the passkey is
-    the second factor.
+Once you have at least one passkey, choose **Passkey sign-in on**: the sign-in
+page's **Sign in with passkey** button then signs you in with the passkey
+alone — no email or password. Your password keeps working too. Removing your
+last passkey turns passkey sign-in off again.
 
 !!! info "Browser support"
     Passkeys need a recent Chrome, Safari, Firefox, or Edge. If your browser
     doesn't support them, the page tells you and the passkey options stay
     disabled.
+
+## Authenticator app (two-step sign-in)
+
+To protect your **password** sign-in, add a 6-digit code from an authenticator
+app (1Password, Google Authenticator, Microsoft Authenticator, Aegis, …).
+It is optional. With it on, signing in with your password takes two steps:
+the password, then the current code from the app. Signing in with a passkey
+does not ask for a code.
+
+So you can sign in in one of three ways: email + password, a passkey, or —
+with the authenticator app on — email + password + code.
+
+**Set it up** under **User Settings** → **Authenticator app**:
+
+1. Click **Set up authenticator app**.
+2. Scan the QR code with your app (or type in the key shown beside it).
+3. Enter the 6-digit code the app shows and click **Turn on**.
+4. **Store the backup codes** that appear. Each one signs you in once
+   without your phone, and they are shown only this one time — copy or
+   download them, then tick *I have stored these codes*.
+
+**At sign-in**, after your password, enter the code from the app. Lost your
+phone? Choose **Use a backup code** and enter one of your backup codes.
+
+**Later**, the same section shows how many backup codes you have left (it
+warns when only a few remain). **New backup codes** replaces the whole set;
+**Turn off** removes the app. Both ask for a current code or a backup code.
+
+!!! warning "Lost your phone and your backup codes?"
+    Ask your platform administrator: they can remove the authenticator app
+    from your account, after which you sign in with your password alone and
+    can set it up again.
 
 ## Notification preferences
 

@@ -132,6 +132,18 @@ per-message sha256 verification) established the facts this decision rests on.
   bound for everything that path misses. Operator procedure + the anti-spam
   cost of lowering that value:
   [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md).
+- **Blob files are no longer append-once** (Stalwart v0.16.10+). The Context above
+  says blob data sits in append-once `.blob` files outside compaction churn, which
+  keeps the standby rsync and restic cheap. Blob GC changed that: Stalwart enables it
+  with `blob_gc_age_cutoff = 1.0`, so roughly every 128 MiB of new mail a compaction
+  rewrites the **entire** message store into new files. File-level copies (standby
+  rsync, restic) then see a whole new store, a node briefly needs about twice the
+  store on disk, and imports cost roughly quadratic writes. Measured, and
+  mitigated by the standby + disk-headroom health checks:
+  [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites).
+  The decision stands while the cutoff is upstream's to change; a FileSystem blob
+  store would avoid the rewrites but needs a full re-export to migrate to, and the
+  per-file walk cost below is unmeasured at large message counts.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).

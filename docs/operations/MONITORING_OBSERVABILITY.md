@@ -144,7 +144,102 @@ cluster until 2026-08-30.
 | --- | --- | --- |
 | VM caches | `-memory.allowedBytes=64MiB` | fastcache — anonymous mmap **outside** the Go heap |
 | Go runtime | `GOGC=40`, `GOMEMLIMIT=192Mi` | heap + runtime; cannot see the caches |
-| Ingest volume | `metric_relabel_configs` in `scrape-config.yaml` | series never stored at all |
+| Ingest volume | `metric_relabel_configs` in `scrape-config.yaml`, then read-driven ingestion (below) | series never stored at all |
+| CPU count | `GOMAXPROCS=2` | write buffers, which vmsingle sizes per CPU core |
+| Uptime | `recycler` sidecar, `RECYCLE_AT_UTC=22:30` | memory that grows with how long the process lives |
+
+### Read-driven ingestion
+
+vmsingle's memory follows the number of active series, so the platform stores
+only what something **reads**, in the shape it reads it. Before this, 39–64% of
+active series (measured on two clusters) had no reader, and the read families
+carried per-container and per-status-code dimensions 6–200× beyond what any
+query uses — all of it growing with every container, volume, database replica
+and tenant route. Filtering by reader instead of capping series keeps every
+panel, rule and chart intact; series then scale with what the platform shows
+(nodes, tenant routes, pods' traffic).
+
+| File | What it does |
+| --- | --- |
+| `k8s/base/monitoring/read-driven-relabel.yaml` (`-relabelConfig`) | keeps the READ families plus a small vmsingle self-diagnosis set; drops per-container CPU/memory/OOM series outside what the rules read |
+| `k8s/base/monitoring/streamaggr-config.yaml` | sums Traefik's per-code/method counters to `service, node` (or `entrypoint, code`) before storage |
+| `backend/src/modules/monitoring/read-driven-ingestion.test.ts` | fails the build when a backend query reads a family or label that is not stored, or when a family is kept that nothing reads |
+
+**Adding a reader.** A new PromQL query in the backend needs its metric family
+in the READ list of `read-driven-relabel.yaml`, and every label it filters on
+must survive (not be dropped, not be aggregated away in `streamaggr-config.yaml`).
+The test names the missing family and the file that reads it.
+
+**Exploring beyond what the platform reads.** Operators who use VMUI or an
+external Grafana for ad-hoc analysis can include the opt-in component in their
+overlay; it stores everything again, at the memory cost this policy avoids:
+
+```yaml
+components:
+  - ../../components/monitoring-full-metrics
+```
+
+Both files are read when vmsingle starts, so a change takes effect at the next
+daily recycle (below), a rollout, or deleting the pod.
+
+**Still growing with cluster size, by design or not yet addressed:** per-pod
+network series (the traffic charts show traffic per pod), and the scraper's
+per-target memory — vmsingle keeps each target's last raw response
+(compressed) to emit staleness markers, sized by the response *before* any
+relabeling, so it grows with the number of nodes and their container count.
+`-promscrape.noStaleMarkers` would remove it; not enabled, because it changes
+how a vanished series ends in queries.
+
+### Two terms that do not depend on load
+
+Neither the cache flags nor `GOMEMLIMIT` see these, and both used to make the
+footprint differ between installs running the same workload.
+
+**Write buffers scale with the node's CPU count.** vmsingle keeps an 8 MiB
+buffer per CPU shard for each monthly partition it writes to, and keeps it
+until that partition ages out of retention (v1.148.0
+`lib/storage/raw_row.go`). The pod has no CPU limit, so the shard count was the
+node's core count: 64 MiB on 8 cores, 256 MiB on 32 — and twice that once the
+process lives across a month boundary. On DEV (4 cores) the heap floor stepped
+68 → 101 MiB at 00:00 UTC on the 1st. `GOMAXPROCS=2` makes it 16 MiB (32 across a
+boundary) everywhere; vmsingle honours an explicit `GOMAXPROCS`. Two cores are
+far more than this workload uses. Raise it in an overlay patch only if a very
+large cluster shows ingestion or query latency — each step costs 8 MiB per
+partition.
+
+**Some memory grows with uptime alone.** At constant series count and constant
+scrape targets, the live heap still rose 1.8–3.8 MiB/day (DEV over 7 days, and
+one production run over 17), not yet attributed to a structure. The `recycler`
+sidecar bounds it — and the month-boundary buffers, and whatever else
+accumulates — by restarting vmsingle gracefully once a day. It sends SIGTERM;
+vmsingle flushes every in-memory row to disk and exits 0, and the kubelet
+restarts the container in place (same pod, volume and node). The cost is one
+scrape interval without samples per day; stored data is kept. The pod's restart
+counter rises by one per day, with last state `Completed`, exit 0 — not an OOM.
+
+Configure it with `RECYCLE_AT_UTC` on the `recycler` container, `HH:MM` in UTC,
+or `off`:
+
+```yaml
+# overlay patch (strategic merge — containers and env merge by name)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: vmsingle, namespace: monitoring }
+spec:
+  template:
+    spec:
+      containers:
+        - name: recycler
+          env:
+            - name: RECYCLE_AT_UTC
+              value: "03:00"   # or "off"
+```
+
+The default 22:30 is chosen for every install, not one cluster: at 23:00 UTC
+vmsingle pre-builds the next day's per-day index entry for every active series,
+the heaviest index work of its day, and this way it runs on a fresh process.
+A bad value is reported in the sidecar's log and disables recycling; the sidecar
+never exits on its own.
 
 `GOMEMLIMIT` is **derived**, not chosen. It must leave room for everything in
 the cgroup that the Go runtime cannot see:

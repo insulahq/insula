@@ -1,0 +1,26 @@
+-- Drop the retired plan AI-budget column (ROADMAP R43).
+--
+-- hosting_plans.weekly_ai_budget_cents was the plan's weekly AI spend cap for
+-- the AI code editor. Migration 0148 (v2026.10.6) retired the editor and took
+-- the column out of the Drizzle schema, the plan contract, the plan form and
+-- the seed, but left the column itself in place — the expand/contract rule
+-- from 0046: the v2026.10.5 backend pods still running during that rollout
+-- SELECT it by name on every plan read.
+--
+-- This is the contract half. Code that reads the column by name:
+--   * v2026.10.6 and later: none.
+--   * Tenant-bundle `config` restores insert rows by the dump's own column
+--     names (`backup-restore/executors/_shared.ts:upsertRow`), but
+--     `hosting_plans` is not in `CONFIG_DUMP_TABLES` and not in the
+--     config-tables restore allow-list, so no bundle carries the column.
+--   * The admin export/import (`export-import/service.ts`) inserts named
+--     fields only; an older export's extra key is ignored.
+--
+-- A cluster that jumps from v2026.10.5 straight to this release (ADR-045
+-- allows it) still has v2026.10.5 pods serving until the rollout replaces
+-- them; their plan reads fail for that window. Upgrade through v2026.10.6
+-- to avoid it.
+--
+-- IF EXISTS makes the statement replay-safe under the non-transactional
+-- runner.
+ALTER TABLE "hosting_plans" DROP COLUMN IF EXISTS "weekly_ai_budget_cents";

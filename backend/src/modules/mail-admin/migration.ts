@@ -53,6 +53,7 @@ import type { Database } from '../../db/index.js';
 // binding.
 import { parseQuantity } from './mail-pvc.js';
 import { readStalwartCredentials } from './credentials.js';
+import { withMailTaskLiveness } from './task-liveness.js';
 
 const MAIL_NAMESPACE = 'mail';
 const SETTINGS_ID = 'system';
@@ -308,8 +309,11 @@ export async function startMailMigration(
     }
   }
 
-  // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId
-  void runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, effectiveOpts, taskId).catch(async (err) => {
+  // Fire-and-forget — operator polls GET /admin/mail/migrate/:runId.
+  // The run and its task row count as in flight only while this process holds
+  // their liveness leases (task-liveness.ts) — held until the failure write
+  // below has landed too, so the orphan reaper never races it.
+  void withMailTaskLiveness(db, [runId, taskId], () => runMigrationStateMachine(runId, sourceNode, targetNode, deps, newGiB, effectiveOpts, taskId).catch(async (err) => {
     const isCancelled = err instanceof MigrationCancelledError;
     const errMsg = isCancelled
       ? `cancelled by operator at step '${err.cancelledAtStep}'`
@@ -328,7 +332,7 @@ export async function startMailMigration(
         });
       } catch { /* best-effort */ }
     }
-  });
+  }), deps.logger);
 
   return { runId, taskId };
 }
@@ -546,42 +550,48 @@ export async function triggerRestoreBasedFailover(
   // mailDrState='degraded' so the next tick retries.
   //
   // DR-mode flag: skip the on-demand snapshot (source unreachable).
-  try {
-    await runMigrationStateMachine(runId, sourceNode, targetNode, {
-      ...deps,
-      kubeconfigPath: deps.kubeconfigPath,
-      logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
-    } as MigrationDeps, undefined, { skipFreshSnapshot: true, abortOnApiLoss: true });
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    // Retried: if this write is lost the run stays 'running', which blocks
-    // every later failover attempt until a platform-api restart reaps it.
-    await withDbRetry(() => db.execute(sql`
-      UPDATE mail_migration_runs
-      SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
-      WHERE id = ${runId}
-    `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
-    throw err;
-  }
+  //
+  // The liveness lease (task-liveness.ts) keeps the run "in flight" for the
+  // orphan reaper until the outcome below is written — a replica booting
+  // mid-failover (the dead node's own replica, rescheduled) must not fail it.
+  await withMailTaskLiveness(db, [runId], async () => {
+    try {
+      await runMigrationStateMachine(runId, sourceNode, targetNode, {
+        ...deps,
+        kubeconfigPath: deps.kubeconfigPath,
+        logger: { warn: log.warn.bind(log), info: log.info.bind(log) },
+      } as MigrationDeps, undefined, { skipFreshSnapshot: true, abortOnApiLoss: true });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      // Retried: if this write is lost the run stays 'running', which blocks
+      // every later failover attempt until a platform-api restart reaps it.
+      await withDbRetry(() => db.execute(sql`
+        UPDATE mail_migration_runs
+        SET state = 'failed', error_message = ${errMsg}, finished_at = now(), step_timings = ${appendStepTiming('failed')}
+        WHERE id = ${runId}
+      `)).catch(() => { /* still down after the retry budget — the boot reaper is the backstop */ });
+      throw err;
+    }
 
-  // Check the post-run state in DB to catch the `failRun + return`
-  // path that intermediate failures use. Without this check, a
-  // PVC-delete timeout silently returns from the state machine
-  // and execution falls through to the success-path stamp below.
-  const stateRows = await withDbRetry(() => db.execute(sql`
-    SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
-  `)) as { rows?: Array<{ state: string; error_message: string | null }> };
-  const stateRow = stateRows.rows?.[0];
-  if (stateRow && stateRow.state === 'failed') {
-    throw new Error(
-      `mail migration run ${runId} ended in 'failed' state: ${stateRow.error_message ?? 'no error message recorded'}`,
-    );
-  }
+    // Check the post-run state in DB to catch the `failRun + return`
+    // path that intermediate failures use. Without this check, a
+    // PVC-delete timeout silently returns from the state machine
+    // and execution falls through to the success-path stamp below.
+    const stateRows = await withDbRetry(() => db.execute(sql`
+      SELECT state, error_message FROM mail_migration_runs WHERE id = ${runId}
+    `)) as { rows?: Array<{ state: string; error_message: string | null }> };
+    const stateRow = stateRows.rows?.[0];
+    if (stateRow && stateRow.state === 'failed') {
+      throw new Error(
+        `mail migration run ${runId} ended in 'failed' state: ${stateRow.error_message ?? 'no error message recorded'}`,
+      );
+    }
 
-  // Only reached on success — stamp the new active node + state.
-  await withDbRetry(() => db.update(systemSettings)
-    .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
-    .where(eq(systemSettings.id, SETTINGS_ID)));
+    // Only reached on success — stamp the new active node + state.
+    await withDbRetry(() => db.update(systemSettings)
+      .set({ mailActiveNode: targetNode, mailDrState: 'failed-over' })
+      .where(eq(systemSettings.id, SETTINGS_ID)));
+  }, log);
 }
 
 // ── State machine internals ───────────────────────────────────────────────────
@@ -1697,13 +1707,17 @@ async function runMigrationStateMachine(
     }
   }
 
-  // Step 7: Clear the allow-restore annotation so subsequent pod
-  // restarts don't re-trigger the restore-state init. (The init also
-  // short-circuits on existing CURRENT, so this is belt-and-suspenders.)
+  // Step 7: Clear BOTH restore annotations so later pod restarts don't
+  // re-trigger the restore-state init. Clearing only allow-restore left a
+  // restic escalation's `restore-snapshot-id: latest` on the template: this
+  // very patch rolled the pod, the init saw a per-snapshot request it had
+  // "not applied yet" (it records the concrete snapshot id, never 'latest'),
+  // wiped the just-restored DataStore and — allow-restore now gone —
+  // fresh-started an empty mail store right after a successful failover.
   try {
-    await clearAllowRestoreAnnotation(apps);
+    await clearRestoreAnnotations(apps);
   } catch (annotErr) {
-    log.warn('[migration] failed to clear allow-restore annotation (non-fatal):', annotErr);
+    log.warn('[migration] failed to clear the restore annotations (non-fatal):', annotErr);
   }
 
   // Step 7a: destination verified — the retained source PV is
@@ -1725,6 +1739,9 @@ async function runMigrationStateMachine(
   await withDbRetry(() => db.update(systemSettings)
     .set({ mailActiveNode: targetNode, mailDrState: dataLossCutover ? 'degraded' : 'healthy' })
     .where(eq(systemSettings.id, SETTINGS_ID)));
+
+  // Step 8a: the standby copy follows the stack — see moveStandbyLabelsWithStack.
+  await moveStandbyLabelsWithStack(deps, targetNode, log);
 
   // Step 8b: re-reconcile port-exposure for the NEW active node. In
   // thisNodeOnly mode the stalwart-mail Service.externalIPs must follow
@@ -1988,6 +2005,41 @@ async function runMigrationStateMachine(
   }
 
   log.info(`[migration] run ${runId}: migration to ${targetNode} complete`);
+}
+
+/**
+ * Step 8a: re-derive the mail-standby labels for the node the stack now runs on.
+ * Nothing else did it after a migration: the labels were re-derived only at
+ * platform-api start-up (which skips while a migration is in flight) and on a
+ * placement save. A VM failover drill ended with the label on the node that had
+ * just become active (its replicator copying from its own pod) and none on the
+ * secondary, so the next failure would have restored from a stale copy or
+ * restic. Non-fatal: the cutover already succeeded, and the next platform-api
+ * start or placement save re-derives them.
+ */
+export async function moveStandbyLabelsWithStack(
+  deps: Pick<MigrationDeps, 'db' | 'core' | 'batch'>,
+  activeNode: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<void> {
+  try {
+    const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    const standby = await applyMailStandbyLabels(
+      deps.core,
+      deps.batch,
+      {
+        primary: row?.mailPrimaryNode ?? null,
+        secondary: row?.mailSecondaryNode ?? null,
+        tertiary: row?.mailTertiaryNode ?? null,
+      },
+      activeNode,
+      { warn: log.warn },
+    );
+    log.info(`[migration] standby copies now staged on: ${standby.join(', ') || '(none — single-node placement)'}`);
+  } catch (err) {
+    log.warn('[migration] moving the standby labels with the stack failed (non-fatal — the next platform-api start or placement save re-derives them):', err);
+  }
 }
 
 /**
@@ -3092,14 +3144,19 @@ async function resumeSnapshotCronJob(deps: MigrationDeps): Promise<void> {
  * Uses merge-patch with `null` to delete the key (RFC 7396 semantics).
  * Stalwart-only — Bulwark has no restore-state init container today.
  */
-async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
+export async function clearRestoreAnnotations(apps: AppsV1Api): Promise<void> {
   // Fix #4: clear from spec.template.metadata.annotations (pod
   // template) to match the location applyDeploymentAffinityOne now
   // writes to. Belt-and-braces: also clear from metadata.annotations
   // (Deployment) so legacy clusters that have the pre-fix annotation
   // sitting there get cleaned up too.
+  //
+  // restore-snapshot-id goes with allow-restore: one template patch, so no
+  // extra rollout, and no per-snapshot request outlives the migration that
+  // made it.
   const nullAnnotations = {
     [ALLOW_RESTORE_ANNOTATION]: null,
+    [RESTORE_SNAPSHOT_ID_ANNOTATION]: null,
   };
   await apps.patchNamespacedDeployment(
     {

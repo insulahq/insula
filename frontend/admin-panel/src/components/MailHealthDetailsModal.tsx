@@ -27,6 +27,7 @@ import {
   ChevronRight,
   ExternalLink,
   Globe,
+  HardDrive,
   Info,
   Loader2,
   Mail,
@@ -42,13 +43,16 @@ import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import { timeAgo } from './MailHealthBanner';
 import MailEndpointsSection from './MailEndpointsSection';
 import NodeName from '@/components/nodes/NodeName';
-import { useNodeText } from '@/hooks/use-node-labels';
+import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
+import { formatBytes } from '@/lib/format-snapshot-size';
 import type {
   DeliverabilityProbeSeverity,
   MailHealthBlocklistProbe,
   MailHealthCertComponent,
   MailHealthDeliverabilityComponent,
   MailHealthExposureComponent,
+  MailHealthStandbyComponent,
+  MailHealthStorageComponent,
   MailHealthJmapComponent,
   MailHealthPodComponent,
   MailHealthResponse,
@@ -154,6 +158,11 @@ function DetailsContent({ r }: { readonly r: MailHealthResponse }) {
         {r.components.exposure && r.components.exposure.status !== 'not_implemented' && (
           <ExposureCard data={r.components.exposure} />
         )}
+      </Section>
+
+      <Section title="Capacity" icon={<HardDrive size={14} />}>
+        <StandbyCard data={r.components.standby} />
+        <StorageCard data={r.components.storage} />
       </Section>
 
       {r.endpoints && (
@@ -383,6 +392,83 @@ function ExposureCard({ data }: { readonly data: MailHealthExposureComponent }) 
             'the port-exposure task. haproxy: `kubectl get pods -n mail -l app.kubernetes.io/component=stalwart-haproxy -o wide` ' +
             'and the insula.host/mail-haproxy node label.'
       }
+    />
+  );
+}
+
+function ageText(seconds: number): string {
+  return seconds < 120 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
+}
+
+function StandbyCard({ data }: { readonly data: MailHealthStandbyComponent | undefined }) {
+  const nodeLabel = useNodeLabel();
+  const nodeText = useNodeText();
+  if (!data || data.status === 'not_implemented') {
+    return (
+      <ProbeCard
+        title="Standby copies"
+        severity="skipped"
+        assertion="Each standby node holds a recent complete copy of the mail data"
+        actual={data ? 'no node is labelled for mail standby' : 'not reported by this backend'}
+        expected={null}
+        error={null}
+        remediation={null}
+      />
+    );
+  }
+  const limit = Math.round(data.maxAgeSeconds / 60);
+  return (
+    <ProbeCard
+      title="Standby copies"
+      severity={severityFromHealthy(data.healthy)}
+      assertion="Each standby node holds a recent complete copy of the mail data"
+      actual={data.nodes.length > 0
+        ? data.nodes.map((n) => `${nodeLabel(n.node)}: `
+          + (n.ageSeconds === null ? 'no complete copy yet' : `copy ${ageText(n.ageSeconds)} old`)
+          + (n.durationSeconds !== null ? ` (last sync took ${ageText(Math.round(n.durationSeconds))})` : '')).join(' • ')
+        : 'no standby nodes'}
+      expected={`a copy younger than ${limit} min on every standby node`}
+      error={data.error === null ? null : nodeText(data.error)}
+      remediation={data.healthy
+        ? null
+        : 'A sync is probably still running: a large import, or the mail store rewriting its files, makes one '
+          + 'long. The standby keeps its previous complete copy meanwhile, and a failover would restore that. '
+          + 'If the copy keeps ageing, read the standby pod logs (`kubectl -n mail logs ds/mail-stack-standby-replicate`) '
+          + 'and check that the active mail pod answers on its rsync sidecar; a slow link may need the sync speed limit '
+          + 'raised or removed (ConfigMap mail-standby-settings).'}
+    />
+  );
+}
+
+function StorageCard({ data }: { readonly data: MailHealthStorageComponent | undefined }) {
+  const nodeLabel = useNodeLabel();
+  const nodeText = useNodeText();
+  if (!data || data.status === 'not_implemented') {
+    return (
+      <ProbeCard
+        title="Disk headroom"
+        severity="skipped"
+        assertion="Every mail node has free space at least the size of its mail data"
+        actual={data ? 'free space or mail size not known yet' : 'not reported by this backend'}
+        expected={null}
+        error={null}
+        remediation={null}
+      />
+    );
+  }
+  const size = (b: number | null) => (b === null ? '?' : formatBytes(b));
+  return (
+    <ProbeCard
+      title="Disk headroom"
+      severity={severityFromHealthy(data.healthy)}
+      assertion="Every mail node has free space at least the size of its mail data"
+      actual={data.nodes.map((n) => `${nodeLabel(n.node)} (${n.role}): ${size(n.freeBytes)} free, ${size(n.mailBytes)} mail`).join(' • ')}
+      expected="free space ≥ mail data on the active and every standby node"
+      error={data.error === null ? null : nodeText(data.error)}
+      remediation={data.healthy
+        ? null
+        : 'Free disk space on that node or grow its disk. The mail store periodically rewrites its message files '
+          + 'and holds the old and new files until it finishes, so for a while it needs about twice its size.'}
     />
   );
 }

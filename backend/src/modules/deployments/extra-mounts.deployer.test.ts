@@ -42,6 +42,7 @@ const DB = { name: 'db', type: 'deployment' as const, image: 'mariadb:11', ports
 
 function input(overrides: Partial<DeployCatalogEntryInput> = {}): DeployCatalogEntryInput {
   return {
+    diskLimits: { appMb: 2048, databaseMb: 8192 },
     deploymentName: 'site',
     namespace: 'tenant-acme-1234',
     storagePath: 'runtime/apache-php/site',

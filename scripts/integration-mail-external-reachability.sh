@@ -396,7 +396,9 @@ probe_node_ports() {
       # self-signed after the whole bounded window is a real FAIL, never a warn.
       local ci iss cert_ok=0 nudged=0
       for ci in $(seq 1 8); do
-        iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+        # </dev/null, not `echo |` — a bare newline is an unknown SMTP command, which
+        # Stalwart counts toward a permanent port-scanning ban of this source.
+        iss=$(timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" </dev/null 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
         # An EMPTY issuer is NOT a good cert — it means no TLS handshake
         # happened at all (banned source, firewall, dead listener, timeout).
         # This branch used to fall through to `cert_ok=1`, so "I could not read

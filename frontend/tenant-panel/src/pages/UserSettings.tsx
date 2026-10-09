@@ -6,6 +6,7 @@ import { usePasskey } from '@/hooks/use-passkey';
 import { ApiError } from '@/lib/api-client';
 import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import TimezoneSelect from '@/components/TimezoneSelect';
+import TotpSection from '@/components/settings/TotpSection';
 
 // Lazy so the password inputs stay OUT of the entry chunk — routes are not
 // code-split in this panel, so an inline form here ships on every page view and
@@ -36,6 +37,7 @@ export default function UserSettings() {
       <PasswordSection />
 
       <PasskeySection />
+      <TotpSection />
     </div>
   );
 }
@@ -164,35 +166,27 @@ function PasskeySection() {
       ) : (
         <>
           <div className="mb-6">
-            <h3 className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Sign-in mode</h3>
+            <h3 className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">Passkey sign-in</h3>
             <div className="flex flex-col gap-2 sm:flex-row" data-testid="passkey-mode-group">
               <ModeOption
-                label="Password only"
-                description="Use email and password to sign in."
+                label="Passkey sign-in off"
+                description="Sign in with email and password (plus your authenticator code, if that is on)."
                 checked={mode === null}
                 disabled={busy}
                 onSelect={() => handleModeChange(null)}
                 testid="passkey-mode-none"
               />
               <ModeOption
-                label="Passkey alternative"
-                description="Use either password or passkey."
+                label="Passkey sign-in on"
+                description="A registered passkey signs you in on its own — no password needed."
                 checked={mode === 'alternative'}
                 disabled={busy || list.length === 0}
                 onSelect={() => handleModeChange('alternative')}
                 testid="passkey-mode-alternative"
               />
-              <ModeOption
-                label="Password + passkey (2FA)"
-                description="Require both factors at every sign-in."
-                checked={mode === 'second_factor'}
-                disabled={busy || list.length === 0}
-                onSelect={() => handleModeChange('second_factor')}
-                testid="passkey-mode-2fa"
-              />
             </div>
             {list.length === 0 && mode === null && (
-              <p className="mt-2 text-xs text-gray-500">Register a passkey below to enable alternative or 2FA modes.</p>
+              <p className="mt-2 text-xs text-gray-500">Register a passkey below to turn on passkey sign-in.</p>
             )}
           </div>
 
