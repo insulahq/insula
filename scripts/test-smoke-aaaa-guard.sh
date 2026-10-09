@@ -23,25 +23,27 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-sed -n '/^resolve_aaaa() {/,/^}/p'        "$SMOKE" >  "$WORK/fns.sh"
+sed -n '/^split_host_path() {/,/^}/p'     "$SMOKE" >  "$WORK/fns.sh"
+sed -n '/^resolve_aaaa() {/,/^}/p'        "$SMOKE" >> "$WORK/fns.sh"
 sed -n '/^test_10_aaaa_vs_stack() {/,/^}/p' "$SMOKE" >> "$WORK/fns.sh"
-for fn in resolve_aaaa test_10_aaaa_vs_stack; do
+for fn in split_host_path resolve_aaaa test_10_aaaa_vs_stack; do
   grep -q "^${fn}()" "$WORK/fns.sh" || { echo "FAIL: could not extract ${fn}() from $SMOKE" >&2; exit 1; }
 done
 
-# run_case <podCIDRs> <aaaa-for-host> <curl-code> → the emitted lines
+# run_case <podCIDRs> <aaaa-for-host> <v6-curl-code> [v4-curl-code, default 200] → the
+# emitted lines. Test 10 judges each AAAA against the host's IPv4 answer.
 run_case() {
-  local cidrs="$1" aaaa="$2" code="$3"
+  local cidrs="$1" aaaa="$2" code="$3" v4="${4:-200}"
   (
     set +e
     HOSTNAMES="admin.example.test"
     SKIP=""
     PASS=0; FAIL=0
-    export FAKE_CIDRS="$cidrs" FAKE_AAAA="$aaaa" FAKE_CODE="$code"
+    export FAKE_CIDRS="$cidrs" FAKE_AAAA="$aaaa" FAKE_CODE="$code" FAKE_V4="$v4"
     emit() { printf '%s %s\n' "$2" "$3"; }
     skipped() { return 1; }
     kubectl() { printf '%s\n' "$FAKE_CIDRS"; }
-    curl() { printf '%s' "$FAKE_CODE"; }
+    curl() { if [[ " $* " == *" -4 "* ]]; then printf '%s' "$FAKE_V4"; else printf '%s' "$FAKE_CODE"; fi; }
     # shellcheck disable=SC1090
     source "$WORK/fns.sh"
     resolve_aaaa() { printf '%s' "$FAKE_AAAA"; }
@@ -62,9 +64,11 @@ expect "AAAA on a single-stack cluster FAILS (the testing-box bug)" "FAIL publis
 echo
 echo "dual-stack cluster"
 out=$(run_case '["10.42.0.0/24","fd42:42::/64"]' '2001:db8:9::56' 200)
-expect "AAAA that serves is a PASS" "PASS AAAA 2001:db8:9::56 — all serve" "$out"
+expect "AAAA that serves is a PASS" "PASS AAAA 2001:db8:9::56 — v6 matches v4" "$out"
 out=$(run_case '["10.42.0.0/24","fd42:42::/64"]' '2001:db8:9::56' 000)
-expect "AAAA that does NOT serve FAILS (stale record → same outage)" "FAIL AAAA published but not serving" "$out"
+expect "AAAA that does NOT serve FAILS (stale record → same outage)" "FAIL AAAA published but v6 differs from v4" "$out"
+out=$(run_case '["10.42.0.0/24","fd42:42::/64"]' '2001:db8:9::56' 404 404)
+expect "a host that 404s at / on BOTH families is a PASS (per-path routes)" "PASS AAAA 2001:db8:9::56 — v6 matches v4 (http=404)" "$out"
 out=$(run_case '["10.42.0.0/24","fd42:42::/64"]' '' 200)
 expect "no AAAA on a dual-stack cluster is INFO, not a failure" "INFO cluster serves IPv6" "$out"
 

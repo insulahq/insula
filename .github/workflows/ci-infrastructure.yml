@@ -228,6 +228,9 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
+      # `make smoke` false alarms (dead pods probed, HA asserted where not applied, AAAA).
+      - run: ./scripts/test-smoke-ha-and-running.sh
+      - run: ./scripts/test-smoke-aaaa-guard.sh
       # The retained VM lab's pure logic and cloud-init seeds (no libvirt needed).
       - run: python3 -m pip install --user pyyaml
       - run: ./scripts/test-vm-lab.sh

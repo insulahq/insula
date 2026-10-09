@@ -68,6 +68,8 @@ set -uo pipefail
 #     single-stack included. It has been in this list producing a permanent,
 #     ignored FAIL.
 #   * dex.<dom> IS a real Host route, but Dex serves under /dex — `/` is a 404.
+#     And only where Dex is deployed: it is a test IdP (dev/staging overlays), so a
+#     production install has no dex.<dom> — probing it there is a permanent FAIL.
 SMOKE_HOSTNAMES_FALLBACK="admin.staging.example.test,tenant.staging.example.test,dex.staging.example.test/dex/.well-known/openid-configuration"
 
 discover_hostnames() {
@@ -90,7 +92,11 @@ discover_hostnames() {
       -o jsonpath='{.data.PLATFORM_DOMAIN}' 2>/dev/null || true)
   fi
   if [[ -n "$dom" ]]; then
-    echo "admin.${dom},tenant.${dom},dex.${dom}/dex/.well-known/openid-configuration"
+    if kubectl -n platform get deploy dex >/dev/null 2>&1; then
+      echo "admin.${dom},tenant.${dom},dex.${dom}/dex/.well-known/openid-configuration"
+    else
+      echo "admin.${dom},tenant.${dom}"
+    fi
   else
     echo "$SMOKE_HOSTNAMES_FALLBACK"
   fi
@@ -139,6 +145,12 @@ emit() {
 }
 
 skipped() { [[ ",$SKIP," == *",$1,"* ]]; }
+
+# Every pod a test probes FROM or TO must be running. A node shutdown leaves the
+# pods it stopped (and the replacements it refused) as Completed/Failed records
+# with no IP until the platform's dead-pod sweep removes them days later — probed,
+# they read as a broken network (seen after every lab cluster restart).
+RUNNING=(--field-selector=status.phase=Running)
 
 # split_host_path <entry> — an entry is `host` or `host/path`. Sets SHP_HOST and
 # SHP_PATH (the latter defaults to "/"). Globals rather than stdout so callers
@@ -235,12 +247,12 @@ test_2_ingress_to_backend() {
   # same source-namespace as the real ingress hop, so the netpol treats
   # the probe exactly like Traefik itself.
   local ingress_pods backend_pods
-  ingress_pods=$(kubectl -n traefik get pods -l app.kubernetes.io/name=traefik \
+  ingress_pods=$(kubectl -n traefik get pods -l app.kubernetes.io/name=traefik "${RUNNING[@]}" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test2.ingress_to_backend" FAIL "list traefik pods failed"; return; }
-  backend_pods=$( { kubectl -n platform get pods -l app=admin-panel \
+  backend_pods=$( { kubectl -n platform get pods -l app=admin-panel "${RUNNING[@]}" \
       -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}=80{"\n"}{end}' 2>/dev/null; \
-    kubectl -n platform get pods -l app=platform-api \
+    kubectl -n platform get pods -l app=platform-api "${RUNNING[@]}" \
       -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}=3000{"\n"}{end}' 2>/dev/null; } ) \
     || { emit "test2.ingress_to_backend" FAIL "list backend pods failed"; return; }
   [[ -z "$ingress_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no traefik pods found"; return; }
@@ -309,7 +321,7 @@ test_3_pod_to_pod() {
   if skipped 3; then emit "test3.pod_to_pod" SKIP "skipped"; return; fi
 
   local api_pods pg_ip
-  api_pods=$(kubectl -n platform get pods -l app=platform-api \
+  api_pods=$(kubectl -n platform get pods -l app=platform-api "${RUNNING[@]}" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test3.pod_to_pod" FAIL "list platform-api failed"; return; }
   # Postgres pod naming: CNPG cluster (system-db-1, system-db-2) —
@@ -317,16 +329,16 @@ test_3_pod_to_pod() {
   # PG18 migration. Fall back to the old name + legacy StatefulSet
   # for older clusters that haven't migrated yet.
   local pg_pod
-  pg_pod=$(kubectl -n platform get pods \
+  pg_pod=$(kubectl -n platform get pods "${RUNNING[@]}" \
     -l cnpg.io/cluster=system-db,role=primary \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [[ -z "$pg_pod" ]]; then
-    pg_pod=$(kubectl -n platform get pods \
+    pg_pod=$(kubectl -n platform get pods "${RUNNING[@]}" \
       -l cnpg.io/cluster=postgres,role=primary \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   fi
   if [[ -z "$pg_pod" ]]; then
-    pg_pod=$(kubectl -n platform get pods -l app=postgres \
+    pg_pod=$(kubectl -n platform get pods -l app=postgres "${RUNNING[@]}" \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   fi
   if [[ -z "$pg_pod" ]]; then
@@ -396,7 +408,7 @@ test_4_hostnetwork_to_pod() {
 
   local backend_pods nodes
   # One backend pod is enough — we assert policy, not a path matrix.
-  backend_pods=$(kubectl -n platform get pods -l app=platform-api \
+  backend_pods=$(kubectl -n platform get pods -l app=platform-api "${RUNNING[@]}" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}{"\n"}{end}' 2>/dev/null | head -1)
   nodes=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
   [[ -z "$backend_pods" ]] && { emit "test4.hostnetwork_to_pod" FAIL "no platform-api pods"; return; }
@@ -497,7 +509,7 @@ test_6_felix_logs() {
   if skipped 6; then emit "test6.felix_logs" SKIP "skipped"; return; fi
 
   local pods
-  pods=$(kubectl -n calico-system get pods -l k8s-app=calico-node \
+  pods=$(kubectl -n calico-system get pods -l k8s-app=calico-node "${RUNNING[@]}" \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test6.felix_logs" FAIL "list calico-node pods failed"; return; }
   [[ -z "$pods" ]] && { emit "test6.felix_logs" FAIL "no calico-node pods"; return; }
@@ -677,23 +689,35 @@ test_8_ha_deployments() {
     return
   fi
 
-  # Tier is implied by the live replica count: any of the stateless
-  # Deployments at >=3 replicas means HA is in effect. Reading the
-  # ConfigMap directly added no information beyond the live spec, so
-  # we just look at .spec.replicas across the system Deployments.
-  local expected=2
+  # Tier is implied by the live replica counts: Apply-HA scales every stateless
+  # Deployment above 1, so all of them at 1 means HA was never applied (tier
+  # local) and there is no spread to assert — a multi-node cluster may run local.
+  # A Deployment the overlay does not ship (oauth2-proxy and dex outside
+  # dev/staging) is not counted.
+  local d r max=0 present=()
   for d in admin-panel tenant-panel platform-api oauth2-proxy dex; do
-    local r
-    r=$(kubectl -n platform get deploy "$d" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
-    [[ "$r" -gt "$expected" ]] && expected=$r
+    r=$(kubectl -n platform get deploy "$d" -o jsonpath='{.spec.replicas}' 2>/dev/null) || continue
+    [[ "$r" =~ ^[0-9]+$ ]] || continue
+    present+=("$d")
+    (( r > max )) && max=$r
   done
+  if (( ${#present[@]} == 0 )); then
+    emit "test8.ha_deployments" FAIL "none of the stateless Deployments found in namespace platform"
+    return
+  fi
+  if (( max <= 1 )); then
+    emit "test8.ha_deployments" PASS "HA not applied (every stateless Deployment at 1 replica) — spread assertions skipped"
+    return
+  fi
+  local expected=$max
 
   local total=0 ok=0
-  for d in admin-panel tenant-panel platform-api oauth2-proxy dex; do
+  for d in "${present[@]}"; do
     total=$((total+1))
     local ready_replicas nodes_count
     ready_replicas=$(kubectl -n platform get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
-    nodes_count=$(kubectl -n platform get pods -l app="$d" --field-selector=status.phase=Running \
+    [[ "$ready_replicas" =~ ^[0-9]+$ ]] || ready_replicas=0
+    nodes_count=$(kubectl -n platform get pods -l app="$d" "${RUNNING[@]}" \
       -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null \
       | sort -u | grep -c -v '^$' || echo 0)
     if [[ "$ready_replicas" -ge "$expected" && "$nodes_count" -ge 2 ]]; then
