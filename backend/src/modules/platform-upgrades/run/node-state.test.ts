@@ -92,6 +92,12 @@ describe('assessRunNode — prepare-nodes', () => {
     expect(n.detail).toMatch(/job log in namespace system-upgrade/);
   });
 
+  it('job done, report not relayed yet → still updating, never back to queued', () => {
+    const n = assessRunNode('prepare-nodes', up, status('2026.10.7-rc.3'), { active: 0, failed: 0, succeeded: 1 }, TARGET, []);
+    expect(n.state).toBe('updating');
+    expect(n.detail).toMatch(/waiting for its report/);
+  });
+
   it('nothing started yet → queued, saying which CLI it is on', () => {
     const n = assessRunNode('prepare-nodes', up, status('2026.10.6'), undefined, TARGET, []);
     expect(n.state).toBe('queued');

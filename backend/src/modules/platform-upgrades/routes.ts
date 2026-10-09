@@ -255,7 +255,19 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   app.post('/admin/platform/upgrade', {
     schema: {
       tags: ['Platform Updates'], summary: 'Plan or apply a platform upgrade (Flux re-pin)', security: [{ bearerAuth: [] }],
-      body: { type: 'object', properties: { version: { type: 'string' }, apply: { type: 'boolean' } }, additionalProperties: false },
+      // EVERY accepted field must be listed: with additionalProperties:false Fastify
+      // strips an undeclared one before the handler's Zod parse sees it — that
+      // turned "Upgrade without <node>" into "upgrade every node" (refused on the
+      // down node's pre-flight). routes.test.ts sends each field through this.
+      body: {
+        type: 'object',
+        properties: {
+          version: { type: 'string' },
+          apply: { type: 'boolean' },
+          excludeNodes: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        },
+        additionalProperties: false,
+      },
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
         action: { type: 'string' }, target: { type: 'string', nullable: true }, reason: { type: 'string' },
         proceed: { type: 'boolean' }, applied: { type: 'boolean' }, gitRepository: { type: 'string', nullable: true },

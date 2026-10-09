@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert, FileText } from 'lucide-react';
+import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, FileText } from 'lucide-react';
 import { usePreflight, useHostMigrationsPreview, useUpgradeApply, useUpgradeChanges, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
 import UpgradeChangesSection from './UpgradeChangesSection';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import NodeName from '@/components/nodes/NodeName';
 import ChangelogModal from './ChangelogModal';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatVersion } from '@/lib/format-version';
 
 function Gate({ gate }: { gate: UpgradeGate }) {
@@ -186,11 +188,17 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
                 {hostMigrations.isLoading ? 'loading…' : (hm ? `${hm.willRun ? 'will run' : hm.mode} — ${hm.note}` : 'policy unavailable')}
               </div>
 
-              {applyError && <div className="text-xs text-red-700 dark:text-red-400 flex items-start gap-1"><ShieldAlert className="h-4 w-4 mt-0.5 flex-shrink-0" /><span>{applyError.message}</span></div>}
             </>
           )}
         </div>
 
+        {/* Next to the buttons, not at the end of the scrolled body: an Approve
+            that was refused must say so where the operator just clicked. */}
+        {applyError && (
+          <div className="border-t border-gray-200 px-5 pt-3 dark:border-gray-700" data-testid="upgrade-apply-error">
+            <ErrorPanel error={extractOperatorError(applyError)} compact />
+          </div>
+        )}
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 dark:border-gray-700 px-5 py-3">
           <button type="button" onClick={onClose} className="text-sm px-3 py-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
           {/* Sits before Approve so the reading step comes before the committing

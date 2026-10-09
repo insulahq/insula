@@ -112,6 +112,11 @@ export function assessRunNode(
       : `The node update failed ${job?.failed} times — see the job log in namespace system-upgrade.`);
   }
 
+  // The job finished, the node's own report has not caught up yet (relayed within
+  // a minute) — still updating, never back to "queued".
+  if ((job?.succeeded ?? 0) > 0) {
+    return out('updating', atTarget ? 'Applying host changes…' : 'Done on the node; waiting for its report…');
+  }
   if ((job?.active ?? 0) > 0 || (job?.failed ?? 0) > 0) {
     return out('updating', broken
       ? `Retrying: host change ${broken.key} failed${broken.error ? ` (${broken.error})` : ''}.`
