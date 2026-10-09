@@ -4,6 +4,10 @@ import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 import { isNewerVersion } from './poller/semver.js';
+import type { MaintenanceWindow } from '@insula/api-contracts';
+import {
+  AUTO_UPDATE_STATUS_KEY, MAINTENANCE_WINDOW_KEY, parseStatus, parseWindow,
+} from '../platform-upgrades/auto-update.js';
 import { releaseTagFor } from '../../cli/platform-ops/self-upgrade/release-tag.js';
 
 // GitHub Releases API for the upstream repo — no auth required for
@@ -268,6 +272,9 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
     availableVerifiedAt: availableVerifiedAt ?? null,
     availableVerifyStatus: availableVerifyStatus ?? null,
     includePrereleases,
+    // ADR-064 §7: when automatic updates may act, and what they did last.
+    maintenanceWindow: parseWindow(await getSetting(db, MAINTENANCE_WINDOW_KEY)),
+    autoUpdateStatus: parseStatus(await getSetting(db, AUTO_UPDATE_STATUS_KEY)),
   };
 }
 
@@ -285,13 +292,26 @@ export function isNewer(latest: string, current: string): boolean {
   return isNewerVersion(releaseTagFor(latest), releaseTagFor(current));
 }
 
-export async function updateSettings(db: Database, autoUpdate: boolean, includePrereleases?: boolean): Promise<{ autoUpdate: boolean; includePrereleases: boolean }> {
+export async function updateSettings(
+  db: Database,
+  autoUpdate: boolean,
+  includePrereleases?: boolean,
+  /** undefined = unchanged; null = clear the window (automatic updates then never act). */
+  maintenanceWindow?: MaintenanceWindow | null,
+): Promise<{ autoUpdate: boolean; includePrereleases: boolean; maintenanceWindow: MaintenanceWindow | null }> {
   await setSetting(db, 'auto_update', String(autoUpdate));
   if (includePrereleases !== undefined) {
     await setSetting(db, 'auto_update_include_prereleases', String(includePrereleases));
   }
+  if (maintenanceWindow !== undefined) {
+    await setSetting(db, MAINTENANCE_WINDOW_KEY, maintenanceWindow ? JSON.stringify(maintenanceWindow) : '');
+  }
   const effectivePrereleases = (await getSetting(db, 'auto_update_include_prereleases')) === 'true';
-  return { autoUpdate, includePrereleases: effectivePrereleases };
+  return {
+    autoUpdate,
+    includePrereleases: effectivePrereleases,
+    maintenanceWindow: parseWindow(await getSetting(db, MAINTENANCE_WINDOW_KEY)),
+  };
 }
 
 // ─── Capacity Check ─────────────────────────────────────────────────────────

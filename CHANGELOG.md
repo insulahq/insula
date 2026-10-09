@@ -14,6 +14,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Automatic updates are real.** The toggle used to be stored and read by nothing. Now it applies
+  a verified **stable**, non-BREAKING release through the same run and pre-flight as a manual
+  upgrade, and only inside a **maintenance window** you set (weekdays, start and end, time zone).
+  Release candidates and BREAKING releases are left for you to apply. Without a window it does
+  nothing, a failing check skips the window and notifies once, and the page says what it did last
+  and why. Changing it now needs `super_admin`, like Apply. `insula upgrade --apply` runs the same
+  pre-flight and starts the same run (`--exclude-node`, `--status`). `--direct` keeps the old
+  services-only re-pin as break-glass for when platform-api is down. A cluster on a release
+  channel (staging following new tags) starts a run by itself after its services roll, so the nodes
+  follow promptly. ([ADR-064](docs/architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md) §7, §9)
 - **The upgrade review says what changes, and every upgrade run keeps a page.** The review
   lists the services' version before and after, how many database and platform migrations still
   run here, and each host change by its description: before or after the services, and on which

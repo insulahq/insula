@@ -57,9 +57,12 @@ Commands:
   cluster upgrade-cnpg   Bump the CloudNativePG operator
   node cordon|uncordon <name>
                          Cordon / uncordon a node (operator maintenance)
-  upgrade [--version X.Y.Z] [--apply]
-                         Plan/apply a platform upgrade by re-pinning the Flux
-                         source tag (dry-run prints the plan; --apply re-pins)
+  upgrade [--version X.Y.Z] [--apply] [--exclude-node N]... [--direct]
+                         Plan/start a platform upgrade (dry-run prints the plan
+                         and pre-flight; --apply starts the run: nodes first,
+                         then the services; --direct = break-glass services-only
+                         re-pin when platform-api is down)
+  upgrade --status       Show the upgrade run in flight (or the last one)
   rollback [--apply] [--restore-data]
                          Undo the most recent upgrade (re-pin back; --restore-data
                          also reverts Longhorn snapshots — DESTRUCTIVE)

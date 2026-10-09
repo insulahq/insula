@@ -2330,11 +2330,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // upgrade is in flight (pending_update_version set) it advances the
         // post-flight convergence streak on a controlled cadence and notifies
         // admins if the upgrade is not converging (abort-recommended). Dormant
-        // otherwise; single-flight across replicas via a DB lease. Does NOT
-        // auto-apply upgrades — Apply stays operator-driven.
+        // otherwise; single-flight across replicas via a DB lease. It applies
+        // nothing itself — Apply and automatic updates (below) start runs.
         const { startUpgradeReconciler } = await import('./modules/platform-upgrades/scheduler.js');
         const upgradeReconcilerHandle = startUpgradeReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => upgradeReconcilerHandle.stop());
+
+        // ADR-064 §7: automatic updates — off unless an operator turns them on AND
+        // sets a maintenance window. Applies verified stable, non-BREAKING releases
+        // through the same run and pre-flight as Apply. Lease-guarded (one actor).
+        const { startAutoUpdateScheduler } = await import('./modules/platform-upgrades/auto-update.js');
+        const autoUpdateHandle = startAutoUpdateScheduler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => autoUpdateHandle.stop());
 
         // M13: storage-policy advisor — emit a one-time admin
         // notification when the cluster reaches >=3 Ready servers

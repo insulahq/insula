@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle, ShieldAlert, Download, Container, ArrowUpCircle } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
-import { usePlatformVersion, useCheckForUpdates, useUpdateSettings } from '@/hooks/use-platform-updates';
+import { usePlatformVersion, useCheckForUpdates } from '@/hooks/use-platform-updates';
 import { useRollback, type RollbackData } from '@/hooks/use-platform-upgrade';
 import { useAuth } from '@/hooks/use-auth';
 import DeployedImagesModal from '@/components/platform/DeployedImagesModal';
@@ -9,6 +9,7 @@ import UpgradeReviewModal from '@/components/platform/UpgradeReviewModal';
 import PlatformUpgradeProgressModal from '@/components/PlatformUpgradeProgressModal';
 import HostMigrationsCard from '@/components/platform/HostMigrationsCard';
 import UpgradeHistoryCard from '@/components/platform/UpgradeHistoryCard';
+import AutoUpdateSettings from '@/components/platform/AutoUpdateSettings';
 import { formatVersion } from '@/lib/format-version';
 
 /**
@@ -25,12 +26,10 @@ export default function UpgradesPage() {
   const checkForUpdates = useCheckForUpdates();
   // Spin while either the on-demand poll or a background refetch is in flight.
   const checking = checkForUpdates.isPending || versionFetching;
-  const updateSettings = useUpdateSettings();
   const rollback = useRollback();
   const { user } = useAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [autoUpdateLocal, setAutoUpdateLocal] = useState<boolean | null>(null);
   const [showImages, setShowImages] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [progressTarget, setProgressTarget] = useState<string | undefined>(undefined);
@@ -138,12 +137,7 @@ export default function UpgradesPage() {
                   <CheckCircle size={14} /> Auto-managed by Flux
                 </span>
               ) : (
-                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                  <input type="checkbox" data-testid="auto-update-toggle" checked={autoUpdateLocal ?? v.autoUpdate}
-                    onChange={(e) => { setAutoUpdateLocal(e.target.checked); updateSettings.mutate(e.target.checked); }}
-                    className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
-                  Automatic updates
-                </label>
+                <AutoUpdateSettings v={v} canEdit={isSuperAdmin} />
               )}
               {/* Polls GitHub for real. refetchVersion() only re-read the value
                   the hourly CronJob stored, so a release published since the

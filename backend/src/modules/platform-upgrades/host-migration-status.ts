@@ -21,6 +21,7 @@
  * the state, the reason, and the exact commands — see the runbook.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { plainText } from '../../shared/plain-text.js';
 import type {
   HostMigrationNodeStatus,
   HostMigrationStatusResponse,
@@ -86,6 +87,11 @@ const STATES = new Set([
 ]);
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+/** Free text a node wrote (a script's stderr, a skip reason): shown in the panel and the CLI. */
+const nodeText = (v: unknown): string | null => {
+  const s = str(v);
+  return s === null ? null : plainText(s) || null;
+};
 const versionOrNull = (v: unknown): string | null => {
   const s = str(v)?.trim();
   return s && s.length <= 64 && parseVersion(s) ? s : null;
@@ -185,10 +191,10 @@ export function interpretNodeSnapshot(
       {
         key,
         state: state as HostMigrationItem['state'],
-        error: str(i.error),
+        error: nodeText(i.error),
         attempt: num(i.attempt),
         failingSince: str(i.failingSince),
-        skipReason: str(i.skipReason),
+        skipReason: nodeText(i.skipReason),
         // ADR-056 §5: recorded by a fresh bootstrap's `.baseline`, never run here.
         baseline: i.baseline === true ? true : null,
         phase: i.phase === 'before-services' || i.phase === 'after-services' ? i.phase : null,
@@ -236,7 +242,7 @@ export function interpretNodeSnapshot(
     // A whole-run refusal (catalog over MAX_SCRIPTS) arrives as ok:false with
     // NO items. Without carrying the reason, that node renders as a healthy
     // "0 applied" while running nothing at all.
-    reason: str(hm['reason']),
+    reason: nodeText(hm['reason']),
     items,
     // A CLI that predates the field reports none — "not reported", never a version.
     // Node-supplied: only a well-formed version is believed (and displayed).

@@ -685,21 +685,44 @@ export async function nodeCommand(args: string[], deps: Deps): Promise<number> {
 }
 
 /**
- * `upgrade [--version X.Y.Z] [--apply]` (ADR-045 W13) — host-side platform
- * upgrade by re-pinning the cluster's Flux GitRepository to a release tag
- * (the PR-18 spike's validated mechanism). DRY-RUN BY DEFAULT: prints the plan +
- * the re-pin it WOULD do; `--apply` performs the re-pin (Flux then rolls the
- * cluster to the new tag). Operator-driven = manual mode (auto_update gating
- * applies only to the backend reconciler). Exit 1 on a real failure.
+ * `upgrade [--version X.Y.Z] [--apply] [--exclude-node N]… [--direct] | --status`
+ * (ADR-045 W13, ADR-064 §9). DRY-RUN BY DEFAULT: prints the plan and the
+ * pre-flight. `--apply` runs the pre-flight and starts the same upgrade run the
+ * admin panel starts — every node takes the release first, then the services
+ * roll — driven by platform-api (`--status` shows it). `--exclude-node` upgrades
+ * without a node that is down. `--direct` is break-glass: the old services-only
+ * Flux re-pin, for when platform-api cannot drive a run; nodes then catch up on
+ * their own hourly check. Exit 1 on a real failure.
  */
+const NODE_NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 export async function upgradeCommand(args: string[], deps: Deps): Promise<number> {
   let requestedVersion: string | undefined;
   let apply = false;
+  let direct = false;
+  const excludeNodes: string[] = [];
+  if (args.length === 1 && args[0] === '--status') {
+    const s = await deps.upgrade.status();
+    if (s.errorCode) {
+      deps.err(`upgrade --status: ${s.errorCode}`);
+      return 1;
+    }
+    for (const l of s.lines.length > 0 ? s.lines : ['no upgrade run recorded']) deps.out(l);
+    return s.ok ? 0 : 1;
+  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--apply') apply = true;
     else if (a === '--dry-run') apply = false;
-    else if (a === '--version') {
+    else if (a === '--direct') direct = true;
+    else if (a === '--exclude-node') {
+      const n = args[i + 1];
+      if (n === undefined || !NODE_NAME_RE.test(n) || n.length > 253) {
+        deps.err('upgrade: --exclude-node requires a node name (e.g. --exclude-node worker-2)');
+        return 2;
+      }
+      excludeNodes.push(n);
+      i++;
+    } else if (a === '--version') {
       const v = args[i + 1];
       if (v === undefined || v.startsWith('--')) {
         deps.err('upgrade: --version requires a value (e.g. --version 2026.7.0)');
@@ -713,19 +736,26 @@ export async function upgradeCommand(args: string[], deps: Deps): Promise<number
     }
   }
 
-  const r = await deps.upgrade.run({ mode: 'manual', requestedVersion, apply });
+  if (direct && !apply) {
+    deps.err('upgrade: --direct only changes how --apply works; add --apply');
+    return 2;
+  }
+  const r = await deps.upgrade.run({ mode: 'manual', requestedVersion, apply, excludeNodes, direct });
   if (r.errorCode) {
     deps.err(`upgrade: ${r.errorCode} — ${r.summary}`);
+    for (const b of r.blocking ?? []) deps.err(`  ✗ ${b}`);
     return 1;
   }
   if (!apply) {
     deps.out(`# DRY-RUN — ${r.summary}`);
     deps.out(`  decision: ${r.action}${r.target ? ` → ${r.target}` : ''} (${r.reason})`);
-    if (r.proceed) deps.out('  pass --apply to perform the re-pin (Flux then rolls the cluster).');
+    for (const b of r.blocking ?? []) deps.out(`  ✗ pre-flight: ${b}`);
+    if (r.proceed) deps.out('  pass --apply to start the upgrade (nodes first, then the services).');
     return 0;
   }
   deps.out(`upgrade: ${r.summary}`);
-  if (r.applied) deps.out('Watch: kubectl -n flux-system get gitrepository,kustomization');
+  if (r.applied && r.runId) deps.out('Watch: insula upgrade --status   (or Platform → Updates in the admin panel)');
+  else if (r.applied) deps.out('Watch: kubectl -n flux-system get gitrepository,kustomization');
   // proceed-but-not-applied is a real failure; a blocked/no-op decision is exit 0.
   return r.ok ? 0 : 1;
 }
