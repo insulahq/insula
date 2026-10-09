@@ -19,7 +19,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   step after the host changes, through the same k3s Plans as `insula cluster upgrade`: servers one
   at a time, then each worker drained and upgraded. Each node row shows its Kubernetes version.
   It is offered only for a newer patch or the next minor; anything further is pointed at
-  `insula cluster upgrade`. The signed release manifest now carries the release's k3s pin, and
+  `insula cluster upgrade`. A node counts as done only once the upgrade controller has finished
+  with it and lifted its cordon. A node left out of the run keeps its Kubernetes version, and the
+  run's last line says so. The signed release manifest now carries the release's k3s pin, and
   the platform-api admission policy allows the two k3s Plans only in exactly that shape.
   ([ADR-064](docs/architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md) §8)
 - **Automatic updates are real.** The toggle used to be stored and read by nothing. Now it applies
@@ -167,6 +169,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A panel left open across an upgrade loads the new version instead of crashing.** Every page is
+  loaded on demand, and an upgrade replaces the admin and tenant panels; the next page opened in a
+  tab of the previous version (the upgrade dialog's **Open page**, for one) asked for a file the
+  new version no longer has and showed *Something went wrong*. The panel now loads the same page
+  again, once, and says *The admin panel was updated*. A second failure right after is treated as
+  an outage and offers **Reload Page** instead of looping.
 - **A cluster on a release candidate is offered the next one, and the stable release.** The
   Updates page compared versions without their `-rc.N` suffix, so a cluster on `-rc.1` read
   `-rc.2`, and later the stable release, as "already current" and never showed **Run upgrade**,

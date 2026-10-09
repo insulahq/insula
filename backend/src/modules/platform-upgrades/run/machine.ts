@@ -79,8 +79,12 @@ export interface RunMachineDeps {
   /** ADR-064 §8: start the k3s Plans for the run's Kubernetes target. */
   readonly applyKubernetesPlans: () => Promise<{ readonly ok: boolean; readonly reason?: string }>;
   readonly deleteKubernetesPlans: () => Promise<void>;
-  /** Both k3s Plans exist (a crash between claiming the step and applying them leaves none). */
-  readonly kubernetesPlansExist: () => Promise<boolean>;
+  /**
+   * Whether both k3s Plans exist (a crash between claiming the step and applying
+   * them leaves none), and each Plan's current hash (status.latestHash) — what a
+   * node's completion label is compared with.
+   */
+  readonly kubernetesPlans: () => Promise<{ readonly exist: boolean; readonly latestHash: ReadonlyMap<string, string> }>;
   readonly kubernetesJobs: (sinceMs: number) => Promise<ReadonlyMap<string, NodeJobFacts>>;
 }
 
@@ -212,8 +216,10 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
 
   if (run.step === 'upgrade-kubernetes' && run.kubernetesVersion) {
     const k8sTarget = run.kubernetesVersion;
-    const [nodes, jobs] = await Promise.all([deps.nodes(), deps.kubernetesJobs(new Date(run.stepStartedAt).getTime())]);
-    const view = nodes.map((n) => assessKubernetesNode(n, jobs.get(n.name), k8sTarget, run.excludedNodes ?? []));
+    const [nodes, jobs, plans] = await Promise.all([
+      deps.nodes(), deps.kubernetesJobs(new Date(run.stepStartedAt).getTime()), deps.kubernetesPlans(),
+    ]);
+    const view = nodes.map((n) => assessKubernetesNode(n, jobs.get(n.name), k8sTarget, run.excludedNodes ?? [], plans.latestHash));
     if (!sameNodes(view, run.nodes ?? [])) await deps.update({ nodes: view as unknown as Array<Record<string, unknown>> });
     const included = view.filter((n) => n.state !== 'excluded');
     const ready = included.filter((n) => n.state === 'ready');
@@ -222,7 +228,7 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
     await deps.progress(atBand(progressBands(run).kubernetes, ready.length / total), `Kubernetes ${k8sTarget} ${ready.length}/${included.length}`);
     // Resumable like every step: a crash after the claim, before the Plans were
     // created, finds none here and creates them (applying is create-or-patch).
-    if (ready.length < included.length && failed.length === 0 && !(await deps.kubernetesPlansExist())) {
+    if (ready.length < included.length && failed.length === 0 && !plans.exist) {
       const p = await deps.applyKubernetesPlans();
       if (!p.ok) {
         await fail(deps, `The services and host changes run ${target}, but the Kubernetes step could not start: ${p.reason ?? 'unknown'}.`);
@@ -243,9 +249,11 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
       return 'done';
     }
     // Never cut a k3s restart off mid-flight: the budget runs out only while no
-    // node is updating (each job is bounded by the controller's own deadline).
+    // job is running (each is bounded by the controller's own deadline). Judged on
+    // the jobs, not on "updating" — a node waiting on a stalled controller must
+    // not hold the step open forever.
     const timeoutMs = kubernetesTimeoutMs(included.length);
-    if (elapsed > timeoutMs && !included.some((n) => n.state === 'updating')) {
+    if (elapsed > timeoutMs && !included.some((n) => (jobs.get(n.node)?.active ?? 0) > 0)) {
       const late = included.filter((n) => n.state !== 'ready');
       await deps.deleteKubernetesPlans();
       await fail(deps, `The services and host changes run ${target}, but Kubernetes did not reach ${k8sTarget} within `

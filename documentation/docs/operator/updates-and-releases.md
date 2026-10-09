@@ -135,7 +135,9 @@ close the dialog and reopen it from the Tasks chip, or use **Open page**: every
 run has its own page (*Platform Settings → Updates → Upgrade history*), which
 survives a reload and stays as the record of how the run ended — each node's
 outcome and the message it stopped with. Cancelled and rolled-back runs are
-listed as such, apart from failures.
+listed as such, apart from failures. Step 2 replaces the admin panel itself:
+the page you have open keeps working, and the next page you open there loads
+the new version by itself (it says *The admin panel was updated*).
 
 1. **Update the nodes.** Each node, one at a time, fetches the release's
    `insula` CLI, verifies its signature against the key the node pins, and
@@ -168,7 +170,9 @@ Each release pins a k3s (Kubernetes) version for fresh installs. When that versi
 is newer than your nodes run, the review offers **Also upgrade Kubernetes x → y**.
 It is off by default. Ticked, the run gets a fourth step after the host changes:
 servers one at a time, then each worker drained (its tenant sites move while it
-is drained) and upgraded. Its node rows show each node's Kubernetes version. The
+is drained) and upgraded. Its node rows show each node's Kubernetes version. A
+node counts as done once the upgrade controller has finished with it and lifted
+its cordon, not as soon as its new version reports. The
 step is offered only for a safe hop: a newer patch, or the next minor version.
 A cluster further behind is told to use `insula cluster upgrade`, which steps
 one minor version at a time. If the step fails, the services and host changes
@@ -181,8 +185,12 @@ the pre-flight check **Every node can take part** fails and names it. If the nod
 will not be back soon, tick **Upgrade without** next to it in the review dialog.
 The run then leaves it out, and the node updates itself through its own hourly
 update check once it is back. It runs no release ahead of the cluster: the check
-only ever fetches the release the cluster runs. If a node goes down *during* step 1,
-the run waits for it. Cancel, then start the upgrade again without it.
+only ever fetches the release the cluster runs. Kubernetes is the exception: a
+node left out of a run that also upgraded Kubernetes keeps its Kubernetes
+version; once it is back, run `insula cluster upgrade --version <version> --apply`
+on a server for it. The run's last line counts the nodes it upgraded and says so.
+If a node goes down *during* step 1, the run waits for it. Cancel, then start the
+upgrade again without it.
 
 ## Automatic updates
 

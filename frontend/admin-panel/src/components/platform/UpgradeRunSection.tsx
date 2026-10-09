@@ -50,9 +50,22 @@ export function runPercent(run: UpgradeRun, servicesPercent: number | null): num
   return 100;
 }
 
+/** Pure: what a finished run changed — "every node" only when the operator left none out. */
+function doneLine(run: UpgradeRun, target: string): string {
+  const onK8s = run.kubernetesVersion ? `, on Kubernetes ${run.kubernetesVersion}` : '';
+  const left = run.nodes.filter((n) => n.state === 'excluded').length;
+  if (left === 0) return `Done — the services and every node run ${target}${onK8s}.`;
+  const total = run.nodes.length;
+  const catchUp = left === 1
+    ? 'the node left out updates on its own timer when it is back'
+    : `the ${left} nodes left out update on their own timer when they are back`;
+  const k8sCatchUp = run.kubernetesVersion ? ` (Kubernetes: run \`insula cluster upgrade\` for ${left === 1 ? 'it' : 'them'})` : '';
+  return `Done — the services and ${total - left} of ${total} nodes run ${target}${onK8s}; ${catchUp}${k8sCatchUp}.`;
+}
+
 /** Pure: the one-line status of a run. */
 export function runStatusLine(run: UpgradeRun, target: string): string {
-  if (run.status === 'succeeded') return `Done — the services and every node run ${target}.`;
+  if (run.status === 'succeeded') return doneLine(run, target);
   if (run.status === 'cancelled') return run.message ?? 'Cancelled before the services changed.';
   if (run.status === 'rolled-back') return run.message ?? 'Rolled back.';
   if (run.status === 'failed') return run.message ?? 'The upgrade stopped.';

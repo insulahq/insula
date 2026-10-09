@@ -36,6 +36,8 @@ interface World {
   k8sApplyOk: boolean;
   k8sJobs: Record<string, NodeJobFacts>;
   k8sPlansExist: boolean;
+  /** Each k3s Plan's status.latestHash. */
+  k8sPlanHashes: Record<string, string>;
 }
 
 function harness(w: Partial<World> = {}) {
@@ -44,7 +46,8 @@ function harness(w: Partial<World> = {}) {
     nodes: [{ name: 'sv1', ready: true }, { name: 'sv2', ready: true }],
     statuses: [st('sv1', '2026.10.7-rc.3'), st('sv2', '2026.10.7-rc.3')],
     jobs: {}, pending: null, installed: '2026.10.7-rc.3', servicesApplied: true, applyOk: true,
-    dbStatus: 'running', dbStep: 'prepare-nodes', k8sApplyOk: true, k8sJobs: {}, k8sPlansExist: true, ...w,
+    dbStatus: 'running', dbStep: 'prepare-nodes', k8sApplyOk: true, k8sJobs: {}, k8sPlansExist: true,
+    k8sPlanHashes: { 'k3s-server-upgrade': 'h-server', 'k3s-agent-upgrade': 'h-agent' }, ...w,
   };
   const calls = { patches: [] as RunPatch[], applied: [] as string[], deleted: [] as string[], services: 0, finalized: [] as Array<[string, string | null]>, progress: [] as Array<[number, string]>, k8sApplied: 0, k8sDeleted: 0 };
   const deps: RunMachineDeps = {
@@ -73,7 +76,7 @@ function harness(w: Partial<World> = {}) {
     applyKubernetesPlans: async () => { calls.k8sApplied += 1; return world.k8sApplyOk ? { ok: true } : { ok: false, reason: 'refusing skip-a-minor' }; },
     deleteKubernetesPlans: async () => { calls.k8sDeleted += 1; },
     kubernetesJobs: async () => new Map(Object.entries(world.k8sJobs)),
-    kubernetesPlansExist: async () => world.k8sPlansExist,
+    kubernetesPlans: async () => ({ exist: world.k8sPlansExist, latestHash: new Map(Object.entries(world.k8sPlanHashes)) }),
   };
   return { world, calls, deps };
 }
@@ -224,7 +227,9 @@ describe('advanceRun — update-services and finish', () => {
 
 describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
   const K = 'v1.36.5+k3s1';
-  const kNodes = (v1: string, v2: string) => [{ name: 'sv1', ready: true, kubeletVersion: v1 }, { name: 'sv2', ready: true, kubeletVersion: v2 }];
+  // A node at the target carries the controller's completion record for the current Plan hash.
+  const kNode = (name: string, v: string) => ({ name, ready: true, kubeletVersion: v, planHashes: v === K ? { 'k3s-server-upgrade': 'h-server' } : {} });
+  const kNodes = (v1: string, v2: string) => [kNode('sv1', v1), kNode('sv2', v2)];
 
   it('host changes finished + a Kubernetes target → starts the k3s Plans and enters the step (not done)', async () => {
     const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish' });
@@ -256,6 +261,22 @@ describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
     await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), failing.deps);
     expect(failing.calls.k8sDeleted).toBe(1);
     expect(failing.calls.finalized[0]?.[1]).toMatch(/Kubernetes upgrade to v1\.36\.5\+k3s1 stopped on sv2/);
+  });
+
+  it('the last kubelet at the target but the controller not done with it → Plans kept (deleting them now would leave it cordoned)', async () => {
+    const lagging = [kNode('sv1', K), { name: 'sv2', ready: true, kubeletVersion: K, unschedulable: true, planHashes: {} }];
+    const h = harness({ nodes: lagging, dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 0, failed: 0, succeeded: 1 } } });
+    expect(await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps)).toBe('upgrade-kubernetes');
+    expect(h.calls.k8sDeleted).toBe(0);
+    expect(h.calls.finalized).toEqual([]);
+  });
+
+  it('a controller that never confirms cannot hold the step open: the budget runs out once no job is running', async () => {
+    const late = T0 + 61 * 60 * 1000;
+    const stuck = [kNode('sv1', K), { name: 'sv2', ready: true, kubeletVersion: K, planHashes: {} }];
+    const h = harness({ now: late, nodes: stuck, dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 0, failed: 0, succeeded: 1 } } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps);
+    expect(h.calls.finalized[0]?.[1]).toMatch(/did not reach v1\.36\.5\+k3s1 within 60 minutes on sv2/);
   });
 
   it('no Kubernetes target → the run ends at finish as before', async () => {

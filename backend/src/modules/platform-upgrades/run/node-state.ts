@@ -20,6 +20,14 @@ export interface NodeFacts {
   readonly ready: boolean;
   /** The kubelet's version (status.nodeInfo), for the Kubernetes step. */
   readonly kubeletVersion?: string | null;
+  /** Cordoned (spec.unschedulable). */
+  readonly unschedulable?: boolean;
+  /**
+   * The upgrade controller's completion record on the node: Plan name → the Plan
+   * hash it last finished here (label `plan.upgrade.cattle.io/<plan>`). The
+   * controller writes it in the same update that uncordons the node.
+   */
+  readonly planHashes?: Readonly<Record<string, string>>;
 }
 
 export interface NodeJobFacts {
