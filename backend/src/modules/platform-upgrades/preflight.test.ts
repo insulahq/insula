@@ -148,3 +148,44 @@ describe('evaluatePreflight', () => {
     });
   });
 });
+
+describe('evaluatePreflight — upgrade-run gates (ADR-064)', () => {
+  const nodes = [{ name: 'sv1', ready: true }, { name: 'sv2', ready: false }];
+
+  it('no node facts (a caller that predates runs) → no nodes-ready gate', () => {
+    expect(evaluatePreflight(healthy).gates.find((g) => g.id === 'nodes-ready')).toBeUndefined();
+  });
+
+  it('a Not Ready node blocks — in every environment, since the run would only wait', () => {
+    for (const environment of ['production', 'staging', 'dev']) {
+      const r = evaluatePreflight({ ...healthy, environment, nodes });
+      expect(gate(r, 'nodes-ready').status).toBe('fail');
+      expect(gate(r, 'nodes-ready').detail).toMatch(/sv2 is not Ready.*exclude it/);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it('excluding the Not Ready node passes and names it as upgraded without', () => {
+    const r = evaluatePreflight({ ...healthy, nodes, excludedNodes: ['sv2'] });
+    expect(gate(r, 'nodes-ready').status).toBe('pass');
+    expect(gate(r, 'nodes-ready').detail).toMatch(/1 node\(s\) Ready.*without sv2.*hourly timer/);
+    expect(r.ok).toBe(true);
+  });
+
+  it('every node excluded → fail (at least one must take part)', () => {
+    const r = evaluatePreflight({ ...healthy, nodes, excludedNodes: ['sv1', 'sv2'] });
+    expect(gate(r, 'nodes-ready').status).toBe('fail');
+    expect(gate(r, 'nodes-ready').detail).toMatch(/every node is excluded/);
+  });
+
+  it('unreadable nodes → warn, never a silent pass', () => {
+    const r = evaluatePreflight({ ...healthy, nodes: null });
+    expect(gate(r, 'nodes-ready').status).toBe('warn');
+  });
+
+  it('an upgrade already running → fail; not running or unreadable → no gate', () => {
+    expect(gate(evaluatePreflight({ ...healthy, upgradeRunning: true }), 'no-upgrade-running').status).toBe('fail');
+    expect(evaluatePreflight({ ...healthy, upgradeRunning: false }).gates.find((g) => g.id === 'no-upgrade-running')).toBeUndefined();
+    expect(evaluatePreflight({ ...healthy, upgradeRunning: null }).gates.find((g) => g.id === 'no-upgrade-running')).toBeUndefined();
+  });
+});

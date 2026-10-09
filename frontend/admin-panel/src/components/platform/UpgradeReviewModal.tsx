@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert, FileText } from 'lucide-react';
 import { usePreflight, useHostMigrationsPreview, useUpgradeApply, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import NodeName from '@/components/nodes/NodeName';
 import ChangelogModal from './ChangelogModal';
 import { formatVersion } from '@/lib/format-version';
 
@@ -35,7 +37,18 @@ interface Props {
 }
 
 export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }: Props) {
-  const preflight = usePreflight();
+  // ADR-064: the upgrade updates every node before the services, so a node that is
+  // not Ready blocks it — unless the operator chooses to upgrade without it.
+  const [excluded, setExcluded] = useState<string[]>([]);
+  const nodesQ = useClusterNodes();
+  const notReady = useMemo(
+    () => (nodesQ.data?.data ?? [])
+      .filter((n) => n.existsInKubernetes !== false)
+      .filter((n) => (n.statusConditions ?? []).find((c) => c.type === 'Ready')?.status !== 'True')
+      .map((n) => n.name),
+    [nodesQ.data],
+  );
+  const preflight = usePreflight(true, excluded);
   const hostMigrations = useHostMigrationsPreview();
   const apply = useUpgradeApply();
   const [preview, setPreview] = useState<UpgradeApplyData | null>(null);
@@ -70,7 +83,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   const onApproveClick = async () => {
     setApplying(true);
     try {
-      await apply.mutateAsync({ version: targetVersion, apply: true });
+      await apply.mutateAsync({ version: targetVersion, apply: true, excludeNodes: excluded });
       onApprove(resolvedTarget ?? undefined);
     } catch {
       setApplying(false); // stay open; error shows below
@@ -133,6 +146,34 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
                   </>
                 ) : <div className="text-xs text-red-600 dark:text-red-400">Could not load pre-flight checks.</div>}
               </div>
+
+              {/* Nodes the upgrade would wait for */}
+              {(notReady.length > 0 || excluded.length > 0) && (
+                <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-700 dark:bg-amber-900/20" data-testid="upgrade-exclude-nodes">
+                  <div className="font-medium text-gray-900 dark:text-gray-100">Nodes that are not Ready</div>
+                  <p className="mt-1 text-gray-700 dark:text-gray-300">
+                    The upgrade updates every node before the services. Upgrade without a node that is down, and it
+                    catches up on its own hourly update when it is back.
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {[...new Set([...notReady, ...excluded])].map((name) => (
+                      <li key={name}>
+                        <label className="inline-flex items-center gap-2 text-gray-800 dark:text-gray-200">
+                          <input
+                            type="checkbox"
+                            className="rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700"
+                            data-testid={`exclude-node-${name}`}
+                            checked={excluded.includes(name)}
+                            disabled={applying}
+                            onChange={(e) => setExcluded((cur) => (e.target.checked ? [...cur, name] : cur.filter((x) => x !== name)))}
+                          />
+                          Upgrade without <NodeName name={name} className="font-mono" />
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {/* Host migrations */}
               <div className="text-xs text-gray-500 dark:text-gray-400">

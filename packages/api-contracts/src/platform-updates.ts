@@ -68,6 +68,9 @@ export const upgradePreflightResponseSchema = z.object({
   environment: z.string(),
 });
 
+/** A Kubernetes node name (DNS-1123 subdomain). */
+const NODE_NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
+
 export const upgradeApplyRequestSchema = z.object({
   /** Explicit target version (CalVer); omitted → the verified available version.
    *  Charset-pinned here (defence-in-depth + no log-injection) on top of the
@@ -77,9 +80,67 @@ export const upgradeApplyRequestSchema = z.object({
     .max(64)
     .regex(/^\d+\.\d+\.\d+(-[A-Za-z0-9.-]{1,40})?$/, 'version must be CalVer X.Y.Z[-suffix]')
     .optional(),
-  /** false (default) = dry-run plan only; true = perform the Flux re-pin. */
+  /** false (default) = dry-run plan only; true = start the upgrade run. */
   apply: z.boolean().optional(),
+  /**
+   * ADR-064 §5: nodes the operator chooses to upgrade WITHOUT (offline at the
+   * start). They catch up through their own update timer when they return.
+   * Node names are DNS-1123 subdomains.
+   */
+  excludeNodes: z
+    .array(z.string().max(253).regex(NODE_NAME_RE, 'not a node name'))
+    .max(100)
+    .optional(),
 });
+
+/** GET …/upgrade/preflight?exclude=a,b — the same exclusions the apply would carry. */
+export const upgradePreflightQuerySchema = z.object({
+  exclude: z
+    .string()
+    .max(4096)
+    .optional()
+    .transform((v) => (v ? v.split(',').map((s) => s.trim()).filter((s) => s !== '') : []))
+    .pipe(z.array(z.string().max(253).regex(NODE_NAME_RE, 'not a node name')).max(100)),
+});
+
+// ── Upgrade runs (ADR-064) ─────────────────────────────────────────────────────
+export const upgradeRunStepSchema = z.enum(['prepare-nodes', 'update-services', 'finish', 'done']);
+export type UpgradeRunStep = z.infer<typeof upgradeRunStepSchema>;
+
+/**
+ * One node in a run. `excluded` is a node upgraded without — it updates on its
+ * own timer when back; `waiting` is a node the run waits for (not Ready). Only
+ * `failed` is a fault.
+ */
+export const upgradeRunNodeStateSchema = z.enum([
+  'queued', 'updating', 'ready', 'waiting', 'excluded', 'failed',
+]);
+export const upgradeRunNodeSchema = z.object({
+  node: z.string(),
+  state: upgradeRunNodeStateSchema,
+  /** The node's CLI version as last reported (null = not reported). */
+  cliVersion: z.string().nullable(),
+  /** One line an operator can act on. */
+  detail: z.string(),
+});
+export type UpgradeRunNode = z.infer<typeof upgradeRunNodeSchema>;
+
+export const upgradeRunSchema = z.object({
+  id: z.string(),
+  fromVersion: z.string().nullable(),
+  toVersion: z.string(),
+  mode: z.enum(['manual', 'auto']),
+  /** cancelled = stopped by an operator before the services changed; rolled-back = a rollback took over. */
+  status: z.enum(['running', 'succeeded', 'failed', 'cancelled', 'rolled-back']),
+  step: upgradeRunStepSchema,
+  excludedNodes: z.array(z.string()),
+  nodes: z.array(upgradeRunNodeSchema),
+  message: z.string().nullable(),
+  startedAt: z.string(),
+  stepStartedAt: z.string(),
+  finishedAt: z.string().nullable(),
+});
+export type UpgradeRun = z.infer<typeof upgradeRunSchema>;
 
 export const upgradeApplyResponseSchema = z.object({
   action: z.string(),
@@ -90,6 +151,8 @@ export const upgradeApplyResponseSchema = z.object({
   gitRepository: z.string().nullable(),
   environment: z.string(),
   summary: z.string(),
+  /** ADR-064: the run an apply started (null on a dry-run or a refusal). */
+  runId: z.string().nullable().optional(),
 });
 
 export const rollbackRequestSchema = z.object({
@@ -204,9 +267,13 @@ export const hostMigrationItemSchema = z.object({
     'run-failed',
     'blocked',
     'skipped',
+    // ADR-064: an after-services script waiting for the services to run its release.
+    'deferred',
     'invalid',
   ]),
   error: z.string().nullable().optional(),
+  /** ADR-064 §3: before-services | after-services (absent from older CLIs). */
+  phase: z.enum(['before-services', 'after-services']).nullable().optional(),
   /** ADR-056: how many consecutive times this has failed, and since when. */
   attempt: z.number().int().nullable().optional(),
   failingSince: z.string().nullable().optional(),
@@ -235,6 +302,8 @@ export const hostMigrationNodeStatusSchema = z.object({
   skippedCount: z.number().int(),
   /** A script whose name/version failed validation — it will NEVER run. */
   invalidCount: z.number().int(),
+  /** ADR-064: after-services scripts waiting for the services to run their release. */
+  deferredCount: z.number().int().optional(),
   /**
    * A whole-run refusal, e.g. the catalog exceeded MAX_SCRIPTS. This arrives
    * with `ok: false` and an EMPTY item list — the run never got far enough to

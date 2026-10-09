@@ -249,3 +249,47 @@ func TestReadMigrationStatusOlderCliHasNoVersion(t *testing.T) {
 		t.Fatalf("an absent cliVersion must stay absent; got %s", out)
 	}
 }
+
+func TestReadMigrationStatusRelaysPhaseAndDeferred(t *testing.T) {
+	// ADR-064: an after-services script waits ("deferred") until the services run
+	// its release. The upgrade run reads both fields to know when a node is done;
+	// dropping either in the relay would hold the run or end it early.
+	p := filepath.Join(t.TempDir(), "status.json")
+	body := `{"schema":1,"cliVersion":"2026.10.7","mode":"enforce","ok":true,"items":[` +
+		`{"key":"2026.10.7/0001-a.sh","state":"applied","phase":"before-services"},` +
+		`{"key":"2026.10.7/0002-b.sh","state":"deferred","phase":"after-services"},` +
+		`{"key":"2026.10.6/0001-c.sh","state":"applied"}]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, errs := readMigrationStatus(p)
+	if len(errs) != 0 || st == nil {
+		t.Fatalf("unexpected: %v / %v", st, errs)
+	}
+	out, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"phase":"before-services"`, `"phase":"after-services"`, `"state":"deferred"`} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("%s must reach the published snapshot; got %s", want, out)
+		}
+	}
+	// A script from a CLI that predates phases carries none — it stays absent.
+	if strings.Count(string(out), `"phase"`) != 2 {
+		t.Fatalf("an absent phase must stay absent; got %s", out)
+	}
+}
+
+func TestReadMigrationStatusClipsAHostilePhase(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "status.json")
+	long := strings.Repeat("x", 10000)
+	body := `{"schema":1,"mode":"enforce","ok":true,"items":[{"key":"2026.10.7/0001-a.sh","state":"applied","phase":"` + long + `"}]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := readMigrationStatus(p)
+	if st == nil || len(st.Items) != 1 || st.Items[0].Phase == nil || len(*st.Items[0].Phase) >= 10000 {
+		t.Fatalf("a hostile phase must be clipped, got %+v", st)
+	}
+}

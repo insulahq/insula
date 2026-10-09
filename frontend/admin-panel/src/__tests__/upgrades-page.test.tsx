@@ -8,6 +8,13 @@ let updateAvailable = true;
 let role = 'super_admin';
 let changelogNotes: string | null = '## Fixed\n- alias drift false positives';
 const checkMutate = vi.fn();
+let clusterNodes: Array<Record<string, unknown>> = [];
+const preflightCalls: string[][] = [];
+const applyMutate = vi.fn(async (vars: { apply: boolean }) => ({ data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: vars.apply, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } }));
+
+vi.mock('../hooks/use-cluster-nodes', () => ({
+  useClusterNodes: () => ({ data: { data: clusterNodes }, isLoading: false }),
+}));
 
 vi.mock('../hooks/use-platform-updates', () => ({
   usePlatformVersion: () => ({
@@ -34,9 +41,14 @@ vi.mock('../hooks/use-auth', () => ({ useAuth: () => ({ user: { id: 'sa', role }
 vi.mock('../hooks/use-platform-upgrade', () => ({
   useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, manifest: null, summary: 'nothing to roll back' } })), isPending: false, error: null }),
   // Used by the review modal when it opens
-  usePreflight: () => ({ data: { data: { gates: [{ id: 'cnpg-healthy', label: 'Database (CNPG) healthy', status: 'pass', detail: 'ok' }], ok: true, failures: 0, warnings: 0, environment: 'production' } }, isLoading: false, isFetching: false, refetch: vi.fn() }),
+  usePreflight: (_enabled?: boolean, exclude: readonly string[] = []) => {
+    preflightCalls.push([...exclude]);
+    return { data: { data: { gates: [{ id: 'cnpg-healthy', label: 'Database (CNPG) healthy', status: 'pass', detail: 'ok' }], ok: true, failures: 0, warnings: 0, environment: 'production' } }, isLoading: false, isFetching: false, refetch: vi.fn() };
+  },
   useHostMigrationsPreview: () => ({ data: { data: { mode: 'observe', willRun: false, note: 'report-only' } }, isLoading: false }),
-  useUpgradeApply: () => ({ mutateAsync: vi.fn(async () => ({ data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: false, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } })), isPending: false, error: null }),
+  useUpgradeApply: () => ({ mutateAsync: applyMutate, isPending: false, error: null }),
+  useUpgradeRun: () => ({ data: { data: { run: null } }, failureCount: 0 }),
+  useCancelUpgradeRun: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   usePostflight: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
   useUpgradeProgress: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
 }));
@@ -176,3 +188,29 @@ describe('UpgradesPage — review hand-off + changelog', () => {
     });
   });
 });
+
+describe('UpgradesPage — upgrading without a node that is down (ADR-064)', () => {
+  const node = (name: string, ready: string) => ({ name, existsInKubernetes: true, statusConditions: [{ type: 'Ready', status: ready }] });
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; preflightCalls.length = 0; applyMutate.mockClear(); });
+
+  it('no node down → no choice offered', async () => {
+    clusterNodes = [node('sv1', 'True'), node('sv2', 'True')];
+    renderPage('/platform/updates?review=1');
+    await screen.findByTestId('approve-upgrade-btn');
+    expect(screen.queryByTestId('upgrade-exclude-nodes')).toBeNull();
+  });
+
+  it('offers only the Not Ready node; ticking it re-checks pre-flight and the apply carries it', async () => {
+    clusterNodes = [node('sv1', 'True'), node('sv2', 'Unknown')];
+    renderPage('/platform/updates?review=1');
+    const box = await screen.findByTestId('exclude-node-sv2');
+    expect(screen.queryByTestId('exclude-node-sv1')).toBeNull();
+    fireEvent.click(box);
+    expect(preflightCalls.at(-1)).toEqual(['sv2']);
+    const approve = screen.getByTestId('approve-upgrade-btn');
+    await vi.waitFor(() => expect(approve).toBeEnabled());
+    fireEvent.click(approve);
+    await vi.waitFor(() => expect(applyMutate).toHaveBeenCalledWith(expect.objectContaining({ apply: true, excludeNodes: ['sv2'] })));
+  });
+});
+

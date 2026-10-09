@@ -133,7 +133,19 @@ export type HostMigrationState =
   | 'run-failed' // ran, non-zero exit → halts the pass iff it blocks-on-failure
   | 'blocked' // a prior BLOCKING script failed this pass → not attempted
   | 'skipped' // operator recorded a .skipped marker — never ran, never blocks
-  | 'invalid'; // failed catalog validation (bad version/name) → never run
+  | 'deferred' // `phase: after-services`, and the services have not reached its release yet (ADR-064)
+  | 'invalid'; // failed catalog validation (bad version/name/phase) → never run
+
+/**
+ * ADR-064 §3. When a host-migration runs relative to the services' roll.
+ *  - before-services (default): runs as soon as the node has the release's CLI —
+ *    during an upgrade, BEFORE the services roll — so it must work with the
+ *    release still running.
+ *  - after-services: may rely on what the new release deploys; runs only once
+ *    the services run that release (the platform-version ConfigMap, which Flux
+ *    changes together with the containers), and must not break the previous one.
+ */
+export type HostMigrationPhase = 'before-services' | 'after-services';
 
 export interface HostMigrationItem {
   readonly key: string; // "<version>/<name>" — marker + ordering key
@@ -155,6 +167,8 @@ export interface HostMigrationItem {
    * script that really ran (`.done`), which takes precedence.
    */
   readonly baseline?: boolean;
+  /** ADR-064 §3. The script's declared phase (absent only for an invalid script). */
+  readonly phase?: HostMigrationPhase;
 }
 
 export interface HostMigrationResult {
@@ -183,6 +197,23 @@ export interface HostMigrationScript {
  * earlier one applied. `no` is a claim the author makes about their own script —
  * that nothing later depends on it — and is reviewed like any other code.
  */
+/**
+ * ADR-064 §3. The `# phase: before-services|after-services` header. ABSENT MEANS
+ * before-services — every script shipped before the header existed ran that way
+ * (or was baselined). An unrecognised value returns null: the script is invalid
+ * and never runs (CI rejects it before it ships).
+ */
+export function hostMigrationPhase(body: string): HostMigrationPhase | null {
+  for (const line of body.split('\n', 40)) {
+    const m = /^#\s*phase:\s*(\S+)/i.exec(line.trim());
+    if (m) {
+      const v = (m[1] ?? '').toLowerCase();
+      return v === 'before-services' || v === 'after-services' ? v : null;
+    }
+  }
+  return 'before-services';
+}
+
 export function hostMigrationBlocksOnFailure(body: string): boolean {
   for (const line of body.split('\n', 40)) {
     const m = /^#\s*blocks-on-failure:\s*(\S+)/i.exec(line.trim());
@@ -194,6 +225,12 @@ export function hostMigrationBlocksOnFailure(body: string): boolean {
 export interface HostMigrationDeps {
   /** host-migrations-desired mode (enforce|observe|…); null = absent/unreachable. */
   readonly readMode: () => Promise<string | null>;
+  /**
+   * ADR-064 §3. The release the services run (the platform-version ConfigMap),
+   * read before the pass. An after-services script runs only once this has
+   * reached its release; null (unreadable) defers every after-services script.
+   */
+  readonly servicesVersion?: string | null;
   /** Has this script already applied on this node (marker present)? */
   readonly isApplied: (key: string) => boolean;
   /** Record a script as applied (write its marker); throws on failure. */

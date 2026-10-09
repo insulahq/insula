@@ -215,11 +215,13 @@ export function parseSelfUpgradeArgs(args: string[]): SelfUpgradeArgs | { error:
 /**
  * `self-upgrade [--check] [--force] [--version X.Y.Z]` (ADR-045 W11.5).
  *
- * Keeps the binary current: resolve a target (explicit → cluster-up
- * platform-version ConfigMap → cluster-down GitHub Releases), and if it's newer
- * (or --force), download + cosign-verify + atomically replace. `--check` is the
- * daily-timer mode — it APPLIES, but tolerates transient download failures so
- * the unit doesn't flap on a network blip. A verify failure ALWAYS surfaces.
+ * Keeps the binary current: resolve a target (explicit `--version`, else the
+ * cluster's platform-version ConfigMap — no GitHub fallback: a node never runs
+ * ahead of its cluster), and if it's newer (or --force), download +
+ * cosign-verify + atomically replace. `--check` is the hourly-timer mode — it
+ * APPLIES, but tolerates transient download failures so the unit doesn't flap
+ * on a network blip. A verify failure ALWAYS surfaces. An upgrade run pushes
+ * `--version` to every node (ADR-064).
  */
 export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
   const parsed = parseSelfUpgradeArgs(args);

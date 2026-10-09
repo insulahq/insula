@@ -56,7 +56,7 @@
 | [R41](#r41--failover-and-restore-guards-left-open-by-the-v2026103-cycle) | Failover and restore guards left open by the v2026.10.3 cycle | P3 | Not started — two known gaps, both rare operator paths |
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 | [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
-| [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | Planned 2026-10-09 (ADR-064) — P0 truthful status ships in v2026.10.7-rc.2; P1 node push + hosts-first order, P2 UX, P3 auto-update + parity, P4 Kubernetes step |
+| [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | In progress (ADR-064) — P0 truthful status shipped in v2026.10.7-rc.2; P1 node push + hosts-first order (upgrade runs) lands for v2026.10.7-rc.3; P2 UX, P3 auto-update + parity, P4 Kubernetes step open |
 
 ---
 
@@ -2259,8 +2259,8 @@ Kubernetes (k3s) upgrades join the same flow; P0 ships first in v2026.10.7-rc.2.
 
 | Phase | Content | Status |
 |---|---|---|
-| P0 | Truthful status: nodes report their CLI version, the gate compares it with the target, gate-detail bugs fixed, review/remediation/interruption texts corrected, stale docs fixed | Not started |
-| P1 | Node push (`insula-node-update` Plan), `phase:` header + CI guard + phase selection, hourly check timer without the GitHub-latest fallback, `platform_upgrade_runs`, per-node progress, `nodes-ready` gate + override | Not started |
+| P0 | Truthful status: nodes report their CLI version, the gate compares it with the target, gate-detail bugs fixed, review/remediation/interruption texts corrected, stale docs fixed | Done — v2026.10.7-rc.2 |
+| P1 | Node push (`insula-node-update` Plan), `phase:` header + CI guard + phase selection, hourly check timer without the GitHub-latest fallback, `platform_upgrade_runs`, per-node progress, `nodes-ready` gate + override; plus Cancel while preparing, the `platform-api-plan-scope` admission policy | Implemented — proven by the rc.3 → rc.4 upgrade |
 | P2 | Review and progress redesign, resumable progress page, run history, CLI version on the Nodes page, progress-view tests | Not started |
 | P3 | Auto-update scheduler + maintenance window, CLI parity (pre-flight), staging-channel handling, ADR-045/056 alignment | Not started |
 | P4 | Kubernetes step in the same run (supersedes the CLI-only path, R39) | Not started |

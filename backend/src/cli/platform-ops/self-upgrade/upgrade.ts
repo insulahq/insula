@@ -2,8 +2,8 @@
  * `platform-ops self-upgrade` orchestrator (ADR-045 W11.5).
  *
  * Keeps the operator CLI binary current: resolve a target version (explicit
- * --version → cluster-up platform-version ConfigMap → cluster-down GitHub
- * Releases), and if it's newer (or --force), download the signed binary,
+ * --version, else the cluster's platform-version ConfigMap — never GitHub's
+ * latest: a node must not run ahead of its cluster), and if it's newer (or --force), download the signed binary,
  * cosign-VERIFY it (the single trust gate — reused from the W11 poller, pure
  * Node crypto, no cosign binary), and atomically replace the running binary.
  *
@@ -39,21 +39,19 @@ export async function runSelfUpgrade(
     target = opts.version;
     source = 'explicit';
   } else {
+    // The cluster's own version, and nothing else (ADR-064). This used to fall
+    // back to the newest GitHub release when the ConfigMap could not be read — a
+    // node that lost API access then installed a release NEWER than its cluster,
+    // which a self-upgrade can never undo (no downgrade without --force).
     const running = await deps.readRunningVersion();
     if (running && isValidVersion(running)) {
       target = running;
       source = 'configmap';
-    } else {
-      const latest = await deps.fetchLatestReleaseVersion();
-      if (latest && isValidVersion(latest)) {
-        target = latest;
-        source = 'releases';
-      }
     }
   }
 
   if (!target) {
-    deps.log('warn', '[self-upgrade] could not determine a target version (cluster unreachable + Releases offline)');
+    deps.log('warn', "[self-upgrade] could not read the cluster's version (platform-version ConfigMap) — not guessing; will retry on the next check");
     return { ok: true, action: 'no-target', target: null, source: null, ...base };
   }
 

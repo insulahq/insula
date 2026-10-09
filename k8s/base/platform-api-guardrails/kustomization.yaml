@@ -10,3 +10,4 @@ resources:
   - namespace-rbac-scope.yaml
   - config-scope.yaml
   - workload-scope.yaml
+  - plan-scope.yaml

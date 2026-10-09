@@ -236,6 +236,24 @@ describe('platform-updates service', () => {
       expect(result.updateAvailable).toBe(false); // floored by installed → no phantom banner
     });
 
+    it.each([
+      ['RC → next RC', '2026.10.7-rc.1', '2026.10.7-rc.2', true],
+      ['RC → its stable', '2026.10.7-rc.2', '2026.10.7', true],
+      ['stable → an RC of itself', '2026.10.7', '2026.10.7-rc.2', false],
+      ['same RC', '2026.10.7-rc.2', '2026.10.7-rc.2', false],
+      ['DEV build stamp → the release it was built on', '2026.10.6-2f64f72', '2026.10.6', false],
+      ['DEV build stamp → the next release', '2026.10.6-2f64f72', '2026.10.7', true],
+    ])('offers an update across prereleases: %s', async (_label, installed, available, expected) => {
+      // The lazy checker stripped every suffix, so an operator on -rc.1 was never
+      // offered -rc.2 or the stable (found driving rc.1 → rc.2 on the lab staging).
+      settingsStore.set('installed_platform_version', installed);
+      settingsStore.set('available_version', available);
+      settingsStore.set('available_verify_status', 'verified');
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      const result = await getVersionInfo(createTrackedDb());
+      expect(result.updateAvailable).toBe(expected);
+    });
+
     // W11 verified-poller surfaces — `available` prefers the cosign-VERIFIED value.
     it('prefers the verified available_version over the unverified latestVersion', async () => {
       // Lazy checker would see 2026.7.1; the poller has VERIFIED 2026.6.9.

@@ -12,6 +12,10 @@
 #   3. The controller pod itself is hardened (runAsNonRoot, drop ALL caps).
 #   4. The k3s Plan generator REFUSES skip-a-minor / downgrade / cross-major.
 #   5. The CLI defaults to dry-run (only `--apply` creates Plans).
+#   8. ADR-064 node Plans: platform-api writes them at runtime (an upgrade run),
+#      so the builder validates every interpolated value, the account's Plan
+#      access is namespaced to system-upgrade, and an admission policy pins the
+#      two Plan names, the image and the one host command each may run.
 
 set -euo pipefail
 
@@ -83,6 +87,38 @@ fi
 
 # (7) a --upgrade-image override is validated (no arbitrary image into privileged Jobs)
 grep -q 'imageRefValid' "$GEN_TS" || fail "k3s-plan.ts must validate a --upgrade-image override (imageRefValid)"
+
+# (8) ADR-064 node Plans written by platform-api
+NODE_PLAN_TS="$REPO_ROOT/backend/src/modules/platform-upgrades/run/node-plan.ts"
+PLAN_VAP="$REPO_ROOT/k8s/base/platform-api-guardrails/plan-scope.yaml"
+RBAC="$REPO_ROOT/k8s/base/rbac.yaml"
+if [[ -f "$NODE_PLAN_TS" ]]; then
+  for token in 'SAFE_VERSION_RE' 'imageRefValid' 'NODE_NAME_RE' 'RUN_ID_RE'; do
+    grep -q "$token" "$NODE_PLAN_TS" || fail "run/node-plan.ts must validate every interpolated value (missing $token)"
+  done
+  grep -q 'concurrency: 1' "$NODE_PLAN_TS" || fail "node Plans must update one node at a time (concurrency: 1)"
+else
+  fail "backend/src/modules/platform-upgrades/run/node-plan.ts is missing"
+fi
+if [[ -f "$PLAN_VAP" ]]; then
+  grep -q 'kind: ValidatingAdmissionPolicyBinding' "$PLAN_VAP" || fail "plan-scope.yaml must bind its policy"
+  grep -q 'validationActions: \[Deny\]' "$PLAN_VAP" || fail "plan-scope binding must Deny"
+  grep -q "system:serviceaccount:platform:platform-api" "$PLAN_VAP" || fail "plan-scope must match the platform-api ServiceAccount"
+  for token in "insula-node-update" "insula-node-finish" "node-terminal" "self-upgrade --version" "platform-ops-host-config" \
+      "!has(object.spec.prepare)" "!has(object.spec.drain)" "!has(object.spec.channel)" "!has(object.spec.postCompleteLabels)" \
+      "object.spec.version.matches(variables.versionRe)" "object.spec.tolerations == [{'operator': 'Exists'}]"; do
+    grep -qF -- "$token" "$PLAN_VAP" || fail "plan-scope.yaml must pin '$token'"
+  done
+  grep -q 'plan-scope.yaml' "$REPO_ROOT/k8s/base/platform-api-guardrails/kustomization.yaml" \
+    || fail "plan-scope.yaml not wired into platform-api-guardrails/kustomization.yaml"
+else
+  fail "missing ValidatingAdmissionPolicy platform-api-guardrails/plan-scope.yaml"
+fi
+# Plan write access only through the namespaced Role — never the ClusterRole.
+if awk '/^kind: ClusterRole$/{c=1} /^---/{c=0} c && /upgrade\.cattle\.io/{found=1} END{exit !found}' "$RBAC"; then
+  fail "rbac.yaml grants upgrade.cattle.io in a ClusterRole — Plan access must stay a Role in system-upgrade"
+fi
+grep -q 'name: platform-api-node-upgrade' "$RBAC" || fail "rbac.yaml is missing the platform-api-node-upgrade Role"
 
 if [[ "$FAILED" -ne 0 ]]; then
   echo "ci-system-upgrade-check: FAILED" >&2

@@ -52,6 +52,13 @@ export interface PreflightFacts {
   /** Suspended Flux objects the upgrade depends on (`Kind/name`: the platform
    *  Kustomization, its GitRepository); [] = reconciling, null = unreadable. */
   readonly fluxSuspended: readonly string[] | null;
+  /** ADR-064: every node and whether it is Ready, or null = unreadable. Optional
+   *  so callers that predate the run (the host CLI) keep compiling. */
+  readonly nodes?: ReadonlyArray<{ readonly name: string; readonly ready: boolean }> | null;
+  /** Nodes the operator chose to upgrade without. */
+  readonly excludedNodes?: readonly string[];
+  /** An upgrade run is already in flight; null = unreadable. */
+  readonly upgradeRunning?: boolean | null;
 }
 
 const DISK_WARN_PCT = 80;
@@ -164,7 +171,44 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
     });
   }
 
+  gates.push(...runGates(facts));
+
   const failures = gates.filter((g) => g.status === 'fail').length;
   const warnings = gates.filter((g) => g.status === 'warn').length;
   return { gates, ok: failures === 0, failures, warnings };
+}
+
+/**
+ * ADR-064 gates: the upgrade updates every node before the services, so a node
+ * that cannot take part blocks it — in every environment, because the run would
+ * only wait for it — until the operator excludes it. An excluded node catches up
+ * on its own hourly update timer when it is back.
+ */
+function runGates(facts: PreflightFacts): PreflightGate[] {
+  const gates: PreflightGate[] = [];
+  if (facts.upgradeRunning === true) {
+    gates.push({ id: 'no-upgrade-running', label: 'No upgrade already running', status: 'fail', detail: 'an upgrade is in progress — wait for it to finish' });
+  }
+  if (facts.nodes === undefined) return gates;
+  const label = 'Every node can take part';
+  if (facts.nodes === null) {
+    gates.push({ id: 'nodes-ready', label, status: 'warn', detail: 'could not list the nodes — the upgrade will wait for any node that is not Ready' });
+    return gates;
+  }
+  const excluded = new Set(facts.excludedNodes ?? []);
+  const included = facts.nodes.filter((n) => !excluded.has(n.name));
+  const notReady = included.filter((n) => !n.ready).map((n) => n.name);
+  const skipped = facts.nodes.filter((n) => excluded.has(n.name)).map((n) => n.name);
+  const skippedNote = skipped.length > 0 ? ` Upgrading without ${skipped.join(', ')}: it updates on its own hourly timer when it is back.` : '';
+  if (included.length === 0) {
+    gates.push({ id: 'nodes-ready', label, status: 'fail', detail: 'every node is excluded — at least one node must take part' });
+  } else if (notReady.length > 0) {
+    gates.push({
+      id: 'nodes-ready', label, status: 'fail',
+      detail: `${notReady.join(', ')} ${notReady.length === 1 ? 'is' : 'are'} not Ready. Bring ${notReady.length === 1 ? 'it' : 'them'} back, or exclude ${notReady.length === 1 ? 'it' : 'them'} to upgrade without.${skippedNote}`,
+    });
+  } else {
+    gates.push({ id: 'nodes-ready', label, status: 'pass', detail: `${included.length} node(s) Ready.${skippedNote}` });
+  }
+  return gates;
 }

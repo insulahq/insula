@@ -4685,6 +4685,30 @@ export const platformUpgradeSnapshots = pgTable('platform_upgrade_snapshots', {
 export type PlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferSelect;
 export type NewPlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferInsert;
 
+/**
+ * ADR-064: one platform upgrade, recorded as a run in three steps (migration 0154).
+ * `nodes` is the last per-node view the run recorded — what the progress view and
+ * the history show once the cluster has moved on.
+ */
+export const platformUpgradeRuns = pgTable('platform_upgrade_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  fromVersion: text('from_version'),
+  toVersion: text('to_version').notNull(),
+  mode: text('mode').notNull().default('manual'), // manual | auto
+  status: text('status').notNull().default('running'), // running | succeeded | failed | cancelled | rolled-back
+  step: text('step').notNull().default('prepare-nodes'), // prepare-nodes | update-services | finish | done
+  excludedNodes: jsonb('excluded_nodes').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  nodes: jsonb('nodes').$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  message: text('message'),
+  initiatedBy: varchar('initiated_by', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  stepStartedAt: timestamp('step_started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+});
+
+export type PlatformUpgradeRunRow = typeof platformUpgradeRuns.$inferSelect;
+export type NewPlatformUpgradeRunRow = typeof platformUpgradeRuns.$inferInsert;
+
 // ─── Monitoring / SLO alerting (ADR-051 phase 3) ──────────────────────────────
 
 // Live alert state per rule — the evaluator (modules/monitoring) is the

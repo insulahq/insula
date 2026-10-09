@@ -138,8 +138,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# self-upgrade --check resolves the target version (cluster-up: platform-version
-# ConfigMap; cluster-down: GitHub Releases), and if newer applies a cosign-verified
+# self-upgrade --check resolves the target version (the cluster's platform-version
+# ConfigMap; nothing when the cluster is down), and if newer applies a cosign-verified
 # atomic replace (ADR-045 W11.5). A concurrent manual run is benign — each writes a
 # same-dir temp + atomic rename, so the last valid signed binary simply wins.
 # Do NOT add an EnvironmentFile= here without security review: PLATFORM_OPS_COSIGN_PUB
@@ -168,13 +168,16 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=$(dirname "$bin") /etc/platform
 UNIT
+  # Hourly (ADR-064): the upgrade itself pushes a release to every node; this timer
+  # is the safety net for a node the push missed (offline, excluded). The check is
+  # a ConfigMap read when nothing changed — a download happens only on a new release.
   cat > "${dir}/platform-ops-update.timer" <<'UNIT'
 [Unit]
-Description=Daily Insula platform-ops self-upgrade check
+Description=Hourly Insula platform-ops self-upgrade check
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=3600
+OnCalendar=hourly
+RandomizedDelaySec=900
 Persistent=true
 
 [Install]
