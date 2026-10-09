@@ -44,21 +44,21 @@ jobs:
           echo "tag matches platform/VERSION: $FILE_VERSION"
 
       # Build all 3 images with semver tag only (no :latest — that's build-deploy.yml's job)
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: backend/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: frontend/admin-panel/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: frontend/tenant-panel/Dockerfile
