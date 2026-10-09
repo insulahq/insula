@@ -31,7 +31,6 @@ interface Harness {
 interface Over {
   current?: string;
   running?: string | null;
-  latest?: string | null;
   binBytes?: Buffer | null;
   sigBytes?: Buffer | null;
   pub?: string | null;
@@ -46,7 +45,6 @@ function harness(over: Over = {}): Harness {
     currentVersion: () => over.current ?? '2026.6.2',
     arch: () => 'amd64',
     readRunningVersion: async () => over.running ?? null,
-    fetchLatestReleaseVersion: async () => over.latest ?? null,
     downloadAsset: async (version, arch, kind) => {
       downloads.push({ version, arch, kind });
       if (kind === 'sig') return over.sigBytes !== undefined ? over.sigBytes : sigFor(BIN, priv);
@@ -91,27 +89,29 @@ describe('runSelfUpgrade — target resolution', () => {
     expect(r.action).toBe('upgraded');
   });
 
-  it('cluster-down: falls back to the latest GitHub Release', async () => {
-    const h = harness({ current: '2026.6.2', running: null, latest: '2026.6.7' });
-    const r = await runSelfUpgrade(apply, h.deps);
-    expect(r.source).toBe('releases');
-    expect(r.target).toBe('2026.6.7');
-    expect(r.action).toBe('upgraded');
-  });
-
-  it('no-target (cluster down + Releases offline) is a benign no-op', async () => {
-    const h = harness({ running: null, latest: null });
+  it('cluster unreadable: does NOT guess from GitHub — a no-op until it can read the cluster', async () => {
+    // ADR-064: the fallback to the newest GitHub release let a node that lost API
+    // access install a release NEWER than its cluster, which it could never undo.
+    const h = harness({ current: '2026.6.2', running: null });
     const r = await runSelfUpgrade(apply, h.deps);
     expect(r.action).toBe('no-target');
     expect(r.ok).toBe(true);
     expect(h.replaced.value).toBeNull();
   });
 
-  it('ignores an invalid running version and falls through to Releases', async () => {
-    const h = harness({ current: '2026.6.2', running: 'garbage', latest: '2026.6.8' });
+  it('no-target (cluster down) is a benign no-op', async () => {
+    const h = harness({ running: null });
     const r = await runSelfUpgrade(apply, h.deps);
-    expect(r.source).toBe('releases');
-    expect(r.target).toBe('2026.6.8');
+    expect(r.action).toBe('no-target');
+    expect(r.ok).toBe(true);
+    expect(h.replaced.value).toBeNull();
+  });
+
+  it('ignores an invalid running version — and does not guess another target', async () => {
+    const h = harness({ current: '2026.6.2', running: 'garbage' });
+    const r = await runSelfUpgrade(apply, h.deps);
+    expect(r.action).toBe('no-target');
+    expect(h.replaced.value).toBeNull();
   });
 
   it('a binary with no baked version (unknown) upgrades to any valid target', async () => {
@@ -134,8 +134,8 @@ describe('runSelfUpgrade — version gate', () => {
     expect(h.downloads).toHaveLength(0); // never even downloads
   });
 
-  it('refuses a downgrade via a MITM-ed "latest" (not newer → skipped)', async () => {
-    const h = harness({ current: '2026.6.9', running: null, latest: '2026.5.1' });
+  it('refuses a downgrade when the cluster names an older version (not newer → skipped)', async () => {
+    const h = harness({ current: '2026.6.9', running: '2026.5.1' });
     const r = await runSelfUpgrade(apply, h.deps);
     expect(r.action).toBe('already-current');
     expect(h.replaced.value).toBeNull();

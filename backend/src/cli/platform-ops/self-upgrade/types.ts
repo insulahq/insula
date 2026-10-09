@@ -8,8 +8,7 @@
 /** Where the target version came from. */
 export type TargetSource =
   | 'explicit' // operator passed --version X.Y.Z
-  | 'configmap' // cluster-up: the running version from the platform-version ConfigMap
-  | 'releases'; // cluster-down fallback: newest stable GitHub Release
+  | 'configmap'; // the cluster's running version from the platform-version ConfigMap — never a guess (ADR-064)
 
 export type SelfUpgradeAction =
   | 'upgraded' // downloaded + cosign-verified + atomically replaced
@@ -52,8 +51,6 @@ export interface SelfUpgradeDeps {
   readonly arch: () => string;
   /** Cluster-up: the cluster's RUNNING version from the platform-version ConfigMap; null if unreachable. */
   readonly readRunningVersion: () => Promise<string | null>;
-  /** Cluster-down fallback: newest stable released version from GitHub Releases; null if unreachable. */
-  readonly fetchLatestReleaseVersion: () => Promise<string | null>;
   /** Download a release asset (the binary or its .sig) for version+arch; null on any failure. */
   readonly downloadAsset: (version: string, arch: string, kind: 'bin' | 'sig') => Promise<Buffer | null>;
   /** The pinned cosign public key PEM (host trust anchor, /etc/platform/cosign.pub); null if unreadable. */

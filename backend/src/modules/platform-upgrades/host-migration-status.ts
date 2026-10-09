@@ -47,8 +47,7 @@ export const NEVER_CONVERGED_REMEDIATION: string[] = [
   '# On the affected node, as root:',
   'insula --version                 # confirm the CLI is present',
   'systemctl list-timers | grep platform-ops   # expect TWO timers; none means this bug',
-  'insula self-upgrade              # installs/repairs the timers, then converges',
-  '# If the timers are still absent, re-run the installer (idempotent):',
+  '# Re-run the installer: it lays the timers down (idempotent). self-upgrade alone does not.',
   'insula bootstrap',
   '# Verify:',
   'systemctl start platform-ops-host-config.service',
@@ -72,6 +71,7 @@ interface RelayedItem {
   failingSince?: unknown;
   skipReason?: unknown;
   baseline?: unknown;
+  phase?: unknown;
 }
 
 const STATES = new Set([
@@ -81,6 +81,7 @@ const STATES = new Set([
   'run-failed',
   'blocked',
   'skipped',
+  'deferred',
   'invalid',
 ]);
 
@@ -189,6 +190,7 @@ export function interpretNodeSnapshot(
         skipReason: str(i.skipReason),
         // ADR-056 §5: recorded by a fresh bootstrap's `.baseline`, never run here.
         baseline: i.baseline === true ? true : null,
+        phase: i.phase === 'before-services' || i.phase === 'after-services' ? i.phase : null,
       },
     ];
   });
@@ -229,6 +231,7 @@ export function interpretNodeSnapshot(
     pendingCount: count('would-run', hm['pendingCount']),
     skippedCount: count('skipped', hm['skippedCount']),
     invalidCount: items.filter((i) => i.state === 'invalid').length,
+    deferredCount: items.filter((i) => i.state === 'deferred').length,
     // A whole-run refusal (catalog over MAX_SCRIPTS) arrives as ok:false with
     // NO items. Without carrying the reason, that node renders as a healthy
     // "0 applied" while running nothing at all.
@@ -275,13 +278,29 @@ export function isDegraded(nodes: readonly HostMigrationNodeStatus[]): boolean {
  * (`2026.10.6-ad8fe1a`) is served by the `2026.10.6` CLI. null when either side
  * is unknown or not a version.
  */
-export function cliBehindTarget(cliVersion: string | null | undefined, targetVersion: string | null | undefined): boolean | null {
-  if (!cliVersion || !targetVersion) return null;
+export function cliBehindTarget(
+  cliVersion: string | null | undefined,
+  targetVersion: string | null | undefined,
+  /** The node has reported host-migration state (so its silence about the CLI means something). */
+  reported = false,
+): boolean | null {
+  if (!targetVersion) return null;
   const target = releaseTagFor(targetVersion.trim().replace(/^v/, ''));
+  if (!parseVersion(target)) return null;
+  if (!cliVersion) {
+    // Every CLI from FIRST_CLI_VERSION_REPORT on reports its version, so a node
+    // that reports state WITHOUT one runs an older CLI — behind any target from
+    // that release on. Seen on the lab staging: rc.1 nodes under rc.2 services
+    // read "All shipped migrations are applied".
+    return reported && compareVersions(target, FIRST_CLI_VERSION_REPORT) >= 0 ? true : null;
+  }
   const cli = cliVersion.trim().replace(/^v/, '');
-  if (!parseVersion(cli) || !parseVersion(target)) return null;
+  if (!parseVersion(cli)) return null;
   return compareVersions(cli, target) < 0;
 }
+
+/** The first release whose node CLI reports its own version in the status it relays. */
+export const FIRST_CLI_VERSION_REPORT = '2026.10.7-rc.2';
 
 export interface HostMigrationGateAssessment {
   /** Never `fail`: host state is reported, it does not decide whether the services converged. */
@@ -310,7 +329,7 @@ const names = (ns: readonly HostMigrationNodeStatus[]): string => {
  *
  * It never fails: whether the services converged is decided by the service
  * gates. Holding that on host state turned an old failure on one node into an
- * upgrade that never finished, and made a node's daily timer read as a fault.
+ * upgrade that never finished, and made a node's update timer read as a fault.
  */
 export function assessHostMigrations(
   nodes: readonly HostMigrationNodeStatus[],
@@ -332,11 +351,11 @@ export function assessHostMigrations(
   if (attention.length > 0) parts.push(`needs attention on ${names(attention)} — see Host migrations`);
   if (behind.length > 0) {
     parts.push(`${behind.length} of ${nodes.length} node(s) still on an older CLI (${names(behind)}); each applies `
-      + `this release's host changes when its daily update runs (within ~25 h)`);
+      + `this release's host changes when its hourly update runs`);
   }
   if (unreported.length > 0) {
     parts.push(`${names(unreported)} ha${unreported.length === 1 ? 's' : 've'} not reported a CLI version yet `
-      + `(a CLI older than this release does not; it will after its daily update)`);
+      + `(a CLI older than this release does not; it will after its hourly update)`);
   }
   if (parts.length === 0) {
     return {
@@ -394,7 +413,7 @@ export async function readHostMigrationStatus(
 
   const nodes = snapshots
     .map((s) => interpretNodeSnapshot(s.node, s.raw, ages.get(s.node)))
-    .map((n) => ({ ...n, cliBehind: cliBehindTarget(n.cliVersion, targetVersion) }))
+    .map((n) => ({ ...n, cliBehind: cliBehindTarget(n.cliVersion, targetVersion, n.collectedAt !== null) }))
     .sort((a, b) => a.node.localeCompare(b.node));
 
   return {

@@ -60,6 +60,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **An upgrade now updates the nodes first, then the services, as one tracked run.** Until now
+  Apply rolled the containers at once, and each node fetched the release's `insula` CLI, and with
+  it the release's host changes, on its own daily timer, up to a day later. Now Apply starts a run
+  in three steps. First, every node fetches and verifies the release's CLI, one node at a time,
+  and applies the host changes that must come first. Then the services roll. Then the nodes apply
+  the host changes that need the new services. The progress view shows each step and each node,
+  and the upgrade is reported done only when all of them are. A failure while the nodes update
+  stops the run before anything changed for the services. While the nodes update, **Cancel
+  upgrade** stops it the same way. A node that is down blocks the upgrade, and the review offers
+  **Upgrade without** it. That node catches up through its own update check when it is back, now
+  hourly instead of daily. Host-migration scripts declare `# phase: before-services` or
+  `after-services`; `scripts/new-host-migration.sh` writes the header and CI requires it from
+  2026.10.7. The node update runs through the system-upgrade-controller. Platform-api may write
+  only the two node Plans, with one fixed command each, and a new admission policy
+  (`platform-api-plan-scope`) enforces that. A node's CLI no longer falls back to GitHub's newest
+  release when it cannot reach its cluster, so a node never runs ahead of the cluster.
+  ([ADR-064](docs/architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md))
 - **Production installs can let the mail server trust a private certificate authority.** The
   production overlay now carries the trust step the development overlay already had, so
   `bootstrap.sh --trust-ca` (with `--acme-server`) gives Stalwart the root as well, and the mail
@@ -118,6 +135,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A cluster on a release candidate is offered the next one, and the stable release.** The
+  Updates page compared versions without their `-rc.N` suffix, so a cluster on `-rc.1` read
+  `-rc.2`, and later the stable release, as "already current" and never showed **Run upgrade**,
+  although the upgrade itself handled both. Versions now compare as releases, prerelease included.
+  A development build still compares as the release it was built on.
+- **Nodes on a CLI too old to report its version now read as behind, not as fully applied.** A
+  node whose CLI predates version reporting showed *All shipped migrations are applied* under
+  a newer release. It now shows *update pending* until its CLI catches up.
 - **The upgrade view tells the truth about the nodes.** A node applies a release's host changes
   when its own `insula` CLI updates to that release, which it does on a daily timer — up to about 25
   hours after the containers. The review said those changes run "during the upgrade", and the

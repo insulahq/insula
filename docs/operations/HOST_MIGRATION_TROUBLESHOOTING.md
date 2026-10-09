@@ -214,8 +214,7 @@ this host — record a `.skipped` with the reason (above).
 
     **Fix** (root shell on the node; both steps idempotent):
     ```bash
-    insula self-upgrade          # installs/repairs the timers, then converges
-    # if the timers are still absent, re-run the installer:
+    # re-run the installer — it lays the timers down; self-upgrade alone does not:
     insula bootstrap
     # verify:
     systemctl start platform-ops-host-config.service

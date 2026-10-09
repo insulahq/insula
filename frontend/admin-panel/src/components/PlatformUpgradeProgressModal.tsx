@@ -1,18 +1,21 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, CheckCircle, Loader2, AlertTriangle, Clock } from 'lucide-react';
-import { usePostflight, useUpgradeProgress } from '@/hooks/use-platform-upgrade';
+import { X, CheckCircle, Loader2, AlertTriangle, Clock, XCircle, MinusCircle } from 'lucide-react';
+import { usePostflight, useUpgradeProgress, useUpgradeRun } from '@/hooks/use-platform-upgrade';
 import { formatVersion } from '@/lib/format-version';
+import UpgradeRunSection, { runPercent, runStatusLine } from '@/components/platform/UpgradeRunSection';
 
 /**
  * Re-openable Task Center progress modal for a platform upgrade
  * (`kind: platform.upgrade`, `target.modal: 'platform-upgrade'`).
  *
  * The backend task carries `{ version }` in modalProps. This modal polls the
- * LIVE roll-progress endpoint (/upgrade/progress, every 4s) + the post-flight
- * convergence state (/upgrade/postflight) — the same signals the Upgrades page
- * shows — so the operator can close the page and reopen live progress from the
- * Tasks chip.
+ * upgrade RUN (/upgrade/run — nodes first, then the services, then the finish;
+ * ADR-064), the LIVE roll-progress endpoint (/upgrade/progress, every 4s) and the
+ * post-flight convergence state (/upgrade/postflight) — the same signals the
+ * Upgrades page shows — so the operator can close the page and reopen live
+ * progress from the Tasks chip. A rollback (or an upgrade started before runs
+ * existed) has no run, and shows the services' roll alone.
  */
 interface Props {
   readonly version?: string;
@@ -29,10 +32,10 @@ const PHASE = {
 
 /**
  * The convergence rows. Only platform migrations hold "Done": they run as the
- * new platform-api starts, inside the upgrade. Host migrations do not — a node
- * applies a release's host changes when its own CLI updates to that release, on
- * the node's daily timer, hours after the services — so they are shown for what
- * they are (applied / catching up / needs attention) and never hold the modal open.
+ * new platform-api starts, inside the upgrade. Host migrations do not — the run
+ * applies them on the nodes before and after the services, and a node it left
+ * out catches up on its hourly timer — so they are shown for what they are
+ * (applied / catching up / needs attention) and never hold the modal open.
  */
 const CONVERGENCE_GATES = [
   { id: 'migrations-converged', label: 'Platform migrations', holdsDone: true },
@@ -42,18 +45,23 @@ const CONVERGENCE_GATES = [
 export default function PlatformUpgradeProgressModal({ version, onClose }: Props) {
   const postQ = usePostflight(true);
   const post = postQ.data?.data;
+  const runQ = useUpgradeRun();
+  const latestRun = runQ.data?.data.run ?? null;
+  // The run this modal follows: the one in flight, or the one for this version.
+  const run = latestRun && (latestRun.status === 'running' || (version !== undefined && latestRun.toVersion === version))
+    ? latestRun : null;
   // Active (poll) while an upgrade is pending/reconciling; once idle the roll is done.
   const pending = post?.pendingVersion ?? null;
-  const active = !!pending || post?.phase === 'reconciling';
+  const active = !!pending || post?.phase === 'reconciling' || run?.step === 'update-services';
   const progQ = useUpgradeProgress(active);
   const prog = progQ.data?.data;
 
   // Formatted only when it IS a version: the fallback is prose, and
   // "v the new version" is worse than no prefix at all. `targetTag` arrives
   // already prefixed (it is a git tag), which formatVersion tolerates.
-  const targetVersion = version ?? pending ?? prog?.targetTag ?? null;
+  const targetVersion = version ?? run?.toVersion ?? pending ?? prog?.targetTag ?? null;
   const target = targetVersion ? formatVersion(targetVersion) : 'the new version';
-  const stuck = post?.verdict === 'abort-recommended';
+  const stuck = (!run || run.step === 'update-services') && post?.verdict === 'abort-recommended';
   // The roll is physically DONE when every version-managed Deployment is on the
   // target image (the live /progress signal — refreshes ~4s), even before the
   // post-flight reconciler clears `pending_update_version` on its slower 2-min
@@ -75,12 +83,17 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
     const g = post?.gates?.find((x) => x.id === id);
     return g !== undefined && g.status !== 'pass';
   });
-  const done = !stuck && !convergencePending && (rolled || converged);
-  const percent = done ? 100 : (prog?.percent ?? (active ? 0 : 100));
+  // With a run, the run decides: it ends only after the nodes finished too.
+  const done = run ? run.status === 'succeeded' : (!stuck && !convergencePending && (rolled || converged));
+  const runFailed = run?.status === 'failed';
+  // Cancelled before the services changed, or a rollback took over: an outcome, not a fault.
+  const runStopped = run?.status === 'cancelled' || run?.status === 'rolled-back';
+  const percent = run ? runPercent(run, prog?.percent ?? null) : done ? 100 : (prog?.percent ?? (active ? 0 : 100));
   // Connection is flaky mid-roll (admin-panel + platform-api pods restart).
   // failureCount rises on each failed poll and resets on the next success →
   // a live "reconnecting" hint so the modal never looks frozen.
-  const reconnecting = active && !done && !stuck && (postQ.failureCount > 0 || progQ.failureCount > 0);
+  const reconnecting = (active || run?.status === 'running') && !done && !stuck
+    && (postQ.failureCount > 0 || progQ.failureCount > 0 || runQ.failureCount > 0);
 
   // When the roll completes, refresh the version spine so the dashboard badge +
   // update banner drop the just-superseded "update available" immediately, instead
@@ -113,10 +126,18 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
         <div className="px-5 py-4 space-y-4">
           {/* Status line */}
           <div className="flex items-center gap-2 text-sm">
-            {done ? (
+            {run && runStopped ? (
+              <><MinusCircle size={16} className="flex-shrink-0 text-gray-500 dark:text-gray-400" /><span className="text-gray-700 dark:text-gray-300" data-testid="upgrade-run-status">{runStatusLine(run, target)}</span></>
+            ) : run && runFailed ? (
+              <><XCircle size={16} className="flex-shrink-0 text-red-600 dark:text-red-400" /><span className="text-red-700 dark:text-red-300" data-testid="upgrade-run-status">{runStatusLine(run, target)}</span></>
+            ) : run && done ? (
+              <><CheckCircle size={16} className="text-green-600 dark:text-green-400" /><span className="font-medium text-green-700 dark:text-green-300" data-testid="upgrade-run-status">{runStatusLine(run, target)}</span></>
+            ) : done ? (
               <><CheckCircle size={16} className="text-green-600 dark:text-green-400" /><span className="font-medium text-green-700 dark:text-green-300">Done — all services are running {target}.</span></>
             ) : stuck ? (
               <><AlertTriangle size={16} className="text-amber-600 dark:text-amber-400" /><span className="text-amber-700 dark:text-amber-300">Not converging after {post?.consecutiveFailures} checks — consider rolling back below.</span></>
+            ) : run ? (
+              <><Loader2 size={16} className="flex-shrink-0 animate-spin text-blue-600 dark:text-blue-400" /><span className="text-gray-700 dark:text-gray-300" data-testid="upgrade-run-status">{runStatusLine(run, target)}</span></>
             ) : (
               <><Loader2 size={16} className="animate-spin text-blue-600 dark:text-blue-400" /><span className="text-gray-700 dark:text-gray-300">Rolling services to {target}…</span></>
             )}
@@ -125,19 +146,22 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
           {/* Progress bar */}
           <div>
             <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-              <span>{prog ? `${prog.atTarget}/${prog.total} · ${percent}%` : `${percent}%`}</span>
+              <span>{prog && !run ? `${prog.atTarget}/${prog.total} · ${percent}%` : `${percent}%`}</span>
               {post?.lastCheckedAt && <span>checked {new Date(post.lastCheckedAt).toLocaleTimeString()}</span>}
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
               <div
-                className={`h-full rounded-full transition-all ${done ? 'bg-green-500' : stuck ? 'bg-amber-500' : 'bg-blue-500'}`}
+                className={`h-full rounded-full transition-all ${done ? 'bg-green-500' : runFailed ? 'bg-red-500' : runStopped ? 'bg-gray-400 dark:bg-gray-500' : stuck ? 'bg-amber-500' : 'bg-blue-500'}`}
                 style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
               />
             </div>
           </div>
 
-          {/* Per-component checklist with phase (Queued → Downloading → Deploying → Ready) */}
-          {prog?.deployments && prog.deployments.length > 0 && (
+          {run && <UpgradeRunSection run={run} />}
+
+          {/* Per-component checklist with phase (Queued → Downloading → Deploying → Ready).
+              Not while a run is still updating the nodes: nothing has rolled yet. */}
+          {prog?.deployments && prog.deployments.length > 0 && run?.step !== 'prepare-nodes' && (
             <ul className="space-y-1">
               {prog.deployments.map((d) => {
                 const ph = PHASE[d.phase ?? (d.atTarget ? 'ready' : 'starting')];
@@ -162,10 +186,10 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
 
           {/* Convergence rows — the half of an upgrade Flux cannot see.
               Images rolling is not the upgrade finishing: platform migrations
-              land seconds after the new pod starts. Host migrations land when
-              each node's CLI updates to the release, on that node's daily
-              timer — so "catching up" is their normal state right after an
-              upgrade and is shown neutrally, never as a fault. Red/amber only
+              land seconds after the new pod starts. Host migrations are applied
+              by the run on each node; a node it left out catches up on its
+              hourly timer — so "catching up" is shown neutrally, never as a
+              fault. Red/amber only
               for a real problem (a stuck platform migration, or a node whose
               host migrations failed). */}
           {CONVERGENCE_GATES.map(({ id, label, holdsDone }) => {

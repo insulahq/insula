@@ -3,6 +3,8 @@ import type { PlatformVersionResponse } from '@insula/api-contracts';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
+import { isNewerVersion } from './poller/semver.js';
+import { releaseTagFor } from '../../cli/platform-ops/self-upgrade/release-tag.js';
 
 // GitHub Releases API for the upstream repo — no auth required for
 // public repos and matches what release.yml publishes on `v*.*.*`
@@ -269,15 +271,18 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
   };
 }
 
-function isNewer(latest: string, current: string): boolean {
-  // Strip any pre-release suffix (0.0.0-<sha>) before comparing so CI-
-  // derived currentVersions compare cleanly against pure-semver tags.
-  const parse = (v: string) => v.split('-')[0].split('.').map(Number);
-  const [lMaj, lMin, lPat] = parse(latest);
-  const [cMaj, cMin, cPat] = parse(current);
-  if (lMaj !== cMaj) return lMaj > cMaj;
-  if (lMin !== cMin) return lMin > cMin;
-  return lPat > cPat;
+/**
+ * Prerelease-aware "is `latest` a newer release than `current`": `-rc.2` is newer
+ * than `-rc.1`, and a stable release is newer than its own RCs. A DEV build stamp
+ * (`2026.10.6-2f64f72`) compares as the release it was built on (releaseTagFor),
+ * so a dev cluster is not offered the release it already runs.
+ *
+ * This used to strip every suffix, which made RC → RC and RC → stable read as
+ * "already current": an operator on `-rc.1` was never offered `-rc.2` or the
+ * stable, although the upgrade itself (upgrade-planner) handles both.
+ */
+export function isNewer(latest: string, current: string): boolean {
+  return isNewerVersion(releaseTagFor(latest), releaseTagFor(current));
 }
 
 export async function updateSettings(db: Database, autoUpdate: boolean, includePrereleases?: boolean): Promise<{ autoUpdate: boolean; includePrereleases: boolean }> {

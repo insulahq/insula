@@ -102,6 +102,7 @@ cat > "$DEST" <<EOF
 # idempotent: TODO — describe why re-running on an already-applied node is a no-op
 # allow-paths: TODO — list the host path(s) this migration may touch (review allow-list)
 # blocks-on-failure: yes    # ADR-056: 'no' iff NOTHING later depends on this script
+# phase: before-services    # ADR-064: runs before the services roll — must work with the release still running. 'after-services' iff it needs the new release's containers/manifests.
 set -euo pipefail
 
 # TODO: implement the host change for "${NAME}".

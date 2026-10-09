@@ -173,14 +173,13 @@ export function evaluatePostflight(facts: PostflightFacts): PostflightResult {
     });
   }
 
-  // Host migrations are REPORTED here, never blocking. A node applies a
-  // release's host changes when its own CLI updates to that release — on the
-  // node's daily update timer, up to ~25 h after the services roll — so during
-  // the upgrade window a node is legitimately behind, and any failure that shows
-  // is an OLD one. Neither may hold the services' convergence: that turned a
-  // node's timer into "not converging" and one old failure into an upgrade that
-  // never finished. `scheduled` tells the UI a behind node is catching up, not
-  // broken.
+  // Host migrations are REPORTED here, never blocking. The upgrade run (ADR-064)
+  // updates the nodes before the services and finishes after-services changes
+  // after them; a node it left out (excluded, or one that joined later) catches up
+  // on its hourly update timer and is legitimately behind meanwhile. Neither may
+  // hold the services' convergence: that turned a node's timer into "not
+  // converging" and one old failure into an upgrade that never finished.
+  // `scheduled` tells the UI a behind node is catching up, not broken.
   if (facts.hostMigrations) {
     gates.push({
       id: 'host-migrations-converged',

@@ -66,4 +66,7 @@ type MigrationItem struct {
 	// ADR-056 §5: recorded by a fresh bootstrap's `.baseline` marker — it never
 	// ran on this node. Only ever true; absent for a script that really ran.
 	Baseline *bool `json:"baseline,omitempty"`
+	// ADR-064 §3: before-services | after-services. Lets the upgrade tell a node
+	// that finished its before-services work from one still running it.
+	Phase *string `json:"phase,omitempty"`
 }

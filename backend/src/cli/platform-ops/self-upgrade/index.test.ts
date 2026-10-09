@@ -34,13 +34,12 @@ function realDepsWithLocalAssets(
   buildVersion: string,
   newBinary: Buffer,
   newSig: Buffer,
-  target: { running?: string | null; latest?: string | null },
+  target: { running?: string | null },
 ): SelfUpgradeDeps {
   const env: NodeJS.ProcessEnv = { PLATFORM_OPS_BIN: binPath };
   return {
     ...realSelfUpgradeDeps(env, buildVersion),
     readRunningVersion: async () => target.running ?? null,
-    fetchLatestReleaseVersion: async () => target.latest ?? null,
     downloadAsset: async (_v, _a, kind) => (kind === 'sig' ? newSig : newBinary),
     readPublicKey: () => pubPem,
     log: () => undefined,

@@ -1,0 +1,105 @@
+# What node Plans platform-api may write (ADR-064).
+#
+# An upgrade run pushes the release to every node through the
+# system-upgrade-controller, which runs each Plan as a PRIVILEGED, hostPID job on
+# every matching node. A free-form Plan would be root on every node, so the
+# account may write exactly two Plans, each with one fixed host command:
+#
+#   insula-node-update  /usr/local/bin/insula self-upgrade --version <release>
+#                       && systemctl start platform-ops-host-config.service
+#   insula-node-finish  systemctl start platform-ops-host-config.service
+#
+# The CLI verifies the release it downloads against the key the node pins
+# (/etc/platform/cosign.pub) and refuses a downgrade, so the version is the only
+# variable — and it is pinned to the release grammar here, in the argument AND in
+# spec.version. The image must be the platform's own node-terminal image (alpine
+# + nsenter) with an explicit tag or digest: the controller appends spec.version
+# as the tag of a name-only image. Every other Plan field is pinned or must be
+# absent — no prepare/drain step, channel, secrets, pull secrets, volumes, env,
+# security context, node labels after completion, priority, window or deadline
+# override; one node at a time, tolerating every taint, selected only by OS and
+# by excluded hostnames.
+#
+# Plans for k3s upgrades are created host-side by `insula cluster upgrade` with
+# the node's admin kubeconfig, not by platform-api, and are not affected.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform-api-plan-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["upgrade.cattle.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["plans"]
+  matchConditions:
+    - name: platform-api-only
+      expression: "request.userInfo.username == 'system:serviceaccount:platform:platform-api'"
+  variables:
+    - name: isDelete
+      expression: "request.operation == 'DELETE'"
+    # The one argument each Plan may carry (raw strings: no escape processing).
+    - name: updateArg
+      expression: >-
+        r"^exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '/usr/local/bin/insula self-upgrade --version [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]{1,40})? && /usr/bin/env systemctl start platform-ops-host-config\.service'$"
+    - name: finishArg
+      expression: >-
+        r"^exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '/usr/bin/env systemctl start platform-ops-host-config\.service'$"
+    # node-plan.ts: <release>-run.<first 12 hex of the run id>
+    - name: versionRe
+      expression: >-
+        r"^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]{1,40})?-run\.[0-9a-f]{12}$"
+  validations:
+    - expression: "request.namespace == 'system-upgrade' && request.name in ['insula-node-update', 'insula-node-finish']"
+      message: "platform-api may only write the insula-node-update / insula-node-finish Plans in system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isDelete ||
+        (object.spec.upgrade.image.matches(r"^ghcr\.io/insulahq/insula/node-terminal(:[A-Za-z0-9._-]{1,128}(@sha256:[a-f0-9]{64})?|@sha256:[a-f0-9]{64})$") &&
+          has(object.spec.version) && object.spec.version.matches(variables.versionRe) &&
+          has(object.spec.upgrade.command) && object.spec.upgrade.command == ['/bin/sh', '-c'] &&
+          has(object.spec.upgrade.args) && size(object.spec.upgrade.args) == 1 &&
+          object.spec.upgrade.args[0].matches(request.name == 'insula-node-update' ? variables.updateArg : variables.finishArg))
+      message: "a node Plan must run the platform's node-terminal image (tag or digest) with the fixed node-update command and a run version (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isDelete ||
+        (!has(object.spec.upgrade.envs) && !has(object.spec.upgrade.envFrom) && !has(object.spec.upgrade.volumes) &&
+          !has(object.spec.upgrade.securityContext) &&
+          !has(object.spec.prepare) && !has(object.spec.drain) && !has(object.spec.channel) &&
+          (!has(object.spec.secrets) || size(object.spec.secrets) == 0) &&
+          (!has(object.spec.imagePullSecrets) || size(object.spec.imagePullSecrets) == 0) &&
+          !has(object.spec.postCompleteLabels) && !has(object.spec.postCompleteDelay) &&
+          !has(object.spec.priorityClassName) && !has(object.spec.window) &&
+          !has(object.spec.jobActiveDeadlineSecs) &&
+          (!has(object.spec.exclusive) || !object.spec.exclusive) &&
+          (!has(object.spec.cordon) || !object.spec.cordon) &&
+          has(object.spec.concurrency) && object.spec.concurrency == 1 &&
+          has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'system-upgrade')
+      message: "a node Plan may not add a prepare/drain step, a channel, secrets, pull secrets, volumes, env, a security context, node labels, a priority, a window or a deadline, and runs one node at a time as system-upgrade (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+    - expression: >-
+        variables.isDelete ||
+        (has(object.spec.tolerations) && object.spec.tolerations == [{'operator': 'Exists'}] &&
+          has(object.spec.nodeSelector) && !has(object.spec.nodeSelector.matchLabels) &&
+          has(object.spec.nodeSelector.matchExpressions) &&
+          object.spec.nodeSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/os' && e.operator == 'In' && e.values == ['linux']) &&
+          object.spec.nodeSelector.matchExpressions.all(e,
+            (e.key == 'kubernetes.io/os' && e.operator == 'In' && e.values == ['linux']) ||
+            (e.key == 'kubernetes.io/hostname' && e.operator == 'NotIn')))
+      message: "a node Plan selects every Linux node except excluded hostnames, tolerating every taint (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform-api-plan-scope
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  policyName: platform-api-plan-scope
+  validationActions: [Deny]

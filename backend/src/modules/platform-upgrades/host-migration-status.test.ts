@@ -285,6 +285,16 @@ describe('cliBehindTarget', () => {
     expect(cliBehindTarget('2026.10.5', '2026.10.6-ad8fe1a')).toBe(true);
   });
 
+  it('a node that reports state but no CLI version runs a CLI from before the field — behind', () => {
+    // Lab staging, rc.1 → rc.2: rc.1 CLIs sent no version and read as fully applied.
+    expect(cliBehindTarget(null, '2026.10.7-rc.2', true)).toBe(true);
+    expect(cliBehindTarget(undefined, '2026.10.8', true)).toBe(true);
+    // Before the first reporting release, silence says nothing.
+    expect(cliBehindTarget(null, '2026.10.7-rc.1', true)).toBeNull();
+    // Not reported at all — unknown, not behind.
+    expect(cliBehindTarget(null, '2026.10.7-rc.2', false)).toBeNull();
+  });
+
   it('is null when either side is unknown or not a version', () => {
     expect(cliBehindTarget(null, '2026.10.7')).toBeNull();
     expect(cliBehindTarget('2026.10.7', null)).toBeNull();
@@ -313,7 +323,7 @@ describe('assessHostMigrations', () => {
     expect(a.status).toBe('warn');
     expect(a.scheduled).toBe(true);
     expect(a.detail).toMatch(/1 of 2 node\(s\) still on an older CLI \(s2\)/);
-    expect(a.detail).toMatch(/daily update/);
+    expect(a.detail).toMatch(/hourly update runs/);
     // The old wording — the one this replaces — called such a node "converged".
     expect(a.detail).not.toMatch(/converged/);
   });

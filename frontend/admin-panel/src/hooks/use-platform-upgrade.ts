@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { UpgradeGate } from '@insula/api-contracts';
+import type { UpgradeGate, UpgradeRun } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // The gate shape is the shared contract's (it carries `scheduled`, which a local
 // copy silently dropped).
-export type { UpgradeGate };
+export type { UpgradeGate, UpgradeRun };
 
 interface PreflightResponse {
   readonly data: {
@@ -18,11 +18,15 @@ interface PreflightResponse {
 
 export type PreflightData = PreflightResponse['data'];
 
-/** Read-only upgrade pre-flight gate evaluation (super_admin). */
-export function usePreflight(enabled = true) {
+/**
+ * Read-only upgrade pre-flight gate evaluation (super_admin). `exclude` judges the
+ * nodes the way an apply that upgrades without them would (ADR-064).
+ */
+export function usePreflight(enabled = true, exclude: readonly string[] = []) {
+  const qs = exclude.length > 0 ? `?exclude=${encodeURIComponent(exclude.join(','))}` : '';
   return useQuery({
-    queryKey: ['upgrade-preflight'],
-    queryFn: () => apiFetch<PreflightResponse>('/api/v1/admin/platform/upgrade/preflight'),
+    queryKey: ['upgrade-preflight', exclude.join(',')],
+    queryFn: () => apiFetch<PreflightResponse>(`/api/v1/admin/platform/upgrade/preflight${qs}`),
     enabled,
     staleTime: 30 * 1000,
   });
@@ -115,6 +119,8 @@ interface UpgradeApplyResponse {
     readonly summary: string;
     /** Populated on a dry-run (apply:false) so the confirm modal can preview it. */
     readonly interruption: InterruptionPreview | null;
+    /** ADR-064: the run an apply started. */
+    readonly runId?: string | null;
   };
 }
 
@@ -176,7 +182,7 @@ export function useUpgradeProgress(active: boolean) {
 export function useUpgradeApply() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { version?: string; apply: boolean }) =>
+    mutationFn: (vars: { version?: string; apply: boolean; excludeNodes?: readonly string[] }) =>
       apiFetch<UpgradeApplyResponse>('/api/v1/admin/platform/upgrade', {
         method: 'POST',
         body: JSON.stringify(vars),
@@ -185,6 +191,41 @@ export function useUpgradeApply() {
       queryClient.invalidateQueries({ queryKey: ['platform-version'] });
       queryClient.invalidateQueries({ queryKey: ['upgrade-preflight'] });
       queryClient.invalidateQueries({ queryKey: ['upgrade-postflight'] });
+      queryClient.invalidateQueries({ queryKey: ['upgrade-run'] });
+    },
+  });
+}
+
+interface UpgradeRunResponse {
+  readonly data: { readonly run: UpgradeRun | null };
+}
+
+/**
+ * The upgrade run in flight, else the latest one (ADR-064). Polls every 4 s while
+ * it runs — through the services' roll, when the API itself restarts — and stops
+ * once it has finished.
+ */
+export function useUpgradeRun(enabled = true) {
+  return useQuery({
+    queryKey: ['upgrade-run'],
+    queryFn: () => apiFetch<UpgradeRunResponse>('/api/v1/admin/platform/upgrade/run'),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.data.run?.status === 'running' ? 4 * 1000 : false),
+    refetchIntervalInBackground: true,
+    retry: true,
+    retryDelay: 2000,
+    staleTime: 2 * 1000,
+  });
+}
+
+/** Cancel a run that is still preparing nodes (the services have not changed). */
+export function useCancelUpgradeRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<UpgradeRunResponse>('/api/v1/admin/platform/upgrade/run/cancel', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['upgrade-run'] });
+      queryClient.invalidateQueries({ queryKey: ['upgrade-preflight'] });
     },
   });
 }
