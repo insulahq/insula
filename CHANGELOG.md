@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.7-rc.7] - 2026-10-09
-
 ### Added
 
 - **Kubernetes joins the upgrade.** When a release pins a newer k3s than the nodes run, the

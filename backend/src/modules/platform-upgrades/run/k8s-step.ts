@@ -108,6 +108,11 @@ export function assessKubernetesNode(
   if (active > 0 || (job?.succeeded ?? 0) > 0) {
     if (!node.ready) return out('updating', 'Restarting k3s…');
     if (atTarget) return out('updating', `Kubernetes ${kubelet} — waiting for the upgrade controller to finish with it.`);
+    // The controller starts a worker's job at once; it waits for the servers before
+    // it cordons and drains the node. Not cordoned yet = not being upgraded yet.
+    if (!node.unschedulable && (job?.succeeded ?? 0) === 0) {
+      return out('queued', `On Kubernetes ${kubelet ?? '?'}; its upgrade waits for its turn (servers first, then workers).`);
+    }
     return out('updating', `Upgrading Kubernetes ${kubelet ?? '?'} → ${target}…`);
   }
   if (!node.ready) return out('waiting', 'Not Ready — the step waits for it.');
