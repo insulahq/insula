@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
-import { listPlanJobs, listNodeFacts, applyNodePlan, deleteNodePlan } from './k8s.js';
+import { listPlanJobs, listNodeFacts, applyNodePlan, deleteNodePlan, readPlanHash } from './k8s.js';
 
 const job = (node: string, created: string, status: Record<string, number>) => ({
   metadata: { labels: { 'upgrade.cattle.io/node': node, 'upgrade.cattle.io/plan': 'insula-node-update' }, creationTimestamp: created },
@@ -35,7 +35,41 @@ describe('listNodeFacts', () => {
       { metadata: { name: 'sv1' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } },
       { metadata: {}, status: {} },
     ] }) } } as unknown as K8sClients;
-    expect(await listNodeFacts(k8s)).toEqual([{ name: 'sv1', ready: true, kubeletVersion: null }, { name: 'sv2', ready: false, kubeletVersion: null }]);
+    expect(await listNodeFacts(k8s)).toEqual([
+      { name: 'sv1', ready: true, kubeletVersion: null, unschedulable: false, planHashes: {} },
+      { name: 'sv2', ready: false, kubeletVersion: null, unschedulable: false, planHashes: {} },
+    ]);
+  });
+
+  it('carries the cordon and the upgrade controller\'s per-Plan completion labels — only those', async () => {
+    const k8s = { core: { listNode: async () => ({ items: [{
+      metadata: { name: 'sv1', labels: {
+        'plan.upgrade.cattle.io/k3s-server-upgrade': 'h1',
+        'plan.upgrade.cattle.io/insula-node-update': 'h2',
+        'node-role.kubernetes.io/control-plane': 'true',
+      } },
+      spec: { unschedulable: true },
+      status: { conditions: [{ type: 'Ready', status: 'True' }], nodeInfo: { kubeletVersion: 'v1.36.5+k3s1' } },
+    }] }) } } as unknown as K8sClients;
+    expect(await listNodeFacts(k8s)).toEqual([{
+      name: 'sv1', ready: true, kubeletVersion: 'v1.36.5+k3s1', unschedulable: true,
+      planHashes: { 'k3s-server-upgrade': 'h1', 'insula-node-update': 'h2' },
+    }]);
+  });
+});
+
+describe('readPlanHash', () => {
+  const err = (code: number) => Object.assign(new Error(`HTTP ${code}`), { code });
+  const k8sWith = (get: () => Promise<unknown>) => ({ custom: { getNamespacedCustomObject: get } } as unknown as K8sClients);
+
+  it('the controller\'s latestHash; a Plan it has not synced yet has none; absent is not an error', async () => {
+    expect(await readPlanHash(k8sWith(async () => ({ status: { latestHash: 'abc' } })), 'k3s-server-upgrade')).toEqual({ exists: true, latestHash: 'abc' });
+    expect(await readPlanHash(k8sWith(async () => ({ spec: {} })), 'k3s-server-upgrade')).toEqual({ exists: true, latestHash: null });
+    expect(await readPlanHash(k8sWith(async () => { throw err(404); }), 'k3s-server-upgrade')).toEqual({ exists: false, latestHash: null });
+  });
+
+  it('any other read error propagates (a 403 is not "no Plan")', async () => {
+    await expect(readPlanHash(k8sWith(async () => { throw err(403); }), 'k3s-server-upgrade')).rejects.toThrow('HTTP 403');
   });
 });
 

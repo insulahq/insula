@@ -71,22 +71,46 @@ export function buildRunK3sPlans(target: string, current: string, excluded: read
   return { ok: true, plans };
 }
 
-/** One node in the Kubernetes step: judged by its kubelet, which only k3s itself changes. */
-export function assessKubernetesNode(node: NodeFacts, job: NodeJobFacts | undefined, target: string, excluded: readonly string[]): UpgradeRunNode {
+/**
+ * One node in the Kubernetes step. Done is the kubelet at the target AND the upgrade
+ * controller's record that it finished there: the controller uncordons the node in
+ * the same update that writes `plan.upgrade.cattle.io/<plan>` = the Plan's hash, and
+ * it does neither once the Plan is gone — so ending the step on the kubelet alone
+ * (deleting the Plans) could leave the last node cordoned.
+ */
+export function assessKubernetesNode(
+  node: NodeFacts,
+  job: NodeJobFacts | undefined,
+  target: string,
+  excluded: readonly string[],
+  latestHash: ReadonlyMap<string, string>,
+): UpgradeRunNode {
   const out = (state: UpgradeRunNode['state'], detail: string): UpgradeRunNode =>
     ({ node: node.name, state, cliVersion: null, detail, hostChanges: null });
   if (excluded.includes(node.name)) return out('excluded', 'Left out — run `insula cluster upgrade` on it when it is back.');
   const kubelet = node.kubeletVersion ?? null;
-  if (kubelet && k3sVersionAtLeast(kubelet, target) && node.ready) return out('ready', `Kubernetes ${kubelet}.`);
+  const atTarget = !!kubelet && k3sVersionAtLeast(kubelet, target);
+  // Either Plan: their selectors split the nodes (control-plane In / DoesNotExist),
+  // so a node only ever carries the label of the one that selected it.
+  const finished = K3S_PLAN_NAMES.some((p) => {
+    const h = latestHash.get(p);
+    return !!h && node.planHashes?.[p] === h;
+  });
+  if (atTarget && node.ready && finished) return out('ready', `Kubernetes ${kubelet}.`);
+  const active = job?.active ?? 0;
   // Failed only once nothing is in flight: the controller retries a failed pod, and
   // ending the step (deleting its Plans) under a running k3s restart could leave the
-  // node cordoned mid-upgrade.
-  if ((job?.failed ?? 0) >= JOB_FAILURE_THRESHOLD && (job?.active ?? 0) === 0) {
-    return out('failed', `The Kubernetes upgrade failed ${job?.failed} times — see the job log in namespace system-upgrade.`);
+  // node cordoned mid-upgrade. The controller leaves a failed node cordoned.
+  if ((job?.failed ?? 0) >= JOB_FAILURE_THRESHOLD && active === 0) {
+    const cordoned = node.unschedulable ? ' It stays cordoned until you uncordon it.' : '';
+    return out('failed', `The Kubernetes upgrade failed ${job?.failed} times — see the job log in namespace system-upgrade.${cordoned}`);
   }
-  if ((job?.active ?? 0) > 0 || (job?.succeeded ?? 0) > 0) {
-    return out('updating', node.ready ? `Upgrading Kubernetes ${kubelet ?? '?'} → ${target}…` : 'Restarting k3s…');
+  if (active > 0 || (job?.succeeded ?? 0) > 0) {
+    if (!node.ready) return out('updating', 'Restarting k3s…');
+    if (atTarget) return out('updating', `Kubernetes ${kubelet} — waiting for the upgrade controller to finish with it.`);
+    return out('updating', `Upgrading Kubernetes ${kubelet ?? '?'} → ${target}…`);
   }
   if (!node.ready) return out('waiting', 'Not Ready — the step waits for it.');
+  if (atTarget) return out('queued', `On Kubernetes ${kubelet}; the upgrade controller confirms it in its turn.`);
   return out('queued', `On Kubernetes ${kubelet ?? '?'}; waiting for its turn (servers first, then workers).`);
 }

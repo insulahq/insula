@@ -13,7 +13,7 @@ import { dbSettings, runUpgrade } from '../orchestrate.js';
 import { captureUpgradeRescue, realRollbackDeps } from '../rollback.js';
 import { readHostMigrationStatus } from '../host-migration-status.js';
 import { buildNodePlan, NODE_PLAN_KINDS, type NodePlanKind } from './node-plan.js';
-import { applyNodePlan, deleteNodePlan, deletePlanNamed, listJobsForPlans, listNodeFacts, listPlanJobs, planExists } from './k8s.js';
+import { applyNodePlan, deleteNodePlan, deletePlanNamed, listJobsForPlans, listNodeFacts, listPlanJobs, readPlanHash } from './k8s.js';
 import { K3S_PLAN_NAMES, buildRunK3sPlans, lowestKubelet } from './k8s-step.js';
 import { updateRun, createRun, getActiveRun, transitionRun, type NewRunInput } from './store.js';
 import { ApiError } from '../../../shared/errors.js';
@@ -106,7 +106,13 @@ export function realRunMachineDeps(db: Database, k8s: K8sClients, run: PlatformU
       for (const name of K3S_PLAN_NAMES) await deletePlanNamed(k8s, name);
     },
     kubernetesJobs: (sinceMs) => listJobsForPlans(k8s, K3S_PLAN_NAMES, sinceMs),
-    kubernetesPlansExist: async () => (await Promise.all(K3S_PLAN_NAMES.map((n) => planExists(k8s, n)))).every(Boolean),
+    kubernetesPlans: async () => {
+      const read = await Promise.all(K3S_PLAN_NAMES.map(async (n) => [n, await readPlanHash(k8s, n)] as const));
+      return {
+        exist: read.every(([, p]) => p.exists),
+        latestHash: new Map(read.flatMap(([n, p]) => (p.latestHash ? [[n, p.latestHash] as const] : []))),
+      };
+    },
   };
 }
 

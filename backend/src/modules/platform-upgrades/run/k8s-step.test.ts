@@ -61,18 +61,37 @@ describe('buildRunK3sPlans', () => {
 });
 
 describe('assessKubernetesNode', () => {
-  const up = (kubeletVersion: string) => ({ name: 'sv1', ready: true, kubeletVersion });
-  it('ready once its kubelet is at the target and it is Ready', () => {
-    expect(assessKubernetesNode(up(T), undefined, T, []).state).toBe('ready');
+  const HASH = new Map([['k3s-server-upgrade', 'h-server'], ['k3s-agent-upgrade', 'h-agent']]);
+  const up = (kubeletVersion: string, planHashes: Record<string, string> = {}) => ({ name: 'sv1', ready: true, kubeletVersion, planHashes });
+  const finished = { 'k3s-server-upgrade': 'h-server' };
+
+  it('ready once its kubelet is at the target, it is Ready, and the controller recorded its Plan\'s current hash on it', () => {
+    expect(assessKubernetesNode(up(T, finished), undefined, T, [], HASH).state).toBe('ready');
+    expect(assessKubernetesNode({ ...up(T), planHashes: { 'k3s-agent-upgrade': 'h-agent' } }, undefined, T, [], HASH).state).toBe('ready');
   });
+
+  it('the kubelet at the target is NOT done while the controller has not finished — it uncordons in that same update', () => {
+    const running = assessKubernetesNode({ ...up(T), unschedulable: true }, { active: 0, failed: 0, succeeded: 1 }, T, [], HASH);
+    expect(running.state).toBe('updating');
+    expect(running.detail).toMatch(/waiting for the upgrade controller to finish/);
+    // A record from an earlier spec of the Plan (another hash) is not this run's.
+    expect(assessKubernetesNode(up(T, { 'k3s-server-upgrade': 'old' }), undefined, T, [], HASH).state).toBe('queued');
+    // Plans not yet synced by the controller: nothing to compare with.
+    expect(assessKubernetesNode(up(T, finished), undefined, T, [], new Map()).state).toBe('queued');
+  });
+
   it('a node restarting k3s mid-job is updating, not waiting or failed', () => {
-    const n = assessKubernetesNode({ name: 'sv1', ready: false, kubeletVersion: 'v1.36.2+k3s1' }, { active: 1, failed: 0, succeeded: 0 }, T, []);
+    const n = assessKubernetesNode({ name: 'sv1', ready: false, kubeletVersion: 'v1.36.2+k3s1' }, { active: 1, failed: 0, succeeded: 0 }, T, [], HASH);
     expect(n.state).toBe('updating');
     expect(n.detail).toMatch(/Restarting k3s/);
   });
-  it('fails after repeated job failures; queued before its turn; excluded stays out', () => {
-    expect(assessKubernetesNode(up('v1.36.2+k3s1'), { active: 0, failed: 3, succeeded: 0 }, T, []).state).toBe('failed');
-    expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, []).state).toBe('queued');
-    expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, ['sv1']).state).toBe('excluded');
+
+  it('fails after repeated job failures, saying when it stays cordoned; queued before its turn; excluded stays out', () => {
+    const failed = assessKubernetesNode({ ...up('v1.36.2+k3s1'), unschedulable: true }, { active: 0, failed: 3, succeeded: 0 }, T, [], HASH);
+    expect(failed.state).toBe('failed');
+    expect(failed.detail).toMatch(/stays cordoned until you uncordon it/);
+    expect(assessKubernetesNode(up('v1.36.2+k3s1'), { active: 0, failed: 3, succeeded: 0 }, T, [], HASH).detail).not.toMatch(/cordoned/);
+    expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, [], HASH).state).toBe('queued');
+    expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, ['sv1'], HASH).state).toBe('excluded');
   });
 });

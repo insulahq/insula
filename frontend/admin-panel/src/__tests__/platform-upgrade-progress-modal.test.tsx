@@ -127,6 +127,41 @@ describe('PlatformUpgradeProgressModal', () => {
       expect(screen.getByTestId('upgrade-run-status')).toHaveTextContent(/Done — the services and every node run v2026\.10\.7-rc\.2/);
     });
 
+    it('a succeeded run without a node does not claim every node — it counts them and says how the rest catches up', () => {
+      run = runOf({
+        status: 'succeeded', step: 'done', excludedNodes: ['w1'],
+        nodes: [
+          { node: 's1', state: 'ready', cliVersion: '2026.10.7-rc.2', detail: 'On 2026.10.7-rc.2.' },
+          { node: 'w1', state: 'excluded', cliVersion: '2026.10.7-rc.1', detail: 'Upgraded without it — it updates on its own timer when it is back.' },
+        ],
+      });
+      renderModal();
+      const line = screen.getByTestId('upgrade-run-status');
+      expect(line).toHaveTextContent('Done — the services and 1 of 2 nodes run v2026.10.7-rc.2; the node left out updates on its own timer when it is back.');
+      expect(line).not.toHaveTextContent(/every node/);
+    });
+
+    it('a succeeded Kubernetes run names the version, and that left-out nodes need the CLI for it', () => {
+      run = runOf({
+        status: 'succeeded', step: 'done', kubernetesVersion: 'v1.36.5+k3s1', excludedNodes: ['w1', 'w2'],
+        nodes: [
+          { node: 's1', state: 'ready', cliVersion: null, detail: 'Kubernetes v1.36.5+k3s1.' },
+          { node: 'w1', state: 'excluded', cliVersion: null, detail: 'Left out.' },
+          { node: 'w2', state: 'excluded', cliVersion: null, detail: 'Left out.' },
+        ],
+      });
+      renderModal();
+      expect(screen.getByTestId('upgrade-run-status')).toHaveTextContent(
+        'Done — the services and 1 of 3 nodes run v2026.10.7-rc.2, on Kubernetes v1.36.5+k3s1; the 2 nodes left out update on their own timer when they are back (Kubernetes: run `insula cluster upgrade` for them).',
+      );
+    });
+
+    it('a succeeded Kubernetes run with every node says so', () => {
+      run = runOf({ status: 'succeeded', step: 'done', kubernetesVersion: 'v1.36.5+k3s1' });
+      renderModal();
+      expect(screen.getByTestId('upgrade-run-status')).toHaveTextContent('Done — the services and every node run v2026.10.7-rc.2, on Kubernetes v1.36.5+k3s1.');
+    });
+
     it('a failed run shows its message, not a spinner', () => {
       run = runOf({ status: 'failed', message: 'Stopped before the services changed: s2 — failed. The services still run the previous release.' });
       renderModal();
