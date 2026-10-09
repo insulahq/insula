@@ -405,27 +405,60 @@ function migrationNoteFailure(key: string): { attempt: number; failingSince: str
  *
  * Best-effort: reporting must never fail a converge.
  */
+/**
+ * This binary's version — the release whose host-migrations it carries. The
+ * literal `process.env.PLATFORM_OPS_VERSION` is what esbuild --define replaces
+ * at build time (an aliased read would not be substituted); a dev run without
+ * the define falls back to the host's VERSION file, then null.
+ */
+export function cliBuildVersion(): string | null {
+  const baked = (process.env.PLATFORM_OPS_VERSION ?? '').trim();
+  if (baked) return baked;
+  try {
+    const f = readFileSync('/etc/platform/VERSION', 'utf8').trim();
+    return f || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure: the status.json document. `schema` stays 1 — the fields are additive and
+ * the relay reads by name.
+ */
+export function buildHostMigrationStatusDoc(
+  result: HostMigrationResult,
+  cliVersion: string | null,
+  now: Date = new Date(),
+): Record<string, unknown> {
+  return {
+    schema: 1,
+    // The release this node's CLI carries. Without it a node on an older CLI —
+    // which cannot know the newer release's migrations exist — reports "nothing
+    // pending" and is indistinguishable from an up-to-date node.
+    cliVersion,
+    collectedAt: now.toISOString(),
+    mode: result.mode,
+    source: result.source,
+    ok: result.ok,
+    appliedCount: result.appliedCount,
+    reason: result.reason ?? null,
+    items: result.items.map((i) => ({
+      key: i.key,
+      state: i.state,
+      error: i.error ?? null,
+      attempt: i.attempt ?? null,
+      failingSince: i.failingSince ?? null,
+      skipReason: i.skipReason ?? null,
+      baseline: i.baseline ?? null,
+    })),
+  };
+}
+
 function writeHostMigrationStatusFile(result: HostMigrationResult): void {
   try {
     mkdirSync(HOST_MIGRATION_MARKER_ROOT, { recursive: true });
-    const doc = {
-      schema: 1,
-      collectedAt: new Date().toISOString(),
-      mode: result.mode,
-      source: result.source,
-      ok: result.ok,
-      appliedCount: result.appliedCount,
-      reason: result.reason ?? null,
-      items: result.items.map((i) => ({
-        key: i.key,
-        state: i.state,
-        error: i.error ?? null,
-        attempt: i.attempt ?? null,
-        failingSince: i.failingSince ?? null,
-        skipReason: i.skipReason ?? null,
-        baseline: i.baseline ?? null,
-      })),
-    };
+    const doc = buildHostMigrationStatusDoc(result, cliBuildVersion());
     writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
   } catch {
     /* advisory — a converge must not fail because it could not report */

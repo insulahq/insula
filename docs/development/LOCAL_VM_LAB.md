@@ -1,7 +1,7 @@
 # Local VM Lab — retained DEV and staging clusters on one host
 
 > **Status:** built — services VM, local DEV and local staging (with its worker) run, reachable from
-> the LAN by name; the first release candidate through staging is open (see *Phases*).
+> the LAN by name; release candidates are tested on staging as in-place upgrades (see *Phases*).
 > **Supersedes:** [`LOCAL_MULTINODE_VM_SETUP.md`](./LOCAL_MULTINODE_VM_SETUP.md) (never built).
 > **Related:** [`EPHEMERAL_VM_INTEGRATION_TESTING.md`](./EPHEMERAL_VM_INTEGRATION_TESTING.md) — the
 > throw-away per-run tier (`scripts/vm-integration-tests/run.sh`). The lab reuses its machinery
@@ -233,7 +233,7 @@ lab's. `run.sh` stops older throw-away runs before it starts — it never touche
 | 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | done — services VM and DEV built and checked live |
 | 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | done for the install path — Flux running, all public certificates (incl. mail) from the lab CA; `bootstrap.sh --trust-ca` now seeds Stalwart's trust too |
 | 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | done (smoke 46/0, browser, auto-deploy of a real push, mail TLS, backups, DNS) — soak running |
-| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | install done (3 servers: Ubuntu 24.04 / Debian 12 / Rocky 9 at v2026.10.6); worker (Debian 12) joined and removed twice through the admin flows, the second time on the reused VM; smoke with the worker in: API 46/0, cluster network 41/0. Found and fixed on the way: removed nodes left their Longhorn node behind, `make smoke` false alarms, the join's needless pre-authorisation warning, the log gate missing `insula bootstrap`'s transcript. First RC upgrade open |
+| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | done. Install: 3 servers (Ubuntu 24.04 / Debian 12 / Rocky 9) at v2026.10.6. Worker (Debian 12) joined and removed through the admin flows, also on the reused VM. First RC: v2026.10.7-rc.1 applied in place from v2026.10.6 through the admin panel's update (browser) — DB migrations 0150–0153, host-migration 2026.10.7/0001 on every node, mail certificate from the lab CA, smoke API 46/0 and cluster network green, worker join/leave on the RC with the Longhorn node removed by the platform |
 | 5 | Cutover: docs (ADR-053's DEV description, this tier's docs), retire the remote DEV server | docs done (ADR-053 amendment); nothing in CI talks to the remote DEV, so retiring it is the operator cancelling the server |
 
 ## Non-goals

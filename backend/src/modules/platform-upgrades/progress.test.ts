@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectUpgradeProgress, computeInterruptionPreview } from './progress.js';
+import { collectUpgradeProgress, computeInterruptionPreview, serviceImpactKind } from './progress.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 /** Minimal k8s double: canned Deployment list + node count. */
@@ -92,7 +92,9 @@ describe('collectUpgradeProgress', () => {
 });
 
 describe('computeInterruptionPreview', () => {
-  it('single-node → hard-unavailability wording + singleNode true; tenant workloads NOT affected', async () => {
+  const withStrategy = (d: ReturnType<typeof dep>, strategy: unknown) => ({ ...d, spec: { ...d.spec, strategy } });
+
+  it('one replica on the default rollout → the new pod starts first; tenant workloads NOT affected', async () => {
     const k8s = fakeK8s([
       dep('platform-api', `${IMG}/backend:2026.7.9`, 1, 1),
       dep('admin-panel', `${IMG}/admin-panel:2026.7.9`, 1, 1),
@@ -100,18 +102,75 @@ describe('computeInterruptionPreview', () => {
     ], 1);
     const p = await computeInterruptionPreview(k8s);
     expect(p.singleNode).toBe(true);
+    expect(p.noRedundancy).toBe(true);
     expect(p.nodeCount).toBe(1);
     expect(p.tenantWorkloadsAffected).toBe(false);
     expect(p.services.map((s) => s.name).sort()).toEqual(['admin-panel', 'platform-api', 'tenant-panel']);
-    expect(p.services.every((s) => /hard-unavailability/.test(s.impact))).toBe(true);
+    expect(p.services.every((s) => /starts before the old one stops/.test(s.impact))).toBe(true);
     expect(p.summary).toMatch(/keep serving/i);
   });
 
-  it('multi-node → rolling-restart wording + singleNode false', async () => {
+  it('multi-node, two replicas → rolling restart via the other replica', async () => {
     const k8s = fakeK8s([dep('platform-api', `${IMG}/backend:2026.7.9`, 2, 2)], 3);
     const p = await computeInterruptionPreview(k8s);
     expect(p.singleNode).toBe(false);
+    expect(p.noRedundancy).toBe(false);
     expect(p.nodeCount).toBe(3);
     expect(p.services[0].impact).toMatch(/rolling restart/i);
+  });
+
+  it('multi-node WITHOUT HA (one replica each) never claims "its other replica"', async () => {
+    // Seen on a three-node lab cluster that never applied HA: the preview keyed
+    // on node count and promised a second replica that did not exist.
+    const k8s = fakeK8s([
+      dep('platform-api', `${IMG}/backend:2026.7.9`, 1, 1),
+      dep('admin-panel', `${IMG}/admin-panel:2026.7.9`, 1, 1),
+    ], 3);
+    const p = await computeInterruptionPreview(k8s);
+    expect(p.singleNode).toBe(false);
+    expect(p.noRedundancy).toBe(true);
+    expect(p.services.some((s) => /other replica/.test(s.impact))).toBe(false);
+    expect(p.summary).toMatch(/one replica each/);
+  });
+
+  it('never reassures when the services could not be read', async () => {
+    const k8s = {
+      apps: { listNamespacedDeployment: async () => { throw new Error('api down'); } },
+      core: { listNode: async () => ({ items: [{}] }) },
+    } as unknown as K8sClients;
+    const p = await computeInterruptionPreview(k8s);
+    expect(p.noRedundancy).toBe(true);
+    expect(p.summary).toMatch(/could not be read/);
+    expect(p.summary).not.toMatch(/stay available throughout/);
+  });
+
+  it('a Recreate rollout is a real gap, and the summary says so', async () => {
+    const k8s = fakeK8s([withStrategy(dep('platform-api', `${IMG}/backend:2026.7.9`, 1, 1), { type: 'Recreate' })], 3);
+    const p = await computeInterruptionPreview(k8s);
+    expect(p.services[0].impact).toMatch(/unavailable/);
+    expect(p.summary).toMatch(/briefly unavailable/);
+  });
+});
+
+describe('serviceImpactKind', () => {
+  it('two replicas with the default rollout are redundant', () => {
+    expect(serviceImpactKind({ replicas: 2 })).toBe('redundant');
+    expect(serviceImpactKind({ replicas: 3, strategy: { rollingUpdate: { maxUnavailable: 1 } } })).toBe('redundant');
+  });
+
+  it('one replica surges when maxUnavailable rounds to 0 (Kubernetes rounds a % DOWN)', () => {
+    expect(serviceImpactKind({ replicas: 1 })).toBe('surge');
+    expect(serviceImpactKind({ replicas: 1, strategy: { rollingUpdate: { maxSurge: '25%', maxUnavailable: '25%' } } })).toBe('surge');
+    expect(serviceImpactKind({ replicas: 1, strategy: { rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } } })).toBe('surge');
+  });
+
+  it('one replica that may be stopped first is a gap', () => {
+    expect(serviceImpactKind({ replicas: 1, strategy: { rollingUpdate: { maxUnavailable: 1 } } })).toBe('gap');
+    expect(serviceImpactKind({ replicas: 1, strategy: { rollingUpdate: { maxSurge: 0, maxUnavailable: '100%' } } })).toBe('gap');
+    expect(serviceImpactKind({ replicas: 1, strategy: { type: 'Recreate' } })).toBe('gap');
+  });
+
+  it('all replicas allowed down at once is a gap even with several replicas', () => {
+    expect(serviceImpactKind({ replicas: 2, strategy: { rollingUpdate: { maxUnavailable: '100%', maxSurge: 0 } } })).toBe('gap');
   });
 });

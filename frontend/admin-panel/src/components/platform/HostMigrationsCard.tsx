@@ -129,6 +129,19 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
                 + `${node.pendingCount ? ` · ${node.pendingCount} pending` : ''}`}
           </span>
         )}
+        {/* The node's CLI decides which release's host changes it can apply. A node
+            behind the cluster's release is catching up on its own timer — said
+            neutrally, never as a fault. */}
+        <span className="ml-auto flex items-center gap-1.5 text-[11px]" data-testid={`host-migrations-cli-${node.node}`}>
+          {node.cliVersion ? (
+            <span className="font-mono text-gray-500 dark:text-gray-400">CLI {node.cliVersion}</span>
+          ) : null}
+          {node.cliBehind === true && (
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+              update pending
+            </span>
+          )}
+        </span>
       </button>
 
       {open && (
@@ -212,7 +225,7 @@ export default function HostMigrationsCard() {
 
       {isError && (
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Could not read node state. The converge still runs hourly on each node regardless.
+          Could not read node state. Each node still converges on its own timer regardless.
         </p>
       )}
 
@@ -225,6 +238,14 @@ export default function HostMigrationsCard() {
           {' '}and, on each node,{' '}
           <span className="font-mono">systemctl list-timers | grep platform-ops</span> (two timers
           expected).
+        </p>
+      )}
+
+      {res && res.nodes.some((n) => n.cliBehind === true) && (
+        <p className="mb-2 text-xs text-gray-600 dark:text-gray-300" data-testid="host-migrations-catching-up">
+          {res.nodes.filter((n) => n.cliBehind === true).length} node(s) still run an older CLI. Each applies
+          {res.targetVersion ? ` ${res.targetVersion}'s` : " this release's"} host changes when its daily update
+          runs — nothing to do.
         </p>
       )}
 

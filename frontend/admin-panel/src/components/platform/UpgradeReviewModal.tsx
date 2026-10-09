@@ -94,12 +94,12 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
             <>
               {/* Interruption preview */}
               {preview?.interruption && (
-                <div className={`text-xs rounded border p-3 space-y-2 ${preview.interruption.singleNode ? 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'}`}>
+                <div className={`text-xs rounded border p-3 space-y-2 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'}`}>
                   <div className="flex items-center gap-1.5 font-medium text-gray-900 dark:text-gray-100">
-                    <AlertTriangle className={`h-4 w-4 ${preview.interruption.singleNode ? 'text-amber-500' : 'text-blue-500'}`} />
+                    <AlertTriangle className={`h-4 w-4 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'text-amber-500' : 'text-blue-500'}`} />
                     What will be interrupted
                     {preview.interruption.nodeCount != null && (
-                      <span className="ml-auto text-gray-500 dark:text-gray-400 font-normal">{preview.interruption.nodeCount} node{preview.interruption.nodeCount === 1 ? '' : 's'}{preview.interruption.singleNode ? ' · no rolling redundancy' : ''}</span>
+                      <span className="ml-auto text-gray-500 dark:text-gray-400 font-normal">{preview.interruption.nodeCount} node{preview.interruption.nodeCount === 1 ? '' : 's'}{(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? ' · no second replica' : ''}</span>
                     )}
                   </div>
                   <p className="text-gray-700 dark:text-gray-300">{preview.interruption.summary}</p>

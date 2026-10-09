@@ -23,6 +23,8 @@ export interface PostflightGate {
   readonly label: string;
   readonly status: PostflightGateStatus;
   readonly detail: string;
+  /** A `warn` that means "not run yet", not a fault (rendered as catching up). */
+  readonly scheduled?: boolean;
 }
 
 export type PostflightPhase = 'idle' | 'reconciling' | 'healthy';
@@ -37,9 +39,16 @@ export interface PostflightMigrationFacts {
   readonly migrationsFailed?: readonly string[];
   /** Count not yet applied (0 on a converged cluster). */
   readonly migrationsPending?: number;
-  /** undefined = not reported yet by any node. */
-  readonly hostMigrationsDegraded?: boolean;
-  readonly hostMigrationsDetail?: string;
+  /**
+   * The nodes' host-migration state against the target release
+   * (host-migration-status.ts assessHostMigrations). Never a `fail`: reported,
+   * not blocking. undefined = not collected (callers without a cluster).
+   */
+  readonly hostMigrations?: {
+    readonly status: 'pass' | 'warn';
+    readonly scheduled: boolean;
+    readonly detail: string;
+  };
 }
 
 export interface PostflightResult {
@@ -164,24 +173,21 @@ export function evaluatePostflight(facts: PostflightFacts): PostflightResult {
     });
   }
 
-  // Host migrations converge per node on their own timer (immediately after a
-  // self-upgrade installs the release's binary, then hourly). Unknown is
-  // tolerated as a pass: a cluster whose nodes have not reported yet must not
-  // block an otherwise healthy upgrade forever — the dedicated status relay and
-  // its own alerting own that case.
-  if (facts.hostMigrationsDegraded === true) {
+  // Host migrations are REPORTED here, never blocking. A node applies a
+  // release's host changes when its own CLI updates to that release — on the
+  // node's daily update timer, up to ~25 h after the services roll — so during
+  // the upgrade window a node is legitimately behind, and any failure that shows
+  // is an OLD one. Neither may hold the services' convergence: that turned a
+  // node's timer into "not converging" and one old failure into an upgrade that
+  // never finished. `scheduled` tells the UI a behind node is catching up, not
+  // broken.
+  if (facts.hostMigrations) {
     gates.push({
       id: 'host-migrations-converged',
-      label: 'Host migrations applied',
-      status: 'fail',
-      detail: facts.hostMigrationsDetail || 'one or more nodes have a failed or blocked host-migration',
-    });
-  } else if (facts.hostMigrationsDegraded === false) {
-    gates.push({
-      id: 'host-migrations-converged',
-      label: 'Host migrations applied',
-      status: 'pass',
-      detail: facts.hostMigrationsDetail || 'all nodes converged',
+      label: 'Host migrations',
+      status: facts.hostMigrations.status,
+      detail: facts.hostMigrations.detail,
+      scheduled: facts.hostMigrations.scheduled,
     });
   }
 

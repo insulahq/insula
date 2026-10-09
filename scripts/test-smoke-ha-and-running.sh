@@ -102,5 +102,30 @@ expect "HA half-applied (one Deployment left at 1): FAIL" "test8.tenant-panel FA
 out=$(run_case 3 "")
 expect "no stateless Deployment at all: FAIL" "test8.ha_deployments FAIL none of the stateless Deployments" "$out"
 
+echo "test 6 (Felix log)"
+sed -n '/^test_6_felix_logs() {/,/^}/p' "$SMOKE" > "$WORK/t6.sh"
+grep -q '^test_6_felix_logs()' "$WORK/t6.sh" || { echo "FAIL: could not extract test_6_felix_logs() from $SMOKE" >&2; exit 1; }
+# felix_case <log lines> → emitted lines for one calico-node pod
+felix_case() {
+  (
+    set +e
+    SKIP=""; RUNNING=(--field-selector=status.phase=Running)
+    emit() { printf '%s %s %s\n' "$1" "$2" "$3"; }
+    skipped() { return 1; }
+    export FAKE_LOG="$1"
+    kubectl() { if [[ "$*" == *" logs "* ]]; then printf '%s\n' "$FAKE_LOG"; else echo "calico-node-x=n1"; fi; }
+    # shellcheck disable=SC1090
+    source "$WORK/t6.sh"
+    test_6_felix_logs
+  )
+}
+out=$(felix_case '2026-10-09 10:04:00.188 [INFO][36] felix/wireguard.go 983: Node is deleted, remove wireguard peer ipVersion=0x4 node="w1"
+2026-10-09 10:06:50.126 [INFO][36] felix/wireguard.go 1203: Peer endpoint address is updated endpointAddr=(*ip.Addr)(nil) ipVersion=0x4 peer="w1"')
+expect "WireGuard peer bookkeeping on a node join/removal is not a failure" "test6.n1 PASS" "$out"
+out=$(felix_case '2026-10-09 10:04:00.188 [WARNING][36] felix/wireguard.go 700: Failed to configure wireguard peer error=timeout')
+expect "a WireGuard peer WARNING still fails the test" "test6.n1 FAIL" "$out"
+out=$(felix_case '2026-10-09 10:04:00.188 [ERROR][36] felix/int_dataplane.go 1: Failed to set tunnel device MTU error=x')
+expect "an MTU failure still fails the test" "test6.n1 FAIL" "$out"
+
 echo "test-smoke-ha-and-running: ${pass} passed, ${fail} failed"
 (( fail == 0 ))

@@ -52,6 +52,12 @@ export const upgradeGateSchema = z.object({
   label: z.string(),
   status: z.enum(['pass', 'warn', 'fail']),
   detail: z.string(),
+  /**
+   * A `warn` that only means "a scheduled process has not run yet" — e.g. nodes
+   * that apply the release's host changes on their own update timer. Rendered
+   * neutrally (catching up), never as a fault. Absent = an ordinary gate.
+   */
+  scheduled: z.boolean().optional(),
 });
 
 export const upgradePreflightResponseSchema = z.object({
@@ -260,6 +266,18 @@ export const hostMigrationNodeStatusSchema = z.object({
   reconcilerMissing: z.boolean().optional(),
   /** Shell commands that fix this node, in order. Rendered verbatim in the UI. */
   remediation: z.array(z.string()).optional(),
+  /**
+   * The node's insula CLI version, as its last converge reported it. A release's
+   * host-migrations ship inside that binary, so a node on an older CLI has not
+   * seen them yet. null = not reported (a CLI that predates the field).
+   */
+  cliVersion: z.string().nullable().optional(),
+  /**
+   * The node's CLI is older than the cluster's release — its host changes for
+   * that release are still to come (the node updates on its own timer). null
+   * when either version is unknown.
+   */
+  cliBehind: z.boolean().nullable().optional(),
 });
 export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
 
@@ -270,6 +288,8 @@ export const hostMigrationStatusResponseSchema = z.object({
   degraded: z.boolean(),
   /** Runbook the UI links to for remediation. */
   runbookUrl: z.string(),
+  /** The release the nodes are compared against (the cluster's running version). */
+  targetVersion: z.string().nullable().optional(),
 });
 export type HostMigrationStatusResponse = z.infer<typeof hostMigrationStatusResponseSchema>;
 

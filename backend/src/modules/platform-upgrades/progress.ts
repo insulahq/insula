@@ -177,8 +177,14 @@ export interface InterruptionPreview {
   readonly services: readonly AffectedService[];
   /** Cluster node count (server + worker). */
   readonly nodeCount: number | null;
-  /** true when the platform runs on a single node → no rolling redundancy. */
+  /** true when the platform runs on a single node. */
   readonly singleNode: boolean;
+  /**
+   * true when at least one user-facing service has no second replica to carry it
+   * through the restart. Decided from the Deployments, not the node count: a
+   * three-node cluster that never applied HA runs one replica of each.
+   */
+  readonly noRedundancy: boolean;
   /** Plain-language headline the UI shows above the service list. */
   readonly summary: string;
   /** Whether tenant-facing websites/databases are affected (they are NOT by an
@@ -186,10 +192,54 @@ export interface InterruptionPreview {
   readonly tenantWorkloadsAffected: boolean;
 }
 
+type RollingValue = number | string | undefined;
+export interface DeploymentShape {
+  readonly replicas?: number;
+  readonly strategy?: { readonly type?: string; readonly rollingUpdate?: { readonly maxSurge?: RollingValue; readonly maxUnavailable?: RollingValue } };
+}
+
+/** Kubernetes' own rounding: maxSurge rounds a percentage UP, maxUnavailable DOWN. */
+function resolveRolling(v: RollingValue, replicas: number, roundUp: boolean, fallback: string): number {
+  const raw = v ?? fallback;
+  if (typeof raw === 'number') return raw;
+  const m = /^(\d+)%$/.exec(raw.trim());
+  if (m) {
+    const exact = (Number(m[1]) / 100) * replicas;
+    return roundUp ? Math.ceil(exact) : Math.floor(exact);
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export type ServiceImpactKind = 'redundant' | 'surge' | 'gap';
+
+/**
+ * Pure: what restarting this Deployment does to its availability.
+ *  - redundant — two or more replicas, replaced one at a time;
+ *  - surge — one replica, but the new pod is started before the old one stops
+ *    (maxUnavailable resolves to 0, maxSurge to ≥1): no gap unless it cannot start;
+ *  - gap — one replica that is stopped first (Recreate, or maxUnavailable ≥ 1).
+ */
+export function serviceImpactKind(d: DeploymentShape): ServiceImpactKind {
+  const replicas = Math.max(1, d.replicas ?? 1);
+  if (d.strategy?.type === 'Recreate') return 'gap';
+  const surge = resolveRolling(d.strategy?.rollingUpdate?.maxSurge, replicas, true, '25%');
+  const unavailable = resolveRolling(d.strategy?.rollingUpdate?.maxUnavailable, replicas, false, '25%');
+  if (replicas >= 2 && unavailable < replicas) return 'redundant';
+  if (unavailable === 0 && surge >= 1) return 'surge';
+  return 'gap';
+}
+
+const IMPACT_TEXT: Readonly<Record<ServiceImpactKind, string>> = {
+  redundant: 'rolling restart — stays available via its other replica',
+  surge: 'one replica — the new one starts before the old one stops, so a short gap only if it cannot start',
+  gap: 'one replica, stopped before its replacement starts — unavailable for ~30–90 s',
+};
+
 /**
  * Preview what an upgrade will interrupt, BEFORE the operator commits. Computed
- * from the live platform Deployments (the ones that will restart) + the node
- * count (single-node → hard-unavailability window). Read-only.
+ * from the live platform Deployments that will restart — their replica counts
+ * and rollout strategies — never from the node count alone. Read-only.
  */
 export async function computeInterruptionPreview(k8s: K8sClients): Promise<InterruptionPreview> {
   let nodeCount: number | null = null;
@@ -202,31 +252,44 @@ export async function computeInterruptionPreview(k8s: K8sClients): Promise<Inter
   const singleNode = nodeCount === 1;
 
   let services: AffectedService[] = [];
+  const kinds: ServiceImpactKind[] = [];
+  let readable = true;
   try {
     const list = (await k8s.apps.listNamespacedDeployment({
       namespace: PLATFORM_NS,
-    } as unknown as Parameters<typeof k8s.apps.listNamespacedDeployment>[0])) as { items?: RawDeploy[] };
+    } as unknown as Parameters<typeof k8s.apps.listNamespacedDeployment>[0])) as {
+      items?: Array<{ metadata?: { name?: string }; spec?: DeploymentShape }>;
+    };
     // Only the control-plane Deployments that serve operator/tenant traffic are
-    // worth calling out (the reconcilers restart invisibly). Highlight the
-    // user-facing ones; note single-node makes each a hard gap not a rolling one.
+    // worth calling out (the reconcilers restart invisibly).
     const userFacing = new Set(['platform-api', 'admin-panel', 'tenant-panel']);
     services = (list.items ?? [])
-      .map((d) => d.metadata?.name ?? '')
-      .filter((n) => userFacing.has(n))
-      .map((n) => ({
-        name: n,
-        label: SERVICE_LABELS[n] ?? n,
-        impact: singleNode
-          ? 'brief hard-unavailability while its single replica restarts (~30–90s)'
-          : 'rolling restart — stays available via its other replica',
-      }));
+      .filter((d) => userFacing.has(d.metadata?.name ?? ''))
+      .map((d) => {
+        const name = d.metadata?.name ?? '';
+        const kind = serviceImpactKind(d.spec ?? {});
+        kinds.push(kind);
+        return { name, label: SERVICE_LABELS[name] ?? name, impact: IMPACT_TEXT[kind] };
+      });
   } catch {
     services = [];
+    readable = false;
   }
 
-  const summary = singleNode
-    ? 'Single-node cluster: the admin panel, tenant panel, and management API each run one replica, so each has a short hard-unavailable window (~30–90s) while it restarts. Tenant websites and databases are NOT rolled and keep serving.'
-    : 'The admin panel, tenant panel, and management API restart one replica at a time and stay available throughout. Tenant websites and databases are NOT rolled and keep serving.';
+  const tail = 'Tenant websites and databases are NOT rolled and keep serving.';
+  if (!readable) {
+    // Unknown is not "redundant": never reassure on data we could not read.
+    return {
+      services, nodeCount, singleNode, noRedundancy: true, tenantWorkloadsAffected: false,
+      summary: `The platform's services could not be read, so the interruption cannot be predicted; expect a short gap for any service that runs a single replica. ${tail}`,
+    };
+  }
+  const noRedundancy = kinds.some((k) => k !== 'redundant');
+  const summary = kinds.includes('gap')
+    ? `At least one of the admin panel, tenant panel and management API runs a single replica that is stopped before its replacement starts, so it is briefly unavailable (~30–90 s). ${tail}`
+    : noRedundancy
+      ? `The admin panel, tenant panel and management API run one replica each; each new one starts before the old one stops, so a short gap is possible only if it cannot start. ${tail}`
+      : `The admin panel, tenant panel and management API restart one replica at a time and stay available throughout. ${tail}`;
 
-  return { services, nodeCount, singleNode, summary, tenantWorkloadsAffected: false };
+  return { services, nodeCount, singleNode, noRedundancy, summary, tenantWorkloadsAffected: false };
 }
