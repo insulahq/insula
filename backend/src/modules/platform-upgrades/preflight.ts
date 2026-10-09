@@ -188,7 +188,7 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
  * ADR-064 gates: the upgrade updates every node before the services, so a node
  * that cannot take part blocks it — in every environment, because the run would
  * only wait for it — until the operator excludes it. An excluded node catches up
- * on its own hourly update timer when it is back.
+ * on its own update check when it is back.
  */
 function runGates(facts: PreflightFacts): PreflightGate[] {
   const gates: PreflightGate[] = [];
@@ -206,7 +206,7 @@ function runGates(facts: PreflightFacts): PreflightGate[] {
   const included = facts.nodes.filter((n) => !excluded.has(n.name));
   const notReady = included.filter((n) => !n.ready).map((n) => n.name);
   const skipped = facts.nodes.filter((n) => excluded.has(n.name)).map((n) => n.name);
-  const skippedNote = skipped.length > 0 ? ` Upgrading without ${skipped.join(', ')}: it updates on its own hourly timer when it is back.` : '';
+  const skippedNote = skipped.length > 0 ? ` Upgrading without ${skipped.join(', ')}: it catches up on its own update check when it is back.` : '';
   if (included.length === 0) {
     gates.push({ id: 'nodes-ready', label, status: 'fail', detail: 'every node is excluded — at least one node must take part' });
   } else if (notReady.length > 0) {

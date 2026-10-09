@@ -58,11 +58,11 @@ const runOf = (over: Record<string, unknown>) => ({
 describe('PlatformUpgradeProgressModal', () => {
   it('is Done while nodes are still catching up — and says so neutrally', () => {
     prog = rolledProgress;
-    post = postflight([migrations('pass'), hosts('warn', true, '2 of 3 node(s) still on an older CLI (s2, s3); each applies this release\'s host changes when its hourly update runs')]);
+    post = postflight([migrations('pass'), hosts('warn', true, '2 of 3 node(s) still on an older CLI (s2, s3); each applies this release\'s host changes on its next update check, within the hour')]);
     renderModal();
     expect(screen.getByText(/Done — all services are running/)).toBeInTheDocument();
     expect(screen.getByTestId('convergence-host-migrations-converged-state')).toHaveTextContent('Catching up');
-    expect(screen.getByTestId('convergence-host-migrations-converged-detail')).toHaveTextContent(/hourly update/);
+    expect(screen.getByTestId('convergence-host-migrations-converged-detail')).toHaveTextContent(/next update check/);
   });
 
   it('shows a node that needs attention without holding the services open', () => {

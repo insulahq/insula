@@ -323,9 +323,24 @@ describe('assessHostMigrations', () => {
     expect(a.status).toBe('warn');
     expect(a.scheduled).toBe(true);
     expect(a.detail).toMatch(/1 of 2 node\(s\) still on an older CLI \(s2\)/);
-    expect(a.detail).toMatch(/hourly update runs/);
     // The old wording — the one this replaces — called such a node "converged".
     expect(a.detail).not.toMatch(/converged/);
+  });
+
+  it('a node on a CLI from before 2026.10.7 still checks DAILY — up to a day, and how to skip the wait', () => {
+    // The first upgrade from 2026.10.6: its nodes are behind, on the daily timer.
+    for (const cliVersion of ['2026.10.6', null]) {
+      const a = assessHostMigrations([node({ node: 's1', cliVersion, cliBehind: true })], '2026.10.7');
+      expect(a.detail).toMatch(/daily on a CLI from before 2026\.10\.7 \(s1\), so up to a day/);
+      expect(a.detail).toMatch(/systemctl start platform-ops-update\.service/);
+      expect(a.detail).not.toMatch(/within the hour/);
+    }
+  });
+
+  it('a node already on a 2026.10.7 CLI catches up within the hour', () => {
+    const a = assessHostMigrations([node({ node: 's1', cliVersion: '2026.10.7-rc.8', cliBehind: true })], '2026.10.8');
+    expect(a.detail).toMatch(/on its next update check, within the hour/);
+    expect(a.detail).not.toMatch(/daily/);
   });
 
   it('never says "converged" for a node whose CLI predates version reporting', () => {

@@ -91,6 +91,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Upgrading from 2026.10.6: the nodes follow within a day.** 2026.10.6's own upgrade rolls the
+  services; each node then updates on its daily check, after which it checks hourly and every later
+  upgrade runs nodes first. Meanwhile Host migrations lists the nodes as catching up, and says so —
+  run `systemctl start platform-ops-update.service` on each node to skip the wait.
 - **k3s v1.36.5+k3s1** for fresh installs (was v1.36.2+k3s1; the installer script is byte-identical).
   Existing clusters take it through the upgrade run's opt-in Kubernetes step. Not 1.37: a k3s minor
   needs its own Longhorn, Calico, CNPG and system-upgrade-controller compatibility check.

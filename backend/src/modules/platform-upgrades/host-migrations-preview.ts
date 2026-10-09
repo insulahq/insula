@@ -24,7 +24,7 @@ export function interpretHostMigrationMode(rawMode: string | null): HostMigratio
       mode: 'enforce',
       willRun: true,
       note: 'Enabled — the upgrade updates each node first and applies this release\'s host changes before the services '
-        + 'roll (changes that need the new services run right after). An excluded node catches up on its hourly update timer. '
+        + 'roll (changes that need the new services run right after). An excluded node catches up on its own update check. '
         + 'The Host migrations card shows each node.',
     };
   }
