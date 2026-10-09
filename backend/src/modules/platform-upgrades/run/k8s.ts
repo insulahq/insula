@@ -34,13 +34,14 @@ export async function deleteNodePlan(k8s: K8sClients, kind: NodePlanKind): Promi
   await deletePlanNamed(k8s, planNameFor(kind));
 }
 
-export async function planExists(k8s: K8sClients, name: string): Promise<boolean> {
+/** A Plan's existence and the controller's hash of its current spec (status.latestHash). */
+export async function readPlanHash(k8s: K8sClients, name: string): Promise<{ readonly exists: boolean; readonly latestHash: string | null }> {
   try {
-    await (k8s.custom as unknown as { getNamespacedCustomObject: (r: Record<string, unknown>) => Promise<unknown> })
-      .getNamespacedCustomObject({ ...SUC, name });
-    return true;
+    const plan = (await (k8s.custom as unknown as { getNamespacedCustomObject: (r: Record<string, unknown>) => Promise<unknown> })
+      .getNamespacedCustomObject({ ...SUC, name })) as { status?: { latestHash?: string } };
+    return { exists: true, latestHash: plan.status?.latestHash || null };
   } catch (err) {
-    if (httpStatusOf(err) === 404) return false;
+    if (httpStatusOf(err) === 404) return { exists: false, latestHash: null };
     throw err;
   }
 }
@@ -91,8 +92,19 @@ export async function listJobsForPlans(k8s: K8sClients, planNames: readonly stri
 }
 
 interface RawNode {
-  metadata?: { name?: string };
+  metadata?: { name?: string; labels?: Record<string, string> };
+  spec?: { unschedulable?: boolean };
   status?: { conditions?: Array<{ type?: string; status?: string }>; nodeInfo?: { kubeletVersion?: string } };
+}
+
+const PLAN_LABEL_PREFIX = 'plan.upgrade.cattle.io/';
+
+function planHashesOf(labels: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(labels ?? {})
+      .filter(([k]) => k.startsWith(PLAN_LABEL_PREFIX))
+      .map(([k, v]) => [k.slice(PLAN_LABEL_PREFIX.length), v]),
+  );
 }
 
 export async function listNodeFacts(k8s: K8sClients): Promise<NodeFacts[]> {
@@ -102,6 +114,8 @@ export async function listNodeFacts(k8s: K8sClients): Promise<NodeFacts[]> {
       name: n.metadata?.name ?? '',
       ready: (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'),
       kubeletVersion: n.status?.nodeInfo?.kubeletVersion ?? null,
+      unschedulable: n.spec?.unschedulable === true,
+      planHashes: planHashesOf(n.metadata?.labels),
     }))
     .filter((n) => n.name !== '')
     .sort((a, b) => a.name.localeCompare(b.name));
