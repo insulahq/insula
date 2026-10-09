@@ -10,6 +10,7 @@ import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import { useAuth } from '@/hooks/use-auth';
 import type { ClusterNodeResponse, NodeIngressMode, HostMigrationNodeStatus } from '@insula/api-contracts';
+import { nodeChecksForUpdatesHourly } from '@insula/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
@@ -482,7 +483,8 @@ function NodeCard({ node, subsystem, health, cli }: {
                   {cli.cliBehind === true && (
                     <span
                       className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-200"
-                      title="This node's CLI is older than the release the cluster runs. It updates during the next upgrade, or on its own hourly check."
+                      title={`This node's CLI is older than the release the cluster runs. It updates during the next upgrade, or on its own ${
+                        nodeChecksForUpdatesHourly(cli.cliVersion) ? 'hourly check' : 'daily check (a CLI from before 2026.10.7) — up to a day'}.`}
                     >
                       update pending
                     </span>

@@ -257,6 +257,29 @@ describe('HostMigrationsCard — never-converged node', () => {
     expect(screen.queryByText(/needs attention/i)).not.toBeInTheDocument();
   });
 
+  it('a node on a CLI from before 2026.10.7 still checks daily: says up to a day, and how to skip the wait', async () => {
+    // The first upgrade from 2026.10.6 — its nodes are on the daily timer, some too old to report a version.
+    resolve({
+      degraded: false, runbookUrl: 'https://example.test/runbook', targetVersion: '2026.10.7',
+      nodes: [node({ node: 'node-a', cliVersion: null, cliBehind: true }), node({ node: 'node-b', cliVersion: '2026.10.6', cliBehind: true })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    const line = await screen.findByTestId('host-migrations-catching-up');
+    expect(line).toHaveTextContent('2 node(s) still run an older CLI. Each applies 2026.10.7\'s host changes on its next update check — daily on a CLI from before 2026.10.7, so up to a day (systemctl start platform-ops-update.service on a node applies them now). Nothing is wrong.');
+    expect(line).not.toHaveTextContent(/within the hour|hourly/);
+  });
+
+  it('nodes already on a 2026.10.7 CLI catch up within the hour', async () => {
+    resolve({
+      degraded: false, runbookUrl: 'https://example.test/runbook', targetVersion: '2026.10.8',
+      nodes: [node({ node: 'node-a', cliVersion: '2026.10.7', cliBehind: true })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    expect(await screen.findByTestId('host-migrations-catching-up')).toHaveTextContent(
+      '1 node(s) still run an older CLI. Each applies 2026.10.8\'s host changes on its next update check, within the hour. Nothing is wrong.',
+    );
+  });
+
   it('says nothing about catching up when every node is on the release', async () => {
     resolve({
       degraded: false, runbookUrl: 'https://example.test/runbook', targetVersion: '2026.10.7',

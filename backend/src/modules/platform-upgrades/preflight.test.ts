@@ -168,7 +168,7 @@ describe('evaluatePreflight — upgrade-run gates (ADR-064)', () => {
   it('excluding the Not Ready node passes and names it as upgraded without', () => {
     const r = evaluatePreflight({ ...healthy, nodes, excludedNodes: ['sv2'] });
     expect(gate(r, 'nodes-ready').status).toBe('pass');
-    expect(gate(r, 'nodes-ready').detail).toMatch(/1 node\(s\) Ready.*without sv2.*hourly timer/);
+    expect(gate(r, 'nodes-ready').detail).toMatch(/1 node\(s\) Ready.*without sv2.*own update check when it is back/);
     expect(r.ok).toBe(true);
   });
 

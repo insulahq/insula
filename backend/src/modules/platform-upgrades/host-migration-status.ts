@@ -27,6 +27,7 @@ import type {
   HostMigrationStatusResponse,
   HostMigrationItem,
 } from '@insula/api-contracts';
+import { nodeChecksForUpdatesHourly } from '@insula/api-contracts';
 import { compareVersions, parseVersion } from '../platform-updates/poller/semver.js';
 import { releaseTagFor } from '../../cli/platform-ops/self-upgrade/release-tag.js';
 
@@ -358,12 +359,18 @@ export function assessHostMigrations(
   const parts: string[] = [];
   if (attention.length > 0) parts.push(`needs attention on ${names(attention)} — see Host migrations`);
   if (behind.length > 0) {
+    // A CLI from before 2026.10.7 still checks daily: say so, and how to skip the wait.
+    const daily = behind.filter((n) => !nodeChecksForUpdatesHourly(n.cliVersion));
+    const when = daily.length > 0
+      ? `on its next update check — daily on a CLI from before 2026.10.7 (${names(daily)}), so up to a day; `
+        + '`systemctl start platform-ops-update.service` on a node applies them now'
+      : 'on its next update check, within the hour';
     parts.push(`${behind.length} of ${nodes.length} node(s) still on an older CLI (${names(behind)}); each applies `
-      + `this release's host changes when its hourly update runs`);
+      + `this release's host changes ${when}`);
   }
   if (unreported.length > 0) {
     parts.push(`${names(unreported)} ha${unreported.length === 1 ? 's' : 've'} not reported a CLI version yet `
-      + `(a CLI older than this release does not; it will after its hourly update)`);
+      + `(a CLI older than this release does not; it will after its next update check)`);
   }
   if (parts.length === 0) {
     return {
