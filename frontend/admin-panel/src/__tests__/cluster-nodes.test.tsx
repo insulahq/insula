@@ -19,6 +19,16 @@ vi.mock('@/hooks/use-cluster-nodes', () => ({
 vi.mock('@/hooks/use-cluster-health', () => ({
   useNodeSubsystemHealth: () => mockSubsystem(),
 }));
+let hostStatus: Array<Record<string, unknown>> | undefined;
+let role = 'super_admin';
+const hostStatusEnabled: boolean[] = [];
+vi.mock('@/hooks/use-host-migrations', () => ({
+  useHostMigrationStatus: (enabled: boolean) => {
+    hostStatusEnabled.push(enabled);
+    return { data: enabled && hostStatus ? { data: { nodes: hostStatus } } : undefined };
+  },
+}));
+vi.mock('@/hooks/use-auth', () => ({ useAuth: () => ({ user: { id: 'u', role } }) }));
 vi.mock('@/hooks/use-node-storage', () => ({
   useNodeStorage: () => ({ data: undefined, isLoading: false, error: null }),
   usePatchNodeDisk: () => ({ mutate: vi.fn(), isPending: false }),
@@ -275,3 +285,31 @@ describe('ClusterNodes — orphan node removal', () => {
     confirmSpy.mockRestore();
   });
 });
+
+describe('ClusterNodes — the node CLI version (ADR-064)', () => {
+  it('shows each node\'s insula CLI, and says when it is behind the cluster', () => {
+    role = 'super_admin';
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'sv1' }), makeNode({ name: 'sv2' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: undefined });
+    hostStatus = [
+      { node: 'sv1', cliVersion: '2026.10.7-rc.3', cliBehind: false },
+      { node: 'sv2', cliVersion: '2026.10.7-rc.2', cliBehind: true },
+    ];
+    renderPage();
+    expect(screen.getByTestId('node-cli-version-sv1')).toHaveTextContent('insula 2026.10.7-rc.3');
+    expect(screen.getByTestId('node-cli-version-sv1')).not.toHaveTextContent('update pending');
+    expect(screen.getByTestId('node-cli-version-sv2')).toHaveTextContent(/insula 2026\.10\.7-rc\.2\s*update pending/);
+  });
+
+  it('a role without the upgrade API sees the page without the CLI column (no 403 request)', () => {
+    role = 'admin';
+    hostStatusEnabled.length = 0;
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'sv1' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: undefined });
+    hostStatus = [{ node: 'sv1', cliVersion: '2026.10.7-rc.3', cliBehind: false }];
+    renderPage();
+    expect(hostStatusEnabled.every((e) => e === false)).toBe(true);
+    expect(screen.queryByTestId('node-cli-version-sv1')).toBeNull();
+  });
+});
+

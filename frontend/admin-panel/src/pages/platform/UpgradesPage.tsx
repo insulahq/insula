@@ -8,6 +8,7 @@ import DeployedImagesModal from '@/components/platform/DeployedImagesModal';
 import UpgradeReviewModal from '@/components/platform/UpgradeReviewModal';
 import PlatformUpgradeProgressModal from '@/components/PlatformUpgradeProgressModal';
 import HostMigrationsCard from '@/components/platform/HostMigrationsCard';
+import UpgradeHistoryCard from '@/components/platform/UpgradeHistoryCard';
 import { formatVersion } from '@/lib/format-version';
 
 /**
@@ -203,6 +204,9 @@ export default function UpgradesPage() {
           one blocks every later migration on that node. Surfaced here, next to
           the upgrade that ships them. */}
       <HostMigrationsCard />
+
+      {/* Run history (ADR-064) — super_admin only, like the runs API. */}
+      {isSuperAdmin && <UpgradeHistoryCard className={CARD} />}
 
       {showImages && <DeployedImagesModal onClose={() => setShowImages(false)} />}
       {showReview && (

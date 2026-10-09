@@ -56,6 +56,8 @@ fi
 
 # (3) every shipped script obeys the authoring contract
 PHASE_REQUIRED_FROM="2026.10.7"
+# ADR-064 §6: the upgrade review lists each host change by its description.
+DESCRIPTION_REQUIRED_FROM="2026.10.7"
 SCRIPT_COUNT=0
 if [[ -d "$HM_ROOT" ]]; then
   while IFS= read -r -d '' f; do
@@ -91,6 +93,16 @@ if [[ -d "$HM_ROOT" ]]; then
       esac
     elif [[ "$(printf '%s\n%s\n' "$PHASE_REQUIRED_FROM" "$version" | sort -V | head -n1)" == "$PHASE_REQUIRED_FROM" ]]; then
       fail "$rel: missing '# phase: before-services|after-services' (required from ${PHASE_REQUIRED_FROM}, ADR-064)"
+    fi
+    # ADR-064 §6: one line an operator reads in the upgrade review. The release
+    # manifest carries it (release.yml), so it must stay short and plain.
+    if grep -q '^# description:' "$f"; then
+      d=$(grep -m1 '^# description:' "$f" | sed -E 's/^# description:[[:space:]]*//')
+      if (( ${#d} < 10 || ${#d} > 200 )); then
+        fail "$rel: '# description:' must be 10–200 characters (got ${#d})"
+      fi
+    elif [[ "$(printf '%s\n%s\n' "$DESCRIPTION_REQUIRED_FROM" "$version" | sort -V | head -n1)" == "$DESCRIPTION_REQUIRED_FROM" ]]; then
+      fail "$rel: missing '# description: <one line for the upgrade review>' (required from ${DESCRIPTION_REQUIRED_FROM}, ADR-064)"
     fi
     if command -v shellcheck >/dev/null 2>&1; then
       shellcheck -S warning "$f" || fail "$rel: shellcheck reported issues"

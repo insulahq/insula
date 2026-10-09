@@ -229,3 +229,42 @@ describe('pollAvailableVersion — connectivity + empty', () => {
     expect(res.availableVersion).toBe('2026.7.0-rc.1');
   });
 });
+
+describe('pollAvailableVersion — release contents (ADR-064 §6)', () => {
+  const contents = {
+    hostMigrations: [{ key: '2026.10.7/0001-firewall-conf-own-directory.sh', phase: 'before-services', description: 'Moves the firewall config.' }],
+    migrations: { sql: ['0154_platform_upgrade_runs.sql'], platform: ['0009_seed_wildcard_dns01_issuers'] },
+  };
+  const signed = (body: Record<string, unknown>) => {
+    const manifest = Buffer.from(JSON.stringify({ version: '2026.6.5', ...body }));
+    return { manifest, sig: Buffer.from(signB64(manifest, priv)) };
+  };
+  const release = () => releaseWithSignedManifest('v2026.6.5', priv).release;
+
+  it('stores what the release brings, once verified', async () => {
+    const { manifest, sig } = signed(contents);
+    const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+    await pollAvailableVersion(h.deps);
+    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual(contents);
+  });
+
+  it('an older manifest without contents stores none (not stale contents of another release)', async () => {
+    const { manifest, sig } = signed({});
+    const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+    h.settings.set(SETTING_KEYS.availableContents, JSON.stringify(contents));
+    await pollAvailableVersion(h.deps);
+    expect(h.settings.get(SETTING_KEYS.availableContents)).toBe('');
+  });
+
+  it('a malformed entry is dropped, not rendered — and only that entry, even when signed', async () => {
+    const { manifest, sig } = signed({
+      ...contents,
+      hostMigrations: [...contents.hostMigrations, { key: '../../etc/passwd', phase: 'before-services', description: 'escape attempt here' }],
+    });
+    const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+    await pollAvailableVersion(h.deps);
+    expect(JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null')).toEqual(contents);
+    expect(h.settings.get(SETTING_KEYS.availableVersion)).toBe('2026.6.5');
+    expect(h.logs.some((l) => /dropped 1 malformed/.test(l.msg))).toBe(true);
+  });
+});

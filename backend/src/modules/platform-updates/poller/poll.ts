@@ -14,6 +14,7 @@
 import { verifyCosignSignature } from './verify.js';
 import { selectRelease } from './select.js';
 import { isValidVersion } from './semver.js';
+import { releaseContentsFrom } from './release-contents.js';
 import {
   SETTING_KEYS,
   type GithubRelease,
@@ -122,6 +123,15 @@ export async function pollAvailableVersion(deps: PollDeps): Promise<PollResult> 
     return { status: 'invalid-manifest', selectedTag: tag, availableVersion: null, reason: 'manifest/tag version mismatch' };
   }
 
+  // What the release brings (ADR-064 §6), for the upgrade review — written FIRST,
+  // so an interrupted poll never pairs this version with another release's
+  // contents. Signed with the manifest, still schema-checked: an older manifest
+  // has none (''), and a malformed one is dropped rather than rendered.
+  const contents = releaseContentsFrom(manifest);
+  if (contents && contents.dropped > 0) {
+    deps.log('warn', `[version-poller] ${tag}: dropped ${contents.dropped} malformed release-content entr(y/ies)`);
+  }
+  await deps.setSetting(SETTING_KEYS.availableContents, contents ? JSON.stringify(contents.contents) : '');
   await deps.setSetting(SETTING_KEYS.availableVersion, version);
   await deps.setSetting(SETTING_KEYS.availableSource, 'verified-release');
   await deps.setSetting(SETTING_KEYS.availableVerifiedAt, nowIso);

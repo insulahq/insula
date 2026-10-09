@@ -38,7 +38,10 @@ type MigrationStatus struct {
 	// The node CLI's own version: the release whose host-migrations it carries.
 	// A node on an older CLI cannot know a newer release's migrations exist, so
 	// without this it reads exactly like an up-to-date node.
-	CliVersion   string          `json:"cliVersion,omitempty"`
+	CliVersion string `json:"cliVersion,omitempty"`
+	// Whether the node can verify a release (its pinned cosign key is present
+	// and parses). nil = a CLI that predates the field.
+	TrustAnchor  *bool           `json:"trustAnchor,omitempty"`
 	CollectedAt  string          `json:"collectedAt"`
 	Mode         string          `json:"mode"`
 	Source       string          `json:"source"`

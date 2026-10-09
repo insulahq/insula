@@ -153,6 +153,33 @@ jobs:
               raise SystemExit(1)
           breaking = bool(re.search(r"^#{3,4} +BREAKING", section.group(1), re.M | re.I))
 
+          # What the release brings (ADR-064 §6): every host-migration with its
+          # phase and one-line description, and the database / platform
+          # migrations it carries. The cluster diffs these against its own
+          # ledgers and the nodes' reports to show the upgrade review "what
+          # changes". Signed with the rest of the manifest.
+          import glob
+          def header(lines, name):
+              for line in lines:
+                  m = re.match(r"^#\s*" + name + r":\s*(.+?)\s*$", line)
+                  if m:
+                      return m.group(1)
+              return None
+          host_migrations = []
+          for path in sorted(glob.glob("platform/host-migrations/*/*.sh")):
+              rel = os.path.relpath(path, "platform/host-migrations")
+              lines = open(path, encoding="utf-8").read().split("\n")[:40]
+              phase = (header(lines, "phase") or "before-services").split()[0].lower()
+              slug = re.sub(r"^\d{4}-", "", os.path.basename(path)[:-3]).replace("-", " ")
+              desc = header(lines, "description") or slug.capitalize()
+              if len(desc) < 10:  # the manifest schema's floor — a short slug still reads
+                  desc = f"Host change: {desc}"
+              host_migrations.append({"key": rel, "phase": phase, "description": desc[:200]})
+          sql_migrations = sorted(os.path.basename(p) for p in glob.glob("backend/src/db/migrations/*.sql"))
+          platform_migrations = sorted(
+              os.path.basename(p)[:-3] for p in glob.glob("backend/src/modules/platform-upgrades/migrations/[0-9]*.ts")
+              if not p.endswith(".test.ts"))
+
           print(json.dumps({
               "version": v,
               "images": {
@@ -162,6 +189,8 @@ jobs:
               },
               "breaking": breaking,
               "releasedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "hostMigrations": host_migrations,
+              "migrations": {"sql": sql_migrations, "platform": platform_migrations},
           }, separators=(",", ":")))
           PY
           echo "manifest: $(cat dist-release/release-manifest.json)"

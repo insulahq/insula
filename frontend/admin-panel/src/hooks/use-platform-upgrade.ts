@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { UpgradeGate, UpgradeRun } from '@insula/api-contracts';
+import type { UpgradeGate, UpgradeRun, UpgradeChangesResponse } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // The gate shape is the shared contract's (it carries `scheduled`, which a local
@@ -218,6 +218,41 @@ export function useUpgradeRun(enabled = true) {
   });
 }
 
+/** What an upgrade to the available release changes (ADR-064 §6). */
+export function useUpgradeChanges(enabled = true) {
+  return useQuery({
+    queryKey: ['upgrade-changes'],
+    queryFn: () => apiFetch<{ readonly data: UpgradeChangesResponse }>('/api/v1/admin/platform/upgrade/changes'),
+    enabled,
+    staleTime: 30 * 1000,
+  });
+}
+
+/** One run by id (its page). Polls while it runs. */
+export function useUpgradeRunById(id: string | undefined) {
+  return useQuery({
+    queryKey: ['upgrade-run', id],
+    queryFn: () => apiFetch<{ readonly data: UpgradeRun }>(`/api/v1/admin/platform/upgrade/runs/${encodeURIComponent(id ?? '')}`),
+    enabled: !!id,
+    refetchInterval: (query) => (query.state.data?.data.status === 'running' ? 4 * 1000 : false),
+    refetchIntervalInBackground: true,
+    retry: (count, err) => count < 30 && (err as { status?: number }).status !== 404,
+    retryDelay: 2000,
+    staleTime: 2 * 1000,
+  });
+}
+
+/** Run history, newest first (ADR-064 §6). */
+export function useUpgradeRuns(limit = 10, enabled = true) {
+  return useQuery({
+    queryKey: ['upgrade-runs', limit],
+    queryFn: () => apiFetch<{ readonly data: readonly UpgradeRun[] }>(`/api/v1/admin/platform/upgrade/runs?limit=${limit}`),
+    enabled,
+    staleTime: 15 * 1000,
+    refetchInterval: (query) => (query.state.data?.data.some((r) => r.status === 'running') ? 10 * 1000 : false),
+  });
+}
+
 /** Cancel a run that is still preparing nodes (the services have not changed). */
 export function useCancelUpgradeRun() {
   const queryClient = useQueryClient();
@@ -225,6 +260,7 @@ export function useCancelUpgradeRun() {
     mutationFn: () => apiFetch<UpgradeRunResponse>('/api/v1/admin/platform/upgrade/run/cancel', { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['upgrade-run'] });
+      queryClient.invalidateQueries({ queryKey: ['upgrade-runs'] });
       queryClient.invalidateQueries({ queryKey: ['upgrade-preflight'] });
     },
   });

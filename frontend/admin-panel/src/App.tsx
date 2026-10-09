@@ -46,6 +46,7 @@ const LoadBalancerPage = lazy(() => import('@/pages/cluster/LoadBalancerPage'));
 const TunnelsPage = lazy(() => import('@/pages/cluster/TunnelsPage'));
 // Platform Settings group (product configuration)
 const UpgradesPage = lazy(() => import('@/pages/platform/UpgradesPage'));
+const UpgradeRunPage = lazy(() => import('@/pages/platform/UpgradeRunPage'));
 const IdentityPage = lazy(() => import('@/pages/platform/IdentityPage'));
 const LimitsPage = lazy(() => import('@/pages/platform/LimitsPage'));
 const IntegrationsPage = lazy(() => import('@/pages/platform/IntegrationsPage'));
@@ -176,6 +177,7 @@ export default function App() {
             {/* Single consolidated page. /platform/upgrades kept as a redirect for old links. */}
             <Route path="platform" element={<Navigate to="/platform/updates" replace />} />
             <Route path="platform/updates" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><UpgradesPage /></ProtectedRoute>} />
+            <Route path="platform/updates/runs/:id" element={<ProtectedRoute allowedRoles={['super_admin']}><UpgradeRunPage /></ProtectedRoute>} />
             <Route path="platform/upgrades" element={<Navigate to="/platform/updates" replace />} />
             <Route path="platform/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityPage /></ProtectedRoute>} />
             <Route path="platform/plans" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PlansPage /></ProtectedRoute>} />

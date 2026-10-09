@@ -12,10 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.7-rc.3] - 2026-10-09
-
 ### Added
 
+- **The upgrade review says what changes, and every upgrade run keeps a page.** The review
+  lists the services' version before and after, how many database and platform migrations still
+  run here, and each host change by its description: before or after the services, and on which
+  nodes. A node without a report is named, never counted as done. Host-migration scripts carry a
+  one-line `# description:` header, required from 2026.10.7. The signed release manifest now lists
+  each release's host changes and migrations. Every run has its own page, which survives a reload
+  and records how the run ended. The Updates page lists the last runs, and the progress dialog
+  links to the page. The Nodes page shows each node's `insula` CLI version, marked *update pending*
+  while it is behind. Pre-flight gains two checks: **No failed host change on a node** (blocking
+  in production) and **Every node can verify a release**. Nodes now report whether their signing
+  key is present. ([ADR-064](docs/architecture/adr/ADR-064-one-upgrade-procedure-nodes-first.md) §6)
 - **Automatic mail-server bans now expire — after 24 hours by default.** The mail server blocks
   an address on its own after repeated failed logins, port scans or exploit probes, idle
   connections, or mail to unknown recipients, and until now such a ban lasted forever: an office

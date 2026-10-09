@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,6 +9,8 @@ let role = 'super_admin';
 let changelogNotes: string | null = '## Fixed\n- alias drift false positives';
 const checkMutate = vi.fn();
 let clusterNodes: Array<Record<string, unknown>> = [];
+let historyRuns: Array<Record<string, unknown>> = [];
+let changes: Record<string, unknown> | null = null;
 const preflightCalls: string[][] = [];
 const applyMutate = vi.fn(async (vars: { apply: boolean }) => ({ data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: vars.apply, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } }));
 
@@ -49,6 +51,8 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
   useUpgradeApply: () => ({ mutateAsync: applyMutate, isPending: false, error: null }),
   useUpgradeRun: () => ({ data: { data: { run: null } }, failureCount: 0 }),
   useCancelUpgradeRun: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+  useUpgradeRuns: () => ({ data: { data: historyRuns }, isLoading: false }),
+  useUpgradeChanges: () => ({ data: changes ? { data: changes } : undefined, isLoading: false }),
   usePostflight: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
   useUpgradeProgress: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
 }));
@@ -211,6 +215,71 @@ describe('UpgradesPage — upgrading without a node that is down (ADR-064)', () 
     await vi.waitFor(() => expect(approve).toBeEnabled());
     fireEvent.click(approve);
     await vi.waitFor(() => expect(applyMutate).toHaveBeenCalledWith(expect.objectContaining({ apply: true, excludeNodes: ['sv2'] })));
+  });
+});
+
+describe('UpgradesPage — upgrade history (ADR-064)', () => {
+  beforeEach(() => { updateAvailable = false; role = 'super_admin'; historyRuns = []; });
+  const run = (over: Record<string, unknown>) => ({
+    id: 'r1', fromVersion: '2026.10.7-rc.3', toVersion: '2026.10.7-rc.4', mode: 'manual', status: 'succeeded', step: 'done',
+    excludedNodes: [], nodes: [], message: null, startedAt: '2026-10-09T10:00:00Z', stepStartedAt: '2026-10-09T10:20:00Z',
+    finishedAt: '2026-10-09T10:24:00Z', ...over,
+  });
+
+  it('lists the runs, each linking to its page, with how they ended', () => {
+    historyRuns = [
+      run({ id: 'r2', status: 'cancelled', message: 'Cancelled by an operator before the services changed.', excludedNodes: ['w1'] }),
+      run({}),
+    ];
+    renderPage();
+    const card = screen.getByTestId('upgrade-history');
+    expect(card).toHaveTextContent('Upgrade history');
+    expect(screen.getByTestId('upgrade-history-r1')).toHaveTextContent(/v2026\.10\.7-rc\.3 → v2026\.10\.7-rc\.4.*Succeeded.*24 min/);
+    expect(screen.getByTestId('upgrade-history-r2')).toHaveTextContent(/Cancelled.*without w1.*Cancelled by an operator/);
+    expect(within(screen.getByTestId('upgrade-history-r1')).getByRole('link')).toHaveAttribute('href', '/platform/updates/runs/r1');
+  });
+
+  it('no runs yet → no card; not shown to a non-super_admin', () => {
+    renderPage();
+    expect(screen.queryByTestId('upgrade-history')).toBeNull();
+    historyRuns = [run({})];
+    role = 'admin';
+    renderPage();
+    expect(screen.queryByTestId('upgrade-history')).toBeNull();
+  });
+});
+
+describe('UpgradesPage — what the upgrade changes (ADR-064 §6)', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; changes = null; });
+  const base = { fromVersion: '2026.6.2', toVersion: '2026.7.0', known: true, databaseMigrations: 2, platformMigrations: 0, unreportedNodes: [] };
+
+  it('names the services\' versions, the migrations, and each host change with when and where it runs', async () => {
+    changes = {
+      ...base,
+      hostChanges: [
+        { key: '2026.7.0/0001-a.sh', phase: 'before-services', description: 'Moves the firewall config.', nodes: ['sv1', 'sv2'] },
+        { key: '2026.7.0/0002-b.sh', phase: 'after-services', description: 'Needs the new services.', nodes: ['sv2'] },
+      ],
+    };
+    renderPage('/platform/updates?review=1');
+    const section = await screen.findByTestId('upgrade-changes');
+    expect(section).toHaveTextContent(/Services v2026\.6\.2 → v2026\.7\.0/);
+    expect(screen.getByTestId('upgrade-changes-migrations')).toHaveTextContent('2 database migration(s), 0 platform migration(s)');
+    expect(screen.getByTestId('upgrade-change-2026.7.0/0001-a.sh')).toHaveTextContent(/before the services\s*Moves the firewall config\. — every node/);
+    expect(screen.getByTestId('upgrade-change-2026.7.0/0002-b.sh')).toHaveTextContent(/after the services\s*Needs the new services\. — sv2/);
+  });
+
+  it('a release without listed contents says so, instead of "no changes"', async () => {
+    changes = { ...base, known: false, databaseMigrations: 0, hostChanges: [] };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-changes-unknown')).toBeInTheDocument();
+    expect(screen.queryByText(/No host changes/)).toBeNull();
+  });
+
+  it('a node without a report is named, not counted as done', async () => {
+    changes = { ...base, hostChanges: [], unreportedNodes: ['w1'] };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-changes-unreported')).toHaveTextContent(/w1 has not reported host state/);
   });
 });
 

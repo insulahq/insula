@@ -21,6 +21,7 @@ import { runRollback, realRollbackDeps } from './rollback.js';
 import { readPostflightState } from './collect-postflight.js';
 import { readHostMigrationsPreview } from './host-migrations-preview.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
+import { readUpgradeChanges } from './release-changes.js';
 import { startUpgradeRun, abortActiveRun, cancelPreparingRun } from './run/real.js';
 import { getActiveRun, getRun, listRuns, toUpgradeRun } from './run/store.js';
 
@@ -38,6 +39,7 @@ const runJsonSchema = {
     excludedNodes: { type: 'array', items: { type: 'string' } },
     nodes: { type: 'array', items: { type: 'object', properties: {
       node: { type: 'string' }, state: { type: 'string' }, cliVersion: { type: 'string', nullable: true }, detail: { type: 'string' },
+      hostChanges: { type: 'object', nullable: true, properties: { done: { type: 'number' }, total: { type: 'number' } } },
     } } },
     message: { type: 'string', nullable: true }, startedAt: { type: 'string' }, stepStartedAt: { type: 'string' },
     finishedAt: { type: 'string', nullable: true },
@@ -226,6 +228,27 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       drift,
       migrations: items,
     });
+  });
+
+  // GET /api/v1/admin/platform/upgrade/changes — what an upgrade to the available
+  // release changes (ADR-064 §6): database and platform migrations still to run,
+  // and each host change with the nodes it still has to run on.
+  app.get('/admin/platform/upgrade/changes', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'What an upgrade to the available release changes', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
+        fromVersion: { type: 'string', nullable: true }, toVersion: { type: 'string', nullable: true },
+        known: { type: 'boolean' }, databaseMigrations: { type: 'number' }, platformMigrations: { type: 'number' },
+        hostChanges: { type: 'array', items: { type: 'object', properties: {
+          key: { type: 'string' }, phase: { type: 'string' }, description: { type: 'string' },
+          nodes: { type: 'array', items: { type: 'string' } },
+        } } },
+        unreportedNodes: { type: 'array', items: { type: 'string' } },
+      } } } } },
+    },
+  }, async () => {
+    const k8s = createK8sClients(kubeconfigPath());
+    return success(await readUpgradeChanges(app.db, k8s, RUNNING_VERSION));
   });
 
   // GET /api/v1/admin/platform/host-migrations/status — per-node applied /
