@@ -79,10 +79,10 @@ describe('runUpgrade', () => {
   // ── Mode B: prerelease (-rc.N) auto-pin, gated by auto_update_include_prereleases ──
   const seedRc = { installed_platform_version: '2026.6.2', available_version: '2026.7.0-rc.1', auto_update: 'true' };
 
-  it('Mode B: pins an -rc.N tag when auto_update_include_prereleases is on (staging)', async () => {
+  it('Mode B: pins an -rc.N tag when auto_update_include_prereleases is on (staging, applied by hand)', async () => {
     const { io } = fakeSettings({ ...seedRc, auto_update_include_prereleases: 'true' });
     const { k8s, patches } = fakeK8s({ source: 'hosting-platform-staging', ref: { branch: 'development' } });
-    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true });
+    const r = await runUpgrade(io, k8s, { mode: 'manual', apply: true });
     expect(r.applied).toBe(true);
     expect(r.repin?.tag).toBe('v2026.7.0-rc.1');
     // the re-pin switches the staging source from branch → rc tag
@@ -92,9 +92,18 @@ describe('runUpgrade', () => {
   it('refuses to pin an -rc.N tag when the prerelease flag is OFF (production safety)', async () => {
     const { io } = fakeSettings(seedRc); // no auto_update_include_prereleases
     const { k8s, patches } = fakeK8s({ source: 'hosting-platform-production' });
-    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true });
+    const r = await runUpgrade(io, k8s, { mode: 'manual', apply: true });
     expect(r.applied).toBe(false);
     expect(r.summary).toMatch(/no clean release tag/);
+    expect(patches).toHaveLength(0);
+  });
+
+  it('ADR-064 §7: automatic updates never take a release candidate — even with prereleases on', async () => {
+    const { io } = fakeSettings({ ...seedRc, auto_update_include_prereleases: 'true' });
+    const { k8s, patches } = fakeK8s({ source: 'hosting-platform-staging', ref: { branch: 'development' } });
+    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true });
+    expect(r.applied).toBe(false);
+    expect(r.decision.action).toBe('blocked-prerelease');
     expect(patches).toHaveLength(0);
   });
 

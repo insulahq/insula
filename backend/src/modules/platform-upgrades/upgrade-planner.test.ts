@@ -74,3 +74,14 @@ describe('planUpgrade — manual mode (operator)', () => {
     expect(d.target).toBe('2026.6.5');
   });
 });
+
+describe('planUpgrade — automatic updates apply stable releases only (ADR-064 §7)', () => {
+  it('refuses a release candidate on the auto path; a manual upgrade may still take it', () => {
+    const auto = planUpgrade({ installed: '2026.10.7', available: '2026.10.8-rc.1', autoUpdate: true, breaking: false, mode: 'auto' });
+    expect(auto.action).toBe('blocked-prerelease');
+    expect(auto.proceed).toBe(false);
+    const manual = planUpgrade({ installed: '2026.10.7', available: '2026.10.8-rc.1', autoUpdate: false, breaking: false, mode: 'manual' });
+    expect(manual.proceed).toBe(true);
+  });
+});
+

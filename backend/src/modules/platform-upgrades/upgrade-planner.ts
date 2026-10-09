@@ -11,7 +11,7 @@
  * and a `### BREAKING` release short-circuits the auto path (manual override is
  * allowed but flagged).
  */
-import { isNewerVersion, isValidVersion } from '../platform-updates/poller/semver.js';
+import { isNewerVersion, isPrerelease, isValidVersion } from '../platform-updates/poller/semver.js';
 
 export type UpgradeAction =
   | 'upgrade' // re-pin to `target`
@@ -20,6 +20,7 @@ export type UpgradeAction =
   | 'blocked-no-candidate' // nothing to upgrade to
   | 'blocked-not-newer' // requested/available is not newer than installed
   | 'blocked-breaking' // auto path, candidate is a BREAKING release
+  | 'blocked-prerelease' // auto path, candidate is a release candidate (ADR-064 §7: stable only)
   | 'blocked-installed-unknown' // auto path, installed version unparseable — can't verify
   | 'blocked-bad-version'; // candidate is not a valid version string
 
@@ -80,6 +81,11 @@ export function planUpgrade(input: UpgradeInput): UpgradeDecision {
   }
   if (input.breaking) {
     return decide('blocked-breaking', input.available, `available ${input.available} is a BREAKING release — auto-update short-circuited; apply manually`);
+  }
+  // ADR-064 §7: automatic updates apply verified STABLE releases only. A cluster
+  // that opted into release candidates still upgrades to one by hand.
+  if (isPrerelease(input.available)) {
+    return decide('blocked-prerelease', input.available, `available ${input.available} is a release candidate — automatic updates apply stable releases only; apply it manually`);
   }
   return decide('upgrade', input.available, `auto upgrade ${input.installed} → ${input.available}`);
 }

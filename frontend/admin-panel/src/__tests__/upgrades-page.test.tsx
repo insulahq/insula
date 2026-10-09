@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
+import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -48,7 +49,17 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
     return { data: { data: { gates: [{ id: 'cnpg-healthy', label: 'Database (CNPG) healthy', status: 'pass', detail: 'ok' }], ok: true, failures: 0, warnings: 0, environment: 'production' } }, isLoading: false, isFetching: false, refetch: vi.fn() };
   },
   useHostMigrationsPreview: () => ({ data: { data: { mode: 'observe', willRun: false, note: 'report-only' } }, isLoading: false }),
-  useUpgradeApply: () => ({ mutateAsync: applyMutate, isPending: false, error: null }),
+  // Like the real mutation: a rejection is kept as `error` for the dialog to show.
+  useUpgradeApply: () => {
+    const [error, setError] = useState<Error | null>(null);
+    return {
+      mutateAsync: async (vars: { apply: boolean }) => {
+        try { return await applyMutate(vars); } catch (e) { setError(e as Error); throw e; }
+      },
+      isPending: false,
+      error,
+    };
+  },
   useUpgradeRun: () => ({ data: { data: { run: null } }, failureCount: 0 }),
   useCancelUpgradeRun: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useUpgradeRuns: () => ({ data: { data: historyRuns }, isLoading: false }),
@@ -280,6 +291,22 @@ describe('UpgradesPage — what the upgrade changes (ADR-064 §6)', () => {
     changes = { ...base, hostChanges: [], unreportedNodes: ['w1'] };
     renderPage('/platform/updates?review=1');
     expect(await screen.findByTestId('upgrade-changes-unreported')).toHaveTextContent(/w1 has not reported host state/);
+  });
+});
+
+describe('UpgradesPage — a refused Approve says so by the buttons', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; applyMutate.mockClear(); });
+
+  it('shows the refusal as an error panel next to Approve', async () => {
+    applyMutate.mockImplementation(async (vars: { apply: boolean }) => {
+      if (vars.apply) throw Object.assign(new Error('pre-flight has 1 blocking failure(s) — Every node can take part: w1 is not Ready'), { status: 409, code: 'UPGRADE_PREFLIGHT_FAILED' });
+      return { data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: false, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } };
+    });
+    renderPage('/platform/updates?review=1');
+    const approve = await screen.findByTestId('approve-upgrade-btn');
+    await vi.waitFor(() => expect(approve).toBeEnabled());
+    fireEvent.click(approve);
+    expect(await screen.findByTestId('upgrade-apply-error')).toHaveTextContent(/w1 is not Ready/);
   });
 });
 
