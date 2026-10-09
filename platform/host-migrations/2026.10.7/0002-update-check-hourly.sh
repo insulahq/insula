@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Runs the node's update check hourly instead of daily, so a node an upgrade left out catches up within the hour.
 # idempotent: rewrites the timer only while it is still the daily shape bootstrap wrote; a second run finds OnCalendar=hourly and exits without touching systemd
 # allow-paths: /etc/systemd/system/platform-ops-update.timer
 # blocks-on-failure: no    # ADR-056: nothing later depends on the timer's schedule; a node left on the daily check still updates, just later.

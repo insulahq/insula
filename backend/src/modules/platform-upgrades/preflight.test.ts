@@ -189,3 +189,37 @@ describe('evaluatePreflight — upgrade-run gates (ADR-064)', () => {
     expect(evaluatePreflight({ ...healthy, upgradeRunning: null }).gates.find((g) => g.id === 'no-upgrade-running')).toBeUndefined();
   });
 });
+
+describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
+  const ok = { name: 'sv1', hostFault: false, trustAnchor: true };
+
+  it('absent facts (an older caller) → no gates', () => {
+    expect(evaluatePreflight(healthy).gates.find((g) => g.id === 'host-migrations-healthy')).toBeUndefined();
+  });
+
+  it('a failed host change blocks in production, warns elsewhere, and names the node', () => {
+    const facts = { ...healthy, nodeHostState: [ok, { name: 'sv2', hostFault: true, trustAnchor: true }] };
+    expect(gate(evaluatePreflight(facts), 'host-migrations-healthy').status).toBe('fail');
+    expect(gate(evaluatePreflight(facts), 'host-migrations-healthy').detail).toMatch(/^sv2: a host change failed/);
+    expect(gate(evaluatePreflight({ ...facts, environment: 'staging' }), 'host-migrations-healthy').status).toBe('warn');
+  });
+
+  it('a node that cannot verify a release blocks in production, warns elsewhere; one that does not say yet passes', () => {
+    const blind = { ...healthy, nodeHostState: [ok, { name: 'sv2', hostFault: false, trustAnchor: false }] };
+    expect(gate(evaluatePreflight(blind), 'nodes-can-verify').status).toBe('fail');
+    expect(gate(evaluatePreflight({ ...blind, environment: 'staging' }), 'nodes-can-verify').status).toBe('warn');
+    expect(gate(evaluatePreflight(blind), 'nodes-can-verify').detail).toMatch(/sv2: \/etc\/platform\/cosign\.pub/);
+    const older = { ...healthy, nodeHostState: [ok, { name: 'sv2', hostFault: false, trustAnchor: null }] };
+    expect(gate(evaluatePreflight(older), 'nodes-can-verify').status).toBe('pass');
+  });
+
+  it('an excluded node is not judged', () => {
+    const facts = { ...healthy, excludedNodes: ['sv2'], nodeHostState: [ok, { name: 'sv2', hostFault: true, trustAnchor: false }] };
+    expect(gate(evaluatePreflight(facts), 'host-migrations-healthy').status).toBe('pass');
+    expect(gate(evaluatePreflight(facts), 'nodes-can-verify').status).toBe('pass');
+  });
+
+  it('unreadable → warn, never a silent pass', () => {
+    expect(gate(evaluatePreflight({ ...healthy, nodeHostState: null }), 'host-migrations-healthy').status).toBe('warn');
+  });
+});

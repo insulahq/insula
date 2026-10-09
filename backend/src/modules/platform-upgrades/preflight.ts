@@ -59,6 +59,12 @@ export interface PreflightFacts {
   readonly excludedNodes?: readonly string[];
   /** An upgrade run is already in flight; null = unreadable. */
   readonly upgradeRunning?: boolean | null;
+  /**
+   * ADR-064 §6, per node from its relayed host-migration status: a failed,
+   * blocked or invalid host change, and whether it can verify a release.
+   * null = unreadable.
+   */
+  readonly nodeHostState?: ReadonlyArray<{ readonly name: string; readonly hostFault: boolean; readonly trustAnchor: boolean | null }> | null;
 }
 
 const DISK_WARN_PCT = 80;
@@ -189,6 +195,7 @@ function runGates(facts: PreflightFacts): PreflightGate[] {
   if (facts.upgradeRunning === true) {
     gates.push({ id: 'no-upgrade-running', label: 'No upgrade already running', status: 'fail', detail: 'an upgrade is in progress — wait for it to finish' });
   }
+  gates.push(...hostGates(facts));
   if (facts.nodes === undefined) return gates;
   const label = 'Every node can take part';
   if (facts.nodes === null) {
@@ -211,4 +218,41 @@ function runGates(facts: PreflightFacts): PreflightGate[] {
     gates.push({ id: 'nodes-ready', label, status: 'pass', detail: `${included.length} node(s) Ready.${skippedNote}` });
   }
   return gates;
+}
+
+/**
+ * A failed host change blocks every later one on its node, so an upgrade onto it
+ * stacks more unapplied changes behind the failure — fix or skip it first. A node
+ * that cannot verify a release would fail the node update outright. Both follow
+ * the environment's severity like every other gate (blocking in production): the
+ * signals are the node's own report, the same trust tier as its failed counts,
+ * and the node update re-checks its key regardless. Excluded nodes are not judged.
+ */
+function hostGates(facts: PreflightFacts): PreflightGate[] {
+  if (facts.nodeHostState === undefined) return [];
+  if (facts.nodeHostState === null) {
+    return [{ id: 'host-migrations-healthy', label: 'No failed host change on a node', status: 'warn', detail: 'could not read the nodes\' host-migration state' }];
+  }
+  const excluded = new Set(facts.excludedNodes ?? []);
+  const nodes = facts.nodeHostState.filter((n) => !excluded.has(n.name));
+  const faulty = nodes.filter((n) => n.hostFault).map((n) => n.name);
+  const blind = nodes.filter((n) => n.trustAnchor === false).map((n) => n.name);
+  return [
+    {
+      id: 'host-migrations-healthy',
+      label: 'No failed host change on a node',
+      status: sev(facts.environment, faulty.length > 0),
+      detail: faulty.length > 0
+        ? `${faulty.join(', ')}: a host change failed or is blocked — every later one waits behind it. Fix it or record a skip (Host migrations card).`
+        : 'no node reports a failed host change',
+    },
+    {
+      id: 'nodes-can-verify',
+      label: 'Every node can verify a release',
+      status: sev(facts.environment, blind.length > 0),
+      detail: blind.length > 0
+        ? `${blind.join(', ')}: /etc/platform/cosign.pub is missing or unreadable, so the node would refuse the release. Re-run the installer on it (insula bootstrap).`
+        : 'no node reports a missing or unreadable signing key (a node on an older CLI does not report it yet and is not judged)',
+    },
+  ];
 }

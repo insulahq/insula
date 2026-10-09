@@ -103,6 +103,50 @@ export const upgradePreflightQuerySchema = z.object({
     .pipe(z.array(z.string().max(253).regex(NODE_NAME_RE, 'not a node name')).max(100)),
 });
 
+// ── What a release brings (ADR-064 §6) ───────────────────────────────────────
+/**
+ * Carried in the cosign-signed release manifest (release.yml) and stored by the
+ * version poller once verified. Bounded and charset-pinned on top of the
+ * signature: it is rendered in the upgrade review.
+ */
+// The key follows the CLI's own naming rule (host-config/host-migrations.ts NAME_RE).
+export const releaseHostMigrationSchema = z.object({
+  key: z.string().max(120).regex(/^\d+\.\d+\.\d+\/[0-9]{3,}-[a-z0-9][a-z0-9-]*\.sh$/),
+  phase: z.enum(['before-services', 'after-services']),
+  // Rendered as text today; no control characters for any future renderer.
+  description: z.string().min(10).max(200).regex(/^[^\x00-\x1f\x7f]+$/),
+});
+export const releaseSqlMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0-9_]+\.sql$/);
+export const releasePlatformMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0-9_]+$/);
+export const releaseContentsSchema = z.object({
+  hostMigrations: z.array(releaseHostMigrationSchema).max(1000),
+  migrations: z.object({
+    sql: z.array(releaseSqlMigrationSchema).max(5000),
+    platform: z.array(releasePlatformMigrationSchema).max(1000),
+  }),
+});
+export type ReleaseContents = z.infer<typeof releaseContentsSchema>;
+
+/** GET /admin/platform/upgrade/changes — what an upgrade to the available release changes. */
+export const upgradeChangesResponseSchema = z.object({
+  fromVersion: z.string().nullable(),
+  toVersion: z.string().nullable(),
+  /** false = the release's manifest carries no contents (cut before they existed). */
+  known: z.boolean(),
+  databaseMigrations: z.number().int(),
+  platformMigrations: z.number().int(),
+  hostChanges: z.array(z.object({
+    key: z.string(),
+    phase: z.enum(['before-services', 'after-services']),
+    description: z.string(),
+    /** The nodes this change still has to run on. */
+    nodes: z.array(z.string()),
+  })),
+  /** Nodes that have not reported their host-migration state: unknown, not "nothing to do". */
+  unreportedNodes: z.array(z.string()),
+});
+export type UpgradeChangesResponse = z.infer<typeof upgradeChangesResponseSchema>;
+
 // ── Upgrade runs (ADR-064) ─────────────────────────────────────────────────────
 export const upgradeRunStepSchema = z.enum(['prepare-nodes', 'update-services', 'finish', 'done']);
 export type UpgradeRunStep = z.infer<typeof upgradeRunStepSchema>;
@@ -122,6 +166,11 @@ export const upgradeRunNodeSchema = z.object({
   cliVersion: z.string().nullable(),
   /** One line an operator can act on. */
   detail: z.string(),
+  /**
+   * The release's host changes this step applies on the node: before-services
+   * ones while preparing, all of them when finishing. null = not reported yet.
+   */
+  hostChanges: z.object({ done: z.number().int(), total: z.number().int() }).nullable().optional(),
 });
 export type UpgradeRunNode = z.infer<typeof upgradeRunNodeSchema>;
 
@@ -347,6 +396,11 @@ export const hostMigrationNodeStatusSchema = z.object({
    * when either version is unknown.
    */
   cliBehind: z.boolean().nullable().optional(),
+  /**
+   * ADR-064 §6: the node can verify a release (its pinned cosign key is present
+   * and parses). false blocks an upgrade; null = a CLI that predates the field.
+   */
+  trustAnchor: z.boolean().nullable().optional(),
 });
 export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
 

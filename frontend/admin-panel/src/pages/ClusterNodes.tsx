@@ -7,7 +7,9 @@ import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
-import type { ClusterNodeResponse, NodeIngressMode } from '@insula/api-contracts';
+import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
+import { useAuth } from '@/hooks/use-auth';
+import type { ClusterNodeResponse, NodeIngressMode, HostMigrationNodeStatus } from '@insula/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
@@ -85,6 +87,14 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
   const nodeHealthByName = new Map<string, NodeHealthEntry>(
     (nodeHealthData?.data.nodes ?? []).map((n) => [n.name, n]),
   );
+  // The node's insula CLI version (ADR-064): which release's host changes it can
+  // apply. The status comes from the super_admin upgrade API — other roles see
+  // the page without it.
+  const { user } = useAuth();
+  const { data: hostMigrationData } = useHostMigrationStatus(user?.role === 'super_admin');
+  const cliByName = new Map<string, HostMigrationNodeStatus>(
+    (hostMigrationData?.data.nodes ?? []).map((n) => [n.node, n]),
+  );
 
   if (isLoading) {
     return (
@@ -134,7 +144,7 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
           <ClusterHealthBar nodes={nodes} subsystemByName={subsystemByName} />
           <div className="space-y-3">
             {nodes.map((node) => (
-              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} health={nodeHealthByName.get(node.name)} />
+              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} health={nodeHealthByName.get(node.name)} cli={cliByName.get(node.name)} />
             ))}
           </div>
         </>
@@ -272,7 +282,12 @@ function HealthChip({
   return <span className={cls} data-testid={testId}>{children}</span>;
 }
 
-function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport; readonly health?: NodeHealthEntry }) {
+function NodeCard({ node, subsystem, health, cli }: {
+  readonly node: ClusterNodeResponse;
+  readonly subsystem?: NodeSubsystemReport;
+  readonly health?: NodeHealthEntry;
+  readonly cli?: HostMigrationNodeStatus;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
@@ -461,6 +476,19 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
                 </>
               )}
               {' · '}k3s {node.k3sVersion ?? '—'} · kubelet {node.kubeletVersion ?? '—'}
+              {cli && (
+                <span data-testid={`node-cli-version-${node.name}`}>
+                  {' · '}insula {cli.cliVersion ?? 'not reported'}
+                  {cli.cliBehind === true && (
+                    <span
+                      className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+                      title="This node's CLI is older than the release the cluster runs. It updates during the next upgrade, or on its own hourly check."
+                    >
+                      update pending
+                    </span>
+                  )}
+                </span>
+              )}
             </p>
           </div>
         </div>

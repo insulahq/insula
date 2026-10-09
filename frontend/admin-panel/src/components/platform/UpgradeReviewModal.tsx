@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, Loader2, CheckCircle, AlertTriangle, XCircle, Server, ShieldAlert, FileText } from 'lucide-react';
-import { usePreflight, useHostMigrationsPreview, useUpgradeApply, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
+import { usePreflight, useHostMigrationsPreview, useUpgradeApply, useUpgradeChanges, type UpgradeGate, type UpgradeApplyData } from '@/hooks/use-platform-upgrade';
+import UpgradeChangesSection from './UpgradeChangesSection';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import NodeName from '@/components/nodes/NodeName';
 import ChangelogModal from './ChangelogModal';
@@ -50,6 +51,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   );
   const preflight = usePreflight(true, excluded);
   const hostMigrations = useHostMigrationsPreview();
+  const changesQ = useUpgradeChanges();
   const apply = useUpgradeApply();
   const [preview, setPreview] = useState<UpgradeApplyData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +107,9 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
             <div className="flex items-center gap-2 py-4 text-sm text-gray-500 dark:text-gray-400"><Loader2 className="h-4 w-4 animate-spin" /> Planning the upgrade…</div>
           ) : (
             <>
+              {/* What changes (ADR-064 §6) */}
+              {changesQ.data?.data && <UpgradeChangesSection changes={changesQ.data.data} target={resolvedTarget ?? undefined} />}
+
               {/* Interruption preview */}
               {preview?.interruption && (
                 <div className={`text-xs rounded border p-3 space-y-2 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'}`}>

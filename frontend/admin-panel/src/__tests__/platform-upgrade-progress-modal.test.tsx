@@ -6,18 +6,21 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 type Gate = { id: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string; scheduled?: boolean };
 let post: Record<string, unknown> | undefined;
 let prog: Record<string, unknown> | undefined;
 let run: Record<string, unknown> | null = null;
+let runById: Record<string, unknown> | null = null;
 const cancelMutate = vi.fn();
 
 vi.mock('@/hooks/use-platform-upgrade', () => ({
   usePostflight: () => ({ data: post ? { data: post } : undefined, failureCount: 0 }),
   useUpgradeProgress: () => ({ data: prog ? { data: prog } : undefined, failureCount: 0 }),
   useUpgradeRun: () => ({ data: { data: { run } }, failureCount: 0 }),
+  useUpgradeRunById: (id: string | undefined) => ({ data: id ? { data: runById } : undefined, failureCount: 0 }),
   useCancelUpgradeRun: () => ({ mutate: cancelMutate, isPending: false, error: null }),
 }));
 
@@ -37,10 +40,10 @@ const hosts = (status: Gate['status'], scheduled: boolean, detail: string): Gate
 
 function renderModal() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><Modal version="2026.10.7-rc.2" onClose={() => {}} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><MemoryRouter><Modal version="2026.10.7-rc.2" onClose={() => {}} /></MemoryRouter></QueryClientProvider>);
 }
 
-beforeEach(() => { post = undefined; prog = undefined; run = null; cancelMutate.mockReset(); });
+beforeEach(() => { post = undefined; prog = undefined; run = null; runById = null; cancelMutate.mockReset(); });
 
 const runOf = (over: Record<string, unknown>) => ({
   id: 'r1', fromVersion: '2026.10.7-rc.1', toVersion: '2026.10.7-rc.2', mode: 'manual', status: 'running', step: 'prepare-nodes',
@@ -152,4 +155,38 @@ describe('PlatformUpgradeProgressModal', () => {
       expect(screen.getByText(/Done — all services are running/)).toBeInTheDocument();
     });
   });
+
+  describe('the run page (a view of the same component)', () => {
+    it('follows the run it was opened for — a finished one stays a record, without the live roll', async () => {
+      const { default: View } = await import('@/components/platform/UpgradeProgressView');
+      runById = runOf({ id: 'old', status: 'succeeded', step: 'done', toVersion: '2026.10.7-rc.1', fromVersion: '2026.10.6' });
+      // A different upgrade is live right now — the page must not mix it in.
+      prog = rolledProgress;
+      post = { ...postflight([migrations('fail')]), phase: 'reconciling', pendingVersion: '2026.10.7-rc.3' };
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={qc}><MemoryRouter><View runId="old" asPage /></MemoryRouter></QueryClientProvider>);
+      expect(screen.getByTestId('upgrade-run-status')).toHaveTextContent(/Done — the services and every node run v2026\.10\.7-rc\.1/);
+      expect(screen.getByText(/Platform upgrade v2026\.10\.6 → v2026\.10\.7-rc\.1/)).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByText(/Reload admin panel/)).toBeNull();
+      expect(screen.queryByTestId('upgrade-run-page-link')).toBeNull();
+    });
+
+    it('a failed run\'s page does not borrow the live roll of another upgrade', async () => {
+      const { default: View } = await import('@/components/platform/UpgradeProgressView');
+      runById = runOf({ id: 'old', status: 'failed', step: 'update-services', message: 'The services were not changed: refused.' });
+      prog = rolledProgress; // another upgrade, live right now
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={qc}><MemoryRouter><View runId="old" asPage /></MemoryRouter></QueryClientProvider>);
+      expect(screen.getByText('33%')).toBeInTheDocument();
+      expect(screen.queryByText('Management API')).toBeNull();
+    });
+
+    it('the modal links to the run\'s page', () => {
+      run = runOf({});
+      renderModal();
+      expect(screen.getByTestId('upgrade-run-page-link')).toHaveAttribute('href', '/platform/updates/runs/r1');
+    });
+  });
 });
+

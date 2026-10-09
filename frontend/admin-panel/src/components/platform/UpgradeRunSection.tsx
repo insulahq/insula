@@ -94,6 +94,11 @@ export default function UpgradeRunSection({ run }: { readonly run: UpgradeRun })
                   <span className="flex items-center gap-1.5 text-xs">
                     {st.icon}
                     <span className={`font-medium ${st.cls}`} data-testid={`run-node-${n.node}-state`}>{st.text}</span>
+                    {n.hostChanges && n.hostChanges.total > 0 && (
+                      <span className="text-gray-500 dark:text-gray-400" data-testid={`run-node-${n.node}-changes`}>
+                        host changes {n.hostChanges.done}/{n.hostChanges.total}
+                      </span>
+                    )}
                     {n.cliVersion && <span className="font-mono text-gray-400 dark:text-gray-500">CLI {n.cliVersion}</span>}
                   </span>
                 </div>

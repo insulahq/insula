@@ -44,6 +44,22 @@ function upToTarget(status: HostMigrationNodeStatus | undefined, target: string)
   });
 }
 
+const DONE_STATES = new Set(['applied', 'already-applied', 'skipped']);
+
+/**
+ * How many of the release's host changes this step applies on the node are done.
+ * Only a node on the release's CLI knows the release's scripts, so an older CLI
+ * reports nothing (null) rather than a misleading 0/0.
+ */
+function countHostChanges(step: UpgradeRunStep, status: HostMigrationNodeStatus | undefined, target: string) {
+  if (!status || !cliAtTarget(status.cliVersion, target)) return null;
+  const b = base(target);
+  if (!b) return null;
+  const items = status.items.filter((i) => releaseOf(i.key) === b
+    && (step === 'finish' || i.phase !== 'after-services'));
+  return { done: items.filter((i) => DONE_STATES.has(i.state)).length, total: items.length };
+}
+
 /** The node's CLI is at least the target release. */
 export function cliAtTarget(cliVersion: string | null | undefined, target: string): boolean {
   if (!cliVersion || !parseVersion(cliVersion) || !parseVersion(target)) return false;
@@ -66,7 +82,8 @@ export function assessRunNode(
   excluded: readonly string[],
 ): UpgradeRunNode {
   const cliVersion = status?.cliVersion ?? null;
-  const out = (state: UpgradeRunNode['state'], detail: string): UpgradeRunNode => ({ node: node.name, state, cliVersion, detail });
+  const hostChanges = countHostChanges(step, status, target);
+  const out = (state: UpgradeRunNode['state'], detail: string): UpgradeRunNode => ({ node: node.name, state, cliVersion, detail, hostChanges });
 
   if (excluded.includes(node.name)) {
     return out('excluded', 'Upgraded without it — it updates on its own timer when it is back.');

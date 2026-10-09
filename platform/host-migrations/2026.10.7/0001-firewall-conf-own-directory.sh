@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Moves the firewall config into a directory of its own, so the security probe no longer mounts the credentials beside it.
 # idempotent: moves firewall.conf only while it is a regular file at the old path and (re)creates the compat symlink only when it is missing or points elsewhere; a converged node (directory present, file in it, old path already the relative symlink) writes nothing and exits 0.
 # allow-paths: /etc/hosting-platform/firewall /etc/hosting-platform/firewall/firewall.conf /etc/hosting-platform/firewall.conf
 # blocks-on-failure: no    # ADR-056: only the security-probe reads this file, and the probe falls back to the old path; nothing later depends on this script.
