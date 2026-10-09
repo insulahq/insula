@@ -542,7 +542,7 @@ export interface Deps {
    * process is still the OLD code, so we MUST re-exec the new binary to pick up its
    * new embedded host-migration catalog. No `--apply`, so each host-config surface
    * still honours its own `enforce`/`observe` policy mode (host-migrations default
-   * to enforce); without this the new migrations would wait for the next daily
+   * to enforce); without this the new migrations would wait for the next hourly
    * `platform-ops-host-config.timer`. NEVER throws; returns the converge exit code.
    * Optional: absent in tests + dev (non-SEA), where there is no replaced binary.
    */
@@ -970,7 +970,7 @@ function findRepoRootFromSource(): string | null {
  * apply-on-Apply (ADR-045 W10c): converge host-migrations right after a
  * successful self-upgrade. Re-execs the NEW binary (process.execPath was
  * atomically replaced on disk) as `host-config apply` so the freshly-installed
- * release's embedded migrations run now, not on the next daily host-config timer.
+ * release's embedded migrations run now, not on the next hourly host-config timer.
  * SEA-only: in dev (non-SEA) there is no replaced binary to invoke, so skip.
  * NEVER throws.
  */

@@ -212,3 +212,40 @@ func TestReadMigrationStatusRelaysBaseline(t *testing.T) {
 		t.Fatalf("an absent baseline must be omitted from the relayed item, got %s", out)
 	}
 }
+
+func TestReadMigrationStatusRelaysCliVersion(t *testing.T) {
+	// The node CLI's version is what tells a node that has not fetched the new
+	// release apart from one that has — both report "nothing pending". Dropping it
+	// here (the struct, not the file, decides what travels) silently restores the
+	// false green this field exists to end.
+	p := filepath.Join(t.TempDir(), "status.json")
+	body := `{"schema":1,"cliVersion":"2026.10.7-rc.2","mode":"enforce","source":"embedded","ok":true,"appliedCount":0,"items":[]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, errs := readMigrationStatus(p)
+	if len(errs) != 0 || st == nil {
+		t.Fatalf("unexpected: %v / %v", st, errs)
+	}
+	if st.CliVersion != "2026.10.7-rc.2" {
+		t.Fatalf("cliVersion must be relayed; got %q", st.CliVersion)
+	}
+	out, err := json.Marshal(st)
+	if err != nil || !strings.Contains(string(out), `"cliVersion":"2026.10.7-rc.2"`) {
+		t.Fatalf("cliVersion must reach the published snapshot; got %s (%v)", out, err)
+	}
+}
+
+func TestReadMigrationStatusOlderCliHasNoVersion(t *testing.T) {
+	// A CLI that predates the field writes none; the snapshot must then omit it
+	// (the backend reads "absent" as "not reported", never as a version).
+	p := filepath.Join(t.TempDir(), "status.json")
+	if err := os.WriteFile(p, []byte(`{"schema":1,"mode":"enforce","ok":true,"items":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := readMigrationStatus(p)
+	out, _ := json.Marshal(st)
+	if strings.Contains(string(out), "cliVersion") {
+		t.Fatalf("an absent cliVersion must stay absent; got %s", out)
+	}
+}

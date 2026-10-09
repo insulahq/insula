@@ -3,8 +3,9 @@
  * embedded in the platform-ops binary (they travel with each release), so the
  * backend cannot list the actual pending scripts. It surfaces the one thing it
  * CAN read from the cluster: the `host-migrations-desired` ConfigMap mode, i.e.
- * whether host-migrations would RUN during an upgrade. Operators see the full
- * picture in the runbook (docs/operations/…) the UI links to.
+ * whether nodes apply host-migrations at all — and says WHEN they do. They do not
+ * run during the upgrade: a node applies a release's host changes once its own
+ * CLI updates to that release, on the node's daily update timer.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { HostMigrationsPreviewResponse } from '@insula/api-contracts';
@@ -15,14 +16,19 @@ const HOST_MIGRATIONS_CM = 'host-migrations-desired';
 /** Pure: map a raw CM mode string to the preview shape. */
 export function interpretHostMigrationMode(rawMode: string | null): HostMigrationsPreviewResponse {
   if (rawMode === null) {
-    return { mode: 'absent', willRun: false, note: 'No host-migration policy — none will run during an upgrade.' };
+    return { mode: 'absent', willRun: false, note: 'No host-migration policy — nodes will not apply host changes.' };
   }
   const mode = rawMode.trim().toLowerCase();
   if (mode === 'enforce') {
-    return { mode: 'enforce', willRun: true, note: 'Host-migrations are ENABLED — pending scripts run host-side (platform-ops) during the upgrade.' };
+    return {
+      mode: 'enforce',
+      willRun: true,
+      note: 'Enabled — each node applies this release\'s host changes when its own CLI updates to the release, '
+        + 'on the node\'s daily update timer (up to ~25 h after the services). The Host migrations card shows each node.',
+    };
   }
   if (mode === 'observe' || mode === '') {
-    return { mode: 'observe', willRun: false, note: 'Host-migrations are in observe mode — drift is reported only; nothing runs until set to enforce.' };
+    return { mode: 'observe', willRun: false, note: 'Observe mode — nodes report what would change; nothing runs until the policy is set to enforce.' };
   }
   return { mode: 'unknown', willRun: false, note: `Unrecognised host-migration mode "${mode.slice(0, 32)}".` };
 }

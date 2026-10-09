@@ -26,6 +26,8 @@ import type {
   HostMigrationStatusResponse,
   HostMigrationItem,
 } from '@insula/api-contracts';
+import { compareVersions, parseVersion } from '../platform-updates/poller/semver.js';
+import { releaseTagFor } from '../../cli/platform-ops/self-upgrade/release-tag.js';
 
 const DRIFT_NS = 'platform-system';
 const DRIFT_CM_PREFIX = 'host-config-drift-';
@@ -83,6 +85,10 @@ const STATES = new Set([
 ]);
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const versionOrNull = (v: unknown): string | null => {
+  const s = str(v)?.trim();
+  return s && s.length <= 64 && parseVersion(s) ? s : null;
+};
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const int = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
@@ -134,6 +140,7 @@ export function interpretNodeSnapshot(
     reason: null,
     items: [],
     note,
+    cliVersion: null,
     ...extra,
   });
 
@@ -227,6 +234,9 @@ export function interpretNodeSnapshot(
     // "0 applied" while running nothing at all.
     reason: str(hm['reason']),
     items,
+    // A CLI that predates the field reports none — "not reported", never a version.
+    // Node-supplied: only a well-formed version is believed (and displayed).
+    cliVersion: versionOrNull(hm['cliVersion']),
   };
 }
 
@@ -239,8 +249,8 @@ export function interpretNodeSnapshot(
  *    validate. Silent in exactly the same way.
  *  - `ok === false` — a whole-run refusal, which carries NO items at all, so
  *    every count above is legitimately zero.
- * Pending alone is NOT degraded: it is normal between a release and the next
- * hourly converge.
+ * Pending alone is NOT degraded, and neither is a node whose CLI is still on an
+ * older release: both are a process that has not run yet, not a fault.
  */
 export function isDegraded(nodes: readonly HostMigrationNodeStatus[]): boolean {
   return nodes.some(
@@ -257,7 +267,92 @@ export function isDegraded(nodes: readonly HostMigrationNodeStatus[]): boolean {
   );
 }
 
-export async function readHostMigrationStatus(k8s: K8sClients): Promise<HostMigrationStatusResponse> {
+/**
+ * Is this node's CLI older than the cluster's release? A release's host-migrations
+ * ship inside the node CLI, so a node on an older CLI has not seen them yet —
+ * while reporting exactly what an up-to-date node reports ("nothing pending").
+ * The target is mapped to its release tag first: a DEV build stamp
+ * (`2026.10.6-ad8fe1a`) is served by the `2026.10.6` CLI. null when either side
+ * is unknown or not a version.
+ */
+export function cliBehindTarget(cliVersion: string | null | undefined, targetVersion: string | null | undefined): boolean | null {
+  if (!cliVersion || !targetVersion) return null;
+  const target = releaseTagFor(targetVersion.trim().replace(/^v/, ''));
+  const cli = cliVersion.trim().replace(/^v/, '');
+  if (!parseVersion(cli) || !parseVersion(target)) return null;
+  return compareVersions(cli, target) < 0;
+}
+
+export interface HostMigrationGateAssessment {
+  /** Never `fail`: host state is reported, it does not decide whether the services converged. */
+  readonly status: 'pass' | 'warn';
+  /** true when the only reason for `warn` is nodes that have not updated or reported YET. */
+  readonly scheduled: boolean;
+  readonly detail: string;
+}
+
+const MAX_NAMED_NODES = 4;
+const names = (ns: readonly HostMigrationNodeStatus[]): string => {
+  const shown = ns.slice(0, MAX_NAMED_NODES).map((n) => n.node).join(', ');
+  return ns.length > MAX_NAMED_NODES ? `${shown} +${ns.length - MAX_NAMED_NODES} more` : shown;
+};
+
+/**
+ * Pure: what the upgrade's host-migration gate says about the nodes, in words an
+ * operator can act on. Three outcomes, never conflated:
+ *
+ *  - attention — a node with a failed, blocked or invalid script, a refused run,
+ *    a converge that never ran, or no reconciler: something is wrong there.
+ *  - catching up — nodes whose CLI is older than the release (or too old to say),
+ *    or that have not reported yet. They apply the release's host changes when
+ *    their own update timer runs; nothing is wrong, and the gate says so.
+ *  - pass — every node runs the release's CLI and nothing needs attention.
+ *
+ * It never fails: whether the services converged is decided by the service
+ * gates. Holding that on host state turned an old failure on one node into an
+ * upgrade that never finished, and made a node's daily timer read as a fault.
+ */
+export function assessHostMigrations(
+  nodes: readonly HostMigrationNodeStatus[],
+  targetVersion: string | null,
+): HostMigrationGateAssessment {
+  if (nodes.length === 0) {
+    return { status: 'warn', scheduled: true, detail: 'No node has reported host-migration state yet.' };
+  }
+  const attention = nodes.filter((n) =>
+    n.failedCount > 0 || n.blockedCount > 0 || n.invalidCount > 0 || n.ok === false
+    || n.neverConverged === true || n.reconcilerMissing === true);
+  const behind = nodes.filter((n) => !attention.includes(n) && n.cliBehind === true);
+  const unreported = nodes.filter((n) =>
+    !attention.includes(n) && !behind.includes(n) && (n.collectedAt === null || !n.cliVersion));
+  const mapped = targetVersion ? releaseTagFor(targetVersion.trim().replace(/^v/, '')) : null;
+  const target = mapped && parseVersion(mapped) ? mapped : null;
+
+  const parts: string[] = [];
+  if (attention.length > 0) parts.push(`needs attention on ${names(attention)} — see Host migrations`);
+  if (behind.length > 0) {
+    parts.push(`${behind.length} of ${nodes.length} node(s) still on an older CLI (${names(behind)}); each applies `
+      + `this release's host changes when its daily update runs (within ~25 h)`);
+  }
+  if (unreported.length > 0) {
+    parts.push(`${names(unreported)} ha${unreported.length === 1 ? 's' : 've'} not reported a CLI version yet `
+      + `(a CLI older than this release does not; it will after its daily update)`);
+  }
+  if (parts.length === 0) {
+    return {
+      status: 'pass',
+      scheduled: false,
+      detail: `All ${nodes.length} node(s) on ${target ? `CLI ${target}` : 'the current CLI'}; host changes applied`,
+    };
+  }
+  return { status: 'warn', scheduled: attention.length === 0, detail: parts.join('; ') };
+}
+
+export async function readHostMigrationStatus(
+  k8s: K8sClients,
+  /** The release the nodes should run (the cluster's running version). */
+  targetVersion: string | null = null,
+): Promise<HostMigrationStatusResponse> {
   let snapshots: Array<{ node: string; raw: string | undefined }> = [];
   try {
     const list = (await k8s.core.listNamespacedConfigMap({
@@ -299,7 +394,13 @@ export async function readHostMigrationStatus(k8s: K8sClients): Promise<HostMigr
 
   const nodes = snapshots
     .map((s) => interpretNodeSnapshot(s.node, s.raw, ages.get(s.node)))
+    .map((n) => ({ ...n, cliBehind: cliBehindTarget(n.cliVersion, targetVersion) }))
     .sort((a, b) => a.node.localeCompare(b.node));
 
-  return { nodes, degraded: isDegraded(nodes), runbookUrl: HOST_MIGRATION_RUNBOOK_URL };
+  return {
+    nodes,
+    degraded: isDegraded(nodes),
+    runbookUrl: HOST_MIGRATION_RUNBOOK_URL,
+    targetVersion: targetVersion ? releaseTagFor(targetVersion.replace(/^v/, '')) : null,
+  };
 }

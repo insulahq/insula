@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { X, CheckCircle, Loader2, AlertTriangle, Clock } from 'lucide-react';
 import { usePostflight, useUpgradeProgress } from '@/hooks/use-platform-upgrade';
 import { formatVersion } from '@/lib/format-version';
 
@@ -27,10 +27,16 @@ const PHASE = {
   error: { label: 'Failed', cls: 'text-red-600 dark:text-red-400' },
 } as const;
 
-/** The two gates that make "healthy" mean converged rather than "images rolled". */
+/**
+ * The convergence rows. Only platform migrations hold "Done": they run as the
+ * new platform-api starts, inside the upgrade. Host migrations do not — a node
+ * applies a release's host changes when its own CLI updates to that release, on
+ * the node's daily timer, hours after the services — so they are shown for what
+ * they are (applied / catching up / needs attention) and never hold the modal open.
+ */
 const CONVERGENCE_GATES = [
-  { id: 'migrations-converged', label: 'Platform migrations' },
-  { id: 'host-migrations-converged', label: 'Host migrations' },
+  { id: 'migrations-converged', label: 'Platform migrations', holdsDone: true },
+  { id: 'host-migrations-converged', label: 'Host migrations', holdsDone: false },
 ] as const;
 
 export default function PlatformUpgradeProgressModal({ version, onClose }: Props) {
@@ -63,8 +69,9 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
   // while their migration registry sat halted at 0008.
   //
   // Absent gates keep the old behaviour rather than hanging the modal open on
-  // missing data: only a gate that EXISTS and is not passing holds `done` back.
-  const convergencePending = CONVERGENCE_GATES.some(({ id }) => {
+  // missing data: only a gate that EXISTS, holds `done`, and is not passing does.
+  const convergencePending = CONVERGENCE_GATES.some(({ id, holdsDone }) => {
+    if (!holdsDone) return false;
     const g = post?.gates?.find((x) => x.id === id);
     return g !== undefined && g.status !== 'pass';
   });
@@ -155,37 +162,40 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
 
           {/* Convergence rows — the half of an upgrade Flux cannot see.
               Images rolling is not the upgrade finishing: platform migrations
-              land seconds after the new pod starts, host migrations when the
-              node converges (immediately after its self-upgrade, else hourly).
-              On 2026-08-19 every deployment reported Ready on three clusters
-              whose migration registry had halted, and the upgrade called itself
-              healthy.
-
-              Rendered in the SAME vocabulary as the component rows above, and
-              deliberately as "Converging" (blue) rather than "Incomplete" while
-              in their normal window — a gate that cries wolf gets dismissed.
-              Red only once the run is genuinely stuck. */}
-          {CONVERGENCE_GATES.map(({ id, label }) => {
+              land seconds after the new pod starts. Host migrations land when
+              each node's CLI updates to the release, on that node's daily
+              timer — so "catching up" is their normal state right after an
+              upgrade and is shown neutrally, never as a fault. Red/amber only
+              for a real problem (a stuck platform migration, or a node whose
+              host migrations failed). */}
+          {CONVERGENCE_GATES.map(({ id, label, holdsDone }) => {
             const g = post?.gates?.find((x) => x.id === id);
-            if (!g) return null; // not reported (e.g. no node has checked in yet)
+            if (!g) return null; // not reported
             const ok = g.status === 'pass';
-            // `stuck` is the modal's existing streak-based "this is not moving"
-            // signal — the only thing that turns a pending gate red.
-            const failed = !ok && stuck;
+            const catchingUp = !ok && !holdsDone && g.scheduled === true;
+            const attention = !ok && !holdsDone && !catchingUp;
+            // `stuck` is the streak-based "this is not moving" signal — the only
+            // thing that turns a pending platform-migration gate red.
+            const failed = !ok && holdsDone && stuck;
+            const state = ok
+              ? { text: 'Applied', cls: PHASE.ready.cls, icon: <CheckCircle size={13} className="text-green-600 dark:text-green-400" /> }
+              : catchingUp
+                ? { text: 'Catching up', cls: 'text-gray-600 dark:text-gray-300', icon: <Clock size={13} className="text-gray-500 dark:text-gray-400" /> }
+                : attention
+                  ? { text: 'Needs attention', cls: 'text-amber-700 dark:text-amber-300', icon: <AlertTriangle size={13} className="text-amber-500" /> }
+                  : failed
+                    ? { text: 'Stalled', cls: PHASE.error.cls, icon: <AlertTriangle size={13} className="text-red-500" /> }
+                    : { text: 'Converging', cls: PHASE.starting.cls, icon: <Loader2 size={13} className="animate-spin text-blue-500" /> };
             return (
-              <div key={id} className="flex items-center justify-between text-sm" data-testid={`convergence-${id}`}>
-                <span className="text-gray-700 dark:text-gray-300">{label}</span>
-                <span className="flex items-center gap-1.5 text-xs">
-                  {ok
-                    ? <CheckCircle size={13} className="text-green-600 dark:text-green-400" />
-                    : failed
-                      ? <AlertTriangle size={13} className="text-red-500" />
-                      : <Loader2 size={13} className="animate-spin text-blue-500" />}
-                  <span className={`font-medium ${ok ? PHASE.ready.cls : failed ? PHASE.error.cls : PHASE.starting.cls}`}>
-                    {ok ? 'Applied' : failed ? 'Stalled' : 'Converging'}
+              <div key={id} className="text-sm" data-testid={`convergence-${id}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-700 dark:text-gray-300">{label}</span>
+                  <span className="flex items-center gap-1.5 text-xs">
+                    {state.icon}
+                    <span className={`font-medium ${state.cls}`} data-testid={`convergence-${id}-state`}>{state.text}</span>
                   </span>
-                  <span className="text-gray-400 dark:text-gray-500">{g.detail}</span>
-                </span>
+                </div>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400" data-testid={`convergence-${id}-detail`}>{g.detail}</p>
               </div>
             );
           })}

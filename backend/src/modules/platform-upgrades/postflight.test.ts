@@ -139,27 +139,42 @@ describe('convergence gates — an upgrade is not done when its images are', () 
     expect(gate(r, 'migrations-converged')?.detail).toMatch(/unreadable/i);
   });
 
-  it('IS healthy once images, migrations and host config have all converged', () => {
+  it('IS healthy once images and migrations converged, with every node on the release', () => {
     const r = evaluatePostflight({
       ...rolled, migrationsReadable: true, migrationsPending: 0,
-      hostMigrationsDegraded: false, hostMigrationsDetail: '1 node(s) converged',
+      hostMigrations: { status: 'pass', scheduled: false, detail: 'All 1 node(s) on CLI 2026.8.7; host changes applied' },
     });
     expect(r.phase).toBe('healthy');
     expect(r.ok).toBe(true);
+    expect(gate(r, 'host-migrations-converged')?.status).toBe('pass');
   });
 
-  it('fails when a node has a blocked host-migration', () => {
+  it('reports nodes still catching up as scheduled, and does NOT hold the services back', () => {
+    // A node applies the release's host changes on its own daily timer, hours
+    // after the services. That is the normal state right after an upgrade; holding
+    // the run open on it made every upgrade "not converging".
     const r = evaluatePostflight({
       ...rolled, migrationsReadable: true, migrationsPending: 0,
-      hostMigrationsDegraded: true, hostMigrationsDetail: '1/3 node(s) blocked: sv2',
+      hostMigrations: { status: 'warn', scheduled: true, detail: '2 of 3 node(s) still on an older CLI (s2, s3)' },
     });
-    expect(r.phase).toBe('reconciling');
-    expect(gate(r, 'host-migrations-converged')?.detail).toContain('sv2');
+    expect(r.phase).toBe('healthy');
+    expect(gate(r, 'host-migrations-converged')).toMatchObject({ status: 'warn', scheduled: true });
   });
 
-  it('does NOT block on nodes that have not reported yet', () => {
-    // Missing data must not hold an otherwise healthy upgrade open forever —
-    // the host-migration status relay owns that case with its own alerting.
+  it('names a node that needs attention without failing the services', () => {
+    // During the upgrade window a host failure can only be an OLD one (the
+    // release's own migrations land hours later); it must be visible, but it
+    // must not turn the upgrade into one that never finishes.
+    const r = evaluatePostflight({
+      ...rolled, migrationsReadable: true, migrationsPending: 0,
+      hostMigrations: { status: 'warn', scheduled: false, detail: 'needs attention on sv2 — see Host migrations' },
+    });
+    expect(r.phase).toBe('healthy');
+    expect(gate(r, 'host-migrations-converged')?.detail).toContain('sv2');
+    expect(gate(r, 'host-migrations-converged')?.scheduled).toBe(false);
+  });
+
+  it('omits the host gate only when host state was not collected at all', () => {
     const r = evaluatePostflight({ ...rolled, migrationsReadable: true, migrationsPending: 0 });
     expect(gate(r, 'host-migrations-converged')).toBeUndefined();
     expect(r.phase).toBe('healthy');

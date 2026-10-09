@@ -23,6 +23,8 @@ import { readHostMigrationsPreview } from './host-migrations-preview.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
+// The release this pod serves — what each node's CLI is compared against.
+const RUNNING_VERSION = (process.env.PLATFORM_VERSION ?? '').trim().replace(/^v/, '') || null;
 
 export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -32,7 +34,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   const kubeconfigPath = () => (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
   const gateProps = {
-    gates: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' } } } },
+    gates: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, scheduled: { type: 'boolean' } } } },
     ok: { type: 'boolean' }, failures: { type: 'number' }, warnings: { type: 'number' }, environment: { type: 'string' },
   };
 
@@ -59,7 +61,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
         type: 'object', properties: {
           phase: { type: 'string' }, verdict: { type: 'string' }, consecutiveFailures: { type: 'number' },
           abortThreshold: { type: 'number' }, pendingVersion: { type: 'string', nullable: true }, runningVersion: { type: 'string' },
-          gates: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' } } } },
+          gates: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, status: { type: 'string' }, detail: { type: 'string' }, scheduled: { type: 'boolean' } } } },
           ok: { type: 'boolean' }, failures: { type: 'number' }, warnings: { type: 'number' },
           lastCheckedAt: { type: 'string', nullable: true }, environment: { type: 'string' },
         },
@@ -159,12 +161,15 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       tags: ['Platform Updates'], summary: 'Per-node host-migration status', security: [{ bearerAuth: [] }],
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
         degraded: { type: 'boolean' }, runbookUrl: { type: 'string' },
+        targetVersion: { type: 'string', nullable: true },
         nodes: { type: 'array', items: { type: 'object', additionalProperties: true } },
       } } } } },
     },
   }, async () => {
     const k8s = createK8sClients(kubeconfigPath());
-    return success(await readHostMigrationStatus(k8s));
+    // Nodes are judged against the release this cluster runs: a node whose CLI is
+    // older has not seen that release's host-migrations yet.
+    return success(await readHostMigrationStatus(k8s, RUNNING_VERSION));
   });
 
   // POST /api/v1/admin/platform/upgrade  { version?, apply? }
@@ -180,7 +185,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
         // tell the operator what will restart before they commit.
         interruption: {
           type: 'object', nullable: true, properties: {
-            summary: { type: 'string' }, singleNode: { type: 'boolean' }, nodeCount: { type: 'number', nullable: true },
+            summary: { type: 'string' }, singleNode: { type: 'boolean' }, noRedundancy: { type: 'boolean' }, nodeCount: { type: 'number', nullable: true },
             tenantWorkloadsAffected: { type: 'boolean' },
             services: { type: 'array', items: { type: 'object', properties: {
               name: { type: 'string' }, label: { type: 'string' }, impact: { type: 'string' },

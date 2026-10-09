@@ -1,12 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpgradeGate } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-export interface UpgradeGate {
-  readonly id: string;
-  readonly label: string;
-  readonly status: 'pass' | 'warn' | 'fail';
-  readonly detail: string;
-}
+// The gate shape is the shared contract's (it carries `scheduled`, which a local
+// copy silently dropped).
+export type { UpgradeGate };
 
 interface PreflightResponse {
   readonly data: {
@@ -99,6 +97,8 @@ export interface InterruptionPreview {
   readonly services: AffectedService[];
   readonly nodeCount: number | null;
   readonly singleNode: boolean;
+  /** No second replica for at least one user-facing service (from the Deployments, not the node count). */
+  readonly noRedundancy?: boolean;
   readonly summary: string;
   readonly tenantWorkloadsAffected: boolean;
 }

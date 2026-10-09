@@ -236,4 +236,34 @@ describe('HostMigrationsCard — never-converged node', () => {
     await waitFor(() => expect(screen.getByTestId('host-migrations-node-node-a')).toBeInTheDocument());
     expect(screen.queryByTestId('host-migrations-remediation')).not.toBeInTheDocument();
   });
+
+  it("shows each node's CLI version, and a node behind the release as catching up — not as a fault", async () => {
+    // A node applies a release's host changes when its own CLI updates, on its
+    // daily timer. Right after an upgrade that is the normal state: it must read
+    // as "update pending", never red.
+    resolve({
+      degraded: false, runbookUrl: 'https://example.test/runbook', targetVersion: '2026.10.7-rc.2',
+      nodes: [
+        node({ node: 'node-a', cliVersion: '2026.10.7-rc.2', cliBehind: false }),
+        node({ node: 'node-b', cliVersion: '2026.10.6', cliBehind: true }),
+      ],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('host-migrations-cli-node-b')).toHaveTextContent('CLI 2026.10.6'));
+    expect(screen.getByTestId('host-migrations-cli-node-b')).toHaveTextContent(/update pending/);
+    expect(screen.getByTestId('host-migrations-cli-node-a')).not.toHaveTextContent(/update pending/);
+    expect(screen.getByTestId('host-migrations-catching-up')).toHaveTextContent(/1 node\(s\) still run an older CLI/);
+    expect(screen.getByTestId('host-migrations-catching-up')).toHaveTextContent(/2026\.10\.7-rc\.2/);
+    expect(screen.queryByText(/needs attention/i)).not.toBeInTheDocument();
+  });
+
+  it('says nothing about catching up when every node is on the release', async () => {
+    resolve({
+      degraded: false, runbookUrl: 'https://example.test/runbook', targetVersion: '2026.10.7',
+      nodes: [node({ cliVersion: '2026.10.7', cliBehind: false })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('host-migrations-cli-node-a')).toHaveTextContent('CLI 2026.10.7'));
+    expect(screen.queryByTestId('host-migrations-catching-up')).not.toBeInTheDocument();
+  });
 });
