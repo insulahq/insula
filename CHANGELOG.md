@@ -132,7 +132,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "ingress → backend broken" and "pod → pod broken"; it now probes running pods only. Its HA check
   failed every multi-node cluster that had not applied HA; it now checks only when HA is applied.
   And on production installs it probed, and counted as missing, the test sign-in service (Dex),
-  which production does not run; it now checks only what is installed.
+  which production does not run; it now checks only what is installed. Its network-plugin log
+  check also failed after any node was removed, reading the routine "remove peer" notices of the
+  departing node as errors; it now ignores those notices.
 - **A joining node no longer prints a pre-authorisation warning when it is pre-authorised.** The
   node join always printed "IMPORTANT — joining requires this node's IP to be pre-authorised …
   otherwise the join will hang", including on joins run from the admin panel's own join script

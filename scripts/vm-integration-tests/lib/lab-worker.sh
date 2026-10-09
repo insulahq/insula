@@ -216,6 +216,22 @@ lab_worker_leave() {
     return 1
   fi
   lab_state_set LAB_STG_WORKER_JOINED 0
-  VIRSH shutdown "$W_VM" >/dev/null 2>&1 || true
-  echo "${W_VM} removed from staging (node, Longhorn and inventory clean; servers Ready); VM stopping, OS kept"
+  _lab_vm_stop "$W_VM" || return 1
+  echo "${W_VM} removed from staging (node, Longhorn and inventory clean; servers Ready); VM stopped, OS kept"
+}
+
+# _lab_vm_stop <vm> — shut the VM down and WAIT until it is off. `virsh shutdown` only
+# sends the ACPI request: a join started right after a leave found the VM still
+# "running", joined it, and the pending shutdown then took the fresh worker down.
+_lab_vm_stop() {
+  local vm="$1" waited=0
+  [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] || return 0
+  VIRSH shutdown "$vm" >/dev/null 2>&1 || true
+  while [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]] && (( waited < ${VMTEST_STOP_TIMEOUT:-180} )); do
+    sleep 5; waited=$((waited + 5))
+  done
+  if [[ "$(VIRSH domstate "$vm" 2>/dev/null || true)" == running ]]; then
+    echo "  ${vm} did not shut down in ${VMTEST_STOP_TIMEOUT:-180} s — powering off" >&2
+    VIRSH destroy "$vm" >/dev/null || return 1
+  fi
 }

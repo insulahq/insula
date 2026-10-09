@@ -531,10 +531,16 @@ test_6_felix_logs() {
     # threading sysctl (Debian 13 trixie, kernel 6.12). Replaced
     # with a narrower regex that targets actual wireguard egress/
     # peer/encryption failures.
+    #
+    # INFO lines from felix/wireguard.go are peer bookkeeping, not failures:
+    # "Node is deleted, remove wireguard peer" / "Peer endpoint address is
+    # updated" on every node join and removal. They matched the peer arm and
+    # failed this test after any worker was removed.
     local hits
     hits=$(kubectl -n calico-system logs "$pod" -c calico-node --tail=200 2>/dev/null \
       | grep -E 'Failed to set tunnel device MTU|Failed to wipe the XDP|fatal|panic|Permission denied|wireguard.*(peer|encrypt|cannot create)' \
       | grep -vE 'Failed to set NAPI threading.*operation not supported' \
+      | grep -vE '\[INFO\]\[[0-9]+\] felix/wireguard\.go' \
       | wc -l)
     if [[ "$hits" -eq 0 ]]; then
       ok=$((ok+1))
