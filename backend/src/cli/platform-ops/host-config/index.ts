@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { createPublicKey } from 'node:crypto';
 import {
   convergeSysctls,
   normalizeSysctl,
@@ -430,6 +431,7 @@ export function buildHostMigrationStatusDoc(
   result: HostMigrationResult,
   cliVersion: string | null,
   now: Date = new Date(),
+  trustAnchor: boolean | null = null,
 ): Record<string, unknown> {
   return {
     schema: 1,
@@ -437,6 +439,10 @@ export function buildHostMigrationStatusDoc(
     // which cannot know the newer release's migrations exist — reports "nothing
     // pending" and is indistinguishable from an up-to-date node.
     cliVersion,
+    // ADR-064 §6: whether this node can verify a release at all (its pinned
+    // cosign key is present and parses). An upgrade pushed to a node that cannot
+    // fails there; the pre-flight says so first.
+    trustAnchor,
     collectedAt: now.toISOString(),
     mode: result.mode,
     source: result.source,
@@ -457,10 +463,21 @@ export function buildHostMigrationStatusDoc(
   };
 }
 
+/** The key self-upgrade verifies releases against — present and a parseable public key. */
+const TRUST_ANCHOR_PATH = '/etc/platform/cosign.pub';
+export function trustAnchorUsable(path: string = TRUST_ANCHOR_PATH): boolean {
+  try {
+    createPublicKey(readFileSync(path, 'utf8'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function writeHostMigrationStatusFile(result: HostMigrationResult): void {
   try {
     mkdirSync(HOST_MIGRATION_MARKER_ROOT, { recursive: true });
-    const doc = buildHostMigrationStatusDoc(result, cliBuildVersion());
+    const doc = buildHostMigrationStatusDoc(result, cliBuildVersion(), new Date(), trustAnchorUsable());
     writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
   } catch {
     /* advisory — a converge must not fail because it could not report */

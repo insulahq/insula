@@ -28,6 +28,9 @@ export interface ReleaseManifest {
    * (operator must apply it manually). Defaults false when absent.
    */
   readonly breaking?: boolean;
+  /** ADR-064 §6: what the release brings — validated against releaseContentsSchema before use. */
+  readonly hostMigrations?: unknown;
+  readonly migrations?: unknown;
 }
 
 /**
@@ -58,5 +61,7 @@ export const SETTING_KEYS = {
   availableVerifiedAt: 'available_verified_at',
   availableVerifyStatus: 'available_verify_status',
   availableBreaking: 'available_breaking',
+  /** JSON of the verified release's contents (ReleaseContents), '' when the manifest has none. */
+  availableContents: 'available_release_contents',
   lastUpdateCheck: 'last_update_check',
 } as const;

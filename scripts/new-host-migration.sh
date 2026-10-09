@@ -99,6 +99,7 @@ mkdir -p "$VER_DIR"
 # implemented — an un-edited stub must never silently "succeed" doing nothing.
 cat > "$DEST" <<EOF
 #!/usr/bin/env bash
+# description: TODO — one line an operator reads in the upgrade review: what changes on the host
 # idempotent: TODO — describe why re-running on an already-applied node is a no-op
 # allow-paths: TODO — list the host path(s) this migration may touch (review allow-list)
 # blocks-on-failure: yes    # ADR-056: 'no' iff NOTHING later depends on this script

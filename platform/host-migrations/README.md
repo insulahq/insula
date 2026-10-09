@@ -58,10 +58,17 @@ Every script MUST:
    scripts have run, but NEVER that "we were on version X when this runs".
 5. Be **order-stable** — once shipped, a script's path is its contract: never
    rename, renumber, or edit its body.
-6. Carry two header comments documenting the contract:
+6. Carry the header comments documenting the contract:
    - `# idempotent: <how re-running is safe>`
    - `# allow-paths: <the host paths this script may touch>`  ← a review-time
      allow-list; any host path outside it requires a `### BREAKING` CHANGELOG note.
+   - `# phase: before-services | after-services` (required from 2026.10.7, ADR-064):
+     whether it runs while the previous release's services still run, or only once
+     the new ones do.
+   - `# description: <one line, 10–200 characters>` (required from 2026.10.7,
+     ADR-064 §6): what changes on the host, in words an operator reads in the
+     upgrade review. The release manifest carries it.
+   Headers may be added to a shipped script; its body never changes.
 
 Scripts run via `bash` from **stdin** (no temp file), so do not rely on `$0` or
 `$BASH_SOURCE`. They get a clean minimal environment (`PATH`, `HOME` only) and a

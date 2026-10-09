@@ -142,6 +142,7 @@ export function interpretNodeSnapshot(
     items: [],
     note,
     cliVersion: null,
+    trustAnchor: null,
     ...extra,
   });
 
@@ -240,6 +241,7 @@ export function interpretNodeSnapshot(
     // A CLI that predates the field reports none — "not reported", never a version.
     // Node-supplied: only a well-formed version is believed (and displayed).
     cliVersion: versionOrNull(hm['cliVersion']),
+    trustAnchor: typeof hm['trustAnchor'] === 'boolean' ? hm['trustAnchor'] : null,
   };
 }
 

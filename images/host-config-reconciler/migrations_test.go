@@ -293,3 +293,35 @@ func TestReadMigrationStatusClipsAHostilePhase(t *testing.T) {
 		t.Fatalf("a hostile phase must be clipped, got %+v", st)
 	}
 }
+
+func TestReadMigrationStatusRelaysTrustAnchor(t *testing.T) {
+	// ADR-064 §6: the upgrade pre-flight refuses to push a release to a node that
+	// cannot verify it. Dropping the field would hide exactly that node.
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		body, want string
+	}{
+		{`{"schema":1,"trustAnchor":false,"mode":"enforce","ok":true,"items":[]}`, `"trustAnchor":false`},
+		{`{"schema":1,"trustAnchor":true,"mode":"enforce","ok":true,"items":[]}`, `"trustAnchor":true`},
+	} {
+		p := filepath.Join(dir, "status.json")
+		if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		st, _ := readMigrationStatus(p)
+		out, _ := json.Marshal(st)
+		if !strings.Contains(string(out), tc.want) {
+			t.Fatalf("want %s in %s", tc.want, out)
+		}
+	}
+	// An older CLI writes none — it stays absent, never false.
+	p := filepath.Join(dir, "status.json")
+	if err := os.WriteFile(p, []byte(`{"schema":1,"mode":"enforce","ok":true,"items":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := readMigrationStatus(p)
+	out, _ := json.Marshal(st)
+	if strings.Contains(string(out), "trustAnchor") {
+		t.Fatalf("an absent trustAnchor must stay absent; got %s", out)
+	}
+}

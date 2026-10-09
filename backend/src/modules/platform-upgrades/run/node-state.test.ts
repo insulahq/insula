@@ -100,6 +100,27 @@ describe('assessRunNode — prepare-nodes', () => {
   });
 });
 
+describe('assessRunNode — host-change counts', () => {
+  const s = status(TARGET, [
+    item('2026.10.7/0001-a.sh', 'applied', { phase: 'before-services' }),
+    item('2026.10.7/0002-b.sh', 'would-run', { phase: 'before-services' }),
+    item('2026.10.7/0003-c.sh', 'deferred', { phase: 'after-services' }),
+    item('2026.10.6/0001-old.sh', 'already-applied'),
+  ]);
+
+  it('preparing: the release\'s before-services changes only', () => {
+    expect(assessRunNode('prepare-nodes', up, s, undefined, TARGET, []).hostChanges).toEqual({ done: 1, total: 2 });
+  });
+
+  it('finishing: all of the release\'s changes', () => {
+    expect(assessRunNode('finish', up, s, undefined, TARGET, []).hostChanges).toEqual({ done: 1, total: 3 });
+  });
+
+  it('a node still on an older CLI does not know the release\'s scripts — no count, not 0/0', () => {
+    expect(assessRunNode('prepare-nodes', up, status('2026.10.7-rc.3', []), undefined, TARGET, []).hostChanges).toBeNull();
+  });
+});
+
 describe('assessRunNode — finish', () => {
   it('a deferred script holds finish until the node reports it applied', () => {
     const waiting = status(TARGET, [item('2026.10.7/0002-b.sh', 'deferred', { phase: 'after-services' })]);

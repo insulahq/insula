@@ -12,6 +12,7 @@ import type { PreflightFacts } from './preflight.js';
 import { readFluxSuspension } from './flux-repin.js';
 import { listNodeFacts } from './run/k8s.js';
 import { getActiveRun } from './run/store.js';
+import { readHostMigrationStatus } from './host-migration-status.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 const CNPG_NS = 'platform';
@@ -152,7 +153,7 @@ export async function collectPreflightFacts(
   nowMs: number,
   excludedNodes: readonly string[] = [],
 ): Promise<PreflightFacts> {
-  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended, nodes, activeRun] = await Promise.all([
+  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended, nodes, activeRun, hostState] = await Promise.all([
     cnpgReady(k8s),
     longhornAtRiskVolumes(k8s),
     inFlightTransitions(db),
@@ -161,6 +162,14 @@ export async function collectPreflightFacts(
     readFluxSuspension(k8s),
     listNodeFacts(k8s).catch(() => null),
     getActiveRun(db).then((r) => r !== null).catch(() => null),
+    readHostMigrationStatus(k8s, null)
+      // An unreadable status comes back as no nodes at all: unknown, not "all fine".
+      .then((s) => (s.nodes.length === 0 ? null : s.nodes.map((n) => ({
+        name: n.node,
+        hostFault: n.failedCount > 0 || n.blockedCount > 0 || n.invalidCount > 0 || n.ok === false,
+        trustAnchor: n.trustAnchor ?? null,
+      }))))
+      .catch(() => null),
   ]);
   return {
     environment: ENVIRONMENT,
@@ -175,5 +184,6 @@ export async function collectPreflightFacts(
     nodes,
     excludedNodes,
     upgradeRunning: activeRun,
+    nodeHostState: hostState,
   };
 }

@@ -59,14 +59,25 @@ On **Platform Settings → Upgrades** (`super_admin`):
    *update available*.
 2. **Pre-flight checks** — a live list of gates (pass / warn / fail). Click
    **refresh** to re-run them. If any **blocking** check fails, the Apply button
-   stays disabled until you resolve it. **Flux reconciling the platform** fails
+   stays disabled until you resolve it. Three checks are about the nodes:
+   **Every node can take part** (see [Upgrading with a node down](#upgrading-with-a-node-down)),
+   **No failed host change on a node** (a failed host migration blocks every later
+   one on its node, so fix it or record a skip first; blocking in production), and
+   **Every node can verify a release** (the node's pinned signing key
+   `/etc/platform/cosign.pub` is present; without it the node refuses the
+   release). **Flux reconciling the platform** fails
    when the platform Kustomization or its git source is suspended (for example
    after a manual rollback) — the upgrade only re-pins the release Flux applies,
    so it would change nothing. Resume them first:
    `flux resume source git <name>` and `flux resume kustomization platform`.
-3. **Host migrations** — whether nodes apply the release's host-level
-   migration scripts. The upgrade applies them on every node as part of the run
-   (see [The upgrade run](#the-upgrade-run)).
+3. **What changes** — the services' version before and after, how many database
+   and platform migrations the release still has to run here, and each **host
+   change** by its one-line description: whether it runs *before the services*
+   or *after the services*, and on which nodes (a node that already has it is
+   left out). A node that has not reported its host state is named, never counted
+   as done. Releases cut before 2026.10.7 do not list their changes, and the
+   dialog says so. The upgrade applies the host changes on every node as part of
+   the run (see [The upgrade run](#the-upgrade-run)).
    The dialog also names the services that run a **single replica**. Those see a
    short gap while they restart, even on a multi-node cluster. Services with more
    than one replica roll over without one.
@@ -120,7 +131,11 @@ when a node actually reports a failed or blocked migration.
 ## The upgrade run
 
 Apply starts one **run**, shown step by step in the progress dialog. You can
-close the dialog and reopen it from the Tasks chip.
+close the dialog and reopen it from the Tasks chip, or use **Open page**: every
+run has its own page (*Platform Settings → Updates → Upgrade history*), which
+survives a reload and stays as the record of how the run ended — each node's
+outcome and the message it stopped with. Cancelled and rolled-back runs are
+listed as such, apart from failures.
 
 1. **Update the nodes.** Each node, one at a time, fetches the release's
    `insula` CLI, verifies its signature against the key the node pins, and
@@ -132,7 +147,10 @@ close the dialog and reopen it from the Tasks chip.
    new services, then reports the release.
 
 Each node row says where it stands: *Queued*, *Updating*, *Ready*,
-*Waiting for node*, *Upgraded without* or *Failed*, with one line on why.
+*Waiting for node*, *Upgraded without* or *Failed*, with one line on why. Once a
+node runs the release's CLI, its row also counts the release's host changes
+(*host changes 1/2*). The **Nodes** page shows each node's `insula` CLI version,
+marked *update pending* while it is older than the release the cluster runs.
 
 - **A failure in step 1 stops the run before the services change.** The services
   still run the previous release. The nodes that did update keep the new CLI
