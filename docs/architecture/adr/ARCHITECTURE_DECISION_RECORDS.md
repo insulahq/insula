@@ -2733,3 +2733,20 @@ biggest-over-reserver-first because each migration *frees* CPU and eases the nex
 tiered the default for fresh installs. The grandfather-or-re-plan question dissolves: a
 share cannot be oversold and a burst ceiling is meant to be, so admission control gates the
 request ledger and memory — never the sum of ceilings.
+
+## ADR-064: One upgrade procedure — nodes first, pushed, and "done" means done
+
+See [ADR-064-one-upgrade-procedure-nodes-first.md](ADR-064-one-upgrade-procedure-nodes-first.md).
+
+Accepted (2026-10-09): a platform upgrade re-pinned Flux and rolled the services in about a minute,
+while each node fetched the release's CLI — and with it the release's host-migrations — on a daily
+timer, 0–25 hours later; the UI reported the host side as done before it had started, nothing could
+see a lagging node, and host changes could not be ordered before the containers that need them.
+Decision: one recorded run in three steps — prepare nodes (pushed through a system-upgrade-controller
+Plan; each node still verifies the release against its own pinned key), update services, finish —
+and "done" only when every service and every included node runs the target. Host-migrations declare
+`# phase: before-services` (default; must work with the running release) or `after-services`, which
+also makes rollback safe by contract. Nodes report their CLI version; an offline node blocks unless the
+operator excludes it, and is then shown as catching up, not failed. The Automatic-updates toggle
+becomes real, and Kubernetes upgrades join the same flow. Phased as R44.
+
