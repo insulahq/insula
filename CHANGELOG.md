@@ -118,6 +118,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Removing a node no longer leaves its storage node behind.** Longhorn keeps its own record of
+  every node, and removing a node through the admin panel (Drain, then Delete) left that record
+  in place for good: listed as not ready, a host that no longer existed. The platform tried to
+  remove it, but lacked the permission, and Longhorn would have refused anyway — it only lets go
+  of a node whose scheduling is turned off, which no step of the removal did. The node sync now
+  finishes the removal itself about a minute after the node is gone, once Longhorn agrees it is
+  gone and no volume data is left on it, and also clears records that earlier removals left
+  behind. A node removed within a minute or so of joining, before Longhorn had registered its
+  disk, is covered too.
+- **`make smoke` no longer reports a healthy cluster as broken.** After any node restart it probed
+  the leftover records of pods the shutdown had stopped (they have no address), and reported
+  "ingress → backend broken" and "pod → pod broken"; it now probes running pods only. Its HA check
+  failed every multi-node cluster that had not applied HA; it now checks only when HA is applied.
+  And on production installs it probed, and counted as missing, the test sign-in service (Dex),
+  which production does not run; it now checks only what is installed.
+- **A joining node no longer prints a pre-authorisation warning when it is pre-authorised.** The
+  node join always printed "IMPORTANT — joining requires this node's IP to be pre-authorised …
+  otherwise the join will hang", including on joins run from the admin panel's own join script
+  for a pre-enrolled node. The join now checks whether the server it joins answers it, and gives
+  that advice only when it does not.
 - **A fresh install no longer serves mail on a self-signed certificate for up to 90 minutes.**
   The platform's first start restarts the mail server once to open its proxy listeners — moments
   after the install queued the first certificate order. The order died with the old process, which

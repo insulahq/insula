@@ -162,3 +162,20 @@ prereleases at all; the highest match wins, so a stable supersedes its own RCs.
    `cut-release.sh` for stable.
 6. Delete `sync-development.yml`.
 7. Thereafter: rebase/merge `main` → `development` after each release (decision C).
+
+## Amendment — 2026-10: where DEV and staging run
+
+The branch, tag and pin model above is unchanged. What changed is where the two
+non-production clusters live and how the retained staging is installed:
+
+- **Both run in the local VM lab** ([`LOCAL_VM_LAB.md`](../../development/LOCAL_VM_LAB.md)),
+  not on rented servers. DEV is installed exactly as above (`--env dev`, Flux follows
+  `development`). Nothing in CI connects to either cluster — Flux pulls the pinned images
+  and the release poller pulls signed tags — so a cluster behind NAT loses nothing.
+- **The retained staging is installed `--env production` at production's release, opted
+  into release candidates** (`auto_update_include_prereleases`), instead of `--env staging`.
+  A cut RC then reaches it through the path production takes — signed tag verified on the
+  node, host-migrations, database migrations, image roll — in place, from production's
+  version. The `staging` channel (Flux `ref.semver`) rolls the overlay but skips that path,
+  which is where upgrades break. `--env staging` stays supported for installs that want
+  auto-follow.

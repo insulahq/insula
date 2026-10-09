@@ -200,8 +200,14 @@ lab_worker_leave() {
   _lab_worker_node_exists && problems+=("the Kubernetes node still exists")
   [[ -z "$(lab_api GET /admin/nodes | jq -r --arg n "$W_VM" '.data[]? | select(.name == $n) | .name')" ]] \
     || problems+=("the platform's inventory still lists it")
+  # The platform's node-sync reconciler removes the Longhorn node a tick or two after
+  # Longhorn sees the node gone (60 s ticks) — give it that long.
+  for i in $(seq 1 18); do
+    _lab_s1 "k3s kubectl -n longhorn-system get nodes.longhorn.io ${W_VM} >/dev/null 2>&1" || break
+    sleep 10
+  done
   _lab_s1 "k3s kubectl -n longhorn-system get nodes.longhorn.io ${W_VM} >/dev/null 2>&1" \
-    && problems+=("Longhorn still has its node object")
+    && problems+=("Longhorn still has its node object 3 minutes after the removal")
   [[ "$(_lab_s1 "k3s kubectl get nodes --no-headers | awk '\$2 != \"Ready\"' | wc -l" 2>/dev/null)" == 0 ]] \
     || problems+=("a server is not Ready")
   if (( ${#problems[@]} > 0 )); then

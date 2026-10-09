@@ -39,7 +39,7 @@ _lab_smoke_network() {
   scp -q -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     "$REPO/scripts/smoke-test-cluster-network.sh" "root@${s1}:${d}/" || return 1
   _vssh "$s1" "trap 'rm -rf $d' EXIT; cd $d && KUBECONFIG=/etc/rancher/k3s/k3s.yaml timeout 1200 bash smoke-test-cluster-network.sh > net.log 2>&1; rc=\$?; \
-      grep -E 'FAIL|summary' net.log | tail -30; exit \$rc"
+      grep -E '^\[FAIL\]|summary' net.log; exit \$rc"
 }
 
 # lab_smoke <name> [api|network] — both by default; 0 only when everything passed.

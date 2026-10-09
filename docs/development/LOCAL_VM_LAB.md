@@ -1,6 +1,7 @@
 # Local VM Lab — retained DEV and staging clusters on one host
 
-> **Status:** in progress — design agreed, Phase 0 (networking) verified, Phase 1 under way.
+> **Status:** built — services VM, local DEV and local staging (with its worker) run; the first
+> release candidate through staging and the LAN-client checks are open (see *Phases*).
 > **Supersedes:** [`LOCAL_MULTINODE_VM_SETUP.md`](./LOCAL_MULTINODE_VM_SETUP.md) (never built).
 > **Related:** [`EPHEMERAL_VM_INTEGRATION_TESTING.md`](./EPHEMERAL_VM_INTEGRATION_TESTING.md) — the
 > throw-away per-run tier (`scripts/vm-integration-tests/run.sh`). The lab reuses its machinery
@@ -39,7 +40,7 @@ from where production is*.
 | `lab-runner` | 2 / 2 GB / 20 GB | on demand (integration suites, browser checks) |
 | `lab-dev-1` | 6 / 12 GB / 80 GB | always on, autostarts with the host |
 | `lab-stg-s1..s3` | 4 / 6 GB / 60 GB each | on for release and multi-node work, stopped otherwise |
-| `lab-stg-w1` | 4 / 8 GB / 40 GB | OS installed; joined and removed on demand |
+| `lab-stg-w1` | 4 / 6 GB / 40 GB | OS installed; joined and removed on demand |
 
 Fixed addresses come from DHCP host reservations in each network's definition, keyed on a MAC
 derived from the network and host octet, so a VM always gets the same address back. The third
@@ -122,11 +123,22 @@ the lab's credentials are generated once and kept in the operator's lab state fi
   from production's version. That is the upgrade test, every time, without a fresh baseline.
 - **Baseline:** between release cycles staging sits on the version production runs. After a stable
   release is pulled by production, staging follows.
-- **Worker:** `lab-stg-w1` keeps its OS but is not part of the cluster by default. `lab.sh worker
-  join` pre-enrolls it (`ClusterPendingPeer`) and joins it with `bootstrap.sh --join-as worker`;
-  `lab.sh worker leave` removes it through the platform's node-removal flow. Both flows get
-  exercised whenever the worker is used.
+- **Worker:** `lab-stg-w1` keeps its OS but is not part of the cluster by default. Both flows are
+  the operator's, driven through the admin API over the cluster's ingress:
+  - `lab.sh worker join` pre-enrols the node (`POST /admin/cluster/pending-peers`), fetches the
+    admin panel's join script (`POST /admin/cluster/bootstrap-command/<name>`: the signed `insula`
+    CLI of the cluster's release, verified against the key the cluster pins, then
+    `insula bootstrap --join-as worker` with a short-lived token) and runs it on the node as root,
+    as pasted. The one edit is the one the script's note asks for: the servers' private-network
+    CIDR on the join line. Checked: the bootstrap transcript (log gate), join invariance, node
+    hygiene, the node Ready, the platform's inventory, the pre-enrolment claimed.
+  - `lab.sh worker leave` drains and deletes the node (`POST /admin/nodes/<name>/drain`, then
+    `…/delete` — the host stays running, as the admin panel says), runs the runbook's host step
+    (`k3s-agent-uninstall.sh`) and stops the VM. Checked: the node gone from Kubernetes, Longhorn
+    and the inventory, every server Ready.
 - **Integration suites** run from `lab-runner` against either cluster, as on the throw-away tier.
+- **Post-deploy checks:** `lab.sh smoke dev|stg` runs the API smoke (`scripts/smoke-test.sh`) from
+  `lab-svc` — lab names, lab CA — and the cluster-network smoke (`make smoke`) on the first server.
 
 ## Certificates
 
@@ -177,13 +189,14 @@ creation and rewritten after any platform reinstall on the same VM.
 
 ## Capacity
 
-Host: 20 cores, 62 GB RAM. VMs hold their full allocation (guest page cache keeps it; free-page
-reporting only returns truly free pages — measured: DEV's qemu at 12.3 of 12 GB). Always on: DEV +
-svc = 14 GB. Staging adds 18 GB (3 × 6 GB; three 8 GB servers would have left ~3 GB free) while it
-runs; measured with everything up: 11.8 GB of the host still available. Free-page reporting and KSM
-return well below the ceilings in practice, but staging stays on-demand, and `lab.sh up stg`
-refuses to start when the host's available memory minus staging's ceilings would drop below the
-margin (default 8 GB).
+Host: 20 cores, 62 GB RAM, shared with other work. VMs hold their full allocation (guest page
+cache keeps it; free-page reporting only returns truly free pages — measured: DEV's qemu at 12.3 of
+12 GB). Always on: DEV + svc = 14 GB. Staging is 18 GB (3 × 6 GB) plus 6 GB for the worker.
+
+**DEV and staging take turns.** The host holds one of them with the memory margin, not both:
+`lab.sh up stg` stops a running DEV first and records that; `lab.sh down stg` starts DEV again;
+`lab.sh up dev` is refused while staging runs. Every start also refuses when the host's available
+memory minus the VMs' ceilings would drop below the margin (default 8 GB).
 
 ## Operator prerequisites
 
@@ -199,10 +212,11 @@ margin (default 8 GB).
 | Command | Does |
 |---|---|
 | `lab.sh up svc` | networks + the services VM (idempotent) |
-| `lab.sh up dev` / `lab.sh up stg` | create the cluster if it does not exist, otherwise start it |
-| `lab.sh down dev` / `lab.sh down stg` | stop (VMs, OS and platform kept) |
+| `lab.sh up dev` / `lab.sh up stg` | create the cluster if it does not exist, otherwise start it; `up stg` stops DEV first |
+| `lab.sh down dev` / `lab.sh down stg` | stop (VMs, OS and platform kept); `down stg` starts DEV again |
+| `lab.sh worker join` / `worker leave` | add or remove `lab-stg-w1` through the platform's flows |
+| `lab.sh smoke dev\|stg [api\|network]` | API smoke + cluster-network smoke against a running cluster |
 | `lab.sh status` | VMs, addresses, cluster health, cache status |
-| `lab.sh worker join` / `worker leave` | add or remove `lab-stg-w1` through the real flows |
 | `lab.sh ca-root` | print the lab CA root for import |
 
 Configuration: `scripts/vm-integration-tests/lab.env` (operator-local, git-ignored), from
@@ -219,8 +233,8 @@ lab's. `run.sh` stops older throw-away runs before it starts — it never touche
 | 1 | `lab.sh`: config, three routed networks, the persistent services VM (PowerDNS zones, step-ca, S3, apt cache), DEV create/start/stop, discard | done — services VM and DEV built and checked live |
 | 2 | Certificates durable under Flux; CA trust in every platform component that makes outbound TLS calls | done for the install path — Flux running, all public certificates (incl. mail) from the lab CA; `bootstrap.sh --trust-ca` now seeds Stalwart's trust too |
 | 3 | DEV parity checklist (smoke test, browser sign-in, Flux auto-deploy of a real push, mail, backups, DNS provider, Dex); run beside the remote DEV for a few days | done (smoke 46/0, browser, auto-deploy of a real push, mail TLS, backups, DNS) — soak running |
-| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | install done (3 servers: Ubuntu 24.04 / Debian 12 / Rocky 9 at v2026.10.6, smoke 46/0); worker join/leave and the first RC upgrade open |
-| 5 | Cutover: docs (ADR-053's DEV description, this tier's docs), retire the remote DEV server | — |
+| 4 | Staging: production-mode install at production's version, prerelease opt-in, worker join/leave; first job — the next release candidate | install done (3 servers: Ubuntu 24.04 / Debian 12 / Rocky 9 at v2026.10.6); worker (Debian 12) joined and removed twice through the admin flows, the second time on the reused VM; smoke with the worker in: API 46/0, cluster network 41/0. Found and fixed on the way: removed nodes left their Longhorn node behind, `make smoke` false alarms, the join's needless pre-authorisation warning, the log gate missing `insula bootstrap`'s transcript. First RC upgrade open |
+| 5 | Cutover: docs (ADR-053's DEV description, this tier's docs), retire the remote DEV server | docs done (ADR-053 amendment); nothing in CI talks to the remote DEV, so retiring it is the operator cancelling the server |
 
 ## Non-goals
 
