@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.7-rc.5] - 2026-10-09
+
 ### Added
 
 - **Automatic updates are real.** The toggle used to be stored and read by nothing. Now it applies
