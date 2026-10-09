@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.7-rc.3] - 2026-10-09
+
 ### Added
 
 - **Automatic mail-server bans now expire — after 24 hours by default.** The mail server blocks
