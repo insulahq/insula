@@ -4700,7 +4700,7 @@ export const platformUpgradeRuns = pgTable('platform_upgrade_runs', {
   excludedNodes: jsonb('excluded_nodes').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   nodes: jsonb('nodes').$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   message: text('message'),
-  initiatedBy: uuid('initiated_by').references(() => users.id, { onDelete: 'set null' }),
+  initiatedBy: varchar('initiated_by', { length: 36 }).references(() => users.id, { onDelete: 'set null' }),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   stepStartedAt: timestamp('step_started_at', { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),

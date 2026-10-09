@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS "platform_upgrade_runs" (
   -- Last per-node view the run recorded: [{ node, state, cliVersion, detail }].
   "nodes" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "message" text,
-  "initiated_by" uuid REFERENCES "users"("id") ON DELETE SET NULL,
+  "initiated_by" varchar(36) REFERENCES "users"("id") ON DELETE SET NULL,
   "started_at" timestamptz NOT NULL DEFAULT now(),
   "step_started_at" timestamptz NOT NULL DEFAULT now(),
   "finished_at" timestamptz,
