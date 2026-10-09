@@ -80,6 +80,15 @@ describe('assessKubernetesNode', () => {
     expect(assessKubernetesNode(up(T, finished), undefined, T, [], new Map()).state).toBe('queued');
   });
 
+  it('a worker whose job waits for the servers (not cordoned yet) is queued, not updating; once cordoned it is updating', () => {
+    const waiting = assessKubernetesNode(up('v1.36.2+k3s1'), { active: 1, failed: 0, succeeded: 0 }, T, [], HASH);
+    expect(waiting.state).toBe('queued');
+    expect(waiting.detail).toMatch(/waits for its turn \(servers first, then workers\)/);
+    const going = assessKubernetesNode({ ...up('v1.36.2+k3s1'), unschedulable: true }, { active: 1, failed: 0, succeeded: 0 }, T, [], HASH);
+    expect(going.state).toBe('updating');
+    expect(going.detail).toMatch(/Upgrading Kubernetes v1\.36\.2\+k3s1 →/);
+  });
+
   it('a node restarting k3s mid-job is updating, not waiting or failed', () => {
     const n = assessKubernetesNode({ name: 'sv1', ready: false, kubeletVersion: 'v1.36.2+k3s1' }, { active: 1, failed: 0, succeeded: 0 }, T, [], HASH);
     expect(n.state).toBe('updating');

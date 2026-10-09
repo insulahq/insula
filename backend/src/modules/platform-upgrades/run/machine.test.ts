@@ -171,6 +171,16 @@ describe('advanceRun — update-services and finish', () => {
     expect(c.calls.applied).toEqual(['finish']);
   });
 
+  it('entering finish writes that step\'s own node rows with the claim — not the previous step\'s "Ready"', async () => {
+    const prev = ['sv1', 'sv2'].map((node) => ({ node, state: 'ready', cliVersion: TARGET, detail: 'On the release.', hostChanges: null }));
+    // The nodes still report the old CLI: for finishing host changes, nobody is done.
+    const c = harness({ pending: null, installed: TARGET, dbStep: 'update-services' });
+    expect(await advanceRun(run({ step: 'update-services', nodes: prev }), c.deps)).toBe('finish');
+    const claim = c.calls.patches.find((p) => p.step === 'finish');
+    expect(claim?.nodes).toHaveLength(2);
+    expect((claim?.nodes as Array<{ state: string }>).some((n) => n.state === 'ready')).toBe(false);
+  });
+
   it('crash recovery: step claimed but nothing re-pinned → re-pins now, once', async () => {
     const h = harness({ pending: null, installed: '2026.10.7-rc.3', dbStep: 'update-services' });
     expect(await advanceRun(run({ step: 'update-services' }), h.deps)).toBe('update-services');
@@ -240,6 +250,13 @@ describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
     expect(h.calls.progress.at(-1)?.[0]).toBe(75);
   });
 
+  it('entering the step writes its own rows — every node waiting its turn, none "Ready" from the host-change step', async () => {
+    const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish', nodes: kNodes('v1.36.2+k3s1', K) });
+    await advanceRun(run({ step: 'finish', kubernetesVersion: K }), h.deps);
+    const claim = h.calls.patches.find((p) => p.step === 'upgrade-kubernetes');
+    expect((claim?.nodes as Array<{ state: string }>).map((n) => n.state)).toEqual(['queued', 'queued']);
+  });
+
   it('a Kubernetes step that cannot start fails the run, saying the services and host changes are done', async () => {
     const h = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStep: 'finish', k8sApplyOk: false });
     await advanceRun(run({ step: 'finish', kubernetesVersion: K }), h.deps);
@@ -306,7 +323,8 @@ describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
   });
 
   it('a node still retrying after failures is updating, not failed — the Plans are not deleted under it', async () => {
-    const h = harness({ nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 4, succeeded: 0 } } });
+    const retrying = [kNode('sv1', K), { ...kNode('sv2', 'v1.36.2+k3s1'), unschedulable: true }];
+    const h = harness({ nodes: retrying, dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 4, succeeded: 0 } } });
     await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps);
     expect(h.calls.k8sDeleted).toBe(0);
     expect(h.calls.finalized).toEqual([]);
