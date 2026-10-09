@@ -119,7 +119,7 @@ export async function channelCatchUpTick(deps: CatchUpDeps): Promise<string | nu
     const failing = pf.gates.filter((g) => g.status === 'fail');
     await deps.notify(
       `channel-catch-up:${version}:preflight:${failing.map((g) => g.id).sort().join(',')}`,
-      `The nodes did not start catching up with ${version}: pre-flight has ${failing.length} blocking failure(s). They update on their own hourly check meanwhile.`,
+      `The nodes did not start catching up with ${version}: pre-flight has ${failing.length} blocking failure(s). They update on their own update check meanwhile.`,
       failing.map((g) => plainText(`${g.label}: ${g.detail}`)),
     );
     return null;

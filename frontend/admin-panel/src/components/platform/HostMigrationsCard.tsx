@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Loader2, Externa
 import { useEffect, useId, useState } from 'react';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import type { HostMigrationNodeStatus, HostMigrationItem } from '@insula/api-contracts';
+import { nodeChecksForUpdatesHourly } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import NodeText from '@/components/nodes/NodeText';
 
@@ -248,8 +249,12 @@ export default function HostMigrationsCard() {
       {res && res.nodes.some((n) => n.cliBehind === true) && (
         <p className="mb-2 text-xs text-gray-600 dark:text-gray-300" data-testid="host-migrations-catching-up">
           {res.nodes.filter((n) => n.cliBehind === true).length} node(s) still run an older CLI. Each applies
-          {res.targetVersion ? ` ${res.targetVersion}'s` : " this release's"} host changes when its hourly update
-          runs — nothing to do.
+          {res.targetVersion ? ` ${res.targetVersion}'s` : " this release's"} host changes on its next update
+          check
+          {res.nodes.some((n) => n.cliBehind === true && !nodeChecksForUpdatesHourly(n.cliVersion))
+            ? <> — daily on a CLI from before 2026.10.7, so up to a day (<span className="font-mono">systemctl start platform-ops-update.service</span> on a node applies them now)</>
+            : ', within the hour'}
+          . Nothing is wrong.
         </p>
       )}
 

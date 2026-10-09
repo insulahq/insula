@@ -21,7 +21,7 @@ describe('interpretHostMigrationMode', () => {
     const r = interpretHostMigrationMode('enforce');
     expect(r.note).toMatch(/updates each node first/i);
     expect(r.note).toMatch(/before the services/i);
-    expect(r.note).toMatch(/excluded node catches up on its hourly update timer/i);
+    expect(r.note).toMatch(/excluded node catches up on its own update check/i);
     expect(r.note).not.toMatch(/daily|25 h/i);
   });
 

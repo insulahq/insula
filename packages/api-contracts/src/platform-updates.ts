@@ -461,6 +461,24 @@ export const hostMigrationNodeStatusSchema = z.object({
 });
 export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
 
+/**
+ * A node checks for its update hourly from CLI 2026.10.7 (host migration
+ * 2026.10.7/0002); before that, daily with up to an hour of jitter. A node on an
+ * older CLI — or one too old to report its version — can take up to a day to
+ * catch up after the services moved on (the first upgrade from 2026.10.6).
+ */
+const HOURLY_UPDATE_CHECK_SINCE = [2026, 10, 7] as const;
+
+export function nodeChecksForUpdatesHourly(cliVersion: string | null | undefined): boolean {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(cliVersion ?? '');
+  if (!m) return false;
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < HOURLY_UPDATE_CHECK_SINCE.length; i++) {
+    if (v[i] !== HOURLY_UPDATE_CHECK_SINCE[i]) return (v[i] ?? 0) > HOURLY_UPDATE_CHECK_SINCE[i];
+  }
+  return true;
+}
+
 export const hostMigrationStatusResponseSchema = z.object({
   nodes: z.array(hostMigrationNodeStatusSchema),
   /** True when ANY node has a failed, blocked or invalid migration, or refused

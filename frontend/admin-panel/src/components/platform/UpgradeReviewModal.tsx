@@ -186,7 +186,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
                   <div className="font-medium text-gray-900 dark:text-gray-100">Nodes that are not Ready</div>
                   <p className="mt-1 text-gray-700 dark:text-gray-300">
                     The upgrade updates every node before the services. Upgrade without a node that is down, and it
-                    catches up on its own hourly update when it is back.
+                    catches up on its own update check when it is back.
                   </p>
                   <ul className="mt-2 space-y-1">
                     {[...new Set([...notReady, ...excluded])].map((name) => (

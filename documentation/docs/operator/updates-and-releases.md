@@ -178,12 +178,21 @@ A cluster further behind is told to use `insula cluster upgrade`, which steps
 one minor version at a time. If the step fails, the services and host changes
 are already done; the run says on which node the Kubernetes upgrade stopped.
 
+### Upgrading from 2026.10.6
+
+A cluster on 2026.10.6 upgrades with that release's own upgrade, which predates the
+run: the services roll first, and each node follows on its own update check, which
+runs **daily** on a 2026.10.6 node (up to a day). The new release's CLI then makes
+that check hourly, and every later upgrade runs nodes first, as described above.
+Meanwhile **Host migrations** lists the nodes as catching up, which is not a fault.
+To skip the wait, run `systemctl start platform-ops-update.service` on each node.
+
 ### Upgrading with a node down
 
 The run updates **every** node, so a node that is not Ready blocks the upgrade:
 the pre-flight check **Every node can take part** fails and names it. If the node
 will not be back soon, tick **Upgrade without** next to it in the review dialog.
-The run then leaves it out, and the node updates itself through its own hourly
+The run then leaves it out, and the node updates itself through its own
 update check once it is back. It runs no release ahead of the cluster: the check
 only ever fetches the release the cluster runs. Kubernetes is the exception: a
 node left out of a run that also upgraded Kubernetes keeps its Kubernetes

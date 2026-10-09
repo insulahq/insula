@@ -301,6 +301,20 @@ describe('ClusterNodes — the node CLI version (ADR-064)', () => {
     expect(screen.getByTestId('node-cli-version-sv2')).toHaveTextContent(/insula 2026\.10\.7-rc\.2\s*update pending/);
   });
 
+  it('"update pending" says when the node checks: hourly on a 2026.10.7 CLI, daily (up to a day) before it', () => {
+    role = 'super_admin';
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'sv1' }), makeNode({ name: 'sv2' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: undefined });
+    hostStatus = [
+      { node: 'sv1', cliVersion: '2026.10.7', cliBehind: true },
+      { node: 'sv2', cliVersion: null, cliBehind: true },
+    ];
+    renderPage();
+    const hint = (node: string) => screen.getByTestId(`node-cli-version-${node}`).querySelector('[title]')?.getAttribute('title') ?? '';
+    expect(hint('sv1')).toMatch(/on its own hourly check\.$/);
+    expect(hint('sv2')).toMatch(/on its own daily check \(a CLI from before 2026\.10\.7\) — up to a day\.$/);
+  });
+
   it('a role without the upgrade API sees the page without the CLI column (no 403 request)', () => {
     role = 'admin';
     hostStatusEnabled.length = 0;
