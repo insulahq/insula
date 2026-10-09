@@ -56,7 +56,10 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
       waitForRollout: vi.fn(async () => ({ ok: true as const })),
     },
     node: { cordon: vi.fn(async () => {}) },
-    upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
+    upgrade: {
+      run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })),
+      status: vi.fn(async () => ({ ok: true, lines: [] })),
+    },
     rollback: { run: vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'nothing to roll back' })) },
     ...over,
   };
@@ -836,16 +839,48 @@ describe('upgradeCommand', () => {
     const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'manual upgrade 2026.6.2 → 2026.7.0', proceed: true, applied: false, gitRepository: 'hosting-platform-production', summary: 'DRY-RUN: would re-pin hosting-platform-production → v2026.7.0' }));
     const { deps, out } = fakeDeps({ upgrade: { run } });
     expect(await upgradeCommand(['--version', '2026.7.0'], deps)).toBe(0);
-    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: false });
+    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: false, excludeNodes: [], direct: false });
     expect(out.join('\n')).toMatch(/DRY-RUN/);
   });
 
-  it('--apply re-pins and reports success (exit 0)', async () => {
-    const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'hosting-platform-production', summary: 're-pinned hosting-platform-production → v2026.7.0' }));
+  it('--apply starts the run (nodes first) and points at --status (exit 0)', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'hosting-platform-production', runId: 'r1', summary: 'upgrade to 2026.7.0 started (run r1): every node takes the release first' }));
     const { deps, out } = fakeDeps({ upgrade: { run } });
     expect(await upgradeCommand(['--version', '2026.7.0', '--apply'], deps)).toBe(0);
-    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: true });
-    expect(out.join('\n')).toMatch(/re-pinned/);
+    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: '2026.7.0', apply: true, excludeNodes: [], direct: false });
+    expect(out.join('\n')).toMatch(/every node takes the release first/);
+    expect(out.join('\n')).toMatch(/insula upgrade --status/);
+  });
+
+  it('--exclude-node (repeatable) and --direct reach the ops; a bad node name is refused', async () => {
+    const run = vi.fn(async () => ({ ok: true, action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'g', summary: 're-pinned g → v2026.7.0 — services only (break-glass)' }));
+    const { deps } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand(['--apply', '--exclude-node', 'w1', '--exclude-node', 'w2', '--direct'], deps)).toBe(0);
+    expect(run).toHaveBeenCalledWith({ mode: 'manual', requestedVersion: undefined, apply: true, excludeNodes: ['w1', 'w2'], direct: true });
+    expect(await upgradeCommand(['--apply', '--exclude-node', 'Bad_Name'], deps)).toBe(2);
+    expect(await upgradeCommand(['--apply', '--exclude-node'], deps)).toBe(2);
+  });
+
+  it('--direct without --apply is refused (it only changes how an apply works)', async () => {
+    const { deps } = fakeDeps();
+    expect(await upgradeCommand(['--direct'], deps)).toBe(2);
+  });
+
+  it('a blocking pre-flight → exit 1, naming each blocking gate', async () => {
+    const run = vi.fn(async () => ({ ok: false, errorCode: 'PREFLIGHT_FAILED', action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: false, gitRepository: 'g', summary: 'pre-flight has 1 blocking failure(s)', blocking: ['Every node can take part: sv2 is not Ready'] }));
+    const { deps, err } = fakeDeps({ upgrade: { run } });
+    expect(await upgradeCommand(['--apply'], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/PREFLIGHT_FAILED[\s\S]*✗ Every node can take part: sv2 is not Ready/);
+  });
+
+  it('--status prints the run, or says there is none', async () => {
+    const status = vi.fn(async () => ({ ok: true, lines: ['run r1: 2026.6.2 → 2026.7.0 · running · step prepare-nodes'] }));
+    const { deps, out } = fakeDeps({ upgrade: { run: vi.fn(), status } });
+    expect(await upgradeCommand(['--status'], deps)).toBe(0);
+    expect(out.join('\n')).toMatch(/step prepare-nodes/);
+    const empty = fakeDeps({ upgrade: { run: vi.fn(), status: vi.fn(async () => ({ ok: true, lines: [] })) } });
+    expect(await upgradeCommand(['--status'], empty.deps)).toBe(0);
+    expect(empty.out.join('\n')).toMatch(/no upgrade run recorded/);
   });
 
   it('--apply but the re-pin did not land → exit 1', async () => {

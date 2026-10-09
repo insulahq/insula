@@ -90,6 +90,14 @@ describe('advanceRun — prepare-nodes', () => {
     expect(calls.progress.at(-1)?.[0]).toBe(33);
   });
 
+  it('services already on the target (a release channel, or a break-glass re-pin) → no second re-pin', async () => {
+    for (const w of [{ installed: TARGET, pending: null }, { installed: '2026.10.7-rc.3', pending: TARGET }]) {
+      const { calls, deps } = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], ...w });
+      expect(await advanceRun(run(), deps)).toBe('update-services');
+      expect(calls.services).toBe(0);
+    }
+  });
+
   it('a Cancel that won the race: nodes ready, but the services are NOT re-pinned', async () => {
     const { calls, deps } = harness({ statuses: [st('sv1', TARGET), st('sv2', TARGET)], dbStatus: 'failed' });
     expect(await advanceRun(run(), deps)).toBe('prepare-nodes');

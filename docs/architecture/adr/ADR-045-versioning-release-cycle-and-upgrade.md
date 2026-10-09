@@ -9,6 +9,19 @@ valid SemVer and stays in lockstep with `package.json`; version ordering must
 use semver-aware comparison, never raw string sort. Operator-approved; mirrored
 in the holistic plan §15 and `CONTRIBUTING.md`.
 
+2026-10-09 — **[ADR-064](ADR-064-one-upgrade-procedure-nodes-first.md) supersedes
+the upgrade procedure here** (Decisions 7, 11/12 for the auto path, 19, the W10c
+delivery timing and the W13 re-pin as "the upgrade"): an upgrade is one run —
+every node takes the release first (pushed through the system-upgrade-controller),
+then the services re-pin, then after-services host changes. The self-upgrade
+timer (Decision 19) is an hourly safety net, without the GitHub-latest fallback.
+Automatic updates (Decision 7) apply verified **stable**, non-BREAKING releases
+only, inside an operator maintenance window, through the same run and pre-flight;
+Mode B's release candidates are applied by hand. Decision 7's "staging ON" default
+no longer holds: automatic updates are off until an operator turns them on and
+sets a window. `insula upgrade --apply` starts the same run (`--direct` keeps the
+re-pin alone as break-glass).
+
 **Amends:** the earlier cluster-upgrade roadmap (carries forward 17 of its 20
 locked decisions; amends 3 — see §6).
 

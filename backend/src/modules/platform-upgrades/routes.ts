@@ -22,7 +22,7 @@ import { readPostflightState } from './collect-postflight.js';
 import { readHostMigrationsPreview } from './host-migrations-preview.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
 import { readUpgradeChanges } from './release-changes.js';
-import { startUpgradeRun, abortActiveRun, cancelPreparingRun } from './run/real.js';
+import { startRunWithTask, abortActiveRun, cancelPreparingRun } from './run/real.js';
 import { getActiveRun, getRun, listRuns, toUpgradeRun } from './run/store.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
@@ -53,11 +53,10 @@ async function startRunFor(
   sub: string | null,
   r: Awaited<ReturnType<typeof runUpgrade>>,
   excluded: string[],
-  log: FastifyInstance['log'],
 ) {
   const target = r.decision.target as string;
   const installed = (await dbSettings(db).get('installed_platform_version'))?.trim() || null;
-  const run = await startUpgradeRun(db, k8s, {
+  const run = await startRunWithTask(db, k8s, {
     fromVersion: installed,
     toVersion: target,
     mode: 'manual',
@@ -65,27 +64,6 @@ async function startRunFor(
     initiatedBy: sub && UUID_RE.test(sub) ? sub : null,
   });
   const started = run.status === 'running';
-  // A re-openable Task Center task for the run, so the operator can close the
-  // page and reopen live progress from the Tasks chip. refId = target version.
-  // The run finalizes it. Best-effort: a task-center failure must NEVER fail an
-  // upgrade that already started.
-  if (started) {
-    try {
-      await taskCenter.start(db, {
-        kind: 'platform.upgrade',
-        refId: target,
-        scope: 'system',
-        userId: null,
-        label: toSafeText(`Platform upgrade → ${target}`),
-        target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: target } },
-        progressPct: 0,
-        progressText: toSafeText('Preparing nodes'),
-        details: { toVersion: target, runId: run.id, excludedNodes: excluded, initiatedBy: sub },
-      });
-    } catch (err) {
-      log.error({ err }, 'platform-upgrade task-center start failed (upgrade still started)');
-    }
-  }
   return {
     action: r.decision.action,
     target,
@@ -277,7 +255,19 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   app.post('/admin/platform/upgrade', {
     schema: {
       tags: ['Platform Updates'], summary: 'Plan or apply a platform upgrade (Flux re-pin)', security: [{ bearerAuth: [] }],
-      body: { type: 'object', properties: { version: { type: 'string' }, apply: { type: 'boolean' } }, additionalProperties: false },
+      // EVERY accepted field must be listed: with additionalProperties:false Fastify
+      // strips an undeclared one before the handler's Zod parse sees it — that
+      // turned "Upgrade without <node>" into "upgrade every node" (refused on the
+      // down node's pre-flight). routes.test.ts sends each field through this.
+      body: {
+        type: 'object',
+        properties: {
+          version: { type: 'string' },
+          apply: { type: 'boolean' },
+          excludeNodes: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        },
+        additionalProperties: false,
+      },
       response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
         action: { type: 'string' }, target: { type: 'string', nullable: true }, reason: { type: 'string' },
         proceed: { type: 'boolean' }, applied: { type: 'boolean' }, gitRepository: { type: 'string', nullable: true },
@@ -318,7 +308,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       const settings = dbSettings(app.db);
       const r = await runUpgrade(settings, k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply: false });
       if (apply && r.decision.proceed && r.decision.target) {
-        return success(await startRunFor(app.db, k8s, request.user?.sub ?? null, r, excludeNodes, app.log));
+        return success(await startRunFor(app.db, k8s, request.user?.sub ?? null, r, excludeNodes));
       }
       // Attach the interruption preview to a DRY-RUN so the confirm modal can
       // show it before the operator applies. Best-effort — a preview failure must

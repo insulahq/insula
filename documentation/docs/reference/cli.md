@@ -28,7 +28,8 @@ platform-ops <command> [args]
 | `cluster diagnostics` | Best-effort support bundle (nodes, pods, events, flux) |
 | `cluster upgrade --version vX.Y.Z+k3sN [--apply]` | Generate k3s upgrade plans; dry-run by default, `--apply` rolls the nodes. Skipping a k3s minor is refused |
 | `node cordon\|uncordon <name>` | Node maintenance without the panel |
-| `upgrade [--version X.Y.Z] [--apply]` | Plan/apply a **platform** upgrade (re-pins the GitOps source tag) |
+| `upgrade [--version X.Y.Z] [--apply] [--exclude-node N]… [--direct]` | Plan or start a **platform** upgrade. The dry-run prints the plan and the pre-flight; `--apply` runs the same pre-flight and starts the same run as the admin panel (every node first, then the services). `--exclude-node` upgrades without a node that is down. `--direct` is break-glass for when platform-api is down: it re-pins the services only, and the nodes catch up on their hourly check |
+| `upgrade --status` | Show the upgrade run in flight, or the last one, with each node's state |
 | `rollback [--apply] [--restore-data]` | Undo the most recent upgrade. `--restore-data` also reverts storage snapshots — **destructive** |
 | `migrations list [--json]` | Platform migrations and their applied status |
 | `migrations apply [--dry-run]` | Apply pending platform migrations (DB + cluster) |

@@ -342,11 +342,27 @@ export interface UpgradeRunResult {
   readonly gitRepository: string | null;
   readonly summary: string;
   readonly errorCode?: string;
+  /** ADR-064: the run an apply started. */
+  readonly runId?: string;
+  /** Pre-flight gates that block (label: detail), when they did. */
+  readonly blocking?: readonly string[];
 }
 
 export interface UpgradeOps {
-  /** Plan (+ optionally apply) a platform upgrade by re-pinning the Flux source. */
-  run: (opts: { mode: 'manual' | 'auto'; requestedVersion?: string; apply: boolean }) => Promise<UpgradeRunResult>;
+  /**
+   * Plan, or start, a platform upgrade. An apply runs the pre-flight and starts
+   * the same run the admin panel starts (ADR-064 §9) — nodes first; `direct`
+   * is the break-glass services-only re-pin for when platform-api cannot drive a run.
+   */
+  run: (opts: {
+    mode: 'manual' | 'auto';
+    requestedVersion?: string;
+    apply: boolean;
+    excludeNodes?: readonly string[];
+    direct?: boolean;
+  }) => Promise<UpgradeRunResult>;
+  /** The run in flight, else the latest one, as printable lines (none → []). */
+  status: () => Promise<{ readonly ok: boolean; readonly lines: readonly string[]; readonly errorCode?: string }>;
 }
 
 export interface RollbackRunResult {

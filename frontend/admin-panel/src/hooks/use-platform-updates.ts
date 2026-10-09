@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { PlatformChangelogResponse } from '@insula/api-contracts';
+import type { PlatformChangelogResponse, MaintenanceWindow, AutoUpdateStatus } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 interface PlatformVersionResponse {
@@ -22,6 +22,10 @@ interface PlatformVersionResponse {
     readonly running: string;
     readonly available: string | null;
     readonly availableVerifyStatus: string | null;
+    /** ADR-064 §7: when automatic updates may act (null = none: they never act). */
+    readonly maintenanceWindow?: MaintenanceWindow | null;
+    /** What automatic updates did last, and why. */
+    readonly autoUpdateStatus?: AutoUpdateStatus | null;
   };
 }
 
@@ -83,10 +87,11 @@ export function useCheckForUpdates() {
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (autoUpdate: boolean) =>
+    /** `maintenanceWindow` omitted = unchanged; null = cleared. */
+    mutationFn: (vars: { readonly autoUpdate: boolean; readonly maintenanceWindow?: MaintenanceWindow | null }) =>
       apiFetch('/api/v1/admin/platform/update-settings', {
         method: 'PUT',
-        body: JSON.stringify({ autoUpdate }),
+        body: JSON.stringify(vars),
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform-version'] }),
   });

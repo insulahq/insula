@@ -172,6 +172,37 @@ update check once it is back. It runs no release ahead of the cluster: the check
 only ever fetches the release the cluster runs. If a node goes down *during* step 1,
 the run waits for it. Cancel, then start the upgrade again without it.
 
+## Automatic updates
+
+**Automatic updates** (Platform Settings → Updates, `super_admin`) apply a new
+release for you, through the same run and the same pre-flight checks as a manual
+upgrade. They act only when all of this holds:
+
+- the release is **verified** and **stable** — never a release candidate, never a
+  release whose notes carry a `BREAKING` section (those you read and apply by hand;
+  you are notified);
+- no upgrade is already running;
+- it is inside your **maintenance window** — the weekdays and the start and end
+  time you set, in the time zone you choose. A window whose end is before its
+  start runs past midnight; equal start and end means the whole day. **Without a
+  saved window, automatic updates do nothing**;
+- the pre-flight passes. A failing check skips that window and notifies you once;
+  nothing is forced.
+
+Under the toggle the page says what automatic updates did last and why — for
+example *2026.11.1 applies in the next maintenance window: Sun 02:00–05:00 (UTC)*.
+A started run appears in the upgrade history like any other, marked *automatic*.
+
+### Clusters on a release channel
+
+A cluster whose GitOps source follows a release **channel** (a semver range, as a
+staging cluster set to auto-follow does) rolls the services as soon as a release is
+published, before any upgrade run exists. The platform then starts a run for that
+release by itself, so the nodes follow promptly with the same per-node view. That
+is the one case where the services go first. A node that is down is left out and
+catches up on its own when it is back. For the hosts-first order on staging, run it
+in production mode with release candidates opted in.
+
 ## Rolling back
 
 The Upgrades page also has **Roll back the last upgrade**. It re-pins the GitOps

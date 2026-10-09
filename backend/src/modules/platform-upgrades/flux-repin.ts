@@ -20,6 +20,8 @@ export interface GitRepoRef {
   readonly branch?: string;
   readonly tag?: string;
   readonly commit?: string;
+  /** A release channel: Flux follows the newest tag in this range (staging). */
+  readonly semver?: string;
 }
 
 /** Stable release tag (CalVer): `vX.Y.Z`. */

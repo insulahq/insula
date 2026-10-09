@@ -43,6 +43,16 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
                 availableVerifiedAt: { type: 'string', nullable: true },
                 availableVerifyStatus: { type: 'string', nullable: true },
                 includePrereleases: { type: 'boolean' },
+                maintenanceWindow: {
+                  type: 'object', nullable: true, properties: {
+                    days: { type: 'array', items: { type: 'number' } }, start: { type: 'string' }, end: { type: 'string' }, timeZone: { type: 'string' },
+                  },
+                },
+                autoUpdateStatus: {
+                  type: 'object', nullable: true, properties: {
+                    state: { type: 'string' }, detail: { type: 'string' }, target: { type: 'string', nullable: true }, checkedAt: { type: 'string' },
+                  },
+                },
               },
             },
           },
@@ -99,7 +109,9 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
   });
 
   // PUT /api/v1/admin/platform/update-settings
+  // super_admin only: with ADR-064 §7 the toggle applies upgrades — as strong as Apply.
   app.put('/admin/platform/update-settings', {
+    preHandler: requireRole('super_admin'),
     schema: {
       tags: ['Platform Updates'],
       summary: 'Update auto-update preference',
@@ -110,6 +122,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
         properties: {
           autoUpdate: { type: 'boolean' },
           includePrereleases: { type: 'boolean' },
+          maintenanceWindow: { type: ['object', 'null'] },
         },
       },
       response: {
@@ -121,6 +134,11 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
               properties: {
                 autoUpdate: { type: 'boolean' },
                 includePrereleases: { type: 'boolean' },
+                maintenanceWindow: {
+                  type: 'object', nullable: true, properties: {
+                    days: { type: 'array', items: { type: 'number' } }, start: { type: 'string' }, end: { type: 'string' }, timeZone: { type: 'string' },
+                  },
+                },
               },
             },
           },
@@ -138,7 +156,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
         { field: firstError.path.join('.') },
       );
     }
-    const result = await service.updateSettings(app.db, parsed.data.autoUpdate, parsed.data.includePrereleases);
+    const result = await service.updateSettings(app.db, parsed.data.autoUpdate, parsed.data.includePrereleases, parsed.data.maintenanceWindow);
     return success(result);
   });
 

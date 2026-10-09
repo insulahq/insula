@@ -104,12 +104,17 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
       return run.step;
     }
     if (v.ready.length === v.included.length) {
+      const s = await deps.servicesState();
       // Claim the step BEFORE touching the services: a concurrent Cancel then
       // either wins (nothing re-pinned) or finds the run already past it.
       if (!(await deps.transition('prepare-nodes', { step: 'update-services', stepStartedAt: new Date(deps.now()), message: null }))) {
         return run.step;
       }
       await deps.deletePlan('update');
+      // The services already run the target, or are rolling to it: a release
+      // channel (Flux follows the newest tag — "services first", ADR-064 §9) or a
+      // break-glass re-pin. Re-pinning again would only take a second rescue snapshot.
+      if (s.installed === target || s.pending === target) return 'update-services';
       return (await startServices(deps)) ? 'update-services' : run.step;
     }
     if (elapsed > PREPARE_TIMEOUT_MS) {

@@ -338,7 +338,7 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await updateSettings(db, true);
 
-      expect(result).toEqual({ autoUpdate: true, includePrereleases: false });
+      expect(result).toEqual({ autoUpdate: true, includePrereleases: false, maintenanceWindow: null });
       expect(settingsStore.get('auto_update')).toBe('true');
     });
 
@@ -346,7 +346,7 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await updateSettings(db, false);
 
-      expect(result).toEqual({ autoUpdate: false, includePrereleases: false });
+      expect(result).toEqual({ autoUpdate: false, includePrereleases: false, maintenanceWindow: null });
       expect(settingsStore.get('auto_update')).toBe('false');
     });
 
@@ -354,8 +354,18 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await updateSettings(db, true, true);
 
-      expect(result).toEqual({ autoUpdate: true, includePrereleases: true });
+      expect(result).toEqual({ autoUpdate: true, includePrereleases: true, maintenanceWindow: null });
       expect(settingsStore.get('auto_update_include_prereleases')).toBe('true');
+    });
+
+    it('stores, returns and clears the maintenance window (ADR-064 §7)', async () => {
+      const db = createTrackedDb();
+      const w = { days: [0, 3], start: '02:00', end: '05:00', timeZone: 'Europe/Berlin' };
+      expect((await updateSettings(db, true, undefined, w)).maintenanceWindow).toEqual(w);
+      expect((await getVersionInfo(db)).maintenanceWindow).toEqual(w);
+      // Omitted = unchanged; null = cleared.
+      expect((await updateSettings(db, true)).maintenanceWindow).toEqual(w);
+      expect((await updateSettings(db, true, undefined, null)).maintenanceWindow).toBeNull();
     });
   });
 

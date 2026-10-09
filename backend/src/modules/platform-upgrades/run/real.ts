@@ -8,7 +8,7 @@ import type { Database } from '../../../db/index.js';
 import type { PlatformUpgradeRunRow } from '../../../db/schema.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
-import { finalizeByRef, progressByRef } from '../../tasks/service.js';
+import { finalizeByRef, progressByRef, start as startTask } from '../../tasks/service.js';
 import { dbSettings, runUpgrade } from '../orchestrate.js';
 import { captureUpgradeRescue, realRollbackDeps } from '../rollback.js';
 import { readHostMigrationStatus } from '../host-migration-status.js';
@@ -17,6 +17,17 @@ import { applyNodePlan, deleteNodePlan, listNodeFacts, listPlanJobs } from './k8
 import { updateRun, createRun, getActiveRun, transitionRun, type NewRunInput } from './store.js';
 import { ApiError } from '../../../shared/errors.js';
 import type { RunMachineDeps } from './machine.js';
+
+/**
+ * How the services step re-pins: exactly the run's version, as an already-decided
+ * upgrade. Never the 'auto' decision — that re-derives the target from whatever
+ * release is available NOW, so a newer release verified while the nodes prepared
+ * would roll the services to a version the nodes never took. Automatic updates
+ * decided (stable, not BREAKING, in the window, pre-flight) when they started the run.
+ */
+export function servicesRepinFor(run: Pick<PlatformUpgradeRunRow, 'toVersion'>): { readonly mode: 'manual'; readonly requestedVersion: string } {
+  return { mode: 'manual', requestedVersion: run.toVersion };
+}
 
 export function nodeUpdateImage(env: NodeJS.ProcessEnv = process.env): string {
   return resolvePlatformImage('node-terminal', env);
@@ -47,8 +58,7 @@ export function realRunMachineDeps(db: Database, k8s: K8sClients, run: PlatformU
     deletePlan: (kind) => deleteNodePlan(k8s, kind),
     startServices: async () => {
       const r = await runUpgrade(settings, k8s, {
-        mode: run.mode === 'auto' ? 'auto' : 'manual',
-        requestedVersion: run.toVersion,
+        ...servicesRepinFor(run),
         apply: true,
         rollback: { capture: (input) => captureUpgradeRescue(realRollbackDeps(db, k8s), input).then((c) => ({ ok: c.ok, reason: c.reason })) },
       });
@@ -93,6 +103,41 @@ export async function startUpgradeRun(db: Database, k8s: K8sClients, input: NewR
     return { ...run, status: 'failed', message };
   }
   return run;
+}
+
+/**
+ * Start a run and the re-openable Task Center task that tracks it (refId = the
+ * target; the run finalizes it). The task is best-effort: a task-center failure
+ * must never fail an upgrade that already started. Used by the API's Apply, by
+ * automatic updates and by `insula upgrade --apply`.
+ */
+export async function startRunWithTask(db: Database, k8s: K8sClients, input: NewRunInput): Promise<PlatformUpgradeRunRow> {
+  const run = await startUpgradeRun(db, k8s, input);
+  if (run.status === 'running') {
+    await startTask(db, {
+      kind: 'platform.upgrade',
+      refId: input.toVersion,
+      scope: 'system',
+      userId: null,
+      label: toSafeText(`${input.mode === 'auto' ? 'Automatic upgrade' : 'Platform upgrade'} → ${input.toVersion}`),
+      target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: input.toVersion } },
+      progressPct: 0,
+      progressText: toSafeText('Preparing nodes'),
+      details: { toVersion: input.toVersion, runId: run.id, excludedNodes: [...input.excludedNodes], initiatedBy: input.initiatedBy, mode: input.mode },
+    }).catch((err) => console.error('[upgrade-run] task-center start failed (upgrade still started):', (err as Error).message));
+  }
+  return run;
+}
+
+/** Automatic updates (ADR-064 §7): the caller already checked the window and the pre-flight. */
+export async function startAutoRun(db: Database, k8s: K8sClients, target: string): Promise<{ readonly started: boolean; readonly message: string }> {
+  const installed = (await dbSettings(db).get('installed_platform_version'))?.trim() || null;
+  try {
+    const run = await startRunWithTask(db, k8s, { fromVersion: installed, toVersion: target, mode: 'auto', excludedNodes: [], initiatedBy: null });
+    return run.status === 'running' ? { started: true, message: '' } : { started: false, message: run.message ?? 'the upgrade could not be started' };
+  } catch (err) {
+    return { started: false, message: (err as Error).message.split('\n')[0]?.slice(0, 200) ?? 'the upgrade could not be started' };
+  }
 }
 
 /** End the run (only if still in `fromStep`, when given), then stop its Plans. null = it had moved on. */

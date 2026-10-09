@@ -1,5 +1,37 @@
 import { z } from 'zod';
 
+/** A valid IANA time zone for this runtime. */
+function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ADR-064 §7: when automatic updates may act. Weekdays (0 = Sunday), a start and
+ * an end time ("HH:MM", end before start spans midnight, equal = all day), in an
+ * IANA time zone.
+ */
+export const maintenanceWindowSchema = z.object({
+  days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'start must be HH:MM'),
+  end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'end must be HH:MM'),
+  timeZone: z.string().min(1).max(64).refine(isTimeZone, 'not a known time zone'),
+});
+export type MaintenanceWindow = z.infer<typeof maintenanceWindowSchema>;
+
+/** What automatic updates did last, and why (shown under the toggle). */
+export const autoUpdateStatusSchema = z.object({
+  state: z.enum(['off', 'current', 'held', 'waiting-window', 'blocked', 'running', 'started']),
+  detail: z.string(),
+  target: z.string().nullable(),
+  checkedAt: z.string(),
+});
+export type AutoUpdateStatus = z.infer<typeof autoUpdateStatusSchema>;
+
 export const platformVersionResponseSchema = z.object({
   // Version spine (ADR-045): the three coordinates a consumer should read.
   //   installed — durable record of the release the cluster is on (DB row)
@@ -33,12 +65,18 @@ export const platformVersionResponseSchema = z.object({
   availableVerifiedAt: z.string().nullable(),
   availableVerifyStatus: z.string().nullable(),
   includePrereleases: z.boolean(),
+  /** ADR-064 §7: when automatic updates may act (null = none set: they never act). */
+  maintenanceWindow: maintenanceWindowSchema.nullable().optional(),
+  /** What automatic updates did last, and why. */
+  autoUpdateStatus: autoUpdateStatusSchema.nullable().optional(),
 });
 
 export const updateSettingsSchema = z.object({
   autoUpdate: z.boolean(),
   // Optional: when present, persists the poller's prerelease-inclusion flag.
   includePrereleases: z.boolean().optional(),
+  /** Optional: when present, replaces the maintenance window (null clears it). */
+  maintenanceWindow: maintenanceWindowSchema.nullable().optional(),
 });
 
 export const triggerUpdateResponseSchema = z.object({

@@ -47,11 +47,12 @@ export function runStatusLine(run: UpgradeRun, target: string): string {
   if (run.status === 'failed') return run.message ?? 'The upgrade stopped.';
   const included = run.nodes.filter((n) => n.state !== 'excluded');
   const ready = included.filter((n) => n.state === 'ready').length;
+  const count = included.length > 0 ? ` (${ready}/${included.length})` : '';
   if (run.step === 'prepare-nodes') {
-    return `Updating the nodes to ${target} (${ready}/${included.length}) — the services keep running the current release.`;
+    return `Updating the nodes to ${target}${count} — the services keep running the current release.`;
   }
   if (run.step === 'update-services') return `Rolling the services to ${target}…`;
-  return `Finishing host changes on the nodes (${ready}/${included.length})…`;
+  return `Finishing host changes on the nodes${count}…`;
 }
 
 export default function UpgradeRunSection({ run }: { readonly run: UpgradeRun }) {

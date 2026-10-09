@@ -2262,7 +2262,7 @@ Kubernetes (k3s) upgrades join the same flow; P0 ships first in v2026.10.7-rc.2.
 | P0 | Truthful status: nodes report their CLI version, the gate compares it with the target, gate-detail bugs fixed, review/remediation/interruption texts corrected, stale docs fixed | Done — v2026.10.7-rc.2 |
 | P1 | Node push (`insula-node-update` Plan), `phase:` header + CI guard + phase selection, hourly check timer without the GitHub-latest fallback, `platform_upgrade_runs`, per-node progress, `nodes-ready` gate + override; plus Cancel while preparing, the `platform-api-plan-scope` admission policy | Implemented — proven by the rc.3 → rc.4 upgrade |
 | P2 | Review and progress redesign, resumable progress page, run history, CLI version on the Nodes page, progress-view tests; plus the signed manifest's release contents, `# description:` header, host-health + can-verify pre-flight | Implemented — proven by the rc.4 → rc.5 upgrade |
-| P3 | Auto-update scheduler + maintenance window, CLI parity (pre-flight), staging-channel handling, ADR-045/056 alignment | Not started |
+| P3 | Auto-update scheduler + maintenance window, CLI parity (pre-flight), staging-channel handling, ADR-045/056 alignment | Implemented — proven on the lab staging |
 | P4 | Kubernetes step in the same run (supersedes the CLI-only path, R39) | Not started |
 
 Every phase is proven as an in-place upgrade on the local lab staging from production's release,

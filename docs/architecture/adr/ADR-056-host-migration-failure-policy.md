@@ -1,6 +1,6 @@
 # ADR-056: Host-migration failure policy — blocking scope, escape hatch, escalation
 
-**Status:** Proposed (2026-08-05) · Amended 2026-10-01 (§5, `.baseline` markers)
+**Status:** Proposed (2026-08-05) · Amended 2026-10-01 (§5, `.baseline` markers) · Amended 2026-10-09 by ADR-064 (§6)
 
 Amends [ADR-045](ADR-045-versioning-release-cycle-and-upgrade.md) W10c, which
 introduced host-migrations: per-release one-shot bash scripts embedded in the
@@ -133,6 +133,22 @@ history — any `.done` or `.failing` marker — because on an existing node som
 migrations ≤ X may genuinely still be pending, and a baseline would skip them
 silently. `--force` overrides and the marker then records that it was forced.
 Scripts newer than X are never stamped: the bootstrap did not produce them.
+
+### 6. Phases, descriptions, and when a failure stops an upgrade (amendment, ADR-064)
+
+[ADR-064](ADR-064-one-upgrade-procedure-nodes-first.md) makes host-migrations part of
+the upgrade run. Each script now also declares `# phase: before-services` (runs while
+the previous release's services still run — the default, and the only phase a node
+applies before the services roll) or `after-services` (the converge defers it until
+the platform-version ConfigMap reaches its release), and a one-line `# description:`
+the upgrade review shows. Both are required from 2026.10.7 (CI).
+
+The failure policy itself is unchanged — a failed script still blocks every later
+one on its node, counts its attempts and escalates — but its effect on an upgrade
+is now explicit: the pre-flight's **No failed host change on a node** gate blocks a
+production upgrade onto a node with a failed or blocked script (fix it or record a
+skip first), and a failure while the run updates the nodes stops the run **before**
+the services change.
 
 ## Alternatives considered
 
