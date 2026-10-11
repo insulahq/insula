@@ -12,6 +12,54 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
+  x86-64-v2 (SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF) and exits at start on a
+  CPU without them; its log then reads *"This build of Stalwart requires an x86-64-v2 compatible
+  CPU"*. Intel CPUs since Nehalem (2008), AMD since Bulldozer (2011) and the usual cloud instance
+  types have these. A virtual machine given a generic CPU model does not — QEMU's `qemu64` and
+  `kvm64`, the default on older Proxmox — and there the mail server, and the mail archive Job,
+  stop starting with this release. arm64 nodes are not affected. **Check every x86-64 node that
+  can run mail before upgrading** (prints nothing when the node is fine):
+
+  ```bash
+  [ "$(uname -m)" = x86_64 ] && for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do grep -qw "$f" /proc/cpuinfo || echo "missing: $f"; done
+  ```
+
+  If a node prints anything, set its VM's CPU type to `host` (or `x86-64-v2` or newer) at the
+  hypervisor and restart the VM first. Upstream's release notes do not list this change; it is in
+  the source at the tag (`.cargo/config.toml`, `crates/main/src/cpu.rs`).
+
+### Changed
+
+- **Stalwart 0.16.24 → 0.16.26.** Mostly fixes. Besides the CPU requirement above, the ones that
+  change what an operator sees:
+  - **Deleted mail is reclaimed without rewriting the store on every bit of growth.** Since 0.16.10
+    the mail store rewrote all of its message bodies about every 128 MiB of new mail — a store-sized
+    disk write, and a store-sized transfer to a standby, every few days on a busy server. We
+    reported it ([support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887)).
+    0.16.26 rewrites only when its scheduled store purge finds at least 256 MiB **and** a quarter of
+    the message data to be deleted mail. The rewrite is still store-sized when it happens, so a
+    mail node still needs free space equal to its mail data, and until then deleted mail stays on
+    disk: up to the larger of 256 MiB and a quarter of the message data.
+    ([MAIL_STORE_SPACE_RECLAIM.md](docs/operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites))
+  - **The global queue quota is enforced.** Stalwart creates a "Global queue quota" on first
+    start — 100,000 messages or 10 GiB — and until 0.16.25 never applied it, because a quota
+    without a match expression was skipped. It counts every message in the mail queue, incoming
+    and outgoing, as one total: at either figure the server answers `452 4.3.1 Mail system full`
+    to all new mail, **including mail from the Internet**, until the queue drains. A queue that
+    large means delivery is stuck (blocked outbound port 25, a dead relay), so watch the queue
+    depth alert. The platform's own per-domain send quotas have a match expression and behave as
+    before. Raise the global quota in the Stalwart WebUI if an install legitimately queues more.
+  - **Spam scores can shift slightly.** A blocklist answer with several return codes (a Spamhaus
+    ZEN listing in both SBL and PBL) is now scored for each code, a "not listed" answer is cached
+    for 24 hours, and messages too short for a Pyzor digest are no longer tagged `PYZOR`.
+  - A failed IMAP login with a wrong or expired app password now gets a proper tagged `NO`;
+    clients used to wait for a timeout. The RocksDB info log no longer grows without limit.
+  The archive checkpoint binary stays compatible: Stalwart still links librocksdb-sys
+  0.17.3+10.4.2 at the new tag.
+
 ### Fixed
 
 - **Background jobs run once on a high-availability cluster.** With three API replicas every

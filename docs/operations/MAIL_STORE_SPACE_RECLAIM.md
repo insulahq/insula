@@ -19,8 +19,9 @@ upstream, [discussion #2956](https://github.com/stalwartlabs/stalwart/discussion
 | undelete links | the undelete hold period |
 
 **The dominant one is spam training samples.** They pin the blob through a
-`BlobLink::Temporary { until }` stamped *at ingest* as `midnight + holdSamplesFor`
-— **180 days** on an upstream-default install. Destroying the account does **not**
+`BlobLink::Temporary { until }` stamped *at ingest* as `now + holdSamplesFor`
+(counted from the preceding midnight before v0.16.26) — **180 days** on an
+upstream-default install. Destroying the account does **not**
 release them: Stalwart's `destroy_account_blobs` unlinks only `Email` / `FileNode`
 / `SieveScript` hard links. The bytes stay on the mail PVC, invisibly — the mailbox
 is gone and the account quota reads 0 B.
@@ -29,11 +30,16 @@ Once the last reference goes, the rest is automatic:
 
 1. **Blob purge** (`purgeBlob`, daily 04:00 by default) deletes the blob key — and,
    for an expired temporary link, the `SpamTrainingSample` row with it.
-2. **Compaction** turns those deletes into reclaimed bytes. RocksDB blob GC is
-   enabled on the blobs CF from Stalwart **v0.16.10**
-   ([commit 69c2b052](https://github.com/stalwartlabs/stalwart/commit/69c2b052)),
-   so partially-dead blob files are rewritten too. On a server with live mail
-   traffic this happens on its own; an idle server waits for the CF's 30-day TTL.
+2. **Blob garbage collection** turns those deletes into reclaimed bytes — in
+   batches. From Stalwart **v0.16.26** the store compares, at every scheduled
+   data-store purge (`purgeData`), how much of its blob data is dead; once that is
+   **at least 256 MiB and at least 25 %** of the blob data it rewrites the blob
+   files without the dead part. Below either mark nothing is rewritten and the dead
+   bytes stay on disk — up to the larger of 256 MiB and a quarter of the blob data
+   (see [below](#the-cost-of-blob-gc-periodic-full-rewrites)). RocksDB only
+   counts a deleted blob as dead once a compaction has processed the delete, which
+   on a server with mail traffic happens about every 128 MiB of new mail; an idle
+   server waits for the column family's 30-day TTL.
 
 ### Measured (v0.16.16, 2026-08-04)
 
@@ -54,8 +60,9 @@ them, `expires 4200 / total 21`.
 
 - **On mailbox/domain/tenant deletion**, `destroyStalwartArtifactsForEmailDomain`
   purges each mailbox principal's training samples **before** destroying the
-  principal (`backend/src/modules/mail-admin/spam-sample-cleanup.ts`). Space
-  returns within a compaction cycle instead of six months. Failures are non-fatal
+  principal (`backend/src/modules/mail-admin/spam-sample-cleanup.ts`). The space
+  becomes reclaimable at once instead of after six months, and returns at the next
+  garbage collection — once the dead share passes the thresholds above. Failures are non-fatal
   and logged — the `holdSamplesFor` timer remains the backstop.
 - **`holdSamplesFor` is set to 30 d** by `bootstrap.sh configure_stalwart_full()`
   (upstream default 180 d), bounding drift for every path the hook does not cover:
@@ -83,61 +90,57 @@ kubectl -n mail exec deploy/stalwart-mail -- curl -s \
 
 ## The cost of blob GC: periodic full rewrites
 
-Stalwart turns blob GC on with `blob_gc_age_cutoff = 1.0` (hard-coded in
-`crates/store/src/backend/rocksdb/main.rs`, not configurable). That cutoff treats
-**every** blob file as old, so each compaction rewrites every live message body it
-touches, whether or not the file holds any garbage. On the blobs column family that
-means the **whole store**:
+Reclaiming deleted mail means rewriting blob files, and Stalwart rewrites **all** of
+them when it does (`blob_gc_age_cutoff = 1.0`, hard-coded in
+`crates/store/src/backend/rocksdb/main.rs`): a garbage collection pass costs a write
+the size of the whole live store. What changed over time is **how often** that
+happens.
 
-- The CF's SST data is tiny next to its blobs (keys and blob indexes, under 1 % on
-  real mail), so it sits in one level until it outgrows 256 MiB.
-- Keys are content hashes, so every new L0 file spans the whole key range, and the
-  L0→L6 compaction that follows merges all of L6.
-- That compaction runs after roughly every **128 MiB of new message bodies** (32 MiB
-  write buffer × 4 L0 files at Stalwart's default `bufferSize`).
+| Stalwart | When the whole store is rewritten |
+|---|---|
+| up to v0.16.9 | never — blob GC was off, and deleted mail stayed on disk |
+| v0.16.10 – v0.16.25 | on every compaction of the blobs column family: about every **128 MiB of new mail**, whether or not anything had been deleted |
+| **v0.16.26** (pinned) | only at a store purge that finds dead blob data of **≥ 256 MiB and ≥ 25 %** of the blob data |
 
-The amount rewritten grows with the store, not with the garbage. The RocksDB
-`LOG` shows it as a `compaction_started` on `"cf_name": "t"` with
-`"compaction_reason": "LevelL0FilesNum"`, followed by a `compaction_finished` whose
-`total_blob_output_size` is about the size of the store.
+The old behaviour was ours to find: the rewrite volume grew with the store, not with
+the garbage, and showed up as a store-sized transfer to the standby every few days
+([support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887)).
+Upstream fixed it in v0.16.26 by switching automatic blob GC off and running it from
+the store purge instead, behind the two thresholds
+([commit 92c99813](https://github.com/stalwartlabs/stalwart/commit/92c998138)).
 
-Measured on v0.16.25 (local Docker, upstream defaults), with RocksDB's default cutoff
-0.25 for comparison (build with the options made settable):
-
-| | cutoff 1.0 (shipped) | cutoff 0.25 |
-|---|---|---|
-| Loading 2.75 GiB into an empty store | 15.9 GiB rewritten | 6.9 GiB |
-| 2 GiB of new mail on a 10.8 GB store | 59 GiB rewritten (29×) | 1.3 GiB (0.7×) |
-| Peak disk during a rewrite | up to ~2× the store | ~1× |
-| Deleted mail reclaimed | yes | yes (never less than 1.0 in our runs) |
+Measured on v0.16.25 (local Docker, upstream defaults), the behaviour that is gone:
+loading 2.75 GiB into an empty store rewrote 15.9 GiB; 2 GiB of new mail on a
+10.8 GB store rewrote 59 GiB (29 times the new mail); the disk peaked at about
+twice the store during a rewrite. The v0.16.26 row above is read from the source at
+the tag.
 
 What this means for an install, whatever its size:
 
+- **A rewrite still happens, and it is still the size of the store** — but only
+  after a quarter of the store has been deleted. A store that mostly grows may go
+  months without one; a store with heavy churn (large mailboxes emptied, tenants
+  offboarded, short retention) gets one each time the dead share passes 25 %.
 - **Disk headroom:** old blob files are deleted only when the rewrite finishes, so a
-  mail node needs **free space at least the size of its mail data**. The mail health
-  check reports this as **Disk headroom** and alerts when a node falls short.
-- **Disk writes:** the whole store is written again on every cycle, which wears SSDs
-  and can stall shared or HDD-backed storage.
+  mail node needs **free space at least the size of its mail data** for the moment
+  it happens. The mail health check reports this as **Disk headroom** and alerts
+  when a node falls short. Between rewrites, plan for deleted mail that is still on
+  disk: up to the larger of 256 MiB and a quarter of the blob data.
 - **Standby replication and backups** copy whole files. After a rewrite the standby
   sync re-transfers the entire store across the network. The standby keeps its
   previous complete copy until that sync finishes, so the copy ages but never
   disappears; the **Standby copies** health check alerts when it is older than the
-  target (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)). Count a store-sized transfer
-  every few days in traffic budgets on metered links; the sync's bandwidth can be
-  capped (`mail-standby-settings` ConfigMap, same page).
-- **Imports and migrations** cost roughly quadratic writes, because each ~128 MiB step
-  rewrites everything imported so far. Expect a large mailbox import to keep the disk
-  busy, and the standby copy ageing, for longer than the copy itself would suggest.
+  target (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)). On a metered link, budget
+  a store-sized transfer per rewrite; the sync's bandwidth can be capped
+  (`mail-standby-settings` ConfigMap, same page).
+- **Imports and migrations** should no longer pay for it: with automatic blob GC
+  off, new mail is written once. (Up to v0.16.25 an import cost roughly quadratic
+  writes, each ~128 MiB step rewriting everything imported so far.)
 
-Only an upstream change can fix this: Stalwart would need to lower the cutoff (RocksDB's
-default is 0.25) or make it configurable. Reported with a reproduction and measurements:
-[support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887).
-Upstream has answered that it is fixed in **v0.16.26** (not yet released on 2026-10-08).
-Insula will move to it once the release is out and the rewrite measured above is
-re-measured against it; until then the guidance on this page stands. RocksDB itself is working on garbage-ratio-driven
-blob GC ([facebook/rocksdb#15301](https://github.com/facebook/rocksdb/issues/15301)). Until
-then there is nothing to tune on the platform side: keep the headroom, and watch the two
-health checks.
+Neither threshold nor the cutoff is configurable. RocksDB itself is working on
+garbage-ratio-driven blob GC
+([facebook/rocksdb#15301](https://github.com/facebook/rocksdb/issues/15301)), which
+would rewrite only the files that hold garbage.
 
 ## Do not set `holdSamplesFor` too low
 
@@ -176,22 +179,30 @@ monitoring and node headroom absorb normal churn.
    `maintenanceType: purgeBlob` and **no** `shardIndex` — it fans out to all 256.
    Passing `shardIndex: 0` covers 1/256 of the keyspace and looks like a no-op.
 
-3. **Let compaction run.** On a live server, ordinary mail traffic drives it.
-   Confirm from the RocksDB log:
+3. **Let the store count the garbage, then run the store purge.** From v0.16.26
+   blob files are rewritten only by the data-store purge, and only when dead blob
+   data is at least 256 MiB and at least 25 % of the blob data. RocksDB counts a
+   deleted blob as dead once a compaction has processed the delete — on a live
+   server about every 128 MiB of new mail — so a purge run straight after step 2
+   may still see none. Follow it in the RocksDB log:
 
    ```bash
-   kubectl -n mail exec deploy/stalwart-mail -- \
-     grep -E '\[t\] \[JOB' /var/lib/stalwart/LOG | tail -3
+   kubectl -n mail exec deploy/stalwart-mail -c stalwart -- \
+     grep -E 'Blob file count' /var/lib/stalwart/data/LOG | tail -3
    ```
 
-   `Generated table #N: <k> keys` is the authority — `<k>` falling is the purge
-   working. `Blob file count / total size / garbage size` in the same log shows the
-   reclaim.
+   `Blob file count / total size / garbage size` is what the purge compares. When
+   the garbage is over both marks, enqueue a `Task`/`StoreMaintenance` with
+   `maintenanceType: purgeData` (or wait for the scheduled one): the blob files are
+   rewritten and the total drops by the garbage.
 
-4. **Only if the node is critically full**, force compaction offline: suspend the
-   Flux `platform` Kustomization, scale `stalwart-mail` to 0, run
-   `ldb --db=/var/lib/stalwart --try_load_options compact` with a matching RocksDB
-   major version, then scale up and resume Flux.
+4. **Below the thresholds nothing is rewritten**, however long you wait. The offline
+   `ldb … compact` this runbook used to give for a critically full node no longer
+   reclaims message data on its own: the stored options have blob GC off, so it
+   compacts the index and leaves the blob files as they are. Running it with blob GC
+   switched on from the command line has not been tested against v0.16.26 — on a
+   node that is out of space, free room another way first (move the standby copy or
+   another tenant's data off the node), then follow steps 1–3.
 
 > **Diagnostic tip.** `garbage size: 0.0 GB` in the RocksDB log does **not** prove
 > the purge failed — it is equally consistent with "deletes issued, not yet

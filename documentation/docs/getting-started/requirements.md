@@ -38,6 +38,18 @@ Two memory notes for capacity planning:
   thrashing. See
   [how nodes behave under memory pressure](../operator/nodes-and-cluster.md#how-nodes-behave-under-memory-pressure).
 
+And one about the CPU: **an x86-64 server must be x86-64-v2 or newer** (arm64
+servers have no such requirement). Intel CPUs since Nehalem (2008) and AMD since
+Bulldozer (2011) qualify, and so do the usual cloud instance types. A virtual
+machine that was given a generic CPU model does not — QEMU's `qemu64` and `kvm64`,
+the default on older Proxmox — and the mail server will not start on it. Set the
+VM's CPU type to `host` (or `x86-64-v2`) at the hypervisor. To check an x86-64
+server, run this on it; it prints nothing when the CPU is fine:
+
+```bash
+[ "$(uname -m)" = x86_64 ] && for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do grep -qw "$f" /proc/cpuinfo || echo "missing: $f"; done
+```
+
 !!! tip "Add storage before adding nodes"
     When storage runs low but you still have CPU/RAM headroom, attaching a cloud
     volume as extra Longhorn disk is cheaper than a whole new node. HA and

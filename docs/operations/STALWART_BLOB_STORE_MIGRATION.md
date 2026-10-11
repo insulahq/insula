@@ -15,9 +15,10 @@
 - Stalwart's RocksDB backend already runs **BlobDB key-value separation**
   (`blobSize` default 16834): blobs ≥16 KiB live in large `.blob` files outside
   SST compaction. Blob data stays in O(hundreds) of files, so rsync-standby walks
-  and restic scans stay fast at any message count. **Since Stalwart v0.16.10 those
-  files are not append-once:** blob GC rewrites the whole store every ~128 MiB of
-  new mail (see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
+  and restic scans stay fast at any message count. **Those files are rewritten when
+  deleted mail is reclaimed:** from Stalwart v0.16.26, once dead blob data reaches
+  256 MiB and a quarter of the store (v0.16.10–v0.16.25 rewrote the whole store
+  every ~128 MiB of new mail; see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
 - One restic snapshot captures metadata + blobs as a **single consistent
   unit**. External blob stores split the backup story and create a
   silent-data-loss mode: ingest dedups blobs by content hash, so if blob
@@ -71,8 +72,9 @@ comparison passes, and never let blob files and the data store diverge
 
 - `pvc-mail-stack.yaml`'s 30Gi request is informational — local-path does
   not enforce it; the real limit is the node's disk.
-- BlobDB garbage collection is enabled by Stalwart from **v0.16.10** (it was off
-  when this document was written). Deleted mail is reclaimed once nothing references
-  it, see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md). The price is a
-  periodic full rewrite of the store, which needs free disk at least the size of the
-  mail data.
+- BlobDB garbage collection runs from Stalwart **v0.16.10** (it was off when this
+  document was written), and from **v0.16.26** only once deleted mail makes up
+  256 MiB and a quarter of the message data. Deleted mail is reclaimed once nothing references it and that mark
+  is reached, see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md). The
+  price is a full rewrite of the store each time, which needs free disk at least
+  the size of the mail data.

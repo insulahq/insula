@@ -121,7 +121,7 @@ Each pass builds `gen/next` with `rsync --link-dest` on the current copy, so
 unchanged files are hard links and a pass costs only what changed. `current` and the
 marker move only when the pass succeeds. **A complete copy therefore exists at all
 times**, also while a long pass runs (a large import, or the mail store rewriting its
-files — every ~128 MiB of new mail on Stalwart v0.16.10+, see
+files to reclaim deleted mail — once a quarter of it is dead, on Stalwart v0.16.26+, see
 [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
 The copy ages during such a pass; it never disappears. A failed pass leaves `current`
 alone and the next pass resumes `gen/next`. The old in-place layout is adopted on the

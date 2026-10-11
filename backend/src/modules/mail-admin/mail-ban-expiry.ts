@@ -65,8 +65,9 @@ const BAN_PERIOD_FIELDS = ['abuseBanPeriod', 'authBanPeriod', 'loiterBanPeriod',
 
 /**
  * Stalwart's built-in values for the fields of the group the platform has no
- * opinion about — `impl Default for Security` in Stalwart v0.16.25, the same
- * as the v0.16.24 the platform pins (read back live after a cold commit). Only
+ * opinion about — `impl Default for Security` in Stalwart v0.16.25, read back
+ * live on v0.16.24 after a cold commit; no file defining them changed up to the
+ * v0.16.26 the platform pins. Only
  * used when the group has never been written, or lacks the field: a written
  * group keeps whatever is stored in it. Re-check on a Stalwart upgrade.
  */
