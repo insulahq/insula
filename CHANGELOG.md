@@ -40,7 +40,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     disk write, and a store-sized transfer to a standby, every few days on a busy server. We
     reported it ([support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887)).
     0.16.26 rewrites only when its scheduled store purge finds at least 256 MiB **and** a quarter of
-    the message data to be deleted mail. The rewrite is still store-sized when it happens, so a
+    the message data to be deleted mail. Measured on one cluster, appending 411 MiB of mail
+    re-wrote 674 MiB on 0.16.24 and nothing on 0.16.26; after deleting most of it, one store purge
+    took the message data from 953 MiB to 281 MiB. The rewrite is still store-sized when it happens, so a
     mail node still needs free space equal to its mail data, and until then deleted mail stays on
     disk: up to the larger of 256 MiB and a quarter of the message data.
     ([MAIL_STORE_SPACE_RECLAIM.md](docs/operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites))

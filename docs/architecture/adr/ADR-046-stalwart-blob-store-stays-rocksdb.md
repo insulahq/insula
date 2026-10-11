@@ -142,8 +142,8 @@ per-message sha256 verification) established the facts this decision rests on.
   v0.16.26 runs blob GC only from the data-store purge, and only once dead blob data
   reaches 256 MiB **and** a quarter of the store. The rewrite is still store-sized
   when it comes, so the standby and disk-headroom health checks stay; what it no
-  longer does is fire on ordinary growth. The old behaviour was measured; the new
-  one is read from the source at the tag:
+  longer does is fire on ordinary growth. Measured before and after on one
+  cluster (410.7 MiB appended: 673.8 MiB rewritten on v0.16.24, none on v0.16.26):
   [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites).
   The Context's premise — blob data in a few large files that file-level copies
   handle cheaply — holds again for a store that mostly grows. A FileSystem blob

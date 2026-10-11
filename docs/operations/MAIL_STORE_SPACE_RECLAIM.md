@@ -112,8 +112,35 @@ the store purge instead, behind the two thresholds
 Measured on v0.16.25 (local Docker, upstream defaults), the behaviour that is gone:
 loading 2.75 GiB into an empty store rewrote 15.9 GiB; 2 GiB of new mail on a
 10.8 GB store rewrote 59 GiB (29 times the new mail); the disk peaked at about
-twice the store during a rewrite. The v0.16.26 row above is read from the source at
-the tag.
+twice the store during a rewrite.
+
+Measured before and after the bump on one cluster (single node, one mailbox, 800
+messages of 512 KiB appended over IMAP each time; figures from the RocksDB event
+log, which records for every blob file whether a flush or a compaction wrote it):
+
+| | v0.16.24 | v0.16.26 |
+|---|---|---|
+| Mail appended | 410.7 MiB | 410.7 MiB |
+| Blob data written for the new mail (flushes) | 383.1 MiB | 383.0 MiB |
+| Blob data **re-written** by compactions | **673.8 MiB** | **0** |
+| Blob files deleted | 14 | 0 |
+| Compactions of the blobs column family | 3 | 3 |
+
+The same three compactions ran; on v0.16.26 they no longer touch the message
+bodies.
+
+Deleting then showed the new collection, on v0.16.26:
+
+1. All 1,602 messages expunged, their training samples destroyed, accounts and
+   blobs purged. A store purge straight after rewrote **nothing** — the deletes
+   had not been through a compaction, so the store counted no garbage yet.
+2. After 154 MiB of new mail, the next store purge ran one forced compaction:
+   **953 MiB of blob data in 21 files became 281 MiB in 2.** It wrote 561 MiB to
+   get there — the 281 MiB that stayed went through two compactions.
+3. A second blob purge released 243 more blobs, about 125 MiB (the first purge
+   misses blobs that are still being unlinked). With those dead — about 30 % of
+   the blob data, but under 256 MiB — the store purge after that left the files
+   alone.
 
 What this means for an install, whatever its size:
 
@@ -133,9 +160,9 @@ What this means for an install, whatever its size:
   target (see [MAIL_HA_FAILOVER.md](MAIL_HA_FAILOVER.md)). On a metered link, budget
   a store-sized transfer per rewrite; the sync's bandwidth can be capped
   (`mail-standby-settings` ConfigMap, same page).
-- **Imports and migrations** should no longer pay for it: with automatic blob GC
-  off, new mail is written once. (Up to v0.16.25 an import cost roughly quadratic
-  writes, each ~128 MiB step rewriting everything imported so far.)
+- **Imports and migrations** no longer pay for it: new mail is written once
+  (measured above). Up to v0.16.25 an import cost roughly quadratic writes, each
+  ~128 MiB step rewriting everything imported so far.
 
 Neither threshold nor the cutoff is configurable. RocksDB itself is working on
 garbage-ratio-driven blob GC
@@ -175,9 +202,11 @@ monitoring and node headroom absorb normal churn.
    x:SpamTrainingSample/set    {"#destroy": <back-reference to /ids>}
    ```
 
-2. **Purge blobs across all shards.** Enqueue a `Task`/`StoreMaintenance` with
-   `maintenanceType: purgeBlob` and **no** `shardIndex` — it fans out to all 256.
-   Passing `shardIndex: 0` covers 1/256 of the keyspace and looks like a no-op.
+2. **Purge blobs across all shards — twice.** Enqueue a `Task`/`StoreMaintenance`
+   with `maintenanceType: purgeBlob` and **no** `shardIndex` — it fans out to all
+   256. Passing `shardIndex: 0` covers 1/256 of the keyspace and looks like a no-op.
+   After a large delete, run it again a few minutes later: the first pass misses
+   blobs that are still being unlinked (243 of 1,602 in the measurement above).
 
 3. **Let the store count the garbage, then run the store purge.** From v0.16.26
    blob files are rewritten only by the data-store purge, and only when dead blob
