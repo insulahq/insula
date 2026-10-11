@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { reconcileMailboxUsage } from './service.js';
 import { checkQuotaThresholds } from './quota-notifications.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const DEFAULT_INTERVAL_MINUTES = 15;
 const INITIAL_DELAY_MS = 60_000; // Wait 1 minute after startup before first run
@@ -62,28 +63,33 @@ export function startMailStatsScheduler(db: Database): NodeJS.Timeout {
   const runCycle = async (): Promise<void> => {
     if (state.stopped) return;
     try {
-      const result = await reconcileMailboxUsage(db);
-      console.log(
-        `[mail-stats-scheduler] Usage sync complete: synced=${result.synced} failed=${result.failed}`,
-      );
+      // One replica syncs: a cycle lists every account in Stalwart, and the
+      // over-quota summary is deduplicated by a lookup only.
+      const ttlMs = (await readIntervalMinutes()) * 60_000 * 1.5;
+      await withSchedulerLease(db, 'mailbox-usage-sync', ttlMs, async () => {
+        const result = await reconcileMailboxUsage(db);
+        console.log(
+          `[mail-stats-scheduler] Usage sync complete: synced=${result.synced} failed=${result.failed}`,
+        );
 
-      // Phase 3 T5.3: after reconciling used_mb, walk the
-      // updated mailboxes for newly-crossed quota thresholds.
-      // Fires at most one notification per (mailbox, threshold)
-      // crossing thanks to the mailbox_quota_events dedupe table.
-      try {
-        const quota = await checkQuotaThresholds(db);
-        if (quota.fired > 0 || quota.cleared > 0 || quota.overQuota > 0) {
-          console.log(
-            `[mail-stats-scheduler] Quota notifications: fired=${quota.fired} cleared=${quota.cleared} overQuota=${quota.overQuota}`,
+        // Phase 3 T5.3: after reconciling used_mb, walk the
+        // updated mailboxes for newly-crossed quota thresholds.
+        // Fires at most one notification per (mailbox, threshold)
+        // crossing thanks to the mailbox_quota_events dedupe table.
+        try {
+          const quota = await checkQuotaThresholds(db);
+          if (quota.fired > 0 || quota.cleared > 0 || quota.overQuota > 0) {
+            console.log(
+              `[mail-stats-scheduler] Quota notifications: fired=${quota.fired} cleared=${quota.cleared} overQuota=${quota.overQuota}`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            '[mail-stats-scheduler] quota check error:',
+            err instanceof Error ? err.message : String(err),
           );
         }
-      } catch (err) {
-        console.warn(
-          '[mail-stats-scheduler] quota check error:',
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      });
     } catch (err) {
       console.warn(
         '[mail-stats-scheduler] Cycle error:',

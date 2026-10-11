@@ -32,6 +32,18 @@ export interface LeaseDb {
 /** This process. A restarted pod is a new holder: its old lease simply expires. */
 export const REPLICA_ID = `${hostname()}:${process.pid}:${randomBytes(4).toString('hex')}`;
 
+/**
+ * How long a job with a long interval waits before its start-up run.
+ *
+ * A rollout starts the new process while the one it replaces still holds the
+ * lease — that one gives it up when it stops. A start-up run made at once is
+ * therefore skipped, and the job waits a whole interval: on a cluster deployed
+ * more often than the interval it would never run. A few minutes later the
+ * replaced process is gone; on a cluster with other live replicas the lease is
+ * still theirs and the delayed run is skipped, as it should be.
+ */
+export const LEASED_STARTUP_DELAY_MS = 3 * 60_000;
+
 /** Every lease's platform_settings key is this prefix + the job name. */
 export const SCHEDULER_LEASE_KEY_PREFIX = 'scheduler-lease:';
 const KEY_PREFIX = SCHEDULER_LEASE_KEY_PREFIX;

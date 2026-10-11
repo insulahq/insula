@@ -19,6 +19,7 @@ import { listHealthWatchedJobs, findNewFailures } from './service.js';
 import type { BackupJobMeta } from './service.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const RESOURCE_TYPE_BACKUP_JOB = 'backup_job';
 
@@ -41,11 +42,16 @@ export function startBackupHealthScheduler(
     warn: (msg, err) => console.warn(`[backup-health] ${msg}`, err ?? ''),
   };
 
-  safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
+  // One replica watches: the failure notification is deduplicated by a lookup,
+  // not a constraint, so replicas ticking together each send it.
+  const tick = (): void => safeTick(
+    'backup-health',
+    () => withSchedulerLease(deps.db, 'backup-job-health', tickMs * 1.5, () => runTick(deps.db, deps.batch, log)),
+    log,
+  );
+  tick();
 
-  const timer = setInterval(() => {
-    safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
-  }, tickMs);
+  const timer = setInterval(tick, tickMs);
 
   return () => clearInterval(timer);
 }

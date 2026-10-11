@@ -1,4 +1,4 @@
-import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../shared/scheduler-lease.js';
 import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -42,7 +42,8 @@ const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 // was completely down. Detection is bounded by this interval plus the reconciler
 // grace window, so ~13 min worst case instead of "until a human notices".
 const WORKLOAD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
-const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
+// The first runs wait until a replaced process has given its leases up.
+const INITIAL_DELAY_MS = LEASED_STARTUP_DELAY_MS;
 
 /**
  * Opt-in tenant-lifecycle auto-ops. Both default OFF — operators must
@@ -126,7 +127,11 @@ export function startStorageLifecycleScheduler(
   const runExpiry = async () => {
     if (stopped) return;
     try {
-      const reaped = await expireSnapshots(await buildCtx());
+      // One replica expires: a snapshot on an SSH or CIFS target is deleted by a
+      // one-shot Job, and two replicas each started one for the same snapshot.
+      const leased = await withSchedulerLease(db, 'storage-snapshot-expiry', EXPIRY_INTERVAL_MS * 1.5,
+        async () => expireSnapshots(await buildCtx()));
+      const reaped = leased.ran ? leased.value : 0;
       if (reaped > 0) console.log(`[storage-lifecycle-scheduler] Reaped ${reaped} expired snapshot(s)`);
     } catch (err) {
       console.error('[storage-lifecycle-scheduler] expireSnapshots failed:', (err as Error).message);
@@ -137,12 +142,16 @@ export function startStorageLifecycleScheduler(
   const runAudit = async () => {
     if (stopped) return;
     try {
-      const report = await storageAuditReport(await buildCtx());
-      const totalWasteGi = report.reduce((sum, r) => {
-        const provisioned = r.provisionedGi * 1024 * 1024 * 1024;
-        return sum + Math.max(0, (provisioned - r.usedBytes) / (1024 ** 3));
-      }, 0);
-      console.log(`[storage-lifecycle-scheduler] Audit: ${report.length} tenants, ${totalWasteGi.toFixed(1)} GiB provisioned-not-used`);
+      // One replica audits: the report measures every tenant's volume from
+      // inside its file manager.
+      await withSchedulerLease(db, 'storage-audit', AUDIT_INTERVAL_MS * 1.5, async () => {
+        const report = await storageAuditReport(await buildCtx());
+        const totalWasteGi = report.reduce((sum, r) => {
+          const provisioned = r.provisionedGi * 1024 * 1024 * 1024;
+          return sum + Math.max(0, (provisioned - r.usedBytes) / (1024 ** 3));
+        }, 0);
+        console.log(`[storage-lifecycle-scheduler] Audit: ${report.length} tenants, ${totalWasteGi.toFixed(1)} GiB provisioned-not-used`);
+      });
     } catch (err) {
       console.error('[storage-lifecycle-scheduler] audit failed:', (err as Error).message);
     }
@@ -254,11 +263,16 @@ export function startStorageLifecycleScheduler(
   const runIntegrity = async () => {
     if (stopped) return;
     try {
-      const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
-      const result = await sweepFleetIntegrity(db, k8s);
-      if (result.repaired > 0 || result.errored > 0) {
-        console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
-      }
+      // One replica repairs: a repair is followed by an alert deduplicated by
+      // a lookup only, and a replica losing the repair race reports a partial
+      // failure for what the other one repaired.
+      await withSchedulerLease(db, 'namespace-integrity', INTEGRITY_INTERVAL_MS * 1.5, async () => {
+        const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
+        const result = await sweepFleetIntegrity(db, k8s);
+        if (result.repaired > 0 || result.errored > 0) {
+          console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
+        }
+      });
     } catch (err) {
       console.error('[namespace-integrity] sweep failed:', (err as Error).message);
     }
@@ -326,11 +340,16 @@ export function startStorageLifecycleScheduler(
   const runQuiesceWatchdog = async () => {
     if (stopped) return;
     try {
-      const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
-      const result = await sweepAbandonedQuiesce(db, k8s);
-      if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {
-        console.log(`[quiesce-watchdog] abandonedOps=${result.abandonedOps} recoveredNamespaces=${result.recoveredNamespaces}`);
-      }
+      // One replica recovers: an abandoned operation is not claimed, so two
+      // replicas ran the same recovery — one re-pinning the workloads while
+      // the other scaled them up.
+      await withSchedulerLease(db, 'storage-quiesce-watchdog', QUIESCE_WATCHDOG_INTERVAL_MS * 1.5, async () => {
+        const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
+        const result = await sweepAbandonedQuiesce(db, k8s);
+        if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {
+          console.log(`[quiesce-watchdog] abandonedOps=${result.abandonedOps} recoveredNamespaces=${result.recoveredNamespaces}`);
+        }
+      });
     } catch (err) {
       console.error('[quiesce-watchdog] sweep failed:', (err as Error).message);
     }

@@ -35,6 +35,7 @@ import {
 } from './client.js';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
@@ -105,6 +106,13 @@ export function createPrincipalsSyncScheduler(
     }
   }
 
+  // The timer's cycles run on one replica: each lists every principal and
+  // mailing list in Stalwart, and replicas syncing together split the new
+  // drift between them and each alert. `runOnce` (an explicit call) is not
+  // leased.
+  const scheduledCycle = (): Promise<unknown> =>
+    withSchedulerLease(db, 'stalwart-principals-sync', intervalMs * 1.5, runCycle);
+
   return {
     start() {
       if (timer !== null) return;
@@ -126,11 +134,11 @@ export function createPrincipalsSyncScheduler(
         // return on the next start() prevents a double-start. The next
         // line then re-installs the periodic interval — also stop()able.
         timer = null;
-        void runCycle().catch((err) => {
+        void scheduledCycle().catch((err) => {
           log.error({ err: err instanceof Error ? err.message : String(err) }, 'initial cycle failed');
         });
         timer = setInterval(() => {
-          void runCycle().catch((err) => {
+          void scheduledCycle().catch((err) => {
             log.error({ err: err instanceof Error ? err.message : String(err) }, 'cycle failed');
           });
         }, intervalMs);

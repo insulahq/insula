@@ -11,6 +11,7 @@
  * for instant convergence. The scheduler picks up any failed inline
  * runs on the next tick.
  */
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
@@ -73,7 +74,12 @@ export function startClusterTrustedProxiesReconciler(
         core: clients.core,
         apps: clients.apps,
       };
-      await runReconcileExclusive(db, reconcileClients, log);
+      // One replica ticks: the ingress DaemonSet's arguments are patched by
+      // position from a snapshot, and the only guard against two patches at
+      // once (runReconcileExclusive) is per process. A reconcile started by a
+      // route on another replica can still overlap this tick.
+      await withSchedulerLease(db, 'cluster-trusted-proxies', intervalMs * 1.5,
+        () => runReconcileExclusive(db, reconcileClients, log), { log });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

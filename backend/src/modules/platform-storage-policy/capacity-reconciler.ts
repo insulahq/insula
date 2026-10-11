@@ -22,6 +22,7 @@
  * 10 GiB replica"(the postgres-2 case observed).
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -144,36 +145,41 @@ export function startCapacityReconciler(db: Database, k8s: K8sClients): { stop: 
   const tick = async () => {
     if (stopped) return;
     try {
-      const snap = await readClusterCapacity(k8s);
-      const worst = snap.nodes.reduce<NodeFact | null>(
-        (a, b) => (a === null || b.commitPct > a.commitPct ? b : a),
-        null,
-      );
-      const newSeverity: Severity = severityFor(Math.max(snap.clusterCommitPct, worst?.commitPct ?? 0));
-      const prev = await readState(db);
-      const prevSeverity: Severity = prev?.severity ?? 'normal';
-      const now = new Date();
-      const lastNotifiedAt = prev?.lastNotifiedAt ? new Date(prev.lastNotifiedAt) : null;
-      const sinceLastMs = lastNotifiedAt ? now.getTime() - lastNotifiedAt.getTime() : Infinity;
-      const dailyThrottleMs = 24 * 60 * 60 * 1000;
+      // One replica watches: the last severity is read, the alert sent, then
+      // the state written — replicas ticking together both see the old
+      // severity and both alert.
+      await withSchedulerLease(db, 'storage-capacity-watch', TICK_MS * 1.5, async () => {
+        const snap = await readClusterCapacity(k8s);
+        const worst = snap.nodes.reduce<NodeFact | null>(
+          (a, b) => (a === null || b.commitPct > a.commitPct ? b : a),
+          null,
+        );
+        const newSeverity: Severity = severityFor(Math.max(snap.clusterCommitPct, worst?.commitPct ?? 0));
+        const prev = await readState(db);
+        const prevSeverity: Severity = prev?.severity ?? 'normal';
+        const now = new Date();
+        const lastNotifiedAt = prev?.lastNotifiedAt ? new Date(prev.lastNotifiedAt) : null;
+        const sinceLastMs = lastNotifiedAt ? now.getTime() - lastNotifiedAt.getTime() : Infinity;
+        const dailyThrottleMs = 24 * 60 * 60 * 1000;
 
-      const shouldNotify =
-        // Severity transition (up OR down) always emits.
-        newSeverity !== prevSeverity
-        // Same critical level — emit at most once per 24 h.
-        || (newSeverity === 'critical' && sinceLastMs >= dailyThrottleMs)
-        || (newSeverity === 'warning' && sinceLastMs >= dailyThrottleMs);
+        const shouldNotify =
+          // Severity transition (up OR down) always emits.
+          newSeverity !== prevSeverity
+          // Same critical level — emit at most once per 24 h.
+          || (newSeverity === 'critical' && sinceLastMs >= dailyThrottleMs)
+          || (newSeverity === 'warning' && sinceLastMs >= dailyThrottleMs);
 
-      if (shouldNotify) {
-        await fanoutNotification(db, snap, worst, newSeverity);
-      }
+        if (shouldNotify) {
+          await fanoutNotification(db, snap, worst, newSeverity);
+        }
 
-      await writeState(db, {
-        severity: newSeverity,
-        clusterCommitPct: snap.clusterCommitPct,
-        worstNode: worst?.name ?? null,
-        worstNodePct: worst?.commitPct ?? 0,
-        lastNotifiedAt: shouldNotify ? now.toISOString() : (prev?.lastNotifiedAt ?? now.toISOString()),
+        await writeState(db, {
+          severity: newSeverity,
+          clusterCommitPct: snap.clusterCommitPct,
+          worstNode: worst?.name ?? null,
+          worstNodePct: worst?.commitPct ?? 0,
+          lastNotifiedAt: shouldNotify ? now.toISOString() : (prev?.lastNotifiedAt ?? now.toISOString()),
+        });
       });
     } catch (err) {
       console.error('[capacity-reconciler] tick failed:', (err as Error).message);

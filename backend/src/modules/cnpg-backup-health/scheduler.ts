@@ -33,6 +33,7 @@ import { readBackupHealth, type ClusterBackupHealth, type BackupRecord } from '.
 import { recordSystemLastSuccess } from '../system-backup/footprint-store.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const RESOURCE_TYPE = 'cnpg_backup_failure';
 
@@ -62,11 +63,16 @@ export function startCnpgBackupHealthScheduler(
     info: (msg) => console.info(`[cnpg-backup-health] ${msg}`),
   };
 
-  safeTick('cnpg-backup-health', () => runTick(deps.db, deps.custom, log), log);
+  // One replica watches: the failure notification is deduplicated by a lookup,
+  // not a constraint, so replicas ticking together each send it.
+  const tick = (): void => safeTick(
+    'cnpg-backup-health',
+    () => withSchedulerLease(deps.db, 'cnpg-backup-health', tickMs * 1.5, () => runTick(deps.db, deps.custom, log)),
+    log,
+  );
+  tick();
 
-  const timer = setInterval(() => {
-    safeTick('cnpg-backup-health', () => runTick(deps.db, deps.custom, log), log);
-  }, tickMs);
+  const timer = setInterval(tick, tickMs);
 
   return () => clearInterval(timer);
 }

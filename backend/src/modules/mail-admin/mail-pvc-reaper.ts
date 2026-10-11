@@ -28,6 +28,7 @@
  * the grace window, so a failover can still be reversed by hand for two days.
  */
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const MAIL_NS = 'mail';
@@ -243,14 +244,14 @@ const REAPER_INITIAL_DELAY_MS = 10 * 60 * 1000;
 /**
  * Daily reaper tick. Returns a stop function for `app.addHook('onClose', …)`.
  *
- * Scheduling the Jobs is cheap and idempotent (same name per node per day →
- * 409 on repeat), so several platform-api replicas ticking together is safe
- * without a lease.
+ * One replica schedules them. The Job name (per node per day) makes a repeat
+ * create a 409 only while the finished Job still exists — an hour — so
+ * replicas ticking at different times of day each ran a Job on every node.
  */
 export function startMailPvcReaper(db: Database, k8s: K8sClients): { stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   const run = () => {
-    void spawnMailPvcReaperJobs(db, k8s).catch((err) => {
+    void withSchedulerLease(db, 'mail-pvc-reaper', REAPER_TICK_MS * 1.5, () => spawnMailPvcReaperJobs(db, k8s)).catch((err) => {
       console.warn('[mail-pvc-reaper] tick failed:', (err as Error).message);
     });
   };

@@ -43,7 +43,7 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 
 ### platform-api scheduled jobs (scheduler lease)
 
-Every in-process `setInterval` scheduler starts on every platform-api replica.
+Every in-process timer starts on every platform-api replica.
 A job that must not run concurrently claims a sticky lease in
 `platform_settings` (`scheduler-lease:<job>` → `{"holder","until"}`) via
 `withSchedulerLease` (`backend/src/shared/scheduler-lease.ts`): the holder keeps
@@ -55,9 +55,23 @@ uses both: a sticky schedule owner plus a run lock shared with the manual
 flight). Graceful shutdown releases every lease the process holds, so a rollout
 does not stall 6- and 24-hour jobs for a full ttl — except the lease of a job
 still running in that process, which expires as after a crash, so the job is
-not started a second time beside itself. The covered jobs are listed
-in `scheduler-lease-coverage.test.ts`; the nightly bundle scheduler is already
-safe through its `last_fired_at` compare-and-set.
+not started a second time beside itself.
+
+Every recurring timer is a recorded decision. `scheduler-lease-coverage.test.ts`
+parses the backend source, finds each interval, each function that re-arms
+itself with a timeout and each run-until-stopped loop, and fails until the
+timer is either a leased job (`LEASED`) or listed with the reason it runs on
+every replica (`EVERY_REPLICA`): it belongs to one connection or task in that
+process, it feeds that process's own memory or gauges, its work is claimed
+atomically (the nightly bundle scheduler's `last_fired_at` compare-and-set), or
+it converges to a value every replica derives identically. Reasons that do
+**not** qualify: "the notification has a dedupe key" (the key is checked by a
+lookup, not a constraint, so replicas ticking together both send), and "the Job
+name is deterministic" when the finished Job is removed before the next
+replica's tick. A job with a long interval makes its start-up run after
+`LEASED_STARTUP_DELAY_MS`, not at once: during a rollout the replaced process
+still holds the lease when the new one starts, and a run skipped then would
+wait a whole interval.
 
 What `Apply HA` does NOT do:
 - Per-tenant client workloads (separate per-tenant storage tier — see

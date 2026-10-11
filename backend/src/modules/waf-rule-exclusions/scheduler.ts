@@ -14,6 +14,7 @@
  * mutation so the operator sees the change reflect within seconds.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { reconcileWafExclusions, type WafExclusionClients } from './reconciler.js';
@@ -38,7 +39,11 @@ export function startWafExclusionReconciler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      await reconcileWafExclusions(db, clients, log);
+      // One replica renders: the bypass list comes from an exec that fails
+      // closed to an empty list, so a replica whose exec failed stamps a
+      // different hash than one whose exec worked, and each rolls the WAF.
+      await withSchedulerLease(db, 'waf-rule-exclusions', intervalMs * 1.5,
+        () => reconcileWafExclusions(db, clients, log), { log });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

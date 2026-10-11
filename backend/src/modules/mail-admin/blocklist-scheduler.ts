@@ -22,6 +22,7 @@ import type { MailEndpointK8s } from './mail-endpoints.js';
 import { resolveDefaultMailHost } from './mail-acme-override-route.js';
 import { notifyAdminMailBlocklisted } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../shared/scheduler-lease.js';
 
 export interface BlocklistSchedulerLog {
   info(...args: unknown[]): void;
@@ -96,7 +97,8 @@ export async function runBlocklistCheckOnce(
 
 /**
  * Start the hourly blocklist watch. Returns a stop function for onClose.
- * Kicks ~2min after boot (let the cluster settle) then hourly.
+ * Kicks a few minutes after boot (the cluster has settled, and a replaced
+ * process has given the lease up) then hourly.
  */
 export function startMailBlocklistScheduler(
   db: Database,
@@ -104,12 +106,15 @@ export function startMailBlocklistScheduler(
   opts: { kubeconfigPath?: string; intervalMs?: number } = {},
 ): () => void {
   const intervalMs = opts.intervalMs ?? 3_600_000;
+  // One replica probes: every pass queries the blocklists for each mail
+  // address, and the listing alert is deduplicated by a lookup only.
   const runOnce = (): void => {
-    runBlocklistCheckOnce(db, log, opts.kubeconfigPath).catch((err: unknown) => {
+    withSchedulerLease(db, 'mail-blocklist-watch', intervalMs * 1.5,
+      () => runBlocklistCheckOnce(db, log, opts.kubeconfigPath), { log }).catch((err: unknown) => {
       log.warn({ err }, 'blocklist-scheduler: pass failed');
     });
   };
-  const bootKick = setTimeout(runOnce, 120_000);
+  const bootKick = setTimeout(runOnce, LEASED_STARTUP_DELAY_MS);
   bootKick.unref?.();
   const timer = setInterval(runOnce, intervalMs);
   timer.unref?.();

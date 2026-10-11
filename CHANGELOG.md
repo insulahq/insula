@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Background jobs run once on a high-availability cluster.** With three API replicas every
+  in-process timer starts three times, and only the jobs someone had listed ran on one replica. The
+  backup-freshness check was not on the list: it started a Job that lists the mail backup
+  repository on every replica every five minutes — about 860 Jobs a day, on any node. Every
+  recurring timer in the API has now been reviewed, and 29 of them moved to one replica:
+  - the watchers that alert (failed backup Jobs, database backups, WAL archiving, mail blocklists,
+    mail health, storage capacity, namespace repairs, subscription expiry, escalations, the alert
+    evaluator) — an alert's duplicate check is a lookup, so replicas ticking together could each
+    send it;
+  - the syncs against the mail server (accounts, mailbox usage, the rules and alias sweep), which
+    listed every account once per replica;
+  - sweeps that start Jobs or pods (expired snapshots on SSH/CIFS targets, the file-manager recycle
+    bin, leftover mail store directories, released volumes, Longhorn snapshot cleanup);
+  - reconcilers where two replicas at once could roll a workload twice (the backup shim, the
+    ingress trusted-proxy arguments, WAF exclusions) or cancel a first-run step (CrowdSec's
+    database).
+  A single-replica cluster runs the same jobs as before; after a restart, the first run of the
+  escalation, expiry-warning and recycle-bin jobs now comes three minutes after start instead of at
+  once (the mail blocklist check: three minutes instead of two). A test now finds every recurring
+  timer by parsing the source, and fails until each is either leased or listed with the reason it
+  runs on every replica.
+- **The mail backup repository is listed after a snapshot, not every five minutes.** The
+  reachability check follows the mail snapshot schedule: once after each scheduled snapshot has had
+  time to run, at most every 15 minutes and at least every 6 hours (hourly while the schedule is
+  off). A listing that could not be made is retried on the next five-minute tick. **This makes the
+  "backup target unreachable" alert slower:** it used to come within five minutes of the target
+  going away; it now comes after the next scheduled snapshot — about an hour on an hourly schedule,
+  six hours at most.
+
 ## [2026.10.7] - 2026-10-09
 
 ### Added

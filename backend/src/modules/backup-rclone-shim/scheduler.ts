@@ -18,6 +18,7 @@
  * convergence on user-initiated changes; the periodic scheduler then
  * acts as the drift safety-net.
  */
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../db/index.js';
@@ -49,7 +50,12 @@ export function startBackupRcloneShimReconciler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      await reconcileBackupRcloneShim(db, clients, encryptionKey, log);
+      // One replica ticks: an SFTP-password or CIFS target is obscured with a
+      // random IV, so two replicas rendering the same change stamp different
+      // config hashes on the shim DaemonSet and roll it twice. A reconcile
+      // started by a route on another replica can still overlap this tick.
+      await withSchedulerLease(db, 'backup-rclone-shim', intervalMs * 1.5,
+        () => reconcileBackupRcloneShim(db, clients, encryptionKey, log), { log });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

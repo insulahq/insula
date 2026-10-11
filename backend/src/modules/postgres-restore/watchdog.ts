@@ -31,6 +31,7 @@
  * the SAFE-FIRST default; flip via env when operators are confident.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import { releasePitrLock } from './service.js';
@@ -433,7 +434,10 @@ export function startPitrJobWatchdog(deps: PitrWatchdogDeps): { readonly stop: (
     }
     if (reaperEnabled) {
       try {
-        await reapReleasedPvsOnce(deps);
+        // One replica reaps: a pass lists every volume in the cluster. The
+        // stuck-restore check above stays on every replica — it also clears
+        // this process's own "a restore is running" flag.
+        await withSchedulerLease(deps.db, 'released-pv-reaper', WATCHDOG_INTERVAL_MS * 1.5, () => reapReleasedPvsOnce(deps));
       } catch (err) {
         deps.log?.error?.({ err: (err as Error).message }, 'pv-reaper: tick failed');
       }
