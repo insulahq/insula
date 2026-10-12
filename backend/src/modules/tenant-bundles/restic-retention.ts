@@ -63,7 +63,7 @@
  * recovered on the next tick.
  */
 
-import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { defaultMaxHoldMs, withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
@@ -936,7 +936,11 @@ export function startResticRetentionScheduler(
           k8s: createK8sClients(kubeconfigPath),
           secretsKeyHex,
           logger: app.log,
-        }), { release: true, log: app.log }), { log: app.log });
+          // Given up about when the schedule's own run would be: a prune that
+          // is merely slow must not be joined by the next sweep's. A minute
+          // sooner, so that one run given up is reported once — by this lock,
+          // whose error then ends the lease's run — not by both.
+        }), { release: true, maxHoldMs: defaultMaxHoldMs(intervalMs * 1.5) - 60_000, log: app.log }), { log: app.log });
       if (!scheduled.ran || !scheduled.value.ran) return;
       const res = scheduled.value.value;
       if (res.snapshotsForgotten > 0 || res.prunesRun > 0 || res.errors > 0) {

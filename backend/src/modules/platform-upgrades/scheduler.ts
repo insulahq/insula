@@ -241,8 +241,14 @@ export async function claimLease(db: Database, nowMs: number, ttlMs: number = le
  * Not a sticky owner: an upgrade restarts the replicas themselves.
  */
 const UPGRADE_PASS_LOCK_MS = 60_000;
+/**
+ * A pass is a handful of reads and at most one step of the run; one that has
+ * not returned after this long is hung, and an upgrade must not wait half a
+ * day (the helper's default) for the next pass.
+ */
+const UPGRADE_PASS_MAX_HOLD_MS = 30 * 60_000;
 export function withUpgradePassLock<T>(db: LeaseDb, pass: () => Promise<T>): Promise<LeaseOutcome<T>> {
-  return withSchedulerLease(db, 'platform-upgrade-pass', UPGRADE_PASS_LOCK_MS, pass, { release: true });
+  return withSchedulerLease(db, 'platform-upgrade-pass', UPGRADE_PASS_LOCK_MS, pass, { release: true, maxHoldMs: UPGRADE_PASS_MAX_HOLD_MS });
 }
 
 export function startUpgradeReconciler(db: Database, k8s: K8sClients): { readonly stop: () => void } {

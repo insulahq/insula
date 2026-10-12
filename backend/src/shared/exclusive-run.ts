@@ -21,13 +21,15 @@
  *
  * A holder that dies loses the lock after RUN_LOCK_TTL_MS; a live run renews it,
  * for RUN_LOCK_MAX_HOLD_MS at most. A run that hangs — a call to the cluster
- * that never returns — therefore stops blocking the other replicas after that
- * long. In its own process it still counts as running until it returns or the
- * process restarts, exactly as a hung tick always has.
+ * that never returns — is given up after that long (scheduler-lease.ts): the
+ * lock is released, the job is free again on every replica, this one included,
+ * and the caller gets LeasedRunAbandonedError.
  */
+import { sql } from 'drizzle-orm';
 import type { OperatorError } from '@insula/api-contracts';
 import { ApiError } from './errors.js';
 import {
+  SCHEDULER_LEASE_KEY_PREFIX,
   withSchedulerLease,
   type LeaseDb,
   type LeaseLogger,
@@ -39,7 +41,8 @@ export const RUN_LOCK_TTL_MS = 2 * 60_000;
 
 /**
  * The longest a run keeps its lock. Far above any of these runs (seconds to a
- * few minutes); past it the run is taken for hung and its lock left to lapse.
+ * few minutes); past it the run is taken for hung and given up. A job whose
+ * runs honestly take longer passes its own `maxHoldMs`.
  */
 export const RUN_LOCK_MAX_HOLD_MS = 30 * 60_000;
 
@@ -62,8 +65,9 @@ export interface ExclusiveRunOptions {
    * postponed: its next one comes after the job's interval.
    */
   readonly waitMs?: number;
-  /** Tests only: the lock's ttl and longest hold. */
+  /** Tests only: the lock's ttl. */
   readonly ttlMs?: number;
+  /** The longest the run is waited for before it is given up. Default RUN_LOCK_MAX_HOLD_MS. */
   readonly maxHoldMs?: number;
   readonly log?: LeaseLogger;
 }
@@ -93,6 +97,21 @@ export async function runExclusive<T>(
     if (left <= 0) return outcome;
     await sleep(Math.min(POLL_MS, left));
   }
+}
+
+/**
+ * Whether a run of `job`'s work is under way right now, on any replica — for
+ * a status display. Not a claim: by the time the answer is read it may be old.
+ */
+export async function isRunUnderWay(db: LeaseDb, job: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    SELECT 1 FROM platform_settings
+     WHERE setting_key = ${`${SCHEDULER_LEASE_KEY_PREFIX}${runLockName(job)}`}
+       AND pg_input_is_valid(setting_value, 'jsonb')
+       AND pg_input_is_valid(setting_value::jsonb ->> 'until', 'timestamptz')
+       AND (setting_value::jsonb ->> 'until')::timestamptz > now()
+  `) as unknown as { rows?: unknown[] };
+  return (res.rows ?? []).length > 0;
 }
 
 /**

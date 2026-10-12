@@ -14,8 +14,11 @@ import { RUN_LOCK_TTL_MS, runExclusive, runExclusiveOrBusy, runLockName } from '
 import {
   __setLeaseTimingForTests,
   claimSchedulerLease,
+  LeasedRunAbandonedError,
   releaseSchedulerLease,
+  setAbandonedRunReporter,
   withSchedulerLease,
+  type AbandonedRun,
 } from './scheduler-lease.js';
 
 const url = process.env.LEASE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -41,6 +44,7 @@ describe.skipIf(!url)('run lock (real Postgres)', () => {
   beforeEach(async () => {
     await pool.query('TRUNCATE platform_settings');
     __setLeaseTimingForTests(null);
+    setAbandonedRunReporter(null);
   });
 
   const lockRows = async (job: string): Promise<number> =>
@@ -120,27 +124,66 @@ describe.skipIf(!url)('run lock (real Postgres)', () => {
     expect(overlap).toBe(false);
   });
 
-  it('a run that hangs stops renewing after its longest hold: another replica takes the work, and the late run leaves that lock alone', async () => {
+  it('a run that hangs is given up after its longest hold: the lock is free at once, here and elsewhere, and the late run leaves the next one alone', async () => {
     let finish: () => void = () => {};
     const warnings: string[] = [];
-    // Renewed every 500 ms (a third of the ttl), for 600 ms at most: the last
-    // renewal is the one at 500 ms, so the lock runs out at about 2 s.
+    const reported: AbandonedRun[] = [];
+    setAbandonedRunReporter((run) => { reported.push(run); });
     const hung = runExclusive(db, 'job', () => new Promise<string>((resolve) => { finish = () => resolve('late'); }), {
-      ttlMs: 1500,
+      ttlMs: 60_000,
       maxHoldMs: 600,
       log: { warn: (_obj, msg) => { warnings.push(String(msg)); } },
     });
+    const outcome = hung.then(() => 'returned', (err: unknown) => err);
 
-    await sleep(1300);
+    await sleep(300);
     expect(await claimSchedulerLease(db, runLockName('job'), 60_000, 'replica-b')).toBe(false);   // still held
-    await sleep(1500);
-    expect(await claimSchedulerLease(db, runLockName('job'), 60_000, 'replica-b')).toBe(true);    // run out: theirs now
-    expect(warnings.filter((w) => w.includes('no longer renewed'))).toHaveLength(1);              // said once, not per tick
+    const err = await outcome;
+    expect(err).toBeInstanceOf(LeasedRunAbandonedError);
+    expect((err as LeasedRunAbandonedError).job).toBe(runLockName('job'));
+    // Released, not left to lapse: with a 60 s ttl a lapse would take a minute.
+    expect(await lockRows('job')).toBe(0);
+    expect(warnings.filter((w) => w.includes('was given up'))).toHaveLength(1);
+    await sleep(20);
+    expect(reported).toEqual([{ job: runLockName('job'), holder: expect.any(String), heldMs: 600 }]);
 
-    // The hung run comes back after all. Its release must not take replica-b's lock away.
+    // This process may run the job again — it no longer counts as running here.
+    let release: () => void = () => {};
+    const next = runExclusive(db, 'job', () => new Promise<string>((resolve) => { release = () => resolve('next'); }), { ttlMs: 60_000 });
+    await sleep(200);
+    expect(await lockRows('job')).toBe(1);
+
+    // The run given up comes back after all. It must not end the next run's lock.
     finish();
-    expect(await hung).toEqual({ ran: true, value: 'late' });
+    await sleep(200);
+    expect(await lockRows('job')).toBe(1);
+    expect(warnings.filter((w) => w.includes('has returned after all'))).toHaveLength(1);
     expect(await claimSchedulerLease(db, runLockName('job'), 60_000, 'replica-c')).toBe(false);
+    release();
+    expect(await next).toEqual({ ran: true, value: 'next' });
+    expect(await lockRows('job')).toBe(0);
+  }, 15_000);
+
+  it('a run given up that fails later is logged, not left as an unhandled rejection', async () => {
+    let fail: (err: Error) => void = () => {};
+    const warnings: Array<{ obj: unknown; msg: string }> = [];
+    const hung = runExclusive(db, 'job', () => new Promise<string>((_resolve, reject) => { fail = reject; }), {
+      maxHoldMs: 300,
+      log: { warn: (obj, msg) => { warnings.push({ obj, msg: String(msg) }); } },
+    });
+    await expect(hung).rejects.toBeInstanceOf(LeasedRunAbandonedError);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      fail(new Error('too late'));
+      await sleep(100);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    const late = warnings.find((w) => w.msg.includes('has failed after all'));
+    expect(late?.obj).toMatchObject({ job: runLockName('job'), err: 'too late' });
   }, 15_000);
 
   it('a failure of the work is thrown, and frees the lock', async () => {

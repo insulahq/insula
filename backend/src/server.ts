@@ -8,7 +8,7 @@ import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
 import { persistInstalledVersion } from './modules/platform-updates/service.js';
 import { runExclusive } from './shared/exclusive-run.js';
-import { releaseAllSchedulerLeases, withSchedulerLease } from './shared/scheduler-lease.js';
+import { releaseAllSchedulerLeases, setAbandonedRunReporter, withSchedulerLease } from './shared/scheduler-lease.js';
 import { installK8sConnectionPool } from './shared/k8s-connection-pool.js';
 
 const config = loadConfig();
@@ -18,6 +18,25 @@ const config = loadConfig();
 // handshake per call (see shared/k8s-connection-pool.ts).
 installK8sConnectionPool();
 const db = getDb(config.DATABASE_URL);
+
+// A scheduled job's run that never returns is given up by the lease helper,
+// which frees the job and logs it. A job that hangs is not something an
+// operator finds in a log, so it is also sent to the admins — once an hour
+// per job at most, however often the job hangs again.
+setAbandonedRunReporter(async ({ job, heldMs }) => {
+  const { notifyAdminOperationalEvent } = await import('./modules/notifications/events.js');
+  const waited = heldMs >= 7_200_000 ? `${Math.round(heldMs / 3_600_000)} hours` : `${Math.round(heldMs / 60_000)} minutes`;
+  await notifyAdminOperationalEvent(db, 'platform', {
+    subsystem: 'Background jobs',
+    objectLabel: job,
+    detail: `A run of the background job "${job}" did not finish within ${waited} and was given up. `
+      + 'The job runs again on its schedule; the run given up may still be waiting inside the API process.',
+    severityLabel: 'stuck',
+    recommendedAction: 'If this repeats, the job is waiting on something that does not answer. '
+      + 'Look for the job\'s name in the platform-api log, and restart the platform-api pods to clear the waiting run.',
+  }, `leased-run-given-up:${job}:${new Date().toISOString().slice(0, 13)}`);
+});
+
 const app = await buildApp({ config, db });
 
 // Declare the timer holder up front so the shutdown handler can

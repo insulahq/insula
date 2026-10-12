@@ -11,7 +11,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import {
   __setLeaseTimingForTests,
   claimSchedulerLease,
+  defaultMaxHoldMs,
   LEASE_LIVENESS_MS,
+  LEASE_MAX_HOLD_FLOOR_MS,
+  LeasedRunAbandonedError,
   releaseAllSchedulerLeases,
   releaseSchedulerLease,
   runningSchedulerJobs,
@@ -257,6 +260,79 @@ describe.skipIf(!url)('scheduler lease (real Postgres)', () => {
     expect(runs).toBe(1);
     expect(await secondsLeft('daily')).toBeLessThanOrEqual(LEASE_LIVENESS_MS / 1000);
     expect((await withSchedulerLease(db, 'daily', 1.5 * DAY, async () => { runs += 1; }, { holder: 'replica-a' })).ran).toBe(true);
+  });
+
+  // ── a run that never returns ──────────────────────────────────────────────
+
+  it('a sticky job whose run hangs is given up after its longest hold: the caller is told, and its next tick runs the job here again', async () => {
+    let runs = 0;
+    const hung = withSchedulerLease(db, 'hourly', 60_000, () => { runs += 1; return new Promise<void>(() => {}); }, { holder: 'replica-a', maxHoldMs: 400 });
+    const second = await withSchedulerLease(db, 'hourly', 60_000, async () => { runs += 1; }, { holder: 'replica-a' });
+    expect(second.ran).toBe(false);                                   // still counts as running here
+    await expect(hung).rejects.toBeInstanceOf(LeasedRunAbandonedError);
+    // The schedule is still this replica's: nobody else starts the job meanwhile.
+    expect(await claimSchedulerLease(db, 'hourly', 1_000, 'replica-b')).toBe(false);
+    expect((await withSchedulerLease(db, 'hourly', 60_000, async () => { runs += 1; }, { holder: 'replica-a' })).ran).toBe(true);
+    expect(runs).toBe(2);
+  });
+
+  it('a shutdown after a run was given up hands its lease over: nothing is running here any more', async () => {
+    const hung = withSchedulerLease(db, 'hourly', 60_000, () => new Promise<void>(() => {}), { holder: 'replica-a', maxHoldMs: 300 });
+    await expect(hung).rejects.toBeInstanceOf(LeasedRunAbandonedError);
+    expect(runningSchedulerJobs()).not.toContain('hourly');
+    expect(await releaseAllSchedulerLeases(db, 'replica-a')).toBe(1);
+    expect(await claimSchedulerLease(db, 'hourly', 1_000, 'replica-b')).toBe(true);
+  });
+
+  it('a run that ends within its longest hold is returned as before, and a failure of the job stays the job\'s failure', async () => {
+    expect(await withSchedulerLease(db, 'hourly', 60_000, async () => { await sleep(100); return 'done'; }, { holder: 'replica-a', maxHoldMs: 5_000 }))
+      .toEqual({ ran: true, value: 'done' });
+    await expect(withSchedulerLease(db, 'hourly', 60_000, async () => { throw new Error('boom'); }, { holder: 'replica-a', maxHoldMs: 5_000 }))
+      .rejects.toThrow('boom');
+    await expect(withSchedulerLease(db, 'hourly', 60_000, () => { throw new Error('sync boom'); }, { holder: 'replica-a', maxHoldMs: 5_000 }))
+      .rejects.toThrow('sync boom');
+    expect(runningSchedulerJobs()).not.toContain('hourly');
+  });
+
+  it('a job that opts out of the longest hold is waited for, however long it takes', async () => {
+    let finish: () => void = () => {};
+    const slow = withSchedulerLease(db, 'hourly', 60_000, () => new Promise<string>((resolve) => { finish = () => resolve('late'); }),
+      { holder: 'replica-a', maxHoldMs: Number.POSITIVE_INFINITY });
+    await sleep(500);
+    expect(runningSchedulerJobs()).toContain('hourly');
+    finish();
+    expect(await slow).toEqual({ ran: true, value: 'late' });
+  });
+
+  it('a database that stops answering after the run does not leave the job "running" here for good', async () => {
+    __setLeaseTimingForTests({ afterRunWaitMs: 300 });
+    // The claim is answered; the release that follows the run never is.
+    let stalled = false;
+    const stalling = { execute: (q: Parameters<typeof db.execute>[0]) => (stalled ? new Promise<never>(() => {}) : db.execute(q)) };
+    const warnings: string[] = [];
+    const started = performance.now();
+    const outcome = await withSchedulerLease(stalling, 'lock', 60_000, async () => { stalled = true; return 'done'; },
+      { holder: 'replica-a', release: true, log: { warn: (_o, msg) => { warnings.push(String(msg)); } } });
+    expect(outcome).toEqual({ ran: true, value: 'done' });
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(warnings.filter((w) => w.includes('the lease writes after the run did not return'))).toHaveLength(1);
+    expect(runningSchedulerJobs()).not.toContain('lock');
+    // The row is still there — its release never landed — and is this holder's
+    // own, so the next run here takes it over instead of waiting for it.
+    expect((await withSchedulerLease(db, 'lock', 60_000, async () => 'again', { holder: 'replica-a', release: true })).ran).toBe(true);
+  });
+
+  it('the default longest hold is four ttls, twelve hours at least, and never more than a timer can wait', () => {
+    expect(defaultMaxHoldMs(90_000)).toBe(LEASE_MAX_HOLD_FLOOR_MS);
+    expect(defaultMaxHoldMs(9 * 60 * 60_000)).toBe(36 * 60 * 60_000);
+    expect(LEASE_MAX_HOLD_FLOOR_MS).toBe(12 * 60 * 60_000);
+  });
+
+  it('a weekly job, whose longest hold is beyond what a timer can wait, is not given up at once', async () => {
+    const WEEK = 7 * DAY;
+    expect(defaultMaxHoldMs(1.5 * WEEK)).toBeGreaterThan(2 ** 31 - 1);
+    expect(await withSchedulerLease(db, 'weekly', 1.5 * WEEK, async () => { await sleep(150); return 'done'; }, { holder: 'replica-a' }))
+      .toEqual({ ran: true, value: 'done' });
   });
 
   // ── the start-up run that a rollout, or a crash, refuses ──────────────────

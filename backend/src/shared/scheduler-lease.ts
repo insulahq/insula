@@ -38,6 +38,16 @@
  *
  * A job never runs twice at once in one process either: a tick that finds the
  * job still running here is refused like any other.
+ *
+ * A run that never returns — a call to the cluster with no timeout — would
+ * therefore stop its job for good: every later tick is refused here, the lease
+ * is renewed for ever, and a timer that re-arms itself after its tick never
+ * does. So every run has a longest hold. Past it the helper gives the run up:
+ * it says so, frees the job (here and, for a run lock, everywhere), and throws
+ * to its caller, whose next tick starts the job afresh. The run given up may
+ * still be pending; whatever it returns later goes nowhere. The hold is far
+ * above any honest run, because a run given up while it is merely slow is
+ * joined by a second one.
  */
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -84,6 +94,61 @@ export const SCHEDULER_LEASE_KEY_PREFIX = 'scheduler-lease:';
 const KEY_PREFIX = SCHEDULER_LEASE_KEY_PREFIX;
 
 /**
+ * The shortest default longest hold. A job's own default is four of its ttls
+ * (six intervals) when that is longer — a daily job is given six days.
+ */
+export const LEASE_MAX_HOLD_FLOOR_MS = 12 * 60 * 60_000;
+
+/** The furthest ahead a timer can be set; a longer delay fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** The longest a run of a job with this ttl is waited for, unless its caller says otherwise. */
+export const defaultMaxHoldMs = (ttlMs: number): number => Math.max(4 * ttlMs, LEASE_MAX_HOLD_FLOOR_MS);
+
+/** Thrown to the caller of a run that was given up (see the header). */
+export class LeasedRunAbandonedError extends Error {
+  readonly job: string;
+  readonly heldMs: number;
+  constructor(job: string, heldMs: number) {
+    super(`the run of "${job}" did not return within ${formatHold(heldMs)} and was given up; it may still be pending in this process`);
+    this.name = 'LeasedRunAbandonedError';
+    this.job = job;
+    this.heldMs = heldMs;
+  }
+}
+
+function formatHold(ms: number): string {
+  if (ms >= 2 * 60 * 60_000) return `${Math.round(ms / (60 * 60_000))} h`;
+  if (ms >= 2 * 60_000) return `${Math.round(ms / 60_000)} min`;
+  return `${Math.round(ms / 1000)} s`;
+}
+
+export interface AbandonedRun {
+  readonly job: string;
+  readonly holder: string;
+  readonly heldMs: number;
+}
+
+/**
+ * Told about every run given up, besides the log line — the server wires an
+ * operator notification here. It must not throw; a failure is logged only.
+ */
+let abandonedRunReporter: ((run: AbandonedRun) => void | Promise<void>) | null = null;
+export function setAbandonedRunReporter(reporter: ((run: AbandonedRun) => void | Promise<void>) | null): void {
+  abandonedRunReporter = reporter;
+}
+
+function reportAbandonedRun(run: AbandonedRun, log: LeaseLogger | undefined): void {
+  const msg = `scheduler lease: the run did not return within ${formatHold(run.heldMs)} and was given up — the job is free to start again; the run given up may still be pending`;
+  if (log) log.warn(run, msg);
+  else console.error(`[scheduler-lease] ${msg}`, run);
+  if (!abandonedRunReporter) return;
+  void Promise.resolve().then(() => abandonedRunReporter?.(run)).catch((err: unknown) => {
+    console.error('[scheduler-lease] could not report the run given up:', err instanceof Error ? err.message : String(err));
+  });
+}
+
+/**
  * Jobs whose `fn` is running in this process right now, by lease name. A
  * graceful shutdown must not hand these to another replica: the work is still
  * in flight (a restic prune it spawned may even outlive this process), so its
@@ -107,11 +172,19 @@ interface HeldLease {
   pending?: Promise<void>;
 }
 
+/**
+ * How long the lease writes that follow a run are waited for before the job
+ * is freed in this process without them. Far above a slow statement; reached
+ * only by a database that has stopped answering.
+ */
+const LEASE_SETTLE_MS = 60_000;
+
 const DEFAULT_TIMING = {
   livenessMs: LEASE_LIVENESS_MS,
   keepAliveEveryMs: KEEP_ALIVE_EVERY_MS,
   startupDelayMs: LEASED_STARTUP_DELAY_MS,
   startupLastTryMs: STARTUP_LAST_TRY_MS,
+  afterRunWaitMs: LEASE_SETTLE_MS,
 };
 let timing = { ...DEFAULT_TIMING };
 const held = new Map<string, HeldLease>();
@@ -304,10 +377,10 @@ export interface LeaseOptions {
   /** How often a long run renews its lease. Default: a third of the ttl, at most every 5 min. */
   readonly renewEveryMs?: number;
   /**
-   * Stop renewing once the run has lasted this long, and say so. The lease
-   * then runs out after its ttl and another replica may start the work — for
-   * a lock that must not be held for ever by a run that hangs (a call to the
-   * cluster with no timeout). Default: renew for as long as `fn` is pending.
+   * The longest the run is waited for. Past it the run is given up (see the
+   * header): the job is freed and LeasedRunAbandonedError is thrown. Default:
+   * `defaultMaxHoldMs(ttlMs)`. `Infinity` waits for ever — only for work that
+   * bounds itself and must never be started beside itself.
    */
   readonly maxHoldMs?: number;
   /**
@@ -326,7 +399,8 @@ export type LeaseOutcome<T> = { readonly ran: true; readonly value: T } | { read
  * already running the job; otherwise skip. The lease is renewed while `fn`
  * runs, so a run longer than `ttlMs` is not taken over mid-flight. A failure
  * to renew is logged, never thrown — the run in flight is not abandoned over a
- * database blip.
+ * database blip. A run that outlasts its longest hold is given up, and that is
+ * thrown (LeasedRunAbandonedError).
  *
  * A sticky job with a long ttl that is refused on its first tick in this
  * process may be run later by the helper itself (see the header). `fn` then
@@ -367,17 +441,7 @@ export async function withSchedulerLease<T>(
 
   const renewEveryMs = opts.renewEveryMs ?? Math.min(ttlMs / 3, 5 * 60_000);
   let renewing: Promise<void> = Promise.resolve();
-  const startedAt = performance.now();
-  let gaveUp = false;
   const timer = setInterval(() => {
-    if (opts.maxHoldMs !== undefined && performance.now() - startedAt >= opts.maxHoldMs) {
-      if (!gaveUp) {
-        gaveUp = true;
-        opts.log?.warn({ job, holder, maxHoldMs: opts.maxHoldMs },
-          'scheduler lease: the run has outlasted its longest hold and is no longer renewed — it may be hung; another replica can start the work once the lease runs out');
-      }
-      return;
-    }
     renewing = claimSchedulerLease(db, job, ttlMs, holder).then((kept) => {
       if (!kept) opts.log?.warn({ job, holder }, 'scheduler lease: lost to another replica while running');
     }, (err: unknown) => {
@@ -386,14 +450,46 @@ export async function withSchedulerLease<T>(
   }, Math.max(1000, renewEveryMs));
   timer.unref?.();
   if (sticky) ranHere.add(firstKey);
+  const maxHoldMs = opts.maxHoldMs ?? defaultMaxHoldMs(ttlMs);
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
   try {
-    return { ran: true, value: await fn() };
+    if (!Number.isFinite(maxHoldMs)) return { ran: true, value: await fn() };
+    const GIVEN_UP = Symbol('given up');
+    const startedAt = performance.now();
+    const run = (async () => fn())();
+    const first = await Promise.race([
+      run,
+      new Promise<typeof GIVEN_UP>((resolve) => {
+        giveUp = setTimeout(() => resolve(GIVEN_UP), Math.min(MAX_TIMER_MS, Math.max(0, maxHoldMs)));
+        giveUp.unref?.();
+      }),
+    ]);
+    if (first !== GIVEN_UP) return { ran: true, value: first as T };
+    // The run goes on by itself, if it goes on at all. Whatever it ends with
+    // has nobody left to go to — say so, and keep a late failure from counting
+    // as an unhandled one.
+    const lateEnd = (how: 'returned' | 'failed', err?: unknown): void => {
+      const late = {
+        job, holder, afterMs: Math.round(performance.now() - startedAt),
+        ...(how === 'failed' ? { err: err instanceof Error ? err.message : String(err) } : {}),
+      };
+      const msg = `scheduler lease: a run given up earlier has ${how} after all; its result is dropped`;
+      if (opts.log) opts.log.warn(late, msg);
+      else console.warn(`[scheduler-lease] ${msg}`, late);
+    };
+    run.then(() => lateEnd('returned'), (err: unknown) => lateEnd('failed', err));
+    reportAbandonedRun({ job, holder, heldMs: maxHoldMs }, opts.log);
+    throw new LeasedRunAbandonedError(job, maxHoldMs);
   } finally {
     clearInterval(timer);
+    if (giveUp) clearTimeout(giveUp);
     // The job counts as running here until its lease has reached its resting
     // state: a tick let in earlier would have its fresh claim cut back, or its
-    // run lock deleted, by the writes below.
-    try {
+    // run lock deleted, by the writes below. But not for ever: a database that
+    // stops answering just now must not leave the job "running" in this
+    // process until it restarts — the state this helper exists to end.
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    const settled = (async (): Promise<void> => {
       // A renewal on its way would land after them and undo them.
       await renewing;
       if (opts.release || (sticky && stopping)) {
@@ -415,7 +511,25 @@ export async function withSchedulerLease<T>(
         holdLongLease(job, lease);
         await cut;
       }
+    })();
+    try {
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => {
+          settleTimer = setTimeout(() => {
+            const detail = { job, holder, afterMs: timing.afterRunWaitMs };
+            const msg = 'scheduler lease: the lease writes after the run did not return; the job is freed here without them';
+            if (opts.log) opts.log.warn(detail, msg);
+            else console.warn(`[scheduler-lease] ${msg}`, detail);
+            resolve();
+          }, timing.afterRunWaitMs);
+          settleTimer.unref?.();
+        }),
+      ]);
     } finally {
+      if (settleTimer) clearTimeout(settleTimer);
+      // Whatever the writes come to later has nobody waiting for it.
+      settled.catch(() => undefined);
       inFlight.delete(job);
     }
   }
