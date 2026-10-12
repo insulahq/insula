@@ -176,6 +176,63 @@ transitions** tree, and controls to **Retry** a failed hook run and
 [Dashboard](index.md) links here when a transition fails. The lifecycle
 itself is described in [Tenants](tenants.md).
 
+### Automatic archive and delete
+
+The card at the top of the page lets the platform move idle tenants along by
+itself. Both steps are **off** until you switch them on.
+
+| Step | What it does | Default limit |
+|------|--------------|---------------|
+| **Archive suspended tenants** | A tenant that has been suspended for longer than the limit is archived — the same [Archive](tenants.md#the-lifecycle-suspend-resume-archive-restore-delete) as on the tenant page: its files are copied to the backup target, then its mailboxes, aliases, deployments and storage volume are deleted. | 30 days |
+| **Delete archived tenants** | A tenant that has been archived for longer than the limit is deleted — the same Delete as on the tenant page. | 90 days |
+
+The platform checks every **6 hours**. Days are counted from the moment the
+tenant was suspended, or archived; editing the tenant does not restart the
+count.
+
+**Before you save.** Under each step the card lists the tenants its limit
+reaches: who is already past it and will be acted on at the next run, and who
+comes next and on what date. The lists follow the limit as you type it, so
+you can try a value before saving. Switching a step on, or shortening its
+limit, can reach tenants that were suspended or archived long ago — a save
+that puts tenants in front of the next run asks first and names every one of
+them, and a delete has to be typed.
+
+**How long an archive is kept.** An archive taken automatically is kept for
+the platform's archive retention (90 days unless changed), or for the delete
+limit when automatic delete is on and longer — so an archive never expires
+before its tenant is deleted. A deleted tenant can be recovered only for as
+long as its backups are kept: see
+[Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant).
+
+**What the sweep leaves alone.**
+
+- The SYSTEM tenant, always.
+- A tenant with a storage operation under way, or one whose last storage
+  operation failed and has not been cleared — the card says so next to it.
+- A tenant with no recorded suspension (or archive) date.
+- Every suspended tenant, when no backup target is assigned to tenant
+  snapshots: no archive can be taken, so none is. The card shows this as a
+  warning with a link to **Backups → Targets**.
+
+**Run now** checks at once instead of waiting for the next run. With tenants
+due it names them first. The card shows when the sweep last ran, what it did,
+and what it could not do and why; the admins also get a notification for each
+run that archived or deleted something, or failed to.
+
+The sweep works through its tenants one at a time, so the first run after
+switching it on can take a while when many are due. Just before it archives
+or deletes a tenant it checks again that the tenant is still due — if you
+resumed or restored it in the meantime, it is left alone.
+
+**Changing your mind while it runs.** The sweep reads the settings again
+before every tenant. Switch a step off and a run under way stops before its
+next tenant; raise a limit and the next tenant is held to the new one. A
+tenant the sweep is already working on is finished.
+
+Every change of these settings, and every **Run now**, is recorded in the
+audit log with the admin who made it.
+
 ## Notifications
 
 **Platform → Notifications** configures how and when the platform notifies

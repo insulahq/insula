@@ -19,6 +19,7 @@ import {
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
+import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
 import {
   EMPTY_TIMELINE,
   RESTORE_STEP_LABELS,
@@ -86,6 +87,12 @@ async function mustGetTenant(db: Database, tenantId: string) {
   return tenant;
 }
 
+/**
+ * Refuse when an operation already owns the tenant. Every caller runs under
+ * the tenant's lock (tenant-lock.ts), taken by the exported starter that
+ * wraps it — so the state read here is still the state when the caller
+ * writes its own claim a few statements on.
+ */
 async function mustBeIdle(db: Database, tenantId: string) {
   const [tenant] = await db.select({
     state: tenants.storageLifecycleState,
@@ -478,6 +485,14 @@ export async function resizeTenant(
   ctx: ServiceCtx,
   tenantId: string,
   params: { newMib?: number; newGi?: number; triggeredByUserId?: string | null },
+): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startResize(ctx, tenantId, params));
+}
+
+async function startResize(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: Parameters<typeof resizeTenant>[2],
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -1091,6 +1106,14 @@ export async function restoreTenantFromVolumeSnapshot(
     readonly triggeredByUserId?: string | null;
   },
 ): Promise<{ operationId: string }> {
+  return withTenantLock(db, args.tenantId, () => startRestoreFromVolumeSnapshot(db, k8s, args));
+}
+
+async function startRestoreFromVolumeSnapshot(
+  db: Database,
+  k8s: K8sClients,
+  args: Parameters<typeof restoreTenantFromVolumeSnapshot>[2],
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(db, args.tenantId);
   await mustBeIdle(db, args.tenantId);
   const namespace = tenant.kubernetesNamespace;
@@ -1289,6 +1312,14 @@ export async function restoreTenantFromRetainedVolume(
     readonly snapshotName: string;
     readonly triggeredByUserId?: string | null;
   },
+): Promise<{ operationId: string }> {
+  return withTenantLock(db, args.tenantId, () => startRestoreFromRetainedVolume(db, k8s, args));
+}
+
+async function startRestoreFromRetainedVolume(
+  db: Database,
+  k8s: K8sClients,
+  args: Parameters<typeof restoreTenantFromRetainedVolume>[2],
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(db, args.tenantId);
   await mustBeIdle(db, args.tenantId);
@@ -1728,6 +1759,14 @@ export async function suspendTenant(
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => suspendTenantLocked(ctx, tenantId, opts));
+}
+
+async function suspendTenantLocked(
+  ctx: ServiceCtx,
+  tenantId: string,
+  opts: NonNullable<Parameters<typeof suspendTenant>[2]>,
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'suspended') {
@@ -1800,6 +1839,14 @@ export async function resumeTenant(
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => resumeTenantLocked(ctx, tenantId, opts));
+}
+
+async function resumeTenantLocked(
+  ctx: ServiceCtx,
+  tenantId: string,
+  opts: NonNullable<Parameters<typeof resumeTenant>[2]>,
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status !== 'suspended') {
@@ -1869,12 +1916,34 @@ export async function resumeTenant(
 export async function archiveTenant(
   ctx: ServiceCtx,
   tenantId: string,
-  params: { retentionDays?: number; triggeredByUserId?: string | null } = {},
+  params: {
+    retentionDays?: number;
+    triggeredByUserId?: string | null;
+    /**
+     * Archive only a tenant that is still suspended, and has been since before
+     * this moment — checked under the tenant's lock. For the automatic sweep,
+     * whose list of due tenants may be hours old by the time it reaches one:
+     * the operator may have resumed it meanwhile. Refused with NO_LONGER_DUE.
+     */
+    onlyIfSuspendedBefore?: Date;
+  } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startArchive(ctx, tenantId, params));
+}
+
+async function startArchive(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: NonNullable<Parameters<typeof archiveTenant>[2]>,
 ): Promise<{ operationId: string; snapshotId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'archived') {
     throw new ApiError('ALREADY_ARCHIVED', 'Tenant is already archived', 409);
+  }
+  if (params.onlyIfSuspendedBefore
+    && !(tenant.status === 'suspended' && tenant.suspendedAt && tenant.suspendedAt < params.onlyIfSuspendedBefore)) {
+    throw new ApiError('NO_LONGER_DUE', 'Tenant is no longer suspended for long enough to be archived automatically', 409);
   }
 
   const opId = uuid();
@@ -2044,6 +2113,14 @@ export async function restoreArchivedTenant(
   ctx: ServiceCtx,
   tenantId: string,
   params: { newGi?: number; triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startRestoreArchived(ctx, tenantId, params));
+}
+
+async function startRestoreArchived(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: NonNullable<Parameters<typeof restoreArchivedTenant>[2]>,
 ): Promise<{ operationId: string; snapshotId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -2287,7 +2364,7 @@ export async function fsckCheckTenant(
   tenantId: string,
   opts: { triggeredByUserId?: string | null } = {},
 ): Promise<{ operationId: string }> {
-  return startFsck(ctx, tenantId, true, opts);
+  return withTenantLock(ctx.db, tenantId, () => startFsck(ctx, tenantId, true, opts));
 }
 
 /**
@@ -2302,7 +2379,7 @@ export async function fsckRepairTenant(
   tenantId: string,
   opts: { triggeredByUserId?: string | null } = {},
 ): Promise<{ operationId: string }> {
-  return startFsck(ctx, tenantId, false, opts);
+  return withTenantLock(ctx.db, tenantId, () => startFsck(ctx, tenantId, false, opts));
 }
 
 async function startFsck(

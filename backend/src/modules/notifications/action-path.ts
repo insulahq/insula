@@ -147,6 +147,9 @@ export const MAIL_DRIFT_RESOURCE = 'mail_drift';
 /** `resourceType` of a backup-retention (restic forget/prune) alert (`admin.storage_event`). */
 export const BACKUP_RETENTION_RESOURCE = 'backup_retention';
 
+/** `resourceType` of what the automatic archive/delete sweep did (`admin.platform_event`). */
+export const TENANT_AUTOMATION_RESOURCE = 'tenant_lifecycle_automation';
+
 /**
  * Categories that report on several subsystems, where the emitter names WHICH
  * one with `resourceType`: category → resourceType → page.
@@ -161,6 +164,8 @@ export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, str
   // Backup retention (restic forget/prune) is storage housekeeping, but the
   // operator acts on it from Backups, not from the cluster storage page.
   'admin.storage_event': { [BACKUP_RETENTION_RESOURCE]: '/backups' },
+  // The sweep is switched on, and its backlog shown, at the top of this page.
+  'admin.platform_event': { [TENANT_AUTOMATION_RESOURCE]: '/platform/lifecycle-hooks' },
 };
 
 export function notificationActionPath(input: ActionPathInput): string | null {

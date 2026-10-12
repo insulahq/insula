@@ -240,6 +240,11 @@ You can drive the same transitions from the **Status** dropdown in the
 Account Information card — it's the keyboard-friendly equivalent of the
 buttons.
 
+Archive and Delete can also happen by themselves: a suspended tenant archived
+after a set number of days, an archived one deleted after another. Both are
+off until switched on — see
+[Automatic archive and delete](platform-settings.md#automatic-archive-and-delete).
+
 !!! warning "Archive vs Delete"
     **Archive** is the safe choice when a customer leaves but might come
     back — their data survives as a snapshot. **Delete** is permanent and

@@ -44,6 +44,7 @@ import {
 } from '../storage-lifecycle/service.js';
 import { startDataRelocation } from '../tenant-placement/relocate.js';
 import { repinDeployments } from './repin.js';
+import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
 
 type DataRelocation = MigrateToWorkerResult['dataRelocation'];
 
@@ -286,7 +287,9 @@ function bindSteps(db: Database, k8s: K8sClients, input: BeginMoveInput, opId: s
 export async function beginTenantMove(db: Database, k8s: K8sClients, input: BeginMoveInput): Promise<string> {
   const opId = randomUUID();
   const source = input.sourceNodes.join(', ');
-  await db.transaction(async (tx) => {
+  // Under the tenant's lock, like every other start: a delete of the tenant
+  // holds it for as long as it runs.
+  await withTenantLock(db, input.tenantId, () => db.transaction(async (tx) => {
     await tx.insert(storageOperations).values({
       id: opId,
       tenantId: input.tenantId,
@@ -316,7 +319,7 @@ export async function beginTenantMove(db: Database, k8s: K8sClients, input: Begi
         { currentState: cur?.state ?? null, activeOpId: cur?.opId ?? null },
       );
     }
-  });
+  }));
   // Puts the chip in the Task Tracker before the first step runs.
   await updateOp(db, opId, { progressPct: 0 }).catch(() => undefined);
 

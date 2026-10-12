@@ -52,6 +52,8 @@ function makeDb(byId: Map<string, { id: string; status: string; kubernetesNamesp
     update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
     delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+    // The tenant's lock (tenant-lock.ts): always free here.
+    execute: vi.fn().mockResolvedValue({ rows: [{ setting_key: 'lease' }] }),
   };
 }
 

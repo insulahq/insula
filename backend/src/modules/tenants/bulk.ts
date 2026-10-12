@@ -141,9 +141,10 @@ export async function bulkUpdateTenantStatus(
 }
 
 /**
- * Bulk hard-delete. Each per-tenant delete is dispatched through
- * `applyDeleted` so the orphan-prevention hooks (pv-cleanup-released,
- * dns-zone-cleanup, tenant-bundles-bundle-cleanup, etc.) fire.
+ * Bulk hard-delete. Each per-tenant delete is the single-tenant delete
+ * (`deleteTenant`), which dispatches through `applyDeleted` so the
+ * orphan-prevention hooks (pv-cleanup-released, dns-zone-cleanup,
+ * tenant-bundles-bundle-cleanup, etc.) fire.
  *
  * Pre-A2 this skipped `applyDeleted` entirely and called
  * `deleteNamespace` + `db.delete(tenants)` inline — every external
@@ -192,17 +193,10 @@ export async function bulkDeleteTenants(
         continue;
       }
 
-      if (k8sTenants) {
-        const { applyDeleted } = await import('../tenant-lifecycle/cascades.js');
-        await applyDeleted(
-          { db, k8s: k8sTenants, triggeredByUserId, parentTaskId },
-          id,
-          tenant.kubernetesNamespace,
-        );
-      } else {
-        // Without k8s, fall through to a DB-only delete (unit-test path).
-        await db.delete(tenants).where(eq(tenants.id, id));
-      }
+      // The one delete there is: the single-tenant route's, which holds the
+      // tenant's lock and clears its snapshot archives before the row goes.
+      const { deleteTenant } = await import('./service.js');
+      await deleteTenant(db, id, k8sTenants, { triggeredByUserId, parentTaskId });
 
       const { tagBulkOpOnLatestTransition } = await import('../tenant-lifecycle/bulk-tag.js');
       const txId = await tagBulkOpOnLatestTransition(db, id, bulkOpId);

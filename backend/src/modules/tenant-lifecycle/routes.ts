@@ -23,6 +23,7 @@ import {
   tenantLifecycleTransitions,
   tenantLifecycleHookRuns,
 } from '../../db/schema.js';
+import { registerTenantAutomationRoutes } from './automation/routes.js';
 
 type HookRunRow = typeof tenantLifecycleHookRuns.$inferSelect;
 
@@ -45,6 +46,8 @@ export async function tenantLifecycleRoutes(app: FastifyInstance): Promise<void>
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
+
+  registerTenantAutomationRoutes(app);
 
   // GET /admin/lifecycle/transitions?tenantId=...&limit=...
   app.get('/admin/lifecycle/transitions', {

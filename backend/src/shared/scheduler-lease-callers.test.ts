@@ -37,9 +37,6 @@ const SRC = join(import.meta.dirname, '..');
  * `<job> <module>#<function> <- <calling file>` → `'run-lock'`, or why the
  * call takes none. Keys are exactly what the scan prints.
  */
-const PER_TENANT = 'one tenant\'s transition, started by an operator: open — the sweep can reach the same tenant at the same '
-  + 'moment, and only an idle check without a claim stands between them (the tenant lifecycle\'s to close, per tenant)';
-
 const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   // ── Reconcilers a route starts after it has changed what they read ──
   'backup-rclone-shim modules/backup-rclone-shim/reconciler.ts#reconcileBackupRcloneShim <- modules/backup-rclone-shim/apply-assignment.ts': 'run-lock',
@@ -59,6 +56,7 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   'subscription-expiry modules/subscriptions/expiry-checker.ts#suspendExpiredTenants <- modules/subscriptions/routes.ts': 'run-lock',
   'crowdsec-bouncer-prune modules/security-hardening/crowdsec.ts#pruneStaleBouncers <- modules/security-hardening/routes.ts': 'run-lock',
   'daily-image-prune modules/storage/service.ts#purgeUnusedImages <- modules/storage/routes.ts': 'run-lock',
+  'storage-auto-archive modules/tenant-lifecycle/automation/real.ts#sweepTenantsOnce <- modules/tenant-lifecycle/automation/routes.ts': 'run-lock',
   'restic-retention modules/tenant-bundles/restic-retention.ts#runResticRetentionSweep <- modules/tenant-bundles/routes.ts':
     'takes the sweep\'s own run lock (RESTIC_SWEEP_RUN_LOCK), which the scheduled sweep takes too; a dry run changes nothing and may overlap',
   'dns-route-drift-scan modules/dns-apex-drift/service.ts#scanApexDrift <- modules/dns-apex-drift/routes.ts':
@@ -70,18 +68,6 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   'waf-log-scraper modules/ingress-routes/waf-log-scraper.ts#scrapeWafLogs <- modules/security-hardening/routes.ts':
     'an event with a ModSecurity unique id is stored once, whoever read it. The rare event without one is stored again by '
     + 'every read of its window — which a refresh is, overlapping the tick or not — so a lock would change nothing',
-
-  // ── One tenant, named by the operator — a different operation from the
-  //    sweep that picks tenants. Not excluded here, and not harmless: the
-  //    operator and the sweep can reach the SAME tenant at once (the sweep
-  //    archives a suspended tenant, and deletes an archived one, when its
-  //    retention ends). Serialising one tenant's transitions belongs to the
-  //    tenant lifecycle, per tenant; a job-wide lock would make every manual
-  //    archive or delete wait for a whole sweep. ──
-  'storage-auto-archive modules/storage-lifecycle/service.ts#archiveTenant <- modules/storage-lifecycle/routes.ts': PER_TENANT,
-  'storage-auto-archive modules/storage-lifecycle/service.ts#archiveTenant <- modules/tenants/service.ts': PER_TENANT,
-  'storage-auto-archive modules/tenant-lifecycle/cascades.ts#applyDeleted <- modules/tenants/bulk.ts': PER_TENANT,
-  'storage-auto-archive modules/tenant-lifecycle/cascades.ts#applyDeleted <- modules/tenants/service.ts': PER_TENANT,
 
   // ── Reads ──
   'node-subsystem-health modules/cluster-health/service.ts#collectNodeSubsystemHealth <- modules/cluster-health/routes.ts': 'a read: the page shows the current state',
