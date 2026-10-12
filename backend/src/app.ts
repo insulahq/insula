@@ -1865,9 +1865,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           // One boot sweep per rollout: every replica boots and each redeployed
           // every unremediated instance. The first booting replica claims the
           // sweep for 30 min; the others skip it.
+          // No later try: refused means another replica is sweeping, and the
+          // report below must come from the run that made it.
           const leased = await withSchedulerLease(app.db, 'multihost-remediation-boot', 30 * 60_000, () => remediateMultihostDeployments(
             app.db, k8sForRemediation, redeployWithCurrentConfig as never, app.log as never,
-          ));
+          ), { startupRetry: false });
           if (!leased.ran) return;
           const report = leased.value;
           if (report.remediated.length > 0 || report.failed.length > 0) {

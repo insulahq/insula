@@ -21,7 +21,7 @@ import { mailLogger } from '../../shared/mail-logger.js';
 import { tenants } from '../../db/schema.js';
 import { notifyTenantSubscriptionExpiry } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
-import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../shared/scheduler-lease.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const expiryLog = () => mailLogger().child({ module: 'subscriptions-expiry' });
 
@@ -176,9 +176,9 @@ export function startExpiryWarningScheduler(
       log?.warn('[notifications] expiry-warning scheduler tick failed', err);
     }
   };
-  // A first scan shortly after start, so a fresh deploy doesn't wait 6 hours.
-  const startup = setTimeout(() => { void tick(); }, LEASED_STARTUP_DELAY_MS);
-  startup.unref?.();
+  // Fire once immediately so a fresh deploy doesn't wait 6 hours for the
+  // first scan. (Refused during a rollout, the lease tries it once more.)
+  void tick();
   const timer = setInterval(() => { void tick(); }, INTERVAL_MS);
   timer.unref?.();
   return timer;

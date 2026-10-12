@@ -68,10 +68,34 @@ it converges to a value every replica derives identically. Reasons that do
 **not** qualify: "the notification has a dedupe key" (the key is checked by a
 lookup, not a constraint, so replicas ticking together both send), and "the Job
 name is deterministic" when the finished Job is removed before the next
-replica's tick. A job with a long interval makes its start-up run after
-`LEASED_STARTUP_DELAY_MS`, not at once: during a rollout the replaced process
-still holds the lease when the new one starts, and a run skipped then would
-wait a whole interval.
+replica's tick.
+
+Two rules keep a long interval from becoming a long gap:
+
+- **Liveness.** While a job runs, its lease covers the job's whole ttl — the
+  work may outlive the process (a restic prune, a spawned Job), and nothing
+  may start it again beside itself. When the run ends the lease is cut back to
+  `LEASE_LIVENESS_MS` (10 min), and a keep-alive in the holding process extends
+  it until the job's ttl has passed without a tick. A replica that dies between
+  runs therefore frees a daily job's lease within ten minutes instead of
+  holding it for 36 hours; the job then runs at the next replica's tick. A
+  replica that dies mid-run keeps the lease for the full ttl, as before. Run
+  locks (`release: true`) are written for their whole ttl.
+- **The start-up run.** During a rollout the replaced process still holds the
+  lease when the new one starts, so the new one's first tick is refused. A job
+  whose own next tick is far away (ttl above nine minutes) is tried again
+  through the lease `LEASED_STARTUP_DELAY_MS` (3 min) later, and once more just
+  past the liveness window — the first covers a rollout, the second a holder
+  that died. With other live replicas both are refused, as they should be. A
+  start-up one-shot whose caller needs the result opts out
+  (`startupRetry: false`).
+- **One run per process.** A tick that finds its job still running in the same
+  process is refused; the database cannot do that, since a holder's own claim
+  always succeeds.
+
+The upgrade reconciler is the one timer that takes its own per-tick claim
+instead of a sticky lease (an upgrade restarts the replicas, so no replica may
+own it); each pass additionally holds the run lock `platform-upgrade-pass`.
 
 What `Apply HA` does NOT do:
 - Per-tenant client workloads (separate per-tenant storage tier — see

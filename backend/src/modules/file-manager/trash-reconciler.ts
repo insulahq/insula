@@ -1,4 +1,4 @@
-import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../shared/scheduler-lease.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { fileTrashState, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -198,14 +198,13 @@ export async function runTrashReconcile(
 export function startTrashReconciler(db: Database, kubeconfigPath?: string): NodeJS.Timeout {
   // One replica reconciles: the tenants to purge are read without a claim and
   // each one starts that tenant's file manager, so replicas started the same
-  // pods. One pass shortly after startup so a long-stopped cluster catches up
-  // promptly, then on the interval.
+  // pods. One pass at startup so a long-stopped cluster catches up promptly,
+  // then on the interval.
   const tick = (): void => safeTick(
     'file-trash-reconcile',
     () => withSchedulerLease(db, 'file-trash-reconcile', RECONCILE_INTERVAL_MS * 1.5, () => runOnce(db, kubeconfigPath)),
   );
-  const startup = setTimeout(tick, LEASED_STARTUP_DELAY_MS);
-  if (typeof startup.unref === 'function') startup.unref();
+  tick();
   const timer = setInterval(tick, RECONCILE_INTERVAL_MS);
   if (typeof timer.unref === 'function') timer.unref();
   return timer;

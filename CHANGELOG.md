@@ -80,11 +80,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - reconcilers where two replicas at once could roll a workload twice (the backup shim, the
     ingress trusted-proxy arguments, WAF exclusions) or cancel a first-run step (CrowdSec's
     database).
-  A single-replica cluster runs the same jobs as before; after a restart, the first run of the
-  escalation, expiry-warning and recycle-bin jobs now comes three minutes after start instead of at
-  once (the mail blocklist check: three minutes instead of two). A test now finds every recurring
-  timer by parsing the source, and fails until each is either leased or listed with the reason it
-  runs on every replica.
+  A single-replica cluster runs the same jobs as before. A test now finds every recurring timer by
+  parsing the source, and fails until each is either leased or listed with the reason it runs on
+  every replica.
+- **A leased job no longer waits out a dead replica, or skips its run after a rollout.**
+  - A replica that died kept each job's lease for one and a half times the job's interval — a day
+    and a half for a daily job, ten days for the weekly storage audit — and no other replica
+    could run it meanwhile. Between runs a lease is now written at most ten minutes ahead and
+    kept alive by the replica holding it, so a dead replica's lease is free within ten minutes
+    and the job runs at the next replica's tick. While a job is running its lease still covers
+    the whole interval-and-a-half, as before: the work may outlive the replica that started it.
+  - During a rollout the new replica's start-up run was refused, because the one it replaced
+    still held the lease, and the job then waited a whole interval: half an hour for the mail
+    domain reconciler, an hour for subscription expiry, and never on a cluster deployed more
+    often than the interval. A job with a long interval that is refused on its first run is now
+    tried again three minutes later, and once more after eleven — which is also what brings a
+    single-replica cluster's jobs back after a crash.
+  - A job still running when its next tick comes is no longer started a second time in the same
+    replica (a manual retention sweep could start beside the scheduled one that way).
+  - While an upgrade runs, the pass that drives it could be started by a second replica if it took
+    longer than seven seconds. One pass now holds a lock until it ends.
 - **The mail backup repository is listed after a snapshot, not every five minutes.** The
   reachability check follows the mail snapshot schedule: once after each scheduled snapshot has had
   time to run, at most every 15 minutes and at least every 6 hours (hourly while the schedule is

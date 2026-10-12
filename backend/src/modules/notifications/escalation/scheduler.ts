@@ -1,7 +1,7 @@
 /**
  * Escalation sweep.
  *
- * Runs once shortly after startup, then hourly. The startup run matters for the same
+ * Runs once at startup, then hourly. The startup run matters for the same
  * reason it does in the retention and digest passes: a cluster that rolls
  * platform-api more often than the interval never reaches a tick otherwise.
  *
@@ -21,7 +21,7 @@ import {
 } from './service.js';
 import { notifyAdminEscalation } from '../events.js';
 import type { Database } from '../../../db/index.js';
-import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../../shared/scheduler-lease.js';
+import { withSchedulerLease } from '../../../shared/scheduler-lease.js';
 
 const TICK_MS = 60 * 60 * 1000;
 
@@ -32,8 +32,7 @@ export function startEscalationScheduler(db: Database): NodeJS.Timeout {
     'notification-escalation',
     () => withSchedulerLease(db, 'notification-escalation', TICK_MS * 1.5, () => runOnce(db)),
   );
-  const startup = setTimeout(tick, LEASED_STARTUP_DELAY_MS);
-  startup.unref();
+  tick();
   const timer = setInterval(tick, TICK_MS);
   if (typeof timer.unref === 'function') timer.unref();
   return timer;

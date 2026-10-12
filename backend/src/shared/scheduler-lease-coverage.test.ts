@@ -69,6 +69,9 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/mail-admin/proxy-networks-reconciler.ts', job: 'mail-proxy-networks' },
   { file: 'modules/mcp/reaper.ts', job: 'mcp-token-reaper' },
   { file: 'modules/platform-upgrades/auto-update.ts', job: 'auto-update' },
+  // A run lock around each pass of the upgrade reconciler, whose timer runs on
+  // every replica behind its own short per-tick claim.
+  { file: 'modules/platform-upgrades/scheduler.ts', job: 'platform-upgrade-pass', timers: 0 },
   // Watchers that alert. A notification's dedupe key is checked by a lookup,
   // not a constraint, so replicas ticking together each send it.
   { file: 'modules/backup-health/freshness-sweep.ts', job: 'backup-freshness' },
@@ -124,7 +127,7 @@ const EVERY_REPLICA: Readonly<Record<string, readonly string[]>> = {
     'if the holder dies with its node, the replica taking over starts without a baseline and never announces that very node',
   ],
   'modules/platform-upgrades/scheduler.ts': [
-    'takes its own short per-tick claim instead of one sticky replica, because an upgrade restarts the replicas themselves',
+    'takes its own short per-tick claim instead of one sticky replica, because an upgrade restarts the replicas themselves; a pass in flight holds a run lock',
   ],
   // ── one connection or one task in this process ────────────────────────────
   'modules/container-console/routes.ts': [
@@ -140,7 +143,11 @@ const EVERY_REPLICA: Readonly<Record<string, readonly string[]>> = {
   'modules/file-manager/lease.ts': ['renewal of a file-manager hold taken by this process'],
   'modules/mail-admin/task-liveness.ts': ['renewal of the liveness lease of a mail task running in this process'],
   'modules/tenant-bundles/cluster-concurrency.ts': ['heartbeat of a backup stream running in this process'],
-  'shared/scheduler-lease.ts': ['renewal of a lease this process holds, while its job runs'],
+  'shared/scheduler-lease.ts': [
+    'renewal of a lease this process holds, while its job runs',
+    'keep-alive of the long leases this process holds, between its runs',
+    'the later tries of a start-up run that was refused: two at most, then it stops',
+  ],
   // ── this process's own memory and gauges ──────────────────────────────────
   'modules/mail-events/mail-health-collector.ts': ['sets only the gauges this process serves'],
   'modules/monitoring/flux-status-collector.ts': ['sets only the gauge this process serves'],
@@ -345,7 +352,8 @@ describe('every recurring timer is leased, or runs on every replica for a stated
     expect(src).toMatch(new RegExp(`withSchedulerLease\\(\\s*[\\w.]+,\\s*'${job}'`));
   });
 
-  it.each(Object.keys(EVERY_REPLICA).filter((f) => !LEASED.some((l) => l.file === f)))(
+  // (The helper itself is exempt: it is where the function lives.)
+  it.each(Object.keys(EVERY_REPLICA).filter((f) => f !== 'shared/scheduler-lease.ts' && !LEASED.some((l) => l.file === f)))(
     '%s takes no lease',
     (file) => {
       expect(readFileSync(join(SRC, file), 'utf8')).not.toMatch(/withSchedulerLease\(/);

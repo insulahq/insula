@@ -1,4 +1,4 @@
-import { withSchedulerLease, LEASED_STARTUP_DELAY_MS } from '../../shared/scheduler-lease.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -42,8 +42,7 @@ const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 // was completely down. Detection is bounded by this interval plus the reconciler
 // grace window, so ~13 min worst case instead of "until a human notices".
 const WORKLOAD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
-// The first runs wait until a replaced process has given its leases up.
-const INITIAL_DELAY_MS = LEASED_STARTUP_DELAY_MS;
+const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
 
 /**
  * Opt-in tenant-lifecycle auto-ops. Both default OFF — operators must
