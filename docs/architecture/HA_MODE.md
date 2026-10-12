@@ -168,8 +168,53 @@ same tenant.
 
 Inside the lock a caller sees the tenant as it is. The sweep reads its list of
 due tenants once and may reach the last of them hours later, so its archive and
-its delete each check again, under the lock, that the tenant is still due
-(`NO_LONGER_DUE` — left alone, not a failure).
+its delete each check again, under the lock, that the tenant is still due and
+has not been taken out of the automation meanwhile (`NO_LONGER_DUE` — left
+alone, not a failure).
+
+#### An archive whose process is gone (liveness lock)
+
+The tenant lock covers the start of an operation. The operation itself runs
+detached, in the API process, after the request has been answered — and a
+deploy, a crash or a lost node ends that process in the middle. The row then
+reads "snapshotting" with nothing behind it.
+
+An archive holds a second run lock for as long as a process is working on it,
+`storage-op:<operation id>` (`archiveLockJob`,
+`backend/src/modules/storage-lifecycle/service.ts`), renewed like any run lock
+and given up after six hours. The quiesce watchdog reads "gone" from that lock
+and nothing else (`archive-resume.ts`):
+
+- the lock's row is there and lapsed a minute or more ago — a process that
+  ends its archive deletes the row, one that dies leaves it to lapse. That
+  archive is started again, under the lock, so two watchdogs or a holder that
+  was only slow cannot both run it. Every step can be run twice (`runArchive`).
+- no row at all says nothing: an archive started by a release without the
+  lock, or one given up as hung, whose work may still be going on. Those stay
+  with the watchdog's age rule.
+
+A lapsed lock does not prove a dead process: one paused for minutes — a
+stalled VM, a database out of reach — looks the same from outside, and wakes
+up in the middle of its run after another replica has taken the archive over.
+So the archive asks before every step that writes or deletes whether the lock
+is still its own (`ownsRunLock`: the row still carries this process's name)
+and stops where it is when it is not — without marking the operation failed
+and without bringing the workloads back, both of which would happen under its
+successor's feet. What stays open is a stall between one such question and the
+action after it. An archive whose lock cannot be taken at its start is failed
+at once and its tenant released: an operation without a lock row would be
+nobody's, neither running nor ever picked up.
+
+The same tick removes run locks that lapsed more than a day ago
+(`forgetDeadRunLocks`) — a tenant's or an archive's, left by a process that
+died holding one. Nothing else releases them.
+
+The age rule (six hours without an end) no longer applies to an archive whose
+lock is held: an archive picked up late is working, whatever its age. Only
+archives are picked up again. A resize, a restore or a filesystem check that
+loses its process is still failed by the age rule — bringing a tenant's
+workloads back minutes after such a death could meet a helper Job of the dead
+run still writing to the volume.
 
 #### The guard
 

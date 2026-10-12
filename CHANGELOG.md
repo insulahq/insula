@@ -69,6 +69,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   audit log with the admin who made them.
   New endpoints, for the roles that may archive and delete a tenant by hand (admin, super admin):
   `GET` and `PATCH /api/v1/admin/lifecycle/automation`, `POST /api/v1/admin/lifecycle/automation/run`.
+- **A tenant is told before it is archived or deleted automatically, and a tenant can be kept out.**
+  Two additions to the card above:
+  - **Tell the tenant … days ahead** (7 unless changed, 0 to 90). Once a tenant is within that many
+    days of its limit it is sent a message with the date — to its admins in the panel and by
+    email, and by email to the account's contact addresses, so a tenant with no user is told too —
+    and nothing happens to it before that date. The date is the notice period counted from the
+    message, so a tenant already past its limit when a step is switched on is not archived or
+    deleted that day: it is told at the next run and given the whole period. A message counts only
+    for the suspension (or archive) it was sent in; raising a limit sends a new one with the later
+    date, lowering it leaves the date the tenant was given. A message that reached nobody is no
+    notice: the tenant is left as it is, told again at every run, marked on the card, and the
+    admins are reminded once a day. `0` tells nobody from then on and acts at the limit, as
+    before — but a tenant that was already given a date keeps it. The card lists who is told at
+    the next run and for which date, and the confirmation
+    names those tenants too — a delete that follows a notice still has to be typed, because nobody
+    is asked again on the date. An archive is kept for the delete limit **plus the notice period**
+    when that is longer than the platform's archive retention.
+  - **Keep out.** Every tenant on the card has a **Keep out** button, and the tenant page has
+    **Actions → Keep out of automatic archive and delete**. A tenant kept out is never archived or
+    deleted by the sweep, and says so under its name; it can still be archived or deleted by hand.
+    The sweep checks again under the tenant's lock, so a tenant kept out while a sweep is working
+    through a backlog is left alone by that sweep.
+  Two notification sources come with it, *Account will be archived* and *Account will be deleted*,
+  with templates that can be edited like any other. New endpoint:
+  `PUT /api/v1/admin/lifecycle/automation/tenants/:tenantId` with `{ "exempt": true | false }`;
+  the automation settings gain `noticeDays`, the status `kept` and a `notice` per tenant, and the
+  tenant object `lifecycleAutomationExempt`.
 
 ### Changed
 
@@ -186,6 +213,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
   due before it archives or deletes it: its list may be hours old by then, and the operator may
   have resumed or restored the tenant in between.
+- **An archive interrupted by an API restart is picked up again.** An archive runs inside the
+  platform API, after the request that started it has been answered. A deploy, a crash or a lost
+  node in the middle left its operation reading "snapshotting" with nothing working on it: the
+  tenant stayed scaled to zero for six hours, was then marked failed, and stayed out of the
+  automatic sweep until an operator cleared it. An archive now holds a lock for as long as a
+  process is working on it. When that lock has lapsed, the watchdog starts the archive again —
+  within about twenty minutes — and it carries on from where it stood: the replica counts
+  written down at the start are kept (taken again they would all be zero), a copy of the files
+  that was finished is not taken twice, one that was cut off is marked failed and its Job removed
+  before a new one is taken, and the tenant's own cascades and its "archived" message are not run a
+  second time. An archive picked up three times is left to fail, as before. The six-hour rule no
+  longer fails an archive that a process is working on. A lapsed lock does not prove a dead
+  process — one stalled for minutes looks the same — so an archive asks before every step that
+  writes or deletes whether the lock is still its own, and stops where it is when it is not,
+  without failing the operation or bringing the workloads back under its successor. And an
+  archive whose lock cannot be taken at the start is no longer left claimed with nothing running
+  it: the request fails (`503 ARCHIVE_NOT_STARTED`) and the tenant is as it was. Other storage operations — resize,
+  restore, filesystem check — are not picked up again; they are still failed after six hours, a
+  move after thirty minutes.
+- **The empty storage volume earlier releases left on archived tenants is removed.** Until the fix
+  below, the integrity sweep created an empty volume for every tenant ever archived, and those
+  volumes are still there — bound, never mounted, counted against the node's schedulable storage,
+  and of a size the sweep picked. The sweep now removes such a volume, claim and Longhorn volume
+  both, and says so (*Namespace integrity repaired*). It removes only a volume that was provably
+  never written to: created after the tenant was archived, used by no pod, and holding zero bytes
+  in Longhorn — which counts every block ever written, the filesystem's own included — and more
+  than an hour old. A volume that holds anything, or that cannot be read, is kept and not reported. Restoring an archived
+  tenant does the same check first: before, the restore went into the leftover volume, of the
+  sweep's size, and failed when the files did not fit.
 - **An archived tenant no longer gets an empty storage volume back.** Archiving deletes a tenant's
   storage volume, after copying its files to the backup target. The namespace integrity sweep,
   which every 30 minutes restores what a tenant's namespace has lost, then found that volume
@@ -194,7 +250,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   holding storage for tenants that had none. The sweep and the tenant's integrity audit now leave
   the volume of an archived tenant alone, and that of a tenant whose storage operation is under
   way or failed: a destructive resize and a restore delete and recreate the volume themselves.
-  Archived tenants that already got such a volume keep it until they are restored or deleted.
+  Archived tenants that already got such a volume have it removed — the entry above.
 - **A refused Suspend, Reactivate, Archive or Restore on the tenant page says why.** These four
   actions opened the progress dialog and then, when the API refused the request — an operation
   already owns the tenant, the tenant is busy, no backup target — left it on "Dispatching…" with
