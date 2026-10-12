@@ -1,7 +1,7 @@
 import { useState, type ReactElement } from 'react';
 import { CheckCircle, Loader2, AlertTriangle, Clock, MinusCircle, XCircle } from 'lucide-react';
 import type { UpgradeRun } from '@insula/api-contracts';
-import { useCancelUpgradeRun } from '@/hooks/use-platform-upgrade';
+import { useCancelUpgradeRun, type UpgradeProgressData } from '@/hooks/use-platform-upgrade';
 import NodeName from '@/components/nodes/NodeName';
 
 /**
@@ -48,6 +48,28 @@ export function runPercent(run: UpgradeRun, servicesPercent: number | null): num
   if (run.step === 'finish') return band(2, share);
   if (run.step === 'upgrade-kubernetes') return Math.round(75 + 25 * share);
   return 100;
+}
+
+const bare = (version: string | null | undefined): string => (version ?? '').replace(/^v/, '');
+
+/**
+ * Pure: how far the services' roll of THIS run has come, 0–100, or null when
+ * nothing is known.
+ *
+ * The live progress counts a service as "at target" against the version being
+ * rolled to — and while none is being rolled to, every service counts. That is
+ * the state for a moment at each end of the step: just before the re-pin
+ * names the target, when every service is still on the OLD release, and just
+ * after the roll has finished. Read as it stands, the bar jumped to the end of
+ * the step in its first frame and fell back. So with no target named, the
+ * services are judged by the release they actually run.
+ */
+export function servicesPercentOf(run: UpgradeRun, prog: UpgradeProgressData | null | undefined): number | null {
+  if (!prog || !prog.readable) return null;
+  if (prog.targetTag) return prog.percent;
+  const managed = prog.deployments.filter((d) => d.versionManaged);
+  if (managed.length === 0) return null;
+  return managed.every((d) => bare(d.imageTag) === bare(run.toVersion)) ? 100 : 0;
 }
 
 /** Pure: what a finished run changed — "every node" only when the operator left none out. */
