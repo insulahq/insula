@@ -222,6 +222,11 @@ export function startStorageLifecycleScheduler(
       // replicas ran the same recovery — one re-pinning the workloads while
       // the other scaled them up.
       await withSchedulerLease(db, 'storage-quiesce-watchdog', QUIESCE_WATCHDOG_INTERVAL_MS * 1.5, async () => {
+        // First the archives a restart cut off: they are started again, not failed.
+        const { resumeInterruptedArchives } = await import('./archive-resume.js');
+        await resumeInterruptedArchives(db, k8s, config).catch((err: unknown) => {
+          console.error('[archive-resume] failed:', err instanceof Error ? err.message : String(err));
+        });
         const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
         const result = await sweepAbandonedQuiesce(db, k8s);
         if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {

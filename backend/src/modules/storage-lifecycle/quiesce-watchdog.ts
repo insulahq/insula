@@ -21,6 +21,9 @@
  *   failed ("abandoned"), its tenant's workloads are restored from the
  *   op-persisted replica snapshot, and the tenant's lifecycle state is
  *   set to 'failed' (visible + actionable; clear-failed also restores).
+ *   An archive is the exception while a process holds its liveness lock:
+ *   it may have been picked up again late (archive-resume.ts) and be
+ *   working — its age then says nothing.
  *
  *   Leg B — hold-annotation leftovers: one cluster-wide Deployment LIST
  *   finds hold-annotated Deployments; any belonging to an ACTIVE tenant
@@ -29,13 +32,15 @@
  *   tenants are skipped — quiesced-at-0 is their designed state.
  */
 
-import { and, desc, eq, lt, ne, notInArray, or } from 'drizzle-orm';
+import { and, desc, eq, lt, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { storageOperations, tenants } from '../../db/schema.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { repinDeployments } from '../tenant-migration/repin.js';
-import { unquiesceBestEffort } from './service.js';
+import { archiveLockJob, unquiesceBestEffort } from './service.js';
+import { isRunUnderWay, runLockName } from '../../shared/exclusive-run.js';
+import { SCHEDULER_LEASE_KEY_PREFIX } from '../../shared/scheduler-lease.js';
 
 /**
  * Ops legitimately run long (a destructive resize streams a full-PVC
@@ -123,6 +128,10 @@ export async function sweepAbandonedQuiesce(
     ));
 
   for (const op of stale) {
+    // Old, but somebody is working on it: an archive picked up again after
+    // its first process died. Its lock is given up after six hours of its
+    // own, and then this rule applies.
+    if (op.opType === 'archive' && await isRunUnderWay(db, archiveLockJob(op.opId)).catch(() => false)) continue;
     abandonedOps += 1;
     console.warn(
       `[quiesce-watchdog] ${op.opType} op ${op.opId} stuck in '${op.opState}' — marking failed and restoring workloads (tenant ${op.tenantId})`,
@@ -134,6 +143,13 @@ export async function sweepAbandonedQuiesce(
         lastError: `Abandoned in state '${op.opState}' (platform-api likely restarted mid-operation); watchdog restored the tenant's workloads`,
       })
       .where(eq(storageOperations.id, op.opId));
+    // The lock a dead process left behind has no further use; nothing else removes it.
+    if (op.opType === 'archive') {
+      await db.execute(sql`
+        DELETE FROM platform_settings
+         WHERE setting_key = ${`${SCHEDULER_LEASE_KEY_PREFIX}${runLockName(archiveLockJob(op.opId))}`}
+      `).catch(() => undefined);
+    }
     if (op.namespace) {
       if (op.opType === 'relocate') await settleAbandonedMove(db, k8s, op.tenantId, op.namespace, op.params);
       await unquiesceBestEffort(db, k8s, op.opId, op.namespace, null);

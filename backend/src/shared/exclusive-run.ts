@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm';
 import type { OperatorError } from '@insula/api-contracts';
 import { ApiError } from './errors.js';
 import {
+  REPLICA_ID,
   SCHEDULER_LEASE_KEY_PREFIX,
   withSchedulerLease,
   type LeaseDb,
@@ -112,6 +113,50 @@ export async function isRunUnderWay(db: LeaseDb, job: string): Promise<boolean> 
        AND (setting_value::jsonb ->> 'until')::timestamptz > now()
   `) as unknown as { rows?: unknown[] };
   return (res.rows ?? []).length > 0;
+}
+
+/**
+ * Whether the run lock of `job` is still this process's — for a long run to
+ * ask before each step that cannot be taken back.
+ *
+ * A lock is a lease: a process that stalls for longer than its ttl (a paused
+ * VM, a database it cannot reach) loses it without being told, and another
+ * replica may take the work over. The stalled process then wakes up in the
+ * middle of its run. Asking here, it finds the lock under another name — or
+ * gone — and can stop instead of working beside its successor.
+ *
+ * The holder's name is what counts, not the lease's time: a lock that merely
+ * lapsed and was taken by nobody is still this run's, and its renewal will
+ * extend it again.
+ */
+export async function ownsRunLock(db: LeaseDb, job: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    SELECT 1 FROM platform_settings
+     WHERE setting_key = ${`${SCHEDULER_LEASE_KEY_PREFIX}${runLockName(job)}`}
+       AND pg_input_is_valid(setting_value, 'jsonb')
+       AND (setting_value::jsonb ->> 'holder') = ${REPLICA_ID}::text
+  `) as unknown as { rows?: unknown[] };
+  return (res.rows ?? []).length > 0;
+}
+
+/**
+ * Remove run locks whose holder died long ago. A run lock is deleted when its
+ * run ends; one that lapsed and was never taken again belongs to a process
+ * that is gone, and nothing else removes it — a row per tenant ever locked or
+ * operation ever started at the wrong moment, for ever. `olderThanMs` must be
+ * longer than anything reads a lapsed lock for (an interrupted archive is
+ * read for six hours at most). Returns how many were removed.
+ */
+export async function forgetDeadRunLocks(db: LeaseDb, olderThanMs: number): Promise<number> {
+  const res = await db.execute(sql`
+    DELETE FROM platform_settings
+     WHERE setting_key LIKE ${`${SCHEDULER_LEASE_KEY_PREFIX}%${runLockName('')}`}
+       AND pg_input_is_valid(setting_value, 'jsonb')
+       AND pg_input_is_valid(setting_value::jsonb ->> 'until', 'timestamptz')
+       AND (setting_value::jsonb ->> 'until')::timestamptz < now() - (${olderThanMs} || ' milliseconds')::interval
+    RETURNING setting_key
+  `) as unknown as { rows?: unknown[] };
+  return (res.rows ?? []).length;
 }
 
 /**

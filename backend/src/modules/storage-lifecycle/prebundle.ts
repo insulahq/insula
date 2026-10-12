@@ -31,7 +31,7 @@
  * PVC. Mirrors backup-restore/executors/files-paths.ts (the cart restore).
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, gte, inArray } from 'drizzle-orm';
 import {
   backupConfigurations,
   backupTargetAssignments,
@@ -259,6 +259,31 @@ export async function captureFilesOnlyBundle(args: {
     status: result.status,
     sizeBytes: comp?.sizeBytes ?? 0,
   };
+}
+
+/**
+ * Fail the captures a dead process left running for a tenant, and remove their
+ * Jobs. For an archive picked up again after the API restarted: the capture it
+ * was in the middle of has nobody waiting for it, its Job may still hold the
+ * volume, and its row would read "running" until the retention sweep reports it
+ * as a failed backup a day later. Only system captures of this kind, started
+ * since `since` — the archive's own start. Returns how many were settled.
+ */
+export async function settleInterruptedCaptures(db: Database, k8s: K8sClients, tenantId: string, since: Date): Promise<number> {
+  const why = 'Interrupted: the platform API restarted while this capture was running. The archive it belonged to was picked up again and took a new one.';
+  const settled = await db
+    .update(backupJobs)
+    .set({ status: 'failed', lastError: why, finishedAt: new Date() })
+    .where(and(
+      eq(backupJobs.tenantId, tenantId),
+      inArray(backupJobs.status, ['pending', 'running']),
+      eq(backupJobs.initiator, 'system'),
+      eq(backupJobs.systemTrigger, 'pre_resize'),
+      gte(backupJobs.createdAt, since),
+    ))
+    .returning({ id: backupJobs.id });
+  for (const { id } of settled) await deleteCaptureJob(db, k8s, tenantId, id);
+  return settled.length;
 }
 
 /**
