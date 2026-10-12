@@ -1884,10 +1884,12 @@ async function findStalwartPod(
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<{ readonly name: string; readonly startedAtMs: number | null } | null> {
   try {
+    // Running pods only, and no limit: finished pods left by node restarts
+    // sort ahead of the live one and would fill a truncated list.
     const pods = await core.listNamespacedPod({
       namespace: 'mail',
       labelSelector: 'app=stalwart-mail',
-      limit: 5,
+      fieldSelector: 'status.phase=Running',
     });
     const ready = (pods.items ?? []).find((p) =>
       p.status?.containerStatuses?.some((cs) => cs.name === 'stalwart' && cs.ready === true),

@@ -115,6 +115,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "backup target unreachable" alert slower:** it used to come within five minutes of the target
   going away; it now comes after the next scheduled snapshot — about an hour on an hourly schedule,
   six hours at most.
+- **After a node restart the platform looked at the wrong mail pod.** A restarted mail node keeps
+  the pod that was running, as finished, until Kubernetes clears it, and that pod is listed ahead
+  of its replacement. Three places read the first pod of the list:
+  - the *Storage Usage* tile on the email pages and *Mail data used* under **Email → Operations →
+    Storage** found no running pod and read "—", possibly for days;
+  - the **mail recovery status** described the finished pod: it reported "healthy" for a
+    replacement stuck in Pending or crash-looping, and skipped the check that the mail volume is
+    bound on the active node — so the *Recover Mail* banner stayed hidden when it was needed;
+  - the diagnostics added to a failed mail scale-up named the finished pod.
+  All of them now pick the mail server's current pod. The mail domain reconciler, which read at
+  most five pods, asks for running ones only.
 
 ### Removed
 

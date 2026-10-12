@@ -28,6 +28,7 @@
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { parseQuantity } from './mail-pvc.js';
+import { findRunningStalwartPod } from './stalwart-pod.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STANDBY_NODE_LABEL_KEY = 'insula.host/mail-standby';
@@ -275,15 +276,8 @@ async function tryDuInStalwartPod(
   log: { warn: (...args: unknown[]) => void },
 ): Promise<number | null> {
   try {
-    const pods = await core.listNamespacedPod({
-      namespace: MAIL_NAMESPACE,
-      labelSelector: 'app=stalwart-mail',
-      limit: 1,
-    } as unknown as Parameters<typeof core.listNamespacedPod>[0]) as {
-      items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }>;
-    };
-    const pod = (pods.items ?? []).find((p) => p.status?.phase === 'Running');
-    if (!pod?.metadata?.name) return null;
+    const podName = await findRunningStalwartPod(core);
+    if (!podName) return null;
     // Path resolves to the Stalwart RocksDB DataStore mount inside
     // the stalwart container. The container subPath-mounts the PVC's
     // stalwart/ subtree at /var/lib/stalwart/data — so this matches
@@ -293,7 +287,7 @@ async function tryDuInStalwartPod(
     // it here because the operator-facing question is "how much disk
     // is mail consuming on the active mail node?", and stalwart is
     // >99% of that.
-    const stdout = await execStdoutCapture(exec, pod.metadata.name, ['du', '-sb', '/var/lib/stalwart/data']);
+    const stdout = await execStdoutCapture(exec, podName, ['du', '-sb', '/var/lib/stalwart/data']);
     const firstField = stdout.trim().split(/\s+/, 1)[0];
     const n = Number(firstField);
     return Number.isFinite(n) && n >= 0 ? n : null;
