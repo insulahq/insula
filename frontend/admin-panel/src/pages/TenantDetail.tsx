@@ -20,6 +20,7 @@ import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
+import { useSetTenantAutomationExempt } from '@/hooks/use-tenant-automation';
 import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
 import { useTenantBundles } from '@/hooks/use-tenant-bundles';
 // BackupScheduleEditor removed — tenants no longer have
@@ -67,6 +68,7 @@ import {
 import { useSftpUsers } from '@/hooks/use-sftp-users';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -133,6 +135,17 @@ export default function TenantDetail() {
     transitionId?: string | null;
   } | null>(null);
 
+  // A suspend, reactivate, archive or restore the API refused — the tenant is
+  // busy, an operation already owns it, no backup target. Shown under the
+  // header until the next action; these used to end with the "Dispatching…"
+  // dialog left open and nothing to say why.
+  const [lifecycleActionError, setLifecycleActionError] = useState<unknown>(null);
+  const lifecycleActionFailed = (err: unknown): void => {
+    setTxModal(null);
+    setLifecycleActionError(err);
+  };
+  const setAutomationExempt = useSetTenantAutomationExempt();
+
   const deleteTenant = useDeleteTenant();
   // Which tenant this page shows NOW. The same page instance is reused when
   // the route's :id changes, so "still mounted" alone does not mean "still on
@@ -188,6 +201,7 @@ export default function TenantDetail() {
 
   const handleSuspend = async () => {
     if (!id) return;
+    setLifecycleActionError(null);
     try {
       setTxModal({ kind: 'suspended', since: Date.now() });
       // notifications-system: cast through Record<string, unknown> so
@@ -201,8 +215,8 @@ export default function TenantDetail() {
         ?? res?.data?.storageRestoreOperationId
         ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // silently handled — status badge will reflect current state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -217,6 +231,7 @@ export default function TenantDetail() {
       + 'Continue?',
     );
     if (!ok) return;
+    setLifecycleActionError(null);
     try {
       setTxModal({ kind: 'archived', since: Date.now() });
       const res = await updateTenant.mutateAsync(
@@ -228,8 +243,8 @@ export default function TenantDetail() {
       );
       const opId = res?.data?.storageArchiveOperationId ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // surfaced via mutation state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -246,6 +261,7 @@ export default function TenantDetail() {
       );
       if (!ok) return;
     }
+    setLifecycleActionError(null);
     try {
       // Distinguish unsuspend (transition='active') from
       // restore-from-archive (transition='restored') so the audit
@@ -262,8 +278,8 @@ export default function TenantDetail() {
         ?? res?.data?.storageArchiveOperationId
         ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // silently handled — status badge will reflect current state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -326,6 +342,12 @@ export default function TenantDetail() {
         </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
+          {tenant.lifecycleAutomationExempt === true && (
+            <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400" data-testid="automation-exempt-note">
+              Kept out of{' '}
+              <Link to="/platform/lifecycle-hooks" className="underline hover:no-underline">automatic archive and delete</Link>.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -433,6 +455,33 @@ export default function TenantDetail() {
               </label>
             )}
 
+            {/* Saved at once, like a switch: it is a standing property of the
+                tenant, not a setting of the action clicked next. */}
+            {!tenant.isSystem && (
+              <label
+                onClick={(e) => e.stopPropagation()}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
+                title="Never archive or delete this tenant automatically, however long it stays suspended or archived (Platform → Tenant Lifecycle Hooks)"
+                data-testid="automation-exempt-toggle"
+              >
+                <input
+                  type="checkbox"
+                  checked={tenant.lifecycleAutomationExempt === true}
+                  disabled={setAutomationExempt.isPending}
+                  onChange={(e) => {
+                    setLifecycleActionError(null);
+                    setAutomationExempt.mutate(
+                      { tenantId: tenant.id, exempt: e.target.checked },
+                      { onError: (err) => setLifecycleActionError(err) },
+                    );
+                  }}
+                  className="rounded"
+                  data-testid="automation-exempt-checkbox"
+                />
+                Keep out of automatic archive and delete
+              </label>
+            )}
+
             {tenant.status === 'active' && !tenant.isSystem && (
               <ActionsMenuItem
                 onClick={handleSuspend}
@@ -491,6 +540,12 @@ export default function TenantDetail() {
           </ActionsMenu>
         </div>
       </div>
+
+      {lifecycleActionError !== null && (
+        <div className="mb-4">
+          <ErrorPanel error={extractOperatorError(lifecycleActionError)} severity="error" testId="tenant-lifecycle-action-error" />
+        </div>
+      )}
 
       {/* Not-provisioned warning. A `pending` tenant is created but not yet
           provisioned: it cannot deploy workloads, configure domains/ingress,

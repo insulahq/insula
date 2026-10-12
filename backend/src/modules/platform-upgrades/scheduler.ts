@@ -26,6 +26,7 @@ import { toSafeText } from '@insula/api-contracts';
 import { getActiveRun } from './run/store.js';
 import { advanceRun, atBand, progressBands } from './run/machine.js';
 import { realRunMachineDeps } from './run/real.js';
+import { withSchedulerLease, type LeaseDb, type LeaseOutcome } from '../../shared/scheduler-lease.js';
 
 // Dormant cadence — a cheap no-op tick that just reads `pending_update_version`.
 const IDLE_TICK_MS = 30 * 1000;
@@ -228,6 +229,28 @@ export async function claimLease(db: Database, nowMs: number, ttlMs: number = le
   return won.length === 1;
 }
 
+/**
+ * One pass at a time, across replicas.
+ *
+ * The per-tick claim above admits one replica per interval, but it lapses
+ * after 0.9 × the interval (7 s while an upgrade runs) and is not renewed. A
+ * pass that takes longer — it captures a rescue snapshot and re-pins Flux —
+ * was open to a second replica starting the same pass beside it. This run
+ * lock is held, and renewed, for as long as the pass runs and given up when it
+ * ends; a replica that dies mid-pass blocks the next one for at most its ttl.
+ * Not a sticky owner: an upgrade restarts the replicas themselves.
+ */
+const UPGRADE_PASS_LOCK_MS = 60_000;
+/**
+ * A pass is a handful of reads and at most one step of the run; one that has
+ * not returned after this long is hung, and an upgrade must not wait half a
+ * day (the helper's default) for the next pass.
+ */
+const UPGRADE_PASS_MAX_HOLD_MS = 30 * 60_000;
+export function withUpgradePassLock<T>(db: LeaseDb, pass: () => Promise<T>): Promise<LeaseOutcome<T>> {
+  return withSchedulerLease(db, 'platform-upgrade-pass', UPGRADE_PASS_LOCK_MS, pass, { release: true, maxHoldMs: UPGRADE_PASS_MAX_HOLD_MS });
+}
+
 export function startUpgradeReconciler(db: Database, k8s: K8sClients): { readonly stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
@@ -250,18 +273,20 @@ export function startUpgradeReconciler(db: Database, k8s: K8sClients): { readonl
       // Only claim the lease + do work when there's an upgrade in flight; an idle
       // tick is a pure no-op (just the reads above — no lease churn).
       if (busy && (await claimLease(db, nowMs, leaseTtlFor(nextDelay)))) {
-        if (run) {
-          try {
-            await advanceRun(run, realRunMachineDeps(db, k8s, run));
-          } catch (err) {
-            console.error('[upgrade-run] advance failed:', (err as Error).message);
+        await withUpgradePassLock(db, async () => {
+          if (run) {
+            try {
+              await advanceRun(run, realRunMachineDeps(db, k8s, run));
+            } catch (err) {
+              console.error('[upgrade-run] advance failed:', (err as Error).message);
+            }
           }
-        }
-        const pendingNow = (await dbSettings(db).get('pending_update_version'))?.trim();
-        if (pendingNow) {
-          const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s, { runActive: !!run, run }), nowMs);
-          if (r.notified) console.log('[upgrade-reconciler] in-flight upgrade is not converging → notified admins');
-        }
+          const pendingNow = (await dbSettings(db).get('pending_update_version'))?.trim();
+          if (pendingNow) {
+            const r = await reconcileUpgradeOnce(realUpgradeReconcilerDeps(db, k8s, { runActive: !!run, run }), nowMs);
+            if (r.notified) console.log('[upgrade-reconciler] in-flight upgrade is not converging → notified admins');
+          }
+        });
       }
     } catch (err) {
       console.error('[upgrade-reconciler] tick failed:', (err as Error).message);

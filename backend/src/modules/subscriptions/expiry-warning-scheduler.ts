@@ -21,6 +21,7 @@ import { mailLogger } from '../../shared/mail-logger.js';
 import { tenants } from '../../db/schema.js';
 import { notifyTenantSubscriptionExpiry } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const expiryLog = () => mailLogger().child({ module: 'subscriptions-expiry' });
 
@@ -151,7 +152,8 @@ export async function runExpiryWarningPass(
 /**
  * Start the periodic scheduler. Runs every 6 hours so an outage that
  * caused us to miss a daily tick is recovered automatically. The
- * dispatcher's dedupe check prevents over-sending.
+ * dispatcher's dedupe check prevents over-sending across passes; the
+ * lease keeps two replicas from making the same pass together.
  *
  * unref'd so it doesn't pin the event loop on shutdown.
  */
@@ -160,9 +162,13 @@ export function startExpiryWarningScheduler(
   log?: { info: (msg: string, extra?: Record<string, unknown>) => void; warn: (msg: string, err?: unknown) => void },
 ): NodeJS.Timeout {
   const INTERVAL_MS = 6 * 60 * 60 * 1000;
+  // One replica warns: the dedupe key is checked by a lookup, not a constraint,
+  // so replicas scanning together would each send the same warning.
   const tick = async (): Promise<void> => {
     try {
-      const r = await runExpiryWarningPass(db);
+      const leased = await withSchedulerLease(db, 'subscription-expiry-warning', INTERVAL_MS * 1.5, () => runExpiryWarningPass(db));
+      if (!leased.ran) return;
+      const r = leased.value;
       log?.info('[notifications] expiry-warning scheduler tick', {
         scanned: r.scanned, emitted: r.emitted, failed: r.failed,
       });
@@ -170,8 +176,8 @@ export function startExpiryWarningScheduler(
       log?.warn('[notifications] expiry-warning scheduler tick failed', err);
     }
   };
-  // Fire once immediately so a fresh deploy doesn't wait 6 hours for
-  // the first scan; dedupeKey guards against double-fire.
+  // Fire once immediately so a fresh deploy doesn't wait 6 hours for the
+  // first scan. (Refused during a rollout, the lease tries it once more.)
   void tick();
   const timer = setInterval(() => { void tick(); }, INTERVAL_MS);
   timer.unref?.();

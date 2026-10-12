@@ -306,7 +306,7 @@ separately because they need different actions.
 | **Backup failed** | a run executed and failed, within ~5 min | Something ran and returned an error. The message names the job and the reason. |
 | **Backups have stopped running** | a scheduled run did not happen | Nothing ran. There is no failed job to look at — this is the only signal you get. |
 | **Backup has never run** | a schedule has never once succeeded | Setup, not a regression: the destination, its credentials, or the schedule have most likely never worked. |
-| **Backup target unreachable** | the destination cannot be contacted | The repository itself is unreachable or timing out. |
+| **Backup target unreachable** | the destination cannot be contacted; the mail repository is checked after each scheduled mail snapshot, six hours apart at most | The repository itself is unreachable or timing out. |
 
 !!! note "Silence is measured against the schedule, not the clock"
     *Backups have stopped* counts **missed scheduled runs**, not elapsed

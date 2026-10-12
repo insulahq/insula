@@ -1,0 +1,14 @@
+# DORMANT IMAGE — its dependencies are not scanned.
+#
+# Nothing builds or runs this image while the mail archive is switched off
+# (backend/src/modules/mail-admin/archive-dormant.ts).
+# The daily dependency scan (osv-scanner, recursive from the repo root) would
+# still read Cargo.lock here and fail CI on an advisory in a crate no cluster
+# runs. This file tells it to skip every package of this directory.
+#
+# REMOVE THIS FILE when the image is built again: scripts/
+# ci-rocksdb-stalwart-pin-check.sh refuses a switched-on archive while it exists.
+[[PackageOverrides]]
+ecosystem = "crates.io"
+ignore = true
+reason = "dormant image: not built, not shipped (mail archive switched off)"

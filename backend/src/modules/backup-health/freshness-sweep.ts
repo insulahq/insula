@@ -51,6 +51,8 @@ import {
 } from '../notifications/events.js';
 import { LABEL_HEALTH_WATCH } from './labels.js';
 import { safeTick } from '../../shared/safe-tick.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { cronMatchesMinuteInZone } from '../../shared/cron-match.js';
 import type { Database } from '../../db/index.js';
 
 /** Same cadence as the Job watcher; both read the same apiserver. */
@@ -433,31 +435,140 @@ export function startFreshnessSweep(deps: {
     reason: string | null;
     targetName: string | null;
   }>;
+  /** The mail snapshot schedule, so the mail target check follows it (see MAIL_CHECK_SETTLE_MS). */
+  readonly mailSchedule?: () => Promise<MailSnapshotSchedule | null>;
+  /** Injectable clock for tests. */
+  readonly now?: () => Date;
 }): () => void {
   const tickMs = deps.tickMs ?? FRESHNESS_TICK_MS;
+  const clock = deps.now ?? (() => new Date());
   const log: Logger = deps.logger ?? {
     warn: (msg, err) => console.warn(`[backup-freshness] ${msg}`, err ?? ''),
     info: (msg) => console.log(msg),
   };
 
+  const mailGate = createMailCheckGate({ mailSchedule: deps.mailSchedule, log });
+
+  // One replica runs the sweep: on three it evaluated and notified three times
+  // and started three mail-listing Jobs per tick. And one sweep at a time: the
+  // holder's own next tick takes the lease again, so a sweep still waiting on a
+  // slow mail listing would be joined by a second one — both seeing the check
+  // as due.
+  let sweeping = false;
   const tick = () => safeTick('backup-freshness', async () => {
-    const r = await runFreshnessSweep(deps.db, deps.batch, log);
-    if (deps.listMailBackups) {
-      await checkMailTargetReachable(deps.db, deps.listMailBackups, log);
-    }
-    if (r.notified > 0 || r.pruned > 0) {
-      log.info?.(
-        `[backup-freshness] evaluated=${r.evaluated} notified=${r.notified} `
-        + `suspended=${r.skippedSuspended} tooYoung=${r.skippedTooYoung} `
-        + `inFlight=${r.skippedInFlight} pruned=${r.pruned}`,
-      );
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      await leasedSweep();
+    } finally {
+      sweeping = false;
     }
   }, log);
+  const leasedSweep = async (): Promise<void> => {
+    await withSchedulerLease(deps.db, 'backup-freshness', tickMs * 1.5, async () => {
+      const r = await runFreshnessSweep(deps.db, deps.batch, log);
+      if (deps.listMailBackups) {
+        const now = clock();
+        if (await mailGate.due(now)) {
+          // Only a check that reached a verdict counts: a listing that threw,
+          // or a target still being set up, is asked again on the next tick.
+          const outcome = await checkMailTargetReachable(deps.db, deps.listMailBackups, log);
+          if (outcome !== 'skipped') mailGate.ran(now);
+        }
+      }
+      if (r.notified > 0 || r.pruned > 0) {
+        log.info?.(
+          `[backup-freshness] evaluated=${r.evaluated} notified=${r.notified} `
+          + `suspended=${r.skippedSuspended} tooYoung=${r.skippedTooYoung} `
+          + `inFlight=${r.skippedInFlight} pruned=${r.pruned}`,
+        );
+      }
+    });
+  };
 
   tick();
   const timer = setInterval(tick, tickMs);
   if (typeof timer.unref === 'function') timer.unref();
   return () => clearInterval(timer);
+}
+
+/**
+ * When the mail target check runs. Each check is a Job that lists the mail
+ * restic repository (every snapshot file, over the network), so it follows the
+ * mail snapshot schedule instead of every sweep tick: once after each scheduled
+ * snapshot, when that snapshot has had time to run — the repository has just
+ * been written and the check confirms it can still be read. Bounded both ways:
+ * a schedule firing every few minutes is checked at most every 15 minutes, a
+ * daily one at least every 6 hours. Without a schedule to follow (disabled, or
+ * unreadable) it checks hourly.
+ */
+export const MAIL_CHECK_SETTLE_MS = 5 * 60_000;
+export const MAIL_CHECK_MIN_SPACING_MS = 15 * 60_000;
+export const MAIL_CHECK_MAX_SPACING_MS = 6 * 60 * 60_000;
+export const MAIL_CHECK_UNALIGNED_MS = 60 * 60_000;
+
+/** Pure: the most recent minute at or before `at` that `cron` fires (in `timeZone`), looking back at most `lookbackMs`. */
+export function lastScheduledFire(cron: string, at: Date, timeZone: string | null, lookbackMs: number): Date | null {
+  const top = Math.floor(at.getTime() / 60_000) * 60_000;
+  for (let back = 0; back * 60_000 <= lookbackMs; back++) {
+    const cand = new Date(top - back * 60_000);
+    if (cronMatchesMinuteInZone(cron, cand, timeZone)) return cand;
+  }
+  return null;
+}
+
+/**
+ * Pure: whether the mail target check is due. `lastSettledFire` is the newest
+ * scheduled snapshot at least MAIL_CHECK_SETTLE_MS old, or null; `aligned` is
+ * false when there is no schedule to follow.
+ */
+export function mailCheckDue(p: {
+  readonly now: Date;
+  readonly lastCheckAt: Date | null;
+  readonly lastSettledFire: Date | null;
+  readonly aligned: boolean;
+}): boolean {
+  if (!p.lastCheckAt) return true;
+  const since = p.now.getTime() - p.lastCheckAt.getTime();
+  if (since < MAIL_CHECK_MIN_SPACING_MS) return false;
+  if (since >= MAIL_CHECK_MAX_SPACING_MS) return true;
+  if (!p.aligned) return since >= MAIL_CHECK_UNALIGNED_MS;
+  return p.lastSettledFire !== null && p.lastSettledFire.getTime() > p.lastCheckAt.getTime();
+}
+
+/** The mail snapshot schedule the check follows (backup_schedules.mail, in the platform's zone). */
+export interface MailSnapshotSchedule {
+  readonly cron: string;
+  readonly enabled: boolean;
+  readonly timeZone: string | null;
+}
+
+/**
+ * The mail target check's timing on the lease holder: `due` reads the schedule
+ * and decides; `ran` records a check that reached a verdict. The last check
+ * lives in memory — a new holder checks once on taking the job over.
+ */
+export function createMailCheckGate(deps: {
+  readonly mailSchedule?: () => Promise<MailSnapshotSchedule | null>;
+  readonly log: Logger;
+}): { due: (now: Date) => Promise<boolean>; ran: (at: Date) => void } {
+  let lastCheckAt: Date | null = null;
+  return {
+    due: async (now) => {
+      let schedule: MailSnapshotSchedule | null = null;
+      try {
+        schedule = (await deps.mailSchedule?.()) ?? null;
+      } catch (err) {
+        deps.log.warn('mail snapshot schedule unreadable — the target check falls back to hourly', err);
+      }
+      const followed = schedule?.enabled ? schedule : null;
+      const lastSettledFire = followed
+        ? lastScheduledFire(followed.cron, new Date(now.getTime() - MAIL_CHECK_SETTLE_MS), followed.timeZone, MAIL_CHECK_MAX_SPACING_MS)
+        : null;
+      return mailCheckDue({ now, lastCheckAt, lastSettledFire, aligned: followed !== null });
+    },
+    ran: (at) => { lastCheckAt = at; },
+  };
 }
 
 /** Referenced so the retention guard can see the table has a bounded writer. */

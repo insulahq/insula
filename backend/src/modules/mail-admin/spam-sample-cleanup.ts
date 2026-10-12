@@ -4,7 +4,7 @@
  * Stalwart blob storage is REFERENCE-COUNTED. A message blob survives until
  * every reference is gone, and a `SpamTrainingSample` row is one such
  * reference — held as a `BlobLink::Temporary { until }` stamped AT INGEST as
- * `midnight + SpamClassifier.holdSamplesFor`, i.e. **180 days** on a default
+ * `now + SpamClassifier.holdSamplesFor`, i.e. **180 days** on a default
  * install.
  *
  * Destroying the Account does not drop it: Stalwart's `destroy_account_blobs`

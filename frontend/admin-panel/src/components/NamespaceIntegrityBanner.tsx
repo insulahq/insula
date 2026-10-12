@@ -29,6 +29,7 @@ const FINDING_LABEL: Record<IntegrityFinding, string> = {
   network_policy_missing: 'NetworkPolicies missing',
   provisioned_exceeds_plan: 'Provisioned resources exceed the subscription',
   resource_quota_exceeded: 'Over quota — new resources are being rejected',
+  archived_volume_unused: 'Unused storage volume left on an archived tenant',
 };
 
 /**

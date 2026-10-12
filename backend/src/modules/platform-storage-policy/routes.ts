@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { authenticate, requireRole, requirePanel, type JwtPayload } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { updatePlatformStoragePolicySchema } from '@insula/api-contracts';
 import { auditLogs, notifications, users, platformStorageApplyRuns } from '../../db/schema.js';
@@ -199,36 +200,44 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     // actor_id column populated below; this fixes the row-level field.
     const user = req.user as JwtPayload | undefined;
     const actorId = user?.sub ?? null;
-    const before = await getPolicy(app.db);
-    const updated = await setPolicy(app.db, input.systemTier, input.pinnedByAdmin ?? true, actorId);
-    // Insert the run row BEFORE applyPolicy so a route-handler crash
-    // mid-patch still leaves an auditable record of the attempt.
-    const runId = await startRun(app.db, input.systemTier, actorId);
+    // Saving the tier and patching it in are one step under the advisor's run
+    // lock. The advisor re-applies the saved tier every few minutes; without
+    // the lock, a pass that had read the old tier could patch it back in after
+    // this apply. Busy after the wait → 409, with nothing changed yet.
+    const { before, updated, runId, startedAtMs, outcome } = await runExclusiveOrBusy(
+      app.db, 'storage-policy-advisor', 'A platform storage apply', async () => {
+        const before = await getPolicy(app.db);
+        const updated = await setPolicy(app.db, input.systemTier, input.pinnedByAdmin ?? true, actorId);
+        // Insert the run row BEFORE applyPolicy so a route-handler crash
+        // mid-patch still leaves an auditable record of the attempt.
+        const runId = await startRun(app.db, input.systemTier, actorId);
 
-    // Register a task-center entry the operator's chip can show + click
-    // to re-open the progress modal. Only when we have an actor (the
-    // task-center contract requires user_id for non-system scopes).
-    // Failure to register is non-fatal — the apply continues, just
-    // without the chip entry; the progress modal opened inline by the
-    // operator still works since it polls /runs/:id directly.
-    if (actorId) {
-      await tasks.start(app.db, {
-        kind: 'storage.tier-flip',
-        refId: runId,
-        scope: 'admin',
-        userId: actorId,
-        label: toSafeText(`Apply ${input.systemTier === 'ha' ? 'High Availability' : 'Local'} platform storage`),
-        target: {
-          type: 'modal',
-          modal: 'platform-storage-apply',
-          modalProps: { runId },
-        },
-      }).catch((err) => app.log.warn({ err, runId }, 'task-center registration failed'));
-    }
+        // Register a task-center entry the operator's chip can show + click
+        // to re-open the progress modal. Only when we have an actor (the
+        // task-center contract requires user_id for non-system scopes).
+        // Failure to register is non-fatal — the apply continues, just
+        // without the chip entry; the progress modal opened inline by the
+        // operator still works since it polls /runs/:id directly.
+        if (actorId) {
+          await tasks.start(app.db, {
+            kind: 'storage.tier-flip',
+            refId: runId,
+            scope: 'admin',
+            userId: actorId,
+            label: toSafeText(`Apply ${input.systemTier === 'ha' ? 'High Availability' : 'Local'} platform storage`),
+            target: {
+              type: 'modal',
+              modal: 'platform-storage-apply',
+              modalProps: { runId },
+            },
+          }).catch((err) => app.log.warn({ err, runId }, 'task-center registration failed'));
+        }
 
-    const startedAtMs = Date.now();
-    const outcome = await applyPolicy(k8s, app.db);
-    await recordPatchOutcome(app.db, runId, outcome).catch((err) => app.log.warn({ err }, 'recordPatchOutcome failed'));
+        const startedAtMs = Date.now();
+        const outcome = await applyPolicy(k8s, app.db);
+        await recordPatchOutcome(app.db, runId, outcome).catch((err) => app.log.warn({ err }, 'recordPatchOutcome failed'));
+        return { before, updated, runId, startedAtMs, outcome };
+      }, { log: app.log });
 
     // Status precedence: any non-capacity error is a hard failure
     // and must be visible to the operator EVEN when CNPG also hit

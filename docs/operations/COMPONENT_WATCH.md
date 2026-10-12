@@ -165,7 +165,10 @@ issues for regressions, since these run under active development. Then:
   enforce sequential hops); check the Kubernetes deprecation guide.
 - **PostgreSQL major** (CNPG): follow [PG_MAJOR_UPGRADE.md](PG_MAJOR_UPGRADE.md).
 - **Stalwart / webmail / catalog runtimes**: check config-format and data-format
-  notes (Stalwart RocksDB format is pinned against `rocksdb-secondary-checkpoint`).
+  notes. (The mail archive's `rocksdb-secondary-checkpoint` image had to link the same
+  RocksDB as Stalwart. It is dormant while the archive is switched off, and its pin check
+  passes without looking; the check re-arms when the archive is switched on — see
+  `backend/src/modules/mail-admin/archive-dormant.ts`.)
 
 If an upgrade carries a breaking change, it goes in the CHANGELOG `### BREAKING`
 section when shipped (ADR-045).

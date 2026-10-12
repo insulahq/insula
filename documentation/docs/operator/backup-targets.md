@@ -5,7 +5,7 @@ verified: 2026.6.7
 # Backup targets
 
 A **backup target** is the off-site storage where Insula writes backups —
-system snapshots, tenant bundles, and mail archives. Nothing leaves your
+system snapshots, tenant bundles, and mail snapshots. Nothing leaves your
 infrastructure until you point a target at it; that is your decision, and your
 storage bill.
 

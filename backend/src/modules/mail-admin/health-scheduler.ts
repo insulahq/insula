@@ -26,6 +26,7 @@ import type { MailEndpointSet } from '@insula/api-contracts';
 import { notifyAdminMailHealthDegraded } from '../notifications/events.js';
 import { capacityItems, mailCapacityReader } from './health-capacity.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 export interface MailHealthSchedulerLog {
   info(...args: unknown[]): void;
@@ -225,8 +226,11 @@ export function startMailHealthScheduler(
   opts: { kubeconfigPath?: string; intervalMs?: number } = {},
 ): () => void {
   const intervalMs = opts.intervalMs ?? 900_000; // 15min: an outage signal, unlike the hourly DNSBL watch
+  // One replica checks: every pass execs into the mail server, runs the
+  // deliverability probes, and alerts behind a lookup-only dedupe.
   const runOnce = (): void => {
-    runMailHealthCheckOnce(db, log, opts.kubeconfigPath).catch((err: unknown) => {
+    withSchedulerLease(db, 'mail-health-watch', intervalMs * 1.5,
+      () => runMailHealthCheckOnce(db, log, opts.kubeconfigPath), { log }).catch((err: unknown) => {
       log.warn({ err }, 'mail-health-scheduler: pass failed');
     });
   };

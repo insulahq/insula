@@ -1386,6 +1386,35 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     variablesSchema: COMMON_VARS,
   },
 
+  // ── tenant.archive_scheduled ───────────────────────────────────────
+  {
+    categoryId: 'tenant.archive_scheduled',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Your account will be archived on {{dueDate}}',
+    bodyTemplate: emailMjml(
+      'Account will be archived',
+      'Your account {{tenantName}} is suspended. On {{dueDate}} it will be archived: its websites, mailboxes and applications are removed, and a copy of its files is kept for a limited time. Contact support before that date to keep the account.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dueDate', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.archive_scheduled',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Account will be archived on {{dueDate}}',
+    bodyTemplate: '{{tenantName}} is suspended and will be archived on {{dueDate}}: its websites, mailboxes and applications are removed. Contact support before then to keep the account.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dueDate', type: 'string', required: true },
+    ],
+  },
+
   // ── tenant.archived ────────────────────────────────────────────────
   {
     categoryId: 'tenant.archived',
@@ -1430,6 +1459,34 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: '{{tenantName}} is being permanently deleted, effective {{occurredAt}}.',
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
+  },
+  // ── tenant.deletion_scheduled ──────────────────────────────────────
+  {
+    categoryId: 'tenant.deletion_scheduled',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Your account will be deleted on {{dueDate}}',
+    bodyTemplate: emailMjml(
+      'Account will be deleted',
+      'Your account {{tenantName}} is archived. On {{dueDate}} it will be permanently deleted. Contact support before that date to keep the account.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dueDate', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.deletion_scheduled',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Account will be deleted on {{dueDate}}',
+    bodyTemplate: '{{tenantName}} is archived and will be permanently deleted on {{dueDate}}. Contact support before then to keep the account.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'dueDate', type: 'string', required: true },
+    ],
   },
   // ── R4/R6 PR 4: send-quota notifications ──
   {

@@ -34,6 +34,7 @@
  * connect hung until timeout, which would present as a LAPI that looks
  * configured and reaches nothing.
  */
+import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 import * as k8s from '@kubernetes/client-node';
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
@@ -546,13 +547,19 @@ export async function reconcileCrowdsecDb(
 
 /** Boot + 5-minute convergence, mirroring the roundcube reconciler. */
 export function startCrowdsecDbReconciler(
+  db: LeaseDb,
   core: k8s.CoreV1Api,
   kc: k8s.KubeConfig,
   log: Logger,
 ): { stop: () => void } {
+  // One replica provisions: the engine is restarted once, by the replica that
+  // created the credentials — and a second replica creating the role or the
+  // database at the same moment makes that one fail before its restart.
   const tick = (): void => {
-    void reconcileCrowdsecDb(core, kc, log)
-      .then((r) => {
+    void withSchedulerLease(db, 'crowdsec-db-reconciler', TICK_INTERVAL_MS * 1.5, () => reconcileCrowdsecDb(core, kc, log))
+      .then((leased) => {
+        if (!leased.ran) return;
+        const r = leased.value;
         if (r.applied && r.createdSecret) {
           log.info('crowdsec-db: role + database ensured (credentials created)');
         }

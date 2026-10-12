@@ -188,6 +188,7 @@ import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { withSchedulerLease } from './shared/scheduler-lease.js';
+import { MAIL_ARCHIVE_ENABLED } from './modules/mail-admin/archive-dormant.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
@@ -1129,16 +1130,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // DB→Stalwart reconciles used to run at boot only, so drift
       // introduced at runtime (restores, out-of-band edits, transient
       // push failures after the DB write) persisted until the next
-      // platform-api restart. Re-run all three on a 15-min interval —
-      // each is idempotent and no-ops when nothing drifted. A guard
-      // skips a tick while the previous one is still running.
+      // platform-api restart. Re-run all three on a 15-min interval. A
+      // guard skips a tick while the previous one is still running.
       {
         const MAIL_CONVERGENCE_SWEEP_MS = 15 * 60 * 1000;
         let sweepRunning = false;
         const sweepTimer = setInterval(() => {
           if (sweepRunning) return;
           sweepRunning = true;
-          void (async () => {
+          // One replica sweeps (lease): the passes list every account in
+          // Stalwart, re-upload each mailbox's rules, and check-then-create
+          // mailing lists and identities, which replicas running together can
+          // create twice.
+          void withSchedulerLease(app.db, 'mail-convergence-sweep', MAIL_CONVERGENCE_SWEEP_MS * 1.5, async () => {
             // Each reconcile is independent — one subsystem's structural
             // failure must not skip the others' convergence for a tick.
             try {
@@ -1163,7 +1167,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             } finally {
               sweepRunning = false;
             }
-          })();
+          }, { log: app.log }).catch((err: unknown) => {
+            app.log.warn({ err }, 'periodic sweep: lease failed (retried next tick)');
+          }).finally(() => {
+            // Also when the lease was not ours and nothing ran.
+            sweepRunning = false;
+          });
         }, MAIL_CONVERGENCE_SWEEP_MS);
         sweepTimer.unref?.();
         app.addHook('onClose', () => clearInterval(sweepTimer));
@@ -1669,31 +1678,36 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // whose Job no longer exists) on every tick. Catches the case
       // where a prior platform-api pod was OOM-killed mid-run and the
       // operator's progress modal would otherwise spin forever.
-      const mailArchiveTimer = setInterval(async () => {
-        try {
-          const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
-          const { startMailArchive, reconcileAbandonedArchiveRuns } = await import('./modules/mail-admin/archive.js');
-          const cfg = app.config as Record<string, unknown>;
-          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const k8s = createK8sClients(kubeconfigPath);
-          await reconcileAbandonedArchiveRuns(
-            { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-reconciler' },
-            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
-          ).catch((err) => app.log.warn({ err }, '[archive-reconciler] tick error'));
-          await maybeFireArchiveSchedule(
-            app.db,
-            () => startMailArchive(
-              { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-scheduler' },
-              { mode: 'no_downtime' },
-            ),
-            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
-          );
-        } catch (err) {
-          app.log.warn({ err }, '[archive-scheduler] tick error');
-        }
-      }, 60_000);
-      app.addHook('onClose', () => clearInterval(mailArchiveTimer));
+      //
+      // DORMANT: the mail archive is switched off (mail-admin/archive-dormant.ts),
+      // so this timer is never started.
+      if (MAIL_ARCHIVE_ENABLED) {
+        const mailArchiveTimer = setInterval(async () => {
+          try {
+            const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
+            const { startMailArchive, reconcileAbandonedArchiveRuns } = await import('./modules/mail-admin/archive.js');
+            const cfg = app.config as Record<string, unknown>;
+            const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const k8s = createK8sClients(kubeconfigPath);
+            await reconcileAbandonedArchiveRuns(
+              { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-reconciler' },
+              { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+            ).catch((err) => app.log.warn({ err }, '[archive-reconciler] tick error'));
+            await maybeFireArchiveSchedule(
+              app.db,
+              () => startMailArchive(
+                { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-scheduler' },
+                { mode: 'no_downtime' },
+              ),
+              { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+            );
+          } catch (err) {
+            app.log.warn({ err }, '[archive-scheduler] tick error');
+          }
+        }, 60_000);
+        app.addHook('onClose', () => clearInterval(mailArchiveTimer));
+      }
 
       // Storage lifecycle: snapshot expiry + weekly audit report.
       // Needs a K8sClients handle for the audit path (`du -sb` exec
@@ -1733,7 +1747,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // and clears scheduled snapshots left on volumes their job no longer
         // covers — bare Snapshot CRs that no panel lists and no reaper sees.
         const { startLonghornRecurringJobReconciler } = await import('./modules/longhorn-recurring-jobs/scheduler.js');
-        const longhornJobsHandle = startLonghornRecurringJobReconciler(app.log, kubeconfigPath);
+        const longhornJobsHandle = startLonghornRecurringJobReconciler(app.db, app.log, kubeconfigPath);
         app.addHook('onClose', () => longhornJobsHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
@@ -1857,9 +1871,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           // One boot sweep per rollout: every replica boots and each redeployed
           // every unremediated instance. The first booting replica claims the
           // sweep for 30 min; the others skip it.
+          // No later try: refused means another replica is sweeping, and the
+          // report below must come from the run that made it.
           const leased = await withSchedulerLease(app.db, 'multihost-remediation-boot', 30 * 60_000, () => remediateMultihostDeployments(
             app.db, k8sForRemediation, redeployWithCurrentConfig as never, app.log as never,
-          ));
+          ), { startupRetry: false });
           if (!leased.ran) return;
           const report = leased.value;
           if (report.remediated.length > 0 || report.failed.length > 0) {
@@ -2015,6 +2031,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (kubePath) kcCs.loadFromFile(kubePath);
           else kcCs.loadFromCluster();
           const csDbHandle = startCrowdsecDbReconciler(
+            app.db,
             k8sForImapsync.core,
             kcCs,
             app.log as unknown as Pick<Console, 'info' | 'warn' | 'error'>,
@@ -2416,6 +2433,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
               core: k8sForImapsync.core,
               batch: k8sForImapsync.batch,
             });
+          },
+          // The check follows the mail snapshot schedule — the same cron, toggle
+          // and wall-clock zone the snapshot scheduler fires on.
+          mailSchedule: async () => {
+            const { resolveDesiredSchedule, resolveMailScheduleEnabled } = await import('./modules/mail-admin/snapshot-cronjob-reconciler.js');
+            const { resolvePlatformTimeZone } = await import('./modules/system-settings/platform-timezone.js');
+            const [cron, enabled, timeZone] = await Promise.all([
+              resolveDesiredSchedule(app.db), resolveMailScheduleEnabled(app.db), resolvePlatformTimeZone(app.db),
+            ]);
+            return { cron, enabled, timeZone };
           },
         });
         app.addHook('onClose', () => freshnessStop());
@@ -2835,7 +2862,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           './modules/security-hardening/crowdsec-bouncer-prune-scheduler.js'
         );
         const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-        const bouncerPruneHandle = startCrowdsecBouncerPruneScheduler(kubeconfigPath, app.log);
+        const bouncerPruneHandle = startCrowdsecBouncerPruneScheduler(app.db, kubeconfigPath, app.log);
         app.addHook('onClose', () => bouncerPruneHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'crowdsec-bouncer-prune scheduler not started');

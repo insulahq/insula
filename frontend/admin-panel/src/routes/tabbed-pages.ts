@@ -25,7 +25,7 @@ export const TABBED_PAGES = {
   '/security/network-trust': ['trusted-ranges', 'pending-peers', 'trusted-proxies', 'blacklist'],
   '/security/web-defense': ['waf', 'bans', 'exclusions', 'settings'],
   '/email/settings': ['mail', 'webmail', 'bundle-engine'],
-  '/email/operations': ['placement', 'backups', 'storage'],
+  '/email/operations': ['placement', 'storage'],
   '/platform/notifications': ['categories', 'providers', 'templates', 'deliveries'],
   // The three backup pages share BackupClassPage, which renders a tab only when
   // its page passes content for it — keep each list equal to what that page

@@ -56,7 +56,9 @@ ALLOW_LIST=(
   "backend/src/modules/storage-lifecycle/service.ts"
   "backend/src/modules/storage-lifecycle/snapshot-quota.ts"
   "backend/src/modules/storage-lifecycle/routes.ts"
-  "backend/src/modules/storage-lifecycle/scheduler.ts"
+  # Names the snapshot CLASS an archive is taken as (a category label the
+  # per-class resolver maps to a target), for the automatic archive sweep.
+  "backend/src/modules/storage-lifecycle/snapshot-ctx.ts"
   "backend/src/modules/storage-lifecycle/target-resolver.ts"
   "backend/src/modules/backup-rclone-shim/rclone-push.ts"
   "backend/src/modules/backup-schedules/service.ts"

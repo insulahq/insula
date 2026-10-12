@@ -1,3 +1,7 @@
+# DORMANT — nothing builds or runs this image while the mail archive is
+# switched off. What was unwired, and how to bring it back:
+# backend/src/modules/mail-admin/archive-dormant.ts
+#
 # Multi-stage build for rocksdb-secondary-checkpoint.
 #
 # librocksdb-sys 0.17.3 statically links librocksdb 10.4.2 + snappy + zlib +

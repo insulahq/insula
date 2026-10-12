@@ -21,6 +21,7 @@
 import crypto from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
@@ -516,8 +517,11 @@ export function startNodeHealthScheduler(
     if (stopped) return;
     try {
       // One replica writes the node-health rows (lease); every replica serves them.
-      const leased = await withSchedulerLease(db, 'node-health-monitor', TICK_MS * 1.5, () => reconcileNodeHealth(db, k8s));
-      const notified = leased.ran ? leased.value.notified : [];
+      // The run lock keeps the tick off a check an operator has started: both
+      // would see the same change of severity and each send its notice.
+      const leased = await withSchedulerLease(db, 'node-health-monitor', TICK_MS * 1.5,
+        () => runExclusive(db, 'node-health-monitor', () => reconcileNodeHealth(db, k8s)));
+      const notified = leased.ran && leased.value.ran ? leased.value.value.notified : [];
       if (notified.length > 0) {
         console.log(`[node-health-monitor] notified ${notified.length} severity transition(s): ${notified.join(', ')}`);
       }

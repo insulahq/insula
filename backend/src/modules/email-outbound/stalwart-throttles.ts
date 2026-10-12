@@ -37,6 +37,7 @@ import {
   type StalwartExpression,
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
+import { runExclusive, RUN_WAIT_MS } from '../../shared/exclusive-run.js';
 import type { OutboundReconcileLogger } from './service.js';
 
 export const DESCRIPTION_PREFIX = 'platform:send-limit:';
@@ -321,10 +322,56 @@ function quotaNeedsUpdate(
  * (verified live in the spike E2E for this PR) — no pod
  * roll is required here.
  */
+/** The run lock of the send-limit reconcile (shared/exclusive-run.ts). */
+const SEND_LIMIT_JOB = 'stalwart-send-limits';
+
+/**
+ * One description, one object: the first live object of each description, and
+ * every further one with the same description. Stalwart keys these objects by
+ * an id of its own, so nothing on its side stops two with one description.
+ */
+function byDescription<T extends { readonly description?: string | null }>(live: readonly T[]): { first: Map<string, T>; repeated: T[] } {
+  const first = new Map<string, T>();
+  const repeated: T[] = [];
+  for (const obj of live) {
+    const desc = obj.description as string;
+    if (first.has(desc)) repeated.push(obj);
+    else first.set(desc, obj);
+  }
+  return { first, repeated };
+}
+
+/**
+ * Bring Stalwart's send limits in line with the plans and tenants — one
+ * reconcile at a time, on any replica.
+ *
+ * Each reconcile reads what Stalwart holds and creates what is missing, and
+ * is started from several places: the mail self-heal timer, and every route
+ * that changes a plan, a tenant's limits or a mail domain. Two at once both
+ * found a new domain's limits missing and both created them — and from then
+ * on a changed limit was written to one copy only, with the other left
+ * enforcing the old one. So a reconcile takes a run lock; one started while
+ * another runs waits for it and then runs itself, because it may have been
+ * started by a change the other has not read. Copies already there (made
+ * before this lock, or behind a lock that lapsed) are removed by the diff.
+ */
 export async function reconcileStalwartSendLimits(
   db: Database,
   logger: OutboundReconcileLogger,
   opts: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<ThrottleReconcileResult> {
+  const run = await runExclusive(db, SEND_LIMIT_JOB, () => reconcileSendLimitsOnce(db, logger, opts), { waitMs: RUN_WAIT_MS });
+  if (run.ran) return run.value;
+  // Still busy after the wait. The next trigger — the self-heal timer at the
+  // latest — runs the full diff, so this is a skip, not a failure.
+  logger.warn({ job: SEND_LIMIT_JOB }, 'send-limit reconcile: another reconcile was still running, skipped');
+  return { skipped: true, reason: 'another reconcile was still running', created: 0, updated: 0, destroyed: 0 };
+}
+
+async function reconcileSendLimitsOnce(
+  db: Database,
+  logger: OutboundReconcileLogger,
+  opts: { baseUrl?: string; env?: NodeJS.ProcessEnv },
 ): Promise<ThrottleReconcileResult> {
   let desired: DesiredSendLimitObjects;
   try {
@@ -343,7 +390,7 @@ export async function reconcileStalwartSendLimits(
     const liveThrottles = (await mtaOutboundThrottleGet(opts)).filter((t) =>
       t.description?.startsWith(DESCRIPTION_PREFIX),
     );
-    const liveByDesc = new Map(liveThrottles.map((t) => [t.description, t]));
+    const { first: liveByDesc, repeated: repeatedThrottles } = byDescription(liveThrottles);
 
     const tCreate: Record<string, Record<string, unknown>> = {};
     const tUpdate: Record<string, Record<string, unknown>> = {};
@@ -359,11 +406,16 @@ export async function reconcileStalwartSendLimits(
         updated += 1;
       }
     }
-    for (const live of liveThrottles) {
+    for (const live of liveByDesc.values()) {
       if (!desired.throttles.has(live.description)) {
         tDestroy.push(live.id);
         destroyed += 1;
       }
+    }
+    // A second object under one description is never right, wanted or not.
+    for (const copy of repeatedThrottles) {
+      tDestroy.push(copy.id);
+      destroyed += 1;
     }
 
     if (Object.keys(tCreate).length || Object.keys(tUpdate).length || tDestroy.length) {
@@ -387,7 +439,7 @@ export async function reconcileStalwartSendLimits(
     const liveQuotas = (await mtaQueueQuotaGet(opts)).filter((q) =>
       q.description?.startsWith(DESCRIPTION_PREFIX),
     );
-    const liveQuotaByDesc = new Map(liveQuotas.map((q) => [q.description as string, q]));
+    const { first: liveQuotaByDesc, repeated: repeatedQuotas } = byDescription(liveQuotas);
 
     const qCreate: Record<string, Record<string, unknown>> = {};
     const qUpdate: Record<string, Record<string, unknown>> = {};
@@ -403,11 +455,15 @@ export async function reconcileStalwartSendLimits(
         updated += 1;
       }
     }
-    for (const live of liveQuotas) {
+    for (const live of liveQuotaByDesc.values()) {
       if (!desired.quotas.has(live.description as string)) {
         qDestroy.push(live.id);
         destroyed += 1;
       }
+    }
+    for (const copy of repeatedQuotas) {
+      qDestroy.push(copy.id);
+      destroyed += 1;
     }
 
     if (Object.keys(qCreate).length || Object.keys(qUpdate).length || qDestroy.length) {

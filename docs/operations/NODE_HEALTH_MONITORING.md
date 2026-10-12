@@ -211,7 +211,10 @@ also bounded individually — see [TENANT_DISK_LIMITS.md](TENANT_DISK_LIMITS.md)
   warning → normal then by name.
 - `POST /api/v1/admin/node-health/reconcile` (super_admin / admin) —
   run a tick now. Useful after operator-initiated remediation; the
-  Monitoring page calls this on the "Reconcile now" button.
+  Monitoring page calls this on the "Reconcile now" button. If the
+  scheduled tick is running at that moment the request waits for it (up
+  to 30 s) and then runs its own; if the check is still busy it answers
+  `409 JOB_ALREADY_RUNNING` with nothing started, and the panel says so.
 
 ## Smoke check
 

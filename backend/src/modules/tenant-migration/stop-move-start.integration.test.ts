@@ -102,6 +102,9 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
       node_name varchar(255), storage_tier varchar(16), status varchar(32) NOT NULL DEFAULT 'active',
       storage_lifecycle_state varchar(32) NOT NULL DEFAULT 'idle', active_storage_op_id varchar(36),
       updated_at timestamp NOT NULL DEFAULT now())`);
+    // The tenant's lock (tenant-lifecycle/tenant-lock.ts) is a lease row.
+    await pool.query(`CREATE TABLE platform_settings (setting_key varchar(100) PRIMARY KEY, setting_value text NOT NULL,
+      updated_at timestamp NOT NULL DEFAULT now())`);
     await pool.query(`CREATE TABLE storage_operations (id varchar(36) PRIMARY KEY, tenant_id varchar(36) NOT NULL,
       op_type storage_operation_type NOT NULL, state varchar(32) NOT NULL DEFAULT 'idle',
       progress_pct integer NOT NULL DEFAULT 0, progress_message text, params jsonb, progress_steps jsonb,
@@ -117,7 +120,7 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE tenants, storage_operations');
+    await pool.query('TRUNCATE tenants, storage_operations, platform_settings');
     await pool.query(`INSERT INTO tenants (id, kubernetes_namespace, node_name, storage_tier) VALUES ('acme', '${NS}', 'node-a', 'local')`);
     cluster.log.length = 0;
     cluster.deployments.splice(0, cluster.deployments.length,
@@ -172,8 +175,22 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
   });
 
   it('lets exactly one of two simultaneous moves start', async () => {
-    const results = await Promise.allSettled([beginTenantMove(db, fakeK8s(), input), beginTenantMove(db, fakeK8s(), input)]);
+    // The two starts take the tenant's lock one after the other, so the
+    // second claims after the first. A real move is then minutes from done;
+    // this fake cluster answers at once, so the first move is held at its
+    // first look at the cluster — or it would be over, and the tenant free
+    // again, before the second start had its turn.
+    let letGo: () => void = () => {};
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    const k8s = fakeK8s();
+    const apps = k8s.apps as unknown as { listNamespacedDeployment: (...args: unknown[]) => Promise<unknown> };
+    const list = apps.listNamespacedDeployment;
+    apps.listNamespacedDeployment = async (...args) => { await held; return list(...args); };
+
+    const results = await Promise.allSettled([beginTenantMove(db, k8s, input), beginTenantMove(db, k8s, input)]);
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({ code: 'STORAGE_OP_IN_PROGRESS', status: 409 });
+    letGo();
     const winner = results.find((r) => r.status === 'fulfilled') as PromiseFulfilledResult<string>;
     await settled(winner.value);
     const { rows } = await pool.query('SELECT count(*)::int AS n FROM storage_operations');

@@ -241,10 +241,12 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
           );
         }
         try {
-          const { runStalwartDomainReconcilerTick } = await import(
+          const { runStalwartDomainReconcile } = await import(
             '../mail-admin/stalwart-domain-reconciler.js'
           );
-          await runStalwartDomainReconcilerTick({
+          const { RUN_WAIT_MS } = await import('../../shared/exclusive-run.js');
+          // After any pass under way, so this one reads the hostname just saved.
+          const run = await runStalwartDomainReconcile({
             core: k8sClients.core,
             custom: k8sClients.custom,
             db: app.db,
@@ -252,7 +254,10 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
               warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
               info: (...args: unknown[]) => app.log.info(args.join(' ')),
             },
-          });
+          }, { waitMs: RUN_WAIT_MS, log: app.log });
+          if (!run.ran) {
+            app.log.warn({}, 'webmail-settings: a Stalwart domain reconcile was still running after the wait (scheduler will retry)');
+          }
         } catch (err) {
           app.log.warn(
             { err },

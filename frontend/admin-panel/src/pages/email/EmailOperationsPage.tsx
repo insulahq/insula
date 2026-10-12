@@ -1,9 +1,8 @@
-import { Server, Network, Archive as ArchiveIcon, HardDrive } from 'lucide-react';
+import { Server, Network, HardDrive } from 'lucide-react';
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
 import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
-import MailArchiveCard from '@/components/MailArchiveCard';
 import MailNodeStorageCards from '@/components/email/MailNodeStorageCards';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -14,8 +13,12 @@ type OpsTab = TabOf<'/email/operations'>;
  * Email → Operations.
  *
  * Day-99 actions: mail-server placement & DR (failover/failback/migrate +
- * standby data freshness), point-in-time archive via `stalwart -e`, and
- * the per-PVC storage view.
+ * standby data freshness) and the per-PVC storage view.
+ *
+ * The page had a third tab, Backups, whose only content was the mail archive
+ * card (`stalwart -e` export). The archive is switched off — its code is kept
+ * dormant, see backend `mail-admin/archive-dormant.ts` — so the tab is gone
+ * with it. Mail backups are under Backups → Mail.
  */
 
 export default function EmailOperationsPage() {
@@ -23,12 +26,12 @@ export default function EmailOperationsPage() {
 
   return (
     <div className="space-y-6">
-      <EmailPageHeader subtitle="Placement & DR • Mail archive (DR export) • Storage." />
+      <EmailPageHeader subtitle="Placement & DR • Storage." />
 
       <MailSectionCard
         icon={Server}
         title="Operations"
-        summary="Placement & migration • Mail archive (DR export) • Storage"
+        summary="Placement & migration • Storage"
         dataTestId="mail-section-operations"
         storageKey="operations"
         defaultOpen
@@ -36,7 +39,6 @@ export default function EmailOperationsPage() {
         <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
           {[
             { key: 'placement' as OpsTab, label: 'Placement & migration', icon: Network },
-            { key: 'backups' as OpsTab, label: 'Backups', icon: ArchiveIcon },
             { key: 'storage' as OpsTab, label: 'Storage', icon: HardDrive },
           ].map((t) => (
             <button
@@ -63,29 +65,6 @@ export default function EmailOperationsPage() {
                 placement, and an operator should not have to know to open a
                 "debugging only" fold to see it (operator request). */}
             <MailPortExposureCard />
-          </div>
-        )}
-
-        {tab === 'backups' && (
-          <div className="space-y-3">
-            {/* Mail backup vocabulary cheatsheet. */}
-            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 space-y-1">
-              <p className="font-semibold">Three distinct mail-backup paths — pick by recovery need:</p>
-              <ul className="space-y-0.5 ml-4 list-disc">
-                <li>
-                  <strong>Archive</strong> (below) — Stalwart-native <code className="font-mono">stalwart -e</code> LZ4 export. Whole-server point-in-time. Use for DR drills + monthly cold backup.
-                </li>
-                <li>
-                  <strong>Snapshots</strong> — restic CronJob of the mail PVC, configured under{' '}
-                  <a href="/backups/mail/routing" className="font-medium underline">Backups → Mail → Targets, Schedules &amp; Retention</a>.
-                </li>
-                <li>
-                  <strong>Per-tenant bundles</strong> — mailbox-only capture via the engine picked in{' '}
-                  <a href="/email/settings" className="font-medium underline">Email → Settings → Backup Engine</a>. Used by the Plesk-style tenant restore cart.
-                </li>
-              </ul>
-            </div>
-            <MailArchiveCard />
           </div>
         )}
 

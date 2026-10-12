@@ -145,9 +145,9 @@ scripts/integration-stalwart-mail-ha.sh --mode-flip
 
 ### A. PATCH returns `MAIL_DEPLOYMENT_SCALED_TO_ZERO` (409)
 
-**Meaning:** another mail-admin operation is in progress that has scaled the Stalwart Deployment to 0 replicas — almost always the archive-downtime path (`archive.ts`) or a DR scale-down. The rollout-wait refuses to flip in this state because `updatedReplicas==replicas` is trivially satisfied (0==0) and the safety check would pass while Stalwart isn't actually running.
+**Meaning:** another mail-admin operation is in progress that has scaled the Stalwart Deployment to 0 replicas — almost always a DR scale-down, or an operator who stopped it by hand ([MAIL_STORE_EXPORT_IMPORT.md](MAIL_STORE_EXPORT_IMPORT.md)). The rollout-wait refuses to flip in this state because `updatedReplicas==replicas` is trivially satisfied (0==0) and the safety check would pass while Stalwart isn't actually running.
 
-**Recovery:** wait for the concurrent operation to complete (visible in the admin panel's Mail Archive card or the Mail DR card), then retry the flip.
+**Recovery:** wait for the concurrent operation to complete (visible in the admin panel's Mail DR card), then retry the flip.
 
 ### B. PATCH returns `MAIL_DEPLOYMENT_ROLLOUT_TIMEOUT` (504)
 

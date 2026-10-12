@@ -206,6 +206,21 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    // Sent by the automatic archive/delete sweep, a notice period ahead
+    // (Platform → Tenant Lifecycle Hooks). `action`: the tenant can still
+    // settle whatever it was suspended for, and keep the account.
+    id: 'tenant.archive_scheduled',
+    cls: 'action',
+    reportsOn: 'billing',
+    displayName: 'Account will be archived',
+    description: 'Your suspended hosting account will be archived on the date given — its sites and mailboxes are removed, a copy of its files is kept for a limited time.',
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: true,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'tenant.archived',
     cls: 'record',
     reportsOn: 'billing',
@@ -225,6 +240,19 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
     description: 'Your hosting account is being permanently removed.',
     audience: 'tenant',
     defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: true,
+    gdprBasis: 'contract',
+  },
+  {
+    // The automatic sweep's notice before it deletes an archived tenant.
+    id: 'tenant.deletion_scheduled',
+    cls: 'action',
+    reportsOn: 'billing',
+    displayName: 'Account will be deleted',
+    description: 'Your archived hosting account will be permanently deleted on the date given.',
+    audience: 'tenant',
+    defaultSeverity: 'error',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: true,
     gdprBasis: 'contract',

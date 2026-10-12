@@ -6,15 +6,18 @@
  * a few volumes' snapshot chains coalesce per tick instead of all of them at
  * once. A cluster with nothing to do costs three LIST calls per tick.
  *
- * Safe to run on every replica: labelling writes the same label, and a snapshot
- * a peer already deleted comes back 404, which `deleteSnapshot` treats as done.
+ * One replica runs it. Labelling writes the same label and a snapshot already
+ * deleted comes back 404, so a second replica did no damage — but the sweep's
+ * few-volumes-per-tick pace is per replica, and three of them ticking at their
+ * own times purged three times as many.
  */
 
+import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileLonghornRecurringJobs, type Logger } from './service.js';
 
 const TICK_MS = 15 * 60 * 1000;
-/** Let the cluster settle before the first write; also de-synchronises replicas. */
+/** Let the cluster settle before the first write. */
 const INITIAL_DELAY_MS = 4 * 60 * 1000;
 
 export interface PendingCounts {
@@ -63,6 +66,7 @@ export function pendingMessages(
 }
 
 export function startLonghornRecurringJobReconciler(
+  db: LeaseDb,
   log: Logger,
   kubeconfigPath?: string,
 ): { stop: () => void } {
@@ -74,32 +78,37 @@ export function startLonghornRecurringJobReconciler(
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const k8s = createK8sClients(kubeconfigPath);
-      const r = await reconcileLonghornRecurringJobs({ k8s, log });
+      // One replica sweeps: a tick purges at most a few volumes to bound the
+      // disk load, and each replica ticking at its own time took the next
+      // few on top.
+      await withSchedulerLease(db, 'longhorn-recurring-jobs', TICK_MS * 1.5, async () => {
+        const k8s = createK8sClients(kubeconfigPath);
+        const r = await reconcileLonghornRecurringJobs({ k8s, log });
 
-      const pending = { detached: r.pendingDetached, headParent: r.pendingHeadParent };
-      for (const m of pendingMessages(lastPending, pending)) log.info(m.obj, m.msg);
-      lastPending = pending;
+        const pending = { detached: r.pendingDetached, headParent: r.pendingHeadParent };
+        for (const m of pendingMessages(lastPending, pending)) log.info(m.obj, m.msg);
+        lastPending = pending;
 
-      if (r.deletedSnapshots > 0 || r.labelled.length > 0) {
-        const outstanding = r.deferredVolumes > 0 || r.pendingPurge > 0;
-        log.info(
-          {
-            labelled: r.labelled.length,
-            deletedSnapshots: r.deletedSnapshots,
-            purgedVolumes: r.purgedVolumes.length,
-            deferredVolumes: r.deferredVolumes,
-            pendingPurge: r.pendingPurge,
-            pendingDetached: r.pendingDetached,
-            pendingHeadParent: r.pendingHeadParent,
-          },
-          // "converged" is a claim about the cluster, so it is only made when
-          // nothing is deferred and nothing is still waiting to be purged.
-          outstanding
-            ? 'longhorn-recurring-jobs: tick applied, work still outstanding'
-            : 'longhorn-recurring-jobs: tick converged',
-        );
-      }
+        if (r.deletedSnapshots > 0 || r.labelled.length > 0) {
+          const outstanding = r.deferredVolumes > 0 || r.pendingPurge > 0;
+          log.info(
+            {
+              labelled: r.labelled.length,
+              deletedSnapshots: r.deletedSnapshots,
+              purgedVolumes: r.purgedVolumes.length,
+              deferredVolumes: r.deferredVolumes,
+              pendingPurge: r.pendingPurge,
+              pendingDetached: r.pendingDetached,
+              pendingHeadParent: r.pendingHeadParent,
+            },
+            // "converged" is a claim about the cluster, so it is only made when
+            // nothing is deferred and nothing is still waiting to be purged.
+            outstanding
+              ? 'longhorn-recurring-jobs: tick applied, work still outstanding'
+              : 'longhorn-recurring-jobs: tick converged',
+          );
+        }
+      });
     } catch (err) {
       log.error({ err: (err as Error).message }, 'longhorn-recurring-jobs: tick failed');
     }

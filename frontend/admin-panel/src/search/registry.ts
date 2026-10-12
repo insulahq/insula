@@ -152,8 +152,6 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     keywords: ['backup', 'restic', 'bundle'] },
   { id: 'email.operations.placement', label: 'Mail Placement & Migration', group: 'Email → Operations', to: '/email/operations/placement',
     keywords: ['node', 'move', 'imapsync', 'migrate'] },
-  { id: 'email.operations.backups', label: 'Mail Operations Backups', group: 'Email → Operations', to: '/email/operations/backups',
-    keywords: ['restore', 'snapshot'] },
   { id: 'email.operations.storage', label: 'Mail Storage', group: 'Email → Operations', to: '/email/operations/storage',
     keywords: ['quota', 'disk', 'volume', 'usage'] },
   { id: 'email.drift', label: 'Mail Data Drift', group: 'Email', to: '/email/drift',

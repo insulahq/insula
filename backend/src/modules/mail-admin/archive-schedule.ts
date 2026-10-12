@@ -10,10 +10,15 @@
  * The tick (`maybeFireArchiveSchedule`) is called every 60s from the
  * in-process timer in app.ts. It:
  *   1. Reads the current schedule config from system_settings.
- *   2. Computes the next-fire-at given config + last-fired-at.
- *   3. If now() >= next-fire-at AND no archive run is currently active,
- *      stamps mail_archive_last_scheduled_run_at = now() FIRST (atomic
- *      "claim"), then calls startMailArchive({ mode: 'no_downtime' }).
+ *   2. Finds the most recent scheduled time at or before now
+ *      (`scheduledRunDue`): due when it has not been run yet and is no older
+ *      than the catch-up window.
+ *   3. If one is due, stamps mail_archive_last_scheduled_run_at = now() FIRST
+ *      (atomic "claim"), then calls startMailArchive({ mode: 'no_downtime' }).
+ *
+ * The due check used to be `computeNextFireAt(row, now) <= now`. That function
+ * answers "when is the NEXT run" for the card, and by construction returns a
+ * time after `now` — so the schedule never fired, for any interval.
  *
  * Manual triggers (operator clicking "Create Archive Now") do NOT
  * update last_scheduled_run_at — keeps the cron cadence honest. Only
@@ -31,7 +36,7 @@ import {
 
 const SETTINGS_ID = 'system';
 
-interface ScheduleRow {
+export interface ScheduleRow {
   interval: MailArchiveScheduleInterval;
   hourUtc: number;
   weekdayUtc: number;
@@ -141,6 +146,51 @@ export function computeNextFireAt(
   return null;
 }
 
+/**
+ * How long after a scheduled time a run is still started. Covers an API
+ * rollout or a short outage at that moment; a run missed by more than this is
+ * skipped — "daily at 02:00" then means the next 02:00, not whenever the API
+ * came back. (It also means a schedule enabled within this window after one of
+ * its times starts a run at once.)
+ */
+export const ARCHIVE_CATCH_UP_MS = 15 * 60_000;
+
+const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Pure: the most recent scheduled time at or before `now`, or null when the schedule is off. All UTC. */
+export function lastScheduledTime(
+  row: Pick<ScheduleRow, 'interval' | 'hourUtc' | 'weekdayUtc'>,
+  now: Date,
+): Date | null {
+  if (row.interval === 'hourly') {
+    return new Date(Math.floor(now.getTime() / HOUR_MS) * HOUR_MS);
+  }
+  if (row.interval === 'daily' || row.interval === 'weekly') {
+    let at = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), row.hourUtc, 0, 0, 0);
+    if (at > now.getTime()) at -= DAY_MS;
+    if (row.interval === 'weekly') {
+      const back = (new Date(at).getUTCDay() - row.weekdayUtc + 7) % 7;
+      at -= back * DAY_MS;
+    }
+    return new Date(at);
+  }
+  return null;
+}
+
+/**
+ * Pure: the scheduled time a run is due for now, or null. Due means: that time
+ * has not been run yet (the last scheduled run is older than it) and it passed
+ * no longer ago than ARCHIVE_CATCH_UP_MS.
+ */
+export function scheduledRunDue(row: ScheduleRow, now: Date): Date | null {
+  const at = lastScheduledTime(row, now);
+  if (!at) return null;
+  if (row.lastScheduledRunAt && row.lastScheduledRunAt.getTime() >= at.getTime()) return null;
+  if (now.getTime() - at.getTime() > ARCHIVE_CATCH_UP_MS) return null;
+  return at;
+}
+
 function sameUtcDay(a: Date, b: Date): boolean {
   return a.getUTCFullYear() === b.getUTCFullYear()
     && a.getUTCMonth() === b.getUTCMonth()
@@ -194,13 +244,13 @@ export async function maybeFireArchiveSchedule(
   db: Database,
   startArchive: () => Promise<{ runId: string }>,
   logger: { info: (msg: string) => void; warn: (msg: string) => void } = console,
+  clock: () => Date = () => new Date(),
 ): Promise<{ fired: boolean; runId?: string; reason?: string }> {
   const row = await readSchedule(db);
   if (row.interval === 'off') return { fired: false, reason: 'interval=off' };
 
-  const now = new Date();
-  const nextFire = computeNextFireAt(row, now);
-  if (!nextFire || nextFire > now) {
+  const now = clock();
+  if (!scheduledRunDue(row, now)) {
     return { fired: false, reason: 'not yet due' };
   }
 

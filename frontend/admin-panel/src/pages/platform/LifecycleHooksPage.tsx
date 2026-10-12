@@ -9,6 +9,7 @@ import {
   type LifecycleTransitionRow,
 } from '@/hooks/use-lifecycle';
 import ErrorPanel from '@/components/ErrorPanel';
+import TenantAutomationCard from '@/components/lifecycle/TenantAutomationCard';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const STATE_BADGE: Record<LifecycleHookRunRow['state'], string> = {
@@ -65,6 +66,8 @@ export default function LifecycleHooksSettings() {
           </button>
         </div>
       </div>
+
+      <TenantAutomationCard />
 
       {list.error && (
         <ErrorPanel error={extractOperatorError(list.error)} severity="error" testId="lifecycle-hooks-list-error" />

@@ -2,25 +2,27 @@
  * Backup-health scheduler.
  *
  * Runs every BACKUP_HEALTH_TICK_MS in the in-cluster process. Each
- * tick: list health-watched Jobs, find new failures (dedup via
- * notifications.resourceId=uid), route to admin or tenant recipients
- * per the Job's `tenant-id` label, emit one notification per Job UID.
+ * tick: list health-watched Jobs and report every failed one.
  *
- * Idempotent: the next tick re-derives the already-notified set from
- * the notifications table, so a pod restart mid-tick is safe.
+ * One notification per failed Job, however many ticks see it: each report
+ * carries the dedupe key `backup-job-failed:<Job UID>`, and the dispatcher
+ * delivers a key once per recipient. That is the only dedupe — a failed Job
+ * is reported again on every tick while it exists, and dropped there. (A
+ * lookup that was meant to skip Jobs already reported used to run first; it
+ * read a column the dispatcher never writes and never matched a row.)
+ *
+ * Idempotent: a pod restart mid-tick leaves the recipients not yet told to
+ * the next tick.
  */
 
-import { eq, and, inArray } from 'drizzle-orm';
 import * as k8s from '@kubernetes/client-node';
-import { notifications } from '../../db/schema.js';
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import { resolveRecipients } from '../notifications/recipients.js';
-import { listHealthWatchedJobs, findNewFailures } from './service.js';
+import { listHealthWatchedJobs } from './service.js';
 import type { BackupJobMeta } from './service.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
-
-const RESOURCE_TYPE_BACKUP_JOB = 'backup_job';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 /** Default tick interval — 5 minutes balances freshness vs apiserver load. */
 export const BACKUP_HEALTH_TICK_MS = 5 * 60 * 1000;
@@ -41,11 +43,16 @@ export function startBackupHealthScheduler(
     warn: (msg, err) => console.warn(`[backup-health] ${msg}`, err ?? ''),
   };
 
-  safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
+  // One replica watches: the failure notification is deduplicated by a lookup,
+  // not a constraint, so replicas ticking together each send it.
+  const tick = (): void => safeTick(
+    'backup-health',
+    () => withSchedulerLease(deps.db, 'backup-job-health', tickMs * 1.5, () => runTick(deps.db, deps.batch, log)),
+    log,
+  );
+  tick();
 
-  const timer = setInterval(() => {
-    safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
-  }, tickMs);
+  const timer = setInterval(tick, tickMs);
 
   return () => clearInterval(timer);
 }
@@ -63,41 +70,10 @@ export async function runTick(
     return;
   }
 
-  if (jobs.length === 0) return;
-
-  const alreadyNotified = await loadAlreadyNotifiedUids(
-    db,
-    jobs.map((j) => j.uid),
-  );
-
-  const newFailures = findNewFailures(jobs, alreadyNotified);
-  if (newFailures.length === 0) return;
-
-  for (const failure of newFailures) {
+  for (const failure of jobs.filter((j) => j.state === 'failed')) {
     // eslint-disable-next-line no-await-in-loop
     await notifyForFailure(db, failure, log);
   }
-}
-
-async function loadAlreadyNotifiedUids(
-  db: Database,
-  candidateUids: ReadonlyArray<string>,
-): Promise<Set<string>> {
-  if (candidateUids.length === 0) return new Set();
-  const rows = await db
-    .select({ resourceId: notifications.resourceId })
-    .from(notifications)
-    .where(
-      and(
-        eq(notifications.resourceType, RESOURCE_TYPE_BACKUP_JOB),
-        inArray(notifications.resourceId, candidateUids as string[]),
-      ),
-    );
-  const seen = new Set<string>();
-  for (const row of rows) {
-    if (row.resourceId) seen.add(row.resourceId);
-  }
-  return seen;
 }
 
 async function notifyForFailure(
@@ -128,9 +104,9 @@ async function notifyForFailure(
   // calls produced TWO inbox entries for one failed backup. The dispatcher
   // path is a strict superset: same row, plus a template, an email leg, a
   // preference gate, a rate limit and a delivery audit.
-  // Dedupe on the Job UID: the scheduler re-reads failed Jobs every tick, and
-  // without a key the same failure re-notifies until the Job is garbage
-  // collected.
+  // Dedupe on the Job UID: the scheduler reports a failed Job on every tick
+  // until the Job is garbage collected, and this key is what makes all but
+  // the first report a no-op.
   await notifyAdminBackupFailed(db, {
     backupName: `${failure.namespace}/${failure.name} (${failure.displayName})`,
     errorMessage: `Category: ${failure.category}, severity: ${failure.severity}. ${reason}`,

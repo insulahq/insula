@@ -235,6 +235,7 @@ jobs:
       - run: python3 -m pip install --user pyyaml
       - run: ./scripts/test-vm-lab.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
+      - run: ./scripts/test-bootstrap-cpu-preflight.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-standby-replicate.sh
       - run: ./scripts/test-standby-restore-pick.sh
@@ -1175,7 +1176,9 @@ jobs:
       # Offline half only — hermetic, so it can run on every push. The --online
       # half (does upstream really resolve that crate version?) runs in
       # component-watch.yml, which already has network + a token.
-      - name: rocksdb pin stays coupled to Stalwart's
+      # Passes without looking while the mail archive — the only user of the
+      # checkpoint image — is switched off; switching it on re-arms the check.
+      - name: rocksdb pin stays coupled to Stalwart's (dormant with the mail archive)
         run: ./scripts/ci-rocksdb-stalwart-pin-check.sh
       - name: runtime-resolved images stay digest-pinned (or declared pending)
         run: ./scripts/ci-config-image-pin-check.sh

@@ -5,6 +5,8 @@ import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePod
 import NodeRecoveryModal from '@/components/NodeRecoveryModal';
 import { memoryEventBadgeClass, memoryEventLabel } from '@/lib/memory-event-label';
 import NodeName from '@/components/nodes/NodeName';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -129,6 +131,11 @@ export default function NodeHealthPanel() {
           Reconcile now
         </button>
       </div>
+
+      {/* A refused or failed check used to end with the spinner and nothing else. */}
+      {reconcile.isError && (
+        <ErrorPanel error={extractOperatorError(reconcile.error)} compact testId="node-health-reconcile-error" />
+      )}
 
       {sortedNodes.length === 0 ? (
         <div className="rounded border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">

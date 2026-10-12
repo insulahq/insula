@@ -99,12 +99,23 @@ PY
     else
       echo "  govulncheck not installed — go install golang.org/x/vuln/cmd/govulncheck@latest"
     fi
-    if command -v cargo-audit >/dev/null 2>&1; then
-      d="$REPO_ROOT/images/rocksdb-secondary-checkpoint"
-      [[ -f "$d/Cargo.lock" ]] && ( cd "$d" && cargo audit ) || true
-    else
-      echo "  cargo-audit not installed — cargo install cargo-audit"
-    fi
+    # cargo-audit: every Rust image that is built. A directory carrying an
+    # osv-scanner.toml that ignores its packages is a dormant image
+    # (images/rocksdb-secondary-checkpoint while the mail archive is off) and
+    # is left out here too.
+    while IFS= read -r lock; do
+      d=$(dirname "$lock")
+      if [[ -f "$d/osv-scanner.toml" ]] && grep -q '^ignore = true' "$d/osv-scanner.toml"; then
+        echo "-- cargo audit $d: skipped (dormant image)"
+        continue
+      fi
+      if command -v cargo-audit >/dev/null 2>&1; then
+        echo "-- cargo audit $d"
+        ( cd "$d" && cargo audit ) || true
+      else
+        echo "  cargo-audit not installed — cargo install cargo-audit"
+      fi
+    done < <(find "$REPO_ROOT/images" -name Cargo.lock 2>/dev/null)
     exit "$rc"
     ;;
 

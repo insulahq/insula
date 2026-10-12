@@ -21,6 +21,8 @@
  * which is itself an operator-visible alarm.
  */
 
+import { runExclusive } from '../../shared/exclusive-run.js';
+import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 import { pruneStaleBouncers } from './crowdsec.js';
 
@@ -33,6 +35,7 @@ export interface BouncerPruneSchedulerHandle {
 }
 
 export function startCrowdsecBouncerPruneScheduler(
+  db: LeaseDb,
   kubeconfigPath: string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   intervalMs: number = BOUNCER_PRUNE_INTERVAL_MS,
@@ -42,12 +45,19 @@ export function startCrowdsecBouncerPruneScheduler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      const result = await pruneStaleBouncers(kubeconfigPath, BOUNCER_PRUNE_OLDER_THAN_SECONDS);
-      if (result.pruned > 0) {
-        log.info({ pruned: result.pruned }, 'crowdsec-bouncer-prune: pruned stale bouncers');
-      } else {
-        log.info({}, 'crowdsec-bouncer-prune: no stale bouncers to prune');
-      }
+      // One replica prunes: the pruned count is a before/after difference of
+      // the bouncer list, which a second prune running alongside falsifies.
+      await withSchedulerLease(db, 'crowdsec-bouncer-prune', intervalMs * 1.5, async () => {
+        // The run lock keeps this prune off one an operator has started.
+        const run = await runExclusive(db, 'crowdsec-bouncer-prune', () => pruneStaleBouncers(kubeconfigPath, BOUNCER_PRUNE_OLDER_THAN_SECONDS));
+        if (!run.ran) return;
+        const result = run.value;
+        if (result.pruned > 0) {
+          log.info({ pruned: result.pruned }, 'crowdsec-bouncer-prune: pruned stale bouncers');
+        } else {
+          log.info({}, 'crowdsec-bouncer-prune: no stale bouncers to prune');
+        }
+      });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },
