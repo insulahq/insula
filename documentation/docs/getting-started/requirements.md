@@ -43,8 +43,11 @@ servers have no such requirement). Intel CPUs since Nehalem (2008) and AMD since
 Bulldozer (2011) qualify, and so do the usual cloud instance types. A virtual
 machine that was given a generic CPU model does not — QEMU's `qemu64` and `kvm64`,
 the default on older Proxmox — and the mail server will not start on it. Set the
-VM's CPU type to `host` (or `x86-64-v2`) at the hypervisor. To check an x86-64
-server, run this on it; it prints nothing when the CPU is fine:
+VM's CPU type to `host` (or `x86-64-v2`) at the hypervisor. The installer checks
+this before it changes anything on the server, on the first node and on every
+node that joins, and an upgrade checks every node it updates before it touches
+the services. To check an x86-64 server yourself, run this on it; it prints nothing
+when the CPU is fine:
 
 ```bash
 [ "$(uname -m)" = x86_64 ] && for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do grep -qw "$f" /proc/cpuinfo || echo "missing: $f"; done

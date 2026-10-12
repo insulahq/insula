@@ -235,6 +235,7 @@ jobs:
       - run: python3 -m pip install --user pyyaml
       - run: ./scripts/test-vm-lab.sh
       - run: ./scripts/test-bootstrap-join-mode.sh
+      - run: ./scripts/test-bootstrap-cpu-preflight.sh
       - run: ./scripts/test-bootstrap-seed-ref.sh
       - run: ./scripts/test-standby-replicate.sh
       - run: ./scripts/test-standby-restore-pick.sh

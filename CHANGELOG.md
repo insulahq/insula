@@ -20,8 +20,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   CPU"*. Intel CPUs since Nehalem (2008), AMD since Bulldozer (2011) and the usual cloud instance
   types have these. A virtual machine given a generic CPU model does not — QEMU's `qemu64` and
   `kvm64`, the default on older Proxmox — and there the mail server, and the mail archive Job,
-  stop starting with this release. arm64 nodes are not affected. **Check every x86-64 node that
-  can run mail before upgrading** (prints nothing when the node is fine):
+  stop starting with this release. arm64 nodes are not affected.
+
+  The platform now checks this itself. **Installing or joining a node** on such a CPU is refused
+  in the pre-flight, before anything on the host changes. **An upgrade** checks every node it
+  updates before the services roll and stops at the first one that fails: the services stay on
+  the release they were on, and the run names the node and what its CPU lacks. A node the
+  operator leaves out of the run is not checked. That upgrade check needs the nodes-first upgrade
+  of 2026.10.7 — a cluster upgrading straight from 2026.10.6 or earlier rolls its services
+  first, so check its nodes by hand (prints nothing when the node is fine):
 
   ```bash
   [ "$(uname -m)" = x86_64 ] && for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do grep -qw "$f" /proc/cpuinfo || echo "missing: $f"; done
