@@ -15,6 +15,7 @@
  */
 
 import { emitEvent, type EmitResult } from './dispatcher/dispatch.js';
+import { getProviderForCategoryEmail } from './providers/service.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -717,7 +718,9 @@ export interface TenantLifecycleNoticePayload {
  * how many copies are on their way to a person, or were sent before under the
  * same key; 0 means there was nobody to tell (no user and no address, the
  * category switched off, notifications disabled). The sweep does not count
- * such a notice. The operators' broadcast channel is not a person.
+ * such a notice. The operators' broadcast channel is not a person — and an
+ * email is on its way to nobody while the platform has no mail provider to
+ * send it through: it is queued all the same, and then fails.
  *
  * Never throws.
  */
@@ -739,8 +742,14 @@ export async function notifyTenantLifecycleNotice(
       dedupeKey,
       externalRecipients: contactAddresses,
     });
-    const reached = result.perChannelStatuses.filter((s) => s.channel !== 'ntfy'
-      && (s.status === 'queued' || s.status === 'sending' || s.status === 'sent' || (s.status === 'skipped' && s.error === 'duplicate'))).length;
+    const onItsWay = result.perChannelStatuses.filter((s) => s.channel !== 'ntfy'
+      && (s.status === 'queued' || s.status === 'sending' || s.status === 'sent' || (s.status === 'skipped' && s.error === 'duplicate')));
+    // The same lookup the mail worker does when it comes to send. Unreadable
+    // counts as "cannot": the sweep then tells again, which costs a repeat,
+    // where the other mistake costs a tenant archived unannounced.
+    const canMail = onItsWay.some((s) => s.channel === 'email')
+      && await getProviderForCategoryEmail(db, categoryId).then((p) => !!p?.smtpHost, () => false);
+    const reached = onItsWay.filter((s) => s.channel !== 'email' || canMail).length;
     return { ok: true, reached };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

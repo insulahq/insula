@@ -25,6 +25,8 @@ const notifyAdmins = vi.fn(async () => undefined);
 const emitted: Array<Record<string, unknown>> = [];
 let deliveries: Array<{ userId: string | null; channel: string; status: string; error?: string }> = [];
 let emitFails: Error | null = null;
+/** The platform's mail provider, as the mail worker would find it; null — none is set up. */
+let mailProvider: { smtpHost: string | null } | null = { smtpHost: 'smtp.example.test' };
 let archiveTarget: Error | null = null;
 
 vi.mock('../../storage-lifecycle/service.js', () => ({ archiveTenant: (...a: unknown[]) => archiveTenant(...a) }));
@@ -44,6 +46,11 @@ vi.mock('../../notifications/dispatcher/dispatch.js', () => ({
     emitted.push(opts);
     return { eventId: 'e-1', deliveryCount: 0, perChannelStatuses: deliveries };
   },
+}));
+
+vi.mock('../../notifications/providers/service.js', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getProviderForCategoryEmail: async () => mailProvider,
 }));
 
 const { getTenantAutomationStatus, notification, outcomeOfRefusal, realSweepIo, setTenantAutomationExempt } = await import('./real.js');
@@ -86,7 +93,7 @@ describe.skipIf(!url)('tenant automation: reads and verdicts (real Postgres)', (
     await pool.query('TRUNCATE platform_settings, tenants, storage_operations, tenant_automation_notices');
     archiveTenant.mockReset(); deleteTenant.mockReset(); notifyAdmins.mockClear();
     archiveTarget = null;
-    emitted.length = 0; emitFails = null;
+    emitted.length = 0; emitFails = null; mailProvider = { smtpHost: 'smtp.example.test' };
     deliveries = [{ userId: 'u-1', channel: 'email', status: 'queued' }, { userId: 'u-1', channel: 'in_app', status: 'sent' }];
   });
 
@@ -261,6 +268,21 @@ describe.skipIf(!url)('tenant automation: reads and verdicts (real Postgres)', (
       expect((await inLineOne('t1')).notice?.reached).toBe(reached);
       const whenTheDateHasCome = DATE.getTime() + 86_400_000;
       expect(tenantAutomationPlan(await inLineOne('t1'), 30, 7, whenTheDateHasCome).kind).toBe(reached ? 'due' : 'tell');
+    });
+
+    it.each<[string, { smtpHost: string | null } | null]>([
+      ['no mail provider is set up', null],
+      ['the mail provider has no server', { smtpHost: null }],
+    ])('an email counts for nothing while %s — it is queued, and then fails', async (_why, provider) => {
+      mailProvider = provider;
+      await tenant('t1', 'suspended', 'suspended_at', -86_400 * 40);
+      // A tenant with no user: the contact address is all there is.
+      deliveries = [{ userId: null, channel: 'email', status: 'queued' }];
+      expect(await io().tell('archive', await inLineOne('t1'), DATE)).toEqual({ kind: 'told', reached: false });
+      // With a user, the copy in the panel still tells the tenant.
+      deliveries = [{ userId: 'u', channel: 'email', status: 'queued' }, { userId: 'u', channel: 'in_app', status: 'sent' }];
+      expect(await io().tell('archive', await inLineOne('t1'), DATE)).toEqual({ kind: 'told', reached: true });
+      expect(await noticeRows()).toEqual([['t1', 'archive', '2026-03-08T12:00:00.000Z', 1]]);
     });
 
     it('writes nothing down when the message could not be sent: the tenant is told by the next sweep, never archived untold', async () => {

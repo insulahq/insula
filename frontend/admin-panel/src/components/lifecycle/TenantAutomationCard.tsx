@@ -388,7 +388,9 @@ function RunLine({ status }: { readonly status: TenantAutomationStatus }) {
     ? [
         last.archived.length > 0 ? `archived ${last.archived.length}` : '',
         last.deleted.length > 0 ? `deleted ${last.deleted.length}` : '',
-        last.told.length > 0 ? `told ${last.told.length}` : '',
+        // A message that reached nobody told nobody.
+        last.told.some((t) => t.reached) ? `told ${last.told.filter((t) => t.reached).length}` : '',
+        last.told.some((t) => !t.reached) ? `could not tell ${last.told.filter((t) => !t.reached).length}` : '',
         last.failed.length > 0 ? `failed on ${last.failed.length}` : '',
       ].filter(Boolean)
     : [];
@@ -618,7 +620,7 @@ function StepPreview({ step, enabled, blocked, days, noticeDays, candidates, now
             {' '}on {new Date(next.dueAt).toLocaleDateString()}
             {next.told
               ? ' (it has been told)'
-              : next.tellAt !== null ? ` (told on ${new Date(next.tellAt).toLocaleDateString()})` : ''}
+              : next.tellAt !== null ? ` (it will be told on ${new Date(next.tellAt).toLocaleDateString()})` : ''}
             {later.length > 1 ? `, then ${later.length - 1} more.` : '.'}
           </span>
           <KeepOutButton tenantId={next.tenantId} name={next.name} onKeepOut={onKeepOut} pending={keepPending} />

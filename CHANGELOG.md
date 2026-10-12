@@ -80,7 +80,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     for the suspension (or archive) it was sent in; raising a limit sends a new one with the later
     date, lowering it leaves the date the tenant was given. A message that reached nobody is no
     notice: the tenant is left as it is, told again at every run, marked on the card, and the
-    admins are reminded once a day. `0` tells nobody from then on and acts at the limit, as
+    admins are reminded once a day. An email does not count as reaching anybody while the platform
+    has no mail provider to send it through. `0` tells nobody from then on and acts at the limit, as
     before — but a tenant that was already given a date keeps it. The card lists who is told at
     the next run and for which date, and the confirmation
     names those tenants too — a delete that follows a notice still has to be typed, because nobody

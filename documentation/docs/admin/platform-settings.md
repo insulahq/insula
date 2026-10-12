@@ -205,7 +205,8 @@ the day you switch on.
 - Raise a limit and a tenant told the old date is told again, with the later
   one. Lower it and the date the tenant was given still holds.
 - A message that reached nobody is no notice. When there is nobody to tell —
-  no user and no usable contact address, or notifications are switched off —
+  no user and no usable contact address, notifications switched off, or no
+  mail provider set up for a tenant that has nobody to read it in the panel —
   the tenant is **left as it is** and told again at every run. The card marks
   it, and the admins are reminded once a day. Give the account a contact
   address or a user; or, to act without telling it, archive or delete it by

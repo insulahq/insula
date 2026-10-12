@@ -496,7 +496,7 @@ describe('TenantAutomationCard', () => {
     expect(screen.queryByTestId('tenant-automation-archive-due-now')).toBeNull();
     expect(screen.getByTestId('tenant-automation-notice-days')).toHaveValue(7);
     // New Forge passes its limit in 20 days and is told a week before.
-    expect(screen.getByTestId('tenant-automation-archive-next')).toHaveTextContent(`New Forge on ${day(ahead(20))} (told on ${day(ahead(13))})`);
+    expect(screen.getByTestId('tenant-automation-archive-next')).toHaveTextContent(`New Forge on ${day(ahead(20))} (it will be told on ${day(ahead(13))})`);
   });
 
   it('the lists follow the notice period being typed, and say what none at all means', async () => {
@@ -631,7 +631,8 @@ describe('TenantAutomationCard', () => {
       },
     }));
     renderCard();
-    expect(await screen.findByTestId('tenant-automation-last-run')).toHaveTextContent('told 2.');
+    // One of the two messages reached nobody: that is not "told 2".
+    expect(await screen.findByTestId('tenant-automation-last-run')).toHaveTextContent('told 1, could not tell 1.');
     const problems = screen.getByTestId('tenant-automation-last-run-problems');
     expect(problems).toHaveTextContent('The last run could not tell everybody it had to.');
     expect(within(problems).getByTestId('tenant-automation-unreached')).toHaveTextContent('Nobody could be told at Beta');
@@ -649,7 +650,7 @@ describe('TenantAutomationCard', () => {
       },
     }));
     renderCard();
-    await screen.findByTestId('tenant-automation-last-run');
+    expect(await screen.findByTestId('tenant-automation-last-run')).toHaveTextContent('told 1.');
     expect(screen.queryByTestId('tenant-automation-last-run-problems')).toBeNull();
   });
 
