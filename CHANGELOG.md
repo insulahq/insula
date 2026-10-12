@@ -186,6 +186,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
   due before it archives or deletes it: its list may be hours old by then, and the operator may
   have resumed or restored the tenant in between.
+- **A refused Suspend, Reactivate, Archive or Restore on the tenant page says why.** These four
+  actions opened the progress dialog and then, when the API refused the request — an operation
+  already owns the tenant, the tenant is busy, no backup target — left it on "Dispatching…" with
+  nothing else. The refusal is now shown under the page header, and the dialog is closed.
 - **Bulk delete clears a tenant's snapshot archives, like the single delete.** Deleting tenants in
   bulk went straight to the cascade and skipped the step that removes a tenant's snapshot
   archives from the snapshot store before its rows go; those archives then stayed in the store

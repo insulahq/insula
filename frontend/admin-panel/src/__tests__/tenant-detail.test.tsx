@@ -768,3 +768,52 @@ describe('TenantDetail delete', () => {
     expect(screen.getByTestId('delete-confirm-dialog')).toBeInTheDocument();
   });
 });
+
+/**
+ * Suspend, Reactivate, Archive and Restore in the Actions menu. A request the
+ * API refuses — the tenant is busy, an operation already owns it — used to
+ * end with the "Dispatching…" dialog left open and nothing to say why.
+ */
+describe('TenantDetail — a lifecycle action the API refuses', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupMockApi();
+  });
+
+  /** Answer the status PATCH with `refusal`; everything else as usual. */
+  function refuseStatusChange(refusal: Error): void {
+    const usual = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH' && /\/tenants\/tenant-001$/.test(path)) return Promise.reject(refusal);
+      return usual(path, init);
+    });
+  }
+
+  it('says why a suspend was refused, and takes the progress dialog away', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    refuseStatusChange(new ApiError(409, 'TENANT_BUSY', 'Another change to this tenant is being started, or the tenant is being deleted. Try again in a moment.'));
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('suspend-button'));
+
+    const panel = await screen.findByTestId('tenant-lifecycle-action-error');
+    expect(panel).toHaveTextContent('TENANT_BUSY');
+    expect(panel).toHaveTextContent('Another change to this tenant is being started');
+    expect(screen.queryByTestId('transition-progress-modal')).toBeNull();
+  });
+
+  it('clears the message when the next attempt goes through', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    refuseStatusChange(new ApiError(409, 'STORAGE_OP_IN_PROGRESS', 'A resizing operation is already in progress for this tenant'));
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('suspend-button'));
+    await screen.findByTestId('tenant-lifecycle-action-error');
+
+    setupMockApi();                       // the operation has ended: the API accepts now
+    fireEvent.click(screen.getByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('suspend-button'));
+    await waitFor(() => expect(screen.queryByTestId('tenant-lifecycle-action-error')).toBeNull());
+    expect(await screen.findByTestId('transition-progress-modal')).toBeInTheDocument();
+  });
+});

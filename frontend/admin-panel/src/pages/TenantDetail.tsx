@@ -67,6 +67,7 @@ import {
 import { useSftpUsers } from '@/hooks/use-sftp-users';
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -133,6 +134,16 @@ export default function TenantDetail() {
     transitionId?: string | null;
   } | null>(null);
 
+  // A suspend, reactivate, archive or restore the API refused — the tenant is
+  // busy, an operation already owns it, no backup target. Shown under the
+  // header until the next action; these used to end with the "Dispatching…"
+  // dialog left open and nothing to say why.
+  const [lifecycleActionError, setLifecycleActionError] = useState<unknown>(null);
+  const lifecycleActionFailed = (err: unknown): void => {
+    setTxModal(null);
+    setLifecycleActionError(err);
+  };
+
   const deleteTenant = useDeleteTenant();
   // Which tenant this page shows NOW. The same page instance is reused when
   // the route's :id changes, so "still mounted" alone does not mean "still on
@@ -188,6 +199,7 @@ export default function TenantDetail() {
 
   const handleSuspend = async () => {
     if (!id) return;
+    setLifecycleActionError(null);
     try {
       setTxModal({ kind: 'suspended', since: Date.now() });
       // notifications-system: cast through Record<string, unknown> so
@@ -201,8 +213,8 @@ export default function TenantDetail() {
         ?? res?.data?.storageRestoreOperationId
         ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // silently handled — status badge will reflect current state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -217,6 +229,7 @@ export default function TenantDetail() {
       + 'Continue?',
     );
     if (!ok) return;
+    setLifecycleActionError(null);
     try {
       setTxModal({ kind: 'archived', since: Date.now() });
       const res = await updateTenant.mutateAsync(
@@ -228,8 +241,8 @@ export default function TenantDetail() {
       );
       const opId = res?.data?.storageArchiveOperationId ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // surfaced via mutation state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -246,6 +259,7 @@ export default function TenantDetail() {
       );
       if (!ok) return;
     }
+    setLifecycleActionError(null);
     try {
       // Distinguish unsuspend (transition='active') from
       // restore-from-archive (transition='restored') so the audit
@@ -262,8 +276,8 @@ export default function TenantDetail() {
         ?? res?.data?.storageArchiveOperationId
         ?? null;
       if (opId) setStatusOpId(opId);
-    } catch {
-      // silently handled — status badge will reflect current state
+    } catch (err) {
+      lifecycleActionFailed(err);
     }
   };
 
@@ -491,6 +505,12 @@ export default function TenantDetail() {
           </ActionsMenu>
         </div>
       </div>
+
+      {lifecycleActionError !== null && (
+        <div className="mb-4">
+          <ErrorPanel error={extractOperatorError(lifecycleActionError)} severity="error" testId="tenant-lifecycle-action-error" />
+        </div>
+      )}
 
       {/* Not-provisioned warning. A `pending` tenant is created but not yet
           provisioned: it cannot deploy workloads, configure domains/ingress,
