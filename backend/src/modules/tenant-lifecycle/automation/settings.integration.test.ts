@@ -48,15 +48,15 @@ describe.skipIf(!url)('tenant automation settings (real Postgres)', () => {
     'INSERT INTO platform_settings (setting_key, setting_value) VALUES ($1, $2) ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2', [key, value],
   );
 
-  it('an install that never touched them runs with both steps off, 30 and 90 days', async () => {
+  it('an install that never touched them runs with both steps off, 30 and 90 days, and a week\'s notice', async () => {
     expect(await loadTenantAutomationSettings(db)).toEqual({
-      autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90,
+      autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90, noticeDays: 7,
     });
   });
 
   it('saves what it is given under the keys the sweep has always read, and leaves the rest alone', async () => {
     const after = await saveTenantAutomationSettings(db, { autoArchiveEnabled: true, autoArchiveAfterDays: 14 });
-    expect(after).toEqual({ autoArchiveEnabled: true, autoArchiveAfterDays: 14, autoDeleteEnabled: false, autoDeleteAfterDays: 90 });
+    expect(after).toEqual({ autoArchiveEnabled: true, autoArchiveAfterDays: 14, autoDeleteEnabled: false, autoDeleteAfterDays: 90, noticeDays: 7 });
     expect(await rows()).toEqual({
       'tenant_lifecycle.auto_archive_enabled': 'true',
       'tenant_lifecycle.auto_archive_after_days': '14',
@@ -102,6 +102,26 @@ describe.skipIf(!url)('tenant automation settings (real Postgres)', () => {
     }
   });
 
+  it('stores a notice period — also none at all, which is a setting and not a missing one', async () => {
+    expect((await saveTenantAutomationSettings(db, { noticeDays: 21 })).noticeDays).toBe(21);
+    expect(await rows()).toEqual({ 'tenant_lifecycle.auto_notice_days': '21' });
+    expect((await saveTenantAutomationSettings(db, { noticeDays: 0 })).noticeDays).toBe(0);
+    expect(await rows()).toEqual({ 'tenant_lifecycle.auto_notice_days': '0' });
+    expect((await loadTenantAutomationSettings(db)).noticeDays).toBe(0);
+  });
+
+  it.each(['-1', '91', 'abc', '1.5', '', ' '])('a stored notice period of %j is not used: the default is, and it says so', async (bad) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await put('tenant_lifecycle.auto_notice_days', bad);
+      // An emptied row must not read as "tell nobody".
+      expect((await loadTenantAutomationSettings(db)).noticeDays).toBe(7);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each(['TRUE', '1', 'yes', 'on', ''])('only the exact string "true" switches a step on — %j does not', async (value) => {
     await put('tenant_lifecycle.auto_archive_enabled', value);
     await put('tenant_lifecycle.auto_delete_enabled', value);
@@ -113,6 +133,8 @@ describe.skipIf(!url)('tenant automation settings (real Postgres)', () => {
     [{ autoDeleteAfterDays: 3651 }, 'autoDeleteAfterDays'],
     [{ autoDeleteAfterDays: 1.5 }, 'autoDeleteAfterDays'],
     [{ autoArchiveEnabled: 'true' }, 'autoArchiveEnabled'],
+    [{ noticeDays: -1 }, 'noticeDays'],
+    [{ noticeDays: 91 }, 'noticeDays'],
   ])('refuses %j and writes nothing', async (input, field) => {
     await expect(saveTenantAutomationSettings(db, input as never)).rejects.toMatchObject({ code: 'VALIDATION_ERROR', status: 400, details: { field } });
     expect(await rows()).toEqual({});
@@ -126,7 +148,7 @@ describe.skipIf(!url)('tenant automation settings (real Postgres)', () => {
 
   const run = (over: Partial<TenantAutomationRun>): TenantAutomationRun => ({
     startedAt: '2026-06-15T12:00:00.000Z', finishedAt: '2026-06-15T12:03:00.000Z', trigger: 'schedule',
-    archived: [{ tenantId: 'a', name: 'A' }], deleted: [], failed: [], archiveSkippedReason: null, errors: [], ...over,
+    archived: [{ tenantId: 'a', name: 'A' }], deleted: [], failed: [], told: [], archiveSkippedReason: null, errors: [], ...over,
   });
 
   it('no run yet reads as none', async () => {
@@ -141,6 +163,12 @@ describe.skipIf(!url)('tenant automation settings (real Postgres)', () => {
     const manual = run({ startedAt: '2026-06-15T15:00:00.000Z', finishedAt: '2026-06-15T15:00:05.000Z', trigger: 'manual', archived: [] });
     await saveAutomationRun(db, manual);
     expect(await loadAutomationRunRecord(db)).toEqual({ lastRun: manual, lastScheduledAt: '2026-06-15T12:00:00.000Z' });
+  });
+
+  it('reads a record written before runs told anybody as a run that told nobody', async () => {
+    const { told: _told, ...older } = run({});
+    await put('tenant_lifecycle.automation_last_run', JSON.stringify(older));
+    expect((await loadAutomationRunRecord(db)).lastRun).toEqual(run({}));
   });
 
   it('a record that cannot be read is no record, not an error on the page', async () => {

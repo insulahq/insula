@@ -483,11 +483,32 @@ export const tenants = pgTable('tenants', {
   // against suspend/archive/delete by service-layer guards plus the
   // system-tenant-guard lifecycle hook (ADR-040).
   isSystem: boolean('is_system').notNull().default(false),
+  // Kept out of automatic archive and delete (Platform → Tenant Lifecycle
+  // Hooks): the sweep never touches this tenant, however long it has been
+  // suspended or archived. Set by an admin. Migration 0157.
+  lifecycleAutomationExempt: boolean('lifecycle_automation_exempt').notNull().default(false),
 }, (table) => [
   uniqueIndex('tenants_namespace_unique').on(table.kubernetesNamespace),
   index('tenants_region_idx').on(table.regionId),
   index('tenants_plan_idx').on(table.planId),
   index('tenants_status_idx').on(table.status),
+]);
+
+/**
+ * What the automatic archive/delete sweep has told a tenant (migration 0157).
+ * One row per tenant and step: when it was told, and the date it was given —
+ * the sweep does nothing to the tenant before that date. A row counts only
+ * while `toldAt` is later than the tenant's suspendedAt (archive) or
+ * archivedAt (delete): a tenant resumed and suspended again is told again.
+ */
+export const tenantAutomationNotices = pgTable('tenant_automation_notices', {
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  step: text('step').notNull(),
+  toldAt: timestamp('told_at', { withTimezone: true }).notNull().defaultNow(),
+  announcedFor: timestamp('announced_for', { withTimezone: true }).notNull(),
+  reached: integer('reached').notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.step] }),
 ]);
 
 export const domains = pgTable('domains', {

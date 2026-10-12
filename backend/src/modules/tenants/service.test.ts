@@ -883,14 +883,21 @@ describe('deleteTenant', () => {
       expect(deleted).toBe(false);
     });
 
+    it('refuses a due tenant an admin has taken out of the automation since, and deletes nothing', async () => {
+      const { outcome, deleted } = await attempt({ status: 'archived', archivedAt: new Date('2026-01-01'), state: 'idle', exempt: true });
+      expect(outcome).toMatchObject({ code: 'NO_LONGER_DUE', status: 409 });
+      expect((outcome as ApiError).message).toContain('kept out');
+      expect(deleted).toBe(false);
+    });
+
     it('deletes a tenant that is still archived, since before the limit, with nothing under way', async () => {
       const { outcome, deleted } = await attempt({ status: 'archived', archivedAt: new Date('2026-02-28T23:59:59.000Z'), state: 'idle' });
       expect(outcome).toBe('deleted');
       expect(deleted).toBe(true);
     });
 
-    it('an operator\'s delete asks none of this', async () => {
-      const db = createMockDb({ selectResult: [{ id: 'c1', kubernetesNamespace: 'tenant-c1', status: 'active', archivedAt: null, state: 'restoring' }] });
+    it('an operator\'s delete asks none of this — not of a tenant kept out of the automation either', async () => {
+      const db = createMockDb({ selectResult: [{ id: 'c1', kubernetesNamespace: 'tenant-c1', status: 'active', archivedAt: null, state: 'restoring', exempt: true }] });
       await deleteTenant(db, 'c1');
       expect((db as unknown as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalled();
     });

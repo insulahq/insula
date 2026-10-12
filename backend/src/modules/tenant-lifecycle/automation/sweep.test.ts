@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TenantAutomationRun, TenantAutomationSettings } from '@insula/api-contracts';
-import { runTenantAutomationSweep, type ActionOutcome, type DueTenant, type SweepIo } from './sweep.js';
+import { runTenantAutomationSweep, type ActionOutcome, type InLineTenant, type SweepIo, type TellOutcome } from './sweep.js';
 
 /**
  * What the automatic archive/delete sweep decides — against a fake of
@@ -11,9 +11,13 @@ import { runTenantAutomationSweep, type ActionOutcome, type DueTenant, type Swee
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date('2026-06-15T12:00:00.000Z');
 
+/** Both steps off, and nobody told: a tenant is acted on as soon as it is past its limit. */
 const OFF: TenantAutomationSettings = {
-  autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90,
+  autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90, noticeDays: 0,
 };
+
+/** A notice as the fake world holds it: told so many days ago, for a date so many days from NOW (negative: past). */
+interface FakeNotice { readonly toldDaysAgo: number; readonly dateInDays: number; readonly reached?: boolean }
 
 interface World {
   settings: TenantAutomationSettings;
@@ -21,6 +25,10 @@ interface World {
   /** tenant → the day it was suspended / archived, as days before NOW. */
   suspended: Record<string, number>;
   archived: Record<string, number>;
+  /** tenant → what it was told, per step. */
+  archiveNotices: Record<string, FakeNotice>;
+  deleteNotices: Record<string, FakeNotice>;
+  tellOutcome: Record<string, TellOutcome | Error>;
   blocked: string | null;
   archiveOutcome: Record<string, ActionOutcome | Error>;
   removeOutcome: Record<string, ActionOutcome | Error>;
@@ -35,6 +43,7 @@ interface World {
 function world(over: Partial<World> = {}): World {
   return {
     settings: OFF, archiveRetentionDays: 90, suspended: {}, archived: {}, blocked: null,
+    archiveNotices: {}, deleteNotices: {}, tellOutcome: {},
     archiveOutcome: {}, removeOutcome: {}, notifyFails: false, ...over,
   };
 }
@@ -44,10 +53,18 @@ function harness(w: World) {
   const recorded: TenantAutomationRun[] = [];
   const notified: TenantAutomationRun[] = [];
   const log: string[] = [];
-  const due = (set: Record<string, number>, before: Date): DueTenant[] => Object.entries(set)
-    .filter(([, daysAgo]) => NOW.getTime() - daysAgo * DAY < before.getTime())
+  // Everybody in the status, oldest first — what is due among them is the sweep's to decide.
+  const inLine = (set: Record<string, number>, notices: Record<string, FakeNotice>): InLineTenant[] => Object.entries(set)
     .sort(([, a], [, b]) => b - a)
-    .map(([name]) => ({ tenantId: `id-${name}`, name }));
+    .map(([name, daysAgo]) => {
+      const n = notices[name];
+      return {
+        tenantId: `id-${name}`,
+        name,
+        since: new Date(NOW.getTime() - daysAgo * DAY),
+        notice: n ? { toldAt: new Date(NOW.getTime() - n.toldDaysAgo * DAY), date: new Date(NOW.getTime() + n.dateInDays * DAY), reached: n.reached ?? true } : null,
+      };
+    });
   const outcome = (o: ActionOutcome | Error | undefined): ActionOutcome => {
     if (o instanceof Error) throw o;
     return o ?? { kind: 'done' };
@@ -56,15 +73,16 @@ function harness(w: World) {
   const io: { -readonly [K in keyof SweepIo]: SweepIo[K] } = {
     settings: async () => { reads += 1; w.onSettingsRead?.(reads); return w.settings; },
     archiveRetentionDays: async () => w.archiveRetentionDays,
-    dueForArchive: async (before) => {
-      calls.push('list-archive');
-      if (w.listArchiveFails) throw new Error('the database did not answer');
-      return due(w.suspended, before);
+    inLine: async (step) => {
+      calls.push(`list-${step}`);
+      if (step === 'archive' ? w.listArchiveFails : w.listDeleteFails) throw new Error('the database did not answer');
+      return step === 'archive' ? inLine(w.suspended, w.archiveNotices) : inLine(w.archived, w.deleteNotices);
     },
-    dueForDelete: async (before) => {
-      calls.push('list-delete');
-      if (w.listDeleteFails) throw new Error('the database did not answer');
-      return due(w.archived, before);
+    tell: async (step, tenant, date) => {
+      calls.push(`tell ${tenant.name}: ${step} on ${date.toISOString().slice(0, 10)}`);
+      const o = w.tellOutcome[tenant.name];
+      if (o instanceof Error) throw o;
+      return o ?? { kind: 'told', reached: true };
     },
     archiveBlockedReason: async () => { calls.push('blocked?'); return w.blocked; },
     archive: async (tenant, opts) => {
@@ -90,7 +108,7 @@ describe('the automatic archive/delete sweep', () => {
     const h = harness(world({ suspended: { old: 400 }, archived: { older: 900 } }));
     const run = await runTenantAutomationSweep(h.io, 'schedule');
     expect(h.calls).toEqual([]);
-    expect(run).toMatchObject({ trigger: 'schedule', archived: [], deleted: [], failed: [], archiveSkippedReason: null, errors: [] });
+    expect(run).toMatchObject({ trigger: 'schedule', archived: [], deleted: [], told: [], failed: [], archiveSkippedReason: null, errors: [] });
     expect(h.recorded).toEqual([run]);
     expect(h.notified).toEqual([]);
   });
@@ -225,7 +243,7 @@ describe('the automatic archive/delete sweep', () => {
     // The fake lists what was archived BEFORE the sweep; a real archive stamps
     // "now", which is never before a limit counted back from the sweep's start.
     const h = harness(world({
-      settings: { autoArchiveEnabled: true, autoArchiveAfterDays: 30, autoDeleteEnabled: true, autoDeleteAfterDays: 1 },
+      settings: { ...OFF, autoArchiveEnabled: true, autoArchiveAfterDays: 30, autoDeleteEnabled: true, autoDeleteAfterDays: 1 },
       suspended: { old: 45 },
     }));
     const run = await runTenantAutomationSweep(h.io, 'schedule');
@@ -259,8 +277,23 @@ describe('the automatic archive/delete sweep', () => {
       return { kind: 'done' };
     };
     await runTenantAutomationSweep(h.io, 'schedule');
-    // b was listed under the 1-day limit; it is handed on with the 90-day one,
-    // which the delete then refuses it under (archived 5 days ago).
+    // a was held to the longer of the two limits — the one stored when its turn
+    // came. b, archived 5 days ago, was due under the slip and is not under the
+    // correction: nothing is asked of it at all.
+    expect(limits).toEqual(['a before=2026-06-14']);
+  });
+
+  it('a limit raised before a tenant\'s turn holds that tenant to the raised limit', async () => {
+    const w = world({ settings: { ...OFF, autoDeleteEnabled: true, autoDeleteAfterDays: 1 }, archived: { a: 400, b: 200 } });
+    const h = harness(w);
+    const limits: string[] = [];
+    h.io.remove = async (tenant, opts) => {
+      limits.push(`${tenant.name} before=${opts.archivedBefore.toISOString().slice(0, 10)}`);
+      w.settings = { ...w.settings, autoDeleteAfterDays: 90 };
+      return { kind: 'done' };
+    };
+    await runTenantAutomationSweep(h.io, 'schedule');
+    // b is past both limits; its delete checks it against the 90 days stored now.
     expect(limits).toEqual(['a before=2026-06-14', 'b before=2026-03-17']);
   });
 
@@ -361,5 +394,210 @@ describe('the automatic archive/delete sweep', () => {
     const run = await runTenantAutomationSweep(h.io, 'schedule');
     expect(h.calls.filter((c) => c.startsWith('archive'))).toHaveLength(60);
     expect(run.archived).toHaveLength(50);
+  });
+
+  // ── a notice period: told first, acted on at the date given ──────────────
+
+  const NOTICE: TenantAutomationSettings = { ...OFF, autoArchiveEnabled: true, noticeDays: 7 };
+
+  it('with a notice period, a tenant coming within it of its limit is told, given that many days, and not archived', async () => {
+    // Suspended 25 days ago under a 30-day limit: 5 days to go, inside the 7.
+    // It is given 7 from today — two days past its limit, never before it.
+    const h = harness(world({ settings: NOTICE, suspended: { soon: 25, far: 10 } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls).toEqual(['list-archive', 'blocked?', 'tell soon: archive on 2026-06-22']);
+    expect(run.told).toEqual([{ tenantId: 'id-soon', name: 'soon', action: 'archive', date: '2026-06-22T12:00:00.000Z', reached: true }]);
+    expect(run.archived).toEqual([]);
+    expect(h.notified).toEqual([run]);       // somebody was written to: the admins hear of it
+  });
+
+  it('a tenant is told at the run that finds it exactly a notice period from its limit, and not at one before', async () => {
+    const at = harness(world({ settings: NOTICE, suspended: { edge: 23 } }));
+    expect(names((await runTenantAutomationSweep(at.io, 'schedule')).told)).toEqual(['edge']);
+    const before = harness(world({ settings: NOTICE, suspended: { edge: 23 - 1 / 86_400 } }));
+    expect((await runTenantAutomationSweep(before.io, 'schedule')).told).toEqual([]);
+  });
+
+  it('a tenant already past its limit when nobody has told it is told now, and given the whole notice period', async () => {
+    const h = harness(world({ settings: NOTICE, suspended: { overdue: 400 } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls.filter((c) => !c.startsWith('list') && c !== 'blocked?')).toEqual(['tell overdue: archive on 2026-06-22']);
+    expect(run.archived).toEqual([]);
+  });
+
+  it('a tenant that was told is archived once its date has come, and not a day before', async () => {
+    const h = harness(world({
+      settings: NOTICE,
+      suspended: { due: 45, waiting: 44 },
+      archiveNotices: { due: { toldDaysAgo: 8, dateInDays: -1 }, waiting: { toldDaysAgo: 2, dateInDays: 5 } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls.filter((c) => c.startsWith('archive') || c.startsWith('tell'))).toEqual(['archive due keep=90 before=2026-05-16']);
+    expect(names(run.archived)).toEqual(['due']);
+    expect(run.told).toEqual([]);            // `waiting` has its notice; it is not told twice
+  });
+
+  it('a notice from an earlier suspension does not count: the tenant is told again', async () => {
+    // Told 60 days ago, resumed, suspended again 40 days ago.
+    const h = harness(world({ settings: NOTICE, suspended: { again: 40 }, archiveNotices: { again: { toldDaysAgo: 60, dateInDays: -53 } } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(run.archived).toEqual([]);
+    expect(names(run.told)).toEqual(['again']);
+  });
+
+  it('…also when the old date happens to lie after this suspension\'s limit: it is told, not archived', async () => {
+    // A 3-day limit under a 7-day notice. Told five days ago, resumed,
+    // suspended again four days ago; the date it was given then passed half a
+    // day ago, which is after the new limit.
+    const h = harness(world({
+      settings: { ...NOTICE, autoArchiveAfterDays: 3 },
+      suspended: { again: 4 },
+      archiveNotices: { again: { toldDaysAgo: 5, dateInDays: -0.5 } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls.filter((c) => c.startsWith('archive'))).toEqual([]);
+    expect(names(run.told)).toEqual(['again']);
+  });
+
+  it('a limit raised after the notice went out makes the notice void: nothing is done on the old date', async () => {
+    // Told "archive on the 14th" under a 30-day limit; the limit is 60 days now and the tenant is 45 days in.
+    const h = harness(world({
+      settings: { ...NOTICE, autoArchiveAfterDays: 60 },
+      suspended: { reprieved: 45 },
+      archiveNotices: { reprieved: { toldDaysAgo: 8, dateInDays: -1 } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls).toEqual(['list-archive']);     // not due, and its new limit is still 15 days off
+    expect(run.archived).toEqual([]);
+    expect(run.told).toEqual([]);
+  });
+
+  it('a limit lowered after the notice went out leaves the date the tenant was given', async () => {
+    const h = harness(world({
+      settings: { ...NOTICE, autoArchiveAfterDays: 10 },
+      suspended: { promised: 28 },
+      archiveNotices: { promised: { toldDaysAgo: 5, dateInDays: 2 } },   // "in a week", said five days ago
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(run.archived).toEqual([]);
+    expect(run.told).toEqual([]);
+  });
+
+  it('with the notice period set to nothing afterwards, a tenant that was given a date keeps it; one that was not is archived', async () => {
+    const h = harness(world({
+      settings: { ...NOTICE, noticeDays: 0 },
+      suspended: { promised: 45, untold: 44 },
+      archiveNotices: { promised: { toldDaysAgo: 1, dateInDays: 6 } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(names(run.archived)).toEqual(['untold']);
+    expect(run.told).toEqual([]);            // nobody is told any more
+  });
+
+  it('tells nobody of an archive that cannot be taken', async () => {
+    const h = harness(world({ settings: NOTICE, suspended: { soon: 25 }, blocked: 'No backup target is assigned to tenant snapshots.' }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls).toEqual(['list-archive', 'blocked?']);
+    expect(run.told).toEqual([]);
+    expect(run.archiveSkippedReason).toBe('No backup target is assigned to tenant snapshots.');
+  });
+
+  it('the delete step tells and waits in the same way', async () => {
+    const h = harness(world({
+      settings: { ...OFF, autoDeleteEnabled: true, noticeDays: 14 },
+      archived: { told: 120, untold: 100, early: 80 },
+      deleteNotices: { told: { toldDaysAgo: 20, dateInDays: -6 } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls).toEqual([
+      'list-delete',
+      'delete told before=2026-03-17',
+      'tell untold: delete on 2026-06-29',
+      'tell early: delete on 2026-06-29',     // 10 days from its limit: inside the 14, and given the full 14
+    ]);
+    expect(names(run.deleted)).toEqual(['told']);
+    expect(run.told.map((t) => `${t.name}:${t.action}`)).toEqual(['untold:delete', 'early:delete']);
+  });
+
+  it('a message that reached nobody is recorded as such, and the admins hear of it', async () => {
+    const h = harness(world({ settings: NOTICE, suspended: { silent: 45 }, tellOutcome: { silent: { kind: 'told', reached: false } } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(run.told).toEqual([{ tenantId: 'id-silent', name: 'silent', action: 'archive', date: '2026-06-22T12:00:00.000Z', reached: false }]);
+    expect(h.log.some((l) => l.includes('the message reached nobody') && l.includes('not archived meanwhile'))).toBe(true);
+    expect(h.notified).toEqual([run]);
+  });
+
+  it('a tenant whose message reached nobody is never archived on that date: it is told again at every sweep', async () => {
+    // Told eight days ago for yesterday — to nobody. Reached, it would be due.
+    const unreached = harness(world({
+      settings: NOTICE, suspended: { silent: 45 },
+      archiveNotices: { silent: { toldDaysAgo: 8, dateInDays: -1, reached: false } },
+    }));
+    const run = await runTenantAutomationSweep(unreached.io, 'schedule');
+    expect(unreached.calls.filter((c) => c.startsWith('archive'))).toEqual([]);
+    expect(unreached.calls.filter((c) => c.startsWith('tell'))).toEqual(['tell silent: archive on 2026-06-22']);
+    expect(run.archived).toEqual([]);
+
+    const reached = harness(world({
+      settings: NOTICE, suspended: { heard: 45 },
+      archiveNotices: { heard: { toldDaysAgo: 8, dateInDays: -1 } },
+    }));
+    expect(names((await runTenantAutomationSweep(reached.io, 'schedule')).archived)).toEqual(['heard']);
+  });
+
+  it('the same holds before a delete', async () => {
+    const h = harness(world({
+      settings: { ...OFF, autoDeleteEnabled: true, noticeDays: 14 },
+      archived: { silent: 200 },
+      deleteNotices: { silent: { toldDaysAgo: 30, dateInDays: -16, reached: false } },
+    }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls.filter((c) => c.startsWith('delete'))).toEqual([]);
+    expect(names(run.told)).toEqual(['silent']);
+  });
+
+  it('a tenant that is no longer in line when its turn to be told comes is passed over', async () => {
+    const h = harness(world({ settings: NOTICE, suspended: { resumed: 45, other: 44 }, tellOutcome: { resumed: { kind: 'skipped', reason: 'it is no longer suspended' } } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(names(run.told)).toEqual(['other']);
+    expect(run.failed).toEqual([]);
+    expect(h.log).toContain('did not tell resumed (id-resumed): it is no longer suspended');
+  });
+
+  it('a message that cannot be sent is a failure with its reason, and the tenants after it are still told', async () => {
+    const h = harness(world({ settings: NOTICE, suspended: { broken: 45, fine: 44 }, tellOutcome: { broken: new Error('the mail queue is down') } }));
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(run.failed).toEqual([{ tenantId: 'id-broken', name: 'broken', action: 'archive', error: 'It could not be told: the mail queue is down' }]);
+    expect(names(run.told)).toEqual(['fine']);
+  });
+
+  it('a notice period raised during the sweep is the one the next tenant is given', async () => {
+    const w = world({ settings: NOTICE, suspended: { a: 400, b: 300 } });
+    const h = harness(w);
+    const base = h.io.tell;
+    h.io.tell = async (step, tenant, date) => { const o = await base(step, tenant, date); w.settings = { ...w.settings, noticeDays: 30 }; return o; };
+    await runTenantAutomationSweep(h.io, 'schedule');
+    expect(h.calls.filter((c) => c.startsWith('tell'))).toEqual(['tell a: archive on 2026-06-22', 'tell b: archive on 2026-07-15']);
+  });
+
+  it('a step switched off during the sweep stops the telling too', async () => {
+    const w = world({ settings: NOTICE, suspended: { a: 400, b: 300 } });
+    const h = harness(w);
+    const base = h.io.tell;
+    h.io.tell = async (step, tenant, date) => { const o = await base(step, tenant, date); w.settings = { ...w.settings, autoArchiveEnabled: false }; return o; };
+    const run = await runTenantAutomationSweep(h.io, 'schedule');
+    expect(names(run.told)).toEqual(['a']);
+  });
+
+  it('keeps an archive for the delete limit plus the notice period, when that is longer than the platform\'s retention', async () => {
+    const h = harness(world({
+      settings: { ...OFF, autoArchiveEnabled: true, autoDeleteEnabled: true, autoDeleteAfterDays: 90, noticeDays: 14 },
+      suspended: { old: 45 },
+      archiveNotices: { old: { toldDaysAgo: 20, dateInDays: -6 } },
+      archiveRetentionDays: 90,
+    }));
+    await runTenantAutomationSweep(h.io, 'schedule');
+    // A tenant told late is deleted up to a notice period after its limit; its archive must still be there.
+    expect(h.calls.find((c) => c.startsWith('archive'))).toContain('keep=104');
   });
 });

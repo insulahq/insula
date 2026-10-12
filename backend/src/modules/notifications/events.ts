@@ -699,6 +699,56 @@ export async function notifyTenantWorkloadsDown(
   return dispatchReporting(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
+export interface TenantLifecycleNoticePayload {
+  /** The date the tenant is given, as YYYY-MM-DD: nothing happens to it before. */
+  readonly dueDate: string;
+}
+
+/**
+ * The automatic archive/delete sweep's notice to a tenant: it will be archived
+ * (or deleted) on `dueDate` (Platform → Tenant Lifecycle Hooks).
+ *
+ * It goes to the tenant's own admins, and by email to `contactAddresses` — the
+ * account's contact addresses, which reach a tenant that has no user at all;
+ * an address that is also one of those admins' gets one copy.
+ *
+ * The sweep acts on the date it gives here, so it has to know what became of
+ * the message. `ok: false` — it could not be dispatched at all. `reached` —
+ * how many copies are on their way to a person, or were sent before under the
+ * same key; 0 means there was nobody to tell (no user and no address, the
+ * category switched off, notifications disabled). The sweep does not count
+ * such a notice. The operators' broadcast channel is not a person.
+ *
+ * Never throws.
+ */
+export async function notifyTenantLifecycleNotice(
+  db: Database,
+  tenantId: string,
+  step: 'archive' | 'delete',
+  payload: TenantLifecycleNoticePayload,
+  dedupeKey?: string,
+  contactAddresses: readonly string[] = [],
+): Promise<{ ok: boolean; reached: number; error?: string }> {
+  const categoryId = step === 'archive' ? 'tenant.archive_scheduled' : 'tenant.deletion_scheduled';
+  try {
+    const result = await emitEvent(db, {
+      categoryId,
+      scope: { kind: 'tenant', tenantId },
+      variables: { ...payload },
+      tenantId,
+      dedupeKey,
+      externalRecipients: contactAddresses,
+    });
+    const reached = result.perChannelStatuses.filter((s) => s.channel !== 'ntfy'
+      && (s.status === 'queued' || s.status === 'sending' || s.status === 'sent' || (s.status === 'skipped' && s.error === 'duplicate'))).length;
+    return { ok: true, reached };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[notifications] dispatch of '${categoryId}' FAILED: ${error}`);
+    return { ok: false, reached: 0, error };
+  }
+}
+
 export interface TenantWorkloadDiskLimitPayload {
   /**
    * One item per restarted application, as the tenant names it, with the

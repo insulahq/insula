@@ -9,20 +9,29 @@
  *                                                 them as they are stored now
  *   POST  /api/v1/admin/lifecycle/automation/run  start a sweep now (202; it
  *                                                 runs on after the answer)
+ *   PUT   /api/v1/admin/lifecycle/automation/tenants/:tenantId
+ *                                                 keep one tenant out of both
+ *                                                 steps, or put it back
  *
- * Registered by tenantLifecycleRoutes, whose hooks gate all three: an
+ * Registered by tenantLifecycleRoutes, whose hooks gate all four: an
  * authenticated admin-panel session with the super_admin or admin role — the
  * roles that may archive and delete a tenant by hand.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { tenantAutomationSettingsUpdateSchema, type TenantAutomationSettingsSaved } from '@insula/api-contracts';
+import {
+  tenantAutomationExemptionSchema,
+  tenantAutomationSettingsUpdateSchema,
+  type TenantAutomationSettingsSaved,
+} from '@insula/api-contracts';
 import { auditLogs } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { jobAlreadyRunning, runExclusive } from '../../../shared/exclusive-run.js';
 import { success } from '../../../shared/response.js';
+import { authenticate, requireRole } from '../../../middleware/auth.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import {
   getTenantAutomationStatus,
+  setTenantAutomationExempt,
   sweepTenantsOnce,
   TENANT_AUTOMATION_JOB,
   TENANT_AUTOMATION_MAX_HOLD_MS,
@@ -65,14 +74,22 @@ export function registerTenantAutomationRoutes(app: FastifyInstance): void {
   };
 
   /** Who did what, on record. A failure to write it is logged, never the request's failure. */
-  const audit = async (request: FastifyRequest, actionType: string, httpMethod: string, httpPath: string, httpStatus: number, changes: Record<string, unknown>): Promise<void> => {
+  const audit = async (
+    request: FastifyRequest,
+    actionType: string,
+    httpMethod: string,
+    httpPath: string,
+    httpStatus: number,
+    changes: Record<string, unknown>,
+    tenantId: string | null = null,
+  ): Promise<void> => {
     const user = request.user as { sub?: string; id?: string } | undefined;
     await app.db.insert(auditLogs).values({
       id: crypto.randomUUID(),
-      tenantId: null,
+      tenantId,
       actionType,
-      resourceType: 'platform_settings',
-      resourceId: null,
+      resourceType: tenantId ? 'tenant' : 'platform_settings',
+      resourceId: tenantId,
       actorId: user?.sub ?? user?.id ?? 'unknown',
       actorType: 'user',
       httpMethod,
@@ -119,5 +136,31 @@ export function registerTenantAutomationRoutes(app: FastifyInstance): void {
     await audit(request, 'tenant_lifecycle_automation.run', 'POST', '/admin/lifecycle/automation/run', 202, { trigger: 'manual' });
     reply.status(202);
     return success({ started: true });
+  });
+
+  app.put<{ Params: { tenantId: string } }>('/admin/lifecycle/automation/tenants/:tenantId', {
+    // No body schema, as above: the strict check refuses what it does not know.
+    schema: { tags: TAGS, summary: 'Keep a tenant out of automatic archive and delete, or put it back', security: SECURITY },
+    // The plugin these routes are registered in gates them already. Said
+    // again here, whole, because this route takes a tenant from its path:
+    // wherever it is registered, no tenant's own token may reach it.
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const parsed = tenantAutomationExemptionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ApiError('VALIDATION_ERROR', issue.message, 400, { field: issue.path.join('.') });
+    }
+    const tenant = await setTenantAutomationExempt(app.db, request.params.tenantId, parsed.data.exempt);
+    await audit(
+      request,
+      'tenant_lifecycle_automation.exempt',
+      'PUT',
+      `/admin/lifecycle/automation/tenants/${request.params.tenantId}`,
+      200,
+      { exempt: parsed.data.exempt },
+      tenant.tenantId,
+    );
+    return success(tenant);
   });
 }

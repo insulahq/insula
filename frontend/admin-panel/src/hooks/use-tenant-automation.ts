@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  TenantAutomationKept,
   TenantAutomationSettingsSaved,
   TenantAutomationSettingsUpdate,
   TenantAutomationStatus,
@@ -46,6 +47,25 @@ export function useRunTenantAutomation() {
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: KEY });
       void qc.invalidateQueries({ queryKey: ['lifecycle-transitions'] });
+    },
+  });
+}
+
+/**
+ * Keep one tenant out of both steps, or put it back. The card and the
+ * tenant's own page both show the answer.
+ */
+export function useSetTenantAutomationExempt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { readonly tenantId: string; readonly exempt: boolean }) =>
+      apiFetch<Envelope<TenantAutomationKept & { readonly exempt: boolean }>>(`${PATH}/tenants/${input.tenantId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ exempt: input.exempt }),
+      }),
+    onSettled: (_res, _err, input) => {
+      void qc.invalidateQueries({ queryKey: KEY });
+      void qc.invalidateQueries({ queryKey: ['tenants', input.tenantId] });
     },
   });
 }

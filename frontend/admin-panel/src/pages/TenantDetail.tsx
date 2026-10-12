@@ -20,6 +20,7 @@ import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
+import { useSetTenantAutomationExempt } from '@/hooks/use-tenant-automation';
 import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
 import { useTenantBundles } from '@/hooks/use-tenant-bundles';
 // BackupScheduleEditor removed — tenants no longer have
@@ -143,6 +144,7 @@ export default function TenantDetail() {
     setTxModal(null);
     setLifecycleActionError(err);
   };
+  const setAutomationExempt = useSetTenantAutomationExempt();
 
   const deleteTenant = useDeleteTenant();
   // Which tenant this page shows NOW. The same page instance is reused when
@@ -340,6 +342,12 @@ export default function TenantDetail() {
         </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
+          {tenant.lifecycleAutomationExempt === true && (
+            <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400" data-testid="automation-exempt-note">
+              Kept out of{' '}
+              <Link to="/platform/lifecycle-hooks" className="underline hover:no-underline">automatic archive and delete</Link>.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -444,6 +452,33 @@ export default function TenantDetail() {
                   data-testid="notify-tenant-checkbox"
                 />
                 Notify tenant
+              </label>
+            )}
+
+            {/* Saved at once, like a switch: it is a standing property of the
+                tenant, not a setting of the action clicked next. */}
+            {!tenant.isSystem && (
+              <label
+                onClick={(e) => e.stopPropagation()}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
+                title="Never archive or delete this tenant automatically, however long it stays suspended or archived (Platform → Tenant Lifecycle Hooks)"
+                data-testid="automation-exempt-toggle"
+              >
+                <input
+                  type="checkbox"
+                  checked={tenant.lifecycleAutomationExempt === true}
+                  disabled={setAutomationExempt.isPending}
+                  onChange={(e) => {
+                    setLifecycleActionError(null);
+                    setAutomationExempt.mutate(
+                      { tenantId: tenant.id, exempt: e.target.checked },
+                      { onError: (err) => setLifecycleActionError(err) },
+                    );
+                  }}
+                  className="rounded"
+                  data-testid="automation-exempt-checkbox"
+                />
+                Keep out of automatic archive and delete
               </label>
             )}
 

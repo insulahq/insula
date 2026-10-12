@@ -1,11 +1,12 @@
 /**
- * The four settings of the automatic archive/delete sweep, and the record of
- * its last run. All of it lives in `platform_settings`.
+ * The settings of the automatic archive/delete sweep, and the record of its
+ * last run. All of it lives in `platform_settings`.
  */
 import { inArray } from 'drizzle-orm';
 import {
   TENANT_AUTOMATION_DEFAULTS,
   TENANT_AUTOMATION_MAX_DAYS,
+  TENANT_AUTOMATION_MAX_NOTICE_DAYS,
   TENANT_AUTOMATION_MIN_DAYS,
   tenantAutomationRunSchema,
   tenantAutomationSettingsUpdateSchema,
@@ -22,6 +23,7 @@ const KEYS = {
   autoArchiveAfterDays: 'tenant_lifecycle.auto_archive_after_days',
   autoDeleteEnabled: 'tenant_lifecycle.auto_delete_enabled',
   autoDeleteAfterDays: 'tenant_lifecycle.auto_delete_after_days',
+  noticeDays: 'tenant_lifecycle.auto_notice_days',
 } as const satisfies Record<keyof TenantAutomationSettings, string>;
 
 const LAST_RUN_KEY = 'tenant_lifecycle.automation_last_run';
@@ -32,10 +34,17 @@ const LAST_SCHEDULED_KEY = 'tenant_lifecycle.automation_last_scheduled_at';
  * hand-edited `0` or `abc` must not become "archive everything suspended
  * before now" or an invalid date in the sweep's query.
  */
-function daysOr(raw: string | undefined, fallback: number, key: string): number {
+function daysOr(
+  raw: string | undefined,
+  fallback: number,
+  key: string,
+  range: { readonly min: number; readonly max: number } = { min: TENANT_AUTOMATION_MIN_DAYS, max: TENANT_AUTOMATION_MAX_DAYS },
+): number {
   if (raw === undefined) return fallback;
-  const n = Number(raw);
-  if (Number.isInteger(n) && n >= TENANT_AUTOMATION_MIN_DAYS && n <= TENANT_AUTOMATION_MAX_DAYS) return n;
+  // `Number('')` is 0, which the notice period accepts: an emptied row must
+  // not read as "tell nobody".
+  const n = raw.trim() === '' ? Number.NaN : Number(raw);
+  if (Number.isInteger(n) && n >= range.min && n <= range.max) return n;
   console.warn(`[tenant-automation] ignoring unusable value for ${key}: ${JSON.stringify(raw)} (using ${fallback})`);
   return fallback;
 }
@@ -64,6 +73,7 @@ export async function loadTenantAutomationSettings(db: Database): Promise<Tenant
     autoArchiveAfterDays: daysOr(rows.get(KEYS.autoArchiveAfterDays), TENANT_AUTOMATION_DEFAULTS.autoArchiveAfterDays, KEYS.autoArchiveAfterDays),
     autoDeleteEnabled: rows.get(KEYS.autoDeleteEnabled) === 'true',
     autoDeleteAfterDays: daysOr(rows.get(KEYS.autoDeleteAfterDays), TENANT_AUTOMATION_DEFAULTS.autoDeleteAfterDays, KEYS.autoDeleteAfterDays),
+    noticeDays: daysOr(rows.get(KEYS.noticeDays), TENANT_AUTOMATION_DEFAULTS.noticeDays, KEYS.noticeDays, { min: 0, max: TENANT_AUTOMATION_MAX_NOTICE_DAYS }),
   };
 }
 
@@ -77,7 +87,7 @@ export async function saveTenantAutomationSettings(
     const issue = parsed.error.issues[0];
     throw new ApiError('VALIDATION_ERROR', issue.message, 400, { field: issue.path.join('.') });
   }
-  // One transaction: a sweep on another replica reads the four rows in one
+  // One transaction: a sweep on another replica reads the rows in one
   // statement, and must see a switch and its limit change together — never
   // "delete on" with the limit the admin was just replacing.
   await db.transaction(async (tx) => {

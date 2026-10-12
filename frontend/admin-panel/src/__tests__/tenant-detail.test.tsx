@@ -817,3 +817,63 @@ describe('TenantDetail — a lifecycle action the API refuses', () => {
     expect(await screen.findByTestId('transition-progress-modal')).toBeInTheDocument();
   });
 });
+
+/**
+ * "Keep out of automatic archive and delete" in the Actions menu: a standing
+ * property of the tenant, saved the moment it is ticked, and visible on the
+ * page without opening the menu.
+ */
+describe('TenantDetail — kept out of automatic archive and delete', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupMockApi();
+  });
+
+  /** Serve the tenant with the flag as given; answer the PUT with `answer` (or reject with it). */
+  function serveTenant(exempt: boolean, answer?: Error): void {
+    const usual = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation((path: string, init?: RequestInit) => {
+      if (init?.method === 'PUT' && path.endsWith('/admin/lifecycle/automation/tenants/tenant-001')) {
+        return answer ? Promise.reject(answer) : Promise.resolve({ data: { tenantId: 'tenant-001', name: 'Acme Corp', status: 'active', exempt: !exempt } });
+      }
+      if (!init?.method && /\/tenants\/tenant-001$/.test(path)) {
+        return Promise.resolve({ data: { ...MOCK_CLIENT.data, lifecycleAutomationExempt: exempt } });
+      }
+      return usual(path, init);
+    });
+  }
+  const puts = (): unknown[] => mockApiFetch.mock.calls
+    .filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    .map(([path, init]) => [path, JSON.parse((init as RequestInit).body as string)]);
+
+  it('a tenant that is not kept out shows no note, and ticking the box keeps it out at once', async () => {
+    serveTenant(false);
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    const box = await screen.findByTestId('automation-exempt-checkbox');
+    expect(box).not.toBeChecked();
+    expect(screen.queryByTestId('automation-exempt-note')).toBeNull();
+    fireEvent.click(box);
+    await waitFor(() => expect(puts()).toEqual([['/api/v1/admin/lifecycle/automation/tenants/tenant-001', { exempt: true }]]));
+  });
+
+  it('a tenant that is kept out says so under its name, and unticking the box puts it back', async () => {
+    serveTenant(true);
+    renderTenantDetail();
+    expect(await screen.findByTestId('automation-exempt-note')).toHaveTextContent('Kept out of automatic archive and delete.');
+    fireEvent.click(screen.getByTestId('tenant-actions-button'));
+    const box = await screen.findByTestId('automation-exempt-checkbox');
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    await waitFor(() => expect(puts()).toEqual([['/api/v1/admin/lifecycle/automation/tenants/tenant-001', { exempt: false }]]));
+  });
+
+  it('says why when the change is refused', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    serveTenant(false, new ApiError(403, 'FORBIDDEN', 'Only an admin may change this'));
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('automation-exempt-checkbox'));
+    expect(await screen.findByTestId('tenant-lifecycle-action-error')).toHaveTextContent('Only an admin may change this');
+  });
+});

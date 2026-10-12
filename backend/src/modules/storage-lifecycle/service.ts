@@ -1923,7 +1923,8 @@ export async function archiveTenant(
      * Archive only a tenant that is still suspended, and has been since before
      * this moment — checked under the tenant's lock. For the automatic sweep,
      * whose list of due tenants may be hours old by the time it reaches one:
-     * the operator may have resumed it meanwhile. Refused with NO_LONGER_DUE.
+     * the operator may have resumed it meanwhile, or taken it out of the
+     * automation. Refused with NO_LONGER_DUE.
      */
     onlyIfSuspendedBefore?: Date;
   } = {},
@@ -1944,6 +1945,11 @@ async function startArchive(
   if (params.onlyIfSuspendedBefore
     && !(tenant.status === 'suspended' && tenant.suspendedAt && tenant.suspendedAt < params.onlyIfSuspendedBefore)) {
     throw new ApiError('NO_LONGER_DUE', 'Tenant is no longer suspended for long enough to be archived automatically', 409);
+  }
+  // An admin may have taken it out of the automation since the sweep read its
+  // list. A manual archive (no `onlyIfSuspendedBefore`) is not the automation.
+  if (params.onlyIfSuspendedBefore && tenant.lifecycleAutomationExempt) {
+    throw new ApiError('NO_LONGER_DUE', 'Tenant is kept out of automatic archive and delete', 409);
   }
 
   const opId = uuid();

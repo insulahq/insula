@@ -2,20 +2,23 @@
  * Automatic archive and delete — the card at the top of Platform → Tenant
  * Lifecycle Hooks.
  *
- * Two switches, each with a limit in days. Under each, the tenants that limit
- * reaches: who is past it and will be acted on at the next run, and who comes
- * next and when. The lists follow what is being typed, so a limit can be
- * tried before it is saved — and a save that would put tenants in front of
- * the next run asks first, naming them.
+ * Two switches, each with a limit in days, and a notice period. Under each
+ * switch, the tenants it reaches: who is acted on at the next run, who is told
+ * at the next run and acted on later, and who comes next and when. The lists
+ * follow what is being typed, so a setting can be tried before it is saved —
+ * and a save that would put tenants in front of the next run asks first,
+ * naming them. Any tenant in a list can be kept out of both steps.
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, Loader2, Play, Save } from 'lucide-react';
 import {
   TENANT_AUTOMATION_MAX_DAYS,
+  TENANT_AUTOMATION_MAX_NOTICE_DAYS,
   TENANT_AUTOMATION_MIN_DAYS,
   tenantAutomationArchiveRetentionDays,
   type TenantAutomationCandidate,
+  type TenantAutomationKept,
   type TenantAutomationRun,
   type TenantAutomationSettings,
   type TenantAutomationSettingsUpdate,
@@ -28,6 +31,8 @@ import {
   changedSettings,
   daysSince,
   newlyDue,
+  reachCount,
+  reachedNow,
   splitByDue,
   tenantCount,
   whyNotYet,
@@ -37,6 +42,7 @@ import {
 import {
   useRunTenantAutomation,
   useSaveTenantAutomation,
+  useSetTenantAutomationExempt,
   useTenantAutomation,
 } from '@/hooks/use-tenant-automation';
 import TenantAutomationConfirmModal from './TenantAutomationConfirmModal';
@@ -58,11 +64,19 @@ function parseDays(raw: string): number | null {
   return n >= TENANT_AUTOMATION_MIN_DAYS && n <= TENANT_AUTOMATION_MAX_DAYS ? n : null;
 }
 
+/** A notice period as typed: 0 tells nobody. Null while it is not usable. */
+function parseNotice(raw: string): number | null {
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw.trim());
+  return n <= TENANT_AUTOMATION_MAX_NOTICE_DAYS ? n : null;
+}
+
 interface DraftState {
   readonly autoArchiveEnabled: boolean;
   readonly autoArchiveAfterDays: string;
   readonly autoDeleteEnabled: boolean;
   readonly autoDeleteAfterDays: string;
+  readonly noticeDays: string;
 }
 
 const toDraft = (s: TenantAutomationSettings): DraftState => ({
@@ -70,12 +84,14 @@ const toDraft = (s: TenantAutomationSettings): DraftState => ({
   autoArchiveAfterDays: String(s.autoArchiveAfterDays),
   autoDeleteEnabled: s.autoDeleteEnabled,
   autoDeleteAfterDays: String(s.autoDeleteAfterDays),
+  noticeDays: String(s.noticeDays),
 });
 
 export default function TenantAutomationCard() {
   const query = useTenantAutomation();
   const save = useSaveTenantAutomation();
   const run = useRunTenantAutomation();
+  const exempt = useSetTenantAutomationExempt();
   const status = query.data?.data;
 
   // Only what the operator has touched. Everything else follows the server,
@@ -97,16 +113,19 @@ export default function TenantAutomationCard() {
 
   const archiveDays = shown ? parseDays(shown.autoArchiveAfterDays) : null;
   const deleteDays = shown ? parseDays(shown.autoDeleteAfterDays) : null;
-  /** What would be stored after a save, given stored settings `on`; null while a limit is unusable. */
+  const noticeDays = shown ? parseNotice(shown.noticeDays) : null;
+  /** What would be stored after a save, given stored settings `on`; null while a number is unusable. */
   const nextOver = (on: TenantAutomationSettings): TenantAutomationSettings | null => {
     const merged = { ...toDraft(on), ...draft };
     const a = parseDays(merged.autoArchiveAfterDays);
     const d = parseDays(merged.autoDeleteAfterDays);
-    return a === null || d === null ? null : {
+    const n = parseNotice(merged.noticeDays);
+    return a === null || d === null || n === null ? null : {
       autoArchiveEnabled: merged.autoArchiveEnabled,
       autoArchiveAfterDays: a,
       autoDeleteEnabled: merged.autoDeleteEnabled,
       autoDeleteAfterDays: d,
+      noticeDays: n,
     };
   };
   const next = saved ? nextOver(saved) : null;
@@ -170,7 +189,7 @@ export default function TenantAutomationCard() {
     const update = changedSettings(fresh.settings, target);
     if (Object.keys(update).length === 0) { setDraft({}); return; }   // somebody saved the same meanwhile
     const due = newlyDue(fresh, target, Date.now());
-    if (due.archive.length + due.remove.length > 0) setConfirm({ kind: 'save', due, update });
+    if (reachCount(due) > 0) setConfirm({ kind: 'save', due, update });
     else await doSave(update);
   };
 
@@ -184,21 +203,23 @@ export default function TenantAutomationCard() {
     run.reset();
     const fresh = await freshStatus();
     if (!fresh) return;
-    const now = Date.now();
-    const on = fresh.settings;
-    const due: NewlyDue = {
-      archive: on.autoArchiveEnabled && !fresh.archiveBlockedReason ? splitByDue(fresh.suspended, on.autoArchiveAfterDays, now).dueNow : [],
-      remove: on.autoDeleteEnabled ? splitByDue(fresh.archived, on.autoDeleteAfterDays, now).dueNow : [],
-    };
-    if (due.archive.length + due.remove.length > 0) setConfirm({ kind: 'run', due, update: {} });
+    const due = reachedNow(fresh, fresh.settings, Date.now());
+    if (reachCount(due) > 0) setConfirm({ kind: 'run', due, update: {} });
     else await doRun();
   };
 
   const bothOff = !saved.autoArchiveEnabled && !saved.autoDeleteEnabled;
+  // The lists under the switches are worked out with the notice period being
+  // typed, or the stored one while what is typed is not a usable number.
+  const previewNotice = noticeDays ?? saved.noticeDays;
   const retention = tenantAutomationArchiveRetentionDays(
-    { autoDeleteEnabled: shown.autoDeleteEnabled, autoDeleteAfterDays: deleteDays ?? saved.autoDeleteAfterDays },
+    { autoDeleteEnabled: shown.autoDeleteEnabled, autoDeleteAfterDays: deleteDays ?? saved.autoDeleteAfterDays, noticeDays: previewNotice },
     status.archiveRetentionDays,
   );
+  const keepOut = (tenantId: string, value: boolean): void => {
+    exempt.mutate({ tenantId, exempt: value });
+  };
+  const keepProps = { onKeepOut: (tenantId: string) => keepOut(tenantId, true), keepPending: exempt.isPending };
 
   return (
     <section
@@ -245,8 +266,10 @@ export default function TenantAutomationCard() {
           enabled={shown.autoArchiveEnabled}
           days={shown.autoArchiveAfterDays}
           parsedDays={archiveDays}
+          noticeDays={previewNotice}
           candidates={status.suspended}
           nowMs={nowMs}
+          {...keepProps}
           disabled={save.isPending}
           onToggle={(v) => change({ autoArchiveEnabled: v })}
           onDays={(v) => change({ autoArchiveAfterDays: v })}
@@ -273,8 +296,10 @@ export default function TenantAutomationCard() {
           enabled={shown.autoDeleteEnabled}
           days={shown.autoDeleteAfterDays}
           parsedDays={deleteDays}
+          noticeDays={previewNotice}
           candidates={status.archived}
           nowMs={nowMs}
+          {...keepProps}
           disabled={save.isPending}
           onToggle={(v) => change({ autoDeleteEnabled: v })}
           onDays={(v) => change({ autoDeleteAfterDays: v })}
@@ -287,6 +312,18 @@ export default function TenantAutomationCard() {
             </>
           }
           warning={null}
+        />
+        <NoticeRow
+          value={shown.noticeDays}
+          parsed={noticeDays}
+          disabled={save.isPending}
+          onChange={(v) => change({ noticeDays: v })}
+        />
+        <KeptRow
+          kept={status.kept}
+          pending={exempt.isPending}
+          error={exempt.error}
+          onPutBack={(tenantId) => keepOut(tenantId, false)}
         />
       </div>
 
@@ -317,7 +354,9 @@ export default function TenantAutomationCard() {
             </button>
             {next === null && (
               <span className="text-xs text-red-700 dark:text-red-300" data-testid="tenant-automation-days-invalid">
-                A limit is a whole number of days from {TENANT_AUTOMATION_MIN_DAYS} to {TENANT_AUTOMATION_MAX_DAYS}.
+                {noticeDays === null
+                  ? `The notice period is a whole number of days from 0 to ${TENANT_AUTOMATION_MAX_NOTICE_DAYS}.`
+                  : `A limit is a whole number of days from ${TENANT_AUTOMATION_MIN_DAYS} to ${TENANT_AUTOMATION_MAX_DAYS}.`}
               </span>
             )}
           </div>
@@ -327,8 +366,7 @@ export default function TenantAutomationCard() {
       {confirm && (
         <TenantAutomationConfirmModal
           kind={confirm.kind}
-          archive={confirm.due.archive}
-          remove={confirm.due.remove}
+          due={confirm.due}
           intervalHours={status.intervalHours}
           pending={confirm.kind === 'save' ? save.isPending : run.isPending}
           error={(confirm.kind === 'save' ? save.error : run.error) ?? null}
@@ -350,6 +388,7 @@ function RunLine({ status }: { readonly status: TenantAutomationStatus }) {
     ? [
         last.archived.length > 0 ? `archived ${last.archived.length}` : '',
         last.deleted.length > 0 ? `deleted ${last.deleted.length}` : '',
+        last.told.length > 0 ? `told ${last.told.length}` : '',
         last.failed.length > 0 ? `failed on ${last.failed.length}` : '',
       ].filter(Boolean)
     : [];
@@ -371,13 +410,29 @@ function RunLine({ status }: { readonly status: TenantAutomationStatus }) {
 
 /** What the last run could not do — kept in view until a later run does it. */
 function LastRunProblems({ run }: { readonly run: TenantAutomationRun | null }) {
-  if (!run || (run.failed.length === 0 && run.errors.length === 0 && !run.archiveSkippedReason)) return null;
+  const unreached = run ? run.told.filter((t) => !t.reached) : [];
+  if (!run || (run.failed.length === 0 && run.errors.length === 0 && !run.archiveSkippedReason && unreached.length === 0)) return null;
+  const undone = run.failed.length > 0 || run.errors.length > 0 || !!run.archiveSkippedReason;
   return (
     <div className="px-4 pt-3" data-testid="tenant-automation-last-run-problems">
       <div className="rounded border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-700/60 dark:bg-red-900/30 dark:text-red-200">
-        <p className="font-medium">The last run did not do everything that was due.</p>
+        <p className="font-medium">
+          {undone ? 'The last run did not do everything that was due.' : 'The last run could not tell everybody it had to.'}
+        </p>
         {run.archiveSkippedReason && <p className="mt-1">No archive could be taken: {run.archiveSkippedReason}</p>}
         {run.errors.map((e) => <p key={e} className="mt-1">{e}</p>)}
+        {unreached.length > 0 && (
+          <ul className="mt-1 list-disc space-y-0.5 pl-4" data-testid="tenant-automation-unreached">
+            {unreached.map((t) => (
+              <li key={`${t.action}-${t.tenantId}`}>
+                Nobody could be told at{' '}
+                <Link to={`/tenants/${t.tenantId}`} className="font-medium underline hover:no-underline">{t.name}</Link>
+                {' '}— no user and no contact address to write to, or notifications are off. It is told again at every run and
+                not {t.action}d until the message reaches somebody.
+              </li>
+            ))}
+          </ul>
+        )}
         {run.failed.length > 0 && (
           <ul className="mt-1 list-disc space-y-0.5 pl-4">
             {run.failed.map((f) => (
@@ -398,8 +453,12 @@ interface StepRowProps {
   readonly enabled: boolean;
   readonly days: string;
   readonly parsedDays: number | null;
+  /** The notice period the lists are worked out with. */
+  readonly noticeDays: number;
   readonly candidates: readonly TenantAutomationCandidate[];
   readonly nowMs: number;
+  readonly onKeepOut: (tenantId: string) => void;
+  readonly keepPending: boolean;
   readonly disabled: boolean;
   readonly onToggle: (value: boolean) => void;
   readonly onDays: (value: string) => void;
@@ -409,7 +468,7 @@ interface StepRowProps {
   readonly warning: React.ReactNode;
 }
 
-function StepRow({ step, enabled, days, parsedDays, candidates, nowMs, disabled, onToggle, onDays, blocked, explanation, warning }: StepRowProps) {
+function StepRow({ step, enabled, days, parsedDays, noticeDays, candidates, nowMs, onKeepOut, keepPending, disabled, onToggle, onDays, blocked, explanation, warning }: StepRowProps) {
   const text = STEP_TEXT[step];
   const label = step === 'archive' ? 'Archive suspended tenants' : 'Delete archived tenants';
   return (
@@ -458,7 +517,17 @@ function StepRow({ step, enabled, days, parsedDays, candidates, nowMs, disabled,
         <p className="text-xs text-gray-500 dark:text-gray-400">{explanation}</p>
         {warning}
         {parsedDays !== null && (
-          <StepPreview step={step} enabled={enabled} blocked={blocked} days={parsedDays} candidates={candidates} nowMs={nowMs} />
+          <StepPreview
+            step={step}
+            enabled={enabled}
+            blocked={blocked}
+            days={parsedDays}
+            noticeDays={noticeDays}
+            candidates={candidates}
+            nowMs={nowMs}
+            onKeepOut={onKeepOut}
+            keepPending={keepPending}
+          />
         )}
       </div>
     </div>
@@ -470,15 +539,17 @@ interface StepPreviewProps {
   readonly enabled: boolean;
   readonly blocked: boolean;
   readonly days: number;
+  readonly noticeDays: number;
   readonly candidates: readonly TenantAutomationCandidate[];
   readonly nowMs: number;
+  readonly onKeepOut: (tenantId: string) => void;
+  readonly keepPending: boolean;
 }
 
-/** Who this limit reaches: at the next run, and after it. */
-function StepPreview({ step, enabled, blocked, days, candidates, nowMs }: StepPreviewProps) {
+/** Who these settings reach: at the next run, and after it. */
+function StepPreview({ step, enabled, blocked, days, noticeDays, candidates, nowMs, onKeepOut, keepPending }: StepPreviewProps) {
   const text = STEP_TEXT[step];
-  const [showAll, setShowAll] = useState(false);
-  const { dueNow, later, undated } = splitByDue(candidates, days, nowMs);
+  const { dueNow, toTell, later, undated } = splitByDue(candidates, days, noticeDays, nowMs);
 
   if (candidates.length === 0) {
     return (
@@ -488,48 +559,69 @@ function StepPreview({ step, enabled, blocked, days, candidates, nowMs }: StepPr
     );
   }
 
-  const listed = showAll ? dueNow : dueNow.slice(0, LIST_LIMIT);
   const accent = step === 'delete'
     ? 'text-red-800 dark:text-red-200'
     : 'text-amber-800 dark:text-amber-200';
+  const heading = enabled ? `font-medium ${accent}` : 'text-gray-600 dark:text-gray-300';
+  const next = later[0];
 
   return (
     <div className="space-y-1 text-xs" data-testid={`tenant-automation-${step}-preview`}>
-      {dueNow.length > 0 ? (
-        <>
-          <p className={enabled ? `font-medium ${accent}` : 'text-gray-600 dark:text-gray-300'} data-testid={`tenant-automation-${step}-due-now`}>
-            {!enabled
+      {dueNow.length > 0 && (
+        <CandidateList
+          testId={`tenant-automation-${step}-due-now`}
+          headingClass={heading}
+          heading={
+            !enabled
               ? `Off. Switched on, ${tenantCount(dueNow.length)} would be ${text.verb} at the next run:`
               : blocked
-                ? `${tenantCount(dueNow.length)} past this limit — not ${text.verb} while no archive can be taken:`
-                : `${tenantCount(dueNow.length)} past this limit — ${text.verb} at the next run:`}
-          </p>
-          <ul className="space-y-0.5 pl-1">
-            {listed.map((c) => <CandidateLine key={c.tenantId} candidate={c} state={text.state} nowMs={nowMs} />)}
-          </ul>
-          {dueNow.length > LIST_LIMIT && (
-            <button
-              type="button"
-              onClick={() => setShowAll(!showAll)}
-              className="text-brand-600 hover:underline dark:text-brand-400"
-              data-testid={`tenant-automation-${step}-show-all`}
-            >
-              {showAll ? 'Show fewer' : `Show all ${dueNow.length}`}
-            </button>
-          )}
-        </>
-      ) : (
+                ? `${tenantCount(dueNow.length)} due — not ${text.verb} while no archive can be taken:`
+                : `${tenantCount(dueNow.length)} due — ${text.verb} at the next run:`
+          }
+          candidates={dueNow}
+          step={step}
+          nowMs={nowMs}
+          onKeepOut={onKeepOut}
+          keepPending={keepPending}
+        />
+      )}
+      {toTell.length > 0 && (
+        <CandidateList
+          testId={`tenant-automation-${step}-to-tell`}
+          headingClass={heading}
+          heading={
+            !enabled
+              ? `Off. Switched on, ${tenantCount(toTell.length)} would be told at the next run, and ${text.verb} on the date given:`
+              : blocked
+                ? `${tenantCount(toTell.length)} to tell — not told while no archive can be taken:`
+                : `${tenantCount(toTell.length)} told at the next run, and ${text.verb} on the date given:`
+          }
+          candidates={toTell}
+          showDate
+          step={step}
+          nowMs={nowMs}
+          onKeepOut={onKeepOut}
+          keepPending={keepPending}
+        />
+      )}
+      {dueNow.length + toTell.length === 0 && (
         <p className="text-gray-600 dark:text-gray-300" data-testid={`tenant-automation-${step}-due-now`}>
           {enabled ? '' : 'Off. '}
-          {tenantCount(candidates.length)} {text.state}, none past this limit.
+          {tenantCount(candidates.length)} {text.state}, none due.
         </p>
       )}
-      {later.length > 0 && (
-        <p className="text-gray-600 dark:text-gray-300" data-testid={`tenant-automation-${step}-next`}>
-          {enabled ? 'Next' : 'First to pass it'}:{' '}
-          <Link to={`/tenants/${later[0].tenantId}`} className="font-medium text-gray-900 hover:underline dark:text-gray-100">{later[0].name}</Link>
-          {' '}on {new Date(later[0].dueAt).toLocaleDateString()}
-          {later.length > 1 ? `, then ${later.length - 1} more.` : '.'}
+      {next && (
+        <p className="flex flex-wrap items-center gap-x-1 text-gray-600 dark:text-gray-300" data-testid={`tenant-automation-${step}-next`}>
+          <span>
+            {enabled ? 'Next' : 'First to come due'}:{' '}
+            <Link to={`/tenants/${next.tenantId}`} className="font-medium text-gray-900 hover:underline dark:text-gray-100">{next.name}</Link>
+            {' '}on {new Date(next.dueAt).toLocaleDateString()}
+            {next.told
+              ? ' (it has been told)'
+              : next.tellAt !== null ? ` (told on ${new Date(next.tellAt).toLocaleDateString()})` : ''}
+            {later.length > 1 ? `, then ${later.length - 1} more.` : '.'}
+          </span>
+          <KeepOutButton tenantId={next.tenantId} name={next.name} onKeepOut={onKeepOut} pending={keepPending} />
         </p>
       )}
       {undated.length > 0 && (
@@ -541,15 +633,182 @@ function StepPreview({ step, enabled, blocked, days, candidates, nowMs }: StepPr
   );
 }
 
-function CandidateLine({ candidate, state, nowMs }: { readonly candidate: DatedCandidate; readonly state: string; readonly nowMs: number }) {
+interface CandidateListProps {
+  readonly testId: string;
+  readonly heading: string;
+  readonly headingClass: string;
+  readonly candidates: readonly DatedCandidate[];
+  /** Name the date each tenant is acted on (a tenant that is told gets one). */
+  readonly showDate?: boolean;
+  readonly step: Step;
+  readonly nowMs: number;
+  readonly onKeepOut: (tenantId: string) => void;
+  readonly keepPending: boolean;
+}
+
+function CandidateList({ testId, heading, headingClass, candidates, showDate, step, nowMs, onKeepOut, keepPending }: CandidateListProps) {
+  const [showAll, setShowAll] = useState(false);
+  const listed = showAll ? candidates : candidates.slice(0, LIST_LIMIT);
+  return (
+    <>
+      <p className={headingClass} data-testid={testId}>{heading}</p>
+      <ul className="space-y-0.5 pl-1">
+        {listed.map((c) => (
+          <CandidateLine key={c.tenantId} candidate={c} step={step} showDate={showDate === true} nowMs={nowMs} onKeepOut={onKeepOut} keepPending={keepPending} />
+        ))}
+      </ul>
+      {candidates.length > LIST_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setShowAll(!showAll)}
+          className="text-brand-600 hover:underline dark:text-brand-400"
+          data-testid={`${testId}-show-all`}
+        >
+          {showAll ? 'Show fewer' : `Show all ${candidates.length}`}
+        </button>
+      )}
+    </>
+  );
+}
+
+interface CandidateLineProps {
+  readonly candidate: DatedCandidate;
+  readonly step: Step;
+  readonly showDate: boolean;
+  readonly nowMs: number;
+  readonly onKeepOut: (tenantId: string) => void;
+  readonly keepPending: boolean;
+}
+
+function CandidateLine({ candidate, step, showDate, nowMs, onKeepOut, keepPending }: CandidateLineProps) {
+  const text = STEP_TEXT[step];
   const days = candidate.since ? daysSince(candidate.since, nowMs) : 0;
   return (
-    <li className="text-gray-700 dark:text-gray-300" data-testid={`tenant-automation-due-${candidate.tenantId}`}>
-      <Link to={`/tenants/${candidate.tenantId}`} className="font-medium text-gray-900 hover:underline dark:text-gray-100">{candidate.name}</Link>
-      {' '}— {state} {days} day{days === 1 ? '' : 's'} ago
-      {candidate.busy && (
-        <span className="text-gray-500 dark:text-gray-400"> ({whyNotYet(candidate.busy)})</span>
-      )}
+    <li className="flex flex-wrap items-center gap-x-1 text-gray-700 dark:text-gray-300" data-testid={`tenant-automation-due-${candidate.tenantId}`}>
+      <span>
+        <Link to={`/tenants/${candidate.tenantId}`} className="font-medium text-gray-900 hover:underline dark:text-gray-100">{candidate.name}</Link>
+        {' '}— {text.state} {days} day{days === 1 ? '' : 's'} ago
+        {showDate && <>, {text.done.toLowerCase()} on {new Date(candidate.dueAt).toLocaleDateString()}</>}
+        {showDate && candidate.notice && !candidate.notice.reached && (
+          <span className="text-red-700 dark:text-red-300"> (the last message reached nobody)</span>
+        )}
+        {!showDate && candidate.notice?.reached && <>, told <TimeCell iso={candidate.notice.toldAt} /></>}
+        {candidate.busy && (
+          <span className="text-gray-500 dark:text-gray-400"> ({whyNotYet(candidate.busy)})</span>
+        )}
+      </span>
+      <KeepOutButton tenantId={candidate.tenantId} name={candidate.name} onKeepOut={onKeepOut} pending={keepPending} />
     </li>
+  );
+}
+
+function KeepOutButton({ tenantId, name, onKeepOut, pending }: { readonly tenantId: string; readonly name: string; readonly onKeepOut: (tenantId: string) => void; readonly pending: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onKeepOut(tenantId)}
+      disabled={pending}
+      title="Never archive or delete this tenant automatically"
+      aria-label={`Keep ${name} out of automatic archive and delete`}
+      className="rounded border border-gray-300 px-1.5 text-[11px] leading-5 text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+      data-testid={`tenant-automation-keep-out-${tenantId}`}
+    >
+      Keep out
+    </button>
+  );
+}
+
+interface NoticeRowProps {
+  readonly value: string;
+  readonly parsed: number | null;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}
+
+/** The notice period: how long before its archive or delete a tenant hears of it. */
+function NoticeRow({ value, parsed, disabled, onChange }: NoticeRowProps) {
+  return (
+    <div className="flex gap-3 px-4 py-3" data-testid="tenant-automation-notice">
+      {/* As wide as a switch, so the three rows line up. */}
+      <div className="w-11 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <label className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-gray-900 dark:text-gray-100">
+          <span className="font-medium">Tell the tenant</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={TENANT_AUTOMATION_MAX_NOTICE_DAYS}
+            step={1}
+            value={value}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.value)}
+            aria-invalid={parsed === null}
+            aria-label="Days ahead a tenant is told that it will be archived or deleted"
+            data-testid="tenant-automation-notice-days"
+            className={`w-20 rounded-md border bg-white px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-100 ${
+              parsed === null ? 'border-red-500 dark:border-red-500' : 'border-gray-300 dark:border-gray-600'
+            }`}
+          />
+          <span className="text-gray-700 dark:text-gray-300">days ahead</span>
+        </label>
+        <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="tenant-automation-notice-explanation">
+          {parsed === 0
+            ? 'Nobody is told. A tenant is archived or deleted at the first run after it passes its limit — one that was given a date already keeps it.'
+            : 'Each tenant gets a message with the date — its admins in the panel and by email, the account\u2019s contact address by email — and nothing happens to it before that date. A tenant already past its limit is told at the next run and given this many days; one nobody could be told is left as it is. 0 tells nobody.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+interface KeptRowProps {
+  readonly kept: readonly TenantAutomationKept[];
+  readonly pending: boolean;
+  readonly error: unknown;
+  readonly onPutBack: (tenantId: string) => void;
+}
+
+/** The tenants kept out of both steps, and the way back in. */
+function KeptRow({ kept, pending, error, onPutBack }: KeptRowProps) {
+  return (
+    <div className="flex gap-3 px-4 py-3" data-testid="tenant-automation-kept">
+      <div className="w-11 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1 space-y-1.5 text-xs">
+        {error ? <ErrorPanel error={extractOperatorError(error)} severity="error" compact testId="tenant-automation-keep-error" /> : null}
+        {kept.length === 0 ? (
+          <p className="text-gray-500 dark:text-gray-400">
+            No tenant is kept out. Keep one out with the button next to its name above, or under Actions on its own page — it is then never
+            archived or deleted automatically.
+          </p>
+        ) : (
+          <>
+            <p className="text-gray-700 dark:text-gray-300">
+              Kept out — never archived or deleted automatically ({kept.length}):
+            </p>
+            <ul className="space-y-0.5 pl-1">
+              {kept.map((t) => (
+                <li key={t.tenantId} className="flex flex-wrap items-center gap-x-1 text-gray-700 dark:text-gray-300" data-testid={`tenant-automation-kept-${t.tenantId}`}>
+                  <span>
+                    <Link to={`/tenants/${t.tenantId}`} className="font-medium text-gray-900 hover:underline dark:text-gray-100">{t.name}</Link>
+                    {' '}— {t.status}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onPutBack(t.tenantId)}
+                    disabled={pending}
+                    aria-label={`Put ${t.name} back into automatic archive and delete`}
+                    className="rounded border border-gray-300 px-1.5 text-[11px] leading-5 text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                    data-testid={`tenant-automation-put-back-${t.tenantId}`}
+                  >
+                    Put back
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

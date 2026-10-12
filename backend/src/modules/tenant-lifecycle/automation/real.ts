@@ -3,15 +3,20 @@
  * and the status the admin panel shows for it.
  */
 import { createHash } from 'node:crypto';
-import { and, asc, eq, lt, sql } from 'drizzle-orm';
-import type { TenantAutomationCandidate, TenantAutomationRun, TenantAutomationStatus } from '@insula/api-contracts';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import type {
+  TenantAutomationCandidate,
+  TenantAutomationKept,
+  TenantAutomationRun,
+  TenantAutomationStatus,
+} from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
-import { storageOperations, tenants } from '../../../db/schema.js';
+import { storageOperations, tenantAutomationNotices, tenants } from '../../../db/schema.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../../shared/errors.js';
 import { isRunUnderWay } from '../../../shared/exclusive-run.js';
 import { loadAutomationRunRecord, loadTenantAutomationSettings, saveAutomationRun } from './settings.js';
-import { runTenantAutomationSweep, type ActionOutcome, type SweepIo } from './sweep.js';
+import { runTenantAutomationSweep, type ActionOutcome, type InLineTenant, type Step, type SweepIo, type TellOutcome } from './sweep.js';
 
 /** The sweep's lease, and with `-run` its run lock. */
 export const TENANT_AUTOMATION_JOB = 'storage-auto-archive';
@@ -33,8 +38,11 @@ const ARCHIVE_POLL_MS = 5_000;
 /** At most this many tenants per list in the status. */
 const MAX_CANDIDATES = 500;
 
-/** The date the sweep counts a tenant's days from, by the status it looks at. */
-type SinceColumn = typeof tenants.suspendedAt | typeof tenants.archivedAt;
+/** What each step looks at: the status a tenant is in, and the date its days count from. */
+const STEP = {
+  archive: { status: 'suspended', since: tenants.suspendedAt },
+  delete: { status: 'archived', since: tenants.archivedAt },
+} as const;
 
 export interface AutomationDeps {
   readonly db: Database;
@@ -110,32 +118,45 @@ async function platformArchiveRetentionDays(db: Database): Promise<number> {
 type OperationalEvent = Parameters<typeof import('../../notifications/events.js').notifyAdminOperationalEvent>[2];
 
 export function notification(run: TenantAutomationRun): { payload: OperationalEvent; dedupeKey: string } {
+  const reached = run.told.filter((t) => t.reached);
+  const unreached = run.told.filter((t) => !t.reached);
   const items = [
     ...run.archived.map((t) => `Archived: ${t.name}`),
     ...run.deleted.map((t) => `Deleted: ${t.name}`),
+    ...reached.map((t) => `Told ${t.name}: ${t.action} on ${t.date.slice(0, 10)}`),
+    ...unreached.map((t) => `Nobody to tell at ${t.name}: not ${t.action}d until it can be told`),
     ...run.failed.map((t) => `Could not ${t.action} ${t.name}: ${t.error}`),
     ...run.errors,
   ];
   const counts = [
     run.archived.length > 0 ? `archived ${run.archived.length}` : '',
     run.deleted.length > 0 ? `deleted ${run.deleted.length}` : '',
+    reached.length > 0 ? `told ${reached.length}` : '',
     run.failed.length > 0 ? `failed on ${run.failed.length}` : '',
   ].filter(Boolean);
+  const nobody = unreached.length > 0
+    ? `${unreached.length} tenant(s) could not be told — no user and no contact address to write to, or notifications are off. They are told again at every run and left as they are until the message reaches somebody.`
+    : '';
   const blocked = run.archiveSkippedReason ? `Suspended tenants are due to be archived, but no archive can be taken: ${run.archiveSkippedReason}` : '';
   const acted = counts.length > 0 ? `The automatic sweep ${counts.join(', ')} tenant(s).` : '';
   const stopped = run.errors.length > 0 ? 'A step of the automatic sweep stopped before its end.' : '';
-  const problem = run.failed.length > 0 || run.errors.length > 0 || !!run.archiveSkippedReason;
-  const changed = run.archived.length + run.deleted.length > 0;
-  // A sweep that archived or deleted something is one event, always sent. One
-  // that only could not — the same tenant still stuck, the same target still
-  // missing — would say so again every six hours; that is said once a day, per
-  // set of things it is about.
-  const about = [...run.failed.map((t) => `${t.action}:${t.tenantId}`), ...run.errors, run.archiveSkippedReason ?? ''].sort().join('|');
+  const problem = run.failed.length > 0 || run.errors.length > 0 || !!run.archiveSkippedReason || unreached.length > 0;
+  const changed = run.archived.length + run.deleted.length + reached.length > 0;
+  // A sweep that archived, deleted or told somebody is one event, always sent. One
+  // that only could not — the same tenant still stuck or still unreachable, the
+  // same target still missing — would say so again every six hours; that is
+  // said once a day, per set of things it is about.
+  const about = [
+    ...run.failed.map((t) => `${t.action}:${t.tenantId}`),
+    ...unreached.map((t) => `untold-${t.action}:${t.tenantId}`),
+    ...run.errors,
+    run.archiveSkippedReason ?? '',
+  ].sort().join('|');
   return {
     payload: {
       subsystem: 'Tenant lifecycle',
       objectLabel: 'Automatic archive and delete',
-      detail: [acted, stopped, blocked].filter(Boolean).join(' '),
+      detail: [acted, nobody, stopped, blocked].filter(Boolean).join(' '),
       items,
       severityLabel: problem ? 'needs attention' : 'done',
       recommendedAction: problem
@@ -148,20 +169,89 @@ export function notification(run: TenantAutomationRun): { payload: OperationalEv
   };
 }
 
-export function realSweepIo(deps: AutomationDeps, timing: { readonly archiveWaitMs?: number; readonly archivePollMs?: number } = {}): SweepIo {
-  const { db, k8s } = deps;
-  const due = (status: 'suspended' | 'archived', column: SinceColumn, before: Date) => db
-    .select({ tenantId: tenants.id, name: tenants.name })
+/** The tenants a step looks at, with what each was told; tenants kept out are not among them. */
+async function inLine(db: Database, step: Step): Promise<InLineTenant[]> {
+  const { status, since } = STEP[step];
+  const rows = await db
+    .select({
+      tenantId: tenants.id,
+      name: tenants.name,
+      since,
+      toldAt: tenantAutomationNotices.toldAt,
+      date: tenantAutomationNotices.announcedFor,
+      reached: tenantAutomationNotices.reached,
+    })
     .from(tenants)
+    .leftJoin(tenantAutomationNotices, and(eq(tenantAutomationNotices.tenantId, tenants.id), eq(tenantAutomationNotices.step, step)))
     // The SYSTEM tenant can be neither suspended nor archived through the API;
     // the filter is for a row written past it (ADR-040, ci-system-tenant-check).
-    .where(and(eq(tenants.status, status), eq(tenants.isSystem, false), lt(column, before)))
-    .orderBy(asc(column));
+    .where(and(eq(tenants.status, status), eq(tenants.isSystem, false), eq(tenants.lifecycleAutomationExempt, false)))
+    .orderBy(sql`${since} asc nulls last`, asc(tenants.name));
+  return rows.map((r) => ({
+    tenantId: r.tenantId,
+    name: r.name,
+    since: r.since,
+    notice: r.toldAt && r.date ? { toldAt: r.toldAt, date: r.date, reached: (r.reached ?? 0) > 0 } : null,
+  }));
+}
+
+/**
+ * Tell one tenant what is coming and write down that it was told. Sent first,
+ * written second: a notice that could not be written is sent again by the next
+ * sweep (the dispatcher drops the repeat by its key), while one written and
+ * never sent would let the tenant be archived without a word.
+ *
+ * A message that reached nobody is written down too — the card shows it — but
+ * as such (`reached` 0), and `tenantAutomationPlan` does not count it.
+ */
+async function tellTenant(db: Database, step: Step, tenant: InLineTenant, date: Date): Promise<TellOutcome> {
+  const { status, since } = STEP[step];
+  const [row] = await db
+    .select({
+      status: tenants.status,
+      since,
+      exempt: tenants.lifecycleAutomationExempt,
+      primaryEmail: tenants.primaryEmail,
+      secondaryEmail: tenants.secondaryEmail,
+    })
+    .from(tenants)
+    .where(eq(tenants.id, tenant.tenantId));
+  if (!row) return { kind: 'skipped', reason: 'the tenant is gone' };
+  if (row.exempt) return { kind: 'skipped', reason: 'it is kept out of automatic archive and delete' };
+  if (row.status !== status || row.since?.getTime() !== tenant.since?.getTime()) {
+    return { kind: 'skipped', reason: `it is no longer ${status} as it was when the sweep began` };
+  }
+  const { notifyTenantLifecycleNotice } = await import('../../notifications/events.js');
+  const day = date.toISOString().slice(0, 10);
+  const sent = await notifyTenantLifecycleNotice(
+    db,
+    tenant.tenantId,
+    step,
+    { dueDate: day },
+    // One per suspension (or archive) and date: the same notice is not sent
+    // twice when writing it down failed the first time.
+    `tenant-automation-notice:${step}:${tenant.tenantId}:${tenant.since?.getTime() ?? 0}:${day}`,
+    // The account's contact addresses: a tenant with no user of its own is
+    // reached there, and an archive or delete must not come unannounced
+    // because nobody ever signed in.
+    [row.primaryEmail, row.secondaryEmail].filter((a): a is string => typeof a === 'string' && a.includes('@')),
+  );
+  if (!sent.ok) throw new Error(sent.error ?? 'the message could not be sent');
+  await db.insert(tenantAutomationNotices)
+    .values({ tenantId: tenant.tenantId, step, toldAt: new Date(), announcedFor: date, reached: sent.reached })
+    .onConflictDoUpdate({
+      target: [tenantAutomationNotices.tenantId, tenantAutomationNotices.step],
+      set: { toldAt: new Date(), announcedFor: date, reached: sent.reached },
+    });
+  return { kind: 'told', reached: sent.reached > 0 };
+}
+
+export function realSweepIo(deps: AutomationDeps, timing: { readonly archiveWaitMs?: number; readonly archivePollMs?: number } = {}): SweepIo {
+  const { db, k8s } = deps;
   return {
     settings: () => loadTenantAutomationSettings(db),
     archiveRetentionDays: () => platformArchiveRetentionDays(db),
-    dueForArchive: (before) => due('suspended', tenants.suspendedAt, before),
-    dueForDelete: (before) => due('archived', tenants.archivedAt, before),
+    inLine: (step) => inLine(db, step),
     archiveBlockedReason: () => archiveBlockedReason(deps),
     archive: async (tenant, opts) => {
       const { buildArchiveServiceCtx } = await import('../../storage-lifecycle/snapshot-ctx.js');
@@ -187,6 +277,7 @@ export function realSweepIo(deps: AutomationDeps, timing: { readonly archiveWait
         return outcomeOfRefusal(err);
       }
     },
+    tell: (step, tenant, date) => tellTenant(db, step, tenant, date),
     record: (run) => saveAutomationRun(db, run),
     notify: async (run) => {
       const { notifyAdminOperationalEvent } = await import('../../notifications/events.js');
@@ -208,31 +299,71 @@ export function sweepTenantsOnce(deps: AutomationDeps, trigger: TenantAutomation
   return runTenantAutomationSweep(realSweepIo(deps), trigger);
 }
 
-async function candidates(db: Database, status: 'suspended' | 'archived', column: SinceColumn): Promise<TenantAutomationCandidate[]> {
+async function candidates(db: Database, step: Step): Promise<TenantAutomationCandidate[]> {
+  const { status, since } = STEP[step];
   const rows = await db
-    .select({ tenantId: tenants.id, name: tenants.name, since: column, state: tenants.storageLifecycleState })
+    .select({
+      tenantId: tenants.id,
+      name: tenants.name,
+      since,
+      state: tenants.storageLifecycleState,
+      toldAt: tenantAutomationNotices.toldAt,
+      date: tenantAutomationNotices.announcedFor,
+      reached: tenantAutomationNotices.reached,
+    })
     .from(tenants)
-    .where(and(eq(tenants.status, status), eq(tenants.isSystem, false)))
-    .orderBy(sql`${column} asc nulls last`, asc(tenants.name))
+    .leftJoin(tenantAutomationNotices, and(eq(tenantAutomationNotices.tenantId, tenants.id), eq(tenantAutomationNotices.step, step)))
+    .where(and(eq(tenants.status, status), eq(tenants.isSystem, false), eq(tenants.lifecycleAutomationExempt, false)))
+    .orderBy(sql`${since} asc nulls last`, asc(tenants.name))
     .limit(MAX_CANDIDATES);
   return rows.map((r) => ({
     tenantId: r.tenantId,
     name: r.name,
     since: r.since ? r.since.toISOString() : null,
     busy: r.state === 'idle' ? null : r.state,
+    // Only a notice of THIS suspension (or archive): one from before the
+    // tenant was resumed says nothing about now.
+    notice: r.toldAt && r.date && r.since && r.toldAt.getTime() >= r.since.getTime()
+      ? { toldAt: r.toldAt.toISOString(), date: r.date.toISOString(), reached: (r.reached ?? 0) > 0 }
+      : null,
   }));
+}
+
+/** Every tenant kept out of the automation, whatever its status. */
+async function keptOut(db: Database): Promise<TenantAutomationKept[]> {
+  return db
+    .select({ tenantId: tenants.id, name: tenants.name, status: tenants.status })
+    .from(tenants)
+    .where(and(eq(tenants.lifecycleAutomationExempt, true), eq(tenants.isSystem, false)))
+    .orderBy(asc(tenants.name))
+    .limit(MAX_CANDIDATES);
+}
+
+/**
+ * Keep a tenant out of the automation, or put it back. Answers the tenant as
+ * it is stored afterwards.
+ */
+export async function setTenantAutomationExempt(db: Database, tenantId: string, exempt: boolean): Promise<TenantAutomationKept & { readonly exempt: boolean }> {
+  const [row] = await db
+    .update(tenants)
+    .set({ lifecycleAutomationExempt: exempt })
+    .where(and(eq(tenants.id, tenantId), eq(tenants.isSystem, false)))
+    .returning({ tenantId: tenants.id, name: tenants.name, status: tenants.status, exempt: tenants.lifecycleAutomationExempt });
+  if (!row) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
+  return row;
 }
 
 export async function getTenantAutomationStatus(deps: AutomationDeps): Promise<TenantAutomationStatus> {
   const { db } = deps;
-  const [settings, record, running, blocked, archiveRetentionDays, suspended, archived] = await Promise.all([
+  const [settings, record, running, blocked, archiveRetentionDays, suspended, archived, kept] = await Promise.all([
     loadTenantAutomationSettings(db),
     loadAutomationRunRecord(db),
     isRunUnderWay(db, TENANT_AUTOMATION_JOB),
     archiveBlockedReason(deps),
     platformArchiveRetentionDays(db),
-    candidates(db, 'suspended', tenants.suspendedAt),
-    candidates(db, 'archived', tenants.archivedAt),
+    candidates(db, 'archive'),
+    candidates(db, 'delete'),
+    keptOut(db),
   ]);
   // The schedule's sweep comes one interval after its last — unless the
   // process that ran it has restarted since, and then sooner. A time already
@@ -248,5 +379,6 @@ export async function getTenantAutomationStatus(deps: AutomationDeps): Promise<T
     archiveRetentionDays,
     suspended,
     archived,
+    kept,
   };
 }

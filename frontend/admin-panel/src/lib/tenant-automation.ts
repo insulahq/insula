@@ -1,84 +1,132 @@
 import {
-  tenantAutomationDueAt,
+  tenantAutomationPlan,
   type TenantAutomationCandidate,
   type TenantAutomationSettings,
   type TenantAutomationSettingsUpdate,
   type TenantAutomationStatus,
 } from '@insula/api-contracts';
 
+const DAY_MS = 86_400_000;
+
 export interface DatedCandidate extends TenantAutomationCandidate {
-  /** When the tenant comes due under the limit asked about, epoch ms. */
+  /** When the sweep acts on the tenant at the earliest — or, once it is due, the limit it passed. Epoch ms. */
   readonly dueAt: number;
 }
 
+export interface LaterCandidate extends DatedCandidate {
+  /** It has been given `dueAt` as its date already. */
+  readonly told: boolean;
+  /** When it will be told; null when it has been, or when nobody is told. */
+  readonly tellAt: number | null;
+}
+
 export interface DueSplit {
-  /** Past the limit: acted on at the next run. Oldest first. */
+  /** Acted on at the next run. Oldest first. */
   readonly dueNow: readonly DatedCandidate[];
-  /** Not past it yet. Soonest first. */
-  readonly later: readonly DatedCandidate[];
+  /** Told at the next run, acted on at `dueAt`. Oldest first. */
+  readonly toTell: readonly DatedCandidate[];
+  /** Nothing at the next run. Soonest first. */
+  readonly later: readonly LaterCandidate[];
   /** No date recorded: the sweep never touches these. */
   readonly undated: readonly TenantAutomationCandidate[];
 }
 
 /**
- * Sort the tenants in line by when a limit of `afterDays` makes them due. The
- * same arithmetic the sweep uses (`tenantAutomationDueAt`), so the card says
- * what the next run will do — for the saved limit and for one being typed.
+ * Sort the tenants in line by what a limit of `afterDays` and a notice period
+ * of `noticeDays` do with them. The same decision the sweep takes
+ * (`tenantAutomationPlan`), so the card says what the next run will do — for
+ * the saved settings and for ones being typed.
  */
 export function splitByDue(
   candidates: readonly TenantAutomationCandidate[],
   afterDays: number,
+  noticeDays: number,
   nowMs: number,
 ): DueSplit {
-  const dated: DatedCandidate[] = [];
+  const dueNow: DatedCandidate[] = [];
+  const toTell: DatedCandidate[] = [];
+  const later: LaterCandidate[] = [];
   const undated: TenantAutomationCandidate[] = [];
   for (const c of candidates) {
-    if (c.since === null) undated.push(c);
-    else dated.push({ ...c, dueAt: tenantAutomationDueAt(c.since, afterDays) });
+    const plan = tenantAutomationPlan(c, afterDays, noticeDays, nowMs);
+    if (plan.kind === 'never') undated.push(c);
+    // Its limit, which it is past: the tenant longest past it comes first.
+    else if (plan.kind === 'due') dueNow.push({ ...c, dueAt: new Date(c.since ?? 0).getTime() + afterDays * DAY_MS });
+    else if (plan.kind === 'tell') toTell.push({ ...c, dueAt: plan.actAt });
+    else later.push({ ...c, dueAt: plan.actAt, told: plan.told, tellAt: plan.tellAt });
   }
-  dated.sort((a, b) => a.dueAt - b.dueAt);
-  return {
-    dueNow: dated.filter((c) => c.dueAt < nowMs),
-    later: dated.filter((c) => c.dueAt >= nowMs),
-    undated,
-  };
+  dueNow.sort((a, b) => a.dueAt - b.dueAt);
+  toTell.sort((a, b) => a.dueAt - b.dueAt);
+  later.sort((a, b) => a.dueAt - b.dueAt);
+  return { dueNow, toTell, later, undated };
+}
+
+/** The tenants one step reaches at the next run. */
+export interface StepReach {
+  /** Archived (or deleted) at the next run. */
+  readonly now: readonly DatedCandidate[];
+  /** Told at the next run, and archived (or deleted) on the date each is given — with nobody asked again. */
+  readonly tell: readonly DatedCandidate[];
 }
 
 export interface NewlyDue {
-  readonly archive: readonly DatedCandidate[];
-  readonly remove: readonly DatedCandidate[];
+  readonly archive: StepReach;
+  readonly remove: StepReach;
+}
+
+const NOBODY: StepReach = { now: [], tell: [] };
+
+/** How many tenants a change reaches, in both steps and both ways. */
+export function reachCount(due: NewlyDue): number {
+  return due.archive.now.length + due.archive.tell.length + due.remove.now.length + due.remove.tell.length;
+}
+
+/** Everything the next run reaches under `settings`: the answer "Run now" is asked with. */
+export function reachedNow(
+  status: Pick<TenantAutomationStatus, 'suspended' | 'archived' | 'archiveBlockedReason'>,
+  settings: TenantAutomationSettings,
+  nowMs: number,
+): NewlyDue {
+  const step = (candidates: readonly TenantAutomationCandidate[], on: boolean, days: number): StepReach => {
+    if (!on) return NOBODY;
+    const split = splitByDue(candidates, days, settings.noticeDays, nowMs);
+    return { now: split.dueNow, tell: split.toTell };
+  };
+  return {
+    // Nothing is archived, and nobody told of it, while no archive can be taken.
+    archive: status.archiveBlockedReason ? NOBODY : step(status.suspended, settings.autoArchiveEnabled, settings.autoArchiveAfterDays),
+    remove: step(status.archived, settings.autoDeleteEnabled, settings.autoDeleteAfterDays),
+  };
 }
 
 /**
- * The tenants a change of settings puts in front of the next run: due under
- * the settings about to be saved, and not due under the saved ones. Switching
- * a step on, or shortening its limit, can reach tenants suspended or archived
- * long ago — the save asks before it does.
+ * The tenants a change of settings puts in front of the next run: reached
+ * under the settings about to be saved, and not — or not that way — under the
+ * saved ones. Switching a step on, shortening its limit or its notice period
+ * can reach tenants suspended or archived long ago — the save asks before it
+ * does. A tenant that is told is asked about here too: its archive or delete
+ * follows on the date it is given, with no further question.
  */
 export function newlyDue(
   status: Pick<TenantAutomationStatus, 'settings' | 'suspended' | 'archived'>,
   draft: TenantAutomationSettings,
   nowMs: number,
 ): NewlyDue {
-  const step = (
-    candidates: readonly TenantAutomationCandidate[],
-    wasOn: boolean,
-    wasDays: number,
-    isOn: boolean,
-    isDays: number,
-  ): readonly DatedCandidate[] => {
-    if (!isOn) return [];
-    const before = new Set(wasOn ? splitByDue(candidates, wasDays, nowMs).dueNow.map((c) => c.tenantId) : []);
-    return splitByDue(candidates, isDays, nowMs).dueNow.filter((c) => !before.has(c.tenantId));
+  const open = { ...status, archiveBlockedReason: null };
+  const before = reachedNow(open, status.settings, nowMs);
+  const after = reachedNow(open, draft, nowMs);
+  const fresh = (was: StepReach, is: StepReach): StepReach => {
+    const wasNow = new Set(was.now.map((c) => c.tenantId));
+    const wasAny = new Set([...was.now, ...was.tell].map((c) => c.tenantId));
+    return {
+      now: is.now.filter((c) => !wasNow.has(c.tenantId)),
+      tell: is.tell.filter((c) => !wasAny.has(c.tenantId)),
+    };
   };
-  const saved = status.settings;
-  return {
-    archive: step(status.suspended, saved.autoArchiveEnabled, saved.autoArchiveAfterDays, draft.autoArchiveEnabled, draft.autoArchiveAfterDays),
-    remove: step(status.archived, saved.autoDeleteEnabled, saved.autoDeleteAfterDays, draft.autoDeleteEnabled, draft.autoDeleteAfterDays),
-  };
+  return { archive: fresh(before.archive, after.archive), remove: fresh(before.remove, after.remove) };
 }
 
-const FIELDS = ['autoArchiveEnabled', 'autoArchiveAfterDays', 'autoDeleteEnabled', 'autoDeleteAfterDays'] as const;
+const FIELDS = ['autoArchiveEnabled', 'autoArchiveAfterDays', 'autoDeleteEnabled', 'autoDeleteAfterDays', 'noticeDays'] as const;
 
 /**
  * The settings in `next` that differ from the stored ones — what a save

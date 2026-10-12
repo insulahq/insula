@@ -1469,7 +1469,8 @@ export interface DeleteTenantOptions {
    * moment, and has no storage operation under way — checked under the
    * tenant's lock. For the automatic sweep, whose list of due tenants may be
    * hours old by the time it reaches one: the operator may be restoring it.
-   * Refused with NO_LONGER_DUE, or STORAGE_OP_IN_PROGRESS when it is due but
+   * Refused with NO_LONGER_DUE — also when the tenant has been taken out of
+   * the automation meanwhile — or STORAGE_OP_IN_PROGRESS when it is due but
    * owned by an operation.
    */
   readonly onlyIfArchivedBefore?: Date;
@@ -1507,12 +1508,22 @@ async function deleteTenantLocked(
   if (opts.onlyIfArchivedBefore) {
     // The row itself: the response shape above carries no dates to compare.
     const [row] = await db
-      .select({ status: tenants.status, archivedAt: tenants.archivedAt, state: tenants.storageLifecycleState })
+      .select({
+        status: tenants.status,
+        archivedAt: tenants.archivedAt,
+        state: tenants.storageLifecycleState,
+        exempt: tenants.lifecycleAutomationExempt,
+      })
       .from(tenants)
       .where(eq(tenants.id, id));
     const due = row?.status === 'archived' && !!row.archivedAt && row.archivedAt < opts.onlyIfArchivedBefore;
     if (!due) {
       throw new ApiError('NO_LONGER_DUE', 'Tenant is no longer archived for long enough to be deleted automatically', 409);
+    }
+    // An admin may have taken it out of the automation since the sweep read
+    // its list — the sweep can be hours into a backlog by now.
+    if (row.exempt) {
+      throw new ApiError('NO_LONGER_DUE', 'Tenant is kept out of automatic archive and delete', 409);
     }
     // Due, but something owns it — a restore under way, or an operation that
     // failed and was not cleared. Said the way a storage operation says it, so

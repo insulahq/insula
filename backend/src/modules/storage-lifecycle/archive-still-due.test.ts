@@ -62,6 +62,19 @@ describe('archiveTenant, only if still suspended for long enough', () => {
     expect(claims).toEqual([expect.objectContaining({ storageLifecycleState: 'quiescing' })]);
   });
 
+  it('refuses a tenant an admin has taken out of the automation since, and claims nothing', async () => {
+    const { outcome, claims } = await attempt({ status: 'suspended', suspendedAt: new Date('2026-01-01'), lifecycleAutomationExempt: true });
+    expect(outcome).toMatchObject({ code: 'NO_LONGER_DUE', status: 409 });
+    expect((outcome as ApiError).message).toContain('kept out');
+    expect(claims).toEqual([]);
+  });
+
+  it('an operator\'s own archive of a tenant kept out of the automation goes ahead: the flag is about the sweep', async () => {
+    const { outcome, claims } = await attempt({ status: 'suspended', suspendedAt: new Date('2026-01-01'), lifecycleAutomationExempt: true }, null);
+    expect(outcome).toMatchObject({ operationId: expect.any(String) });
+    expect(claims).toHaveLength(1);
+  });
+
   it('a tenant with an operation under way is refused as busy, whatever its dates', async () => {
     const { outcome, claims } = await attempt({ status: 'suspended', suspendedAt: new Date('2026-01-01'), state: 'restoring' });
     expect(outcome).toMatchObject({ code: 'STORAGE_OP_IN_PROGRESS' });

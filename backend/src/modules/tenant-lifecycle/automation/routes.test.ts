@@ -12,14 +12,21 @@ import { registerAuth } from '../../../middleware/auth.js';
  */
 
 const STATUS: TenantAutomationStatus = {
-  settings: { autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90 },
+  settings: { autoArchiveEnabled: false, autoArchiveAfterDays: 30, autoDeleteEnabled: false, autoDeleteAfterDays: 90, noticeDays: 7 },
   intervalHours: 6, running: false, lastRun: null, nextRunAt: null, archiveBlockedReason: null, archiveRetentionDays: 90,
-  suspended: [], archived: [],
+  suspended: [], archived: [], kept: [],
 };
 
 const getStatus = vi.fn(async () => STATUS);
 const sweepOnce = vi.fn(async () => ({}));
 const save = vi.fn(async () => STATUS.settings);
+const setExempt = vi.fn(async (_db: unknown, tenantId: string, exempt: boolean) => {
+  if (tenantId === 'nobody') {
+    const { ApiError } = await import('../../../shared/errors.js');
+    throw new ApiError('TENANT_NOT_FOUND', 'Tenant nobody not found', 404);
+  }
+  return { tenantId, name: 'Acme', status: 'suspended', exempt };
+});
 /** Whether the run lock is free; the stand-in for runExclusive honours it. */
 let lockFree = true;
 const lockedJobs: string[] = [];
@@ -27,6 +34,7 @@ const lockedJobs: string[] = [];
 vi.mock('./real.js', () => ({
   getTenantAutomationStatus: (...args: unknown[]) => getStatus(...(args as [])),
   sweepTenantsOnce: (...args: unknown[]) => sweepOnce(...(args as [])),
+  setTenantAutomationExempt: (...args: unknown[]) => setExempt(...(args as [unknown, string, boolean])),
   TENANT_AUTOMATION_JOB: 'storage-auto-archive',
   TENANT_AUTOMATION_MAX_HOLD_MS: 1000,
 }));
@@ -49,7 +57,7 @@ describe('tenant automation routes', () => {
   const audit: Array<Record<string, unknown>> = [];
   const token = (role: string, panel = 'admin'): string =>
     app.jwt.sign({ sub: `${role}-1`, role, panel, iat: Math.floor(Date.now() / 1000) });
-  const call = (method: 'GET' | 'PATCH' | 'POST', path: string, role: string | null, payload?: unknown, panel?: string) => app.inject({
+  const call = (method: 'GET' | 'PATCH' | 'POST' | 'PUT', path: string, role: string | null, payload?: unknown, panel?: string) => app.inject({
     method, url: `/api/v1/admin/lifecycle/automation${path}`,
     ...(role ? { headers: { authorization: `Bearer ${token(role, panel)}` } } : {}),
     ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
@@ -71,14 +79,14 @@ describe('tenant automation routes', () => {
   afterAll(async () => { await app.close(); });
 
   beforeEach(() => {
-    getStatus.mockClear(); sweepOnce.mockClear(); save.mockClear();
+    getStatus.mockClear(); sweepOnce.mockClear(); save.mockClear(); setExempt.mockClear();
     audit.length = 0; lockedJobs.length = 0; lockFree = true;
   });
 
   it.each([
-    ['GET', ''], ['PATCH', ''], ['POST', '/run'],
+    ['GET', ''], ['PATCH', ''], ['POST', '/run'], ['PUT', '/tenants/t-1'],
   ] as const)('%s %s is for a signed-in admin or super admin of the admin panel only', async (method, path) => {
-    const body = method === 'PATCH' ? { autoArchiveEnabled: true } : undefined;
+    const body = method === 'PATCH' ? { autoArchiveEnabled: true } : method === 'PUT' ? { exempt: true } : undefined;
     expect((await call(method, path, null, body)).statusCode).toBe(401);
     for (const role of ['support', 'billing', 'read_only']) {
       expect((await call(method, path, role, body)).statusCode, role).toBe(403);
@@ -86,6 +94,7 @@ describe('tenant automation routes', () => {
     expect((await call(method, path, 'tenant_admin', body, 'tenant')).statusCode).toBe(403);
     expect(save).not.toHaveBeenCalled();
     expect(sweepOnce).not.toHaveBeenCalled();
+    expect(setExempt).not.toHaveBeenCalled();
     for (const role of ['admin', 'super_admin']) {
       expect((await call(method, path, role, body)).statusCode, role).toBeLessThan(300);
     }
@@ -186,5 +195,51 @@ describe('tenant automation routes', () => {
     } finally {
       errors.mockRestore();
     }
+  });
+
+  // ── keeping one tenant out ────────────────────────────────────────────────
+
+  it('PUT …/tenants/:id keeps a tenant out, answers it as stored, and records who did it against that tenant', async () => {
+    const res = await call('PUT', '/tenants/t-1', 'admin', { exempt: true });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toEqual({ tenantId: 't-1', name: 'Acme', status: 'suspended', exempt: true });
+    expect(setExempt).toHaveBeenCalledWith(expect.anything(), 't-1', true);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      actionType: 'tenant_lifecycle_automation.exempt',
+      tenantId: 't-1',
+      resourceType: 'tenant',
+      resourceId: 't-1',
+      actorId: 'admin-1',
+      httpMethod: 'PUT',
+      changes: { exempt: true },
+    });
+  });
+
+  it('PUT …/tenants/:id puts a tenant back with exempt: false', async () => {
+    const res = await call('PUT', '/tenants/t-1', 'super_admin', { exempt: false });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.exempt).toBe(false);
+    expect(setExempt).toHaveBeenCalledWith(expect.anything(), 't-1', false);
+  });
+
+  it.each([
+    ['no body', undefined],
+    ['an empty body', {}],
+    ['a word for the flag', { exempt: 'yes' }],
+    ['a field it does not know', { exempt: true, until: '2027-01-01' }],
+  ])('PUT …/tenants/:id refuses %s and changes nothing', async (_what, body) => {
+    const res = await call('PUT', '/tenants/t-1', 'admin', body);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('VALIDATION_ERROR');
+    expect(setExempt).not.toHaveBeenCalled();
+    expect(audit).toEqual([]);
+  });
+
+  it('PUT …/tenants/:id answers 404 for a tenant that does not exist, and records nothing', async () => {
+    const res = await call('PUT', '/tenants/nobody', 'admin', { exempt: true });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('TENANT_NOT_FOUND');
+    expect(audit).toEqual([]);
   });
 });

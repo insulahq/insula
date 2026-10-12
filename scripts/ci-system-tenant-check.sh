@@ -10,9 +10,9 @@
 #      suspended on the next tick.
 #   2. `tenant-lifecycle/automation/real.ts` MUST contain
 #      `eq(tenants.isSystem, false)` in the query that lists the tenants
-#      due for automatic archive (`status='suspended'`) and automatic
-#      delete (`status='archived'`) — one query, `due`, serves both steps
-#      of the sweep. Same reasoning as (1) — defense in depth against
+#      in line for automatic archive (`status='suspended'`) and automatic
+#      delete (`status='archived'`) — one function, `inLine`, serves both
+#      steps of the sweep. Same reasoning as (1) — defense in depth against
 #      direct SQL writes that would otherwise let the sweep pick up SYSTEM.
 #   3. `backend/src/db/migrations/0008_system_tenant.sql` MUST contain
 #      the partial unique index `tenants_only_one_system_idx`. This is
@@ -43,17 +43,17 @@ if ! grep -q "eq(tenants.isSystem, false)" "$EXPIRY"; then
   fail "subscriptions/expiry-checker.ts is missing 'eq(tenants.isSystem, false)' (ADR-040 §3.5)"
 fi
 
-# (2) the sweep's "due" query. The filter must sit INSIDE that query — the
+# (2) the sweep's "in line" query. The filter must sit INSIDE that query — the
 # file filters SYSTEM in its status listing too, and that one protects nothing.
-due_query=$(awk '/const due = \(/{inq=1} inq{print} inq && /\.orderBy\(/{exit}' "$SCHED")
+due_query=$(awk '/^async function inLine\(/{inq=1} inq{print} inq && /\.orderBy\(/{exit}' "$SCHED")
 if [[ -z "$due_query" ]]; then
-  fail "tenant-lifecycle/automation/real.ts no longer has the sweep's 'due' query where this guard reads it — update the guard with the code"
+  fail "tenant-lifecycle/automation/real.ts no longer has the sweep's 'inLine' query where this guard reads it — update the guard with the code"
 fi
 if ! grep -q "eq(tenants.isSystem, false)" <<<"$due_query"; then
-  fail "tenant-lifecycle/automation/real.ts: the sweep's 'due' query is missing 'eq(tenants.isSystem, false)' (automatic archive + delete would reach SYSTEM)"
+  fail "tenant-lifecycle/automation/real.ts: the sweep's 'inLine' query is missing 'eq(tenants.isSystem, false)' (automatic archive + delete would reach SYSTEM)"
 fi
 if ! grep -q "eq(tenants.status, status)" <<<"$due_query"; then
-  fail "tenant-lifecycle/automation/real.ts: the sweep's 'due' query no longer filters by status — the guard cannot tell what it lists"
+  fail "tenant-lifecycle/automation/real.ts: the sweep's 'inLine' query no longer filters by status — the guard cannot tell what it lists"
 fi
 
 # (3) migration index
