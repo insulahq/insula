@@ -5,6 +5,7 @@ import * as service from './service.js';
 import { suspendExpiredTenants } from './expiry-checker.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 
 export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
   // Round-4 Phase C: the previous incarnation applied
@@ -57,7 +58,10 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/check-expiry', {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async () => {
-    const suspendedCount = await suspendExpiredTenants(app.db);
+    // Under the check's run lock: two checks at once each run the suspend
+    // cascade — hooks and notices — for the same tenant.
+    const suspendedCount = await runExclusiveOrBusy(app.db, 'subscription-expiry', 'The subscription expiry check',
+      () => suspendExpiredTenants(app.db), { log: app.log });
     return success({ suspended_count: suspendedCount });
   });
 }

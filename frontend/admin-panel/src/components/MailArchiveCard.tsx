@@ -1,3 +1,9 @@
+/*
+ * DORMANT — not mounted anywhere. The mail archive (Stalwart's `stalwart -e`
+ * export, on demand or scheduled) is switched off: the backend registers none of
+ * the routes this card calls. The code is kept so the feature can be switched on
+ * again; see backend `src/modules/mail-admin/archive-dormant.ts` for what that takes.
+ */
 import { useId, useState } from 'react';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import {

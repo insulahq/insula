@@ -12,6 +12,334 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
+  x86-64-v2 (SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B, LAHF/SAHF) and exits at start on a
+  CPU without them; its log then reads *"This build of Stalwart requires an x86-64-v2 compatible
+  CPU"*. Intel CPUs since Nehalem (2008), AMD since Bulldozer (2011) and the usual cloud instance
+  types have these. A virtual machine given a generic CPU model does not — QEMU's `qemu64` and
+  `kvm64`, the default on older Proxmox — and there the mail server stops starting with this
+  release. arm64 nodes are not affected.
+
+  The platform now checks this itself. **Installing or joining a node** on such a CPU is refused
+  in the pre-flight, before anything on the host changes. **An upgrade** checks every node it
+  updates before the services roll and stops at the first one that fails: the services stay on
+  the release they were on, and the run names the node and what its CPU lacks. A node the
+  operator leaves out of the run is not checked. That upgrade check needs the nodes-first upgrade
+  of 2026.10.7 — a cluster upgrading straight from 2026.10.6 or earlier rolls its services
+  first, so check its nodes by hand (prints nothing when the node is fine):
+
+  ```bash
+  [ "$(uname -m)" = x86_64 ] && for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do grep -qw "$f" /proc/cpuinfo || echo "missing: $f"; done
+  ```
+
+  If a node prints anything, set its VM's CPU type to `host` (or `x86-64-v2` or newer) at the
+  hypervisor and restart the VM first. Upstream's release notes do not list this change; it is in
+  the source at the tag (`.cargo/config.toml`, `crates/main/src/cpu.rs`).
+- **The mail archive API is gone.** The routes under `/api/v1/admin/mail/` named `archive-status`,
+  `archive-runs`, `archive-runs/:id`, `archive/trigger`, `archive/restore` and `archive/schedule`
+  answer 404. See *Removed* below.
+
+### Added
+
+- **Automatic archive and delete of tenants can be switched on in the admin panel.** The platform
+  has long had a sweep that archives tenants suspended for more than a set number of days and
+  deletes tenants archived for more than another — but its four settings could only be written
+  into the database by hand, so on every install it woke every six hours and did nothing.
+  **Platform → Tenant Lifecycle Hooks** now starts with a card for it:
+  - a switch and a limit in days for each step (off, 30 and 90 days until changed);
+  - under each, the tenants that limit reaches: who is past it and will be archived or deleted at
+    the next run, who comes next and on what date — following the limit as it is typed, before
+    anything is saved;
+  - a save that would put tenants in front of the next run asks first and names them; a delete
+    has to be typed;
+  - when it last ran and what it did, what it could not do and why, and **Run now**.
+  The sweep itself changed with it. It now works through its tenants one at a time and waits for
+  each archive to finish, instead of starting every due archive at once — and it reads the
+  settings again before every tenant, so a step switched off, or a limit raised, takes effect on
+  the next tenant of a sweep already under way. An archive it takes is
+  kept for the platform's archive retention, or for the delete limit when automatic delete is on
+  and longer, so an archive never expires before its tenant is deleted. A stored limit that is
+  not a whole number of days from 1 to 3650 is ignored in favour of the default — a hand-written
+  `0` used to mean "everything suspended before now". The admins are notified of what a sweep
+  did, and of a sweep that could not archive because no backup target serves tenant snapshots; a
+  tenant it cannot act on because a storage operation of it failed and was never cleared is
+  reported too, once a day. A change of the settings and a run started by hand are written to the
+  audit log with the admin who made them.
+  New endpoints, for the roles that may archive and delete a tenant by hand (admin, super admin):
+  `GET` and `PATCH /api/v1/admin/lifecycle/automation`, `POST /api/v1/admin/lifecycle/automation/run`.
+- **A tenant is told before it is archived or deleted automatically, and a tenant can be kept out.**
+  Two additions to the card above:
+  - **Tell the tenant … days ahead** (7 unless changed, 0 to 90). Once a tenant is within that many
+    days of its limit it is sent a message with the date — to its admins in the panel and by
+    email, and by email to the account's contact addresses, so a tenant with no user is told too —
+    and nothing happens to it before that date. The date is the notice period counted from the
+    message, so a tenant already past its limit when a step is switched on is not archived or
+    deleted that day: it is told at the next run and given the whole period. A message counts only
+    for the suspension (or archive) it was sent in; raising a limit sends a new one with the later
+    date, lowering it leaves the date the tenant was given. A message that reached nobody is no
+    notice: the tenant is left as it is, told again at every run, marked on the card, and the
+    admins are reminded once a day. An email does not count as reaching anybody while the platform
+    has no mail provider to send it through. `0` tells nobody from then on and acts at the limit, as
+    before — but a tenant that was already given a date keeps it. The card lists who is told at
+    the next run and for which date, and the confirmation
+    names those tenants too — a delete that follows a notice still has to be typed, because nobody
+    is asked again on the date. An archive is kept for the delete limit **plus the notice period**
+    when that is longer than the platform's archive retention.
+  - **Keep out.** Every tenant on the card has a **Keep out** button, and the tenant page has
+    **Actions → Keep out of automatic archive and delete**. A tenant kept out is never archived or
+    deleted by the sweep, and says so under its name; it can still be archived or deleted by hand.
+    The sweep checks again under the tenant's lock, so a tenant kept out while a sweep is working
+    through a backlog is left alone by that sweep.
+  Two notification sources come with it, *Account will be archived* and *Account will be deleted*,
+  with templates that can be edited like any other. New endpoint:
+  `PUT /api/v1/admin/lifecycle/automation/tenants/:tenantId` with `{ "exempt": true | false }`;
+  the automation settings gain `noticeDays`, the status `kept` and a `notice` per tenant, and the
+  tenant object `lifecycleAutomationExempt`.
+
+### Changed
+
+- **Stalwart 0.16.24 → 0.16.26.** Mostly fixes. Besides the CPU requirement above, the ones that
+  change what an operator sees:
+  - **Deleted mail is reclaimed without rewriting the store on every bit of growth.** Since 0.16.10
+    the mail store rewrote all of its message bodies about every 128 MiB of new mail — a store-sized
+    disk write, and a store-sized transfer to a standby, every few days on a busy server. We
+    reported it ([support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887)).
+    0.16.26 rewrites only when its scheduled store purge finds at least 256 MiB **and** a quarter of
+    the message data to be deleted mail. Measured on one cluster, appending 411 MiB of mail
+    re-wrote 674 MiB on 0.16.24 and nothing on 0.16.26; after deleting most of it, one store purge
+    took the message data from 953 MiB to 281 MiB. The rewrite is still store-sized when it happens, so a
+    mail node still needs free space equal to its mail data, and until then deleted mail stays on
+    disk: up to the larger of 256 MiB and a quarter of the message data.
+    ([MAIL_STORE_SPACE_RECLAIM.md](docs/operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites))
+  - **The global queue quota is enforced.** Stalwart creates a "Global queue quota" on first
+    start — 100,000 messages or 10 GiB — and until 0.16.25 never applied it, because a quota
+    without a match expression was skipped. It counts every message in the mail queue, incoming
+    and outgoing, as one total: at either figure the server answers `452 4.3.1 Mail system full`
+    to all new mail, **including mail from the Internet**, until the queue drains. A queue that
+    large means delivery is stuck (blocked outbound port 25, a dead relay), so watch the queue
+    depth alert. The platform's own per-domain send quotas have a match expression and behave as
+    before. Raise the global quota in the Stalwart WebUI if an install legitimately queues more.
+  - **Spam scores can shift slightly.** A blocklist answer with several return codes (a Spamhaus
+    ZEN listing in both SBL and PBL) is now scored for each code, a "not listed" answer is cached
+    for 24 hours, and messages too short for a Pyzor digest are no longer tagged `PYZOR`.
+  - A failed IMAP login with a wrong or expired app password now gets a proper tagged `NO`;
+    clients used to wait for a timeout. The RocksDB info log no longer grows without limit.
+
+### Fixed
+
+- **Background jobs run once on a high-availability cluster.** With three API replicas every
+  in-process timer starts three times, and only the jobs someone had listed ran on one replica. The
+  backup-freshness check was not on the list: it started a Job that lists the mail backup
+  repository on every replica every five minutes — about 860 Jobs a day, on any node. Every
+  recurring timer in the API has now been reviewed, and 29 of them moved to one replica:
+  - the watchers that alert (failed backup Jobs, database backups, WAL archiving, mail blocklists,
+    mail health, storage capacity, namespace repairs, subscription expiry, escalations, the alert
+    evaluator) — an alert's duplicate check is a lookup, so replicas ticking together could each
+    send it;
+  - the syncs against the mail server (accounts, mailbox usage, the rules and alias sweep), which
+    listed every account once per replica;
+  - sweeps that start Jobs or pods (expired snapshots on SSH/CIFS targets, the file-manager recycle
+    bin, leftover mail store directories, released volumes, Longhorn snapshot cleanup);
+  - reconcilers where two replicas at once could roll a workload twice (the backup shim, the
+    ingress trusted-proxy arguments, WAF exclusions) or cancel a first-run step (CrowdSec's
+    database).
+  A single-replica cluster runs the same jobs as before. A test now finds every recurring timer by
+  parsing the source, and fails until each is either leased or listed with the reason it runs on
+  every replica.
+- **A leased job no longer waits out a dead replica, or skips its run after a rollout.**
+  - A replica that died kept each job's lease for one and a half times the job's interval — a day
+    and a half for a daily job, ten days for the weekly storage audit — and no other replica
+    could run it meanwhile. Between runs a lease is now written at most ten minutes ahead and
+    kept alive by the replica holding it, so a dead replica's lease is free within ten minutes
+    and the job runs at the next replica's tick. While a job is running its lease still covers
+    the whole interval-and-a-half, as before: the work may outlive the replica that started it.
+  - During a rollout the new replica's start-up run was refused, because the one it replaced
+    still held the lease, and the job then waited a whole interval: half an hour for the mail
+    domain reconciler, an hour for subscription expiry, and never on a cluster deployed more
+    often than the interval. A job with a long interval that is refused on its first run is now
+    tried again three minutes later, and once more after eleven — which is also what brings a
+    single-replica cluster's jobs back after a crash.
+  - A job still running when its next tick comes is no longer started a second time in the same
+    replica (a manual retention sweep could start beside the scheduled one that way).
+  - While an upgrade runs, the pass that drives it could be started by a second replica if it took
+    longer than seven seconds. One pass now holds a lock until it ends.
+- **A job is not started beside itself by a button or a settings change.** Keeping a job's timer
+  on one replica did not cover the other ways the same work is started: a route that reconciles at
+  once after a change, and the "run now" buttons. Those run on whichever replica serves the
+  request, beside the timer's run on another replica — or in the same process, on any cluster. The
+  work now takes a lock of its own, whoever starts it:
+  - **Applied at once after a change** — a backup target assignment (the backup proxy is rendered
+    and rolled), a trusted proxy range (the ingress arguments are patched by position), a WAF rule
+    exclusion (the WAF is rolled), a mail hostname change, *Re-provision* on the mail server and
+    the end of a mail migration (certificate orders, a mail server restart), and *Apply tier* for
+    platform storage. Such a run now waits for a run already under way and then starts, so it
+    always reads the change it was started for. The trusted-proxy route used to be handed the run
+    already under way, which could have read the ranges before the change; the new range then
+    waited for the next five-minute tick.
+  - **Run now** — the node health check, the subscription expiry check, the namespace integrity
+    sweep and the repair of one tenant's namespace, the CrowdSec bouncer prune and a real (not
+    dry-run) image purge wait up to 30 seconds for a run under way and then run. If the job is
+    still busy they answer **409 `JOB_ALREADY_RUNNING`**, with nothing started — a new answer
+    from these endpoints, where they used to start a second run. *Re-provision* and *Apply tier*
+    answer the same way.
+  - **The admin panel now shows a refused or failed "run now".** *Reconcile now* on the node
+    health panel, *Prune stale* on the CrowdSec bouncers and the image purge on Monitoring →
+    Storage ended a failed request with the spinner and nothing else.
+  A run keeps its lock for 30 minutes at most; one that hangs is then given up (see below).
+  A test now finds every place that starts a leased job's work outside its timer, by parsing the
+  source, and fails until the call takes the lock or is listed with the reason an overlap is
+  harmless (a read, or a write of the same values). It reads through functions private to the
+  job's own file — seven of 64 jobs do all their work in one, and were invisible to it before.
+- **A scheduled job whose run never returns no longer stays dead until the pod restarts.** A run
+  that hangs — it waits on something that never answers — blocked its job for good: every later
+  tick found it "still running" in that process, its lease was renewed for ever so no other
+  replica took over, and a timer that re-arms itself after its tick never did. On a
+  single-replica cluster, which is most installs, only a restart of the API brought the job back.
+  Every run now has a longest hold: four of the job's intervals-and-a-half, twelve hours at
+  least; 30 minutes for the work a "run now" or an apply-at-once starts. Past it the run is given
+  up — the job is free again and starts afresh on its next tick, the log says so, and the admins
+  get a **Background jobs** notification naming the job (once an hour per job at most). The hold
+  is far above any honest run on purpose: a run given up while it is merely slow would be joined
+  by a second one.
+- **An operator and the automatic archive/delete sweep can no longer act on one tenant at once.**
+  A storage operation claimed its tenant by writing its state after checking that the tenant was
+  idle — two steps, so two starts could both pass the check — and a delete claimed nothing. That
+  left room for two archives of one tenant, a delete beside a restore, or two deletes. Everything
+  that starts an operation on a tenant (resize, the restores, suspend, resume, archive, filesystem
+  check, a move to another node) and everything that deletes one now holds that tenant's lock
+  while it checks and claims; a delete, a suspend and a resume hold it for as long as they run. A request that finds the
+  tenant still busy after 15 seconds answers **409 `TENANT_BUSY`**, with nothing changed — a new
+  answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
+  due before it archives or deletes it: its list may be hours old by then, and the operator may
+  have resumed or restored the tenant in between.
+- **An archive interrupted by an API restart is picked up again.** An archive runs inside the
+  platform API, after the request that started it has been answered. A deploy, a crash or a lost
+  node in the middle left its operation reading "snapshotting" with nothing working on it: the
+  tenant stayed scaled to zero for six hours, was then marked failed, and stayed out of the
+  automatic sweep until an operator cleared it. An archive now holds a lock for as long as a
+  process is working on it. When that lock has lapsed, the watchdog starts the archive again —
+  within about twenty minutes — and it carries on from where it stood: the replica counts
+  written down at the start are kept (taken again they would all be zero), a copy of the files
+  that was finished is not taken twice, one that was cut off is marked failed and its Job removed
+  before a new one is taken, and the tenant's own cascades and its "archived" message are not run a
+  second time. An archive picked up three times is left to fail, as before. The six-hour rule no
+  longer fails an archive that a process is working on. A lapsed lock does not prove a dead
+  process — one stalled for minutes looks the same — so an archive asks before every step that
+  writes or deletes whether the lock is still its own, and stops where it is when it is not,
+  without failing the operation or bringing the workloads back under its successor. And an
+  archive whose lock cannot be taken at the start is no longer left claimed with nothing running
+  it: the request fails (`503 ARCHIVE_NOT_STARTED`) and the tenant is as it was. Other storage operations — resize,
+  restore, filesystem check — are not picked up again; they are still failed after six hours, a
+  move after thirty minutes.
+- **The empty storage volume earlier releases left on archived tenants is removed.** Until the fix
+  below, the integrity sweep created an empty volume for every tenant ever archived, and those
+  volumes are still there — bound, never mounted, counted against the node's schedulable storage,
+  and of a size the sweep picked. The sweep now removes such a volume, claim and Longhorn volume
+  both, and says so (*Namespace integrity repaired*). It removes only a volume that was provably
+  never written to: created after the tenant was archived, used by no pod, and holding zero bytes
+  in Longhorn — which counts every block ever written, the filesystem's own included — and more
+  than an hour old. A volume that holds anything, or that cannot be read, is kept and not reported. Restoring an archived
+  tenant does the same check first: before, the restore went into the leftover volume, of the
+  sweep's size, and failed when the files did not fit.
+- **An archived tenant no longer gets an empty storage volume back.** Archiving deletes a tenant's
+  storage volume, after copying its files to the backup target. The namespace integrity sweep,
+  which every 30 minutes restores what a tenant's namespace has lost, then found that volume
+  "missing" and created a new, empty one — with an "Auto-repaired" notification — for every
+  archived tenant, after a manual archive as much as an automatic one. The platform went on
+  holding storage for tenants that had none. The sweep and the tenant's integrity audit now leave
+  the volume of an archived tenant alone, and that of a tenant whose storage operation is under
+  way or failed: a destructive resize and a restore delete and recreate the volume themselves.
+  Archived tenants that already got such a volume have it removed — the entry above.
+- **A refused Suspend, Reactivate, Archive or Restore on the tenant page says why.** These four
+  actions opened the progress dialog and then, when the API refused the request — an operation
+  already owns the tenant, the tenant is busy, no backup target — left it on "Dispatching…" with
+  nothing else. The refusal is now shown under the page header, and the dialog is closed.
+- **Bulk delete clears a tenant's snapshot archives, like the single delete.** Deleting tenants in
+  bulk went straight to the cascade and skipped the step that removes a tenant's snapshot
+  archives from the snapshot store before its rows go; those archives then stayed in the store
+  with nothing left that could find them. Bulk delete now runs the same delete as the tenant page.
+  The automatic delete had the same gap.
+- **Two mail send-limit updates at once no longer leave a stale limit enforcing itself.** The
+  send limits of every mail domain are written to the mail server by one reconcile, started by a
+  five-minute timer and by every change of a plan, a tenant's limits or a mail domain. It creates
+  what the server lacks — and two at once both found a new domain's limits missing and both
+  created them. From then on a changed limit was written to one copy only, and the other went on
+  enforcing the old one: after a plan's limit was raised, the domain still sent at the lower
+  rate. The reconcile now runs one at a time (a second one waits, then runs), and it removes a
+  second object under one name wherever it finds one — which also repairs servers that already
+  carry such copies, at the next five-minute pass.
+- **A WAF rule exclusion with the preselected scope can be saved.** The exclusion form — in the
+  admin panel and for a tenant's own route — preselects the scope *args*, the one that works for
+  most rules. The database only allowed the other two, so saving with it answered 400
+  (`CHECK_CONSTRAINT_VIOLATION`), in every release that offers the scope. A migration adds it, and
+  a test now compares the scopes the API accepts with the ones the database allows.
+- **A failed backup is reported once, and the log says so once.** The two watchers for failed
+  backups — backup Jobs and database backups — looked up which failures they had already reported
+  before reporting again. The lookup read a column the notification system never fills, so it never
+  found one: every standing failure was reported again on every five-minute tick. Nobody got a
+  second notification, because the report carries a key the notification system acts on only
+  once in 30 days — but the database-backup watcher logged "notified admins about failed backup" each time,
+  288 times a day for one failure. The lookup is gone, the key is the one mechanism, and the log
+  line is written only when someone was told.
+- **Mail drift: no more "drift rows could not be stored" for a row that was stored.** Two drift
+  scans that found the same new item at the same moment both tried to store it; the second was
+  refused by the database, logged as an error and counted as a failed scan, although the row was
+  there. The second scan now leaves the row to the first, which also sends the alert. A row the
+  database really refuses is still reported. And an item an operator dismisses while a scan is
+  running stays *dismissed*; the scan used to relabel it *reappeared* when it finished.
+- **The mail backup repository is listed after a snapshot, not every five minutes.** The
+  reachability check follows the mail snapshot schedule: once after each scheduled snapshot has had
+  time to run, at most every 15 minutes and at least every 6 hours (hourly while the schedule is
+  off). A listing that could not be made is retried on the next five-minute tick. **This makes the
+  "backup target unreachable" alert slower:** it used to come within five minutes of the target
+  going away; it now comes after the next scheduled snapshot — about an hour on an hourly schedule,
+  six hours at most.
+- **After a node restart the platform looked at the wrong mail pod.** A restarted mail node keeps
+  the pod that was running, as finished, until Kubernetes clears it, and that pod is listed ahead
+  of its replacement. Three places read the first pod of the list:
+  - the *Storage Usage* tile on the email pages and *Mail data used* under **Email → Operations →
+    Storage** found no running pod and read "—", possibly for days;
+  - the **mail recovery status** described the finished pod: it reported "healthy" for a
+    replacement stuck in Pending or crash-looping, and skipped the check that the mail volume is
+    bound on the active node — so the *Recover Mail* banner stayed hidden when it was needed;
+  - the diagnostics added to a failed mail scale-up named the finished pod.
+  All of them now pick the mail server's current pod. The mail domain reconciler, which read at
+  most five pods, asks for running ones only.
+
+### Removed
+
+- **The mail archive is switched off.** It was a second mail backup beside the mail snapshots: an
+  export of the whole mail store made by the mail server itself, started from **Email → Operations
+  → Backups** or by a schedule, and uploaded to the mail backup target. No recovery path used it
+  — failover and the restore of a lost mail volume use the snapshots and the standby copy;
+  putting an archive back was a separate action on the same tab. Its schedule could not fire:
+  the check for "is a run due" compared against a time that is always in the future, so an
+  install with the schedule switched on has no scheduled archives.
+  - **Email → Operations** has two tabs now, *Placement & migration* and *Storage*. An old link to
+    the Backups tab opens the page. Mail backups are under **Backups → Mail**, as before.
+  - **Archives you made by hand stay in the backup target, and nothing removes them any more.**
+    Their retention ran as part of each archive run. To list, restore or remove them, see
+    [MAIL_STORE_EXPORT_IMPORT.md](docs/operations/MAIL_STORE_EXPORT_IMPORT.md#archives-made-before-the-feature-was-switched-off).
+  - **Exporting and importing the mail store is still possible by hand**, for what only an export
+    can do: moving the store to another backend or cluster, or rebuilding a store whose files are
+    damaged. The same runbook has the procedure; it was run end to end on a development cluster,
+    with mail stopped for the duration.
+  - The code is kept in the repository, switched off by one constant
+    (`backend/src/modules/mail-admin/archive-dormant.ts`), with its schedule check corrected. The
+    `mail_archive_runs` table and the schedule settings are left in the database.
+  - **The archive's helper image is no longer built or shipped.** `rocksdb-secondary-checkpoint`
+    took the consistent copy of the mail store that a no-downtime archive exported. Its source
+    stays under `images/rocksdb-secondary-checkpoint/`; its build workflow is parked beside it, and
+    the `rocksdb-secondary-checkpoint-image` setting and the API's
+    `ROCKSDB_SECONDARY_CHECKPOINT_IMAGE` variable are gone from the manifests. The image had to
+    link the same RocksDB as the mail server, so every mail server upgrade had to re-verify it
+    first; that check now passes without looking while the archive is off, and comes back —
+    together with a check that the image is wired in again — when the archive is switched on. The
+    images already in the registry were built for Stalwart 0.16.26 and earlier; do not run them
+    against a later mail server.
+
 ## [2026.10.7] - 2026-10-09
 
 ### Added

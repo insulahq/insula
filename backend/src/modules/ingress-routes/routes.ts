@@ -57,7 +57,8 @@ import {
   listExclusionsForTenantRoute,
   WafRuleExclusionError,
 } from '../waf-rule-exclusions/service.js';
-import { reconcileWafExclusions } from '../waf-rule-exclusions/reconciler.js';
+import { runWafExclusionReconcile } from '../waf-rule-exclusions/scheduler.js';
+import { RUN_WAIT_MS } from '../../shared/exclusive-run.js';
 
 // Same minimal shape as security-hardening/routes.ts:userOf — keeps
 // the audit `createdBy` field aligned with the rest of the platform
@@ -505,7 +506,9 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const k8s = getK8s();
     if (!k8s) return;
     try {
-      await reconcileWafExclusions(app.db, { core: k8s.core, apps: k8s.apps }, app.log);
+      // After any run under way, so this one renders the exclusion just saved.
+      const run = await runWafExclusionReconcile(app.db, { core: k8s.core, apps: k8s.apps }, app.log, { waitMs: RUN_WAIT_MS });
+      if (!run.ran) app.log.warn({}, 'tenant-waf-exclusion: a reconcile was still running after the wait; the next tick applies this change');
     } catch (err) {
       app.log.warn(
         { err: err instanceof Error ? err.message : String(err) },

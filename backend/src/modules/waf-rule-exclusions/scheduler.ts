@@ -14,9 +14,11 @@
  * mutation so the operator sees the change reflect within seconds.
  */
 
+import { runExclusive, type ExclusiveRunOptions } from '../../shared/exclusive-run.js';
+import { withSchedulerLease, type LeaseOutcome } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { reconcileWafExclusions, type WafExclusionClients } from './reconciler.js';
+import { reconcileWafExclusions, type ReconcileResult, type WafExclusionClients } from './reconciler.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
@@ -25,6 +27,22 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface WafExclusionSchedulerHandle {
   readonly stop: () => void;
+}
+
+/**
+ * The one way to reconcile, for the tick and for the routes that change an
+ * exclusion. Two runs at once can each stamp a hash on the WAF deployment and
+ * roll it twice; the run lock holds across replicas and within one process. A
+ * caller that has just changed an exclusion passes `waitMs`, so its run starts
+ * after the one under way and reads the change.
+ */
+export function runWafExclusionReconcile(
+  db: Db,
+  clients: WafExclusionClients,
+  log: Pick<Logger, 'info' | 'warn' | 'error'>,
+  opts: ExclusiveRunOptions = {},
+): Promise<LeaseOutcome<ReconcileResult>> {
+  return runExclusive(db, 'waf-rule-exclusions', () => reconcileWafExclusions(db, clients, log), { log, ...opts });
 }
 
 export function startWafExclusionReconciler(
@@ -38,7 +56,11 @@ export function startWafExclusionReconciler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      await reconcileWafExclusions(db, clients, log);
+      // One replica renders: the bypass list comes from an exec that fails
+      // closed to an empty list, so a replica whose exec failed stamps a
+      // different hash than one whose exec worked, and each rolls the WAF.
+      await withSchedulerLease(db, 'waf-rule-exclusions', intervalMs * 1.5,
+        () => runWafExclusionReconcile(db, clients, log), { log });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

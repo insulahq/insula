@@ -10769,6 +10769,26 @@ run_post_install_smoke() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# cpu_missing_x86_64_v2 [cpuinfo-file] [arch] — the x86-64-v2 features this CPU
+# lacks, space-separated; nothing when it has them all, or is not x86-64.
+#
+# The mail server (Stalwart, from v0.16.26) is built for x86-64-v2 and exits at
+# start on a CPU without these. Physical CPUs have had them for over a decade; a
+# virtual machine given a generic CPU model (QEMU's qemu64 / kvm64, the default
+# on older Proxmox) has not. The names are /proc/cpuinfo's: pni = SSE3, cx16 =
+# CMPXCHG16B, lahf_lm = LAHF/SAHF. Existing clusters get the same check on
+# upgrade from platform/host-migrations/2026.10.8/0001-require-x86-64-v2-cpu.sh —
+# keep the two flag lists the same.
+cpu_missing_x86_64_v2() {
+  local cpuinfo="${1:-/proc/cpuinfo}" arch="${2:-$(uname -m)}" flags f missing=""
+  [[ "$arch" == "x86_64" ]] || return 0
+  flags=" $(grep -m1 '^flags' "$cpuinfo" 2>/dev/null | cut -d: -f2) "
+  for f in pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm; do
+    [[ "$flags" == *" $f "* ]] || missing+="${missing:+ }$f"
+  done
+  printf '%s' "$missing"
+}
+
 # Everything that can be known BEFORE the first mutation, checked before the
 # first mutation.
 #
@@ -10823,6 +10843,19 @@ run_preflight() {
     ui_warn "${mem_mb}MB RAM — below the documented 4GB floor; expect eviction pressure"
   else
     ui_ok "memory: ${mem_mb}MB"
+  fi
+
+  # CPU. Every node, whatever its role: the mail server can be moved to any of
+  # them, and one that cannot start it is found out only when it is.
+  local cpu_missing
+  cpu_missing="$(cpu_missing_x86_64_v2)"
+  if [[ -n "$cpu_missing" ]]; then
+    ui_fail "this CPU is not x86-64-v2 (missing: ${cpu_missing}) — the mail server cannot start on it. On a virtual machine, set the CPU type to 'host' or 'x86-64-v2' at the hypervisor and restart the VM (see the requirements doc)"
+    fatal=1
+  elif [[ "$(uname -m)" == "x86_64" ]]; then
+    ui_ok "cpu: x86-64-v2"
+  else
+    ui_ok "cpu: $(uname -m)"
   fi
 
   # Ports the platform must own. Only meaningful on a first server — a re-run on

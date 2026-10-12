@@ -101,6 +101,8 @@ function makeMockCtx(currentGi: number) {
       update: updateFn,
       insert: insertFn,
       transaction,
+      // The tenant's lock (tenant-lock.ts): always free here.
+      execute: vi.fn().mockResolvedValue({ rows: [{ setting_key: 'lease' }] }),
     },
     k8s,
     store: {

@@ -22,6 +22,7 @@ import type { MailEndpointK8s } from './mail-endpoints.js';
 import { resolveDefaultMailHost } from './mail-acme-override-route.js';
 import { notifyAdminMailBlocklisted } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 export interface BlocklistSchedulerLog {
   info(...args: unknown[]): void;
@@ -104,8 +105,11 @@ export function startMailBlocklistScheduler(
   opts: { kubeconfigPath?: string; intervalMs?: number } = {},
 ): () => void {
   const intervalMs = opts.intervalMs ?? 3_600_000;
+  // One replica probes: every pass queries the blocklists for each mail
+  // address, and the listing alert is deduplicated by a lookup only.
   const runOnce = (): void => {
-    runBlocklistCheckOnce(db, log, opts.kubeconfigPath).catch((err: unknown) => {
+    withSchedulerLease(db, 'mail-blocklist-watch', intervalMs * 1.5,
+      () => runBlocklistCheckOnce(db, log, opts.kubeconfigPath), { log }).catch((err: unknown) => {
       log.warn({ err }, 'blocklist-scheduler: pass failed');
     });
   };

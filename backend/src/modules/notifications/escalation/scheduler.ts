@@ -21,14 +21,19 @@ import {
 } from './service.js';
 import { notifyAdminEscalation } from '../events.js';
 import type { Database } from '../../../db/index.js';
+import { withSchedulerLease } from '../../../shared/scheduler-lease.js';
 
 const TICK_MS = 60 * 60 * 1000;
 
 export function startEscalationScheduler(db: Database): NodeJS.Timeout {
-  safeTick('notification-escalation', () => runOnce(db));
-  const timer = setInterval(() => {
-    safeTick('notification-escalation', () => runOnce(db));
-  }, TICK_MS);
+  // One replica escalates: the batch is sent before its rows are marked, so two
+  // replicas reading the same unmarked rows would both send it.
+  const tick = (): void => safeTick(
+    'notification-escalation',
+    () => withSchedulerLease(db, 'notification-escalation', TICK_MS * 1.5, () => runOnce(db)),
+  );
+  tick();
+  const timer = setInterval(tick, TICK_MS);
   if (typeof timer.unref === 'function') timer.unref();
   return timer;
 }

@@ -35,6 +35,10 @@
 #      but we don't want to ever push that key to a live cluster even
 #      transiently.)
 #
+#   Phases E and F test the mail archive, which is switched off
+#   (MAIL_ARCHIVE_ENABLED in backend/src/modules/mail-admin/archive-dormant.ts).
+#   They are kept with the feature and FAIL at once while its routes are gone.
+#
 #   Phase E — mail-archive E2E (--archive, ~5 min, requires ADMIN_TOKEN + configured backup target)
 #     E1. GET /admin/mail/archive-status — verify a backup target is configured
 #         (mail_snapshot_backup_store_id set; otherwise the export has nowhere
@@ -1087,6 +1091,22 @@ print(' '.join(sorted(canon(k) for k, v in ks.items() if v is True)))" 2>/dev/nu
   echo ""
 }
 
+# The mail archive is switched off: the API registers none of its routes, so its
+# status route answers 404. A phase the caller asked for and that cannot run is a
+# failure, not a skip — a skipped phase would read as a passed one.
+mail_archive_available() {
+  local phase="$1" code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${PLATFORM_API_URL}/api/v1/admin/mail/archive-status" --max-time 15 || echo 000)"
+  if [[ "$code" == "404" ]]; then
+    note_fail "${phase}0. the mail archive is switched off on this cluster (archive-status → 404); this phase cannot run. See backend/src/modules/mail-admin/archive-dormant.ts"
+    echo ""
+    return 1
+  fi
+  return 0
+}
+
 # ── Phase E — mail-archive no-downtime E2E ────────────────────────────
 phase_e_archive_no_downtime() {
   echo "## Phase E — mail-archive no-downtime E2E"
@@ -1096,6 +1116,7 @@ phase_e_archive_no_downtime() {
     echo ""
     return
   fi
+  mail_archive_available E || return
 
   # E1. Verify a backup target is configured. Without it the export Job
   # would land + then fail at the restic upload step; not a useful test
@@ -1292,6 +1313,7 @@ phase_f_archive_downtime() {
     echo ""
     return
   fi
+  mail_archive_available F || return
 
   # Same backup-target gate as Phase E.
   local status_body backup_store_id

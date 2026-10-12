@@ -15,9 +15,10 @@
 - Stalwart's RocksDB backend already runs **BlobDB key-value separation**
   (`blobSize` default 16834): blobs ≥16 KiB live in large `.blob` files outside
   SST compaction. Blob data stays in O(hundreds) of files, so rsync-standby walks
-  and restic scans stay fast at any message count. **Since Stalwart v0.16.10 those
-  files are not append-once:** blob GC rewrites the whole store every ~128 MiB of
-  new mail (see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
+  and restic scans stay fast at any message count. **Those files are rewritten when
+  deleted mail is reclaimed:** from Stalwart v0.16.26, once dead blob data reaches
+  256 MiB and a quarter of the store (v0.16.10–v0.16.25 rewrote the whole store
+  every ~128 MiB of new mail; see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites)).
 - One restic snapshot captures metadata + blobs as a **single consistent
   unit**. External blob stores split the backup story and create a
   silent-data-loss mode: ingest dedups blobs by content hash, so if blob
@@ -55,7 +56,7 @@ migrations are byte-copies with a key-layout transform:
 
 | Direction | Transform |
 |---|---|
-| RocksDB (Default) → anything | **No file-level path.** Blobs live inside RocksDB; extraction requires IMAP/JMAP re-export or `stalwart -e` (ADR-042). This is the one direction without a cheap copy — switching away later means a re-export, which is why the decision was made deliberately now (ADR-046). |
+| RocksDB (Default) → anything | **No file-level path.** Blobs live inside RocksDB; extraction requires IMAP/JMAP re-export or the server's own export (`stalwart --export`, ADR-042). This is the one direction without a cheap copy — switching away later means a re-export, which is why the decision was made deliberately now (ADR-046). The export and import are run by hand, with mail stopped: [MAIL_STORE_EXPORT_IMPORT.md](MAIL_STORE_EXPORT_IMPORT.md). |
 | FileSystem → S3 | Flatten: each file's **basename** (base32 of the full hash) becomes the S3 object key, prefixed by `keyPrefix` verbatim. Fan-out dirs (`<hex>/<hex>/`, non-zero-padded `{:x}` bytes, `depth` levels) are dropped. |
 | FileSystem → CIFS/FileSystem | Structure-preserving `cp -a` of the tree; `depth` must match on both sides. |
 | S3 ↔ CIFS | Compose the two transforms above. |
@@ -71,8 +72,9 @@ comparison passes, and never let blob files and the data store diverge
 
 - `pvc-mail-stack.yaml`'s 30Gi request is informational — local-path does
   not enforce it; the real limit is the node's disk.
-- BlobDB garbage collection is enabled by Stalwart from **v0.16.10** (it was off
-  when this document was written). Deleted mail is reclaimed once nothing references
-  it, see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md). The price is a
-  periodic full rewrite of the store, which needs free disk at least the size of the
-  mail data.
+- BlobDB garbage collection runs from Stalwart **v0.16.10** (it was off when this
+  document was written), and from **v0.16.26** only once deleted mail makes up
+  256 MiB and a quarter of the message data. Deleted mail is reclaimed once nothing references it and that mark
+  is reached, see [MAIL_STORE_SPACE_RECLAIM.md](MAIL_STORE_SPACE_RECLAIM.md). The
+  price is a full rewrite of the store each time, which needs free disk at least
+  the size of the mail data.

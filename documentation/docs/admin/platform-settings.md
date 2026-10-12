@@ -176,6 +176,113 @@ transitions** tree, and controls to **Retry** a failed hook run and
 [Dashboard](index.md) links here when a transition fails. The lifecycle
 itself is described in [Tenants](tenants.md).
 
+### Automatic archive and delete
+
+The card at the top of the page lets the platform move idle tenants along by
+itself. Both steps are **off** until you switch them on.
+
+| Step | What it does | Default limit |
+|------|--------------|---------------|
+| **Archive suspended tenants** | A tenant that has been suspended for longer than the limit is archived — the same [Archive](tenants.md#the-lifecycle-suspend-resume-archive-restore-delete) as on the tenant page: its files are copied to the backup target, then its mailboxes, aliases, deployments and storage volume are deleted. | 30 days |
+| **Delete archived tenants** | A tenant that has been archived for longer than the limit is deleted — the same Delete as on the tenant page. | 90 days |
+
+The platform checks every **6 hours**. Days are counted from the moment the
+tenant was suspended, or archived; editing the tenant does not restart the
+count.
+
+**Tell the tenant … days ahead** (default 7, at most 90). The tenant is sent
+a message once it is within that many days of its limit, naming the date, and
+**nothing happens to it before that date**. The message goes to the tenant's
+admins, in the panel and by email, and by email to the account's contact
+addresses — so a tenant nobody ever signed in to is told as well.
+The date is the notice period counted from the message, so it is never before
+the limit. A tenant already past its limit when you switch a step on is told
+at the next run and given the whole period; it is not archived or deleted on
+the day you switch on.
+
+- A message counts only for the suspension (or archive) it was sent in: a
+  tenant you reactivate and suspend again later is told again.
+- Raise a limit and a tenant told the old date is told again, with the later
+  one. Lower it and the date the tenant was given still holds.
+- A message that reached nobody is no notice. When there is nobody to tell —
+  no user and no usable contact address, notifications switched off, or no
+  mail provider set up for a tenant that has nobody to read it in the panel —
+  the tenant is **left as it is** and told again at every run. The card marks
+  it, and the admins are reminded once a day. Give the account a contact
+  address or a user; or, to act without telling it, archive or delete it by
+  hand.
+- Set the period to **0** to tell nobody from then on: a tenant is archived or
+  deleted at the first run after it passes its limit. A tenant that was
+  already given a date keeps it.
+
+The two messages are the notification sources *Account will be archived* and
+*Account will be deleted*; their wording can be edited like any other
+template under **Notifications**.
+
+**Keeping a tenant out.** Every tenant listed on the card has a **Keep out**
+button, and the tenant's own page has **Actions → Keep out of automatic
+archive and delete**. A tenant kept out is never archived or deleted by the
+sweep, however long it stays suspended or archived — use it for a tenant you
+suspended to hold, or for your own sites. You can still archive or delete it
+by hand. The card lists every tenant kept out, with **Put back**; a tenant can
+be kept out ahead of time, while it is still active.
+
+**Before you save.** Under each step the card lists the tenants the settings
+reach: who is acted on at the next run, who is told at the next run and on
+what date it is then acted on, and who comes next. The lists follow what you
+type, so you can try a value before saving. Switching a step on, or shortening
+a limit or the notice period, can reach tenants that were suspended or
+archived long ago — a save that puts tenants in front of the next run asks
+first and names every one of them. A tenant that is only told at first is
+asked about here too: its archive or delete follows on its date with no
+further question. Anything that ends in a delete has to be typed.
+
+**How long an archive is kept.** An archive taken automatically is kept for
+the platform's archive retention (90 days unless changed), or — when automatic
+delete is on — for the delete limit plus the notice period when that is
+longer, so an archive never expires before its tenant is deleted. A deleted
+tenant can be recovered only for as
+long as its backups are kept: see
+[Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant).
+
+**What the sweep leaves alone.**
+
+- The SYSTEM tenant, always.
+- A tenant you keep out (above).
+- A tenant with a storage operation under way, or one whose last storage
+  operation failed and has not been cleared — the card says so next to it.
+- A tenant with no recorded suspension (or archive) date.
+- Every suspended tenant, when no backup target is assigned to tenant
+  snapshots: no archive can be taken, so none is. The card shows this as a
+  warning with a link to **Backups → Targets**.
+
+**Run now** checks at once instead of waiting for the next run. With tenants
+due, or to be told, it names them first. The card shows when the sweep last
+ran, what it did, and what it could not do and why; the admins also get a
+notification for each run that archived or deleted something, told a tenant,
+or failed to.
+
+**An archive interrupted by a restart.** An archive runs inside the platform
+API. If the API restarts in the middle — an upgrade, a crash, a lost node —
+the archive is picked up again within about twenty minutes and carried
+on from where it stood: a finished copy of the files is not taken twice, and
+the tenant is not told twice. This holds for an archive you start by hand too.
+An archive that is interrupted three times over is left to fail, and its
+tenant's page then offers **Clear failed state**.
+
+The sweep works through its tenants one at a time, so the first run after
+switching it on can take a while when many are due. Just before it archives
+or deletes a tenant it checks again that the tenant is still due — if you
+resumed or restored it in the meantime, it is left alone.
+
+**Changing your mind while it runs.** The sweep reads the settings again
+before every tenant. Switch a step off and a run under way stops before its
+next tenant; raise a limit and the next tenant is held to the new one. A
+tenant the sweep is already working on is finished.
+
+Every change of these settings, and every **Run now**, is recorded in the
+audit log with the admin who made it.
+
 ## Notifications
 
 **Platform → Notifications** configures how and when the platform notifies

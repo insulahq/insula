@@ -113,7 +113,7 @@ per-message sha256 verification) established the facts this decision rests on.
     **reference-counted**, and the dominant reference is a
     **spam-classifier training sample**, which pins the blob via a
     `BlobLink::Temporary { until }` stamped at ingest as
-    `midnight + SpamClassifier.holdSamplesFor` — **180 days** by upstream
+    `now + SpamClassifier.holdSamplesFor` (from midnight, before v0.16.26) — **180 days** by upstream
     default. `destroy_account_blobs` unlinks only `Email`/`FileNode`/
     `SieveScript` hard links, so **even destroying the account leaves the
     bytes in place**. Proven: 2 GiB survived EXPUNGE + every forced purge task
@@ -132,18 +132,23 @@ per-message sha256 verification) established the facts this decision rests on.
   bound for everything that path misses. Operator procedure + the anti-spam
   cost of lowering that value:
   [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md).
-- **Blob files are no longer append-once** (Stalwart v0.16.10+). The Context above
-  says blob data sits in append-once `.blob` files outside compaction churn, which
-  keeps the standby rsync and restic cheap. Blob GC changed that: Stalwart enables it
-  with `blob_gc_age_cutoff = 1.0`, so roughly every 128 MiB of new mail a compaction
-  rewrites the **entire** message store into new files. File-level copies (standby
-  rsync, restic) then see a whole new store, a node briefly needs about twice the
-  store on disk, and imports cost roughly quadratic writes. Measured, and
-  mitigated by the standby + disk-headroom health checks:
+- **Blob files are append-once again between garbage collections** (Stalwart
+  v0.16.26). From v0.16.10 to v0.16.25 they were not: Stalwart enabled blob GC with
+  `blob_gc_age_cutoff = 1.0`, so roughly every 128 MiB of new mail a compaction
+  rewrote the **entire** message store into new files — a store-sized transfer to
+  the standby every few days, about twice the store on disk during it, and roughly
+  quadratic writes for an import. We reported it with a reproduction
+  ([support.stalw.art/t/1887](https://support.stalw.art/t/rocksdb-blob-gc-since-v0-16-10-rewrites-the-entire-message-store-on-every-l0-compaction-of-the-blobs-cf-blob-gc-age-cutoff-1-0/1887));
+  v0.16.26 runs blob GC only from the data-store purge, and only once dead blob data
+  reaches 256 MiB **and** a quarter of the store. The rewrite is still store-sized
+  when it comes, so the standby and disk-headroom health checks stay; what it no
+  longer does is fire on ordinary growth. Measured before and after on one
+  cluster (410.7 MiB appended: 673.8 MiB rewritten on v0.16.24, none on v0.16.26):
   [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md#the-cost-of-blob-gc-periodic-full-rewrites).
-  The decision stands while the cutoff is upstream's to change; a FileSystem blob
-  store would avoid the rewrites but needs a full re-export to migrate to, and the
-  per-file walk cost below is unmeasured at large message counts.
+  The Context's premise — blob data in a few large files that file-level copies
+  handle cheaply — holds again for a store that mostly grows. A FileSystem blob
+  store would avoid the remaining rewrites but needs a full re-export to migrate
+  to, and the per-file walk cost below is unmeasured at large message counts.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).

@@ -1026,7 +1026,7 @@ interface XSpamSampleQueryResponse {
  *
  * Why this exists: a spam training sample holds the message blob via a
  * `BlobLink::Temporary { until }` stamped at ingest as
- * `midnight + SpamClassifier.holdSamplesFor` — 180 DAYS on a default install.
+ * `now + SpamClassifier.holdSamplesFor` — 180 DAYS on a default install.
  * Destroying an Account does NOT drop it (`destroy_account_blobs` unlinks only
  * Email/FileNode/SieveScript hard links), so a deleted tenant's mail keeps its
  * bytes on the mail PVC until that timer expires. Verified on Stalwart v0.16.16:

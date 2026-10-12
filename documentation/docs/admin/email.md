@@ -223,24 +223,13 @@ that feature in the webmail UI.
 
 ## Operations
 
-**Email → Operations** is for day-99 actions, in three sub-tabs.
+**Email → Operations** is for day-99 actions, in two sub-tabs.
 
 - **Placement & migration** — the mail-server placement and **disaster
   recovery** card: failover, failback, migrate to another node, and
   standby data-freshness. Below it, the **Mail Port Exposure** card shows
   how the mail ports are published — the default (`allServerNodes`) is
   correct for almost everyone.
-- **Backups** — the **mail archive** (Stalwart-native `stalwart -e` LZ4
-  export — a whole-server point-in-time export, good for DR drills and
-  cold backups). The tab also reminds you of the *three distinct
-  mail-backup paths* and where each lives:
-
-    | Path | What it is | Where |
-    |------|------------|-------|
-    | **Archive** | Stalwart-native whole-server export | this tab |
-    | **Snapshots** | restic backup of the mail volume | [Backups → System](backups-and-restore.md) |
-    | **Per-tenant bundles** | mailbox-only capture | the engine in *Settings → Backup Engine*; used by the restore cart |
-
 - **Storage** — per-node storage for the mail data. Each mail-relevant node
   (active, the placement slots, and any standby-labelled node) gets a card
   showing:

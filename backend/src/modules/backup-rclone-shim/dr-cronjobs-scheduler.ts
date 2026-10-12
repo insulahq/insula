@@ -5,6 +5,7 @@
  * cold-start kick. See dr-cronjobs.ts for what a tick does.
  */
 
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../db/index.js';
@@ -36,12 +37,16 @@ export function startDrCronJobsReconciler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      const r = await reconcileDrCronJobs(db, clients, log);
-      // Log on state changes and on any write, not every quiet tick.
-      if (r.state !== lastState || r.unsuspended > 0 || r.suspended > 0) {
-        log.info({ ...r }, 'dr-cronjobs-scheduler: reconciled');
-        lastState = r.state;
-      }
+      // One replica reconciles: a tick that finds Longhorn backing up with no
+      // backup target alerts, and that alert is deduplicated by a lookup only.
+      await withSchedulerLease(db, 'dr-cronjobs-reconciler', intervalMs * 1.5, async () => {
+        const r = await reconcileDrCronJobs(db, clients, log);
+        // Log on state changes and on any write, not every quiet tick.
+        if (r.state !== lastState || r.unsuspended > 0 || r.suspended > 0) {
+          log.info({ ...r }, 'dr-cronjobs-scheduler: reconciled');
+          lastState = r.state;
+        }
+      });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

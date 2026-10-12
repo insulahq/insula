@@ -13,6 +13,7 @@
 import type { Logger } from 'pino';
 import type * as k8s from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import {
   assessWalArchive,
   DEFAULT_THRESHOLDS,
@@ -120,14 +121,18 @@ export function startWalArchiveHealthScheduler(deps: WalArchiveSchedulerDeps): (
     disableArchiving: () => disableWalArchiving(deps.custom, deps.log),
     nowIso: () => new Date().toISOString(),
   };
+  const tickMs = deps.tickMs ?? WAL_ARCHIVE_HEALTH_TICK_MS;
+  // One replica watches: the breaker is read, then tripped — two replicas
+  // reading it untripped together would both disable archiving and both alert.
   const tick = (): void => {
-    void runWalArchiveTick(deps.db, deps.log, ports, deps.thresholds).catch((err) => {
+    void withSchedulerLease(deps.db, 'wal-archive-health', tickMs * 1.5,
+      () => runWalArchiveTick(deps.db, deps.log, ports, deps.thresholds), { log: deps.log }).catch((err) => {
       deps.log.error({ err: err instanceof Error ? err.message : String(err) },
         'wal-archive-health: scheduler tick failed');
     });
   };
   tick();
-  const timer = setInterval(tick, deps.tickMs ?? WAL_ARCHIVE_HEALTH_TICK_MS);
+  const timer = setInterval(tick, tickMs);
   if (typeof timer.unref === 'function') timer.unref();
   return () => clearInterval(timer);
 }

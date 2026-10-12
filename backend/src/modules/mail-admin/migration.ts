@@ -52,6 +52,7 @@ import type { Database } from '../../db/index.js';
 // pattern used elsewhere in this module for the same kind of late
 // binding.
 import { parseQuantity } from './mail-pvc.js';
+import { pickCurrentPod } from './stalwart-pod.js';
 import { readStalwartCredentials } from './credentials.js';
 import { withMailTaskLiveness } from './task-liveness.js';
 
@@ -1817,9 +1818,16 @@ async function runMigrationStateMachine(
   // 4190 bound, HA entrypoints dead) for ~30min after a failover.
   // (Runs AFTER 8b1 so its admin JMAP calls authenticate.)
   try {
-    const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
-    const rec = await runStalwartDomainReconcilerTick({ core, db, kubeconfigPath, logger: log });
-    if (rec.listenersCreated.length > 0 || rec.defaultHostnameUpdated) {
+    const { runStalwartDomainReconcile } = await import('./stalwart-domain-reconciler.js');
+    const { RUN_WAIT_PAST_DEAD_HOLDER_MS } = await import('../../shared/exclusive-run.js');
+    // After any pass under way — which may have looked at the pod this
+    // migration has just replaced — and long enough to outlast a pass whose
+    // process died: the migration must not leave this to the 30-minute tick.
+    const run = await runStalwartDomainReconcile({ core, db, kubeconfigPath, logger: log }, { waitMs: RUN_WAIT_PAST_DEAD_HOLDER_MS });
+    if (!run.ran) {
+      log.warn(`[migration ${runId}] post-cutover listener/hostname reconcile did not run: another pass was still running (the domain-reconciler tick will retry)`);
+    } else if (run.value.listenersCreated.length > 0 || run.value.defaultHostnameUpdated) {
+      const rec = run.value;
       log.info(
         `[migration ${runId}] post-cutover reconcile healed mail config: listeners=[${rec.listenersCreated.join(',')}] hostnameUpdated=${rec.defaultHostnameUpdated}`,
       );
@@ -3388,7 +3396,7 @@ async function captureScaleUpDiagnostics(
       labelSelector: 'app=stalwart-mail',
     }) as {
       items?: Array<{
-        metadata?: { name?: string };
+        metadata?: { name?: string; creationTimestamp?: string; deletionTimestamp?: string };
         status?: {
           phase?: string;
           conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
@@ -3397,7 +3405,8 @@ async function captureScaleUpDiagnostics(
         };
       }>;
     };
-    const pod = (pods.items ?? [])[0];
+    // The pod the scale-up is waiting on, not a finished one left from before.
+    const pod = pickCurrentPod(pods.items ?? []);
     if (pod) {
       parts.push(`pod=${pod.metadata?.name ?? '?'} phase=${pod.status?.phase ?? '?'}`);
       const sched = (pod.status?.conditions ?? []).find(
@@ -4060,10 +4069,12 @@ export async function getMailRecoveryStatus(
           containerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string } } }>;
           initContainerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string } } }>;
         };
-        metadata?: { creationTimestamp?: string };
+        metadata?: { creationTimestamp?: string; deletionTimestamp?: string };
       }>;
     };
-    const p = pods.items[0];
+    // Not items[0]: after a node restart the pod that was running stays in the
+    // list as Succeeded and sorts ahead of its replacement.
+    const p = pickCurrentPod(pods.items);
     podPhase = p?.status?.phase ?? null;
     const created = p?.metadata?.creationTimestamp;
     podCreatedAt = created ? Date.parse(created) : null;

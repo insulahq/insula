@@ -108,9 +108,10 @@ Three layers of defense, in order:
      to the candidate query — even if operator hand-writes a past
      `subscription_expires_at` via direct SQL, the cron never picks
      up SYSTEM.
-   * `storage-lifecycle/scheduler.ts` adds the same filter to both
-     auto-archive (`status='suspended' > N days`) and auto-delete
-     (`status='archived' > N days`) queries.
+   * `tenant-lifecycle/automation/real.ts` adds the same filter to the
+     query that lists the tenants due for automatic archive
+     (`status='suspended' > N days`) and automatic delete
+     (`status='archived' > N days`).
 
 CI guard `scripts/ci-system-tenant-check.sh` greps for the
 `is_system = false` filters in those schedulers so a future refactor

@@ -11,6 +11,7 @@
  */
 
 import { ApiError } from '../../shared/errors.js';
+import { findRunningStalwartPod } from './stalwart-pod.js';
 import {
   type MailPvcStorageResponse,
   mailPvcStorageResponseSchema,
@@ -193,13 +194,7 @@ async function tryDfProbe(
     else kc.loadFromCluster();
     const core = kc.makeApiClient(k8s.CoreV1Api);
 
-    const pods = await core.listNamespacedPod({
-      namespace: MAIL_NAMESPACE,
-      labelSelector: 'app=stalwart-mail',
-      limit: 1,
-    } as unknown as Parameters<typeof core.listNamespacedPod>[0]) as { items?: { metadata?: { name?: string }; status?: { phase?: string } }[] };
-
-    const podName = (pods.items ?? []).find((p) => p.status?.phase === 'Running')?.metadata?.name;
+    const podName = await findRunningStalwartPod(core);
     if (!podName) return { usedBytes: null, freeBytes: null };
 
     const stdout = await execStdout(

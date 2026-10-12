@@ -1,11 +1,14 @@
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
-import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { tenants, platformSettings } from '../../db/schema.js';
 import { resolveSnapshotStore } from './snapshot-store.js';
-import { expireSnapshots, storageAuditReport, archiveTenant } from './service.js';
-import { applyDeleted } from '../tenant-lifecycle/cascades.js';
+import { expireSnapshots, storageAuditReport } from './service.js';
+import {
+  sweepTenantsOnce,
+  TENANT_AUTOMATION_INTERVAL_MS,
+  TENANT_AUTOMATION_MAX_HOLD_MS,
+} from '../tenant-lifecycle/automation/real.js';
 
 /**
  * Storage-lifecycle housekeeping scheduler.
@@ -24,7 +27,6 @@ import { applyDeleted } from '../tenant-lifecycle/cascades.js';
 
 const EXPIRY_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const AUDIT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const LIFECYCLE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // Issue 1 fix: every 30 minutes, sweep all provisioned tenants for missing
 // PVC / RQ / NetPol and auto-repair. Cluster rebootstraps and DR restores
 // can leave the namespace as a husk that the lifecycle module never fully
@@ -43,29 +45,6 @@ const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 // grace window, so ~13 min worst case instead of "until a human notices".
 const WORKLOAD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
-
-/**
- * Opt-in tenant-lifecycle auto-ops. Both default OFF — operators must
- * explicitly enable them via /admin/settings in production so a
- * mis-configured retention window doesn't destroy a fleet of tenants.
- */
-interface LifecycleSettings {
-  readonly autoArchiveEnabled: boolean;
-  readonly autoArchiveAfterDays: number;
-  readonly autoDeleteEnabled: boolean;
-  readonly autoDeleteAfterDays: number;
-}
-
-async function loadLifecycleSettings(db: Database): Promise<LifecycleSettings> {
-  const rows = await db.select().from(platformSettings);
-  const get = (key: string) => rows.find((r) => r.key === key)?.value;
-  return {
-    autoArchiveEnabled: get('tenant_lifecycle.auto_archive_enabled') === 'true',
-    autoArchiveAfterDays: Number(get('tenant_lifecycle.auto_archive_after_days') ?? 30),
-    autoDeleteEnabled: get('tenant_lifecycle.auto_delete_enabled') === 'true',
-    autoDeleteAfterDays: Number(get('tenant_lifecycle.auto_delete_after_days') ?? 90),
-  };
-}
 
 export function startStorageLifecycleScheduler(
   db: Database,
@@ -89,34 +68,6 @@ export function startStorageLifecycleScheduler(
     platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform',
   });
 
-  // Phase 3: per-class ctx for auto-ops that WRITE snapshots (auto-archive).
-  // Routes through `backup_target_assignments` and stamps target_id on
-  // the resulting storage_snapshots row so Phase 5 restore can look it
-  // up. Throws NO_SNAPSHOT_TARGET (409) if the class is unassigned —
-  // the caller catches and logs (auto-archive becomes a no-op for that
-  // tenant until the operator configures an assignment).
-  const buildSnapshotCtx = async (
-    backupClass: import('@insula/api-contracts').SnapshotClass,
-  ) => {
-    const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
-    const platformNamespace = (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
-    const bundle = await resolveSnapshotStoreForClass(
-      db,
-      config as Record<string, string | undefined>,
-      backupClass,
-      // Phase 11: k8s ctx for CIFS read paths.
-      { k8sCtx: { k8s, namespace: platformNamespace } },
-    );
-    return {
-      db,
-      k8s,
-      store: bundle.store,
-      platformNamespace,
-      targetId: bundle.targetId,
-      backupClass,
-    };
-  };
-
   let expiryTimer: NodeJS.Timeout | null = null;
   let auditTimer: NodeJS.Timeout | null = null;
   let lifecycleTimer: NodeJS.Timeout | null = null;
@@ -126,7 +77,11 @@ export function startStorageLifecycleScheduler(
   const runExpiry = async () => {
     if (stopped) return;
     try {
-      const reaped = await expireSnapshots(await buildCtx());
+      // One replica expires: a snapshot on an SSH or CIFS target is deleted by a
+      // one-shot Job, and two replicas each started one for the same snapshot.
+      const leased = await withSchedulerLease(db, 'storage-snapshot-expiry', EXPIRY_INTERVAL_MS * 1.5,
+        async () => expireSnapshots(await buildCtx()));
+      const reaped = leased.ran ? leased.value : 0;
       if (reaped > 0) console.log(`[storage-lifecycle-scheduler] Reaped ${reaped} expired snapshot(s)`);
     } catch (err) {
       console.error('[storage-lifecycle-scheduler] expireSnapshots failed:', (err as Error).message);
@@ -137,12 +92,16 @@ export function startStorageLifecycleScheduler(
   const runAudit = async () => {
     if (stopped) return;
     try {
-      const report = await storageAuditReport(await buildCtx());
-      const totalWasteGi = report.reduce((sum, r) => {
-        const provisioned = r.provisionedGi * 1024 * 1024 * 1024;
-        return sum + Math.max(0, (provisioned - r.usedBytes) / (1024 ** 3));
-      }, 0);
-      console.log(`[storage-lifecycle-scheduler] Audit: ${report.length} tenants, ${totalWasteGi.toFixed(1)} GiB provisioned-not-used`);
+      // One replica audits: the report measures every tenant's volume from
+      // inside its file manager.
+      await withSchedulerLease(db, 'storage-audit', AUDIT_INTERVAL_MS * 1.5, async () => {
+        const report = await storageAuditReport(await buildCtx());
+        const totalWasteGi = report.reduce((sum, r) => {
+          const provisioned = r.provisionedGi * 1024 * 1024 * 1024;
+          return sum + Math.max(0, (provisioned - r.usedBytes) / (1024 ** 3));
+        }, 0);
+        console.log(`[storage-lifecycle-scheduler] Audit: ${report.length} tenants, ${totalWasteGi.toFixed(1)} GiB provisioned-not-used`);
+      });
     } catch (err) {
       console.error('[storage-lifecycle-scheduler] audit failed:', (err as Error).message);
     }
@@ -150,101 +109,26 @@ export function startStorageLifecycleScheduler(
   };
 
   /**
-   * Client-lifecycle auto-ops:
-   *   - suspended > N days and auto_archive_enabled → call archiveTenant
-   *   - archived > N days and auto_delete_enabled → hard-delete via applyDeleted
-   * Both thresholds default 30 / 90 days, both flags default false.
+   * Automatic archive and delete (tenant-lifecycle/automation): tenants
+   * suspended, or archived, for longer than the admin's limits. Both steps are
+   * off until switched on under Platform → Tenant Lifecycle Hooks.
    */
   const runLifecycle = async () => {
     if (stopped) return;
-    // One replica archives and deletes: the idle check and the claim are
-    // separate steps, so two replicas could start two archives of one tenant,
-    // or delete it twice. The reschedule below runs whether or not this
+    // One replica sweeps, and one sweep runs at a time: the admin's "Run now"
+    // takes the same run lock. The reschedule below runs whether or not this
     // replica held the lease.
     try {
-      await withSchedulerLease(db, 'storage-auto-archive', LIFECYCLE_INTERVAL_MS * 1.5, runLifecycleOnce);
+      await withSchedulerLease(db, 'storage-auto-archive', TENANT_AUTOMATION_INTERVAL_MS * 1.5, async () => {
+        // Skipped when a sweep is under way already — that is what this tick wanted.
+        await runExclusive(db, 'storage-auto-archive', () => sweepTenantsOnce({ db, k8s, config }, 'schedule'), {
+          maxHoldMs: TENANT_AUTOMATION_MAX_HOLD_MS,
+        });
+      });
     } catch (err) {
-      console.error('[tenant-lifecycle] auto-op lease failed:', (err as Error).message);
+      console.error('[tenant-automation] sweep failed:', (err as Error).message);
     }
-    if (!stopped) lifecycleTimer = setTimeout(runLifecycle, LIFECYCLE_INTERVAL_MS);
-  };
-  const runLifecycleOnce = async (): Promise<void> => {
-    try {
-      const settings = await loadLifecycleSettings(db);
-      // No legacy ctx needed here — auto-archive builds its own
-      // per-class ctx below; auto-delete uses applyDeleted with only
-      // db + k8s (no snapshot store needed).
-
-      // Auto-archive: compare against `suspendedAt` (stamped by
-      // applySuspended), NOT `updatedAt` — any admin edit bumps
-      // updatedAt and would silently reset the archive clock.
-      //
-      // Phase 3 fix: resolve a per-class ctx for archive so the
-      // pre-archive snapshot routes through `backup_target_assignments`
-      // and stamps target_id for forensic restore. If no class
-      // assignment exists, log + skip the tenant — operator must
-      // configure an assignment before auto-archive can run.
-      if (settings.autoArchiveEnabled) {
-        const threshold = new Date(Date.now() - settings.autoArchiveAfterDays * 24 * 60 * 60 * 1000);
-        // SYSTEM tenant protection (ADR-040): is_system=false filter is
-        // defense-in-depth — status='suspended' on SYSTEM is already
-        // blocked at the service layer, but a direct-SQL write could
-        // bypass that. CI guard scripts/ci-system-tenant-check.sh
-        // asserts this filter is present.
-        const rows = await db.select({ id: tenants.id, namespace: tenants.kubernetesNamespace, suspendedAt: tenants.suspendedAt })
-          .from(tenants)
-          .where(and(
-            eq(tenants.status, 'suspended'),
-            eq(tenants.isSystem, false),
-            lt(tenants.suspendedAt, threshold),
-          ));
-
-        let snapshotCtx: Awaited<ReturnType<typeof buildSnapshotCtx>> | null = null;
-        if (rows.length > 0) {
-          try {
-            snapshotCtx = await buildSnapshotCtx('tenant_snapshot');
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(`[tenant-lifecycle] auto-archive skipped (${rows.length} tenant(s)): ${msg}`);
-          }
-        }
-
-        if (snapshotCtx) {
-          for (const row of rows) {
-            try {
-              console.log(`[tenant-lifecycle] auto-archiving ${row.id} (suspended since ${row.suspendedAt?.toISOString() ?? 'unknown'})`);
-              await archiveTenant(snapshotCtx, row.id, { retentionDays: settings.autoDeleteAfterDays });
-            } catch (err) {
-              console.warn(`[tenant-lifecycle] auto-archive failed for ${row.id}: ${(err as Error).message}`);
-            }
-          }
-        }
-      }
-
-      // Auto-delete: same pattern against `archivedAt`.
-      if (settings.autoDeleteEnabled) {
-        const threshold = new Date(Date.now() - settings.autoDeleteAfterDays * 24 * 60 * 60 * 1000);
-        // SYSTEM tenant protection (ADR-040): see auto-archive query
-        // above. CI guard ensures the filter survives refactors.
-        const rows = await db.select({ id: tenants.id, namespace: tenants.kubernetesNamespace, archivedAt: tenants.archivedAt })
-          .from(tenants)
-          .where(and(
-            eq(tenants.status, 'archived'),
-            eq(tenants.isSystem, false),
-            lt(tenants.archivedAt, threshold),
-          ));
-        for (const row of rows) {
-          try {
-            console.log(`[tenant-lifecycle] auto-deleting ${row.id} (archived since ${row.archivedAt?.toISOString() ?? 'unknown'})`);
-            await applyDeleted({ db, k8s }, row.id, row.namespace);
-          } catch (err) {
-            console.warn(`[tenant-lifecycle] auto-delete failed for ${row.id}: ${(err as Error).message}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[tenant-lifecycle] auto-op cycle failed:', (err as Error).message);
-    }
+    if (!stopped) lifecycleTimer = setTimeout(runLifecycle, TENANT_AUTOMATION_INTERVAL_MS);
   };
 
   // Issue 1 fix: namespace integrity sweep. Repairs missing PVC / RQ /
@@ -254,11 +138,19 @@ export function startStorageLifecycleScheduler(
   const runIntegrity = async () => {
     if (stopped) return;
     try {
-      const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
-      const result = await sweepFleetIntegrity(db, k8s);
-      if (result.repaired > 0 || result.errored > 0) {
-        console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
-      }
+      // One replica repairs: a repair is followed by an alert deduplicated by
+      // a lookup only, and a replica losing the repair race reports a partial
+      // failure for what the other one repaired.
+      await withSchedulerLease(db, 'namespace-integrity', INTEGRITY_INTERVAL_MS * 1.5, async () => {
+        const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
+        // The run lock keeps this sweep off one an operator has started.
+        const run = await runExclusive(db, 'namespace-integrity', () => sweepFleetIntegrity(db, k8s));
+        if (!run.ran) return;
+        const result = run.value;
+        if (result.repaired > 0 || result.errored > 0) {
+          console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
+        }
+      });
     } catch (err) {
       console.error('[namespace-integrity] sweep failed:', (err as Error).message);
     }
@@ -326,11 +218,21 @@ export function startStorageLifecycleScheduler(
   const runQuiesceWatchdog = async () => {
     if (stopped) return;
     try {
-      const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
-      const result = await sweepAbandonedQuiesce(db, k8s);
-      if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {
-        console.log(`[quiesce-watchdog] abandonedOps=${result.abandonedOps} recoveredNamespaces=${result.recoveredNamespaces}`);
-      }
+      // One replica recovers: an abandoned operation is not claimed, so two
+      // replicas ran the same recovery — one re-pinning the workloads while
+      // the other scaled them up.
+      await withSchedulerLease(db, 'storage-quiesce-watchdog', QUIESCE_WATCHDOG_INTERVAL_MS * 1.5, async () => {
+        // First the archives a restart cut off: they are started again, not failed.
+        const { resumeInterruptedArchives } = await import('./archive-resume.js');
+        await resumeInterruptedArchives(db, k8s, config).catch((err: unknown) => {
+          console.error('[archive-resume] failed:', err instanceof Error ? err.message : String(err));
+        });
+        const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
+        const result = await sweepAbandonedQuiesce(db, k8s);
+        if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {
+          console.log(`[quiesce-watchdog] abandonedOps=${result.abandonedOps} recoveredNamespaces=${result.recoveredNamespaces}`);
+        }
+      });
     } catch (err) {
       console.error('[quiesce-watchdog] sweep failed:', (err as Error).message);
     }

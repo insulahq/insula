@@ -340,6 +340,8 @@ Community Grafana dashboard: [dashboard #23498](https://grafana.com/grafana/dash
 
 All procedures assume a short planned downtime (≤15 min for small volumes). Always take a fresh backup first.
 
+The procedures below move the store's files as they are. Moving the store to a different **store backend**, or to a mail server outside this cluster, needs the server's own export and import instead: [MAIL_STORE_EXPORT_IMPORT.md](MAIL_STORE_EXPORT_IMPORT.md).
+
 ### 5.1 local-path → hcloud-volumes
 
 When you need node portability, volume snapshots, and online expansion.

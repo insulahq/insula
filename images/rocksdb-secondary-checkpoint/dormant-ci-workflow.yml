@@ -1,3 +1,10 @@
+# DORMANT — GitHub does not run this file here. It is the image's build
+# workflow, moved out of .github/workflows/ when the mail archive was switched
+# off: nothing runs the image any more, so nothing builds, pushes or pins it.
+# To bring it back, see backend/src/modules/mail-admin/archive-dormant.ts
+# (move this file to .github/workflows/ci-rocksdb-secondary-checkpoint.yml and
+# refresh the action pins, which Dependabot has not been updating here).
+
 name: rocksdb-secondary-checkpoint CI
 
 # Tiny Rust binary that opens a live Stalwart RocksDB primary as a SECONDARY

@@ -19,6 +19,8 @@ import {
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
+import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
+import { ownsRunLock, runExclusive } from '../../shared/exclusive-run.js';
 import {
   EMPTY_TIMELINE,
   RESTORE_STEP_LABELS,
@@ -86,6 +88,12 @@ async function mustGetTenant(db: Database, tenantId: string) {
   return tenant;
 }
 
+/**
+ * Refuse when an operation already owns the tenant. Every caller runs under
+ * the tenant's lock (tenant-lock.ts), taken by the exported starter that
+ * wraps it — so the state read here is still the state when the caller
+ * writes its own claim a few statements on.
+ */
 async function mustBeIdle(db: Database, tenantId: string) {
   const [tenant] = await db.select({
     state: tenants.storageLifecycleState,
@@ -478,6 +486,14 @@ export async function resizeTenant(
   ctx: ServiceCtx,
   tenantId: string,
   params: { newMib?: number; newGi?: number; triggeredByUserId?: string | null },
+): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startResize(ctx, tenantId, params));
+}
+
+async function startResize(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: Parameters<typeof resizeTenant>[2],
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -1091,6 +1107,14 @@ export async function restoreTenantFromVolumeSnapshot(
     readonly triggeredByUserId?: string | null;
   },
 ): Promise<{ operationId: string }> {
+  return withTenantLock(db, args.tenantId, () => startRestoreFromVolumeSnapshot(db, k8s, args));
+}
+
+async function startRestoreFromVolumeSnapshot(
+  db: Database,
+  k8s: K8sClients,
+  args: Parameters<typeof restoreTenantFromVolumeSnapshot>[2],
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(db, args.tenantId);
   await mustBeIdle(db, args.tenantId);
   const namespace = tenant.kubernetesNamespace;
@@ -1289,6 +1313,14 @@ export async function restoreTenantFromRetainedVolume(
     readonly snapshotName: string;
     readonly triggeredByUserId?: string | null;
   },
+): Promise<{ operationId: string }> {
+  return withTenantLock(db, args.tenantId, () => startRestoreFromRetainedVolume(db, k8s, args));
+}
+
+async function startRestoreFromRetainedVolume(
+  db: Database,
+  k8s: K8sClients,
+  args: Parameters<typeof restoreTenantFromRetainedVolume>[2],
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(db, args.tenantId);
   await mustBeIdle(db, args.tenantId);
@@ -1728,6 +1760,14 @@ export async function suspendTenant(
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => suspendTenantLocked(ctx, tenantId, opts));
+}
+
+async function suspendTenantLocked(
+  ctx: ServiceCtx,
+  tenantId: string,
+  opts: NonNullable<Parameters<typeof suspendTenant>[2]>,
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'suspended') {
@@ -1800,6 +1840,14 @@ export async function resumeTenant(
    */
   opts: { triggeredByUserId?: string | null; suppressTenantNotification?: boolean } = {},
 ): Promise<{ operationId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => resumeTenantLocked(ctx, tenantId, opts));
+}
+
+async function resumeTenantLocked(
+  ctx: ServiceCtx,
+  tenantId: string,
+  opts: NonNullable<Parameters<typeof resumeTenant>[2]>,
+): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status !== 'suspended') {
@@ -1869,12 +1917,40 @@ export async function resumeTenant(
 export async function archiveTenant(
   ctx: ServiceCtx,
   tenantId: string,
-  params: { retentionDays?: number; triggeredByUserId?: string | null } = {},
+  params: {
+    retentionDays?: number;
+    triggeredByUserId?: string | null;
+    /**
+     * Archive only a tenant that is still suspended, and has been since before
+     * this moment — checked under the tenant's lock. For the automatic sweep,
+     * whose list of due tenants may be hours old by the time it reaches one:
+     * the operator may have resumed it meanwhile, or taken it out of the
+     * automation. Refused with NO_LONGER_DUE.
+     */
+    onlyIfSuspendedBefore?: Date;
+  } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startArchive(ctx, tenantId, params));
+}
+
+async function startArchive(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: NonNullable<Parameters<typeof archiveTenant>[2]>,
 ): Promise<{ operationId: string; snapshotId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'archived') {
     throw new ApiError('ALREADY_ARCHIVED', 'Tenant is already archived', 409);
+  }
+  if (params.onlyIfSuspendedBefore
+    && !(tenant.status === 'suspended' && tenant.suspendedAt && tenant.suspendedAt < params.onlyIfSuspendedBefore)) {
+    throw new ApiError('NO_LONGER_DUE', 'Tenant is no longer suspended for long enough to be archived automatically', 409);
+  }
+  // An admin may have taken it out of the automation since the sweep read its
+  // list. A manual archive (no `onlyIfSuspendedBefore`) is not the automation.
+  if (params.onlyIfSuspendedBefore && tenant.lifecycleAutomationExempt) {
+    throw new ApiError('NO_LONGER_DUE', 'Tenant is kept out of automatic archive and delete', 409);
   }
 
   const opId = uuid();
@@ -1909,20 +1985,160 @@ export async function archiveTenant(
       .where(eq(tenants.id, tenantId));
   });
 
-  void runArchive(ctx, opId, snapId, tenant.kubernetesNamespace)
-    .catch((err) => { console.error(`[storage-lifecycle] runArchive pre-orchestrator throw for op ${opId}:`, err); });
+  // The claim is written. The archive must now be running under its lock
+  // before this call answers: an operation with no lock is nobody's — nothing
+  // is working on it, and the watchdog reads "interrupted" from a lock that
+  // lapsed, so it would never be picked up either.
+  const began = await launchArchive(ctx, opId, snapId, tenant.kubernetesNamespace, false).catch((err: unknown) => {
+    console.error(`[storage-lifecycle] archive ${opId} could not take its lock:`, err);
+    return false;
+  });
+  if (!began) {
+    const why = 'The archive could not be started: its lock could not be taken. Nothing was changed.';
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: why, completedAt: new Date() }).catch(() => undefined);
+    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: why }).where(eq(storageSnapshots.id, snapId)).catch(() => undefined);
+    await markTenantState(ctx.db, tenantId, 'idle', null).catch(() => undefined);
+    throw new ApiError('ARCHIVE_NOT_STARTED', 'The archive could not be started. Nothing was changed — try again.', 503);
+  }
   return { operationId: opId, snapshotId: snapId };
 }
 
+/**
+ * The lock a process holds for as long as it is working on an archive.
+ *
+ * An archive runs detached from the request that started it, in the API
+ * process — and a deploy, a crash or a node loss ends that process in the
+ * middle. The operation row then says "snapshotting" for ever and nothing is
+ * working on it. The lock is what tells the two apart: a live archive renews
+ * it, a dead one's lapses within minutes, and the watchdog
+ * (archive-resume.ts) picks the archive up again. Before, such an archive
+ * waited six hours to be marked failed, and its tenant stayed scaled to zero
+ * until an operator cleared it.
+ *
+ * The lock is a lease, so "lapsed" does not prove "dead": a process paused
+ * for minutes — a stalled VM, a database out of reach — looks the same from
+ * outside. The archive therefore asks before every step that writes or
+ * deletes whether the lock is still its own (`ownsRunLock`), and stops where
+ * it is when it is not, without failing the operation or touching the
+ * workloads. What that leaves open is a stall between one such question and
+ * the action after it.
+ */
+export const archiveLockJob = (opId: string): string => `storage-op:${opId}`;
+
+/** As long as the watchdog gives any operation before it calls it abandoned. */
+const ARCHIVE_MAX_HOLD_MS = 6 * 60 * 60 * 1000;
+
+/** How often an interrupted archive is picked up again before it is left to fail. */
+export const ARCHIVE_MAX_RESUMES = 3;
+
+/**
+ * Run an archive detached from its caller, under its liveness lock. Resolves
+ * as soon as it is known whether it began: true — this process holds the lock
+ * and the archive is running; false — another process holds it. Rejects when
+ * the lock could not even be asked for. `onceMine` runs first, under the lock.
+ */
+function launchArchive(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  namespace: string,
+  resumed: boolean,
+  onceMine?: () => Promise<void>,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    let began = false;
+    runExclusive(ctx.db, archiveLockJob(opId), async () => {
+      began = true;
+      resolve(true);
+      await onceMine?.();
+      await runArchive(ctx, opId, snapId, namespace, resumed);
+    }, { maxHoldMs: ARCHIVE_MAX_HOLD_MS }).then((outcome) => {
+      if (!outcome.ran) resolve(false);
+    }, (err: unknown) => {
+      if (!began) reject(err instanceof Error ? err : new Error(String(err)));
+      else console.error(`[storage-lifecycle] archive ${opId} ended outside its own handling:`, err);
+    });
+  });
+}
+
+/**
+ * Thrown inside an archive that finds its lock is no longer its own: the
+ * process stalled for longer than the lock lasts, and another one has picked
+ * the archive up — or the watchdog has ended it. The run stops where it is and
+ * touches nothing more, not the operation's row and not the tenant's
+ * workloads: all of that is its successor's now.
+ */
+class ArchiveTakenOver extends Error {
+  constructor(opId: string) {
+    super(`archive ${opId} is no longer this process's to run`);
+    this.name = 'ArchiveTakenOver';
+  }
+}
+
+/**
+ * Pick an archive up again whose process is gone. Every step of an archive
+ * can be run a second time — see `runArchive` — so this starts it from the
+ * top and the steps already done are passed over. False when there is
+ * nothing to resume: the operation has ended, or has been resumed too often.
+ */
+export async function resumeArchive(ctx: ServiceCtx, opId: string): Promise<boolean> {
+  const [op] = await ctx.db
+    .select({
+      opType: storageOperations.opType,
+      state: storageOperations.state,
+      snapshotId: storageOperations.snapshotId,
+      params: storageOperations.params,
+      namespace: tenants.kubernetesNamespace,
+      activeOpId: tenants.activeStorageOpId,
+    })
+    .from(storageOperations)
+    .innerJoin(tenants, eq(tenants.id, storageOperations.tenantId))
+    .where(eq(storageOperations.id, opId));
+  if (!op || op.opType !== 'archive' || op.state === 'idle' || op.state === 'failed') return false;
+  if (op.activeOpId !== opId || !op.snapshotId) return false;
+  const params = op.params ?? {};
+  const resumes = Number((params as { resumes?: unknown }).resumes ?? 0);
+  // An archive that takes the process down with it every time must not be
+  // started for ever; the watchdog's age rule ends it.
+  if (!Number.isFinite(resumes) || resumes >= ARCHIVE_MAX_RESUMES) return false;
+  // The lock first, the count after: an archive another process turns out to
+  // hold is not one that was resumed.
+  return launchArchive(ctx, opId, op.snapshotId, op.namespace, true, () => updateOp(ctx.db, opId, {
+    params: { ...params, resumes: resumes + 1 },
+    progressMessage: 'Picked up again after the platform API restarted',
+  }));
+}
+
+/**
+ * The archive itself. Written so that it can be run again from the top after
+ * the process that ran it died (`resumed`), whichever step it died in:
+ *
+ *   - scaling down again is harmless, but the replica counts written down the
+ *     first time are the ones to restore on failure — taken again now, they
+ *     would all be zero;
+ *   - a capture that finished is on the snapshot row and is not taken again;
+ *     one that was cut off is failed, its Job removed, and a new one taken;
+ *   - deleting the workloads and the volume a second time finds them gone;
+ *   - the tenant's cascades (mailboxes, domains, status, the tenant's own
+ *     notification) are not run again once the tenant reads archived.
+ */
 async function runArchive(
   ctx: ServiceCtx,
   opId: string,
   snapId: string,
   namespace: string,
+  resumed = false,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
   let preArchiveBundleId: string | null = null;
+  // Asked before every step that writes or deletes: a process that stalled
+  // past its lock's lifetime wakes up here in mid-run, and by then another
+  // one may be running this archive.
+  const stillMine = async (): Promise<void> => {
+    if (!(await ownsRunLock(ctx.db, archiveLockJob(opId)))) throw new ArchiveTakenOver(opId);
+  };
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await stillMine();
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
   };
   try {
@@ -1930,46 +2146,27 @@ async function runArchive(
     // quiesce persists the pre-quiesce replica counts before scaling so a
     // force-cancel / pod restart mid-archive can unquiesce the tenant instead
     // of leaving it at 0 replicas.
-    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
+    const written = resumed ? await loadPersistedQuiesceSnapshot(ctx.db, opId) : null;
+    if (written) {
+      await quiesce(ctx.k8s, namespace);
+      quiesceSnap = written;
+    } else {
+      quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
+    }
     await waitForQuiesced(ctx.k8s, namespace);
 
-    await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
     const tenantId = (await currentTenantId(ctx.db, opId))!;
     const pvcName = `${namespace}-storage`;
-    // The archive IS a restic files bundle — the same off-site, file-level
-    // restorable bundle the destructive-resize path uses, NOT the legacy tar.
-    // Retain it for the archive retention window (default 90d) since the
-    // bundle is the ONLY restore source after the PVC is deleted.
-    const [op] = await ctx.db.select({ params: storageOperations.params })
-      .from(storageOperations).where(eq(storageOperations.id, opId)).limit(1);
-    const retentionDays = (op?.params as { retentionDays?: number } | null)?.retentionDays ?? 90;
-    const bundle = await captureFilesOnlyBundle({
-      db: ctx.db,
-      k8s: ctx.k8s,
-      tenantId,
-      label: `Archive ${new Date().toISOString().slice(0, 10)}`,
-      retentionDays,
-    });
-    // A `partial` bundle means the files component didn't fully capture —
-    // refuse to deprovision the tenant (delete PVC) without a complete archive.
-    if (bundle.status !== 'completed') {
-      throw new ApiError(
-        'SNAPSHOT_INCOMPLETE',
-        `Archive files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to deprovision without a complete archive.`,
-        500,
-      );
-    }
-    preArchiveBundleId = bundle.bundleId;
-    await ctx.db.update(storageSnapshots).set({
-      status: 'ready',
-      archivePath: `bundle:${bundle.bundleId}`,
-      sizeBytes: String(bundle.sizeBytes),
-      sha256: null,
-    }).where(eq(storageSnapshots.id, snapId));
+    preArchiveBundleId = (resumed ? await archiveAlreadyTaken(ctx.db, snapId) : null)
+      ?? await (async () => {
+        await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
+        return takeArchive(ctx, opId, snapId, tenantId, resumed, stillMine);
+      })();
 
     await progress('replacing', 70, 'Removing live workloads and PVC');
     // Delete PVC last so deployments releasing claims don't race.
     await deleteAllDeploymentsCronJobsServices(ctx.k8s, namespace);
+    await stillMine();
     try {
       await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
     } catch (err) {
@@ -1979,9 +2176,16 @@ async function runArchive(
     // Cross-cutting archive cascades: delete mailboxes + aliases,
     // mark domains suspended, stop deployments in DB, set status.
     await progress('archiving', 90, 'Cleaning up mail + domains');
-    const { applyArchived } = await import('../tenant-lifecycle/cascades.js');
-    await applyArchived({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
+    const [now] = resumed
+      ? await ctx.db.select({ status: tenants.status }).from(tenants).where(eq(tenants.id, tenantId))
+      : [];
+    if (now?.status !== 'archived') {
+      await stillMine();
+      const { applyArchived } = await import('../tenant-lifecycle/cascades.js');
+      await applyArchived({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
+    }
 
+    await stillMine();
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Archive complete', completedAt: new Date(),
     });
@@ -1990,6 +2194,17 @@ async function runArchive(
       activeStorageOpId: null,
     }).where(eq(tenants.id, tenantId));
   } catch (err) {
+    // Not this process's archive any more: whatever failed here — its capture
+    // Job removed by the process that took over, most likely — is not that
+    // archive failing. Marking it failed and bringing the workloads back would
+    // do both under the successor's feet. An ownership that cannot be read is
+    // treated the same way: the lock then lapses, and the archive is picked up.
+    const mine = !(err instanceof ArchiveTakenOver)
+      && await ownsRunLock(ctx.db, archiveLockJob(opId)).catch(() => false);
+    if (!mine) {
+      console.warn(`[storage-lifecycle] archive ${opId}: stopped here, it is no longer this process's to run (${err instanceof Error ? err.message : String(err)})`);
+      return;
+    }
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     // Settle the archive snapshot row. If the bundle DID capture before the
@@ -2006,6 +2221,69 @@ async function runArchive(
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
   }
+}
+
+/** The bundle a finished capture left on the archive's snapshot row, or null. */
+async function archiveAlreadyTaken(db: Database, snapId: string): Promise<string | null> {
+  const [taken] = await db
+    .select({ status: storageSnapshots.status, archivePath: storageSnapshots.archivePath })
+    .from(storageSnapshots)
+    .where(eq(storageSnapshots.id, snapId));
+  if (taken?.status !== 'ready' || !taken.archivePath?.startsWith('bundle:') || taken.archivePath === 'bundle:pending') return null;
+  return taken.archivePath.slice('bundle:'.length);
+}
+
+/**
+ * Capture the archive's files bundle and note it on the snapshot row. Returns
+ * the bundle. `stillMine` is asked again once the capture — the long part —
+ * is over, before anything is written.
+ */
+async function takeArchive(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  tenantId: string,
+  resumed: boolean,
+  stillMine: () => Promise<void>,
+): Promise<string> {
+  const [op] = await ctx.db.select({ params: storageOperations.params, createdAt: storageOperations.createdAt })
+    .from(storageOperations).where(eq(storageOperations.id, opId)).limit(1);
+  if (resumed) {
+    // The capture the dead process was in the middle of: nobody is waiting for
+    // it, its Job may still hold the volume, and its row would say "running"
+    // until the retention sweep reports it as a failed backup a day later.
+    const { settleInterruptedCaptures } = await import('./prebundle.js');
+    await settleInterruptedCaptures(ctx.db, ctx.k8s, tenantId, op?.createdAt ?? new Date(0));
+  }
+  // The archive IS a restic files bundle — the same off-site, file-level
+  // restorable bundle the destructive-resize path uses, NOT the legacy tar.
+  // Retain it for the archive retention window (default 90d) since the
+  // bundle is the ONLY restore source after the PVC is deleted.
+  const retentionDays = (op?.params as { retentionDays?: number } | null)?.retentionDays ?? 90;
+  const bundle = await captureFilesOnlyBundle({
+    db: ctx.db,
+    k8s: ctx.k8s,
+    tenantId,
+    label: `Archive ${new Date().toISOString().slice(0, 10)}`,
+    retentionDays,
+  });
+  // A `partial` bundle means the files component didn't fully capture —
+  // refuse to deprovision the tenant (delete PVC) without a complete archive.
+  if (bundle.status !== 'completed') {
+    throw new ApiError(
+      'SNAPSHOT_INCOMPLETE',
+      `Archive files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to deprovision without a complete archive.`,
+      500,
+    );
+  }
+  await stillMine();
+  await ctx.db.update(storageSnapshots).set({
+    status: 'ready',
+    archivePath: `bundle:${bundle.bundleId}`,
+    sizeBytes: String(bundle.sizeBytes),
+    sha256: null,
+  }).where(eq(storageSnapshots.id, snapId));
+  return bundle.bundleId;
 }
 
 async function deleteAllDeploymentsCronJobsServices(k8s: K8sClients, namespace: string): Promise<void> {
@@ -2044,6 +2322,14 @@ export async function restoreArchivedTenant(
   ctx: ServiceCtx,
   tenantId: string,
   params: { newGi?: number; triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  return withTenantLock(ctx.db, tenantId, () => startRestoreArchived(ctx, tenantId, params));
+}
+
+async function startRestoreArchived(
+  ctx: ServiceCtx,
+  tenantId: string,
+  params: NonNullable<Parameters<typeof restoreArchivedTenant>[2]>,
 ): Promise<{ operationId: string; snapshotId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -2172,12 +2458,23 @@ async function runRestoreArchive(
     // LOCAL), not the platform default (`longhorn`, replicas=3) — the original
     // PVC was deleted at archive time, so there's nothing to read back; map
     // from the namespace the same way provisioning does.
+    const tenantId = (await currentTenantId(ctx.db, opId))!;
+    // A volume may be there all the same: the empty one an earlier release's
+    // integrity sweep created for every archived tenant, of a size it picked.
+    // `applyPVC` leaves an existing claim alone, so the restore would go into
+    // that — and fail when the files do not fit. One that was never written to
+    // is removed first, and the tenant gets the size asked for; one that holds
+    // anything is used as it is.
+    const { inspectArchivedVolume, removeUnusedVolume } = await import('./archived-volume.js');
+    const [archived] = await ctx.db.select({ archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
+    const leftover = await inspectArchivedVolume(ctx.k8s, namespace, archived?.archivedAt ?? null);
+    if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
+
     const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
     const storageClass = selectTenantStorageClass(namespace);
     await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
-    const tenantId = (await currentTenantId(ctx.db, opId))!;
     // The PVC was just recreated above; restore the bundle's files into it.
     await restoreFilesBundleIntoPvc({
       db: ctx.db,
@@ -2287,7 +2584,7 @@ export async function fsckCheckTenant(
   tenantId: string,
   opts: { triggeredByUserId?: string | null } = {},
 ): Promise<{ operationId: string }> {
-  return startFsck(ctx, tenantId, true, opts);
+  return withTenantLock(ctx.db, tenantId, () => startFsck(ctx, tenantId, true, opts));
 }
 
 /**
@@ -2302,7 +2599,7 @@ export async function fsckRepairTenant(
   tenantId: string,
   opts: { triggeredByUserId?: string | null } = {},
 ): Promise<{ operationId: string }> {
-  return startFsck(ctx, tenantId, false, opts);
+  return withTenantLock(ctx.db, tenantId, () => startFsck(ctx, tenantId, false, opts));
 }
 
 async function startFsck(

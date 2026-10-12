@@ -1,6 +1,7 @@
 # ADR-042: Stalwart logical DB export via `stalwart -e`
 
 **Status**: DEFERRED — captured for future work, not currently scheduled.
+**Update 2026-10-12**: the platform later shipped a logical export as the *mail archive* (on demand and scheduled, with a restore). It is now switched off and its code kept dormant — see `backend/src/modules/mail-admin/archive-dormant.ts`. Mail snapshots are the backup; the logical export remains available by hand: [MAIL_STORE_EXPORT_IMPORT.md](../../operations/MAIL_STORE_EXPORT_IMPORT.md).
 **Decision date**: 2026-05-19
 **Trigger to ship**: explicit operator request, OR a confirmed RocksDB-corruption incident on a production cluster, OR a customer compliance requirement for portable mail export.
 

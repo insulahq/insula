@@ -418,8 +418,8 @@ PY
 #
 # The block above covers images that appear in a k8s manifest, via the
 # kustomization `images:` transformer. It cannot cover the ones the BACKEND
-# launches at runtime — mail-archive checkpoint, file-manager, tenant-backup-tools,
-# migration-tools, claim-validator, node-terminal — because those references live
+# launches at runtime — file-manager, tenant-backup-tools, migration-tools,
+# claim-validator, node-terminal — because those references live
 # in a ConfigMap the backend reads, not in a pod spec. Each is digest-pinned on
 # `development` by its own build workflow (.github/scripts/pin-config-image.sh);
 # without this, a signed release still shipped them as mutable `:latest`, which
@@ -513,8 +513,8 @@ git -C "$ROOT" add platform/VERSION CHANGELOG.md
 # above. This line was MISSING: the script announced "stamped N runtime-image
 # digest pin(s)", left the edit in the working tree, and committed everything
 # else — so v2026.8.1 through v2026.8.4 each shipped `:latest` for
-# file-manager, rocksdb-secondary-checkpoint, tenant-backup-tools,
-# migration-tools, claim-validator and node-terminal, while `development`
+# file-manager, the mail-archive checkpoint image (since retired),
+# tenant-backup-tools, migration-tools, claim-validator and node-terminal, while `development`
 # carried proper digests. A production cluster then pulled whatever `latest`
 # happened to be, which is exactly what digest pinning exists to prevent.
 [ -f "$PROD_PC" ] && git -C "$ROOT" add k8s/overlays/production/platform-config-patch.yaml

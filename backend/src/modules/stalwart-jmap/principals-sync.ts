@@ -35,6 +35,7 @@ import {
 } from './client.js';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
@@ -105,6 +106,13 @@ export function createPrincipalsSyncScheduler(
     }
   }
 
+  // The timer's cycles run on one replica: each lists every principal and
+  // mailing list in Stalwart, and replicas syncing together split the new
+  // drift between them and each alert. `runOnce` (an explicit call) is not
+  // leased.
+  const scheduledCycle = (): Promise<unknown> =>
+    withSchedulerLease(db, 'stalwart-principals-sync', intervalMs * 1.5, runCycle);
+
   return {
     start() {
       if (timer !== null) return;
@@ -126,11 +134,11 @@ export function createPrincipalsSyncScheduler(
         // return on the next start() prevents a double-start. The next
         // line then re-installs the periodic interval — also stop()able.
         timer = null;
-        void runCycle().catch((err) => {
+        void scheduledCycle().catch((err) => {
           log.error({ err: err instanceof Error ? err.message : String(err) }, 'initial cycle failed');
         });
         timer = setInterval(() => {
-          void runCycle().catch((err) => {
+          void scheduledCycle().catch((err) => {
             log.error({ err: err instanceof Error ? err.message : String(err) }, 'cycle failed');
           });
         }, intervalMs);
@@ -723,12 +731,13 @@ interface DriftTickItem {
  * Semantics:
  *   - Item already-active and re-seen: bump last_seen_at, leave first_detected_at alone.
  *   - Item not previously tracked (or previously resolved): INSERT new row,
- *     return it in the `newItems` list.
+ *     return it in the `newItems` list — unless another pass inserted it
+ *     first, in which case that pass returns it.
  *   - Item previously active but not seen this tick: mark resolved_via='reappeared'.
  *     (The platform DB row is no longer in drift — either Stalwart recovered
  *     the entry or the platform row was deleted.)
  */
-async function reconcileDriftItems(
+export async function reconcileDriftItems(
   db: Database,
   thisTick: ReadonlyArray<DriftTickItem>,
   insertFailures: string[] = [],
@@ -771,16 +780,26 @@ async function reconcileDriftItems(
       // clear. Migration 0128 fixes that constraint; this makes the next
       // mismatch cost one row instead of the pass. It is reported, never
       // swallowed: a kind the database rejects is a bug, not a condition.
+      //
+      // A pass can lose this insert to another one: two passes that both read
+      // "not active" a moment ago (the timer's on one replica and an explicit
+      // run on another, or a lease taken over mid-pass). The row is then
+      // stored — by the other pass, which also reports it — so the conflict
+      // on the one-active-row-per-item index is neither a failure nor new
+      // here. It used to surface as "drift rows could not be stored".
       try {
-        await db.insert(mailDriftItems).values({
+        const inserted = await db.insert(mailDriftItems).values({
           id: randomUUID(),
           kind: item.kind,
           expectedName: item.expectedName,
           expectedStalwartId: item.expectedStalwartId,
           platformRowId: item.platformRowId,
           notes: item.notes ?? null,
-        });
-        newItems.push(item);
+        }).onConflictDoNothing({
+          target: [mailDriftItems.kind, mailDriftItems.platformRowId],
+          where: isNull(mailDriftItems.resolvedAt),
+        }).returning({ id: mailDriftItems.id });
+        if (inserted.length > 0) newItems.push(item);
       } catch (err) {
         insertFailures.push(
           `${item.kind}:${item.platformRowId} (${err instanceof Error ? err.message : String(err)})`,
@@ -794,10 +813,12 @@ async function reconcileDriftItems(
     .filter((r) => !tickKey.has(`${r.kind}:${r.platformRowId}`))
     .map((r) => r.id);
   if (resolvedRowIds.length > 0) {
+    // Only rows still active: one an operator dismissed, or another pass
+    // resolved, since this pass read the list keeps the resolution it has.
     await db
       .update(mailDriftItems)
       .set({ resolvedAt: sql`now()`, resolvedVia: 'reappeared' })
-      .where(inArray(mailDriftItems.id, resolvedRowIds));
+      .where(and(inArray(mailDriftItems.id, resolvedRowIds), isNull(mailDriftItems.resolvedAt)));
   }
 
   return newItems;

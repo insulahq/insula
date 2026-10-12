@@ -1458,12 +1458,45 @@ export async function updateTenant(
     : updated;
 }
 
+export interface DeleteTenantOptions {
+  /** The operator's "Notify tenant" checkbox, unticked. */
+  readonly suppressTenantNotification?: boolean;
+  /** Who started it, and the bulk task it belongs to — for the task tracker. */
+  readonly triggeredByUserId?: string | null;
+  readonly parentTaskId?: string | null;
+  /**
+   * Delete only a tenant that is still archived, has been since before this
+   * moment, and has no storage operation under way — checked under the
+   * tenant's lock. For the automatic sweep, whose list of due tenants may be
+   * hours old by the time it reaches one: the operator may be restoring it.
+   * Refused with NO_LONGER_DUE — also when the tenant has been taken out of
+   * the automation meanwhile — or STORAGE_OP_IN_PROGRESS when it is due but
+   * owned by an operation.
+   */
+  readonly onlyIfArchivedBefore?: Date;
+}
+
+/**
+ * Delete a tenant for good. Holds the tenant's lock (tenant-lock.ts) from the
+ * first check to the dropped row, so that nothing starts an operation on a
+ * tenant being deleted and two deletes of one tenant run one after the other
+ * — the second finds it gone.
+ */
 export async function deleteTenant(
   db: Database,
   id: string,
   k8sTenants?: K8sClients,
-  /** The operator's "Notify tenant" checkbox, unticked. */
-  opts: { suppressTenantNotification?: boolean } = {},
+  opts: DeleteTenantOptions = {},
+): Promise<{ transitionId: string | null }> {
+  const { withTenantLock } = await import('../tenant-lifecycle/tenant-lock.js');
+  return withTenantLock(db, id, () => deleteTenantLocked(db, id, k8sTenants, opts));
+}
+
+async function deleteTenantLocked(
+  db: Database,
+  id: string,
+  k8sTenants: K8sClients | undefined,
+  opts: DeleteTenantOptions,
 ): Promise<{ transitionId: string | null }> {
   const tenant = await getTenantById(db, id);
 
@@ -1471,6 +1504,39 @@ export async function deleteTenant(
   // cascade dispatch — the lifecycle hook `system-tenant-guard` also
   // catches this, but service-layer is the first line of defense.
   assertNotSystem(tenant, 'delete');
+
+  if (opts.onlyIfArchivedBefore) {
+    // The row itself: the response shape above carries no dates to compare.
+    const [row] = await db
+      .select({
+        status: tenants.status,
+        archivedAt: tenants.archivedAt,
+        state: tenants.storageLifecycleState,
+        exempt: tenants.lifecycleAutomationExempt,
+      })
+      .from(tenants)
+      .where(eq(tenants.id, id));
+    const due = row?.status === 'archived' && !!row.archivedAt && row.archivedAt < opts.onlyIfArchivedBefore;
+    if (!due) {
+      throw new ApiError('NO_LONGER_DUE', 'Tenant is no longer archived for long enough to be deleted automatically', 409);
+    }
+    // An admin may have taken it out of the automation since the sweep read
+    // its list — the sweep can be hours into a backlog by now.
+    if (row.exempt) {
+      throw new ApiError('NO_LONGER_DUE', 'Tenant is kept out of automatic archive and delete', 409);
+    }
+    // Due, but something owns it — a restore under way, or an operation that
+    // failed and was not cleared. Said the way a storage operation says it, so
+    // the sweep can tell "wait" from "stuck until an operator clears it".
+    if (row.state !== 'idle') {
+      throw new ApiError(
+        'STORAGE_OP_IN_PROGRESS',
+        `A ${row.state} operation owns this tenant; it is not deleted automatically meanwhile`,
+        409,
+        { currentState: row.state },
+      );
+    }
+  }
 
   // Unified hard-delete cascade via tenant-lifecycle/cascades.ts —
   // namespace delete + DB row cascade in one function. Falls through
@@ -1505,7 +1571,13 @@ export async function deleteTenant(
     // are gone before the row (and its cascade-linked snapshot rows) disappear.
     const { applyDeleted } = await import('../tenant-lifecycle/cascades.js');
     const transitionId = await applyDeleted(
-      { db, k8s: k8sTenants, suppressTenantNotification: opts.suppressTenantNotification === true },
+      {
+        db,
+        k8s: k8sTenants,
+        suppressTenantNotification: opts.suppressTenantNotification === true,
+        triggeredByUserId: opts.triggeredByUserId ?? null,
+        parentTaskId: opts.parentTaskId ?? null,
+      },
       id,
       tenant.kubernetesNamespace,
     );

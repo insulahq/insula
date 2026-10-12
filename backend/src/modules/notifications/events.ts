@@ -14,7 +14,8 @@
  * service) should only know about the *event*, not the presentation.
  */
 
-import { emitEvent } from './dispatcher/dispatch.js';
+import { emitEvent, type EmitResult } from './dispatcher/dispatch.js';
+import { getProviderForCategoryEmail } from './providers/service.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -42,9 +43,9 @@ async function dispatchSafe(
     readonly resourceType?: string;
     readonly resourceId?: string;
   },
-): Promise<void> {
+): Promise<EmitResult | null> {
   try {
-    await emitEvent(db, {
+    return await emitEvent(db, {
       categoryId,
       scope,
       variables: { ...variables } as Record<string, unknown>,
@@ -57,7 +58,17 @@ async function dispatchSafe(
     });
   } catch {
     // Legacy contract: never throw from an event helper.
+    return null;
   }
+}
+
+/**
+ * Did this dispatch reach anyone — on any channel, now or queued? False when
+ * every recipient had already been told under the same dedupe key, when
+ * nobody is subscribed, and when the dispatch failed.
+ */
+function toldSomeone(result: EmitResult | null): boolean {
+  return (result?.perChannelStatuses ?? []).some((s) => s.status === 'sent' || s.status === 'queued');
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -532,12 +543,16 @@ export interface AdminBackupFailedPayload {
   /** What failed, one per entry (e.g. each tenant of a wave). Rendered as a list on every channel. */
   readonly items?: readonly string[];
 }
+/**
+ * Resolves true when this call told someone. A caller that re-reports a
+ * standing failure under one dedupe key gets false from the second call on.
+ */
 export async function notifyAdminBackupFailed(
   db: Database,
   payload: AdminBackupFailedPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, { ...payload, items: payload.items ?? [] }, undefined, { dedupeKey });
+): Promise<boolean> {
+  return toldSomeone(await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, { ...payload, items: payload.items ?? [] }, undefined, { dedupeKey }));
 }
 
 export interface AdminBackupTargetUnreachablePayload {
@@ -683,6 +698,64 @@ export async function notifyTenantWorkloadsDown(
   dedupeKey?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   return dispatchReporting(db, 'tenant.workloads_down', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface TenantLifecycleNoticePayload {
+  /** The date the tenant is given, as YYYY-MM-DD: nothing happens to it before. */
+  readonly dueDate: string;
+}
+
+/**
+ * The automatic archive/delete sweep's notice to a tenant: it will be archived
+ * (or deleted) on `dueDate` (Platform → Tenant Lifecycle Hooks).
+ *
+ * It goes to the tenant's own admins, and by email to `contactAddresses` — the
+ * account's contact addresses, which reach a tenant that has no user at all;
+ * an address that is also one of those admins' gets one copy.
+ *
+ * The sweep acts on the date it gives here, so it has to know what became of
+ * the message. `ok: false` — it could not be dispatched at all. `reached` —
+ * how many copies are on their way to a person, or were sent before under the
+ * same key; 0 means there was nobody to tell (no user and no address, the
+ * category switched off, notifications disabled). The sweep does not count
+ * such a notice. The operators' broadcast channel is not a person — and an
+ * email is on its way to nobody while the platform has no mail provider to
+ * send it through: it is queued all the same, and then fails.
+ *
+ * Never throws.
+ */
+export async function notifyTenantLifecycleNotice(
+  db: Database,
+  tenantId: string,
+  step: 'archive' | 'delete',
+  payload: TenantLifecycleNoticePayload,
+  dedupeKey?: string,
+  contactAddresses: readonly string[] = [],
+): Promise<{ ok: boolean; reached: number; error?: string }> {
+  const categoryId = step === 'archive' ? 'tenant.archive_scheduled' : 'tenant.deletion_scheduled';
+  try {
+    const result = await emitEvent(db, {
+      categoryId,
+      scope: { kind: 'tenant', tenantId },
+      variables: { ...payload },
+      tenantId,
+      dedupeKey,
+      externalRecipients: contactAddresses,
+    });
+    const onItsWay = result.perChannelStatuses.filter((s) => s.channel !== 'ntfy'
+      && (s.status === 'queued' || s.status === 'sending' || s.status === 'sent' || (s.status === 'skipped' && s.error === 'duplicate')));
+    // The same lookup the mail worker does when it comes to send. Unreadable
+    // counts as "cannot": the sweep then tells again, which costs a repeat,
+    // where the other mistake costs a tenant archived unannounced.
+    const canMail = onItsWay.some((s) => s.channel === 'email')
+      && await getProviderForCategoryEmail(db, categoryId).then((p) => !!p?.smtpHost, () => false);
+    const reached = onItsWay.filter((s) => s.channel !== 'email' || canMail).length;
+    return { ok: true, reached };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[notifications] dispatch of '${categoryId}' FAILED: ${error}`);
+    return { ok: false, reached: 0, error };
+  }
 }
 
 export interface TenantWorkloadDiskLimitPayload {

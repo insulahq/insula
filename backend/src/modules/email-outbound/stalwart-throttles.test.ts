@@ -109,7 +109,10 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
   const qGet = vi.mocked(jmap.mtaQueueQuotaGet);
   const qSet = vi.mocked(jmap.mtaQueueQuotaSet);
 
+  // The reconcile's run lock is a lease row: granted unless a test says otherwise.
+  const lease = vi.fn();
   const db = {
+    execute: lease,
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
@@ -146,6 +149,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     vi.clearAllMocks();
     set.mockResolvedValue(emptySet);
     qSet.mockResolvedValue(emptySet);
+    lease.mockResolvedValue({ rows: [{ setting_key: 'lease' }] });
   });
 
   it('creates everything on an empty server (and lowercases domains)', async () => {
@@ -177,6 +181,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
 
   it('blocks domains of non-active tenants (archived) with a messages=0 quota', async () => {
     const archivedDb = {
+      execute: lease,
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
@@ -320,6 +325,87 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     const destroyArg = set.mock.calls[0][0].destroy as string[];
     expect(destroyArg).toContain('stale');
     expect(res.destroyed).toBe(1);
+  });
+
+  const alphaMatch = { match: {}, else: "sender_domain = 'alpha.example.com' && queue_name != 'local' && sender != 'postmaster@alpha.example.com'" };
+
+  it('removes a second object under one description — the copy two reconciles at once used to leave — and keeps the first', async () => {
+    // What two simultaneous reconciles left behind: each found alpha's limits
+    // missing and created them. A raised plan limit was then written to one
+    // copy, and the other went on enforcing the old, lower one.
+    get.mockResolvedValue([
+      { id: 'h1', enable: true, description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`, key: { senderDomain: true }, match: alphaMatch, rate: { count: 50, period: 3_600_000 } },
+      { id: 'h2', enable: true, description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`, key: { senderDomain: true }, match: alphaMatch, rate: { count: 10, period: 3_600_000 } },
+      { id: 'd1', enable: true, description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`, key: { senderDomain: true }, match: alphaMatch, rate: { count: 100, period: 86_400_000 } },
+      { id: 'op1', enable: true, description: 'operator: mine', key: { mx: true }, match: { match: {}, else: 'true' }, rate: { count: 1, period: 1000 } },
+      { id: 'op2', enable: true, description: 'operator: mine', key: { mx: true }, match: { match: {}, else: 'true' }, rate: { count: 1, period: 1000 } },
+    ]);
+    qGet.mockResolvedValue([
+      { id: 'q1', enable: true, description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`, key: { senderDomain: true }, match: alphaMatch, messages: 100, size: null },
+      { id: 'q2', enable: true, description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`, key: { senderDomain: true }, match: alphaMatch, messages: 100, size: null },
+    ]);
+
+    const res = await reconcileStalwartSendLimits(db, silentLogger);
+    expect(res).toMatchObject({ skipped: false, created: 0, updated: 0, destroyed: 2 });
+    // Only the copies go; the operator's own objects are not ours to judge.
+    expect(set.mock.calls[0][0].destroy).toEqual(['h2']);
+    expect(set.mock.calls[0][0].create).toBeUndefined();
+    expect(qSet.mock.calls[0][0].destroy).toEqual(['q2']);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('a copy of an object that is no longer wanted goes with it, once', async () => {
+    get.mockResolvedValue([
+      { id: 's1', enable: true, description: `${DESCRIPTION_PREFIX}gone.example.com:hourly`, key: { senderDomain: true }, match: alphaMatch, rate: { count: 50, period: 3_600_000 } },
+      { id: 's2', enable: true, description: `${DESCRIPTION_PREFIX}gone.example.com:hourly`, key: { senderDomain: true }, match: alphaMatch, rate: { count: 50, period: 3_600_000 } },
+    ]);
+    qGet.mockResolvedValue([]);
+    const res = await reconcileStalwartSendLimits(db, silentLogger);
+    expect([...(set.mock.calls[0][0].destroy as string[])].sort()).toEqual(['s1', 's2']);
+    expect(res.destroyed).toBe(2);
+  });
+
+  it('takes the reconcile\'s run lock, and gives it back when done', async () => {
+    get.mockResolvedValue([]);
+    qGet.mockResolvedValue([]);
+    await reconcileStalwartSendLimits(db, silentLogger);
+    const statements = lease.mock.calls.map(([q]) => JSON.stringify(q));
+    expect(statements.filter((q) => q.includes('scheduler-lease:stalwart-send-limits-run'))).toHaveLength(2);   // claim, release
+    expect(statements.some((q) => q.includes('DELETE FROM platform_settings'))).toBe(true);
+  });
+
+  it('while another reconcile holds the lock past the wait: reads and writes nothing in Stalwart, and says it was skipped', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'Date'] });
+    try {
+      lease.mockResolvedValue({ rows: [] });          // the lease stays someone else's
+      const pending = reconcileStalwartSendLimits(db, silentLogger);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await pending).toEqual({ skipped: true, reason: 'another reconcile was still running', created: 0, updated: 0, destroyed: 0 });
+      expect(get).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+      expect(qSet).not.toHaveBeenCalled();
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('started while another reconcile runs, it waits and then runs itself — it may have been started by a change the other did not read', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'Date'] });
+    try {
+      get.mockResolvedValue([]);
+      qGet.mockResolvedValue([]);
+      let free = false;
+      lease.mockImplementation(async () => ({ rows: free ? [{ setting_key: 'lease' }] : [] }));
+      const pending = reconcileStalwartSendLimits(db, silentLogger);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(get).not.toHaveBeenCalled();
+      free = true;                                     // the other reconcile ends
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await pending).created).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns skipped when Stalwart is unreachable', async () => {

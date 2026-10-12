@@ -13,11 +13,12 @@
  * the status ConfigMap's `reconciledAt` and bails before any
  * ConfigMap / Secret / DaemonSet write.
  *
- * Future: the rotation CLI + admin-panel assignment-CRUD endpoints
- * MAY also call `reconcileBackupRcloneShim` inline for instant
- * convergence on user-initiated changes; the periodic scheduler then
- * acts as the drift safety-net.
+ * A target change (apply-assignment.ts) also reconciles at once instead of
+ * waiting for the tick. Both take the job's run lock (shared/exclusive-run.ts),
+ * so the two never render at the same time.
  */
+import { runExclusive } from '../../shared/exclusive-run.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../db/index.js';
@@ -49,7 +50,12 @@ export function startBackupRcloneShimReconciler(
   const tick = async (): Promise<void> => {
     if (cancelled) return;
     try {
-      await reconcileBackupRcloneShim(db, clients, encryptionKey, log);
+      // One replica ticks: an SFTP-password or CIFS target is obscured with a
+      // random IV, so two replicas rendering the same change stamp different
+      // config hashes on the shim DaemonSet and roll it twice. The run lock
+      // keeps this tick off a reconcile a target change has started.
+      await withSchedulerLease(db, 'backup-rclone-shim', intervalMs * 1.5,
+        () => runExclusive(db, 'backup-rclone-shim', () => reconcileBackupRcloneShim(db, clients, encryptionKey, log), { log }), { log });
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },

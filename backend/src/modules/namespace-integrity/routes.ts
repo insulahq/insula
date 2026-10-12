@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { checkTenantNamespaceIntegrity, sweepFleetIntegrity } from './service.js';
 
@@ -45,7 +46,11 @@ export async function namespaceIntegrityRoutes(app: FastifyInstance): Promise<vo
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const report = await checkTenantNamespaceIntegrity(app.db, k8s, id, true);
+    // The sweep's own repair, for one tenant — under the sweep's run lock, so
+    // the two never repair the same namespace at once (the one that loses
+    // reports a failure for what the other one repaired).
+    const report = await runExclusiveOrBusy(app.db, 'namespace-integrity', 'A namespace integrity sweep',
+      () => checkTenantNamespaceIntegrity(app.db, k8s, id, true), { log: app.log });
     return success(report);
   });
 
@@ -60,7 +65,10 @@ export async function namespaceIntegrityRoutes(app: FastifyInstance): Promise<vo
   }, async () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const result = await sweepFleetIntegrity(app.db, k8s);
+    // Under the sweep's run lock: two sweeps at once race on each repair, and
+    // the one that loses reports a failure for what the other one repaired.
+    const result = await runExclusiveOrBusy(app.db, 'namespace-integrity', 'A namespace integrity sweep',
+      () => sweepFleetIntegrity(app.db, k8s), { log: app.log });
     return success(result);
   });
 }

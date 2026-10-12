@@ -211,6 +211,9 @@ export const tenantResponseSchema = z.object({
   // Orthogonal storage-lifecycle state. `idle` is the common case; any
   // other value means an orchestrator is currently operating on the PVC.
   storageLifecycleState: storageLifecycleStateEnum.optional(),
+  // Kept out of automatic archive and delete (Platform → Tenant Lifecycle
+  // Hooks). Changed through PUT /admin/lifecycle/automation/tenants/:id.
+  lifecycleAutomationExempt: z.boolean().optional(),
   provisioningStatus: provisioningStatusEnum,
   cpuLimitOverride: z.string().nullable(),
   // ADR-062. numeric columns arrive as strings; the enum does not.

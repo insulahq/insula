@@ -140,13 +140,16 @@ Each source is individually routable and rate-limited under
 
 ## Mail snapshots and storage
 
-Mail data is backed up two ways:
+Mail data is backed up by **snapshots**: a restic CronJob of the mail PVC, with
+the schedule and target configured under **Backups → Mail**. A snapshot is what the
+platform restores from when a mail node or its volume is lost.
 
-- **Snapshots** — a restic CronJob of the mail PVC (the schedule and target are
-  configured under **Backups → Mail**). This is the supported off-site mail
-  backup path.
-- **Mail archive (DR export)** — a logical export of the mail store, available on
-  **Email → Operations**.
+The platform used to offer a second path, the *mail archive* (a logical export of
+the store, on **Email → Operations**). It is switched off. The mail server can
+still export and import its whole store, and there are cases only that covers —
+moving the store to another backend or cluster, or rebuilding one whose files are
+damaged. Those are done by hand, with mail stopped:
+[Mail store: manual export and import](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_STORE_EXPORT_IMPORT.md).
 
 ### Reclaiming disk after bulk deletion
 

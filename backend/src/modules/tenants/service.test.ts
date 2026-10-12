@@ -67,6 +67,9 @@ beforeEach(() => {
 import { createTenant, getTenantById, getTenantDetail, listTenants, resolveUserDisplayName, updateTenant, deleteTenant } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
+/** The tenant's lock (tenant-lock.ts) is a lease row: here it is always free. */
+const leaseFree = () => vi.fn().mockResolvedValue({ rows: [{ setting_key: 'lease' }] });
+
 // Helper to build a chainable mock db
 function createMockDb(overrides: {
   selectResult?: unknown[];
@@ -95,6 +98,7 @@ function createMockDb(overrides: {
     insert: insertFn,
     update: updateFn,
     delete: deleteFn,
+    execute: leaseFree(),
     _whereFn: whereFn,
   } as unknown as Parameters<typeof createTenant>[0] & { _whereFn: ReturnType<typeof vi.fn> };
 }
@@ -849,6 +853,56 @@ describe('updateTenant', () => {
 });
 
 describe('deleteTenant', () => {
+  // The automatic sweep's delete: its list of due tenants may be hours old, so
+  // the delete checks again, under the tenant's lock, that this one still is.
+  describe('only if still archived for long enough (the automatic sweep)', () => {
+    const LIMIT = new Date('2026-03-01T00:00:00.000Z');
+    const attempt = async (row: Record<string, unknown>) => {
+      const db = createMockDb({ selectResult: [{ id: 'c1', kubernetesNamespace: 'tenant-c1', ...row }] });
+      const outcome = await deleteTenant(db, 'c1', undefined, { onlyIfArchivedBefore: LIMIT }).then(() => 'deleted', (err: unknown) => err);
+      return { outcome, deleted: (db as unknown as { delete: ReturnType<typeof vi.fn> }).delete.mock.calls.length > 0 };
+    };
+
+    it.each([
+      ['restored since: no longer archived', { status: 'active', archivedAt: new Date('2026-01-01'), state: 'idle' }],
+      ['archived again since: not for long enough', { status: 'archived', archivedAt: new Date('2026-03-02'), state: 'idle' }],
+      ['archived exactly at the limit', { status: 'archived', archivedAt: LIMIT, state: 'idle' }],
+      ['no archive date on record', { status: 'archived', archivedAt: null, state: 'idle' }],
+      // Not due beats busy: a tenant that is no longer due is simply left alone.
+      ['restored since, and busy', { status: 'active', archivedAt: new Date('2026-01-01'), state: 'resizing' }],
+    ])('refuses a tenant %s, and deletes nothing', async (_why, row) => {
+      const { outcome, deleted } = await attempt(row);
+      expect(outcome).toBeInstanceOf(ApiError);
+      expect(outcome).toMatchObject({ code: 'NO_LONGER_DUE', status: 409 });
+      expect(deleted).toBe(false);
+    });
+
+    it.each(['restoring', 'failed'])('refuses a due tenant whose storage state is %s, naming the state, and deletes nothing', async (state) => {
+      const { outcome, deleted } = await attempt({ status: 'archived', archivedAt: new Date('2026-01-01'), state });
+      expect(outcome).toMatchObject({ code: 'STORAGE_OP_IN_PROGRESS', status: 409, details: { currentState: state } });
+      expect(deleted).toBe(false);
+    });
+
+    it('refuses a due tenant an admin has taken out of the automation since, and deletes nothing', async () => {
+      const { outcome, deleted } = await attempt({ status: 'archived', archivedAt: new Date('2026-01-01'), state: 'idle', exempt: true });
+      expect(outcome).toMatchObject({ code: 'NO_LONGER_DUE', status: 409 });
+      expect((outcome as ApiError).message).toContain('kept out');
+      expect(deleted).toBe(false);
+    });
+
+    it('deletes a tenant that is still archived, since before the limit, with nothing under way', async () => {
+      const { outcome, deleted } = await attempt({ status: 'archived', archivedAt: new Date('2026-02-28T23:59:59.000Z'), state: 'idle' });
+      expect(outcome).toBe('deleted');
+      expect(deleted).toBe(true);
+    });
+
+    it('an operator\'s delete asks none of this — not of a tenant kept out of the automation either', async () => {
+      const db = createMockDb({ selectResult: [{ id: 'c1', kubernetesNamespace: 'tenant-c1', status: 'active', archivedAt: null, state: 'restoring', exempt: true }] });
+      await deleteTenant(db, 'c1');
+      expect((db as unknown as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalled();
+    });
+  });
+
   it('should delete tenant regardless of status', async () => {
     const tenant = { id: 'c1', status: 'active' };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
@@ -861,6 +915,7 @@ describe('deleteTenant', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+      execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     await deleteTenant(db, 'c1');
@@ -879,6 +934,7 @@ describe('deleteTenant', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+      execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     await deleteTenant(db, 'c1');
@@ -910,6 +966,7 @@ describe('deleteTenant', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+      execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
@@ -944,6 +1001,7 @@ describe('deleteTenant', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+      execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
@@ -970,7 +1028,7 @@ describe('deleteTenant', () => {
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
     const db = {
-      select: selectFn, delete: deleteFn,
+      select: selectFn, delete: deleteFn, execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
@@ -998,7 +1056,7 @@ describe('deleteTenant', () => {
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
     const db = {
-      select: selectFn, delete: deleteFn,
+      select: selectFn, delete: deleteFn, execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const notFoundErr = Object.assign(new Error('namespaces "x" not found'), { statusCode: 404 });
@@ -1033,7 +1091,7 @@ describe('deleteTenant', () => {
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
     const db = {
-      select: selectFn, delete: deleteFn,
+      select: selectFn, delete: deleteFn, execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const mockDeleteNamespace = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
@@ -1063,6 +1121,7 @@ describe('deleteTenant', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+      execute: leaseFree(),
     } as unknown as Parameters<typeof deleteTenant>[0];
 
     const mockDeleteNamespace = vi.fn().mockRejectedValue(new Error('k8s API unreachable'));

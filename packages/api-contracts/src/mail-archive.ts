@@ -1,6 +1,9 @@
 /**
  * Stalwart-native, app-level mail archive (operator-triggered).
  *
+ * DORMANT — the mail archive is switched off; nothing calls this while
+ * `MAIL_ARCHIVE_ENABLED` (backend `mail-admin/archive-dormant.ts`) is false.
+ *
  * Distinct from the continuous restic backup of the raw data dir
  * (see mail-snapshot-*). An archive run is a one-shot orchestrated
  * sequence:

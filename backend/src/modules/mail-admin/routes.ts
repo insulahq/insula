@@ -53,6 +53,7 @@ import {
   getMailArchiveSchedule,
   updateMailArchiveSchedule,
 } from './archive-schedule.js';
+import { MAIL_ARCHIVE_ENABLED } from './archive-dormant.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import { getStandbyReports, recordStandbyReport } from './standby-reports.js';
 import {
@@ -413,7 +414,8 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     // the actual operator out of their own re-provision button.
     { preHandler: requireRole('super_admin') },
     async (req: { user?: { sub?: string } }) => {
-      const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
+      const { runStalwartDomainReconcile } = await import('./stalwart-domain-reconciler.js');
+      const { RUN_WAIT_MS, jobAlreadyRunning } = await import('../../shared/exclusive-run.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
       const cfg = app.config as Record<string, unknown>;
       const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
@@ -421,7 +423,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         { userId: req.user?.sub ?? 'unknown' },
         'mail-admin: operator-triggered Stalwart re-provision',
       );
-      const result = await runStalwartDomainReconcilerTick({
+      const run = await runStalwartDomainReconcile({
         core: k8s.core,
         // Wire `custom` so the operator "Re-provision Stalwart" button
         // also reconciles the ACME HTTP-01 override IngressRoute
@@ -435,8 +437,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
           info: (...args: unknown[]) => app.log.info(args.join(' ')),
         },
-      });
-      return success(result);
+      }, { waitMs: RUN_WAIT_MS, log: app.log });
+      if (!run.ran) throw jobAlreadyRunning('A mail server re-provision', 'stalwart-domain-reconciler');
+      return success(run.value);
     },
   );
 
@@ -848,220 +851,225 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // GET  /admin/mail/archive-runs/:id          — single run (UI polling)
   // POST /admin/mail/archive/trigger           — start a new run
   // POST /admin/mail/archive/restore           — restore from a past run
-  app.get(
-    '/admin/mail/archive-status',
-    { preHandler: requireRole('super_admin') },
-    async () => {
-      const cfg = app.config as Record<string, unknown>;
-      try {
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
-        const k8s = createK8sClients(kubeconfigPath);
-        const result = await getMailArchiveStatus({ ...k8s, db: app.db, kubeconfigPath });
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.warn({ err }, 'mail-admin: archive status read failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_STATUS_FAILED',
-          'Could not read mail archive status — see server logs',
-          503,
-        );
-      }
-    },
-  );
+  //
+  // DORMANT: the mail archive is switched off (archive-dormant.ts), so none of
+  // these routes is registered.
+  if (MAIL_ARCHIVE_ENABLED) {
+    app.get(
+      '/admin/mail/archive-status',
+      { preHandler: requireRole('super_admin') },
+      async () => {
+        const cfg = app.config as Record<string, unknown>;
+        try {
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          const result = await getMailArchiveStatus({ ...k8s, db: app.db, kubeconfigPath });
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.warn({ err }, 'mail-admin: archive status read failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_STATUS_FAILED',
+            'Could not read mail archive status — see server logs',
+            503,
+          );
+        }
+      },
+    );
 
-  app.get(
-    '/admin/mail/archive-runs',
-    { preHandler: requireRole('super_admin') },
-    async (req: { query: unknown }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const q = (req.query ?? {}) as { limit?: string; offset?: string };
-      // Cap limit to 100 to match the platform PaginationParams contract.
-      const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-      const offset = Math.max(0, Number(q.offset ?? 0) || 0);
-      try {
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
-        const k8s = createK8sClients(kubeconfigPath);
-        const result = await listMailArchives({ limit, offset }, { ...k8s, db: app.db, kubeconfigPath });
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.warn({ err }, 'mail-admin: archive list failed');
-        throw new ApiError('MAIL_ARCHIVE_LIST_FAILED', 'Could not list mail archives — see server logs', 503);
-      }
-    },
-  );
+    app.get(
+      '/admin/mail/archive-runs',
+      { preHandler: requireRole('super_admin') },
+      async (req: { query: unknown }) => {
+        const cfg = app.config as Record<string, unknown>;
+        const q = (req.query ?? {}) as { limit?: string; offset?: string };
+        // Cap limit to 100 to match the platform PaginationParams contract.
+        const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+        const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+        try {
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          const result = await listMailArchives({ limit, offset }, { ...k8s, db: app.db, kubeconfigPath });
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.warn({ err }, 'mail-admin: archive list failed');
+          throw new ApiError('MAIL_ARCHIVE_LIST_FAILED', 'Could not list mail archives — see server logs', 503);
+        }
+      },
+    );
 
-  app.get(
-    '/admin/mail/archive-runs/:id',
-    { preHandler: requireRole('super_admin') },
-    async (req: { params: unknown }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const p = (req.params ?? {}) as { id?: string };
-      if (!p.id || !/^[a-f0-9-]{36}$/.test(p.id)) {
-        throw new ApiError('MAIL_ARCHIVE_RUN_INVALID_ID', 'archive run id must be a UUID', 400);
-      }
-      try {
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
-        const k8s = createK8sClients(kubeconfigPath);
-        const result = await getMailArchiveRun(p.id, { ...k8s, db: app.db, kubeconfigPath });
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.warn({ err, runId: p.id }, 'mail-admin: archive run read failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_RUN_READ_FAILED',
-          'Could not read archive run — see server logs',
-          503,
-        );
-      }
-    },
-  );
+    app.get(
+      '/admin/mail/archive-runs/:id',
+      { preHandler: requireRole('super_admin') },
+      async (req: { params: unknown }) => {
+        const cfg = app.config as Record<string, unknown>;
+        const p = (req.params ?? {}) as { id?: string };
+        if (!p.id || !/^[a-f0-9-]{36}$/.test(p.id)) {
+          throw new ApiError('MAIL_ARCHIVE_RUN_INVALID_ID', 'archive run id must be a UUID', 400);
+        }
+        try {
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          const result = await getMailArchiveRun(p.id, { ...k8s, db: app.db, kubeconfigPath });
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.warn({ err, runId: p.id }, 'mail-admin: archive run read failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_RUN_READ_FAILED',
+            'Could not read archive run — see server logs',
+            503,
+          );
+        }
+      },
+    );
 
-  app.post(
-    '/admin/mail/archive/trigger',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      // Body is optional — empty body is fine and means "default mode".
-      const parsed = mailArchiveTriggerRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      const mode = parsed.data.mode; // undefined → orchestrator default (no_downtime)
-      app.log.warn(
-        { userId, mode: mode ?? 'default(no_downtime)' },
-        mode === 'downtime'
-          ? 'mail-admin: archive trigger requested (will incur ~60-120s mail downtime)'
-          : 'mail-admin: archive trigger requested (no-downtime path)',
-      );
-      try {
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
-        const k8s = createK8sClients(kubeconfigPath);
-        const result = await startMailArchive(
-          { ...k8s, db: app.db, kubeconfigPath, userId },
-          { mode },
-        );
-        app.log.warn({ userId, runId: result.runId }, 'mail-admin: archive run started');
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: archive trigger failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_TRIGGER_FAILED',
-          'Could not start mail archive — see server logs',
-          500,
-        );
-      }
-    },
-  );
-
-  app.post(
-    '/admin/mail/archive/restore',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailArchiveRestoreRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      // DESTRUCTIVE — replaces live mail data with the archive contents.
-      app.log.warn(
-        { userId, sourceRunId: parsed.data.runId },
-        'mail-admin: ARCHIVE RESTORE requested — live mail data will be replaced',
-      );
-      try {
-        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
-        const k8s = createK8sClients(kubeconfigPath);
-        const result = await startMailArchiveRestore(parsed.data.runId, {
-          ...k8s,
-          db: app.db,
-          kubeconfigPath,
-          userId,
-        });
+    app.post(
+      '/admin/mail/archive/trigger',
+      { preHandler: requireRole('super_admin') },
+      async (req: { body: unknown; user?: { sub?: string } }) => {
+        const cfg = app.config as Record<string, unknown>;
+        const userId = req.user?.sub ?? 'unknown';
+        // Body is optional — empty body is fine and means "default mode".
+        const parsed = mailArchiveTriggerRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          throw new ApiError(
+            'VALIDATION_ERROR',
+            parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+            400,
+          );
+        }
+        const mode = parsed.data.mode; // undefined → orchestrator default (no_downtime)
         app.log.warn(
-          { userId, restoreRunId: result.runId, sourceRunId: parsed.data.runId },
-          'mail-admin: archive restore started',
+          { userId, mode: mode ?? 'default(no_downtime)' },
+          mode === 'downtime'
+            ? 'mail-admin: archive trigger requested (will incur ~60-120s mail downtime)'
+            : 'mail-admin: archive trigger requested (no-downtime path)',
         );
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: archive restore failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_RESTORE_FAILED',
-          'Could not start mail archive restore — see server logs',
-          500,
-        );
-      }
-    },
-  );
+        try {
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          const result = await startMailArchive(
+            { ...k8s, db: app.db, kubeconfigPath, userId },
+            { mode },
+          );
+          app.log.warn({ userId, runId: result.runId }, 'mail-admin: archive run started');
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.error({ err, userId }, 'mail-admin: archive trigger failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_TRIGGER_FAILED',
+            'Could not start mail archive — see server logs',
+            500,
+          );
+        }
+      },
+    );
 
-  // ─── Archive schedule (0107: fixed-interval cron, in-process timer) ───────
-  app.get(
-    '/admin/mail/archive/schedule',
-    { preHandler: requireRole('super_admin', 'admin', 'support') },
-    async () => {
-      try {
-        const result = await getMailArchiveSchedule(app.db);
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err }, 'mail-admin: archive schedule read failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_SCHEDULE_READ_FAILED',
-          'Could not read mail archive schedule — see server logs',
-          500,
+    app.post(
+      '/admin/mail/archive/restore',
+      { preHandler: requireRole('super_admin') },
+      async (req: { body: unknown; user?: { sub?: string } }) => {
+        const cfg = app.config as Record<string, unknown>;
+        const userId = req.user?.sub ?? 'unknown';
+        const parsed = mailArchiveRestoreRequestSchema.safeParse(req.body);
+        if (!parsed.success) {
+          throw new ApiError(
+            'VALIDATION_ERROR',
+            parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+            400,
+          );
+        }
+        // DESTRUCTIVE — replaces live mail data with the archive contents.
+        app.log.warn(
+          { userId, sourceRunId: parsed.data.runId },
+          'mail-admin: ARCHIVE RESTORE requested — live mail data will be replaced',
         );
-      }
-    },
-  );
+        try {
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          const result = await startMailArchiveRestore(parsed.data.runId, {
+            ...k8s,
+            db: app.db,
+            kubeconfigPath,
+            userId,
+          });
+          app.log.warn(
+            { userId, restoreRunId: result.runId, sourceRunId: parsed.data.runId },
+            'mail-admin: archive restore started',
+          );
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.error({ err, userId }, 'mail-admin: archive restore failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_RESTORE_FAILED',
+            'Could not start mail archive restore — see server logs',
+            500,
+          );
+        }
+      },
+    );
 
-  app.patch(
-    '/admin/mail/archive/schedule',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailArchiveScheduleUpdateSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
-          400,
+    // ─── Archive schedule (0107: fixed-interval cron, in-process timer) ───────
+    app.get(
+      '/admin/mail/archive/schedule',
+      { preHandler: requireRole('super_admin', 'admin', 'support') },
+      async () => {
+        try {
+          const result = await getMailArchiveSchedule(app.db);
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.error({ err }, 'mail-admin: archive schedule read failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_SCHEDULE_READ_FAILED',
+            'Could not read mail archive schedule — see server logs',
+            500,
+          );
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/mail/archive/schedule',
+      { preHandler: requireRole('super_admin') },
+      async (req: { body: unknown; user?: { sub?: string } }) => {
+        const userId = req.user?.sub ?? 'unknown';
+        const parsed = mailArchiveScheduleUpdateSchema.safeParse(req.body);
+        if (!parsed.success) {
+          throw new ApiError(
+            'VALIDATION_ERROR',
+            parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+            400,
+          );
+        }
+        app.log.warn(
+          { userId, interval: parsed.data.interval, hourUtc: parsed.data.hourUtc, weekdayUtc: parsed.data.weekdayUtc },
+          'mail-admin: archive schedule update requested',
         );
-      }
-      app.log.warn(
-        { userId, interval: parsed.data.interval, hourUtc: parsed.data.hourUtc, weekdayUtc: parsed.data.weekdayUtc },
-        'mail-admin: archive schedule update requested',
-      );
-      try {
-        const result = await updateMailArchiveSchedule(parsed.data, app.db);
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: archive schedule update failed');
-        throw new ApiError(
-          'MAIL_ARCHIVE_SCHEDULE_UPDATE_FAILED',
-          'Could not update mail archive schedule — see server logs',
-          500,
-        );
-      }
-    },
-  );
+        try {
+          const result = await updateMailArchiveSchedule(parsed.data, app.db);
+          return success(result);
+        } catch (err) {
+          if (err instanceof ApiError) throw err;
+          app.log.error({ err, userId }, 'mail-admin: archive schedule update failed');
+          throw new ApiError(
+            'MAIL_ARCHIVE_SCHEDULE_UPDATE_FAILED',
+            'Could not update mail archive schedule — see server logs',
+            500,
+          );
+        }
+      },
+    );
+  }
 
   // ─── Snapshot schedule ────────────────────────────────────────────
   app.get(

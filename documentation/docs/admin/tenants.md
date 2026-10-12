@@ -240,6 +240,22 @@ You can drive the same transitions from the **Status** dropdown in the
 Account Information card — it's the keyboard-friendly equivalent of the
 buttons.
 
+Archive and Delete can also happen by themselves: a suspended tenant archived
+after a set number of days, an archived one deleted after another, each told
+some days ahead. Both are off until switched on — see
+[Automatic archive and delete](platform-settings.md#automatic-archive-and-delete).
+To hold one tenant back from that, tick **Actions → Keep out of automatic
+archive and delete**: it is saved at once, the page then says *Kept out of
+automatic archive and delete* under the tenant's name, and the tenant is never
+archived or deleted by itself — you still can, by hand.
+
+An archived tenant has no storage volume: archiving deletes it after copying
+the files to the backup target, and **Restore** creates a new one. Releases
+before this one could leave an empty volume on an archived tenant; the
+platform removes such a volume by itself when it has never been written to,
+and tells you (*Namespace integrity repaired*). A volume that holds anything
+is never removed.
+
 !!! warning "Archive vs Delete"
     **Archive** is the safe choice when a customer leaves but might come
     back — their data survives as a snapshot. **Delete** is permanent and

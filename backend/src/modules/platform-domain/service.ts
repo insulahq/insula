@@ -191,8 +191,10 @@ export async function renamePlatformDomain(
   // the rename takes effect immediately rather than on the 30-min schedule.
   try {
     if (!k8s) k8s = createK8sClients(kubeconfigPath);
-    const { runStalwartDomainReconcilerTick } = await import('../mail-admin/stalwart-domain-reconciler.js');
-    await runStalwartDomainReconcilerTick({
+    const { runStalwartDomainReconcile } = await import('../mail-admin/stalwart-domain-reconciler.js');
+    const { RUN_WAIT_MS } = await import('../../shared/exclusive-run.js');
+    // After any pass under way, so this one reads the hostname just renamed.
+    const run = await runStalwartDomainReconcile({
       core: k8s.core,
       custom: k8s.custom,
       db,
@@ -200,8 +202,8 @@ export async function renamePlatformDomain(
         warn: (...args: unknown[]) => log.warn({ stalwart: args.join(' ') }),
         info: (...args: unknown[]) => log.info({ stalwart: args.join(' ') }),
       },
-    });
-    reconciled.mail = 'reconciled';
+    }, { waitMs: RUN_WAIT_MS });
+    reconciled.mail = run.ran ? 'reconciled' : 'pending: another reconcile was still running; the 30-min tick applies it';
   } catch (err) {
     reconciled.mail = `error: ${err instanceof Error ? err.message : String(err)}`;
     log.warn({ err }, 'platform-domain rename: mail reconcile failed (non-blocking; 30-min tick retries)');

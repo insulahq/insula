@@ -29,6 +29,12 @@ import { z } from 'zod';
  * `resource_quota_exceeded` — the live ResourceQuota reports `used > hard`, so
  * the apiserver is REJECTING new objects of that kind right now. Usually the
  * same root cause, one step further along.
+ *
+ * `archived_volume_unused` — an ARCHIVED tenant has a storage volume that was
+ * never written to. Archiving deletes the volume; an earlier release's
+ * integrity sweep then created an empty one in its place. The reconciler
+ * removes it. A volume on an archived tenant that HAS been written to is not
+ * a finding and is never touched.
  */
 export const integrityFindingSchema = z.enum([
   'namespace_missing',
@@ -37,6 +43,7 @@ export const integrityFindingSchema = z.enum([
   'network_policy_missing',
   'provisioned_exceeds_plan',
   'resource_quota_exceeded',
+  'archived_volume_unused',
 ]);
 export type IntegrityFinding = z.infer<typeof integrityFindingSchema>;
 

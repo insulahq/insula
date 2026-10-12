@@ -44,7 +44,7 @@ function createWrapper() {
 
 function setupMockApi(domains: unknown[] = [], relays: unknown[] = []) {
   // The EmailManagement page mounts a fleet of mail-admin cards
-  // (MailDrCard, MailArchiveCard, MailSnapshotHealthCard, etc) which
+  // (MailDrCard, MailSnapshotHealthCard, etc) which
   // call their own endpoints on mount. Each card's queryFn expects a
   // typed envelope; returning a bare `{data: []}` here makes the cards
   // crash inside their error boundaries, which then propagates up and
@@ -60,9 +60,6 @@ function setupMockApi(domains: unknown[] = [], relays: unknown[] = []) {
     if (url.includes('/smtp-relays'))          return Promise.resolve({ data: relays });
     if (url.includes('/mail/placement'))       return Promise.resolve({ data: { primaryNode: 'node-a', secondaryNode: null, tertiaryNode: null, autoFailoverEnabled: false, failoverThresholdSeconds: 60, drState: 'healthy', candidateNodes: [], currentScheduledNode: 'node-a', deploymentReady: true } });
     if (url.includes('/mail/port-exposure'))   return Promise.resolve({ data: { mode: 'thisNodeOnly', haproxyReady: 0, haproxyDesired: 0 } });
-    if (url.includes('/mail/archive-status'))  return Promise.resolve({ data: { last: null, current: null, backupTarget: { backupStoreId: null, backupStoreName: null, storageType: null }, scheduledArchivingAvailable: true, scheduledArchivingBlockedBy: null } });
-    if (url.includes('/mail/archive/schedule')) return Promise.resolve({ data: { interval: 'off', hourUtc: 2, weekdayUtc: 0, lastScheduledRunAt: null, nextFireAt: null } });
-    if (url.includes('/mail/archive-runs'))    return Promise.resolve({ data: { data: [], total: 0 } });
     if (url.includes('/mail/snapshot/health')) return Promise.resolve({ data: { state: 'never_run', lastRun: null, nextRun: null } });
     if (url.includes('/mail/snapshot/schedule')) return Promise.resolve({ data: { cron: null, enabled: false } });
     if (url.includes('/mail/snapshot/backup-target')) return Promise.resolve({ data: { backupStoreId: null, backupStoreName: null, storageType: null } });
