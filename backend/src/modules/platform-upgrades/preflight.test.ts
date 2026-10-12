@@ -222,4 +222,53 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
   it('unreadable → warn, never a silent pass', () => {
     expect(gate(evaluatePreflight({ ...healthy, nodeHostState: null }), 'host-migrations-healthy').status).toBe('warn');
   });
+
+  // ── storage operations in flight ─────────────────────────────────────────
+
+  describe('a storage operation in flight', () => {
+    const id = 'no-storage-operation-running';
+    const ops = (...kinds: string[]) => kinds.map((kind, i) => ({ tenant: `Tenant ${i + 1}`, kind }));
+
+    it('none in flight passes; a caller that does not collect them gets no gate at all', () => {
+      expect(gate(evaluatePreflight({ ...healthy, storageOperations: [] }), id)).toMatchObject({ status: 'pass', detail: 'none in flight' });
+      expect(evaluatePreflight(healthy).gates.some((g) => g.id === id)).toBe(false);
+    });
+
+    it.each(['resize', 'restore', 'fsck', 'relocate', 'suspend'])('production: a %s in flight blocks, and names the tenant', (kind) => {
+      const r = evaluatePreflight({ ...healthy, storageOperations: ops(kind) });
+      expect(gate(r, id).status).toBe('fail');
+      expect(gate(r, id).detail).toContain(`${kind} of Tenant 1`);
+      expect(gate(r, id).detail).toContain('Wait for it to finish');
+      expect(r.ok).toBe(false);
+    });
+
+    it('an archive in flight never blocks: the new pods pick it up again — it is a warning that says so', () => {
+      const r = evaluatePreflight({ ...healthy, storageOperations: ops('archive') });
+      expect(gate(r, id).status).toBe('warn');
+      expect(gate(r, id).detail).toContain('archive of Tenant 1');
+      expect(gate(r, id).detail).toContain('picked up again afterwards');
+      expect(r.ok).toBe(true);
+    });
+
+    it('an archive beside another operation does not excuse the other one', () => {
+      expect(gate(evaluatePreflight({ ...healthy, storageOperations: ops('archive', 'resize') }), id).status).toBe('fail');
+    });
+
+    it('staging: the same operation is a warning, not a block', () => {
+      const r = evaluatePreflight({ ...healthy, environment: 'staging', storageOperations: ops('resize') });
+      expect(gate(r, id).status).toBe('warn');
+      expect(r.ok).toBe(true);
+    });
+
+    it('names five and counts the rest', () => {
+      const detail = gate(evaluatePreflight({ ...healthy, storageOperations: ops('resize', 'resize', 'restore', 'fsck', 'resize', 'resize', 'resize') }), id).detail;
+      expect(detail).toContain('resize of Tenant 5 and 2 more');
+      expect(detail).not.toContain('Tenant 6');
+    });
+
+    it('unreadable is a warning, never a pass', () => {
+      const r = evaluatePreflight({ ...healthy, storageOperations: null });
+      expect(gate(r, id).status).toBe('warn');
+    });
+  });
 });
