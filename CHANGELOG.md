@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.8-rc.2] - 2026-10-12
-
 ### BREAKING
 
 - **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
@@ -216,6 +214,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
   due before it archives or deletes it: its list may be hours old by then, and the operator may
   have resumed or restored the tenant in between.
+- **The upgrade page's bar no longer jumps to the end of "Roll the services" and back.** In the
+  first moment of that step no target version is named yet, and the live progress then counts
+  every service as rolled — while all of them are still on the old release. The bar read 67 % for
+  one frame and 33 % in the next. With no target named, the services are now judged by the release
+  they actually run.
 - **An upgrade no longer starts over a storage operation that it would cut off.** A resize, a
   restore, a filesystem check or a move of a tenant runs inside the management API, and an upgrade
   replaces every API replica. The operation was cut off without a word and its tenant stayed

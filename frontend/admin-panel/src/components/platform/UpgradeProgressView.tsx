@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { X, CheckCircle, Loader2, AlertTriangle, Clock, XCircle, MinusCircle, ExternalLink } from 'lucide-react';
 import { usePostflight, useUpgradeProgress, useUpgradeRun, useUpgradeRunById } from '@/hooks/use-platform-upgrade';
 import { formatVersion } from '@/lib/format-version';
-import UpgradeRunSection, { runPercent, runStatusLine } from '@/components/platform/UpgradeRunSection';
+import UpgradeRunSection, { runPercent, runStatusLine, servicesPercentOf } from '@/components/platform/UpgradeRunSection';
 
 /**
  * The live view of a platform upgrade — rendered as the re-openable Task Center
@@ -106,7 +106,7 @@ export default function UpgradeProgressView({ version, runId, onClose, asPage = 
   const runStopped = run?.status === 'cancelled' || run?.status === 'rolled-back';
   // The services' live roll belongs to the run in flight only — a finished run's
   // page must not borrow the percentage of another upgrade the tab watched.
-  const percent = run ? runPercent(run, live ? (prog?.percent ?? null) : null) : done ? 100 : (prog?.percent ?? (active ? 0 : 100));
+  const percent = run ? runPercent(run, live ? servicesPercentOf(run, prog) : null) : done ? 100 : (prog?.percent ?? (active ? 0 : 100));
   // Connection is flaky mid-roll (admin-panel + platform-api pods restart).
   // failureCount rises on each failed poll and resets on the next success →
   // a live "reconnecting" hint so the modal never looks frozen.
