@@ -4,8 +4,8 @@
  * `evaluatePreflight` handles (null → n/a / soft-warn), so a single unreachable
  * subsystem degrades that one gate instead of failing the whole check.
  */
-import { eq, sql } from 'drizzle-orm';
-import { tenantLifecycleTransitions, nodeHealthState } from '../../db/schema.js';
+import { and, asc, eq, notInArray, sql } from 'drizzle-orm';
+import { tenantLifecycleTransitions, nodeHealthState, storageOperations, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PreflightFacts } from './preflight.js';
@@ -96,6 +96,24 @@ async function inFlightTransitions(db: Database): Promise<number | null> {
 }
 
 /**
+ * Storage operations in flight: the one each tenant's row points at, while it
+ * has not ended. An older row left non-terminal by a release that never closed
+ * it is not "in flight" — nothing would be cut off. Null when unreadable.
+ */
+export async function inFlightStorageOperations(db: Database): Promise<Array<{ tenant: string; kind: string }> | null> {
+  try {
+    return await db
+      .select({ tenant: tenants.name, kind: storageOperations.opType })
+      .from(storageOperations)
+      .innerJoin(tenants, and(eq(tenants.id, storageOperations.tenantId), eq(tenants.activeStorageOpId, storageOperations.id)))
+      .where(notInArray(storageOperations.state, ['idle', 'failed']))
+      .orderBy(asc(storageOperations.createdAt));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Disk facts from the node-health reconciler's persisted state (5-min tick):
  *   maxDiskUsedPct        — highest disk-used % across nodes, or null if that
  *                           column is unpopulated (Phase 1 leaves it null).
@@ -153,10 +171,11 @@ export async function collectPreflightFacts(
   nowMs: number,
   excludedNodes: readonly string[] = [],
 ): Promise<PreflightFacts> {
-  const [cnpg, lhAtRisk, inFlight, disk, backupAge, fluxSuspended, nodes, activeRun, hostState] = await Promise.all([
+  const [cnpg, lhAtRisk, inFlight, storageOps, disk, backupAge, fluxSuspended, nodes, activeRun, hostState] = await Promise.all([
     cnpgReady(k8s),
     longhornAtRiskVolumes(k8s),
     inFlightTransitions(db),
+    inFlightStorageOperations(db),
     nodeDiskFacts(db),
     freshestBackupAgeHours(k8s, nowMs),
     readFluxSuspension(k8s),
@@ -177,6 +196,7 @@ export async function collectPreflightFacts(
     cnpgDetail: cnpg.detail,
     longhornAtRiskVolumes: lhAtRisk,
     inFlightTransitions: inFlight,
+    storageOperations: storageOps,
     maxDiskUsedPct: disk.maxDiskUsedPct,
     nodesWithDiskPressure: disk.nodesWithDiskPressure,
     freshestBackupAgeHours: backupAge,
