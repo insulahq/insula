@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.8-rc.2] - 2026-10-12
+
 ### BREAKING
 
 - **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
