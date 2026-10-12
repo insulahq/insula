@@ -284,6 +284,24 @@ async function inspect(
 }
 
 /**
+ * Whether the tenant is meant to have its storage volume right now.
+ *
+ * Not when it is archived: the archive deleted the volume, after copying the
+ * files off-site — that is what archived means. This sweep used to find the
+ * volume "missing" within half an hour and create an empty one, with a
+ * notification, for every archived tenant: storage paid for a tenant that has
+ * none, and a "repaired" that undid part of the archive.
+ *
+ * And not while a storage operation owns the tenant: a destructive resize and
+ * a restore delete the volume and create it again themselves, and one that
+ * failed half-way is for the operator to clear, not for an empty volume to
+ * paper over.
+ */
+export function volumeExpected(tenant: { readonly status: string; readonly storageLifecycleState: string }): boolean {
+  return tenant.status !== 'archived' && tenant.storageLifecycleState === 'idle';
+}
+
+/**
  * Audit + optionally repair a single tenant's namespace. `repair=false`
  * is the read-only audit used by the UI. `repair=true` is the
  * "Run reconciler" admin action and the cron-driven sweep.
@@ -321,7 +339,11 @@ export async function checkTenantNamespaceIntegrity(
     memoryGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 0),
   };
 
-  const { findings, quota } = await inspect(k8s, tenant.kubernetesNamespace, limits);
+  const inspected = await inspect(k8s, tenant.kubernetesNamespace, limits);
+  const quota = inspected.quota;
+  // A volume that is absent on purpose is not a finding — and must never be
+  // "repaired": the repair is an empty volume in its place.
+  const findings = volumeExpected(tenant) ? inspected.findings : inspected.findings.filter((f) => f !== 'pvc_missing');
   if (findings.length === 0 || !repair) {
     return {
       tenantId,

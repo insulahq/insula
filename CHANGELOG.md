@@ -186,6 +186,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
   due before it archives or deletes it: its list may be hours old by then, and the operator may
   have resumed or restored the tenant in between.
+- **An archived tenant no longer gets an empty storage volume back.** Archiving deletes a tenant's
+  storage volume, after copying its files to the backup target. The namespace integrity sweep,
+  which every 30 minutes restores what a tenant's namespace has lost, then found that volume
+  "missing" and created a new, empty one — with an "Auto-repaired" notification — for every
+  archived tenant, after a manual archive as much as an automatic one. The platform went on
+  holding storage for tenants that had none. The sweep and the tenant's integrity audit now leave
+  the volume of an archived tenant alone, and that of a tenant whose storage operation is under
+  way or failed: a destructive resize and a restore delete and recreate the volume themselves.
+  Archived tenants that already got such a volume keep it until they are restored or deleted.
 - **A refused Suspend, Reactivate, Archive or Restore on the tenant page says why.** These four
   actions opened the progress dialog and then, when the API refused the request — an operation
   already owns the tenant, the tenant is busy, no backup target — left it on "Dispatching…" with
