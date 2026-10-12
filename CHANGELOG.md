@@ -136,6 +136,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   A test now finds every place that starts a leased job's work outside its timer, by parsing the
   source, and fails until the call takes the lock or is listed with the reason an overlap is
   harmless (a read, or a write of the same values).
+- **A WAF rule exclusion with the preselected scope can be saved.** The exclusion form — in the
+  admin panel and for a tenant's own route — preselects the scope *args*, the one that works for
+  most rules. The database only allowed the other two, so saving with it answered 400
+  (`CHECK_CONSTRAINT_VIOLATION`), in every release that offers the scope. A migration adds it, and
+  a test now compares the scopes the API accepts with the ones the database allows.
 - **A failed backup is reported once, and the log says so once.** The two watchers for failed
   backups — backup Jobs and database backups — looked up which failures they had already reported
   before reporting again. The lookup read a column the notification system never fills, so it never
