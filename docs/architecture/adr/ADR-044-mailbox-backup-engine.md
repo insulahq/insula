@@ -106,7 +106,7 @@ A *separate* admin path bumps Stalwart's `x:Imap.maxConcurrent` transiently from
 ## Considered and rejected
 
 ### Rejected: CLI `stalwart -e` / `-i`
-Stalwart's whole-server export/import via CLI is the unmatched fast path (3175 msg/s export, ~30 s for 3 k messages). But it is **whole-server** and requires `kubectl scale stalwart-mail --replicas=0` plus a privileged pod — incompatible with per-tenant migration and live operation. Reserved for mass migration / disaster-recovery, not the per-tenant backup loop.
+Stalwart's whole-server export/import via CLI is the unmatched fast path (3175 msg/s export, ~30 s for 3 k messages). But it is **whole-server** and requires `kubectl scale stalwart-mail --replicas=0` plus a privileged pod — incompatible with per-tenant migration and live operation. Reserved for mass migration / disaster-recovery, not the per-tenant backup loop. (Run by hand: [MAIL_STORE_EXPORT_IMPORT.md](../../operations/MAIL_STORE_EXPORT_IMPORT.md).)
 
 ### Rejected: per-account JMAP CalDAV/CardDAV
 The JMAP DAV extensions (`urn:ietf:params:jmap:contacts`, `:calendars`) exist as draft RFCs but Stalwart 0.16's implementation is incomplete. CardDAV/CalDAV backup is therefore a separate work-item (see §Open follow-ups) and will likely go through native DAV PROPFIND+REPORT rather than JMAP.

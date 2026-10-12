@@ -36,12 +36,35 @@ ALLOWLIST=(
   "frontend/admin-panel/src/components/system-backup/LonghornSnapshotsTab.tsx"
 )
 
+# Kept on purpose, switched off. Not "awaiting triage": the decision was made —
+# the feature is off and its code stays so it can be switched on again. Each
+# entry is "<component>=<file that holds the switch>", and the guard fails if
+# that file is gone or no longer names the component: an entry here has to keep
+# pointing at the thing that would bring the component back.
+DORMANT=(
+  "frontend/admin-panel/src/components/MailArchiveCard.tsx=backend/src/modules/mail-admin/archive-dormant.ts"
+)
+
 echo "── dead-component guard ───────────────────────────────────────────"
-python3 - "${ALLOWLIST[@]}" <<'PY'
+DORMANT_LIST="$(IFS=,; echo "${DORMANT[*]}")" python3 - "${ALLOWLIST[@]}" <<'PY'
 import glob, os, re, sys
 
 allow = set(sys.argv[1:])
+dormant = dict(e.split('=', 1) for e in os.environ.get('DORMANT_LIST', '').split(',') if e)
 dead, checked = [], 0
+
+stale = []
+for comp, switch in dormant.items():
+    stem = os.path.splitext(os.path.basename(comp))[0]
+    if not os.path.isfile(comp):
+        stale.append(f"{comp}: listed as dormant but the file is gone — remove the entry")
+    elif not os.path.isfile(switch) or stem not in open(switch, encoding='utf-8').read():
+        stale.append(f"{comp}: its switch {switch} is missing or no longer names {stem}")
+if stale:
+    print("ci-no-dead-components: stale DORMANT entr(y/ies):")
+    for line in stale:
+        print(f"  - {line}")
+    raise SystemExit(1)
 
 for panel in sorted(glob.glob('frontend/*/src')):
     comps = [p for p in glob.glob(os.path.join(panel, 'components', '**', '*.tsx'), recursive=True)
@@ -61,6 +84,9 @@ for panel in sorted(glob.glob('frontend/*/src')):
             continue
         if c in allow:
             print(f"  allowlisted (awaiting triage): {c}")
+            continue
+        if c in dormant:
+            print(f"  dormant (kept on purpose, switch in {dormant[c]}): {c}")
             continue
         dead.append(c)
 

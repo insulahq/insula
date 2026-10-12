@@ -1,6 +1,9 @@
 /**
  * Stalwart-native, app-level archive orchestration.
  *
+ * DORMANT — the mail archive is switched off; nothing calls this while
+ * `MAIL_ARCHIVE_ENABLED` (`./archive-dormant.ts`) is false.
+ *
  * Distinct from the continuous restic backup of the raw data dir
  * (mail-snapshot-*). Operator-triggered, produces a store-agnostic
  * LZ4 export via Stalwart's own `stalwart -e` command.

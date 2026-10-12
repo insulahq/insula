@@ -188,6 +188,7 @@ import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { withSchedulerLease } from './shared/scheduler-lease.js';
+import { MAIL_ARCHIVE_ENABLED } from './modules/mail-admin/archive-dormant.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
@@ -1677,31 +1678,36 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // whose Job no longer exists) on every tick. Catches the case
       // where a prior platform-api pod was OOM-killed mid-run and the
       // operator's progress modal would otherwise spin forever.
-      const mailArchiveTimer = setInterval(async () => {
-        try {
-          const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
-          const { startMailArchive, reconcileAbandonedArchiveRuns } = await import('./modules/mail-admin/archive.js');
-          const cfg = app.config as Record<string, unknown>;
-          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          const k8s = createK8sClients(kubeconfigPath);
-          await reconcileAbandonedArchiveRuns(
-            { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-reconciler' },
-            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
-          ).catch((err) => app.log.warn({ err }, '[archive-reconciler] tick error'));
-          await maybeFireArchiveSchedule(
-            app.db,
-            () => startMailArchive(
-              { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-scheduler' },
-              { mode: 'no_downtime' },
-            ),
-            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
-          );
-        } catch (err) {
-          app.log.warn({ err }, '[archive-scheduler] tick error');
-        }
-      }, 60_000);
-      app.addHook('onClose', () => clearInterval(mailArchiveTimer));
+      //
+      // DORMANT: the mail archive is switched off (mail-admin/archive-dormant.ts),
+      // so this timer is never started.
+      if (MAIL_ARCHIVE_ENABLED) {
+        const mailArchiveTimer = setInterval(async () => {
+          try {
+            const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
+            const { startMailArchive, reconcileAbandonedArchiveRuns } = await import('./modules/mail-admin/archive.js');
+            const cfg = app.config as Record<string, unknown>;
+            const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            const k8s = createK8sClients(kubeconfigPath);
+            await reconcileAbandonedArchiveRuns(
+              { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-reconciler' },
+              { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+            ).catch((err) => app.log.warn({ err }, '[archive-reconciler] tick error'));
+            await maybeFireArchiveSchedule(
+              app.db,
+              () => startMailArchive(
+                { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-scheduler' },
+                { mode: 'no_downtime' },
+              ),
+              { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+            );
+          } catch (err) {
+            app.log.warn({ err }, '[archive-scheduler] tick error');
+          }
+        }, 60_000);
+        app.addHook('onClose', () => clearInterval(mailArchiveTimer));
+      }
 
       // Storage lifecycle: snapshot expiry + weekly audit report.
       // Needs a K8sClients handle for the audit path (`du -sb` exec

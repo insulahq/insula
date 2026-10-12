@@ -207,7 +207,7 @@ const EVERY_REPLICA: Readonly<Record<string, readonly string[]>> = {
   'modules/storage-lifecycle/scheduler.ts': ['orphan Secret sweep: deletes by name Secrets that are ownerless and over 12 hours old'],
   'app.ts': [
     'image-pull Secret reconcile: a Secret is recreated only when missing, under a fixed name whose second create is a handled conflict',
-    'scheduled mail archive: the run is claimed by a compare-and-swap on the last-run time; the abandoned-run pass beside it only marks rows failed, twice at worst',
+    'scheduled mail archive: dormant — never started while MAIL_ARCHIVE_ENABLED is false; when on, the run is claimed by a compare-and-swap on the last-run time',
     'mail migration orphan reconciler: one conditional UPDATE that matches nothing on a second run',
     'mail-task orphan reaper: serialised by an advisory transaction lock',
     'refresh-token prune: one age-bounded DELETE',

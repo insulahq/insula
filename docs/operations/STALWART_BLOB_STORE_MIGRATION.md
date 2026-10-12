@@ -56,7 +56,7 @@ migrations are byte-copies with a key-layout transform:
 
 | Direction | Transform |
 |---|---|
-| RocksDB (Default) → anything | **No file-level path.** Blobs live inside RocksDB; extraction requires IMAP/JMAP re-export or `stalwart -e` (ADR-042). This is the one direction without a cheap copy — switching away later means a re-export, which is why the decision was made deliberately now (ADR-046). |
+| RocksDB (Default) → anything | **No file-level path.** Blobs live inside RocksDB; extraction requires IMAP/JMAP re-export or the server's own export (`stalwart --export`, ADR-042). This is the one direction without a cheap copy — switching away later means a re-export, which is why the decision was made deliberately now (ADR-046). The export and import are run by hand, with mail stopped: [MAIL_STORE_EXPORT_IMPORT.md](MAIL_STORE_EXPORT_IMPORT.md). |
 | FileSystem → S3 | Flatten: each file's **basename** (base32 of the full hash) becomes the S3 object key, prefixed by `keyPrefix` verbatim. Fan-out dirs (`<hex>/<hex>/`, non-zero-padded `{:x}` bytes, `depth` levels) are dropped. |
 | FileSystem → CIFS/FileSystem | Structure-preserving `cp -a` of the tree; `depth` must match on both sides. |
 | S3 ↔ CIFS | Compose the two transforms above. |

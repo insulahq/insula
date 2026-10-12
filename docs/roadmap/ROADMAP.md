@@ -2052,7 +2052,7 @@ Built 2026-10-07; runbook [TENANT_DISK_LIMITS.md](../operations/TENANT_DISK_LIMI
 **Residual, documented** (runbook): container images (image GC + pressure
 watcher), the sum of overlapping limits (kubelet node-pressure eviction +
 the 75/80 % alerts), platform-run proxies in tenant namespaces, platform Jobs
-with their own large staging caps, the mail-archive Job.
+with their own large staging caps.
 
 The original analysis follows.
 

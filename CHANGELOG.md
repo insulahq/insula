@@ -19,8 +19,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   CPU without them; its log then reads *"This build of Stalwart requires an x86-64-v2 compatible
   CPU"*. Intel CPUs since Nehalem (2008), AMD since Bulldozer (2011) and the usual cloud instance
   types have these. A virtual machine given a generic CPU model does not — QEMU's `qemu64` and
-  `kvm64`, the default on older Proxmox — and there the mail server, and the mail archive Job,
-  stop starting with this release. arm64 nodes are not affected.
+  `kvm64`, the default on older Proxmox — and there the mail server stops starting with this
+  release. arm64 nodes are not affected.
 
   The platform now checks this itself. **Installing or joining a node** on such a CPU is refused
   in the pre-flight, before anything on the host changes. **An upgrade** checks every node it
@@ -37,6 +37,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   If a node prints anything, set its VM's CPU type to `host` (or `x86-64-v2` or newer) at the
   hypervisor and restart the VM first. Upstream's release notes do not list this change; it is in
   the source at the tag (`.cargo/config.toml`, `crates/main/src/cpu.rs`).
+- **The mail archive API is gone.** The routes under `/api/v1/admin/mail/` named `archive-status`,
+  `archive-runs`, `archive-runs/:id`, `archive/trigger`, `archive/restore` and `archive/schedule`
+  answer 404. See *Removed* below.
 
 ### Changed
 
@@ -66,8 +69,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     for 24 hours, and messages too short for a Pyzor digest are no longer tagged `PYZOR`.
   - A failed IMAP login with a wrong or expired app password now gets a proper tagged `NO`;
     clients used to wait for a timeout. The RocksDB info log no longer grows without limit.
-  The archive checkpoint binary stays compatible: Stalwart still links librocksdb-sys
-  0.17.3+10.4.2 at the new tag.
 
 ### Fixed
 
@@ -114,6 +115,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "backup target unreachable" alert slower:** it used to come within five minutes of the target
   going away; it now comes after the next scheduled snapshot — about an hour on an hourly schedule,
   six hours at most.
+
+### Removed
+
+- **The mail archive is switched off.** It was a second mail backup beside the mail snapshots: an
+  export of the whole mail store made by the mail server itself, started from **Email → Operations
+  → Backups** or by a schedule, and uploaded to the mail backup target. No recovery path used it
+  — failover and the restore of a lost mail volume use the snapshots and the standby copy;
+  putting an archive back was a separate action on the same tab. Its schedule could not fire:
+  the check for "is a run due" compared against a time that is always in the future, so an
+  install with the schedule switched on has no scheduled archives.
+  - **Email → Operations** has two tabs now, *Placement & migration* and *Storage*. An old link to
+    the Backups tab opens the page. Mail backups are under **Backups → Mail**, as before.
+  - **Archives you made by hand stay in the backup target, and nothing removes them any more.**
+    Their retention ran as part of each archive run. To list, restore or remove them, see
+    [MAIL_STORE_EXPORT_IMPORT.md](docs/operations/MAIL_STORE_EXPORT_IMPORT.md#archives-made-before-the-feature-was-switched-off).
+  - **Exporting and importing the mail store is still possible by hand**, for what only an export
+    can do: moving the store to another backend or cluster, or rebuilding a store whose files are
+    damaged. The same runbook has the procedure; it was run end to end on a development cluster,
+    with mail stopped for the duration.
+  - The code is kept in the repository, switched off by one constant
+    (`backend/src/modules/mail-admin/archive-dormant.ts`), with its schedule check corrected. The
+    `mail_archive_runs` table and the schedule settings are left in the database.
 
 ## [2026.10.7] - 2026-10-09
 

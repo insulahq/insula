@@ -8,9 +8,9 @@
  *   1. Reviewing recent snapshots (size, age, restic short id)
  *   2. Triggering a point-in-time restore back to a chosen target node
  *
- * NOT to be confused with /email/operations → Backups tab, which drives
- * the separate `stalwart -e` logical-export pipeline (mail-archive). The
- * two pipelines are completely independent.
+ * (There used to be a second, independent pipeline — the `stalwart -e`
+ * logical export, "mail archive", on /email/operations. It is switched off;
+ * this page is the mail backup UI.)
  *
  * Mechanism: the per-snapshot restore reuses the mail-migration state
  * machine with skipFreshSnapshot=true and restoreSnapshotId=<shortId>

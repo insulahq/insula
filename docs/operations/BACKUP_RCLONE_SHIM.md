@@ -505,8 +505,6 @@ task-center modal names the culprit. Common cases:
 - A `backup.run` task pinned by a wedged CNPG WAL archive job →
   `kubectl -n cnpg-system get backup` + inspect the long-running
   Backup CR.
-- A `mail.archive` task pinned by a Stalwart export Job that lost
-  its Pod → `kubectl -n mail get jobs | grep mail-archive`
 - A `backup.bundle` orchestrator that crash-looped → check the task
   row's `error_message`.
 
