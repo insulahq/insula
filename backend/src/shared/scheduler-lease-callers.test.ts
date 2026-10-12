@@ -20,11 +20,16 @@
  * the entry says what is left open. A new caller fails here until it is
  * classified.
  *
- * Not found: a job whose callback only calls a function private to its file,
- * when that function in turn calls something a route calls too. Following
- * private functions further was tried and drowns the result in helpers (a
- * hundred functions, most of them reads); the entry points are where a whole
- * second run of a job comes from.
+ * A callback that calls a function private to its file is read through it:
+ * what that function calls is the job's work just the same (seven of 64 jobs
+ * do all their work that way, and one of them hid a reconcile that two
+ * callers at once left duplicates behind). That reaches helpers too, so two
+ * tables name a function once instead of once per caller: READS — it starts
+ * none of the work — and BESIDE_ANY_CALLER — it works on one item, and may
+ * run beside the job for the reason given.
+ *
+ * Not followed: what an entry point from ANOTHER file does inside. Its callers
+ * are what is checked; a second run of the job comes through the entry point.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -80,6 +85,54 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   'storage-policy-advisor modules/platform-storage-policy/service.ts#getPolicy <- modules/platform-storage-policy/routes.ts': 'a read: the saved policy',
   'storage-policy-advisor modules/platform-storage-policy/service.ts#readClusterState <- modules/platform-storage-policy/routes.ts': 'a read: cluster state for the page',
   'storage-policy-advisor modules/platform-storage-policy/service.ts#readClusterState <- modules/platform-storage-policy/runs.ts': 'a read: cluster state for the convergence watcher',
+};
+
+/**
+ * Functions a job reaches that start none of its work: they read, or compute.
+ * `<module>#<function>` → what it reads. Every caller is fine.
+ */
+const READS: Readonly<Record<string, string>> = {
+  'modules/system-settings/service.ts#getSettings': 'the system settings row',
+  'modules/dns-resolver/service.ts#getPlatformResolver': 'the resolver to ask',
+  'modules/domains/verification.ts#getPlatformConfig': 'the platform\'s ingress addresses',
+  'modules/domains/verification.ts#verifyDomain': 'one domain\'s records in DNS; it writes nothing',
+  'modules/storage/service.ts#getInUseImages': 'the images the cluster\'s pods use',
+  'modules/storage/service.ts#isAnyNameInUse': 'a comparison of names',
+  'modules/mail-admin/stalwart-domain-reconciler.ts#getExplicitMailHostname': 'the mail hostname setting',
+  'modules/mail-admin/stalwart-master-user.ts#readStalwartMasterPassword': 'a key of the mail Secret',
+  'modules/mail-admin/stalwart-master-user.ts#readStalwartMasterUser': 'a key of the mail Secret',
+  'modules/mailbox-aliases/alias-live.ts#aliasIsLive': 'a predicate over two flags',
+  'modules/notifications/list-items.ts#cappedList': 'shortens a list for a message',
+  'modules/stalwart-jmap/client.ts#getJmapSession': 'the mail server\'s session object',
+  'modules/stalwart-jmap/client.ts#verifyMasterJmapAuth': 'whether a login is accepted',
+  'modules/stalwart-jmap/mailing-lists.ts#listMailingLists': 'the mail server\'s lists',
+  'modules/webmail-settings/service.ts#getMailServerHostname': 'the mail hostname setting',
+  'modules/storage-lifecycle/snapshot-store.ts#resolveSnapshotStore': 'the snapshot store\'s settings, as a client',
+  'modules/ingress-routes/waf-log-scraper.ts#getScraperStatus': 'the scraper\'s last-run state',
+};
+
+/**
+ * Functions a job calls that bring ONE thing to its stored state — a domain,
+ * a tenant's routes, one settings group — and that many routes call too,
+ * after a change. `<module>#<function>` → why any caller may run it beside
+ * the job. Not for a function that walks everything: that is a second run of
+ * the job and belongs in STARTED_ELSEWHERE, per caller.
+ */
+const BESIDE_ANY_CALLER: Readonly<Record<string, string>> = {
+  'modules/email-outbound/stalwart-throttles.ts#reconcileStalwartSendLimits':
+    'takes a run lock of its own (stalwart-send-limits) inside, whoever calls it — see its header for what two at once did',
+  'modules/mail-admin/mail-ban-expiry.ts#ensureMailBanExpiry':
+    'applies under a database advisory lock of its own',
+  'modules/mail-events/dmarc-report-sender.ts#ensureDmarcReportSender':
+    'writes the whole settings group it owns from the stored sender; two at once write the same group',
+  'modules/mail-admin/reconcile-master-credential.ts#reconcileStalwartMasterCredential':
+    'probes the login first and re-asserts the stored password only when it fails; two at once assert the same password',
+  'modules/domains/service.ts#setDomainVerificationStatus':
+    'stores one domain\'s verification result — what DNS says now, whoever asked',
+  'modules/certificates/service.ts#ensureDomainCertificate':
+    'ensures one domain\'s certificate object; a create or replace that loses to another is read back and retried there',
+  'modules/domains/k8s-ingress.ts#reconcileIngress':
+    'rebuilds one tenant\'s routes from its rows, each a full replace; every route change calls it, and two at once apply the same objects',
 };
 
 /**
@@ -202,7 +255,14 @@ function bindingOf(file: Parsed, callee: ts.Expression): Binding | null {
 
 const key = (b: Binding): string => `${b.module}#${b.original}`;
 
-interface StickyLease { readonly file: string; readonly job: string; readonly work: ReadonlySet<string> }
+interface StickyLease {
+  readonly file: string;
+  readonly job: string;
+  /** What the job's callback calls that another file could call too, the two tables' functions left out. */
+  readonly work: ReadonlySet<string>;
+  /** The same before anything was left out — to tell a table entry nothing reaches any more. */
+  readonly reached: ReadonlySet<string>;
+}
 
 /**
  * Every sticky lease in the source, with the functions its callback calls
@@ -219,21 +279,32 @@ function stickyLeases(files: readonly Parsed[]): StickyLease[] {
         const releases = opts && ts.isObjectLiteralExpression(opts) && opts.properties.some((p) =>
           ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === 'release' && p.initializer.kind === ts.SyntaxKind.TrueKeyword);
         if (job && ts.isStringLiteralLike(job) && fn && !releases) {
-          const work = new Set<string>();
+          const reached = new Set<string>();
+          const entered = new Set<string>();
           const collect = (n: ts.Node): void => {
-            const bound = ts.isCallExpression(n) ? bindingOf(file, n.expression) : null;
-            if (bound && !NOT_WORK.has(key(bound))) work.add(key(bound));
+            if (ts.isCallExpression(n)) {
+              const bound = bindingOf(file, n.expression);
+              if (bound) {
+                if (!NOT_WORK.has(key(bound))) reached.add(key(bound));
+              } else if (ts.isIdentifier(n.expression) && !entered.has(n.expression.text)) {
+                // A function private to this file: what it calls is the job's work too.
+                entered.add(n.expression.text);
+                for (const local of file.locals.get(n.expression.text) ?? []) collect(local);
+              }
+            }
             ts.forEachChild(n, collect);
           };
           if (ts.isIdentifier(fn)) {
             // `withSchedulerLease(db, 'job', ttl, runOnce)` — the callback is a named function of this file.
             const bound = bindingOf(file, fn);
-            if (bound) work.add(key(bound));
+            if (bound) reached.add(key(bound));
+            entered.add(fn.text);
             for (const local of file.locals.get(fn.text) ?? []) collect(local);
           } else {
             collect(fn);
           }
-          out.push({ file: file.rel, job: job.text, work });
+          const work = new Set([...reached].filter((fnKey) => !(fnKey in READS) && !(fnKey in BESIDE_ANY_CALLER)));
+          out.push({ file: file.rel, job: job.text, work, reached });
         }
       }
       ts.forEachChild(node, visit);
@@ -293,6 +364,19 @@ describe('a leased job is started outside its timer only under its run lock, or 
     expect(found).toContain('namespace-integrity modules/namespace-integrity/service.ts#sweepFleetIntegrity <- modules/namespace-integrity/routes.ts');
     // … and a callback given by name.
     expect(found).toContain('waf-log-scraper modules/ingress-routes/waf-log-scraper.ts#scrapeWafLogs <- modules/security-hardening/routes.ts');
+  });
+
+  it('reads through a function private to the lease\'s file: no job is left with nothing to check for want of following one', () => {
+    // Before, these jobs' callbacks reached nothing the scan could see.
+    const reachedBy = (job: string): string[] => [...(stickyLeases(files).find((l) => l.job === job)?.reached ?? [])];
+    expect(reachedBy('mail-self-heal')).toContain('modules/email-outbound/stalwart-throttles.ts#reconcileStalwartSendLimits');
+    expect(reachedBy('domain-verification')).toContain('modules/domains/k8s-ingress.ts#reconcileIngress');
+    expect(reachedBy('stalwart-principals-sync')).toContain('modules/mail-admin/reconcile-master-credential.ts#reconcileStalwartMasterCredential');
+  });
+
+  it.each(Object.keys({ ...READS, ...BESIDE_ANY_CALLER }).sort())('%s is still reached by a job (a table entry nothing reaches is dead)', (fnKey) => {
+    expect(stickyLeases(files).some((l) => l.reached.has(fnKey)), `${fnKey}: no leased job reaches this any more — remove the entry`).toBe(true);
+    expect(fnKey in READS && fnKey in BESIDE_ANY_CALLER, `${fnKey} is in both tables`).toBe(false);
   });
 
   it.each([...new Set([...found, ...Object.keys(STARTED_ELSEWHERE)])].sort())('%s', (entry) => {
