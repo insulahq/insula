@@ -46,6 +46,15 @@ migrations**, and gates **Apply** on pre-flight passing. After applying, a
     the cluster. The operator runbook is in the
     [Operator guide](../operator/updates-and-releases.md).
 
+One of the gates is **No storage operation in flight**. A resize, a restore, a
+filesystem check or a move of a tenant runs inside the management API, and an
+upgrade restarts every API replica: the operation would be cut off and its
+tenant left stopped until the platform calls it abandoned, hours later. The
+gate names the tenant and blocks the upgrade until the operation has finished
+(on a production install; elsewhere it is a warning). An **archive** in flight
+is only a warning: the new replicas pick it up again some twenty minutes after
+the upgrade.
+
 ## Identity — name, panel URLs, support
 
 **Platform → Identity** sets the platform's public identity:

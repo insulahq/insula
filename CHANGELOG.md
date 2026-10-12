@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.8-rc.1] - 2026-10-12
-
 ### BREAKING
 
 - **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
@@ -216,6 +214,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
   due before it archives or deletes it: its list may be hours old by then, and the operator may
   have resumed or restored the tenant in between.
+- **An upgrade no longer starts over a storage operation that it would cut off.** A resize, a
+  restore, a filesystem check or a move of a tenant runs inside the management API, and an upgrade
+  replaces every API replica. The operation was cut off without a word and its tenant stayed
+  stopped until the watchdog called the operation abandoned — six hours later, half an hour for a
+  move. The upgrade pre-flight has a new gate, **No storage operation in flight**: it names the
+  operations and their tenants and, on a production install, blocks the upgrade until they have
+  finished (a warning elsewhere). An archive in flight is only a warning, because the new replicas
+  pick it up again.
 - **An archive interrupted by an API restart is picked up again.** An archive runs inside the
   platform API, after the request that started it has been answered. A deploy, a crash or a lost
   node in the middle left its operation reading "snapshotting" with nothing working on it: the

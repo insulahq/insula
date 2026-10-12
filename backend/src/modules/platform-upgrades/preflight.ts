@@ -60,6 +60,12 @@ export interface PreflightFacts {
   /** An upgrade run is already in flight; null = unreadable. */
   readonly upgradeRunning?: boolean | null;
   /**
+   * Storage operations in flight — a resize, a restore, an archive, a
+   * filesystem check, a move — each with its tenant's name; null = unreadable.
+   * Optional so callers that do not collect it keep compiling; they get no gate.
+   */
+  readonly storageOperations?: ReadonlyArray<{ readonly tenant: string; readonly kind: string }> | null;
+  /**
    * ADR-064 §6, per node from its relayed host-migration status: a failed,
    * blocked or invalid host change, and whether it can verify a release.
    * null = unreadable.
@@ -177,11 +183,48 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
     });
   }
 
+  gates.push(...storageOperationGates(facts));
   gates.push(...runGates(facts));
 
   const failures = gates.filter((g) => g.status === 'fail').length;
   const warnings = gates.filter((g) => g.status === 'warn').length;
   return { gates, ok: failures === 0, failures, warnings };
+}
+
+/** At most this many operations are named in the gate; the rest are counted. */
+const STORAGE_OPS_NAMED = 5;
+
+/**
+ * A storage operation runs inside the platform API, after the request that
+ * started it has been answered — and the upgrade replaces every API pod. An
+ * archive cut off like that is picked up again by the new pods. A resize, a
+ * restore, a filesystem check or a move is not: its tenant stays stopped until
+ * the watchdog calls the operation abandoned, six hours later (a move: half an
+ * hour). So the operator is told before, and on production has to wait.
+ */
+function storageOperationGates(facts: PreflightFacts): PreflightGate[] {
+  if (facts.storageOperations === undefined) return [];
+  const id = 'no-storage-operation-running';
+  const label = 'No storage operation in flight';
+  if (facts.storageOperations === null) {
+    return [{ id, label, status: 'warn', detail: 'could not read the storage operations — an operation in flight would be cut off by the upgrade' }];
+  }
+  const ops = facts.storageOperations;
+  if (ops.length === 0) return [{ id, label, status: 'pass', detail: 'none in flight' }];
+  const named = ops.slice(0, STORAGE_OPS_NAMED).map((o) => `${o.kind} of ${o.tenant}`).join(', ');
+  const more = ops.length > STORAGE_OPS_NAMED ? ` and ${ops.length - STORAGE_OPS_NAMED} more` : '';
+  const onlyArchives = ops.every((o) => o.kind === 'archive');
+  return [{
+    id,
+    label,
+    // An archive is carried on by the new pods; nothing is lost by upgrading
+    // over it, so it never blocks.
+    status: onlyArchives ? 'warn' : sev(facts.environment, true),
+    detail: `${named}${more} — the upgrade restarts the platform API that runs ${ops.length === 1 ? 'it' : 'them'}. `
+      + (onlyArchives
+        ? `${ops.length === 1 ? 'It is' : 'They are'} picked up again afterwards, some twenty minutes later.`
+        : 'An archive is picked up again afterwards; a resize, restore, filesystem check or move is not, and leaves its tenant stopped until it is called abandoned hours later. Wait for it to finish.'),
+  }];
 }
 
 /**
