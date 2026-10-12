@@ -108,6 +108,48 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     replica (a manual retention sweep could start beside the scheduled one that way).
   - While an upgrade runs, the pass that drives it could be started by a second replica if it took
     longer than seven seconds. One pass now holds a lock until it ends.
+- **A job is not started beside itself by a button or a settings change.** Keeping a job's timer
+  on one replica did not cover the other ways the same work is started: a route that reconciles at
+  once after a change, and the "run now" buttons. Those run on whichever replica serves the
+  request, beside the timer's run on another replica — or in the same process, on any cluster. The
+  work now takes a lock of its own, whoever starts it:
+  - **Applied at once after a change** — a backup target assignment (the backup proxy is rendered
+    and rolled), a trusted proxy range (the ingress arguments are patched by position), a WAF rule
+    exclusion (the WAF is rolled), a mail hostname change, *Re-provision* on the mail server and
+    the end of a mail migration (certificate orders, a mail server restart), and *Apply tier* for
+    platform storage. Such a run now waits for a run already under way and then starts, so it
+    always reads the change it was started for. The trusted-proxy route used to be handed the run
+    already under way, which could have read the ranges before the change; the new range then
+    waited for the next five-minute tick.
+  - **Run now** — the node health check, the subscription expiry check, the namespace integrity
+    sweep and the repair of one tenant's namespace, the CrowdSec bouncer prune and a real (not
+    dry-run) image purge wait up to 30 seconds for a run under way and then run. If the job is
+    still busy they answer **409 `JOB_ALREADY_RUNNING`**, with nothing started — a new answer
+    from these endpoints, where they used to start a second run. *Re-provision* and *Apply tier*
+    answer the same way.
+  - **The admin panel now shows a refused or failed "run now".** *Reconcile now* on the node
+    health panel, *Prune stale* on the CrowdSec bouncers and the image purge on Monitoring →
+    Storage ended a failed request with the spinner and nothing else.
+  A run keeps its lock for 30 minutes at most: one that hangs is logged as "no longer renewed"
+  and stops blocking the other replicas. Not covered by any of this: an operator archiving or
+  deleting a tenant at the moment the auto-archive sweep reaches the same tenant.
+  A test now finds every place that starts a leased job's work outside its timer, by parsing the
+  source, and fails until the call takes the lock or is listed with the reason an overlap is
+  harmless (a read, or a write of the same values).
+- **A failed backup is reported once, and the log says so once.** The two watchers for failed
+  backups — backup Jobs and database backups — looked up which failures they had already reported
+  before reporting again. The lookup read a column the notification system never fills, so it never
+  found one: every standing failure was reported again on every five-minute tick. Nobody got a
+  second notification, because the report carries a key the notification system acts on only
+  once in 30 days — but the database-backup watcher logged "notified admins about failed backup" each time,
+  288 times a day for one failure. The lookup is gone, the key is the one mechanism, and the log
+  line is written only when someone was told.
+- **Mail drift: no more "drift rows could not be stored" for a row that was stored.** Two drift
+  scans that found the same new item at the same moment both tried to store it; the second was
+  refused by the database, logged as an error and counted as a failed scan, although the row was
+  there. The second scan now leaves the row to the first, which also sends the alert. A row the
+  database really refuses is still reported. And an item an operator dismisses while a scan is
+  running stays *dismissed*; the scan used to relabel it *reappeared* when it finished.
 - **The mail backup repository is listed after a snapshot, not every five minutes.** The
   reachability check follows the mail snapshot schedule: once after each scheduled snapshot has had
   time to run, at most every 15 minutes and at least every 6 hours (hourly while the schedule is

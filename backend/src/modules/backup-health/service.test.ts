@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as k8s from '@kubernetes/client-node';
-import { parseJob, summariseHealth, findNewFailures } from './service.js';
+import { parseJob, summariseHealth } from './service.js';
 import {
   LABEL_HEALTH_WATCH,
   LABEL_CATEGORY,
@@ -224,25 +224,5 @@ describe('summariseHealth', () => {
     )!;
     const summary = summariseHealth([healthyB, failingA]);
     expect(summary.map((s) => s.groupKey)).toEqual(['a', 'b']);
-  });
-});
-
-describe('findNewFailures', () => {
-  it('returns failures whose UID is not in the already-notified set', () => {
-    const f1 = parseJob(
-      makeJob({ uid: 'u1', name: 'a', state: 'failed' }),
-    )!;
-    const f2 = parseJob(
-      makeJob({ uid: 'u2', name: 'b', state: 'failed' }),
-    )!;
-    const ok = parseJob(makeJob({ uid: 'u3', name: 'c', state: 'succeeded' }))!;
-    const result = findNewFailures([f1, f2, ok], new Set(['u1']));
-    expect(result.map((r) => r.uid)).toEqual(['u2']);
-  });
-
-  it('ignores non-failed states even when uid is unknown', () => {
-    const running = parseJob(makeJob({ uid: 'r', name: 'r', state: 'running' }))!;
-    const result = findNewFailures([running], new Set());
-    expect(result).toEqual([]);
   });
 });

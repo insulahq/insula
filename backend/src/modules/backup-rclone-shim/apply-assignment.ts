@@ -51,6 +51,7 @@ import {
 import type { Database } from '../../db/index.js';
 import { backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusive, RUN_WAIT_PAST_DEAD_HOLDER_MS } from '../../shared/exclusive-run.js';
 import { notifyAdminOperationalEvent } from '../notifications/events.js';
 import * as tasks from '../tasks/service.js';
 import {
@@ -432,12 +433,20 @@ async function runShimAssignmentPipeline(
       pct: 60,
       text: toSafeText('Rendering shim config'),
     });
-    const reconcile = await reconcileBackupRcloneShim(
+    // Under the reconciler's run lock, after any pass under way: a pass that
+    // read the old binding must not render beside this one (each stamps its
+    // own config hash on the shim and rolls it). The wait outlasts a pass
+    // whose process died; a pass that still cannot run is reported like a
+    // failed one — the binding is saved and the periodic reconciler applies it.
+    const run = await runExclusive(
       db,
-      k8sClients,
-      encryptionKey,
-      log,
+      'backup-rclone-shim',
+      () => reconcileBackupRcloneShim(db, k8sClients, encryptionKey, log),
+      { waitMs: RUN_WAIT_PAST_DEAD_HOLDER_MS, log },
     );
+    const reconcile: Pick<ShimReconcileResult, 'state' | 'errorMessage'> = run.ran
+      ? run.value
+      : { state: 'STATE_ERROR', errorMessage: 'another shim reconcile was still running' };
     if (reconcile.state === 'STATE_ERROR') {
       const safeMessage = sanitiseReconcileError(reconcile.errorMessage);
       await tasks.progress(db, taskId, {

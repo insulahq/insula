@@ -21,6 +21,7 @@
  * which is itself an operator-visible alarm.
  */
 
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 import type { Logger } from 'pino';
 import { pruneStaleBouncers } from './crowdsec.js';
@@ -47,7 +48,10 @@ export function startCrowdsecBouncerPruneScheduler(
       // One replica prunes: the pruned count is a before/after difference of
       // the bouncer list, which a second prune running alongside falsifies.
       await withSchedulerLease(db, 'crowdsec-bouncer-prune', intervalMs * 1.5, async () => {
-        const result = await pruneStaleBouncers(kubeconfigPath, BOUNCER_PRUNE_OLDER_THAN_SECONDS);
+        // The run lock keeps this prune off one an operator has started.
+        const run = await runExclusive(db, 'crowdsec-bouncer-prune', () => pruneStaleBouncers(kubeconfigPath, BOUNCER_PRUNE_OLDER_THAN_SECONDS));
+        if (!run.ran) return;
+        const result = run.value;
         if (result.pruned > 0) {
           log.info({ pruned: result.pruned }, 'crowdsec-bouncer-prune: pruned stale bouncers');
         } else {

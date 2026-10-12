@@ -14,7 +14,7 @@
  * service) should only know about the *event*, not the presentation.
  */
 
-import { emitEvent } from './dispatcher/dispatch.js';
+import { emitEvent, type EmitResult } from './dispatcher/dispatch.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -42,9 +42,9 @@ async function dispatchSafe(
     readonly resourceType?: string;
     readonly resourceId?: string;
   },
-): Promise<void> {
+): Promise<EmitResult | null> {
   try {
-    await emitEvent(db, {
+    return await emitEvent(db, {
       categoryId,
       scope,
       variables: { ...variables } as Record<string, unknown>,
@@ -57,7 +57,17 @@ async function dispatchSafe(
     });
   } catch {
     // Legacy contract: never throw from an event helper.
+    return null;
   }
+}
+
+/**
+ * Did this dispatch reach anyone — on any channel, now or queued? False when
+ * every recipient had already been told under the same dedupe key, when
+ * nobody is subscribed, and when the dispatch failed.
+ */
+function toldSomeone(result: EmitResult | null): boolean {
+  return (result?.perChannelStatuses ?? []).some((s) => s.status === 'sent' || s.status === 'queued');
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -532,12 +542,16 @@ export interface AdminBackupFailedPayload {
   /** What failed, one per entry (e.g. each tenant of a wave). Rendered as a list on every channel. */
   readonly items?: readonly string[];
 }
+/**
+ * Resolves true when this call told someone. A caller that re-reports a
+ * standing failure under one dedupe key gets false from the second call on.
+ */
 export async function notifyAdminBackupFailed(
   db: Database,
   payload: AdminBackupFailedPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, { ...payload, items: payload.items ?? [] }, undefined, { dedupeKey });
+): Promise<boolean> {
+  return toldSomeone(await dispatchSafe(db, 'admin.backup_failed', { kind: 'admin' }, { ...payload, items: payload.items ?? [] }, undefined, { dedupeKey }));
 }
 
 export interface AdminBackupTargetUnreachablePayload {

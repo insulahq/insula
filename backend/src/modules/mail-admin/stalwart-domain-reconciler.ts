@@ -41,7 +41,8 @@
  * scheduled tick only exists to catch external drift.
  */
 
-import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { runExclusive, type ExclusiveRunOptions } from '../../shared/exclusive-run.js';
+import { withSchedulerLease, type LeaseOutcome } from '../../shared/scheduler-lease.js';
 import type { CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 
 import { eq } from 'drizzle-orm';
@@ -434,9 +435,9 @@ export function startStalwartDomainReconciler(
   // backoff with the one replica that places them — the follow-up tick runs on
   // that same replica, so it still holds the lease.
   const tick = (): void => {
-    void withSchedulerLease(deps.db, 'stalwart-domain-reconciler', tickMs * 1.5, () => runStalwartDomainReconcilerTick(deps))
+    void withSchedulerLease(deps.db, 'stalwart-domain-reconciler', tickMs * 1.5, () => runStalwartDomainReconcile(deps))
       .then((outcome) => {
-        const delay = outcome.ran ? followUpTickDelayMs(outcome.value) : null;
+        const delay = outcome.ran && outcome.value.ran ? followUpTickDelayMs(outcome.value.value) : null;
         if (delay !== null && followUp === null) {
           followUp = setTimeout(() => { followUp = null; tick(); }, delay);
         }
@@ -452,9 +453,25 @@ export function startStalwartDomainReconciler(
 }
 
 /**
- * One tick of the reconciler. Exported so the webmail-settings
- * PATCH handler can call it inline after persisting a new
- * mail_server_hostname (no wait-out for the next tick).
+ * One reconcile at a time, for the tick and for everything else that starts
+ * one — a new mail hostname, the operator's "Re-provision" button, the end of
+ * a mail migration. Two passes at once each find the same thing missing: both
+ * place the ACME order, both recycle the mail server's pod. The run lock
+ * holds across replicas and within one process.
+ *
+ * A caller that has just changed what the pass reads passes `waitMs`, so its
+ * pass starts after the one under way has finished and reads the change.
+ */
+export function runStalwartDomainReconcile(
+  deps: StalwartDomainReconcilerDeps,
+  opts: ExclusiveRunOptions = {},
+): Promise<LeaseOutcome<StalwartReconcileResult>> {
+  return runExclusive(deps.db, 'stalwart-domain-reconciler', () => runStalwartDomainReconcilerTick(deps), opts);
+}
+
+/**
+ * One pass of the reconciler, without the run lock — call
+ * `runStalwartDomainReconcile` instead.
  *
  * Never throws — every failure path logs a warning and returns.
  * Subsequent ticks retry from a clean state.

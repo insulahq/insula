@@ -63,13 +63,13 @@ const FAILED_TENANT_JOB = {
   failureReason: null,
 };
 
-function mockDb(notifiedUids: string[]) {
-  const whereFn = vi.fn().mockResolvedValue(
-    notifiedUids.map((uid) => ({ resourceId: uid })),
-  );
-  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-  const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-  return { select: selectFn } as never;
+/**
+ * The tick reads nothing from the database itself: who has been told is the
+ * dispatcher's business (the dedupe key). A database that answers a query
+ * would hide a lookup creeping back in, so this one refuses.
+ */
+function mockDb() {
+  return { select: () => { throw new Error('the tick must not query the database'); } } as never;
 }
 
 const NOOP_LOG = { warn: vi.fn() };
@@ -88,7 +88,7 @@ describe('runTick', () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB]);
     resolveRecipientsMock.mockResolvedValue(['admin-1']);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(resolveRecipientsMock).toHaveBeenCalledWith(expect.anything(), {
       kind: 'admin',
@@ -105,7 +105,7 @@ describe('runTick', () => {
     listJobsMock.mockResolvedValue([FAILED_TENANT_JOB]);
     resolveRecipientsMock.mockResolvedValue(['tenant-admin-1']);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(resolveRecipientsMock).toHaveBeenCalledWith(expect.anything(), {
       kind: 'tenant',
@@ -114,19 +114,33 @@ describe('runTick', () => {
     expect(notifyBackupFailedMock).toHaveBeenCalledOnce();
   });
 
-  it('skips already-notified UIDs (dedup via resourceId lookup)', async () => {
+  it('reports a standing failure on every tick, always under the key of its Job — the dispatcher drops the repeats', async () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB, FAILED_TENANT_JOB]);
     resolveRecipientsMock.mockResolvedValue(['someone']);
-    await runTick(mockDb(['uid-1']), {} as never, NOOP_LOG);
-    expect(notifyBackupFailedMock).toHaveBeenCalledTimes(1);
-    const [, , dedupeKey] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
-    expect(String(dedupeKey)).toContain('uid-2');
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+    const keys = (notifyBackupFailedMock.mock.calls as unknown[][]).map((c) => c[2]);
+    expect(keys).toEqual([
+      'backup-job-failed:uid-1', 'backup-job-failed:uid-2',
+      'backup-job-failed:uid-1', 'backup-job-failed:uid-2',
+    ]);
+  });
+
+  it('reports only failed Jobs', async () => {
+    listJobsMock.mockResolvedValue([
+      { ...FAILED_DR_JOB, uid: 'ok', state: 'succeeded' as const },
+      { ...FAILED_DR_JOB, uid: 'busy', state: 'running' as const },
+      FAILED_TENANT_JOB,
+    ]);
+    resolveRecipientsMock.mockResolvedValue(['someone']);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+    expect((notifyBackupFailedMock.mock.calls as unknown[][]).map((c) => c[2])).toEqual(['backup-job-failed:uid-2']);
   });
 
   it('logs and skips when no recipients are resolvable (avoids ghost rows)', async () => {
     listJobsMock.mockResolvedValue([FAILED_DR_JOB]);
     resolveRecipientsMock.mockResolvedValue([]);
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
     expect(notifyBackupFailedMock).not.toHaveBeenCalled();
     expect(NOOP_LOG.warn).toHaveBeenCalledOnce();
   });
@@ -135,7 +149,7 @@ describe('runTick', () => {
     const longReason = 'x'.repeat(2000);
     listJobsMock.mockResolvedValue([{ ...FAILED_DR_JOB, failureReason: longReason }]);
     resolveRecipientsMock.mockResolvedValue(['admin']);
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
     const [, payload] = notifyBackupFailedMock.mock.calls[0]! as unknown[];
     expect((payload as Record<string, string>).errorMessage).toContain('xxx');
     expect((payload as Record<string, string>).errorMessage.length).toBeLessThan(700);
@@ -143,7 +157,7 @@ describe('runTick', () => {
 
   it('returns silently when no jobs are returned', async () => {
     listJobsMock.mockResolvedValue([]);
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
     expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
 });

@@ -282,6 +282,26 @@ describe('notification events', () => {
       }));
     });
 
+    it('notifyAdminBackupFailed says whether this call told anyone', async () => {
+      // Its callers re-report a standing failure every tick under one dedupe
+      // key, and log "notified" from this answer.
+      const result = (statuses: Array<{ status: string }>) => ({ eventId: 'e', deliveryCount: 0, perChannelStatuses: statuses });
+      emitEventMock.mockResolvedValueOnce(result([{ status: 'sent' }, { status: 'queued' }]));
+      expect(await notifyAdminBackupFailed({} as never, { backupName: 'b1' }, 'k')).toBe(true);
+      // An email that was only queued still counts: in-app may be switched off.
+      emitEventMock.mockResolvedValueOnce(result([{ status: 'muted' }, { status: 'queued' }]));
+      expect(await notifyAdminBackupFailed({} as never, { backupName: 'b1' }, 'k')).toBe(true);
+      // Every recipient already told under this key.
+      emitEventMock.mockResolvedValueOnce(result([{ status: 'skipped' }, { status: 'skipped' }]));
+      expect(await notifyAdminBackupFailed({} as never, { backupName: 'b1' }, 'k')).toBe(false);
+      // Nobody subscribed.
+      emitEventMock.mockResolvedValueOnce(result([]));
+      expect(await notifyAdminBackupFailed({} as never, { backupName: 'b1' }, 'k')).toBe(false);
+      // The dispatch itself failed — swallowed, as for every helper here.
+      emitEventMock.mockRejectedValueOnce(new Error('db down'));
+      expect(await notifyAdminBackupFailed({} as never, { backupName: 'b1' }, 'k')).toBe(false);
+    });
+
     it('admin helpers emit their respective categories', async () => {
       // dedupeKey is required on this one — a caller that omits it is what
       // turned a 21-second API outage into 29 notifications on production.

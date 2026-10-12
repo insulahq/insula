@@ -7,6 +7,7 @@ import { runAutoUpgradePass } from './modules/deployments/auto-upgrade-cron.js';
 import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
 import { persistInstalledVersion } from './modules/platform-updates/service.js';
+import { runExclusive } from './shared/exclusive-run.js';
 import { releaseAllSchedulerLeases, withSchedulerLease } from './shared/scheduler-lease.js';
 import { installK8sConnectionPool } from './shared/k8s-connection-pool.js';
 
@@ -213,8 +214,10 @@ const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;
 // One replica suspends: replicas that read the same expired tenant each ran
 // the suspend cascade (hooks, notices) for it.
 const suspendExpired = async (): Promise<number> => {
-  const leased = await withSchedulerLease(db, 'subscription-expiry', EXPIRY_CHECK_INTERVAL * 1.5, () => suspendExpiredTenants(db));
-  return leased.ran ? leased.value : 0;
+  // The run lock keeps the hourly check off one an admin has started.
+  const leased = await withSchedulerLease(db, 'subscription-expiry', EXPIRY_CHECK_INTERVAL * 1.5,
+    () => runExclusive(db, 'subscription-expiry', () => suspendExpiredTenants(db)));
+  return leased.ran && leased.value.ran ? leased.value.value : 0;
 };
 expiryCheckTimer = setInterval(async () => {
   try {

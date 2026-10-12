@@ -156,8 +156,14 @@ function createMockDb(
   const updateFn = vi.fn().mockReturnValue({ set: updateSet });
 
   // Generic insert mock — values() returns a resolved promise so the
-  // drift-item + notification inserts await cleanly without further setup.
-  const insertValues = vi.fn().mockResolvedValue(undefined);
+  // notification inserts await cleanly without further setup, and carries the
+  // `.onConflictDoNothing().returning()` chain of the drift-item insert, which
+  // answers with the row it stored.
+  const insertValues = vi.fn().mockImplementation(() => {
+    const p = Promise.resolve(undefined) as Promise<undefined> & { onConflictDoNothing: () => { returning: () => Promise<Array<{ id: string }>> } };
+    p.onConflictDoNothing = () => ({ returning: async () => [{ id: 'drift-row' }] });
+    return p;
+  });
   const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
   const fromFn = vi.fn().mockImplementation((table?: { __table?: string }) => {

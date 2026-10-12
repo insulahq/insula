@@ -15,6 +15,7 @@
  *   - pressure watcher (60s)    — reactive, >75% ephemeral or DiskPressure
  *   - kubelet image GC          — last-resort at 85% disk
  */
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease, type LeaseDb } from '../../shared/scheduler-lease.js';
 import type { FastifyBaseLogger } from 'fastify';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -59,9 +60,10 @@ export function startDailyImagePrune(
       ticking = true;
       try {
         // One replica prunes: a purge fans out one pod per node, per replica.
+        // The run lock keeps the sweep off a purge an operator has started.
         const leased = await withSchedulerLease(db, 'daily-image-prune', TICK_MS * 1.5,
-          () => runDailyImagePrune({ purge: () => purgeUnusedImages(k8s, false) }));
-        const r = leased.ran ? leased.value : { removedCount: 0, errorCount: 0, freedBytes: 0 };
+          () => runExclusive(db, 'daily-image-prune', () => runDailyImagePrune({ purge: () => purgeUnusedImages(k8s, false) })));
+        const r = leased.ran && leased.value.ran ? leased.value.value : { removedCount: 0, errorCount: 0, freedBytes: 0 };
         if (r.removedCount > 0 || r.errorCount > 0) {
           log.info(`[image-prune] removed ${r.removedCount} image(s), freed ${(r.freedBytes / 1e9).toFixed(2)} GB, ${r.errorCount} error(s)`);
         }

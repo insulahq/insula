@@ -11,7 +11,8 @@
  * for instant convergence. The scheduler picks up any failed inline
  * runs on the next tick.
  */
-import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { runExclusive, type ExclusiveRunOptions } from '../../shared/exclusive-run.js';
+import { withSchedulerLease, type LeaseOutcome } from '../../shared/scheduler-lease.js';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
@@ -31,32 +32,25 @@ export interface SchedulerClients {
   readonly apps: k8s.AppsV1Api;
 }
 
-// Module-level mutual-exclusion gate. The reconciler reads the Traefik
-// DS args + JSON-patches by index — two concurrent runs would each
-// compute indices from the same snapshot and the second apply would
-// target stale positions if the first appended new args. The same gate
-// also protects the inline POST/DELETE reconciles in routes.ts via
-// `runReconcileExclusive`.
-let inflight: Promise<void> | null = null;
-
-export async function runReconcileExclusive(
+/**
+ * The one way to reconcile, for the tick and for the routes. The reconciler
+ * reads the Traefik DS args and JSON-patches them by index: two runs at once
+ * each compute indices from the same snapshot, and the second patch lands on
+ * stale positions if the first appended arguments. The run lock holds across
+ * replicas and within one process.
+ *
+ * A caller that has just changed the ranges passes `waitMs`: its run then
+ * starts after the one under way has finished, so it reads the change. (It
+ * used to be handed the run already under way, which may have read the ranges
+ * before the change — leaving it to the next tick.)
+ */
+export function runReconcileExclusive(
   db: Database,
   clients: ReconcileClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
-): Promise<void> {
-  if (inflight) {
-    // A reconcile is already running — return immediately. The current
-    // run will see whatever DB state exists when it next reads.
-    return inflight;
-  }
-  inflight = (async () => {
-    try {
-      await reconcileClusterTrustedProxies(db, clients, log);
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
+  opts: ExclusiveRunOptions = {},
+): Promise<LeaseOutcome<unknown>> {
+  return runExclusive(db, 'cluster-trusted-proxies', () => reconcileClusterTrustedProxies(db, clients, log), { log, ...opts });
 }
 
 export function startClusterTrustedProxiesReconciler(
@@ -74,10 +68,8 @@ export function startClusterTrustedProxiesReconciler(
         core: clients.core,
         apps: clients.apps,
       };
-      // One replica ticks: the ingress DaemonSet's arguments are patched by
-      // position from a snapshot, and the only guard against two patches at
-      // once (runReconcileExclusive) is per process. A reconcile started by a
-      // route on another replica can still overlap this tick.
+      // One replica ticks; the run lock inside keeps the tick off a reconcile
+      // a route has started, here or on another replica.
       await withSchedulerLease(db, 'cluster-trusted-proxies', intervalMs * 1.5,
         () => runReconcileExclusive(db, reconcileClients, log), { log });
     } catch (err) {

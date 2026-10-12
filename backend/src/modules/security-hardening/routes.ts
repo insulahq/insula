@@ -67,7 +67,8 @@ import {
   updateExclusion as updateWafExclusion,
   WafRuleExclusionError,
 } from '../waf-rule-exclusions/service.js';
-import { reconcileWafExclusions } from '../waf-rule-exclusions/reconciler.js';
+import { runWafExclusionReconcile } from '../waf-rule-exclusions/scheduler.js';
+import { RUN_WAIT_MS, runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 import {
   ConsoleMetaDisabledError,
   disenrollConsole,
@@ -548,15 +549,24 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           olderThanSeconds = parsed;
         }
         app.log.warn({ actor, olderThanSeconds }, 'crowdsec: manual bouncer prune triggered');
-        try {
-          const result = await pruneStaleBouncers(kubeconfigPath, olderThanSeconds);
-          return success(result);
-        } catch (err) {
+        // Under the prune's run lock: the count reported is the bouncer list
+        // before minus after, which a second prune alongside falsifies. Only
+        // the prune's own failure is answered 502 here; "already running" and
+        // a failure to take the lock go to the error handler as they are.
+        const outcome = await runExclusiveOrBusy(deps.db, 'crowdsec-bouncer-prune', 'A bouncer prune', async () => {
+          try {
+            return { result: await pruneStaleBouncers(kubeconfigPath, olderThanSeconds) };
+          } catch (err) {
+            return { failure: err instanceof Error ? err.message : String(err) };
+          }
+        }, { log: app.log });
+        if ('failure' in outcome) {
           return reply.status(502).send({
             error: 'CROWDSEC_BOUNCER_PRUNE_FAILED',
-            message: err instanceof Error ? err.message : String(err),
+            message: outcome.failure,
           });
         }
+        return success(outcome.result);
       },
     );
 
@@ -862,7 +872,9 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
     const triggerWafExclusionReconcile = async (): Promise<void> => {
       try {
         const k8s = createK8sClients(kubeconfigPath);
-        await reconcileWafExclusions(deps.db, { core: k8s.core, apps: k8s.apps }, app.log);
+        // After any run under way, so this one renders the exclusion just saved.
+        const run = await runWafExclusionReconcile(deps.db, { core: k8s.core, apps: k8s.apps }, app.log, { waitMs: RUN_WAIT_MS });
+        if (!run.ran) app.log.warn({}, 'waf-rule-exclusions: a reconcile was still running after the wait; the next tick applies this change');
       } catch (err) {
         app.log.warn(
           { err: err instanceof Error ? err.message : String(err) },

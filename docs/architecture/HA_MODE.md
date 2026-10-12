@@ -97,6 +97,46 @@ The upgrade reconciler is the one timer that takes its own per-tick claim
 instead of a sticky lease (an upgrade restarts the replicas, so no replica may
 own it); each pass additionally holds the run lock `platform-upgrade-pass`.
 
+#### Work that something other than the timer starts (run lock)
+
+The sticky lease decides which replica's **timer** runs a job. The same work is
+also started by routes — a reconcile right after a change (a backup target
+assignment, a trusted proxy range, a WAF exclusion, a mail hostname, *Apply
+tier*), and the "run now" buttons — on whichever replica serves the request,
+beside the timer's run on another replica or in the same process.
+
+So that work takes a second lease, the job's run lock (`<job>-run`, released
+when the run ends), through `runExclusive` in
+`backend/src/shared/exclusive-run.ts`:
+
+- the timer takes it inside its sticky lease and skips the tick when the lock
+  is busy. The tick is skipped, not postponed — the job's next tick comes
+  after its interval;
+- a run started after a change waits for the run under way (`RUN_WAIT_MS`,
+  30 s; the backup-target and mail-migration flows wait past the lock's 2-minute
+  ttl) and then runs, so it always reads the change it was started for;
+- a "run now" route waits the same 30 s and answers `409 JOB_ALREADY_RUNNING`
+  if the job is still busy.
+
+A run renews its lock while it lasts, for 30 minutes at most
+(`RUN_LOCK_MAX_HOLD_MS`). A run that hangs — a call to the cluster that never
+returns — is logged once as "no longer renewed" and stops blocking the other
+replicas when the lock runs out. In its own process it still counts as running
+until it returns or the pod restarts, as a hung tick always has; on a
+single-replica cluster that job stays blocked until then.
+
+Not covered: one tenant's transition. An operator archiving or deleting a
+tenant and the auto-archive sweep reaching the same tenant are different
+operations and share no lock; that exclusion belongs to the tenant lifecycle,
+per tenant.
+
+`scheduler-lease-callers.test.ts` parses the source for every call, outside a
+lease's own file, of a function a sticky lease's callback calls. Each must take
+the run lock (`'run-lock'`, verified — and the timer must take it too) or carry
+the reason an overlap is harmless: a read, or a write of the same values. Its
+blind spot is stated in its header: a callback that only calls a function
+private to its file is not followed further.
+
 What `Apply HA` does NOT do:
 - Per-tenant client workloads (separate per-tenant storage tier — see
   `NODE_OUTAGE_RESILIENCE.md` §2 for how a tenant degrades on node loss)

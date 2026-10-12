@@ -1,3 +1,4 @@
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
@@ -26,83 +27,90 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
       // stamped and sent, and every tick lists each managed volume claim in
       // the cluster. The timer is re-armed below, whoever held the lease.
       await withSchedulerLease(db, 'storage-policy-advisor', TICK_MS * 1.5, async () => {
-        const policy = await getPolicy(db);
-        const state = await readClusterState(k8s, db);
+        // Reading the tier and patching it in hold the run lock the operator's
+        // "apply tier" takes: a pass that read the old tier must not patch it
+        // in after the new one. Nothing else in the tick does — the label
+        // mirror below walks every volume and has nothing to do with the tier.
+        const tierPass = await runExclusive(db, 'storage-policy-advisor', async () => {
+          const policy = await getPolicy(db);
+          const state = await readClusterState(k8s, db);
 
-        // Drift correction: re-apply the current policy to the live
-        // cluster every tick. Catches new PVCs (PITR rebuild, fresh
-        // CNPG instance), node count changes (HA replica count tracks
-        // readyServerCount dynamically), and config drift from manual
-        // kubectl edits. Idempotent — patchLonghornVolumes etc. skip
-        // when the live state already matches desired. Without this,
-        // the cluster only converges when an operator clicks "Apply
-        // Tier" in the UI; in practice that means stale state most of
-        // the time.
-        //
-        // Skip volumes that aren't `attached` yet (provisioning,
-        // detached for restore, etc.) — patching their replica count
-        // mid-rebuild thrashes the reconcile and floods the log with
-        // spurious "drift detected" entries until Longhorn converges
-        // naturally. Once attached we can safely diff currentReplicas
-        // against desiredReplicas.
-        const volumeDrift = state.volumes.some(
-          (v) => v.phase === 'attached' && (v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica),
-        );
+          // Drift correction: re-apply the current policy to the live
+          // cluster every tick. Catches new PVCs (PITR rebuild, fresh
+          // CNPG instance), node count changes (HA replica count tracks
+          // readyServerCount dynamically), and config drift from manual
+          // kubectl edits. Idempotent — patchLonghornVolumes etc. skip
+          // when the live state already matches desired. Without this,
+          // the cluster only converges when an operator clicks "Apply
+          // Tier" in the UI; in practice that means stale state most of
+          // the time.
+          //
+          // Skip volumes that aren't `attached` yet (provisioning,
+          // detached for restore, etc.) — patching their replica count
+          // mid-rebuild thrashes the reconcile and floods the log with
+          // spurious "drift detected" entries until Longhorn converges
+          // naturally. Once attached we can safely diff currentReplicas
+          // against desiredReplicas.
+          const volumeDrift = state.volumes.some(
+            (v) => v.phase === 'attached' && (v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica),
+          );
 
-        // Also detect Valkey replica drift — the cluster may have grown
-        // a server (state.readyServerCount changed) without any volume
-        // delta, in which case `volumeDrift` stays false but Valkey
-        // should still scale 1→3 or 3→4. patchValkey() inside
-        // applyPolicy is idempotent: if neither replicas nor maxmemory
-        // changed, both inner branches no-op and the call is cheap.
-        const desiredValkeyReplicas = valkeyReplicasForSystemTier(policy.systemTier, state.readyServerCount);
-        let valkeyDrift = false;
-        try {
-          const sts = await k8s.apps.readNamespacedStatefulSet({
-            namespace: 'redis-system', name: 'valkey',
-          }) as unknown as { spec?: { replicas?: number } };
-          const live = sts.spec?.replicas ?? 0;
-          valkeyDrift = live !== desiredValkeyReplicas;
-        } catch (err) {
-          // 404 = StatefulSet not deployed (e.g. production overlay).
-          const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
-          if (status !== 404) {
-            console.warn('[storage-policy-advisor] valkey sts probe failed:', (err as Error).message);
-          }
-        }
-
-        // Also detect Deployment replica drift. The stateless tier
-        // (admin/tenant/platform-api/oauth2-proxy/dex/roundcube) and the
-        // leader-elect operators (cert-manager, Flux, CNPG operator,
-        // sealed-secrets, snapshot-controller) scale 1↔N with the tier.
-        // On a stable single-server cluster neither volumes nor valkey
-        // drift, so without this check applyPolicy never fired and those
-        // operators stayed at their bootstrap install default of 2
-        // replicas instead of the local-tier 1. detectDeploymentReplicaDrift
-        // is 404/annotation-tolerant and short-circuits on the first
-        // divergence. A probe failure is swallowed (treated as no-drift)
-        // so a flaky read can't trigger an apply storm.
-        let deploymentDrift = false;
-        try {
-          deploymentDrift = await detectDeploymentReplicaDrift(k8s, policy.systemTier, state.readyServerCount);
-        } catch (err) {
-          console.warn('[storage-policy-advisor] deployment drift probe failed:', (err as Error).message);
-        }
-
-        if (volumeDrift || valkeyDrift || deploymentDrift) {
-          console.log(`[storage-policy-advisor] drift detected (volume=${volumeDrift} valkey=${valkeyDrift} deployment=${deploymentDrift}) — applying ${policy.systemTier} tier`);
+          // Also detect Valkey replica drift — the cluster may have grown
+          // a server (state.readyServerCount changed) without any volume
+          // delta, in which case `volumeDrift` stays false but Valkey
+          // should still scale 1→3 or 3→4. patchValkey() inside
+          // applyPolicy is idempotent: if neither replicas nor maxmemory
+          // changed, both inner branches no-op and the call is cheap.
+          const desiredValkeyReplicas = valkeyReplicasForSystemTier(policy.systemTier, state.readyServerCount);
+          let valkeyDrift = false;
           try {
-            const outcome = await applyPolicy(k8s, db);
-            const patched = outcome.volumes.filter((v) => v.patched).length
-              + outcome.deployments.filter((d) => d.patched).length
-              + outcome.cnpgClusters.filter((c) => c.patched).length
-              + (outcome.valkey?.replicasPatched ? 1 : 0)
-              + (outcome.valkey?.configPatched ? 1 : 0);
-            console.log(`[storage-policy-advisor] reconciled ${patched} resource(s)`);
+            const sts = await k8s.apps.readNamespacedStatefulSet({
+              namespace: 'redis-system', name: 'valkey',
+            }) as unknown as { spec?: { replicas?: number } };
+            const live = sts.spec?.replicas ?? 0;
+            valkeyDrift = live !== desiredValkeyReplicas;
           } catch (err) {
-            console.error('[storage-policy-advisor] reconcile failed:', (err as Error).message);
+            // 404 = StatefulSet not deployed (e.g. production overlay).
+            const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+            if (status !== 404) {
+              console.warn('[storage-policy-advisor] valkey sts probe failed:', (err as Error).message);
+            }
           }
-        }
+
+          // Also detect Deployment replica drift. The stateless tier
+          // (admin/tenant/platform-api/oauth2-proxy/dex/roundcube) and the
+          // leader-elect operators (cert-manager, Flux, CNPG operator,
+          // sealed-secrets, snapshot-controller) scale 1↔N with the tier.
+          // On a stable single-server cluster neither volumes nor valkey
+          // drift, so without this check applyPolicy never fired and those
+          // operators stayed at their bootstrap install default of 2
+          // replicas instead of the local-tier 1. detectDeploymentReplicaDrift
+          // is 404/annotation-tolerant and short-circuits on the first
+          // divergence. A probe failure is swallowed (treated as no-drift)
+          // so a flaky read can't trigger an apply storm.
+          let deploymentDrift = false;
+          try {
+            deploymentDrift = await detectDeploymentReplicaDrift(k8s, policy.systemTier, state.readyServerCount);
+          } catch (err) {
+            console.warn('[storage-policy-advisor] deployment drift probe failed:', (err as Error).message);
+          }
+
+          if (volumeDrift || valkeyDrift || deploymentDrift) {
+            console.log(`[storage-policy-advisor] drift detected (volume=${volumeDrift} valkey=${valkeyDrift} deployment=${deploymentDrift}) — applying ${policy.systemTier} tier`);
+            try {
+              const outcome = await applyPolicy(k8s, db);
+              const patched = outcome.volumes.filter((v) => v.patched).length
+                + outcome.deployments.filter((d) => d.patched).length
+                + outcome.cnpgClusters.filter((c) => c.patched).length
+                + (outcome.valkey?.replicasPatched ? 1 : 0)
+                + (outcome.valkey?.configPatched ? 1 : 0);
+              console.log(`[storage-policy-advisor] reconciled ${patched} resource(s)`);
+            } catch (err) {
+              console.error('[storage-policy-advisor] reconcile failed:', (err as Error).message);
+            }
+          }
+          return { policy, state };
+        });
 
         // Canonical PVC → PV label mirror. Independent of tier-drift —
         // runs every tick because PVCs (and their PVs) are created/deleted
@@ -122,6 +130,11 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
         } catch (err) {
           console.error('[storage-policy-advisor] pvc-pv-mirror tick failed:', (err as Error).message);
         }
+
+        // An operator's apply is under way: it is changing the very tier the
+        // recommendation is about. The next tick looks again.
+        if (!tierPass.ran) return;
+        const { policy, state } = tierPass.value;
 
         // Recommendation: notify ONCE when cluster reaches HA size and
         // policy is still local + un-pinned. Three-way short-circuit:

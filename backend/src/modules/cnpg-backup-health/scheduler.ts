@@ -9,15 +9,19 @@
  *
  * Each tick:
  *   1. Snapshot CNPG Backup health via readBackupHealth().
- *   2. For each cluster's `mostRecentFailure`, check whether we've
- *      already written an admin notification for that specific Backup
- *      CR name. (Dedup key: `<namespace>/<backup-name>` — CNPG names
- *      are timestamped and never reused.)
- *   3. Emit one notification per newly-observed failure.
+ *   2. Report each cluster's `mostRecentFailure` under the dedupe key
+ *      `cnpg-backup-failed:<namespace>/<backup-name>` (CNPG names are
+ *      timestamped and never reused).
  *
- * Idempotent: re-derives the already-notified set from the
- * notifications table on every tick, so a pod restart mid-tick is
- * safe. The next tick re-reads + re-checks.
+ * One notification per failed Backup, however many ticks see it: the
+ * dispatcher delivers a dedupe key once per recipient. That is the only
+ * dedupe — a standing failure is reported again on every tick and dropped
+ * there. (A lookup that was meant to skip failures already reported used to
+ * run first; it read a column the dispatcher never writes and never matched
+ * a row, while the log line below claimed a notification on every tick.)
+ *
+ * Idempotent: a pod restart mid-tick leaves the recipients not yet told to
+ * the next tick.
  *
  * Phase 2A.2 follow-up: closes the loop where operators only learn
  * about backup failures by visiting the admin Email Management page.
@@ -25,17 +29,13 @@
  * (typical lag: 0-5min depending on tick alignment).
  */
 
-import { eq, and, inArray } from 'drizzle-orm';
 import * as k8s from '@kubernetes/client-node';
-import { notifications } from '../../db/schema.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { readBackupHealth, type ClusterBackupHealth, type BackupRecord } from './service.js';
 import { recordSystemLastSuccess } from '../system-backup/footprint-store.js';
 import type { Database } from '../../db/index.js';
 import { safeTick } from '../../shared/safe-tick.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
-
-const RESOURCE_TYPE = 'cnpg_backup_failure';
 
 /**
  * Default tick interval — 5 minutes balances freshness vs apiserver
@@ -99,58 +99,11 @@ export async function runTick(
   await recordSystemLastSuccess(db, snapshot)
     .catch((err: unknown) => log.warn('recording the last system backup failed', err));
 
-  // Collect failures across all clusters in one batch so we hit the
-  // notifications table once for the dedup query.
-  const failures: ReadonlyArray<{
-    cluster: ClusterBackupHealth;
-    backup: BackupRecord;
-    dedupKey: string;
-  }> = snapshot
-    .filter((c) => c.mostRecentFailure !== null)
-    .map((c) => {
-      const backup = c.mostRecentFailure!;
-      return {
-        cluster: c,
-        backup,
-        dedupKey: `${backup.namespace}/${backup.name}`,
-      };
-    });
-
-  if (failures.length === 0) return;
-
-  const alreadyNotified = await loadAlreadyNotifiedKeys(
-    db,
-    failures.map((f) => f.dedupKey),
-  );
-
-  const newFailures = failures.filter((f) => !alreadyNotified.has(f.dedupKey));
-  if (newFailures.length === 0) return;
-
-  for (const f of newFailures) {
+  for (const cluster of snapshot) {
+    if (cluster.mostRecentFailure === null) continue;
     // eslint-disable-next-line no-await-in-loop
-    await notifyForFailure(db, f.cluster, f.backup, log);
+    await notifyForFailure(db, cluster, cluster.mostRecentFailure, log);
   }
-}
-
-async function loadAlreadyNotifiedKeys(
-  db: Database,
-  candidateKeys: ReadonlyArray<string>,
-): Promise<Set<string>> {
-  if (candidateKeys.length === 0) return new Set();
-  const rows = await db
-    .select({ resourceId: notifications.resourceId })
-    .from(notifications)
-    .where(
-      and(
-        eq(notifications.resourceType, RESOURCE_TYPE),
-        inArray(notifications.resourceId, candidateKeys as string[]),
-      ),
-    );
-  const seen = new Set<string>();
-  for (const row of rows) {
-    if (row.resourceId) seen.add(row.resourceId);
-  }
-  return seen;
 }
 
 async function notifyForFailure(
@@ -184,16 +137,20 @@ async function notifyForFailure(
   // replaces wrote an in-app row and stopped there — no template, no email,
   // no preference gate, no delivery audit — for a FAILED DATABASE BACKUP.
   const { notifyAdminBackupFailed } = await import('../notifications/events.js');
-  await notifyAdminBackupFailed(db, {
+  const told = await notifyAdminBackupFailed(db, {
     backupName: `${backup.namespace}/${backup.name} (cluster ${cluster.namespace}/${cluster.clusterName})`,
     errorMessage:
       `${reason} ${recoveryHint} Inspect via /backups/system → Backups, or run `
       + `\`kubectl -n ${backup.namespace} get backup.postgresql.cnpg.io\`.`,
   }, `cnpg-backup-failed:${backup.namespace}/${backup.name}`);
 
-  log.info?.(
-    `notified admins about failed backup ${backup.namespace}/${backup.name} (cluster ${cluster.namespace}/${cluster.clusterName}, ${recipients.length} recipients)`,
-  );
+  // Only when this tick told someone: a standing failure comes through here
+  // every tick, and all but the first are dropped by the dedupe key.
+  if (told) {
+    log.info?.(
+      `notified admins about failed backup ${backup.namespace}/${backup.name} (cluster ${cluster.namespace}/${cluster.clusterName})`,
+    );
+  }
 }
 
 function formatAge(seconds: number): string {
@@ -202,8 +159,3 @@ function formatAge(seconds: number): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
 }
-
-// Test-only re-exports.
-export const __test = {
-  RESOURCE_TYPE,
-};

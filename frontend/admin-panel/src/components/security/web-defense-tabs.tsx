@@ -66,6 +66,8 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { SkeletonLoader } from '@/components/ui/SkeletonLoader';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
 import {
@@ -1070,7 +1072,7 @@ export function BannedIpsTab() {
   );
 }
 
-function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
+export function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
   const coverageOk = status.coverage.traefikPodsTotal > 0 && status.coverage.traefikPodsCovered === status.coverage.traefikPodsTotal;
   const fullCoverage = coverageOk && status.coverage.traefikPodsTotal === status.coverage.nodesTotal;
   // Bans are only enforced if at least one bouncer has pulled recently
@@ -1079,6 +1081,8 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
   // regardless of how many decisions are in the table.
   const liveBouncers = status.bouncers.filter((b) => b.online).length;
   const enforcementBroken = status.bouncers.length > 0 && liveBouncers === 0;
+  // Held here, not in the button: its failure is shown under the card's header.
+  const prune = usePruneCrowdsecBouncers();
   return (
     <div className="space-y-3" data-testid="crowdsec-status-panel">
       {enforcementBroken && (
@@ -1174,8 +1178,14 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
           <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <Activity size={14} /> Bouncers ({status.bouncers.length})
           </div>
-          <CrowdsecBouncerPruneButton staleCount={status.bouncers.length - liveBouncers} />
+          <CrowdsecBouncerPruneButton staleCount={status.bouncers.length - liveBouncers} mut={prune} />
         </div>
+        {/* A refused or failed prune used to leave the button as it was, with no word. */}
+        {prune.isError && (
+          <div className="mt-2">
+            <ErrorPanel error={extractOperatorError(prune.error)} compact testId="crowdsec-prune-bouncers-error" />
+          </div>
+        )}
         <ul className="mt-2 space-y-1 text-xs" data-testid="crowdsec-bouncers">
           {status.bouncers.length === 0 && <li className="text-amber-600 dark:text-amber-400">No bouncers registered — bans won't be enforced!</li>}
           {status.bouncers.map((b) => (
@@ -2752,8 +2762,10 @@ function L4Stat({ label, value, tone }: { label: string; value: string; tone: 'o
 
 // ─── Manual stale-bouncer prune button (mirrors 24h scheduler) ──────
 
-function CrowdsecBouncerPruneButton({ staleCount }: { staleCount: number }) {
-  const mut = usePruneCrowdsecBouncers();
+function CrowdsecBouncerPruneButton({ staleCount, mut }: {
+  staleCount: number;
+  mut: ReturnType<typeof usePruneCrowdsecBouncers>;
+}) {
   const [lastPruned, setLastPruned] = useState<number | null>(null);
 
   if (staleCount <= 0) return null;

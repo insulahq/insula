@@ -3,6 +3,8 @@ import { HardDrive, Loader2, Trash2, AlertTriangle, CheckCircle } from 'lucide-r
 import clsx from 'clsx';
 import { useStorageOverview, useImageInventory, usePurgeImages } from '@/hooks/use-storage';
 import type { ImageEntry } from '@insula/api-contracts';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -142,6 +144,13 @@ export default function StorageUsageTab() {
               </button>
             </div>
           </div>
+          {/* The preview and the purge both failed silently: the confirm dialog
+              only opens on data, so a refused purge just closed it. */}
+          {purgeMutation.isError && (
+            <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+              <ErrorPanel error={extractOperatorError(purgeMutation.error)} compact testId="image-purge-error" />
+            </div>
+          )}
           <p className="px-5 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800" data-testid="image-prune-note">
             Unused, non-protected images are pruned automatically once per day. Additional automatic
             pruning kicks in under disk pressure (platform watcher above 75% ephemeral-storage use;

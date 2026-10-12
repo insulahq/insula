@@ -12,7 +12,8 @@ import { runTick } from './scheduler.js';
 // below stays only so the module graph resolves; the assertions read the
 // categorised call, which is what carries the template, the email leg and the
 // delivery audit the in-app-only path never had.
-const notifyBackupFailedMock = vi.fn(async () => undefined);
+// Resolves true when the dispatch told someone — false for a repeat the dedupe key dropped.
+const notifyBackupFailedMock = vi.fn(async (): Promise<boolean> => true);
 const notifyOperationalMock = vi.fn(async () => undefined);
 vi.mock('../notifications/events.js', () => ({
   notifyAdminBackupFailed: (...a: unknown[]) => notifyBackupFailedMock(...(a as [])),
@@ -42,13 +43,14 @@ const readHealthMock = readBackupHealth as unknown as ReturnType<typeof vi.fn>;
 
 const NOOP_LOG = { warn: vi.fn(), info: vi.fn() };
 
-function mockDb(notifiedKeys: string[]) {
-  const whereFn = vi.fn().mockResolvedValue(
-    notifiedKeys.map((id) => ({ resourceId: id })),
-  );
-  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-  const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-  return { select: selectFn } as never;
+/**
+ * The tick asks the database nothing about who has been told: that is the
+ * dispatcher's business (the dedupe key). A database that answers a query
+ * would hide a lookup creeping back in, so this one refuses every read.
+ * (Recording the last successful backup fails on it too, and is caught.)
+ */
+function mockDb() {
+  return { select: () => { throw new Error('the tick must not query the database'); } } as never;
 }
 
 const HEALTHY: ClusterBackupHealth = {
@@ -94,7 +96,8 @@ const FAILING: ClusterBackupHealth = {
 describe('cnpg-backup-health scheduler runTick', () => {
   beforeEach(() => {
     notifyUsersMock.mockClear();
-    notifyBackupFailedMock.mockClear();
+    notifyBackupFailedMock.mockReset();
+    notifyBackupFailedMock.mockResolvedValue(true);
     notifyOperationalMock.mockClear();
     resolveRecipientsMock.mockReset();
     readHealthMock.mockReset();
@@ -106,7 +109,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     readHealthMock.mockResolvedValue([HEALTHY]);
     resolveRecipientsMock.mockResolvedValue(['admin-1']);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(notifyBackupFailedMock).not.toHaveBeenCalled();
   });
@@ -115,7 +118,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     readHealthMock.mockResolvedValue([FAILING]);
     resolveRecipientsMock.mockResolvedValue(['admin-1', 'admin-2']);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     // ONE categorised dispatch; recipient fan-out belongs to the dispatcher,
     // which is what gives a failed DATABASE BACKUP a template, an email leg
@@ -131,13 +134,24 @@ describe('cnpg-backup-health scheduler runTick', () => {
     expect(dedupeKey).toBe('cnpg-backup-failed:platform/system-db-daily-2');
   });
 
-  it('already-notified failure → dedup, no second notification', async () => {
+  it('a standing failure is reported every tick under one key, and logged as notified only when someone was told', async () => {
     readHealthMock.mockResolvedValue([FAILING]);
-    // Pre-load the dedup table so this Backup CR is already known
-    await runTick(mockDb(['platform/system-db-daily-2']), {} as never, NOOP_LOG);
+    resolveRecipientsMock.mockResolvedValue(['admin-1']);
+    notifyBackupFailedMock.mockResolvedValueOnce(true).mockResolvedValue(false);
 
-    expect(notifyBackupFailedMock).not.toHaveBeenCalled();
-    expect(resolveRecipientsMock).not.toHaveBeenCalled();
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
+
+    // Three reports, one key: the dispatcher delivers the first and drops the rest.
+    expect((notifyBackupFailedMock.mock.calls as unknown[][]).map((c) => c[2])).toEqual([
+      'cnpg-backup-failed:platform/system-db-daily-2',
+      'cnpg-backup-failed:platform/system-db-daily-2',
+      'cnpg-backup-failed:platform/system-db-daily-2',
+    ]);
+    // The log used to say "notified admins" on every one of them.
+    const notified = (NOOP_LOG.info.mock.calls as unknown[][]).filter((c) => String(c[0]).includes('notified admins'));
+    expect(notified).toHaveLength(1);
   });
 
   it('multiple clusters failing → one notification per Backup CR', async () => {
@@ -155,7 +169,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     readHealthMock.mockResolvedValue([FAILING, AUX_FAILING]);
     resolveRecipientsMock.mockResolvedValue(['admin-1']);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(notifyBackupFailedMock).toHaveBeenCalledTimes(2);
     // Dedupe key carries the identity now; there is no resourceId column on
@@ -170,7 +184,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
   it('readBackupHealth throws → tick logs warning and returns', async () => {
     readHealthMock.mockRejectedValue(new Error('apiserver unavailable'));
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(NOOP_LOG.warn).toHaveBeenCalled();
     expect(notifyBackupFailedMock).not.toHaveBeenCalled();
@@ -180,7 +194,7 @@ describe('cnpg-backup-health scheduler runTick', () => {
     readHealthMock.mockResolvedValue([FAILING]);
     resolveRecipientsMock.mockResolvedValue([]);
 
-    await runTick(mockDb([]), {} as never, NOOP_LOG);
+    await runTick(mockDb(), {} as never, NOOP_LOG);
 
     expect(NOOP_LOG.warn).toHaveBeenCalled();
     expect(notifyBackupFailedMock).not.toHaveBeenCalled();

@@ -1,3 +1,4 @@
+import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
@@ -267,7 +268,10 @@ export function startStorageLifecycleScheduler(
       // failure for what the other one repaired.
       await withSchedulerLease(db, 'namespace-integrity', INTEGRITY_INTERVAL_MS * 1.5, async () => {
         const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
-        const result = await sweepFleetIntegrity(db, k8s);
+        // The run lock keeps this sweep off one an operator has started.
+        const run = await runExclusive(db, 'namespace-integrity', () => sweepFleetIntegrity(db, k8s));
+        if (!run.ran) return;
+        const result = run.value;
         if (result.repaired > 0 || result.errored > 0) {
           console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
         }

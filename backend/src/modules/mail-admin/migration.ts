@@ -1818,9 +1818,16 @@ async function runMigrationStateMachine(
   // 4190 bound, HA entrypoints dead) for ~30min after a failover.
   // (Runs AFTER 8b1 so its admin JMAP calls authenticate.)
   try {
-    const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
-    const rec = await runStalwartDomainReconcilerTick({ core, db, kubeconfigPath, logger: log });
-    if (rec.listenersCreated.length > 0 || rec.defaultHostnameUpdated) {
+    const { runStalwartDomainReconcile } = await import('./stalwart-domain-reconciler.js');
+    const { RUN_WAIT_PAST_DEAD_HOLDER_MS } = await import('../../shared/exclusive-run.js');
+    // After any pass under way — which may have looked at the pod this
+    // migration has just replaced — and long enough to outlast a pass whose
+    // process died: the migration must not leave this to the 30-minute tick.
+    const run = await runStalwartDomainReconcile({ core, db, kubeconfigPath, logger: log }, { waitMs: RUN_WAIT_PAST_DEAD_HOLDER_MS });
+    if (!run.ran) {
+      log.warn(`[migration ${runId}] post-cutover listener/hostname reconcile did not run: another pass was still running (the domain-reconciler tick will retry)`);
+    } else if (run.value.listenersCreated.length > 0 || run.value.defaultHostnameUpdated) {
+      const rec = run.value;
       log.info(
         `[migration ${runId}] post-cutover reconcile healed mail config: listeners=[${rec.listenersCreated.join(',')}] hostnameUpdated=${rec.defaultHostnameUpdated}`,
       );

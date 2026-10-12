@@ -5,6 +5,7 @@ import { getStorageOverview, getImageInventory, purgeUnusedImages } from './serv
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 
 export async function storageRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -40,6 +41,12 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
 
+    // A real purge takes the daily sweep's run lock, so the two never fan out
+    // their per-node pods together. A dry run removes nothing and may overlap.
+    const exclusively = <T>(run: () => Promise<T>): Promise<T> => (parsed.data.dryRun
+      ? run()
+      : runExclusiveOrBusy(app.db, 'daily-image-prune', 'An image purge', run, { log: app.log }));
+
     // Wrap the purge in a chip task so the operator can see it running
     // (typically 30-90s on a busy cluster). dryRun mode also gets a
     // task — quick win, low overhead, and surfaces the run in audit.
@@ -47,7 +54,7 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
     if (userId) {
       const { tracked } = await import('../tasks/service.js');
       const { toSafeText } = await import('@insula/api-contracts');
-      const result = await tracked(
+      const result = await exclusively(() => tracked(
         app.db,
         {
           kind: 'cache.purge',
@@ -59,10 +66,10 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
           details: { dryRun: parsed.data.dryRun },
         },
         () => purgeUnusedImages(k8s, parsed.data.dryRun),
-      );
+      ));
       return success(result);
     }
-    const result = await purgeUnusedImages(k8s, parsed.data.dryRun);
+    const result = await exclusively(() => purgeUnusedImages(k8s, parsed.data.dryRun));
     return success(result);
   });
 }

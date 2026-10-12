@@ -211,10 +211,3 @@ export function sortSummaries(
     return a.displayName.localeCompare(b.displayName);
   });
 }
-
-export function findNewFailures(
-  jobs: ReadonlyArray<BackupJobMeta>,
-  alreadyNotifiedUids: ReadonlySet<string>,
-): ReadonlyArray<BackupJobMeta> {
-  return jobs.filter((j) => j.state === 'failed' && !alreadyNotifiedUids.has(j.uid));
-}

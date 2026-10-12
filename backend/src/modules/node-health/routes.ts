@@ -6,6 +6,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
+import { runExclusiveOrBusy } from '../../shared/exclusive-run.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { readNodeHealthSummary, reconcileNodeHealth } from './scheduler.js';
 import { readMemoryEvents } from './memory-events.js';
@@ -86,7 +87,8 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
   }, async () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const result = await reconcileNodeHealth(app.db, k8s);
+    const result = await runExclusiveOrBusy(app.db, 'node-health-monitor', 'The node health check',
+      () => reconcileNodeHealth(app.db, k8s), { log: app.log });
     return success({
       reconciled: result.entries.length,
       notified: result.notified,

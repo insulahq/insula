@@ -414,7 +414,8 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     // the actual operator out of their own re-provision button.
     { preHandler: requireRole('super_admin') },
     async (req: { user?: { sub?: string } }) => {
-      const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
+      const { runStalwartDomainReconcile } = await import('./stalwart-domain-reconciler.js');
+      const { RUN_WAIT_MS, jobAlreadyRunning } = await import('../../shared/exclusive-run.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
       const cfg = app.config as Record<string, unknown>;
       const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
@@ -422,7 +423,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         { userId: req.user?.sub ?? 'unknown' },
         'mail-admin: operator-triggered Stalwart re-provision',
       );
-      const result = await runStalwartDomainReconcilerTick({
+      const run = await runStalwartDomainReconcile({
         core: k8s.core,
         // Wire `custom` so the operator "Re-provision Stalwart" button
         // also reconciles the ACME HTTP-01 override IngressRoute
@@ -436,8 +437,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
           info: (...args: unknown[]) => app.log.info(args.join(' ')),
         },
-      });
-      return success(result);
+      }, { waitMs: RUN_WAIT_MS, log: app.log });
+      if (!run.ran) throw jobAlreadyRunning('A mail server re-provision', 'stalwart-domain-reconciler');
+      return success(run.value);
     },
   );
 

@@ -304,6 +304,13 @@ export interface LeaseOptions {
   /** How often a long run renews its lease. Default: a third of the ttl, at most every 5 min. */
   readonly renewEveryMs?: number;
   /**
+   * Stop renewing once the run has lasted this long, and say so. The lease
+   * then runs out after its ttl and another replica may start the work — for
+   * a lock that must not be held for ever by a run that hangs (a call to the
+   * cluster with no timeout). Default: renew for as long as `fn` is pending.
+   */
+  readonly maxHoldMs?: number;
+  /**
    * False for a job that must not be run later when its first tick is refused
    * — a start-up one-shot whose caller wants its result, or which another
    * replica is already doing.
@@ -360,7 +367,17 @@ export async function withSchedulerLease<T>(
 
   const renewEveryMs = opts.renewEveryMs ?? Math.min(ttlMs / 3, 5 * 60_000);
   let renewing: Promise<void> = Promise.resolve();
+  const startedAt = performance.now();
+  let gaveUp = false;
   const timer = setInterval(() => {
+    if (opts.maxHoldMs !== undefined && performance.now() - startedAt >= opts.maxHoldMs) {
+      if (!gaveUp) {
+        gaveUp = true;
+        opts.log?.warn({ job, holder, maxHoldMs: opts.maxHoldMs },
+          'scheduler lease: the run has outlasted its longest hold and is no longer renewed — it may be hung; another replica can start the work once the lease runs out');
+      }
+      return;
+    }
     renewing = claimSchedulerLease(db, job, ttlMs, holder).then((kept) => {
       if (!kept) opts.log?.warn({ job, holder }, 'scheduler lease: lost to another replica while running');
     }, (err: unknown) => {

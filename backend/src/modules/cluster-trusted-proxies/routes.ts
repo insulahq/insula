@@ -30,6 +30,7 @@ import {
   renderTraefikCsv,
 } from './reconciler.js';
 import { runReconcileExclusive } from './scheduler.js';
+import { RUN_WAIT_MS } from '../../shared/exclusive-run.js';
 
 interface AuthedRequest {
   readonly user?: { readonly sub?: string };
@@ -210,10 +211,13 @@ async function fireInlineReconcile(
 ): Promise<void> {
   try {
     const clients = loadK8sClients(kubeconfigPath);
-    // Goes through the module-level exclusive runner so concurrent
-    // ticks (scheduler + inline) collapse into a single reconcile.
-    // Prevents Traefik DS JSON-patch index races (HIGH #1 from code review).
-    await runReconcileExclusive(db, clients, log);
+    // Under the reconciler's run lock, after any run under way: two runs at
+    // once race on the Traefik DS JSON-patch indices, and this one must read
+    // the range that was just written.
+    const run = await runReconcileExclusive(db, clients, log, { waitMs: RUN_WAIT_MS });
+    if (!run.ran) {
+      log.warn({}, 'cluster-trusted-proxies: a reconcile was still running after the wait; the next tick applies this change');
+    }
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
