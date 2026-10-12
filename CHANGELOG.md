@@ -41,6 +41,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `archive-runs`, `archive-runs/:id`, `archive/trigger`, `archive/restore` and `archive/schedule`
   answer 404. See *Removed* below.
 
+### Added
+
+- **Automatic archive and delete of tenants can be switched on in the admin panel.** The platform
+  has long had a sweep that archives tenants suspended for more than a set number of days and
+  deletes tenants archived for more than another — but its four settings could only be written
+  into the database by hand, so on every install it woke every six hours and did nothing.
+  **Platform → Tenant Lifecycle Hooks** now starts with a card for it:
+  - a switch and a limit in days for each step (off, 30 and 90 days until changed);
+  - under each, the tenants that limit reaches: who is past it and will be archived or deleted at
+    the next run, who comes next and on what date — following the limit as it is typed, before
+    anything is saved;
+  - a save that would put tenants in front of the next run asks first and names them; a delete
+    has to be typed;
+  - when it last ran and what it did, what it could not do and why, and **Run now**.
+  The sweep itself changed with it. It now works through its tenants one at a time and waits for
+  each archive to finish, instead of starting every due archive at once — and it reads the
+  settings again before every tenant, so a step switched off, or a limit raised, takes effect on
+  the next tenant of a sweep already under way. An archive it takes is
+  kept for the platform's archive retention, or for the delete limit when automatic delete is on
+  and longer, so an archive never expires before its tenant is deleted. A stored limit that is
+  not a whole number of days from 1 to 3650 is ignored in favour of the default — a hand-written
+  `0` used to mean "everything suspended before now". The admins are notified of what a sweep
+  did, and of a sweep that could not archive because no backup target serves tenant snapshots; a
+  tenant it cannot act on because a storage operation of it failed and was never cleared is
+  reported too, once a day. A change of the settings and a run started by hand are written to the
+  audit log with the admin who made them.
+  New endpoints, for the roles that may archive and delete a tenant by hand (admin, super admin):
+  `GET` and `PATCH /api/v1/admin/lifecycle/automation`, `POST /api/v1/admin/lifecycle/automation/run`.
+
 ### Changed
 
 - **Stalwart 0.16.24 → 0.16.26.** Mostly fixes. Besides the CPU requirement above, the ones that
@@ -130,12 +159,47 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - **The admin panel now shows a refused or failed "run now".** *Reconcile now* on the node
     health panel, *Prune stale* on the CrowdSec bouncers and the image purge on Monitoring →
     Storage ended a failed request with the spinner and nothing else.
-  A run keeps its lock for 30 minutes at most: one that hangs is logged as "no longer renewed"
-  and stops blocking the other replicas. Not covered by any of this: an operator archiving or
-  deleting a tenant at the moment the auto-archive sweep reaches the same tenant.
+  A run keeps its lock for 30 minutes at most; one that hangs is then given up (see below).
   A test now finds every place that starts a leased job's work outside its timer, by parsing the
   source, and fails until the call takes the lock or is listed with the reason an overlap is
-  harmless (a read, or a write of the same values).
+  harmless (a read, or a write of the same values). It reads through functions private to the
+  job's own file — seven of 64 jobs do all their work in one, and were invisible to it before.
+- **A scheduled job whose run never returns no longer stays dead until the pod restarts.** A run
+  that hangs — it waits on something that never answers — blocked its job for good: every later
+  tick found it "still running" in that process, its lease was renewed for ever so no other
+  replica took over, and a timer that re-arms itself after its tick never did. On a
+  single-replica cluster, which is most installs, only a restart of the API brought the job back.
+  Every run now has a longest hold: four of the job's intervals-and-a-half, twelve hours at
+  least; 30 minutes for the work a "run now" or an apply-at-once starts. Past it the run is given
+  up — the job is free again and starts afresh on its next tick, the log says so, and the admins
+  get a **Background jobs** notification naming the job (once an hour per job at most). The hold
+  is far above any honest run on purpose: a run given up while it is merely slow would be joined
+  by a second one.
+- **An operator and the automatic archive/delete sweep can no longer act on one tenant at once.**
+  A storage operation claimed its tenant by writing its state after checking that the tenant was
+  idle — two steps, so two starts could both pass the check — and a delete claimed nothing. That
+  left room for two archives of one tenant, a delete beside a restore, or two deletes. Everything
+  that starts an operation on a tenant (resize, the restores, suspend, resume, archive, filesystem
+  check, a move to another node) and everything that deletes one now holds that tenant's lock
+  while it checks and claims; a delete, a suspend and a resume hold it for as long as they run. A request that finds the
+  tenant still busy after 15 seconds answers **409 `TENANT_BUSY`**, with nothing changed — a new
+  answer from these endpoints. The sweep also checks again, under the lock, that a tenant is still
+  due before it archives or deletes it: its list may be hours old by then, and the operator may
+  have resumed or restored the tenant in between.
+- **Bulk delete clears a tenant's snapshot archives, like the single delete.** Deleting tenants in
+  bulk went straight to the cascade and skipped the step that removes a tenant's snapshot
+  archives from the snapshot store before its rows go; those archives then stayed in the store
+  with nothing left that could find them. Bulk delete now runs the same delete as the tenant page.
+  The automatic delete had the same gap.
+- **Two mail send-limit updates at once no longer leave a stale limit enforcing itself.** The
+  send limits of every mail domain are written to the mail server by one reconcile, started by a
+  five-minute timer and by every change of a plan, a tenant's limits or a mail domain. It creates
+  what the server lacks — and two at once both found a new domain's limits missing and both
+  created them. From then on a changed limit was written to one copy only, and the other went on
+  enforcing the old one: after a plan's limit was raised, the domain still sent at the lower
+  rate. The reconcile now runs one at a time (a second one waits, then runs), and it removes a
+  second object under one name wherever it finds one — which also repairs servers that already
+  carry such copies, at the next five-minute pass.
 - **A WAF rule exclusion with the preselected scope can be saved.** The exclusion form — in the
   admin panel and for a tenant's own route — preselects the scope *args*, the one that works for
   most rules. The database only allowed the other two, so saving with it answered 400

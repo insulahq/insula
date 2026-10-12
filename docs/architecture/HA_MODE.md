@@ -119,23 +119,69 @@ when the run ends), through `runExclusive` in
   if the job is still busy.
 
 A run renews its lock while it lasts, for 30 minutes at most
-(`RUN_LOCK_MAX_HOLD_MS`). A run that hangs — a call to the cluster that never
-returns — is logged once as "no longer renewed" and stops blocking the other
-replicas when the lock runs out. In its own process it still counts as running
-until it returns or the pod restarts, as a hung tick always has; on a
-single-replica cluster that job stays blocked until then.
+(`RUN_LOCK_MAX_HOLD_MS`; the automatic archive/delete sweep, which works through
+its tenants one at a time, passes 24 hours).
 
-Not covered: one tenant's transition. An operator archiving or deleting a
-tenant and the auto-archive sweep reaching the same tenant are different
-operations and share no lock; that exclusion belongs to the tenant lifecycle,
-per tenant.
+#### A run that never returns
+
+A run that hangs — it waits on something that never answers — used to stop its
+job for good: every later tick was refused in that process, its lease was
+renewed for ever, and a timer that re-arms itself after its tick never did. On
+a single-replica cluster the job stayed dead until the pod restarted.
+
+Every leased run now has a longest hold (`maxHoldMs` in
+`backend/src/shared/scheduler-lease.ts`): four of the job's ttls, twelve hours
+at least, for a sticky lease; the 30 minutes above for a run lock. Past it the
+helper gives the run up:
+
+- the job is free again, in this process and (a run lock is released) on every
+  other replica — its next tick starts it afresh;
+- the caller gets `LeasedRunAbandonedError`;
+- it is logged, and the admins get a "Background jobs" notification naming the
+  job, at most once an hour per job.
+
+The run given up may still be pending; whatever it returns later is logged and
+dropped. The lease writes that follow a run (the release, the cut-back) are
+waited for 60 s at most — a database that stops answering at that moment must
+not leave the job "running" in the process either. The hold is far above any honest run on purpose: a run given up while
+it is merely slow is joined by a second one. A job that bounds its own work and
+must never be started beside itself passes `maxHoldMs: Infinity`.
+
+#### One change to a tenant at a time (tenant lock)
+
+A storage operation claims its tenant by writing `storage_lifecycle_state`
+after checking that it is idle — two steps — and a delete claimed nothing. An
+operator and the automatic archive/delete sweep could so reach one tenant at
+once: two archives of it, a delete beside a restore, two deletes.
+
+Everything that starts an operation on a tenant (resize, the restores, suspend,
+resume, archive, filesystem check, a move to another node) and everything that
+deletes one (the tenant route, bulk delete, the sweep) holds that tenant's run
+lock, `tenant:<id>` (`backend/src/modules/tenant-lifecycle/tenant-lock.ts`),
+while it checks and claims — a delete, a suspend and a resume for as long as
+they run, which is why this lock's longest hold is six hours
+(`TENANT_LOCK_MAX_HOLD_MS`) and not the run lock's half hour: giving a delete
+up while it is merely slow would let an archive start on a half-deleted
+tenant. A caller waits 15 s for the lock and then answers `409 TENANT_BUSY`.
+The lock is not reentrant; nothing that holds it calls another holder for the
+same tenant.
+
+Inside the lock a caller sees the tenant as it is. The sweep reads its list of
+due tenants once and may reach the last of them hours later, so its archive and
+its delete each check again, under the lock, that the tenant is still due
+(`NO_LONGER_DUE` — left alone, not a failure).
+
+#### The guard
 
 `scheduler-lease-callers.test.ts` parses the source for every call, outside a
-lease's own file, of a function a sticky lease's callback calls. Each must take
-the run lock (`'run-lock'`, verified — and the timer must take it too) or carry
-the reason an overlap is harmless: a read, or a write of the same values. Its
-blind spot is stated in its header: a callback that only calls a function
-private to its file is not followed further.
+lease's own file, of a function a sticky lease's callback calls — read through
+functions private to the lease's file, which is where seven of 64 jobs do all
+their work. Each such call must take the run lock (`'run-lock'`, verified —
+and the timer must take it too) or carry the reason an overlap is harmless.
+Two tables name a function once instead of once per caller: `READS`, and
+`BESIDE_ANY_CALLER` for a function that brings one item to its stored state.
+Not followed: what an entry point from another file does inside; its callers
+are what is checked.
 
 What `Apply HA` does NOT do:
 - Per-tenant client workloads (separate per-tenant storage tier — see
