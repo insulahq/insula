@@ -63,7 +63,9 @@ jobs:
       # components.yaml is actually true upstream, not merely self-consistent.
       # Lives here rather than in Infrastructure CI because this workflow is
       # already network-bound; a blip exits 2 (harness), never a false green.
-      - name: rocksdb pin matches Stalwart's upstream lockfile
+      # Passes without looking (and without the network) while the mail archive
+      # — the only user of the checkpoint image — is switched off.
+      - name: rocksdb pin matches Stalwart's upstream lockfile (dormant with the mail archive)
         run: ./scripts/ci-rocksdb-stalwart-pin-check.sh --online
 
   dep-scan:

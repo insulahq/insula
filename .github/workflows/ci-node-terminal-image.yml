@@ -4,7 +4,7 @@ name: node-terminal CI
 # Built from images/node-terminal/Dockerfile (alpine + util-linux for
 # `nsenter` into the k3s node host namespaces).
 #
-# Mirrors ci-rocksdb-secondary-checkpoint.yml — same registry, tagging,
+# Mirrors ci-tenant-backup-tools.yml — same registry, tagging,
 # and Trivy gate. The image surface is tiny (~10MB alpine + util-linux).
 
 on:

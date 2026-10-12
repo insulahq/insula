@@ -12,6 +12,18 @@
 #   This binary is initContainer #1 of the `no_downtime` archive path, which is
 #   DEFAULT_ARCHIVE_MODE — so this is the normal path, not an edge case.
 #
+# DORMANT WHILE THE MAIL ARCHIVE IS OFF
+#   The mail archive is the only thing that runs this binary, and it is switched
+#   off by one constant (MAIL_ARCHIVE_ENABLED in
+#   backend/src/modules/mail-admin/archive-dormant.ts). While it is off nothing
+#   builds, ships or runs the image, so a Stalwart bump owes it nothing and this
+#   guard passes without looking. Setting the constant to true re-arms it, and
+#   it then also insists that the image is wired back in (its build workflow,
+#   its config key, its dependency updates and scans) — an archive switched on
+#   against whatever image was last pushed is exactly the failure described
+#   above. It checks that each piece is declared again, not that the workflow
+#   was brought up to date (its action pins were not maintained while parked).
+#
 #   The coupling used to live in a Cargo.toml comment that read "Pinned to the
 #   same C++ rocksdb version Stalwart 0.16.5 uses" while Stalwart had already
 #   moved to v0.16.16. It happened to still be correct (both resolve
@@ -41,12 +53,63 @@ ONLINE=0
 [[ "${1:-}" == "--online" ]] && ONLINE=1
 
 REG="security/components.yaml"
-CARGO_TOML="images/rocksdb-secondary-checkpoint/Cargo.toml"
-CARGO_LOCK="images/rocksdb-secondary-checkpoint/Cargo.lock"
+IMAGE_DIR="images/rocksdb-secondary-checkpoint"
+CARGO_TOML="$IMAGE_DIR/Cargo.toml"
+CARGO_LOCK="$IMAGE_DIR/Cargo.lock"
+SWITCH="backend/src/modules/mail-admin/archive-dormant.ts"
 
-for f in "$REG" "$CARGO_TOML" "$CARGO_LOCK"; do
+for f in "$REG" "$CARGO_TOML" "$CARGO_LOCK" "$SWITCH"; do
   [[ -f "$f" ]] || { echo "❌ ci-rocksdb-stalwart-pin: missing $f" >&2; exit 2; }
 done
+
+# ── is the mail archive, the image's only user, switched on? ────────────────
+# Read from the declaration itself. A switch this guard cannot read is a
+# harness failure, never "off": that would retire the check by a typo.
+switch_value="$(sed -nE 's/^export const MAIL_ARCHIVE_ENABLED = (true|false)( as boolean)?;.*$/\1/p' "$SWITCH")"
+case "$switch_value" in
+  false)
+    echo "✅ ci-rocksdb-stalwart-pin: dormant — the mail archive is switched off ($SWITCH), so nothing builds or runs $IMAGE_DIR. Not checked."
+    exit 0
+    ;;
+  true) ;;
+  *)
+    echo "❌ ci-rocksdb-stalwart-pin: cannot read MAIL_ARCHIVE_ENABLED in $SWITCH (expected 'export const MAIL_ARCHIVE_ENABLED = true|false')." >&2
+    exit 2
+    ;;
+esac
+
+# ── 0. switched on: the image must be wired back in ─────────────────────────
+unwired=""
+need() {  # need <file> <extended regex, matched against whole lines> <what it is>
+  # Whole lines, so a comment that merely mentions the thing does not count.
+  if ! [[ -f "$1" ]] || ! grep -qxE -- "$2" "$1"; then unwired+="    - $3  ($1)"$'\n'; fi
+}
+KEY="rocksdb-secondary-checkpoint-image"
+need ".github/workflows/ci-rocksdb-secondary-checkpoint.yml" "[[:space:]]+\.github/scripts/pin-config-image\.sh $KEY.*" \
+  "its build workflow, moved back from $IMAGE_DIR/dormant-ci-workflow.yml"
+need "k8s/base/backend-deployment.yaml" "[[:space:]]+- name: ROCKSDB_SECONDARY_CHECKPOINT_IMAGE" "the backend's env var for the image"
+need "k8s/base/platform-config.yaml" "[[:space:]]+$KEY: .+" "the image's config key (base)"
+need "k8s/overlays/development/platform-config-patch.yaml" "[[:space:]]+$KEY: .+" "the image's config key (development — CI pins the digest here)"
+need "k8s/overlays/production/platform-config-patch.yaml" "[[:space:]]+$KEY: .+" "the image's config key (production — stamped at release)"
+need "scripts/ci-config-image-pin-check.sh" "[[:space:]]+$KEY" "the key in the PINNED list of the config-image pin guard"
+need ".github/dependabot.yml" "[[:space:]]+directory: /$IMAGE_DIR" "Dependabot updates for its Cargo dependencies"
+if grep -A12 -F -- "- id: rocksdb-secondary-checkpoint" "$REG" | grep -qE '^[[:space:]]+dormant:[[:space:]]*true'; then
+  unwired+="    - $REG still marks rocksdb-secondary-checkpoint 'dormant: true' — remove the flag"$'\n'
+fi
+if [[ -f "$IMAGE_DIR/osv-scanner.toml" ]]; then
+  unwired+="    - $IMAGE_DIR/osv-scanner.toml still hides its dependencies from the vulnerability scan — remove it"$'\n'
+fi
+if [[ -n "$unwired" ]]; then
+  cat >&2 <<EOF
+❌ ci-rocksdb-stalwart-pin: the mail archive is switched on, but the image it runs is not wired in:
+
+$unwired
+  The archive would run whatever image was last pushed, built against whichever
+  rocksdb Stalwart linked then. Restore each item (the commit that made the image
+  dormant shows them), or switch the archive off again in $SWITCH.
+EOF
+  exit 1
+fi
 
 # ── read the declared coupling out of the registry ──────────────────────────
 read -r STALWART_PINNED TRACK_COMPONENT TRACK_VERIFIED TRACK_CRATE TRACK_VERSION < <(

@@ -190,6 +190,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - The code is kept in the repository, switched off by one constant
     (`backend/src/modules/mail-admin/archive-dormant.ts`), with its schedule check corrected. The
     `mail_archive_runs` table and the schedule settings are left in the database.
+  - **The archive's helper image is no longer built or shipped.** `rocksdb-secondary-checkpoint`
+    took the consistent copy of the mail store that a no-downtime archive exported. Its source
+    stays under `images/rocksdb-secondary-checkpoint/`; its build workflow is parked beside it, and
+    the `rocksdb-secondary-checkpoint-image` setting and the API's
+    `ROCKSDB_SECONDARY_CHECKPOINT_IMAGE` variable are gone from the manifests. The image had to
+    link the same RocksDB as the mail server, so every mail server upgrade had to re-verify it
+    first; that check now passes without looking while the archive is off, and comes back —
+    together with a check that the image is wired in again — when the archive is switched on. The
+    images already in the registry were built for Stalwart 0.16.26 and earlier; do not run them
+    against a later mail server.
 
 ## [2026.10.7] - 2026-10-09
 

@@ -155,29 +155,6 @@ updates:
       semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
-  # ── Rust (RocksDB checkpoint helper) ──
-  - package-ecosystem: cargo
-    directory: /images/rocksdb-secondary-checkpoint
-    target-branch: development
-    schedule: { interval: weekly }
-    # librocksdb-sys is intentionally pinned (=0.17.3) to Stalwart's RocksDB
-    # version — Dependabot may propose, but review against ADR-046 before merge.
-    # Minimum release age before a version bump is proposed (2026-08-06).
-    #
-    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
-    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
-    # unaged bot bumps you onto a malicious release within hours of publication,
-    # before the ecosystem has noticed. A week of soak turns Dependabot from an
-    # amplifier of that attack into a filter against it.
-    #
-    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
-    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
-    # Majors wait longer: they are the least urgent and the most disruptive.
-    cooldown:
-      default-days: 7
-      semver-major-days: 14
-    labels: ["dependencies", "security-watch"]
-
   # ── Base images (Dockerfile FROM lines) ──
   #
   # Every external FROM is pinned by DIGEST (2026-08-07). A digest is immutable,

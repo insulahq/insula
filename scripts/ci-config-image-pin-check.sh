@@ -37,7 +37,6 @@ PATCH="k8s/overlays/development/platform-config-patch.yaml"
 
 # Keys that MUST be digest-pinned in the development overlay.
 PINNED=(
-  rocksdb-secondary-checkpoint-image
   file-manager-image
   migration-tools-image
   claim-validator-image
@@ -98,7 +97,7 @@ if (( violations > 0 )); then
 
   Runtime-resolved images are pinned by their OWN build workflow, after the push:
     .github/scripts/pin-config-image.sh <config-key> "<repo>:<tag>@sha256:<digest>"
-  See ci-rocksdb-secondary-checkpoint.yml for the reference wiring.
+  See ci-tenant-backup-tools.yml for the reference wiring.
 EOF
   exit 1
 fi

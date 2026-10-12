@@ -20,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
 DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))"
-GOOD_REF="ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260807103130-abc1234@${DIGEST}"
+GOOD_REF="ghcr.io/insulahq/insula/migration-tools:20260807103130-abc1234@${DIGEST}"
 
 # make_repo <dir> — a minimal repo with the overlay patch the script edits.
 make_repo() {
@@ -33,7 +33,7 @@ metadata:
   name: platform-config
 data:
   file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
-  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
 YAML
   git -C "$d" init -q 2>/dev/null
   git -C "$d" config user.email t@example.test
@@ -60,13 +60,13 @@ check() {
 
 echo "── rejects references that are not immutable ─────────────────────────"
 # THE point of the script. A tag-only ref would pin nothing of value.
-check "tag-only ref is REFUSED" 2 rocksdb-secondary-checkpoint-image \
-  "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260807103130-abc1234"
-check "bare :latest is REFUSED" 2 rocksdb-secondary-checkpoint-image \
-  "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest"
-check "digest without a tag is REFUSED" 2 rocksdb-secondary-checkpoint-image \
-  "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint@${DIGEST}"
-check "truncated digest is REFUSED" 2 rocksdb-secondary-checkpoint-image \
+check "tag-only ref is REFUSED" 2 migration-tools-image \
+  "ghcr.io/insulahq/insula/migration-tools:20260807103130-abc1234"
+check "bare :latest is REFUSED" 2 migration-tools-image \
+  "ghcr.io/insulahq/insula/migration-tools:latest"
+check "digest without a tag is REFUSED" 2 migration-tools-image \
+  "ghcr.io/insulahq/insula/migration-tools@${DIGEST}"
+check "truncated digest is REFUSED" 2 migration-tools-image \
   "ghcr.io/insulahq/insula/x:t@sha256:abc123"
 
 echo "── refuses to silently no-op ─────────────────────────────────────────"
@@ -79,8 +79,8 @@ check "missing args → usage" 2
 check "bad key characters rejected" 2 'Bad_Key;rm -rf /' "$GOOD_REF"
 
 echo "── the happy path ────────────────────────────────────────────────────"
-check "valid tag@digest pins" 0 rocksdb-secondary-checkpoint-image "$GOOD_REF"
-if grep -q "rocksdb-secondary-checkpoint-image: \"${GOOD_REF}\"" \
+check "valid tag@digest pins" 0 migration-tools-image "$GOOD_REF"
+if grep -q "migration-tools-image: \"${GOOD_REF}\"" \
      "$LAST_DIR/k8s/overlays/development/platform-config-patch.yaml"; then
   echo "  ✅ value written exactly"; pass=$((pass + 1))
 else
@@ -103,7 +103,7 @@ echo "── idempotence ──────────────────�
 # run commits, so without this the test would be asking a question that cannot
 # arise — and would fail on a script that is behaving correctly.
 git -C "$LAST_DIR" commit -qam "pin" 2>/dev/null
-out="$(ROOT="$LAST_DIR" PIN_PUSH=0 bash "$SCRIPT" rocksdb-secondary-checkpoint-image "$GOOD_REF" 2>&1)"; rc=$?
+out="$(ROOT="$LAST_DIR" PIN_PUSH=0 bash "$SCRIPT" migration-tools-image "$GOOD_REF" 2>&1)"; rc=$?
 if [[ $rc -eq 0 && "$out" == *"nothing to do"* ]]; then
   echo "  ✅ re-pinning the same ref is a no-op"; pass=$((pass + 1))
 else

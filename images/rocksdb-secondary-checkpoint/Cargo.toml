@@ -1,3 +1,7 @@
+# DORMANT — nothing builds or runs this crate while the mail archive is
+# switched off. What was unwired, and how to bring it back:
+# backend/src/modules/mail-admin/archive-dormant.ts
+
 [package]
 name = "rocksdb-secondary-checkpoint"
 version = "0.1.0"
@@ -24,6 +28,9 @@ path = "src/main.rs"
 #
 # Enforced, not just documented: scripts/ci-rocksdb-stalwart-pin-check.sh fails
 # CI when the Stalwart pin moves without this pin being re-verified against it.
+# (While the mail archive is off that guard passes without looking, and Stalwart
+# moves on. Switching the archive on re-arms it: the pin below is then compared
+# with the Stalwart release of that day, and must be re-verified first.)
 # The comment above this line said "Stalwart 0.16.5" while Stalwart had already
 # moved to v0.16.16 — a comment cannot hold an invariant, which is why the guard
 # exists. To re-verify after a Stalwart bump:

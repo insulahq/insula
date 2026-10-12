@@ -7,7 +7,7 @@
 #   pin-image-tag.sh rewrites the kustomization `images:` newTag. That transformer
 #   only rewrites `image:` fields in pod specs, so it cannot reach an image the
 #   BACKEND builds at runtime from an env var — Job/initContainer images like
-#   rocksdb-secondary-checkpoint, file-manager, migration-tools. Those resolve
+#   file-manager, migration-tools, tenant-backup-tools. Those resolve
 #   through platform-config → configMapKeyRef → env, so the pin has to land on the
 #   ConfigMap key instead. Same problem, same fix, different file.
 #
@@ -29,7 +29,7 @@
 #   wins; a wrong tag is cosmetic, never a different image.
 #
 # Usage (from a build workflow, after the push step):
-#   .github/scripts/pin-config-image.sh rocksdb-secondary-checkpoint-image \
+#   .github/scripts/pin-config-image.sh file-manager-image \
 #     "ghcr.io/owner/repo/img:20260807103130-abc1234@sha256:<digest>"
 #
 # Env:

@@ -26,6 +26,10 @@
 #   deps        (first-party) lockfiles/modules the dep scanners read
 #   owner       platform | catalog | external
 #   dev_only    true = dev/test fixture, not part of a production install
+#   dormant     true = source kept in the repo, not built or shipped. A marker for
+#               readers and for the guard that re-arms with the feature; the
+#               dependency scan is switched off beside the lockfile itself
+#               (an osv-scanner.toml in the component's directory)
 #   notes       free text
 
 meta:
@@ -490,15 +494,20 @@ components:
     notes: First-party (debian:trixie-slim + restic). Mail backup data path; SSH keys. Watch restic CVEs (Debian pkg).
 
   - id: rocksdb-secondary-checkpoint
-    name: rocksdb-secondary-checkpoint (mail-archive checkpoint Job)
+    name: rocksdb-secondary-checkpoint (mail-archive checkpoint Job) — DORMANT, not shipped
+    # Not built, not pushed, not referenced by any manifest: its only user, the
+    # mail archive, is switched off (backend/src/modules/mail-admin/
+    # archive-dormant.ts). The entry stays for the `tracks` block below, which
+    # ci-rocksdb-stalwart-pin-check.sh reads again the day the archive is
+    # switched on. Until then nothing below is active: the tier, the pin and the
+    # scan describe the image as it is when built.
+    dormant: true
     tier: "1"
     kind: image
     pinned: ci-pinned
-    # Resolved at runtime from ROCKSDB_SECONDARY_CHECKPOINT_IMAGE, defaulting to
-    # ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest — see
-    # backend/src/modules/mail-admin/archive.ts. (Previously pointed at
-    # k8s/base/platform-config.yaml, which has never contained this pin; hence
-    # pin_check: false. Digest-pinning it is open work — see notes.)
+    # When switched on: resolved at runtime from ROCKSDB_SECONDARY_CHECKPOINT_IMAGE,
+    # defaulting to ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest —
+    # see backend/src/modules/mail-admin/archive.ts.
     pin_source: backend/src/modules/mail-admin/archive.ts
     pin_check: false
     watch: { type: first_party }
@@ -514,6 +523,8 @@ components:
     # re-verified. Bumping librocksdb-sys on its own is never correct.
     tracks:
       component: stalwart
+      # LAST verified — Stalwart moves on while the image is dormant, and this
+      # field deliberately does not follow. Re-verify before switching on.
       # Re-verified for the v0.16.24 -> v0.16.26 bump by diffing
       # Stalwart's OWN Cargo.lock at both tags: librocksdb-sys 0.17.3+10.4.2 is
       # identical across them, so this binary still links the same C++ rocksdb
@@ -524,13 +535,12 @@ components:
       crate_version: "0.17.3+10.4.2"
     owner: platform
     notes: >-
-      First-party (Rust 1.95, distroless/cc). librocksdb-sys =0.17.3 (C++ rocksdb
-      10.4.2) coupled to Stalwart's resolution — see `tracks`. Runs as
-      initContainer #1 of every no-downtime mail archive (the DEFAULT archive
-      mode), against the live mail store. OPEN: the runtime reference is the
-      mutable tag `:latest`; digest-pinning it needs a pipeline step to publish
-      the digest, since this image is built by its own CI workflow rather than
-      by build-deploy.
+      DORMANT since the mail archive was switched off. First-party (Rust 1.95,
+      distroless/cc). librocksdb-sys =0.17.3 (C++ rocksdb 10.4.2) coupled to
+      Stalwart's resolution — see `tracks`. When the archive is on it runs as
+      initContainer #1 of every no-downtime mail archive, against the live mail
+      store. The last image pushed to the registry was built for Stalwart
+      v0.16.26 and must not be run against a later one unverified.
 
   # ── Third-party images the backend launches at runtime (added 2026-08-07) ──
   # These were deployed with NO registry entry at all, so nothing watched them for
