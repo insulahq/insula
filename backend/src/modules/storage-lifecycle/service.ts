@@ -2458,12 +2458,23 @@ async function runRestoreArchive(
     // LOCAL), not the platform default (`longhorn`, replicas=3) — the original
     // PVC was deleted at archive time, so there's nothing to read back; map
     // from the namespace the same way provisioning does.
+    const tenantId = (await currentTenantId(ctx.db, opId))!;
+    // A volume may be there all the same: the empty one an earlier release's
+    // integrity sweep created for every archived tenant, of a size it picked.
+    // `applyPVC` leaves an existing claim alone, so the restore would go into
+    // that — and fail when the files do not fit. One that was never written to
+    // is removed first, and the tenant gets the size asked for; one that holds
+    // anything is used as it is.
+    const { inspectArchivedVolume, removeUnusedVolume } = await import('./archived-volume.js');
+    const [archived] = await ctx.db.select({ archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
+    const leftover = await inspectArchivedVolume(ctx.k8s, namespace, archived?.archivedAt ?? null);
+    if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
+
     const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
     const storageClass = selectTenantStorageClass(namespace);
     await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
-    const tenantId = (await currentTenantId(ctx.db, opId))!;
     // The PVC was just recreated above; restore the bundle's files into it.
     await restoreFilesBundleIntoPvc({
       db: ctx.db,

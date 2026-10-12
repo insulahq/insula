@@ -31,6 +31,7 @@ const FINDING_LABEL: Readonly<Record<string, string>> = {
   pvc_missing: 'the storage volume (PVC)',
   resource_quota_missing: 'the resource quota',
   network_policy_missing: `the network policies (${REQUIRED_NETPOLS.join(', ')})`,
+  archived_volume_unused: 'the unused storage volume left on the archived tenant (removed)',
 };
 
 async function exists(call: () => Promise<unknown>): Promise<boolean> {
@@ -343,7 +344,22 @@ export async function checkTenantNamespaceIntegrity(
   const quota = inspected.quota;
   // A volume that is absent on purpose is not a finding — and must never be
   // "repaired": the repair is an empty volume in its place.
-  const findings = volumeExpected(tenant) ? inspected.findings : inspected.findings.filter((f) => f !== 'pvc_missing');
+  const findings: IntegrityFinding[] = inspected.findings.filter((f) => f !== 'pvc_missing' || volumeExpected(tenant));
+  // The other way round: an archived tenant that HAS a volume. An earlier
+  // release of this very sweep created one, empty, for every archived tenant.
+  // Only a volume that was never written to is a finding; one that holds
+  // anything is left alone and not reported.
+  if (tenant.status === 'archived' && tenant.storageLifecycleState === 'idle'
+    && !inspected.findings.includes('namespace_missing') && !inspected.findings.includes('pvc_missing')) {
+    const { inspectArchivedVolume } = await import('../storage-lifecycle/archived-volume.js');
+    // A volume that cannot be read is not a finding, and not a reason to drop
+    // the rest of this tenant's check: it is simply left where it is.
+    const leftover = await inspectArchivedVolume(k8s, tenant.kubernetesNamespace, tenant.archivedAt).catch((err: unknown) => {
+      console.warn(`[namespace-integrity] could not read the storage volume of archived tenant ${tenantId}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (leftover?.kind === 'unused') findings.push('archived_volume_unused');
+  }
   if (findings.length === 0 || !repair) {
     return {
       tenantId,
@@ -432,6 +448,17 @@ export async function checkTenantNamespaceIntegrity(
     }
   }
 
+  if (findings.includes('archived_volume_unused')) {
+    try {
+      // Decided again under the tenant's lock; false when a restore got there
+      // first or the volume is no longer provably unused.
+      const { removeArchivedVolumeIfUnused } = await import('../storage-lifecycle/archived-volume.js');
+      if (await removeArchivedVolumeIfUnused(db, k8s, tenantId)) repaired.push('archived_volume_unused');
+    } catch (err) {
+      errors.push(`archived_volume_unused: ${(err as Error).message}`);
+    }
+  }
+
   // Surface findings to every admin-panel super_admin / admin so the
   // bell icon picks them up. notifications.user_id is per-recipient,
   // so we fan out one row per admin.
@@ -446,7 +473,7 @@ export async function checkTenantNamespaceIntegrity(
     // The individual resources go in `items` — one list entry each, on every channel.
     const message = errors.length > 0
       ? `Auto-repair partially failed: ${errors.length} resource(s) could not be repaired${repaired.length > 0 ? `, ${repaired.length} were` : ''}.`
-      : `Auto-repaired ${repaired.length} missing resource(s).`;
+      : `Auto-repaired ${repaired.length} resource(s).`;
     const items = [
       ...errors.map((e) => `Not repaired — ${e}`),
       ...repaired.map((r) => `Repaired — ${FINDING_LABEL[r] ?? r}`),
