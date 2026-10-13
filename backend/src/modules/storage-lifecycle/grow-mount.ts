@@ -3,11 +3,17 @@
  *
  * A grow has two halves. Longhorn extends the block device, and the kubelet
  * grows the filesystem on it — on the node where the volume is mounted, so
- * only while a pod uses the claim. A tenant with no running pod has none: no
- * workloads yet and an idle file manager, or workloads that are stopped. Its
- * claim then reads `FileSystemResizePending` and keeps its old capacity until
- * a pod comes. The grow used to wait ten minutes for that and fail, with the
- * claim already asking for the new size.
+ * only while a pod uses the claim. (A volume nothing has attached is extended
+ * offline, filesystem and all, and never gets here.)
+ *
+ * The usual way to lose the mount in the middle: a change of a tenant's limit
+ * re-provisions its namespace, which starts the file manager — and the idle
+ * clean-up scales it away again within half a minute, having seen no access.
+ * A tenant with no workload running then has a volume that was attached when
+ * the grow began and is mounted by nothing: its claim reads
+ * `FileSystemResizePending` and keeps its old capacity until a pod comes. The
+ * grow used to wait ten minutes for that and fail, with the claim already
+ * asking for the new size.
  *
  * The tenant's file manager mounts the volume and is the platform's to start,
  * so the grow holds it (file-manager/lease.ts) for as long as the filesystem
@@ -70,20 +76,24 @@ async function fileManagerIsStopped(k8s: K8sClients, namespace: string): Promise
 }
 
 interface PodLike {
-  readonly metadata?: { readonly deletionTimestamp?: unknown };
+  readonly metadata?: { readonly deletionTimestamp?: unknown; readonly labels?: Record<string, string> };
   readonly spec?: { readonly volumes?: ReadonlyArray<{ readonly persistentVolumeClaim?: { readonly claimName?: string } }> };
   readonly status?: { readonly phase?: string };
 }
 
 /**
- * Whether a running pod uses the claim. A pod that is still starting, or on
- * its way out, does not count: neither says the volume is mounted, and the
- * kubelet grows the filesystem on a mount.
+ * The running pods that use the claim. A pod that is still starting, or on its
+ * way out, does not count: neither says the volume is mounted, and the kubelet
+ * grows the filesystem on a mount.
  */
-export function claimIsMountedBy(pods: readonly PodLike[], pvcName: string): boolean {
-  return pods.some((p) => p.status?.phase === 'Running'
+export function podsMounting<P extends PodLike>(pods: readonly P[], pvcName: string): P[] {
+  return pods.filter((p) => p.status?.phase === 'Running'
     && !p.metadata?.deletionTimestamp
     && (p.spec?.volumes ?? []).some((v) => v.persistentVolumeClaim?.claimName === pvcName));
+}
+
+export function claimIsMountedBy(pods: readonly PodLike[], pvcName: string): boolean {
+  return podsMounting(pods, pvcName).length > 0;
 }
 
 async function defaultDeps(): Promise<GrowMountDeps> {
@@ -101,7 +111,10 @@ export function growMount(k8s: K8sClients, namespace: string, pvcName: string, d
       if (why) return 'none';
       try {
         const pods = await k8s.core.listNamespacedPod({ namespace }) as { items?: PodLike[] };
-        if (claimIsMountedBy(pods.items ?? [], pvcName)) return 'coming';
+        // A workload's pod stays where it is. The file manager does not: seen
+        // idle, it is scaled away by the clean-up in the middle of the grow —
+        // so when it is the only thing mounting the volume it is held too.
+        if (podsMounting(pods.items ?? [], pvcName).some((p) => p.metadata?.labels?.app !== FM_NAME)) return 'coming';
         if (await fileManagerIsStopped(k8s, namespace)) {
           why = 'its workloads are stopped';
           return 'none';

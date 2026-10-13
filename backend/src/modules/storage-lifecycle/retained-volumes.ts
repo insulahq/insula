@@ -48,12 +48,14 @@ interface RawLhVolume {
 
 interface RawLhSnapshot {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: {
-    readonly volume?: string;
-    /** FALSE for Longhorn's own snapshots, e.g. the `expand-<bytes>` marker. */
-    readonly userCreated?: boolean;
-  };
+  readonly spec?: { readonly volume?: string };
   readonly status?: {
+    /**
+     * FALSE for Longhorn's own snapshots, e.g. the `expand-<bytes>` marker.
+     * A STATUS field: the snapshot's spec carries `volume`, `createSnapshot`
+     * and `labels`, and nothing about who asked for it.
+     */
+    readonly userCreated?: boolean;
     readonly readyToUse?: boolean;
     // Longhorn reports snapshot size as an int64 → a JSON number.
     readonly size?: string | number;
@@ -139,7 +141,12 @@ export function classifyRetainedVolumes(input: {
     //
     // It also kept such volumes out of orphan detection, which is how one
     // sat unnoticed holding 63% of a production cluster's storage commitment.
-    if (s.spec?.userCreated !== true) continue;
+    //
+    // Read from the snapshot's STATUS, where Longhorn writes it. This read
+    // `spec.userCreated`, which no snapshot has: every snapshot was skipped,
+    // so no retained volume was ever listed and the restore from one could
+    // not be reached at all.
+    if (s.status?.userCreated !== true) continue;
     const arr = snapsByVolume.get(vol) ?? [];
     arr.push({
       name,

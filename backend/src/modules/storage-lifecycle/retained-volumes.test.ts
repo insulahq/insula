@@ -35,10 +35,14 @@ function snap(
   volume: string,
   opts: { created?: string; size?: string; ready?: boolean; userCreated?: boolean } = {},
 ) {
+  // The shape Longhorn v1.12 gives a snapshot: who asked for it is in the
+  // STATUS. (This fixture once had it in the spec, like the code it tested —
+  // and agreed with that code about a field no real snapshot has.)
   return {
     metadata: { name },
-    spec: { volume, userCreated: opts.userCreated ?? true },
+    spec: { volume, createSnapshot: true },
     status: {
+      userCreated: opts.userCreated ?? true,
       readyToUse: opts.ready ?? true,
       size: opts.size ?? '1048576',
       creationTime: opts.created ?? '2026-06-16T09:00:00Z',
@@ -140,6 +144,38 @@ describe('classifyRetainedVolumes', () => {
     expect(out).toHaveLength(0);
   });
 
+  // The objects below have the fields a cluster running Longhorn v1.12
+  // returns, copied from one: `userCreated` is in the status, and the spec has
+  // no such field. The fixtures above were once shaped like the code instead,
+  // and both agreed on `spec.userCreated` — which made every retained volume
+  // invisible on a real cluster while this file stayed green.
+  describe('snapshots as a real cluster returns them', () => {
+    const status = (userCreated: boolean, labels: Record<string, string>) => ({
+      checksum: '', children: { 'volume-head': true }, creationTime: '2026-10-13T10:57:02Z', labels, markRemoved: false,
+      ownerID: 'node-a', parent: '', readyToUse: true, requestedTime: '2026-10-13T10:57:02Z', restoreSize: 2147483648, size: 53133312, userCreated,
+    });
+    const taken = { metadata: { name: 'snapshot-68f25756', labels: { longhornvolume: 'pvc-old' } }, spec: { createSnapshot: true, labels: { type: 'snap' }, volume: 'pvc-old' }, status: status(true, { type: 'snap' }) };
+    const marker = { metadata: { name: 'expand-3221225472', labels: { longhornvolume: 'pvc-old' } }, spec: { createSnapshot: true, labels: null, volume: 'pvc-old' }, status: status(false, { 'replica-expansion': '3221225472' }) };
+    const classify = (snapshots: unknown[]) => classifyRetainedVolumes({
+      namespace: NS, boundVolumeName: 'pvc-new-bound', pvs: [pv('pvc-old')], longhornVolumes: [lhVol('pvc-old', 'pvc-old')], snapshots: snapshots as never,
+    });
+
+    it('a snapshot a person took makes its volume a retained one, with that snapshot to restore from', () => {
+      const out = classify([taken, marker]);
+      expect(out).toHaveLength(1);
+      expect(out[0].snapshots.map((x) => x.name)).toEqual(['snapshot-68f25756']);
+      expect(out[0].snapshots[0]).toMatchObject({ readyToUse: true, sizeBytes: 53133312, createdAt: '2026-10-13T10:57:02Z' });
+    });
+
+    it('a volume with only Longhorn\'s expansion marker is not one', () => {
+      expect(classify([marker])).toEqual([]);
+    });
+
+    it('a flag in the spec — where no snapshot has one — counts for nothing', () => {
+      expect(classify([{ ...taken, spec: { ...taken.spec, userCreated: true }, status: { ...taken.status, userCreated: undefined } }])).toEqual([]);
+    });
+  });
+
   it('sorts snapshots newest-first within a volume', () => {
     const out = classifyRetainedVolumes({
       namespace: NS,
@@ -176,7 +212,7 @@ describe('classifyRetainedVolumes', () => {
       boundVolumeName: null,
       pvs: [pv('pvc-old')],
       longhornVolumes: [{ metadata: { name: 'pvc-old' }, spec: { size: 2147483648 }, status: { kubernetesStatus: { pvName: 'pvc-old' } } } as never],
-      snapshots: [{ metadata: { name: 'snapshot-num' }, spec: { volume: 'pvc-old', userCreated: true }, status: { readyToUse: true, size: 1048576, creationTime: '2026-06-16T09:00:00Z' } } as never],
+      snapshots: [{ metadata: { name: 'snapshot-num' }, spec: { volume: 'pvc-old' }, status: { userCreated: true, readyToUse: true, size: 1048576, creationTime: '2026-06-16T09:00:00Z' } } as never],
     });
     expect(out).toHaveLength(1);
     expect(out[0].snapshots[0].sizeBytes).toBe(1048576);

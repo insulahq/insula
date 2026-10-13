@@ -324,16 +324,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
   A hook that was being *retried* when the process died stayed "running" under a transition long
   ended and was never retried again; it is handed back to the retry scheduler after half an hour.
-- **Growing the storage of a tenant with no running pod no longer fails.** A grow has two halves:
-  Longhorn extends the volume, then the kubelet grows the filesystem — on a node where the volume
-  is mounted. A tenant with no workloads yet and an idle file manager has no pod mounting it, so
-  the claim waited for one, the operation failed after ten minutes with `FS_RESIZE_TIMEOUT`, and
-  the claim was left asking for the new size with the tenant's limit still the old one. The grow
-  now starts the tenant's file manager for as long as the filesystem takes and hands it back
-  after. A suspended tenant's file manager stays stopped: there the operation ends as done and
-  says that the filesystem grows when the tenant's next pod starts, which is when the kubelet
-  does it. The same when the file manager cannot be started after three tries — with the reason
-  in the operation's message.
+- **Growing the storage of a tenant with no running workload no longer fails.** A grow has two
+  halves: Longhorn extends the volume, then the kubelet grows the filesystem — on a node where the
+  volume is mounted. Changing a tenant's limit re-provisions its namespace, which starts the
+  tenant's file manager; the idle clean-up scaled that file manager away again within half a
+  minute, in the middle of the grow. The claim then waited for a mount that never came, the
+  operation failed after ten minutes with `FS_RESIZE_TIMEOUT`, and the claim was left asking for
+  the new size with the tenant's limit still the old one. The grow now holds the file manager —
+  the clean-up leaves a held one alone, and one already scaled away is started again — for as
+  long as the filesystem takes, and hands it back after. Where nothing can mount the volume (the
+  file manager is held stopped by a storage operation or a suspension, or cannot be started after
+  three tries) the operation ends as done and says that the filesystem grows when the tenant's
+  next pod starts, with the reason. A volume that nothing has attached is extended offline and
+  needs none of this.
+- **A tenant's retained volume is listed again — and no longer reported as an orphan.** After a
+  shrink or an archive the tenant's previous volume is kept, and when it carries a snapshot
+  somebody took, the tenant can be restored from it (**Restore from a retained volume**). Whether
+  a snapshot was taken by a person or by Longhorn itself (it writes a marker on every expansion)
+  was read from the wrong part of the Longhorn object: its spec, where no snapshot says so — the
+  flag is in the status. Since 2026.10.1 every snapshot therefore counted as Longhorn's own. The
+  restore listed no volume at all, so it could not be started; and **Platform → Orphaned
+  Volumes** reported a retained volume with a snapshot as a leftover like any other, so **Purge
+  all** removed the fallback it was meant to leave alone once it was past the stale threshold.
+  Both now read the status. If you have purged orphaned volumes on 2026.10.1–2026.10.7, a
+  retained volume may have gone with them; nothing was removed automatically.
 - **The integrity sweep announces each thing it did to a tenant, not only the first of the day.**
   Its notification was limited to one per tenant per day, so the removal of an archived tenant's
   leftover volume went unsaid when the same tenant had had another repair that day. It is now one

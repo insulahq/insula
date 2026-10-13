@@ -179,7 +179,7 @@ describe('detectOrphans', () => {
       longhornVolumes: [{ metadata: { name: 'pvc-expanded' }, status: { kubernetesStatus: { pvName: 'pvc-expanded' } } }],
       longhornSnapshots: [
         { metadata: { name: 'volume-head' }, spec: { volume: 'pvc-expanded' } },
-        { metadata: { name: 'expand-274877906944' }, spec: { volume: 'pvc-expanded', userCreated: false } },
+        { metadata: { name: 'expand-274877906944' }, spec: { volume: 'pvc-expanded' }, status: { userCreated: false } },
       ],
     });
     // The tenant is ALIVE — this is a leftover volume, not a deleted tenant.
@@ -224,13 +224,29 @@ describe('detectOrphans', () => {
       // snapshots too, and those must not confer this protection.
       longhornSnapshots: [
         { metadata: { name: 'volume-head' }, spec: { volume: 'pvc-retained' } },
-        { metadata: { name: 'snap-pre-shrink' }, spec: { volume: 'pvc-retained', userCreated: true } },
+        { metadata: { name: 'snap-pre-shrink' }, spec: { volume: 'pvc-retained' }, status: { userCreated: true } },
       ],
     });
     const db = makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]);
 
     const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
     expect(r.orphans.find((o) => o.pvName === 'pvc-retained')).toBeUndefined();
+  });
+
+  it('reads who took a snapshot from its STATUS: a flag in the spec, where no real snapshot has one, protects nothing', async () => {
+    const old = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-x' },
+        spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
+        status: { phase: 'Released', lastTransitionTime: old },
+      }],
+      namespaces: ['tenant-x'],
+      longhornVolumes: [{ metadata: { name: 'pvc-x' }, status: { kubernetesStatus: { pvName: 'pvc-x' } } }],
+      longhornSnapshots: [{ metadata: { name: 'expand-3221225472' }, spec: { volume: 'pvc-x', userCreated: true }, status: { userCreated: false } }],
+    });
+    const r = await detectOrphans(makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]), k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans.map((o) => `${o.pvName}:${o.reason}`)).toEqual(['pvc-x:pv_released_stale']);
   });
 
   it('DOES flag a stale Released PV once only the volume-head snapshot remains (snapshots expired)', async () => {

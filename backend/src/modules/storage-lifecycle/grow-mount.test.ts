@@ -10,8 +10,8 @@ import { MOUNT_TRIES, claimIsMountedBy, growMount, waitForGrownClaim } from './g
 const GI = 1024 ** 3;
 const CLAIM = 'tenant-a-storage';
 
-const pod = (over: { phase?: string; claim?: string | null; deleting?: boolean } = {}) => ({
-  metadata: over.deleting ? { deletionTimestamp: '2026-10-13T00:00:00Z' } : {},
+const pod = (over: { phase?: string; claim?: string | null; deleting?: boolean; app?: string } = {}) => ({
+  metadata: { ...(over.deleting ? { deletionTimestamp: '2026-10-13T00:00:00Z' } : {}), labels: { app: over.app ?? 'web' } },
   spec: { volumes: over.claim === null ? [{}] : [{ persistentVolumeClaim: { claimName: over.claim ?? CLAIM } }] },
   status: { phase: over.phase ?? 'Running' },
 });
@@ -97,6 +97,24 @@ describe('bringing a mount for a grow', () => {
     expect(tries).toBe(0);
     expect(mount.whyNone()).toBe('its workloads are stopped');
     expect(w.did).toEqual(['list pods']);                            // settled: not asked of the cluster again
+  });
+
+  it('the file manager is what mounts the volume: it is held all the same — unheld, the idle clean-up scales it away in the middle of the grow', async () => {
+    const w = world([pod({ app: 'file-manager' })]);
+    const purposes: string[] = [];
+    const mount = growMount(w.k8s, 'tenant-a', CLAIM, { acquireLease: async (_k8s, _ns, purpose) => { purposes.push(purpose); return w.lease; } });
+    expect(await mount.ensure()).toBe('coming');
+    expect(purposes).toEqual(['storage-grow']);
+    await mount.release();
+    expect(w.releases()).toBe(1);
+  });
+
+  it('a workload beside the file manager mounts it: nothing is held', async () => {
+    const w = world([pod({ app: 'file-manager' }), pod()]);
+    let tries = 0;
+    const mount = growMount(w.k8s, 'tenant-a', CLAIM, { acquireLease: async () => { tries += 1; return w.lease; } });
+    expect(await mount.ensure()).toBe('coming');
+    expect(tries).toBe(0);
   });
 
   it('a stopped file manager does not matter while a workload mounts the volume', async () => {

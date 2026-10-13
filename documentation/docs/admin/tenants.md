@@ -419,12 +419,12 @@ same way.
     you what it will do.
 
 - **Growing storage** happens online — the platform resizes the volume
-  and surfaces a progress modal. The filesystem grows on a running pod; a
-  tenant with none (no workloads yet) gets its file manager started for the
-  moment that takes. For a **suspended** tenant nothing is started: the volume
-  is extended, and the operation says that its filesystem grows when the
-  tenant is resumed. It says the same, with the reason, if the file manager
-  could not be started.
+  and surfaces a progress modal. The filesystem grows on a running pod; for a
+  tenant with no workload running, the platform keeps the tenant's file
+  manager up for the moment that takes. If nothing can mount the volume right
+  now — the file manager is held stopped, or could not be started — the
+  operation still ends as done and says, with the reason, that the filesystem
+  grows when the tenant's next pod starts.
 - **Shrinking storage** is destructive (snapshot → drop volume → recreate
   smaller → restore). The platform refuses it on a normal save and prompts
   you with a confirmation explaining the steps before it runs.
