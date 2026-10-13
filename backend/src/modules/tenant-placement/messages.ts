@@ -4,6 +4,7 @@
  */
 import type { AdminTenantPlacementPayload } from '../notifications/events.js';
 import { formatUtcMinute } from '../../shared/format-utc.js';
+import { COPY_BLOCKED_MARK } from './compute.js';
 import type { StoredFailover, StoredPlacement } from './store.js';
 
 /** At most this many tenants are spelled out; the rest are counted. */
@@ -61,11 +62,18 @@ export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTe
     const since = p.misplacedSince ? ` (seen since ${formatUtcMinute(p.misplacedSince)})` : '';
     return `${p.tenantName}: primary node ${p.primaryNode ?? '—'}, but ${why}${since}.`;
   });
+  // A refused copy does not resolve by waiting, and "move it back" is not the
+  // only way out — the operator needs to hear that it is stuck, and why.
+  const blocked = placements.some((p) => p.reasons.some((r) => r.includes(COPY_BLOCKED_MARK)));
   return {
     summary: summaryOf(placements.map((p) => p.tenantName)),
     details: listed(lines),
     guidance: 'Away from its primary node a tenant can do its disk I/O across the network, and '
       + 'data locality copies its volume between nodes. Open the tenant\'s Placement card to move it '
-      + 'back, or make the node it is on its primary.',
+      + 'back, or make the node it is on its primary.'
+      + (blocked
+        ? ' Where Longhorn cannot copy the data it stays put until that is resolved: move the tenant to a '
+          + 'node with room for its volume (Longhorn reserves the volume\'s full size), or shrink the volume.'
+        : ''),
   };
 }

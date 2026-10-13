@@ -234,7 +234,7 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
       expect(evaluatePreflight(healthy).gates.some((g) => g.id === id)).toBe(false);
     });
 
-    it.each(['resize', 'restore', 'fsck', 'relocate', 'suspend'])('production: a %s in flight blocks, and names the tenant', (kind) => {
+    it.each(['relocate', 'a-kind-from-a-later-release'])('production: a %s in flight blocks, and names the tenant', (kind) => {
       const r = evaluatePreflight({ ...healthy, storageOperations: ops(kind) });
       expect(gate(r, id).status).toBe('fail');
       expect(gate(r, id).detail).toContain(`${kind} of Tenant 1`);
@@ -242,20 +242,24 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
       expect(r.ok).toBe(false);
     });
 
-    it('an archive in flight never blocks: the new pods pick it up again — it is a warning that says so', () => {
-      const r = evaluatePreflight({ ...healthy, storageOperations: ops('archive') });
+    it.each(['archive', 'resize', 'restore', 'fsck', 'suspend', 'resume'])('a %s in flight never blocks: the new pods pick it up again — it is a warning that says so', (kind) => {
+      const r = evaluatePreflight({ ...healthy, storageOperations: ops(kind) });
       expect(gate(r, id).status).toBe('warn');
-      expect(gate(r, id).detail).toContain('archive of Tenant 1');
-      expect(gate(r, id).detail).toContain('picked up again afterwards');
+      expect(gate(r, id).detail).toContain(`${kind} of Tenant 1`);
+      expect(gate(r, id).detail).toContain('picked up again afterwards, a few minutes later');
+      expect(gate(r, id).detail).toContain('stays stopped until then');
+      expect(gate(r, id).detail).not.toContain('Wait for it to finish');
       expect(r.ok).toBe(true);
     });
 
-    it('an archive beside another operation does not excuse the other one', () => {
-      expect(gate(evaluatePreflight({ ...healthy, storageOperations: ops('archive', 'resize') }), id).status).toBe('fail');
+    it('an operation that is picked up does not excuse one beside it that is not', () => {
+      const r = evaluatePreflight({ ...healthy, storageOperations: ops('archive', 'resize', 'relocate') });
+      expect(gate(r, id).status).toBe('fail');
+      expect(gate(r, id).detail).toContain('A move is not picked up again afterwards');
     });
 
     it('staging: the same operation is a warning, not a block', () => {
-      const r = evaluatePreflight({ ...healthy, environment: 'staging', storageOperations: ops('resize') });
+      const r = evaluatePreflight({ ...healthy, environment: 'staging', storageOperations: ops('relocate') });
       expect(gate(r, id).status).toBe('warn');
       expect(r.ok).toBe(true);
     });

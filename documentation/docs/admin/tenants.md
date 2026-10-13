@@ -164,6 +164,21 @@ buttons (below). Underneath are several cards and a tabbed resource view.
       data, so the platform attaches its volume on the primary node itself
       until the copy is done; the result line says **Moving the data there
       now**, and the banner clears once it has.
+
+      A move to a node that **cannot hold the tenant's volume** is refused
+      before anything is stopped, with the numbers: how large the volume is
+      and how much Longhorn can still schedule on that node. Longhorn reserves
+      a volume's *full* size, not what is in use — a 100 GiB volume holding
+      28 GiB needs 100 GiB of schedulable room — so a node with plenty of free
+      disk can still be too small. Pick a node with more room, or shrink the
+      volume first (**Storage Lifecycle**). Without this check the tenant
+      would start on the new node with its data left behind, and do all of
+      its disk I/O across the network from then on.
+    - When Longhorn cannot copy the data to where the tenant runs, the banner
+      says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
+      node-b: insufficient storage* — and so does the notification. That does
+      not resolve by waiting: move the tenant to a node with room, or shrink
+      its volume.
     - **Make &lt;current node&gt; the primary node** accepts where it is: the
       workloads restart once on the same node to pick up the new pin, and no
       data is copied.
@@ -279,6 +294,65 @@ won't recover, jump to [Platform → Tenant Lifecycle Hooks](platform-settings.m
 where you can inspect per-hook success rates and reset a stuck hook's
 circuit breaker.
 
+### Interrupted storage operations
+
+A resize, a restore, a filesystem check and an archive run inside the platform
+API after you have started them, and can take from a minute to more than an
+hour. If the API restarts in the middle — an upgrade, a crash, a lost node —
+the operation is **picked up again** a few minutes later and carried on from
+where it stood. Its progress reads *Picked up again after the platform API
+restarted* for a moment; nothing is asked of you.
+
+What "carried on" means:
+
+- the tenant's workloads come back at the replica counts they had before the
+  operation stopped them, not at zero;
+- a copy of the files that was already taken is not taken twice;
+- a **shrink** that had already replaced the volume restores the files into
+  the new one — it never starts the tenant on the empty volume;
+- a **restore** does not revert or overwrite a second time once the tenant is
+  running again;
+- a **filesystem check** waits for the tool that was already running instead
+  of starting a second one on the same volume.
+
+Until it is picked up, a tenant the operation had stopped stays stopped —
+typically three to five minutes.
+
+An operation interrupted **three times over** is ended as *failed* with its
+workloads started again, and the admins are notified; check the tenant, then
+**Reset to idle** (on the tenant's Storage Operations card) and start the
+operation again.
+
+!!! warning "A failed shrink can leave the tenant stopped on purpose"
+    A shrink deletes the tenant's volume and restores the files into a smaller
+    one. If it fails in between — the restore Job failed, or it was ended
+    after three interruptions — the files are in the **pre-resize bundle**
+    (kept 7 days) and the volume is empty or half restored. The platform then
+    leaves the workloads **stopped** rather than start the tenant on an empty
+    volume, and the failure says so. Restore the files from that bundle into
+    the tenant (**Backups**), then **Reset to idle**, which starts the
+    workloads. Resetting first starts them on the volume as it is.
+
+    A restore from a retained volume that fails with the storage claim
+    deleted leaves the tenant stopped the same way: **Reset to idle**,
+    then start that restore again — both volumes are kept.
+
+A **suspend**, a **resume** and a **delete** cut off by a restart are finished
+the same way, a few minutes later: the steps that were done are not repeated
+(the tenant is not told twice), the rest are run, and a delete goes on to
+remove the tenant. If you have changed the tenant in the meantime — resumed
+one whose suspend was cut off, say, or cancelled the operation it belonged to
+— the interrupted change is not finished over yours: it is closed, and the
+steps it never ran read *failed — Interrupted* under **Platform → Tenant
+Lifecycle Hooks**. The same happens to one found more than six hours late,
+and to a **decommission** (which keeps the tenant): start that again.
+
+A **move** to another server that loses its process is ended after thirty
+minutes and the tenant's workloads are started again.
+
+**Cancel** on a running storage operation stops it where it is and starts the
+workloads again.
+
 ## Bulk actions
 
 On the **Tenants** tab, tick the checkbox on one or more rows to reveal
@@ -360,7 +434,12 @@ same way.
     you what it will do.
 
 - **Growing storage** happens online — the platform resizes the volume
-  and surfaces a progress modal.
+  and surfaces a progress modal. The filesystem grows on a running pod; for a
+  tenant with no workload running, the platform keeps the tenant's file
+  manager up for the moment that takes. If nothing can mount the volume right
+  now — the file manager is held stopped, or could not be started — the
+  operation still ends as done and says, with the reason, that the filesystem
+  grows when the tenant's next pod starts.
 - **Shrinking storage** is destructive (snapshot → drop volume → recreate
   smaller → restore). The platform refuses it on a normal save and prompts
   you with a confirmation explaining the steps before it runs.

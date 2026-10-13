@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.8-rc.3] - 2026-10-12
-
 ### BREAKING
 
 - **On x86-64 nodes the mail server now needs an x86-64-v2 CPU.** Stalwart v0.16.26 is built for
@@ -131,6 +129,62 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **"Mail deliverability check failing" no longer fires on one slow DNS answer, and says what
+  failed.** The alert reads *Mail delivery is likely affected*. On a production cluster it went out
+  three times in a week with reverse DNS, blocklists and certificate all in order: each time one
+  DNS lookup out of about a hundred passes had not been answered inside its three seconds.
+  - A lookup that gets no answer (timeout, refused, resolver unreachable) is now *skipped — lookup
+    got no answer*, as blocklist lookups already were. It used to be reported as a missing PTR or A
+    record. A record that really does not exist still fails, and so does SERVFAIL: there the
+    resolvers did answer — that the zone's own name servers gave them nothing — and receiving mail
+    servers get the same.
+  - Skipped is not silent. After an hour of passes with unanswered lookups a separate notice says
+    which checks are **not being made**, without claiming anything about mail delivery.
+  - The second configured resolver is now actually reached in time. The lookups ask two resolvers,
+    but moving on to the second took three seconds — as long as the whole lookup was allowed.
+  - A failing check is looked at again after a minute and alerted only if the same check — the
+    check and its address, not its wording — still fails. A real outage is announced a minute
+    later than before, not at the next 15-minute pass.
+  - The alert lists each failing check with its address — *reverse DNS for 203.0.113.10 (node-b):
+    (no records)*, *203.0.113.10 is listed on SpamCop* — instead of *1 deliverability failure —
+    open Details to inspect*. Reverse-DNS and blocklist failures, the per-address ones, were
+    exactly the ones it could not name. The API log records them as well.
+
+- **A tenant is no longer moved to a node that cannot hold its data.** A move re-pins the tenant
+  and starts it on the target; Longhorn then builds the volume's copy there. When Longhorn refused
+  that copy — it reserves a volume's *full* size on the node, so a 100 GiB volume holding 28 GiB
+  does not fit where 66 GiB can still be scheduled — the tenant ran on the new node with all of
+  its data on the old one, did every disk read and write across the network, and stayed that way.
+  The move reported *Longhorn is copying the data*, and the *Not on its primary node* notification
+  said only *data on &lt;node&gt;*.
+  - The move now asks first, by Longhorn's own scheduling rule, and is refused before anything is
+    stopped, with the volume's size and the room left on the target. "Make this node the primary"
+    for a tenant already running there is never refused. A check that cannot be made does not
+    hold a move back; the log says it was skipped.
+  - If Longhorn refuses the copy all the same, the finished move says the data has **not** moved
+    and why, and the placement banner and the notification carry Longhorn's reason: *data on
+    node-a; Longhorn cannot copy it to node-b: insufficient storage*.
+  - The platform API may now read Longhorn's two scheduling settings
+    (`storage-over-provisioning-percentage`, `storage-minimal-available-percentage`) — the check
+    needs them. The database point-in-time-restore preflight reads the first one too and had been
+    assuming 100% wherever it was set otherwise.
+- **Tenants are back sooner after a storage failover, and the cause is named correctly.** After a
+  node freeze Longhorn salvages the volumes that were being written to; a tenant whose volume then
+  cannot be mounted again (a stale staging directory, which the node never repairs by itself) is
+  healed by re-staging the volume. That worked, but only 13 minutes after the freeze: the check ran
+  every five minutes and waited eight more.
+  - The check runs every minute, and waits three minutes instead of eight when the volume will not
+    attach or mount within 30 minutes of a recorded storage failover. Every other cause keeps the
+    eight minutes — a database still in crash recovery must not be restarted.
+  - Such a tenant was recorded as *quota rejected*, because the replacement pods are briefly
+    refused by the quota while their predecessors terminate and that message was read first. Had
+    the heal failed, the alert would have said to raise the plan's limits. The stale staging
+    directory is now recognised ahead of the quota message.
+  - The cause is read from what is wrong *now*. Kubernetes keeps a pod's warning events for about
+    an hour, and they used to be read regardless of age: a mount failure a pod logged while
+    starting, or one from a pod since replaced, could explain an outage it had nothing to do with.
+    An event about a pod now counts only while that pod exists and has not started; an event
+    about anything else for ten minutes.
 - **Background jobs run once on a high-availability cluster.** With three API replicas every
   in-process timer starts three times, and only the jobs someone had listed ran on one replica. The
   backup-freshness check was not on the list: it started a Job that lists the mail backup
@@ -221,33 +275,164 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   every service as rolled — while all of them are still on the old release. The bar read 67 % for
   one frame and 33 % in the next. With no target named, the services are now judged by the release
   they actually run.
-- **An upgrade no longer starts over a storage operation that it would cut off.** A resize, a
-  restore, a filesystem check or a move of a tenant runs inside the management API, and an upgrade
-  replaces every API replica. The operation was cut off without a word and its tenant stayed
-  stopped until the watchdog called the operation abandoned — six hours later, half an hour for a
-  move. The upgrade pre-flight has a new gate, **No storage operation in flight**: it names the
-  operations and their tenants and, on a production install, blocks the upgrade until they have
-  finished (a warning elsewhere). An archive in flight is only a warning, because the new replicas
-  pick it up again.
-- **An archive interrupted by an API restart is picked up again.** An archive runs inside the
-  platform API, after the request that started it has been answered. A deploy, a crash or a lost
-  node in the middle left its operation reading "snapshotting" with nothing working on it: the
-  tenant stayed scaled to zero for six hours, was then marked failed, and stayed out of the
-  automatic sweep until an operator cleared it. An archive now holds a lock for as long as a
-  process is working on it. When that lock has lapsed, the watchdog starts the archive again —
-  within about twenty minutes — and it carries on from where it stood: the replica counts
-  written down at the start are kept (taken again they would all be zero), a copy of the files
-  that was finished is not taken twice, one that was cut off is marked failed and its Job removed
-  before a new one is taken, and the tenant's own cascades and its "archived" message are not run a
-  second time. An archive picked up three times is left to fail, as before. The six-hour rule no
-  longer fails an archive that a process is working on. A lapsed lock does not prove a dead
-  process — one stalled for minutes looks the same — so an archive asks before every step that
-  writes or deletes whether the lock is still its own, and stops where it is when it is not,
-  without failing the operation or bringing the workloads back under its successor. And an
-  archive whose lock cannot be taken at the start is no longer left claimed with nothing running
-  it: the request fails (`503 ARCHIVE_NOT_STARTED`) and the tenant is as it was. Other storage operations — resize,
-  restore, filesystem check — are not picked up again; they are still failed after six hours, a
-  move after thirty minutes.
+- **An upgrade no longer starts over a storage operation that it would cut off for good.** A
+  storage operation runs inside the management API, and an upgrade replaces every API replica.
+  The upgrade pre-flight has a gate, **No storage operation in flight**, that names the operations
+  and their tenants. An archive, a resize, a restore or a filesystem check is only a warning: the
+  new replicas pick it up again a few minutes later (below), and the gate says that a tenant the
+  operation has stopped stays stopped until then. A suspend or a resume is a warning for the same
+  reason. A move of a tenant is not picked up, and blocks the upgrade on a production install
+  until it has finished (a warning elsewhere).
+- **A storage operation interrupted by an API restart is picked up again — every kind, within
+  minutes.** A resize, a restore, a filesystem check and an archive run inside the platform API,
+  after the request that started them has been answered. A deploy, a crash or a lost node in the
+  middle left the operation reading "restoring" with nothing working on it: the tenant stayed
+  scaled to zero for six hours, was then marked failed, and — for a shrink cut off after the old
+  volume was deleted — was started on an empty volume. Each of these operations now holds a lock
+  for as long as a process is working on it. When that lock has lapsed, the operation is started
+  again, typically three to five minutes after the process died (the check has its own
+  two-minute tick; it used to ride on the fifteen-minute watchdog), and carries on from where it
+  stood:
+  - the replica counts written down at the start are kept — taken again they would all be zero;
+  - a copy of the files that was finished is not taken twice; one that was cut off is marked
+    failed and its Job removed before a new one is taken;
+  - **a shrink** finds out whether the smaller volume exists already and does not delete it a
+    second time; the Job restoring the files into it is waited for if it is still there, replaced
+    if it failed with its node, and never doubled. The storage class is written down before the
+    old volume is deleted. With no finished copy and no old volume it stops rather than "capture"
+    an empty one;
+  - **a restore from a snapshot** releases the maintenance attach the dead process left on the
+    volume before it reverts; **a restore from a retained volume** does not swap a second time
+    when the claim is on that volume already, and writes down the volume it sets aside before the
+    swap, not after;
+  - **a restore of an archived tenant** does not write the archive over a tenant that already
+    reads restored, and its "restored" cascades run before the operation reads complete — one
+    that died between the two used to be an ended operation on a tenant still archived;
+  - **a filesystem check** waits for the tool the dead process started instead of running a
+    second one on the same blocks, and writes its result down before the workloads start again;
+  - an operation cut off while its workloads were being started again does not stop the tenant
+    and do its work on the volume a second time — that would take back what the tenant has
+    written since;
+  - a tenant's "archived" and "restored" cascades are neither repeated nor cut short. The first
+    run's own transition is looked up: finished, nothing is run and the tenant is not told twice;
+    cut off among its hooks, the ones that had not ended are run. (An archive picked up by the
+    release candidates skipped them all once the tenant read archived — the hooks after the
+    status stamp, the ingress among them, then never ran.)
+
+  An operation picked up three times and interrupted each time is ended there and then — failed,
+  its helper Jobs removed, its workloads started, the admins notified — instead of waiting for
+  the six-hour rule. A move keeps its own thirty-minute rule.
+
+  A **suspend** or a **resume** cut off by a restart is finished the same way (it used to hold
+  the tenant for six hours): the workloads are scaled to the counts written down the first time,
+  and the cascades are finished where they stopped. Ending it and asking again would not do — a
+  suspend cut off among its cascades has a tenant that reads suspended, for which a second
+  suspend is refused, with its site still answering. The operator's choice not to tell the tenant
+  is kept on the operation, so the process that finishes it does not send the message after all.
+- **A failed shrink no longer starts the tenant on an empty volume.** A shrink deletes the volume
+  and restores the files into a smaller one; in between they are in the pre-resize bundle only. A
+  shrink that failed there — its restore Job failed, or it was ended by the watchdog — had its
+  workloads started all the same: on an empty or half-restored volume, where an application sets
+  itself up afresh and then writes over what a later restore brings back. The workloads are now
+  left stopped, the failure says where the files are and what to do (restore the bundle, then
+  **Reset to idle** on the tenant's Storage Operations card), and neither the watchdog nor the workload-health check starts them
+  behind the operator's back. The same holds for a restore from a retained volume that fails with
+  the storage claim deleted and not yet made again. Whether the files are there is read from the
+  cluster: a shrink that failed before its delete went through is started as before.
+
+  A lapsed lock does not prove a dead process — one stalled for minutes looks the same — so an
+  operation asks before every step that writes or deletes whether it is still its own: the lock
+  carries this process's name **and** the operation has not ended. It stops where it is when it
+  is not, without failing the operation or bringing the workloads back under its successor. The
+  same check means an operator's **Cancel** now stops the run — and ends the operation before it
+  starts the workloads, not after; it used to go on, fail a second time and leave the tenant
+  "failed" after the cancel had set it idle. An operation whose lock cannot be taken at the start
+  is not left claimed with nothing running it: the request fails (`503 STORAGE_OP_NOT_STARTED`)
+  and the tenant is as it was. Should even that withdrawal fail to be written, the claim says it
+  never began, and is withdrawn later rather than run.
+
+  **Operations started by an earlier release**, which wrote no lock, are picked up too — once no
+  API process of another release is left that could still be running them. This is what happens
+  to an operation in flight during the upgrade to this release.
+- **A tenant transition cut off by an API restart is finished — a delete included.** Suspending,
+  resuming, archiving, restoring and deleting a tenant each run a list of hooks (mail, DNS,
+  ingress, the status, the tenant's message), one after the other, in the platform API. A deploy,
+  a crash or a lost node between two of them left the transition reading "running" for ever with
+  the rest of its hooks pending: only hooks that *failed* were ever retried. A delete cut off
+  there left a tenant whose mailboxes and DNS zones were gone and whose row, namespace and volume
+  were not, still listed as active. Every transition now holds a lock while its hooks run; one
+  whose lock has lapsed is finished by the two-minute lifecycle tick, typically three to five
+  minutes after the process died: the hooks that had ended are not run again, the rest are, and a
+  delete goes on to drop the namespace and the tenant. A delete's transition now reads "running"
+  until the tenant's row is gone, so one cut off after its last hook is finished as well.
+
+  Not everything found is finished. A transition the tenant has since moved past — suspended, cut
+  off, and resumed by the operator before the tick — is closed instead: its remaining hooks would
+  put a running tenant half back into suspension. So is one whose storage operation has ended as
+  failed or was cancelled in the meantime (an archive's hooks finished afterwards would archive
+  the tenant all the same), a decommission's (recorded as a delete that keeps the tenant — it is
+  never finished as a delete; start the decommission again), one older than six hours, and one
+  picked up three times and cut off each time. Closed means the transition ends "failed (partial)" and
+  the hooks that never ran read failed, with the reason, under **Platform → Tenant Lifecycle
+  Hooks**. On the first tick after the upgrade this also closes transitions an earlier release
+  left "running" long ago — nothing is run for those. A transition of an earlier release, which
+  wrote no lock, is touched only once no API process of that release is left.
+
+  A hook that was being *retried* when the process died stayed "running" under a transition long
+  ended and was never retried again; it is handed back to the retry scheduler after half an hour.
+- **Growing the storage of a tenant with no running workload no longer fails.** A grow has two
+  halves: Longhorn extends the volume, then the kubelet grows the filesystem — on a node where the
+  volume is mounted. Changing a tenant's limit re-provisions its namespace, which starts the
+  tenant's file manager; the idle clean-up scaled that file manager away again within half a
+  minute, in the middle of the grow. The claim then waited for a mount that never came, the
+  operation failed after ten minutes with `FS_RESIZE_TIMEOUT`, and the claim was left asking for
+  the new size with the tenant's limit still the old one. The grow now holds the file manager —
+  the clean-up leaves a held one alone, and one already scaled away is started again — for as
+  long as the filesystem takes, and hands it back after. Where nothing can mount the volume (the
+  file manager is held stopped by a storage operation or a suspension, or cannot be started after
+  three tries) the operation ends as done and says that the filesystem grows when the tenant's
+  next pod starts, with the reason. A volume that nothing has attached is extended offline and
+  needs none of this.
+- **A deleted tenant's backups are removed from the backup target when they expire.** Deleting a
+  tenant keeps its off-site bundles for the retention window — they are its only way back — and
+  they are meant to be reclaimed once they expire. The sweep that forgets expired snapshots asked
+  a per-tenant row which repository to open, and that row is deleted with the tenant. For a
+  deleted tenant it therefore opened the historical layout, found no repository there, reported
+  `repo-missing`, and forgot nothing. Since bundles moved to one repository per tenant
+  (2026.9.38), every deleted tenant's backups stayed on the target for good, and its bundle rows
+  stayed "expired" and were never purged. The sweep now reads where to look from the tenant's own
+  bundles, for as long as one of their snapshots is unreclaimed. The prune that follows — it is
+  what frees the space — had the same blind spot and failed with "repository does not exist" on
+  every sweep. It often runs a day after the snapshot was forgotten, when the bundle's row is
+  gone and nothing says any more where it was, so it now prunes both layouts for every tenant:
+  a repository that is not there has nothing to prune, while a backup target that cannot be
+  reached is a failure and is tried again (the two used to be told apart by words both use).
+  This also frees a live tenant's older repository, which the prune no longer visited once the
+  tenant's last bundle in it was gone. After the upgrade the backlog is worked off by the regular
+  six-hourly sweep, a batch at a time; snapshots younger than the minimum age (48 hours by
+  default) wait as before.
+
+  With it: a snapshot is only declared reclaimed from the contents of the repository its bundle
+  was written to. A tenant with bundles in both layouts could have a snapshot in one declared
+  gone because it was absent from the other — which let the bundle's row be purged with the
+  snapshot still on the target.
+- **A tenant's retained volume is listed again — and no longer reported as an orphan.** After a
+  shrink or an archive the tenant's previous volume is kept, and when it carries a snapshot
+  somebody took, the tenant can be restored from it (**Restore from a retained volume**). Whether
+  a snapshot was taken by a person or by Longhorn itself (it writes a marker on every expansion)
+  was read from the wrong part of the Longhorn object: its spec, where no snapshot says so — the
+  flag is in the status. Since 2026.10.1 every snapshot therefore counted as Longhorn's own. The
+  restore listed no volume at all, so it could not be started; and **Platform → Orphaned
+  Volumes** reported a retained volume with a snapshot as a leftover like any other, so **Purge
+  all** removed the fallback it was meant to leave alone once it was past the stale threshold.
+  Both now read the status — and leave out the snapshots of a recurring job, which Longhorn
+  flags the same way but nothing rotates on a released volume. If you have purged orphaned
+  volumes on 2026.10.1–2026.10.7, a retained volume may have gone with them; nothing was removed
+  automatically.
+- **The integrity sweep announces each thing it did to a tenant, not only the first of the day.**
+  Its notification was limited to one per tenant per day, so the removal of an archived tenant's
+  leftover volume went unsaid when the same tenant had had another repair that day. It is now one
+  per tenant, per day and per outcome: a repair that keeps failing still says so once a day.
 - **The empty storage volume earlier releases left on archived tenants is removed.** Until the fix
   below, the integrity sweep created an empty volume for every tenant ever archived, and those
   volumes are still there — bound, never mounted, counted against the node's schedulable storage,

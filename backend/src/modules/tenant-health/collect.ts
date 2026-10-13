@@ -15,7 +15,10 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listPodsCached } from '../../shared/k8s-watch-cache.js';
 import { tenants, mailboxes, systemSettings, clusterNodes } from '../../db/schema.js';
-import type { NodeFact, PodFact, ReplicaFact, TenantFact, VolumeFact } from './service.js';
+import {
+  scheduleFailureOf,
+  type LonghornCondition, type NodeFact, type PodFact, type ReplicaFact, type TenantFact, type VolumeFact,
+} from './service.js';
 
 const NODE_ROLE_LABEL = 'insula.host/node-role';
 const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
@@ -76,6 +79,7 @@ interface LhVolume {
      * and asked the workload to remount — the storage failover signal.
      */
     remountRequestedAt?: string;
+    conditions?: LonghornCondition[];
     kubernetesStatus?: {
       namespace?: string;
       pvcName?: string;
@@ -345,6 +349,7 @@ export async function collectFacts(
     pvcRefLostAt: v.status?.kubernetesStatus?.lastPVCRefAt || null,
     attachedNode: v.status?.currentNodeID || null,
     remountRequestedAt: v.status?.remountRequestedAt || null,
+    scheduleFailure: scheduleFailureOf(v.status?.conditions),
   })).filter((v) => v.volumeName !== '');
 
   const tenantFacts: TenantFact[] = tenantRows

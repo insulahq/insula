@@ -338,6 +338,25 @@ async function notifyHookPermanentFailure(
 }
 
 /**
+ * The tick's first half: what a restart cut off (interrupted-transitions.ts).
+ * Its failure is logged and never costs the tick its retries.
+ */
+async function finishInterrupted(db: Database, k8s: K8sClients): Promise<void> {
+  try {
+    const { pickUpInterruptedTransitions, requeueInterruptedRetries } = await import('./interrupted-transitions.js');
+    const picked = await pickUpInterruptedTransitions(db, k8s);
+    const requeued = await requeueInterruptedRetries(db);
+    if (picked.finished + picked.closed + picked.leftAlone + requeued > 0) {
+      console.log(
+        `[lifecycle-retry] interrupted transitions: ${picked.finished} finished, ${picked.closed} closed, ${picked.leftAlone} left alone; ${requeued} interrupted retr${requeued === 1 ? 'y' : 'ies'} queued again`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[lifecycle-retry] picking up interrupted transitions failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Start the periodic retry tick. Returns a disposer.
  *
  * The runtime swallows all errors per tick — a single bad row must
@@ -356,7 +375,12 @@ export function startLifecycleHookRetryScheduler(
       // One replica retries: two replicas read the same failed rows and run
       // the same hook (DNS, storage, cleanup) twice. Sticky, so the hook
       // breakers — kept in this process — stay with the replica doing the work.
-      const leased = await withSchedulerLease(db, 'lifecycle-hook-retry', TICK_INTERVAL_MS * 1.5, () => runRetryTick(db, k8s));
+      const leased = await withSchedulerLease(db, 'lifecycle-hook-retry', TICK_INTERVAL_MS * 1.5, async () => {
+        // Before the retries: a transition cut off by a restart has hooks that
+        // never ran, and those are nobody's to retry until it is finished.
+        await finishInterrupted(db, k8s);
+        return runRetryTick(db, k8s);
+      });
       const r = leased.ran ? leased.value : { attempted: 0, succeeded: 0, retried: 0, permanentlyFailed: 0, skippedBreaker: 0 };
       if (r.attempted > 0) {
         console.log(

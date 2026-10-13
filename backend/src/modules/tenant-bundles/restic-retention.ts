@@ -83,11 +83,12 @@ import {
   runResticStats,
   type BackupTarget,
   type ResticComponent,
+  type ResticRepoLayout,
 } from './restic-driver.js';
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
-import { layoutsWithLiveBundles, repoLayoutForStateRow } from './repo-layout.js';
+import { ALL_REPO_LAYOUTS, layoutsHoldingSnapshots, repoLayoutForStateRow } from './repo-layout.js';
 import { bundleIsLive } from './bundle-hold.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -380,8 +381,10 @@ export async function runResticRetentionSweep(
     // merge it stops naming the legacy one — and a tenant's pre-merge
     // snapshots would then never be swept again, leaking until someone
     // deleted the repository by hand. So sweep every layout the tenant still
-    // has live bundles in, not just the one the row happens to point at.
-    const layoutsToSweep = await layoutsWithLiveBundles(db, tenantId, component);
+    // has snapshots in — a live bundle's, or an expired one's that is yet to
+    // be reclaimed — not just the one the row happens to point at. (A deleted
+    // tenant has no such row at all: its bundles are what say where to look.)
+    const layoutsToSweep = await layoutsHoldingSnapshots(db, tenantId, component);
     for (const layout of layoutsToSweep) {
     const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
     try {
@@ -478,7 +481,7 @@ export async function runResticRetentionSweep(
         if (!dryRun) {
           try {
             await stampReclaimedComponents({
-              db, tenantId, component, stillPresent: new Set(kept), at: now(),
+              db, tenantId, component, layout, stillPresent: new Set(kept), at: now(),
             });
           } catch (err) {
             logger.warn({ err, tenantId, component }, 'restic retention: stamp reconcile failed (retried next sweep)');
@@ -532,7 +535,7 @@ export async function runResticRetentionSweep(
       try {
         const stillPresent = new Set(kept);
         await stampReclaimedComponents({
-          db, tenantId, component, stillPresent, at: now(),
+          db, tenantId, component, layout, stillPresent, at: now(),
         });
       } catch (err) {
         logger.warn({ err, tenantId, component }, 'restic retention: could not stamp reclaimed components (retried next sweep)');
@@ -576,21 +579,25 @@ export async function runResticRetentionSweep(
     `) as unknown as { rows: Array<{ tenant_id: string; component: string }> };
 
     // A merged repository is reached by both of a tenant's component rows;
-    // pruning it twice in one pass is wasted work on an exclusive lock.
-    const prunedRepos = new Set<string>();
+    // pruning it twice in one pass is wasted work on an exclusive lock. What
+    // became of it the first time counts for the second row too.
+    const pruneOutcomes = new Map<string, PruneOutcome>();
     for (const { tenant_id: tenantId, component } of due.rows) {
       if (!RESTIC_COMPONENTS.has(component)) continue;
-      const repoUri = buildResticRepoUri(
-        target, tenantId, component as ResticComponent,
-        await repoLayoutForStateRow(db, tenantId, component),
-      );
-      if (prunedRepos.has(repoUri)) continue;
-      prunedRepos.add(repoUri);
       const startedAt = Date.now();
       try {
-        await runResticPrune({
-          target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
-          ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
+        // Both layouts, always. A prune often comes a day after its forget,
+        // when the forgotten bundle's row has been purged and nothing in the
+        // database says any more which repository it was in: a deleted tenant
+        // has no state row, and a live one's names only its newest repository.
+        // A repository that is not there has nothing to prune.
+        await pruneRepositories({
+          repoUris: ALL_REPO_LAYOUTS.map((layout) => buildResticRepoUri(target, tenantId, component as ResticComponent, layout)),
+          outcomes: pruneOutcomes,
+          prune: (repoUri) => runResticPrune({
+            target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
+            ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
+          }),
         });
         await db.update(resticRepoReclaimState)
           .set({
@@ -764,6 +771,47 @@ export async function runResticRetentionSweep(
   };
 }
 
+/** What became of one repository's prune in this pass. */
+export type PruneOutcome = { readonly ok: true } | { readonly ok: false; readonly error: unknown };
+
+/**
+ * Prune the repositories one (tenant, component) row can have forgotten
+ * snapshots in. Every one of them is tried, also after another has failed; a
+ * repository that does not exist has nothing to prune and counts as done. One
+ * already tried in this pass is not tried again, and what became of it then
+ * counts here too: a row must not read "pruned" because the row before it
+ * failed on the same repository. Throws the first failure, after all were tried.
+ *
+ * "Does not exist" is restic's own word (restic-driver.ts): a target that
+ * cannot be reached is a failure, and the row stays pending.
+ */
+export async function pruneRepositories(args: {
+  readonly repoUris: readonly string[];
+  /** Shared by the whole pass. */
+  readonly outcomes: Map<string, PruneOutcome>;
+  readonly prune: (repoUri: string) => Promise<unknown>;
+}): Promise<void> {
+  let failed: unknown;
+  let anyFailed = false;
+  for (const repoUri of args.repoUris) {
+    let outcome = args.outcomes.get(repoUri);
+    if (!outcome) {
+      try {
+        await args.prune(repoUri);
+        outcome = { ok: true };
+      } catch (err) {
+        outcome = isResticRepoMissingError(err) ? { ok: true } : { ok: false, error: err };
+      }
+      args.outcomes.set(repoUri, outcome);
+    }
+    if (!outcome.ok && !anyFailed) {
+      anyFailed = true;
+      failed = outcome.error;
+    }
+  }
+  if (anyFailed) throw failed;
+}
+
 /**
  * Record that this repository was examined, whatever the outcome.
  *
@@ -804,10 +852,19 @@ async function recordSweepExamination(args: {
  * an interrupted sweep, a manual `restic forget`, a repo restored from
  * elsewhere. Uses the query builder so array binding is handled properly.
  */
-async function stampReclaimedComponents(args: {
+export async function stampReclaimedComponents(args: {
   db: Database;
   tenantId: string;
   component: string;
+  /**
+   * The layout of the repository that was looked into. Only components of
+   * bundles written to THAT repository are judged by its contents: a tenant
+   * can have bundles in both layouts, and a snapshot that lives in the other
+   * repository is absent from this one without being gone. Stamped all the
+   * same, it would let its bundle's row be purged — and take its layout out
+   * of the sweep — with the snapshot still on the target.
+   */
+  layout: ResticRepoLayout;
   /** Snapshot ids still in the repository. */
   stillPresent: ReadonlySet<string>;
   at: Date;
@@ -818,6 +875,8 @@ async function stampReclaimedComponents(args: {
     JOIN backup_jobs bj ON bj.id = bc.backup_job_id
     WHERE bj.tenant_id = ${args.tenantId}
       AND bc.component::text = ${args.component}
+      -- As normaliseRepoLayout reads it: anything but 'per-tenant' is the historical layout.
+      AND (CASE WHEN bj.repo_layout = 'per-tenant' THEN 'per-tenant' ELSE 'per-component' END) = ${args.layout}
       AND bc.sha256 IS NOT NULL
       AND bc.snapshot_reclaimed_at IS NULL
   `) as unknown as { rows: Array<{ id: string; sha256: string }> };

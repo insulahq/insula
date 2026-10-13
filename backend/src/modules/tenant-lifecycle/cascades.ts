@@ -1,8 +1,8 @@
-import { eq, inArray } from 'drizzle-orm';
-import { tenants, ingressMtlsConfigs, tenantMtlsProviders } from '../../db/schema.js';
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { tenants, ingressMtlsConfigs, tenantMtlsProviders, tenantLifecycleTransitions } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { runTransition, type Transition } from './registry/index.js';
+import { endTransition, runTransition, type DispatchResult, type Transition } from './registry/index.js';
 import { reapNamespaceVolumes, realReapDeps } from './reap-namespace-volumes.js';
 
 /**
@@ -80,6 +80,8 @@ async function dispatchTransition(
   fromStatus: string | null,
   toStatus: string,
   detail?: Record<string, unknown>,
+  /** Finish this transition, cut off in the middle, instead of starting one. */
+  resumeTransitionId?: string,
 ): Promise<string | null> {
   try {
     const result = await runTransition(ctx.db, ctx.k8s, {
@@ -88,6 +90,7 @@ async function dispatchTransition(
       triggeredByUserId: ctx.triggeredByUserId ?? null,
       parentTaskId: ctx.parentTaskId ?? null,
       suppressTenantNotification: ctx.suppressTenantNotification === true,
+      ...(resumeTransitionId ? { resumeTransitionId } : {}),
     });
     return result.transitionId;
   } catch (err) {
@@ -143,6 +146,51 @@ export async function applyArchived(
   return dispatchTransition(ctx, tenantId, namespace, 'archived', null, 'archived');
 }
 
+/**
+ * A tenant's cascades for an operation that was picked up again after its
+ * process died: run them, unless the first run already did — and finish them
+ * where it died in the middle.
+ *
+ * "Already did" is not "the tenant's status has changed". The status is
+ * stamped by one hook among several, and the ones after it — the ingress, the
+ * tenant's message — had not run when the process died between two of them.
+ * So the first run's own transition is looked up: started at or after `since`
+ * (the operation's start), of this kind, for this tenant.
+ *
+ *   - none: the cascades never began — run them;
+ *   - still `running`: nobody is, its process is gone — finish it, running
+ *     only the hooks that had not ended;
+ *   - ended, any way: nothing to do. Hooks that failed are the retry
+ *     scheduler's, as after any transition.
+ *
+ * Returns the transition's id, or null when the registry could not be written.
+ *
+ * Every kind but a delete, whose cascades end with the tenant's row gone and
+ * have their own second run (`applyDeleted`).
+ */
+export async function applyOnceSince(
+  ctx: CascadeCtx,
+  tenantId: string,
+  namespace: string,
+  transition: Exclude<Transition, 'deleted'>,
+  since: Date,
+): Promise<string | null> {
+  const toStatus = transition === 'restored' ? 'active' : transition;
+  const [first] = await ctx.db
+    .select({ id: tenantLifecycleTransitions.id, state: tenantLifecycleTransitions.state })
+    .from(tenantLifecycleTransitions)
+    .where(and(
+      eq(tenantLifecycleTransitions.tenantId, tenantId),
+      eq(tenantLifecycleTransitions.transitionKind, transition),
+      gte(tenantLifecycleTransitions.startedAt, since),
+    ))
+    .orderBy(desc(tenantLifecycleTransitions.startedAt))
+    .limit(1);
+  if (!first) return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus);
+  if (first.state !== 'running') return first.id;
+  return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus, undefined, first.id);
+}
+
 // ─── active → suspended ──────────────────────────────────────────────────
 
 // ─── * → deleted (hard remove) ──────────────────────────────────────────
@@ -176,6 +224,13 @@ export async function applyDeleted(
   ctx: CascadeCtx,
   tenantId: string,
   namespace: string,
+  /**
+   * Finish a delete whose process died among its hooks: the id of its
+   * transition. The hooks that ended are not run again; the namespace and the
+   * row are dropped as on a first run. Null, with nothing dropped, when the
+   * transition turned out to be another process's to finish.
+   */
+  resumeTransitionId?: string,
 ): Promise<string | null> {
   // Step 1: dispatch hooks while domains/backup_jobs rows still exist.
   //
@@ -189,11 +244,53 @@ export async function applyDeleted(
     const [gone] = await ctx.db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     goneName = gone?.name ?? null;
   } catch { /* named by its namespace slug later */ }
-  const transitionId = await dispatchTransition(
-    ctx, tenantId, namespace, 'deleted', null, 'deleted',
-    goneName ? { tenantName: goneName } : undefined,
-  );
+  // The transition is held open across the rest: the hooks are only the first
+  // half of a delete, and a row that read `completed` between them and the
+  // dropped tenant told the pick-up there was nothing left to finish.
+  let dispatched: DispatchResult | null = null;
+  try {
+    dispatched = await runTransition(ctx.db, ctx.k8s, {
+      tenantId, namespace, transition: 'deleted', toStatus: 'deleted',
+      triggeredByUserId: ctx.triggeredByUserId ?? null,
+      suppressTenantNotification: ctx.suppressTenantNotification === true,
+      holdOpen: true,
+      ...(resumeTransitionId
+        ? { resumeTransitionId }
+        : { fromStatus: null, parentTaskId: ctx.parentTaskId ?? null, ...(goneName ? { detail: { tenantName: goneName } } : {}) }),
+    });
+  } catch (err) {
+    // A registry that cannot be written must not keep a tenant from being
+    // deleted — the orphan scanner and the retry scheduler are the nets. But
+    // a delete being finished goes no further without it: it is finished on a
+    // later look, not half-finished now.
+    console.warn(`[cascades.applyDeleted] registry write failed for tenant ${tenantId} deleted: ${(err as Error).message}`);
+    if (resumeTransitionId) return null;
+  }
+  // `running` is the dispatcher's "not run": another process holds this
+  // transition — the one that began the delete was only slow — and the
+  // namespace and the row are that process's to drop as well. Its hooks still
+  // read the tenant's rows.
+  if (dispatched?.state === 'running') return null;
+  const transitionId = dispatched?.transitionId ?? null;
+  const endsAs = dispatched?.state ?? null;
 
+  try {
+    await dropTenant(ctx, tenantId, namespace);
+  } finally {
+    // Ended whether or not the drop went through: a delete that failed here
+    // has told its caller so, and is the operator's to ask for again — only a
+    // process that died leaves the transition open for the pick-up.
+    if (transitionId && endsAs) {
+      await endTransition(ctx.db, transitionId, endsAs).catch((err: unknown) => {
+        console.warn(`[cascades.applyDeleted] could not end the transition ${transitionId}: ${(err as Error).message}`);
+      });
+    }
+  }
+  return transitionId;
+}
+
+/** A delete's second half: the namespace, then the tenant's row, then — detached — its volumes. */
+async function dropTenant(ctx: CascadeCtx, tenantId: string, namespace: string): Promise<void> {
   // Step 2: drop the k8s namespace. `tenants.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
   // indicate a seed bug upstream and should surface as an error.
@@ -261,6 +358,4 @@ export async function applyDeleted(
     .catch((err) => {
       console.warn(`[cascades.applyDeleted] background volume reap for ${namespace} failed (non-fatal): ${(err as Error).message}`);
     });
-
-  return transitionId;
 }

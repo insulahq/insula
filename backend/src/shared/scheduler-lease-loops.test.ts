@@ -130,16 +130,17 @@ describe('a leased loop keeps ticking on a replica that does not hold the lease'
     }
   });
 
-  it('storage-lifecycle: each of its six leased loops claims at its own interval', { timeout: 60_000 }, async () => {
+  it('storage-lifecycle: each of its seven leased loops claims at its own interval', { timeout: 60_000 }, async () => {
     const { startStorageLifecycleScheduler } = await import('../modules/storage-lifecycle/scheduler.js');
     const { db, claims } = leasesHeldElsewhere();
     const { stop } = startStorageLifecycleScheduler(db, k8s, {});
     try {
       // A week holds a whole number of every interval:
-      //   workload health 5 min → 2016, quiesce watchdog 15 min → 672, namespace
-      //   integrity 30 min → 336, snapshot expiry 6 h → 28, auto-archive 6 h → 28,
-      //   audit 7 d → 1. (The orphan Secret sweep takes no lease.)
-      const perWeek = 2016 + 672 + 336 + 28 + 28 + 1;
+      //   operation pick-up 2 min → 5040, workload health 1 min → 10080, quiesce
+      //   watchdog 15 min → 672, namespace integrity 30 min → 336, snapshot
+      //   expiry 6 h → 28, auto-archive 6 h → 28, audit 7 d → 1. (The orphan
+      //   Secret sweep takes no lease.)
+      const perWeek = 5040 + 10080 + 672 + 336 + 28 + 28 + 1;
       await advance(7 * DAY, 5 * MIN);
       const first = claims();
       await advance(7 * DAY, 5 * MIN);

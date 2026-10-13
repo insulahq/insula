@@ -162,6 +162,33 @@ export async function assertSnapshotRevertable(
 }
 
 /**
+ * Release the maintenance attach a revert left behind when its process died
+ * between attaching and detaching. Left there, the volume never reads
+ * `detached` again, and neither a second revert nor the tenant's own pods can
+ * use it. Only a volume attached with its frontend disabled is touched — no
+ * workload can hold a volume that way. True when an attach was released.
+ */
+export async function releaseLeftoverMaintenanceAttach(
+  k8s: K8sClients,
+  volumeName: string,
+  opts: Pick<RevertCoreOpts, 'apiBase' | 'fetchFn' | 'revertTimeoutMs'> = {},
+): Promise<boolean> {
+  const v = await lhGet<{ status?: { state?: string; frontendDisabled?: boolean } }>(k8s, 'volumes', volumeName);
+  if (v.status?.state !== 'attached' || v.status?.frontendDisabled !== true) return false;
+  const apiBase = (opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE).replace(/\/$/, '');
+  const resp = await (opts.fetchFn ?? globalThis.fetch)(`${apiBase}/v1/volumes/${encodeURIComponent(volumeName)}?action=detach`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+    signal: AbortSignal.timeout(opts.revertTimeoutMs ?? 60_000),
+  });
+  if (!resp.ok) {
+    throw new RevertError(`Longhorn could not release the maintenance attach of '${volumeName}': HTTP ${resp.status}`, 502, []);
+  }
+  return true;
+}
+
+/**
  * Drive the Longhorn side of an in-place revert. Caller MUST have already
  * scaled every consumer of the volume to 0 (the volume is detaching).
  *

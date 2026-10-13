@@ -114,6 +114,28 @@ export interface VolumeFact {
    * that never happened. The storage-failover signal.
    */
   readonly remountRequestedAt: string | null;
+  /**
+   * Longhorn's reason while its `Scheduled` condition is False — it cannot
+   * place a replica the volume should have (e.g. `insufficient storage` for
+   * the local copy data locality wants on the node the tenant moved to). Null
+   * while scheduling is fine. Why a tenant's data is not following it.
+   */
+  readonly scheduleFailure: string | null;
+}
+
+/** One entry of a Longhorn object's `status.conditions`. */
+export interface LonghornCondition {
+  readonly type?: string;
+  readonly status?: string;
+  readonly reason?: string;
+  readonly message?: string;
+}
+
+/** The volume's `Scheduled=False` reason in Longhorn's words, or null. Pure. */
+export function scheduleFailureOf(conditions: readonly LonghornCondition[] | undefined): string | null {
+  const c = (conditions ?? []).find((x) => x.type === 'Scheduled' && x.status === 'False');
+  if (!c) return null;
+  return (c.message?.trim() || c.reason?.trim() || 'no reason given').slice(0, 200);
 }
 
 export interface TenantFact {

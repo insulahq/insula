@@ -263,14 +263,15 @@ export async function captureFilesOnlyBundle(args: {
 
 /**
  * Fail the captures a dead process left running for a tenant, and remove their
- * Jobs. For an archive picked up again after the API restarted: the capture it
- * was in the middle of has nobody waiting for it, its Job may still hold the
- * volume, and its row would read "running" until the retention sweep reports it
- * as a failed backup a day later. Only system captures of this kind, started
- * since `since` — the archive's own start. Returns how many were settled.
+ * Jobs. For an archive or a shrink picked up again after the API restarted, or
+ * ended by the watchdog: the capture it was in the middle of has nobody waiting
+ * for it, its Job may still hold the volume, and its row would read "running"
+ * until the retention sweep reports it as a failed backup a day later. Only
+ * system captures of this kind, started since `since` — the operation's own
+ * start. Returns how many were settled.
  */
 export async function settleInterruptedCaptures(db: Database, k8s: K8sClients, tenantId: string, since: Date): Promise<number> {
-  const why = 'Interrupted: the platform API restarted while this capture was running. The archive it belonged to was picked up again and took a new one.';
+  const why = 'Interrupted: the platform API restarted while this capture was running. The operation it belonged to was picked up again and took a new one, or was ended.';
   const settled = await db
     .update(backupJobs)
     .set({ status: 'failed', lastError: why, finishedAt: new Date() })
@@ -344,6 +345,11 @@ export async function restoreFilesBundleIntoPvc(args: {
   readonly pvcName: string;
   readonly onProgress?: (msg: string) => Promise<void> | void;
   readonly timeoutMs?: number;
+  /**
+   * The operation this restore belongs to was picked up again after its
+   * process died: the Job that process started may still be there.
+   */
+  readonly resumed?: boolean;
 }): Promise<void> {
   const { db, k8s, bundleId, tenantId, namespace, pvcName } = args;
 
@@ -367,6 +373,27 @@ export async function restoreFilesBundleIntoPvc(args: {
   const jobName = `rs-preresize-${safe}`.slice(0, 63);
   const credsSecretName = `rs-preresize-creds-${safe}`.slice(0, 63);
 
+  // A restore picked up again may find the Job the dead process started:
+  // still writing, finished, or failed with the node it ran on. The first two
+  // are waited for — a second Job beside a running one would write the same
+  // files twice at once. A failed one is removed, with the credentials it
+  // owned, and the restore is run again: restic writes over what is there.
+  const left = args.resumed ? await leftoverJob(k8s, namespace, jobName) : 'none';
+  if (left === 'failed') {
+    await removeJobAndWait(k8s, namespace, jobName);
+    await (k8s.core as unknown as {
+      deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
+    }).deleteNamespacedSecret({ name: credsSecretName, namespace }).catch(() => undefined);
+  }
+  const timeoutMs = args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS;
+  if (left === 'there') {
+    await waitForJob(k8s, namespace, jobName, timeoutMs, args.onProgress);
+    await (k8s.batch as unknown as {
+      deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+    }).deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Background' }).catch(() => undefined);
+    return;
+  }
+
   let credsCreated = false;
   let ownerRefWired = false;
   try {
@@ -387,7 +414,6 @@ export async function restoreFilesBundleIntoPvc(args: {
     const pinToNode = tenantRow?.nodeName
       ?? (await resolveTenantDataNode(k8s, { namespace, pvcName, pinNode: null })).node;
 
-    const timeoutMs = args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS;
     const spec = buildResticRestoreJobSpec({
       jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId, pinToNode,
       // Bound the Job's wall-clock in k8s so a platform-api restart mid-restore
@@ -527,6 +553,49 @@ export function buildResticRestoreJobSpec(input: {
       },
     },
   };
+}
+
+/** What is left of a Job a dead process started: nothing, one that failed, or one running or finished. */
+async function leftoverJob(k8s: K8sClients, namespace: string, jobName: string): Promise<'none' | 'failed' | 'there'> {
+  try {
+    const job = await (k8s.batch as unknown as {
+      readNamespacedJob: (a: { name: string; namespace: string }) => Promise<{
+        status?: { conditions?: Array<{ type: string; status: string }>; failed?: number };
+      }>;
+    }).readNamespacedJob({ name: jobName, namespace });
+    const failed = (job.status?.conditions ?? []).some((c) => c.type === 'Failed' && c.status === 'True');
+    return failed || (job.status?.failed ?? 0) > 0 ? 'failed' : 'there';
+  } catch (err) {
+    if (isNotFound(err)) return 'none';
+    throw err;
+  }
+}
+
+function isNotFound(err: unknown): boolean {
+  const e = err as { statusCode?: number; code?: number; response?: { statusCode?: number } } | null;
+  return (e?.statusCode ?? e?.code ?? e?.response?.statusCode) === 404;
+}
+
+/** Delete a Job with its pods and wait until it is gone, so that one of the same name can be created. */
+async function removeJobAndWait(k8s: K8sClients, namespace: string, jobName: string, timeoutMs = 120_000): Promise<void> {
+  const batch = k8s.batch as unknown as {
+    deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+    readNamespacedJob: (a: { name: string; namespace: string }) => Promise<unknown>;
+  };
+  await batch.deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Foreground' }).catch((err: unknown) => {
+    if (!isNotFound(err)) throw err;
+  });
+  const start = Date.now();
+  for (;;) {
+    try {
+      await batch.readNamespacedJob({ name: jobName, namespace });
+    } catch (err) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`Job ${jobName} was not removed within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }
 
 async function waitForJob(

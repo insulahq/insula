@@ -7,6 +7,7 @@ import {
   RELOCATE_TICKET,
   finishDataRelocations,
   planRelocation,
+  readCopyBlocker,
   releaseRelocationsInNamespace,
   relocationVerdict,
   startDataRelocation,
@@ -200,5 +201,46 @@ describe('releaseRelocationsInNamespace', () => {
   it('never throws — the storage operation reports its own detach wait', async () => {
     const k8s = { custom: { listNamespacedCustomObject: async () => { throw new Error('down'); } } } as unknown as K8sClients;
     expect(await releaseRelocationsInNamespace(k8s, NS)).toEqual([]);
+  });
+});
+
+describe('readCopyBlocker', () => {
+  const refused = [{ type: 'Scheduled', status: 'False', reason: 'LocalReplicaSchedulingFailure', message: 'insufficient storage' }];
+  const lhVol = (over: Record<string, unknown> = {}, status: Record<string, unknown> = {}) => ({
+    metadata: { name: 'pvc-1' }, spec: { numberOfReplicas: 1 },
+    status: { conditions: refused, kubernetesStatus: { namespace: NS, lastPVCRefAt: '' }, ...status }, ...over,
+  });
+  const lhRep = (nodeID: string, over: Record<string, unknown> = {}) => ({
+    spec: { volumeName: 'pvc-1', nodeID }, status: { currentState: 'running' }, ...over,
+  });
+  const read = (volumes: unknown[], replicas: unknown[], tier: string | null = 'local') =>
+    readCopyBlocker(fakeK8s({ volumes, replicas }).k8s, NS, 'node-a', tier);
+
+  it('returns Longhorn\'s reason when the moved volume has nothing on the target', async () => {
+    expect(await read([lhVol()], [lhRep('node-b')])).toBe('insufficient storage');
+    // A failed or errored replica on the target is not a copy there.
+    expect(await read([lhVol()], [lhRep('node-b'), lhRep('node-a', { spec: { volumeName: 'pvc-1', nodeID: 'node-a', failedAt: '2026-10-13T10:36:15Z' } })]))
+      .toBe('insufficient storage');
+    expect(await read([lhVol()], [lhRep('node-b'), lhRep('node-a', { status: { currentState: 'error' } })])).toBe('insufficient storage');
+  });
+
+  it('is null when scheduling is fine', async () => {
+    expect(await read([lhVol({}, { conditions: [{ type: 'Scheduled', status: 'True' }] })], [lhRep('node-b')])).toBeNull();
+    expect(await read([lhVol({}, { conditions: undefined })], [lhRep('node-b')])).toBeNull();
+  });
+
+  it('does not report a Scheduled=False that is not about this move', async () => {
+    // Data already on the target; replicated by design; HA tier; another
+    // tenant's volume; a leftover of a past PVC.
+    expect(await read([lhVol()], [lhRep('node-a')])).toBeNull();
+    expect(await read([lhVol({ spec: { numberOfReplicas: 3 } })], [lhRep('node-b')])).toBeNull();
+    expect(await read([lhVol()], [lhRep('node-b')], 'ha')).toBeNull();
+    expect(await read([lhVol({}, { kubernetesStatus: { namespace: 'tenant-other' } })], [lhRep('node-b')])).toBeNull();
+    expect(await read([lhVol({}, { kubernetesStatus: { namespace: NS, lastPVCRefAt: '2026-09-01T00:00:00Z' } })], [lhRep('node-b')])).toBeNull();
+  });
+
+  it('never throws: an unreadable cluster words nothing', async () => {
+    const k8s = { custom: { listNamespacedCustomObject: async () => { throw new Error('forbidden'); } } } as unknown as K8sClients;
+    expect(await readCopyBlocker(k8s, NS, 'node-a', 'local')).toBeNull();
   });
 });

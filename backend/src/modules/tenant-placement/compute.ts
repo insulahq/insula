@@ -45,6 +45,13 @@ export interface TenantPlacementObservation {
   readonly reasons: readonly string[];
 }
 
+/**
+ * Marks the reason of a tenant whose data CANNOT follow it: Longhorn refused
+ * the replica. Stored reasons are plain text, so the notification recognises
+ * the case by this wording (messages.ts) — keep the two in step.
+ */
+export const COPY_BLOCKED_MARK = 'Longhorn cannot copy it to';
+
 /** Controllers whose pods are the tenant's own long-lived workload. */
 const WORKLOAD_CONTROLLERS = new Set(['ReplicaSet', 'StatefulSet']);
 
@@ -115,11 +122,22 @@ export function observeTenantPlacement(
   } else {
     const offData = dataNodes.filter((n) => n !== primary);
     if (offData.length > 0) {
+      // Longhorn builds the local copy on the node the volume is attached to.
+      // When its scheduler refuses that replica the data never moves, however
+      // long anyone waits — say so, in Longhorn's words, instead of "data on X".
+      // Only of a volume with nothing usable there yet: a volume whose data is
+      // already local can fail to schedule something else entirely.
+      const copyTarget = attachedNodes.length > 0 ? attachedNodes : [primary];
+      const hasCopyThere = (volumeName: string): boolean => input.replicas.some((r) => r.volumeName === volumeName
+        && !r.failed && r.nodeId !== null && copyTarget.includes(r.nodeId));
+      const blocked = uniqSorted(vols.filter((v) => !hasCopyThere(v.volumeName)).map((v) => v.scheduleFailure));
       reasons.push(dataNodes.includes(primary)
         // Both: a replica is being built elsewhere — data locality is moving
         // the volume to where a pod runs. Still not where it belongs.
         ? `data being copied to ${formatNodes(offData)}`
-        : `data on ${formatNodes(offData)}`);
+        : blocked.length > 0
+          ? `data on ${formatNodes(offData)}; ${COPY_BLOCKED_MARK} ${formatNodes(copyTarget)}: ${blocked.join('; ')}`
+          : `data on ${formatNodes(offData)}`);
     }
   }
 

@@ -1492,11 +1492,40 @@ export async function deleteTenant(
   return withTenantLock(db, id, () => deleteTenantLocked(db, id, k8sTenants, opts));
 }
 
+/**
+ * Finish a delete whose process died among its hooks
+ * (tenant-lifecycle/interrupted-transitions.ts): the hooks that had not ended
+ * are run, then the namespace and the row go, as on a first run.
+ *
+ * `claim` is asked under the tenant's lock whether the delete's transition is
+ * still there to be finished, and answers with its id — or null, when it
+ * ended or was closed in the meantime; then nothing is deleted. False in that
+ * case, and when the process that began the delete turns out to be running
+ * its hooks after all; TENANT_BUSY when something else holds the tenant.
+ */
+export async function finishInterruptedDelete(
+  db: Database,
+  id: string,
+  k8sTenants: K8sClients,
+  triggeredByUserId: string | null,
+  claim: () => Promise<string | null>,
+): Promise<boolean> {
+  const { withTenantLock } = await import('../tenant-lifecycle/tenant-lock.js');
+  return withTenantLock(db, id, async () => {
+    const transitionId = await claim();
+    if (!transitionId) return false;
+    const done = await deleteTenantLocked(db, id, k8sTenants, { triggeredByUserId }, transitionId);
+    return done.transitionId !== null;
+  }, { waitMs: 0 });
+}
+
 async function deleteTenantLocked(
   db: Database,
   id: string,
   k8sTenants: K8sClients | undefined,
   opts: DeleteTenantOptions,
+  /** The transition of a delete that was cut off, to be finished instead of starting one. */
+  resumeTransitionId?: string,
 ): Promise<{ transitionId: string | null }> {
   const tenant = await getTenantById(db, id);
 
@@ -1580,6 +1609,7 @@ async function deleteTenantLocked(
       },
       id,
       tenant.kubernetesNamespace,
+      resumeTransitionId,
     );
     return { transitionId };
   }

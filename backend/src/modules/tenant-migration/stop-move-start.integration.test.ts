@@ -98,7 +98,7 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
     await pool.query(`CREATE TYPE storage_operation_type AS ENUM
       ('snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore', 'fsck', 'autoheal')`);
     await pool.query(readFileSync(RELOCATE_MIGRATION, 'utf8'));
-    await pool.query(`CREATE TABLE tenants (id varchar(36) PRIMARY KEY, kubernetes_namespace varchar(63),
+    await pool.query(`CREATE TABLE tenants (id varchar(36) PRIMARY KEY, name varchar(255) NOT NULL DEFAULT 'Acme', kubernetes_namespace varchar(63),
       node_name varchar(255), storage_tier varchar(16), status varchar(32) NOT NULL DEFAULT 'active',
       storage_lifecycle_state varchar(32) NOT NULL DEFAULT 'idle', active_storage_op_id varchar(36),
       updated_at timestamp NOT NULL DEFAULT now())`);
