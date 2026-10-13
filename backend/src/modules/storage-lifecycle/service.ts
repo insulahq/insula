@@ -301,7 +301,11 @@ export async function whyWorkloadsStayStopped(
       + 'They are in the pre-resize bundle, which is kept for 7 days. Restore the files from that bundle into the tenant, then use Reset to idle on the tenant\'s Storage Operations card to start the workloads.';
 }
 
-/** A failure's text with the reason the workloads were left stopped, where the reader will see it. */
+/**
+ * A failure's text with the reason the workloads were left stopped, where the
+ * reader will see it first: the first step of a structured error, the opening
+ * of a plain one — whose own text may be a screenful of a cluster's reply.
+ */
 export function withHold(lastError: string, hold: string | null): string {
   if (!hold) return lastError;
   try {
@@ -313,7 +317,7 @@ export function withHold(lastError: string, hold: string | null): string {
       });
     }
   } catch { /* plain text */ }
-  return `${lastError}\n\n${hold}`;
+  return `${hold}\n\nWhat failed: ${lastError}`;
 }
 
 /**

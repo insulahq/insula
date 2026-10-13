@@ -1035,13 +1035,13 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       expect(told[0].payload).toMatchObject({ detail: 'A restore of this tenant failed.' });
     });
 
-    it('the reason is put where the panel shows it: among the steps of a structured error, after the text of a plain one', async () => {
+    it('the reason is put where it is read first: the first step of a structured error, the opening of a plain one', async () => {
       const { withHold } = await import('./service.js');
       expect(withHold('plain failure', null)).toBe('plain failure');
-      expect(withHold('plain failure', 'Left stopped.')).toBe('plain failure\n\nLeft stopped.');
+      expect(withHold('plain failure', 'Left stopped.')).toBe('Left stopped.\n\nWhat failed: plain failure');
       const structured = JSON.stringify({ code: 'X', title: 'T', detail: 'D', remediation: ['first'], retryable: false });
       expect(JSON.parse(withHold(structured, 'Left stopped.'))).toEqual({ code: 'X', title: 'T', detail: 'D', remediation: ['Left stopped.', 'first'], retryable: false });
-      expect(withHold('{"not":"an envelope"}', 'Left stopped.')).toBe('{"not":"an envelope"}\n\nLeft stopped.');
+      expect(withHold('{"not":"an envelope"}', 'Left stopped.')).toBe('Left stopped.\n\nWhat failed: {"not":"an envelope"}');
     });
   });
 
