@@ -293,6 +293,9 @@ export async function checkTargetCapacity(
     }
     return judgeTargetCapacity(target, needs, offered.disks, { overProvisioningPct, minimalAvailablePct });
   } catch (err) {
-    return { state: 'unknown', detail: err instanceof Error ? err.message : String(err) };
+    // The Kubernetes client's message is the whole response, body and headers,
+    // over several lines; this goes into one log line.
+    const detail = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 160);
+    return { state: 'unknown', detail };
   }
 }

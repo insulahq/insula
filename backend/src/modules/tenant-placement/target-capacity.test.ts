@@ -314,6 +314,17 @@ describe('checkTargetCapacity', () => {
     }
   });
 
+  it('keeps an unreadable cluster\'s reason to one short line — the client reports a 404 as headers and body', async () => {
+    const verbose = new Error(`HTTP-Code: 404\nMessage: Unknown API Status Code!\nBody: "{\\"kind\\":\\"Status\\"}"\nHeaders: ${'x'.repeat(600)}`);
+    const { k8s } = fakeK8s({ volumes: [lhVolume()], replicas: [lhReplica('node-b')], node: verbose });
+    const v = await checkTargetCapacity(k8s, NS, 'node-a', 'local');
+    expect(v.state).toBe('unknown');
+    const detail = (v as { detail: string }).detail;
+    expect(detail).toMatch(/^HTTP-Code: 404 Message: /);
+    expect(detail).not.toContain('\n');
+    expect(detail.length).toBeLessThanOrEqual(160);
+  });
+
   it('uses the settings it read, not a default', async () => {
     const { k8s } = fakeK8s({
       volumes: [lhVolume()], replicas: [lhReplica('node-b')], node: lhNode(small),
