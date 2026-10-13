@@ -180,7 +180,8 @@ export async function findInterruptedTransitions(
   }));
 }
 
-const INTERRUPTED = 'Interrupted: the platform API restarted while this transition was running.';
+/** Opens every reason a transition is closed for. Shown under the title "Interrupted", so it does not say the word again. */
+const INTERRUPTED = 'The platform API restarted while this transition was running.';
 
 /** Why a transition is closed instead of finished; null when it is to be finished. */
 export function whyNotFinished(tr: InterruptedTransition): string | null {
@@ -213,7 +214,7 @@ export async function closeInterruptedTransition(db: Database, id: string, why: 
       .where(and(eq(tenantLifecycleHookRuns.transitionId, id), inArray(tenantLifecycleHookRuns.state, ['pending', 'running'])));
     try {
       const { finishByRef } = await import('../tasks/service.js');
-      await finishByRef(db, 'tenant.transition', id, { status: 'failed', text: null, error: why });
+      await finishByRef(db, 'tenant.transition', id, { status: 'failed', text: null, error: `Interrupted: ${why}` });
     } catch { /* the chip is a convenience; the transition is closed either way */ }
     return true;
   });
