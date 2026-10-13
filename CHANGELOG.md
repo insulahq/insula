@@ -28,8 +28,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   good — also long after a deleted tenant's last bundle was reclaimed and its repository was
   gone. Each such tenant took one of the sweep's turns, pushing the live tenants' turns further
   apart as the list grew. A tenant that is gone, with no bundle left that names a snapshot, no
-  prune owed and no repository in either layout, is now taken off the list. Before, the sweep
-  also only ever looked in the older repository layout for such a tenant; it now looks in both.
+  prune owed and no snapshot in any repository of it, is now taken off the list. Before, the
+  sweep also only ever looked in the older repository layout for such a tenant; it now looks in
+  both. A repository that still holds snapshots the database has no record of stays on the list
+  and keeps being reported, as before.
 
 ## [2026.10.8] - 2026-10-13
 

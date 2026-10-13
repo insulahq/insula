@@ -385,9 +385,10 @@ export async function runResticRetentionSweep(
     // be reclaimed — not just the one the row happens to point at. (A deleted
     // tenant has no such row at all: its bundles are what say where to look.)
     const layoutsToSweep = await layoutsHoldingSnapshots(db, tenantId, component);
-    let reposMissing = 0;
+    const seen: RepoSeen[] = [];
     for (const layout of layoutsToSweep) {
     const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
+    let saw: RepoSeen = 'not-looked-at';
     try {
       // Keep-set: snapshots belonging to bundles that are still live. A bundle
       // is live when it completed (fully or partially) AND has not passed its
@@ -451,12 +452,13 @@ export async function runResticRetentionSweep(
           await note('repo-missing');
           repos.push({ ...base, repoUri, skipped: 'repo-missing', error: null });
           reposSkipped++;
-          reposMissing++;
+          saw = 'missing';
           continue;
         }
         throw err;
       }
       base.snapshotsInRepo = snapshots.length;
+      saw = snapshots.length === 0 ? 'empty' : 'holds-snapshots';
 
       const plan = planRepoReclamation({
         snapshots, keepSnapshotIds, keepBundleIds, hasHistory,
@@ -561,15 +563,19 @@ export async function runResticRetentionSweep(
       }, err, logger);
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
+    } finally {
+      seen.push(saw);
     }
     }
 
-    // Nothing anywhere: no repository in any layout looked into. When the
-    // tenant is gone and no bundle of it names a snapshot any more, this pair
-    // has nothing left to reclaim and is taken out of the rotation — it used
-    // to be looked for on every sweep for good, one more for every tenant
-    // ever deleted, each pushing the live tenants' turn further out.
-    if (!dryRun && layoutsToSweep.length > 0 && reposMissing === layoutsToSweep.length) {
+    // No snapshot anywhere: every repository looked into is missing or holds
+    // none. When the tenant is gone and no bundle of it names a snapshot any
+    // more, this pair has nothing left to reclaim and is taken out of the
+    // rotation — it used to be looked for on every sweep for good, one more
+    // for every tenant ever deleted, each pushing the live tenants' turn
+    // further out. (An emptied repository stays on the target — a config file
+    // and its keys — so "there is no repository" alone would never be true.)
+    if (!dryRun && nothingLeftToReclaim(seen)) {
       try {
         if (await dropSpentReclaimState(db, tenantId, component)) {
           logger.info({ tenantId, component }, 'restic retention: nothing is left of this deleted tenant on the target — taken out of the sweep');
@@ -788,11 +794,24 @@ export async function runResticRetentionSweep(
   };
 }
 
+/** What one repository looked like to the forget pass. */
+export type RepoSeen = 'missing' | 'empty' | 'holds-snapshots' | 'not-looked-at';
+
+/**
+ * Whether the repositories looked into hold nothing to reclaim: each is
+ * missing or without a snapshot. One that could not be looked at — an error, a
+ * target out of reach — is not known to be empty, and none looked at is not
+ * "nothing left".
+ */
+export function nothingLeftToReclaim(seen: readonly RepoSeen[]): boolean {
+  return seen.length > 0 && seen.every((s) => s === 'missing' || s === 'empty');
+}
+
 /**
  * Take a (tenant, component) out of the sweep's rotation when nothing is left
  * of it: the tenant's row is gone, no bundle of it names a snapshot any more,
- * and no prune is owed. The caller has just found no repository for it in any
- * layout. True when the row was removed.
+ * and no prune is owed. The caller has just found no snapshot for it in any
+ * repository. True when the row was removed.
  *
  * A live tenant's row stays whatever it has: its next bundle makes a
  * repository. So does a row with a prune still owed — the prune pass looks

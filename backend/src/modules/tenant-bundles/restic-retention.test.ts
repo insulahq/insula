@@ -17,6 +17,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Readable } from 'node:stream';
 import {
+  nothingLeftToReclaim,
   planRepoReclamation,
   pruneRepositories,
   type PlanRepoReclamationArgs,
@@ -197,6 +198,25 @@ function stubSpawn(exitCode = 0): { calls: string[][] } {
 }
 
 afterEach(() => __resetResticSpawnForTest());
+
+describe('nothingLeftToReclaim — when a deleted tenant can leave the sweep', () => {
+  it.each<[string, Parameters<typeof nothingLeftToReclaim>[0]]>([
+    ['no repository in either layout', ['missing', 'missing']],
+    ['one missing, the other emptied — an emptied repository stays on the target', ['missing', 'empty']],
+    ['a single emptied repository', ['empty']],
+  ])('nothing is left with %s', (_what, seen) => {
+    expect(nothingLeftToReclaim(seen)).toBe(true);
+  });
+
+  it.each<[string, Parameters<typeof nothingLeftToReclaim>[0]]>([
+    ['a repository that still holds snapshots', ['missing', 'holds-snapshots']],
+    ['a repository that could not be looked at', ['missing', 'not-looked-at']],
+    ['an emptied one beside one that could not be looked at', ['empty', 'not-looked-at']],
+    ['no repository looked at at all', []],
+  ])('something may be left with %s', (_what, seen) => {
+    expect(nothingLeftToReclaim(seen)).toBe(false);
+  });
+});
 
 describe('pruneRepositories — every repository a row\'s forgotten snapshots can be in', () => {
   const MERGED = 's3:http://shim.example.test/tenant/restic/t1';
