@@ -185,3 +185,47 @@ export async function layoutsHoldingSnapshots(
   if (layouts.size === 0) layouts.add(await repoLayoutForStateRow(db, tenantId, component));
   return [...layouts];
 }
+
+/**
+ * The layouts whose repository may hold something to prune for a given
+ * (tenant, component): what its bundles still name, what its state row names —
+ * and, for a tenant with no state row, both.
+ *
+ * A prune comes after a forget, often a day after (it is rate-limited), and by
+ * then the forgotten bundle's row has been purged: nothing in the database
+ * says any more which repository it was in. For a live tenant the state row
+ * still does. A deleted tenant has none — the row cascades with the tenant —
+ * and its repositories can only be found by looking, so the caller is handed
+ * both and treats "no repository there" as nothing to do. (Asking the state
+ * row alone opened the historical layout for every deleted tenant: the prune
+ * failed with "repository does not exist" on each sweep, for good, and the
+ * forgotten snapshots' data was never freed.)
+ */
+export async function layoutsToPrune(
+  db: Database,
+  tenantId: string,
+  component: string,
+): Promise<ResticRepoLayout[]> {
+  const rows = await db.execute(sql`
+    SELECT DISTINCT coalesce(bj.repo_layout, 'per-component') AS layout
+    FROM backup_jobs bj
+    JOIN backup_components bc ON bc.backup_job_id = bj.id
+    WHERE bj.tenant_id = ${tenantId}
+      AND bc.component::text = ${component}
+      AND bc.sha256 IS NOT NULL
+  `) as unknown as { rows: Array<{ layout: string }> };
+  const layouts = new Set<ResticRepoLayout>();
+  for (const r of rows.rows) layouts.add(normaliseRepoLayout(r.layout));
+
+  const [state] = await db
+    .select({ repoUri: tenantResticRepoState.repoUri })
+    .from(tenantResticRepoState)
+    .where(and(
+      eq(tenantResticRepoState.tenantId, tenantId),
+      eq(tenantResticRepoState.component, component),
+    ))
+    .limit(1);
+  if (state) layouts.add(layoutFromRepoUri(state.repoUri, tenantId));
+  else { layouts.add('per-tenant'); layouts.add('per-component'); }
+  return [...layouts];
+}

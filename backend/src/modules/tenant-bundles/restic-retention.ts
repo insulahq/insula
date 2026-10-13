@@ -88,7 +88,7 @@ import {
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
-import { layoutsHoldingSnapshots, repoLayoutForStateRow } from './repo-layout.js';
+import { layoutsHoldingSnapshots, layoutsToPrune, repoLayoutForStateRow } from './repo-layout.js';
 import { bundleIsLive } from './bundle-hold.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -583,18 +583,23 @@ export async function runResticRetentionSweep(
     const prunedRepos = new Set<string>();
     for (const { tenant_id: tenantId, component } of due.rows) {
       if (!RESTIC_COMPONENTS.has(component)) continue;
-      const repoUri = buildResticRepoUri(
-        target, tenantId, component as ResticComponent,
-        await repoLayoutForStateRow(db, tenantId, component),
-      );
-      if (prunedRepos.has(repoUri)) continue;
-      prunedRepos.add(repoUri);
       const startedAt = Date.now();
       try {
-        await runResticPrune({
-          target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
-          ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
-        });
+        // Every repository this row's forgotten snapshots can have been in
+        // (repo-layout.ts): one that is not there has nothing to prune.
+        for (const layout of await layoutsToPrune(db, tenantId, component)) {
+          const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
+          if (prunedRepos.has(repoUri)) continue;
+          prunedRepos.add(repoUri);
+          try {
+            await runResticPrune({
+              target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId), repoUri,
+              ...(maxRepackSize ? { maxRepackSize } : {}), log: logger,
+            });
+          } catch (err) {
+            if (!isResticRepoMissingError(err)) throw err;
+          }
+        }
         await db.update(resticRepoReclaimState)
           .set({
             prunePending: false,

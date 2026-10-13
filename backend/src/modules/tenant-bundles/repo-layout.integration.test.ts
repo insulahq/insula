@@ -17,7 +17,7 @@ import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } fro
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { backupComponents, backupJobs, tenantResticRepoState, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { layoutsHoldingSnapshots } from './repo-layout.js';
+import { layoutsHoldingSnapshots, layoutsToPrune } from './repo-layout.js';
 import { stampReclaimedComponents } from './restic-retention.js';
 
 const dbAvailable = await isDbAvailable();
@@ -122,6 +122,39 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
     it('with no bundle at all, a live tenant\'s state row is asked', async () => {
       await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
       expect(await layouts()).toEqual(['per-tenant']);
+    });
+  });
+
+  describe('the repositories to prune', () => {
+    const toPrune = async (component = 'files') => (await layoutsToPrune(db(), tenantId, component)).sort();
+
+    it('a live tenant: the repository its state row names', async () => {
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
+      expect(await toPrune()).toEqual(['per-tenant']);
+    });
+
+    it('a live tenant with a bundle left in the other layout: both — its forgotten snapshots are there too', async () => {
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
+      await bundle({ status: 'expired', layout: 'per-component', reclaimed: true });
+      expect(await toPrune()).toEqual(['per-component', 'per-tenant']);
+    });
+
+    it('a DELETED tenant whose bundle rows are purged: nothing says where its repositories are, so both are looked into', async () => {
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
+      await deleteTenant();
+      expect(await toPrune()).toEqual(['per-component', 'per-tenant']);
+    });
+
+    it('a deleted tenant is not pruned in the historical layout alone — that is where nothing of it is', async () => {
+      await bundle({ status: 'expired', layout: 'per-tenant' });
+      await deleteTenant();
+      expect(await toPrune()).toContain('per-tenant');
+    });
+
+    it('a state row of another component does not speak for this one', async () => {
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`, 'mailboxes');
+      expect(await toPrune('mailboxes')).toEqual(['per-tenant']);
+      expect(await toPrune('files')).toEqual(['per-component', 'per-tenant']);
     });
   });
 

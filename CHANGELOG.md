@@ -345,9 +345,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `repo-missing`, and forgot nothing. Since bundles moved to one repository per tenant
   (2026.9.38), every deleted tenant's backups stayed on the target for good, and its bundle rows
   stayed "expired" and were never purged. The sweep now reads where to look from the tenant's own
-  bundles, for as long as one of their snapshots is unreclaimed. After the upgrade the backlog is
-  worked off by the regular six-hourly sweep, a batch at a time; snapshots younger than the
-  minimum age (48 hours by default) wait as before.
+  bundles, for as long as one of their snapshots is unreclaimed. The prune that follows — it is
+  what frees the space — had the same blind spot and failed with "repository does not exist" on
+  every sweep; for a tenant that is gone it now looks into both layouts and takes a missing
+  repository for nothing to do. After the upgrade the backlog is worked off by the regular
+  six-hourly sweep, a batch at a time; snapshots younger than the minimum age (48 hours by
+  default) wait as before.
 
   With it: a snapshot is only declared reclaimed from the contents of the repository its bundle
   was written to. A tenant with bundles in both layouts could have a snapshot in one declared
