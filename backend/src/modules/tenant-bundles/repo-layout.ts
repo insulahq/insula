@@ -141,7 +141,9 @@ export async function repoLayoutForStateRow(
 }
 
 /**
- * Layouts a tenant still has LIVE bundles in, for a given component.
+ * Layouts a tenant still has snapshots in, for a given component: every layout
+ * a bundle of the tenant names that is live, or whose snapshot has not been
+ * reclaimed yet.
  *
  * The retention sweep iterates `tenant_restic_repo_state` rows, and such a row
  * records only the most recent repository. After the merge it stops naming the
@@ -149,11 +151,18 @@ export async function repoLayoutForStateRow(
  * the repository holding every pre-merge snapshot — they would never be
  * forgotten and would leak until an operator removed the repository by hand.
  *
- * Driven off the bundles instead: a layout is swept while any bundle that
- * still references it is live. When the last pre-merge bundle expires, the
- * legacy repository drops out on its own.
+ * Driven off the bundles instead: a layout is swept for as long as a bundle
+ * that references it is live — and after that until its snapshot has been
+ * reclaimed. The second half is the one the sweep exists for. A bundle that
+ * has expired is exactly the one whose snapshot is to be forgotten, and it was
+ * left out here, so the layout came from the state row instead; that row
+ * cascades away with its tenant. For a deleted tenant the sweep therefore
+ * opened the historical layout, found no repository, said `repo-missing`, and
+ * never forgot a snapshot: every deleted tenant's backups stayed on the target
+ * for good, and their bundle rows stayed `expired` and were never purged.
+ * When the last snapshot is reclaimed the layout drops out on its own.
  */
-export async function layoutsWithLiveBundles(
+export async function layoutsHoldingSnapshots(
   db: Database,
   tenantId: string,
   component: string,
@@ -165,12 +174,12 @@ export async function layoutsWithLiveBundles(
     WHERE bj.tenant_id = ${tenantId}
       AND bc.component::text = ${component}
       AND bc.sha256 IS NOT NULL
-      AND bj.status IN ('completed','partial')
+      AND (bj.status IN ('completed','partial') OR bc.snapshot_reclaimed_at IS NULL)
   `) as unknown as { rows: Array<{ layout: string }> };
 
   const layouts = new Set<ResticRepoLayout>();
   for (const r of rows.rows) layouts.add(normaliseRepoLayout(r.layout));
-  // A tenant with no live bundle for this component still gets one pass over
+  // A tenant with no such bundle for this component still gets one pass over
   // the repository its state row names, so an orphaned snapshot there is still
   // reachable by the reclaimer.
   if (layouts.size === 0) layouts.add(await repoLayoutForStateRow(db, tenantId, component));

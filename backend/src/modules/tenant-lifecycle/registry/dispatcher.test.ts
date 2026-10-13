@@ -24,7 +24,7 @@ import type { LifecycleHook } from './types.js';
  * tables with an explicit error so accidental schema-shape drift trips
  * a test rather than silently doing the wrong thing.
  */
-function makeFakeDb() {
+function makeFakeDb(opts: { lockFree?: boolean } = {}) {
   const transitions: Array<Record<string, unknown>> = [];
   const hookRuns: Array<Record<string, unknown>> = [];
 
@@ -58,6 +58,8 @@ function makeFakeDb() {
       },
     }),
     update: (table: unknown) => updateChain(tableOf(table)),
+    // The transition's lock (transition-lock.ts): free unless a test says another process holds it.
+    execute: async () => ({ rows: opts.lockFree === false ? [] : [{ setting_key: 'lease' }] }),
     select: () => ({
       from: (table: unknown) => ({
         where: async (_cond: unknown) => {
@@ -249,5 +251,51 @@ describe('dispatcher.runTransition', () => {
     });
     expect(result.state).toBe('running');
     expect(fake.hookRuns[0].state).toBe('pending');
+  });
+
+  describe('the transition\'s lock', () => {
+    it('a new transition whose lock cannot be taken is not begun at all: it throws, and writes nothing', async () => {
+      const held = makeFakeDb({ lockFree: false });
+      const a = hook({ name: 'a', run: async () => ({ status: 'ok' }) });
+      await expect(runTransition(held.db as never, {} as never, {
+        tenantId: 'c1', namespace: 'ns', transition: 'suspended', toStatus: 'suspended', hooksOverride: [a],
+      })).rejects.toThrow('could not take the lock');
+      expect(held.transitions).toEqual([]);
+      expect(held.hookRuns).toEqual([]);
+    });
+
+    it('finishing one that another process holds runs nothing and reads running', async () => {
+      const held = makeFakeDb({ lockFree: false });
+      let ran = 0;
+      const a = hook({ name: 'a', run: async () => { ran += 1; return { status: 'ok' }; } });
+      const result = await runTransition(held.db as never, {} as never, {
+        tenantId: 'c1', namespace: 'ns', transition: 'suspended', toStatus: 'suspended', hooksOverride: [a],
+        resumeTransitionId: 'the-one-cut-off',
+      });
+      expect(result).toEqual({ transitionId: 'the-one-cut-off', state: 'running', hooksAttempted: 0, hooksOk: 0, hooksFailed: 0 });
+      expect(ran).toBe(0);
+    });
+  });
+
+  describe('a transition held open for its caller', () => {
+    it('runs its hooks, says what it will end as, and leaves the row running', async () => {
+      const a = hook({ name: 'a', run: async () => ({ status: 'ok' }) });
+      const b = hook({ name: 'b', order: 200, run: async () => ({ status: 'failed', envelope: { title: 'b failed' } }) });
+      const result = await runTransition(fake.db as never, {} as never, {
+        tenantId: 'c1', namespace: 'ns', transition: 'deleted', toStatus: 'deleted', hooksOverride: [a, b], holdOpen: true,
+      });
+      expect(result).toMatchObject({ state: 'failed_partial', hooksOk: 1, hooksFailed: 1 });
+      expect(fake.transitions[0]).toMatchObject({ state: 'running' });
+      expect(fake.transitions[0].completedAt).toBeUndefined();
+      expect(fake.hookRuns.map((r) => r.state)).toEqual(['ok', 'failed']);
+    });
+
+    it('with no hooks at all it is left running too', async () => {
+      const result = await runTransition(fake.db as never, {} as never, {
+        tenantId: 'c1', namespace: 'ns', transition: 'deleted', toStatus: 'deleted', hooksOverride: [], holdOpen: true,
+      });
+      expect(result.state).toBe('completed');
+      expect(fake.transitions[0]).toMatchObject({ state: 'running' });
+    });
   });
 });

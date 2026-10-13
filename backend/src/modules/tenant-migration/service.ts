@@ -5,8 +5,9 @@ import { tenants, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { MigrateToWorkerResult } from '@insula/api-contracts';
 import { startDataRelocation } from '../tenant-placement/relocate.js';
+import { checkTargetCapacity } from '../tenant-placement/target-capacity.js';
 import { repinDeployments } from './repin.js';
-import { beginTenantMove, planTenantMove, readMoveFacts } from './stop-move-start.js';
+import { beginTenantMove, planTenantMove, readMoveFacts, type MovePlan } from './stop-move-start.js';
 
 // M6: minimal tenant migration between workers.
 //
@@ -27,6 +28,11 @@ import { beginTenantMove, planTenantMove, readMoveFacts } from './stop-move-star
 //      attached on the new node by the platform until the copy is done
 //      (tenant-placement/relocate.ts).
 //
+// Before 2 and 3 the target is asked whether Longhorn can place the
+// tenant's data there at all (tenant-placement/target-capacity.ts): a
+// move Longhorn then refuses leaves the tenant running on the target
+// with every block still on the node it left.
+//
 // Not yet covered (out of M6 scope — future revisit):
 //   - DNS record updates. PowerDNS lives in a separate project
 //     (ADR-022); the admin runs the DNS update manually for now.
@@ -37,6 +43,46 @@ export interface MigrateToWorkerInput {
   readonly triggeredByUserId: string | null;
 }
 
+
+/**
+ * Refuse (409) a move that would bring the tenant to a node Longhorn cannot
+ * place its data on — before anything is stopped or re-pinned.
+ *
+ * Only a move that brings the tenant TO the target needs room there: one
+ * running elsewhere, or a stopped one whose volume the platform attaches on the
+ * target. "Make this node the primary" for a tenant already running on it only
+ * changes a pin, and is never refused over where its data is.
+ *
+ * A check that could not be made does not hold the move back
+ * (target-capacity.ts); it is logged, so "never refused" cannot quietly come to
+ * mean "never checked".
+ */
+export async function assertTargetHasRoom(
+  k8s: K8sClients,
+  move: {
+    readonly plan: MovePlan;
+    /** Pods mounting the tenant's volume right now. */
+    readonly consumers: number;
+    readonly namespace: string;
+    readonly target: string;
+    readonly storageTier: string | null;
+  },
+): Promise<void> {
+  const arrives = move.plan.kind === 'stop-move-start' || move.consumers === 0;
+  if (!arrives) return;
+  const capacity = await checkTargetCapacity(k8s, move.namespace, move.target, move.storageTier);
+  if (capacity.state === 'insufficient') {
+    throw new ApiError('TARGET_NODE_STORAGE_INSUFFICIENT', capacity.detail, 409, {
+      node_name: move.target,
+      needed_bytes: capacity.neededBytes,
+      schedulable_bytes: capacity.schedulableBytes,
+    });
+  }
+  if (capacity.state === 'unknown') {
+    console.warn(`[tenant-migration] could not check that ${move.target} has room for ${move.namespace} `
+      + `(${capacity.detail}) — moving without the check`);
+  }
+}
 
 export async function migrateTenantToWorker(
   db: Database,
@@ -94,6 +140,10 @@ export async function migrateTenantToWorker(
       { holders: plan.holders },
     );
   }
+  await assertTargetHasRoom(k8s, {
+    plan, consumers: facts.consumers.length, namespace, target: input.nodeName, storageTier: tenant.storageTier ?? null,
+  });
+
   if (plan.kind === 'stop-move-start') {
     const moveOperationId = await beginTenantMove(db, k8s, {
       tenantId,

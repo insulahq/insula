@@ -18,7 +18,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Readable } from 'node:stream';
 import {
   planRepoReclamation,
+  pruneRepositories,
   type PlanRepoReclamationArgs,
+  type PruneOutcome,
 } from './restic-retention.js';
 import {
   runResticForget,
@@ -195,6 +197,70 @@ function stubSpawn(exitCode = 0): { calls: string[][] } {
 }
 
 afterEach(() => __resetResticSpawnForTest());
+
+describe('pruneRepositories — every repository a row\'s forgotten snapshots can be in', () => {
+  const MERGED = 's3:http://shim.example.test/tenant/restic/t1';
+  const SPLIT = 's3:http://shim.example.test/tenant/restic-files/t1';
+  const ABSENT = new Error('restic prune exited 10: Fatal: repository does not exist: unable to open config file: Stat: The specified key does not exist.');
+  const DOWN = new Error('restic prune exited 1: Fatal: unable to open config file: Stat: Get "http://shim.example.test/tenant/restic/t1/config": dial tcp 10.0.0.9:9000: connect: connection refused');
+  const LOCKED = new Error('restic prune exited 11: unable to create lock in backend: repository is already locked');
+
+  /** A stand-in target: what each repository's prune does, and which were asked for. */
+  const run = (does: Record<string, Error | null>, outcomes = new Map<string, PruneOutcome>(), repoUris = [SPLIT, MERGED]) => {
+    const asked: string[] = [];
+    const done = pruneRepositories({
+      repoUris, outcomes,
+      prune: async (repoUri) => { asked.push(repoUri); const err = does[repoUri]; if (err) throw err; },
+    });
+    return { asked, done, outcomes };
+  };
+
+  it('prunes both layouts', async () => {
+    const r = run({ [SPLIT]: null, [MERGED]: null });
+    await expect(r.done).resolves.toBeUndefined();
+    expect(r.asked).toEqual([SPLIT, MERGED]);
+  });
+
+  it('a repository that is not there has nothing to prune: the other is pruned, and the row is done', async () => {
+    const r = run({ [SPLIT]: ABSENT, [MERGED]: null });
+    await expect(r.done).resolves.toBeUndefined();
+    expect(r.asked).toEqual([SPLIT, MERGED]);
+  });
+
+  it('neither repository there: done, nothing to free', async () => {
+    await expect(run({ [SPLIT]: ABSENT, [MERGED]: ABSENT }).done).resolves.toBeUndefined();
+  });
+
+  it('a target that cannot be reached is NOT a repository that is not there: the row fails and stays pending', async () => {
+    const r = run({ [SPLIT]: DOWN, [MERGED]: DOWN });
+    await expect(r.done).rejects.toBe(DOWN);
+    expect(r.asked).toEqual([SPLIT, MERGED]);
+  });
+
+  it('one repository failing does not keep the other from being pruned — and the row still fails', async () => {
+    const r = run({ [SPLIT]: LOCKED, [MERGED]: null });
+    await expect(r.done).rejects.toBe(LOCKED);
+    expect(r.asked).toEqual([SPLIT, MERGED]);
+  });
+
+  it('a repository already pruned in this pass is not pruned a second time for the tenant\'s other row', async () => {
+    const first = run({ [SPLIT]: ABSENT, [MERGED]: null });
+    await first.done;
+    const OTHER_SPLIT = 's3:http://shim.example.test/tenant/restic-mailboxes/t1';
+    const second = run({ [OTHER_SPLIT]: ABSENT, [MERGED]: null }, first.outcomes, [OTHER_SPLIT, MERGED]);
+    await expect(second.done).resolves.toBeUndefined();
+    expect(second.asked).toEqual([OTHER_SPLIT]);
+  });
+
+  it('…and one that FAILED the first time fails the second row too: it must not read pruned', async () => {
+    const first = run({ [SPLIT]: ABSENT, [MERGED]: LOCKED });
+    await expect(first.done).rejects.toBe(LOCKED);
+    const OTHER_SPLIT = 's3:http://shim.example.test/tenant/restic-mailboxes/t1';
+    const second = run({ [OTHER_SPLIT]: ABSENT, [MERGED]: null }, first.outcomes, [OTHER_SPLIT, MERGED]);
+    await expect(second.done).rejects.toBe(LOCKED);
+    expect(second.asked).toEqual([OTHER_SPLIT]);                     // the merged one is not tried again in this pass
+  });
+});
 
 describe('runResticForget', () => {
   it('passes --repo and every snapshot id to `forget`, without --no-lock', async () => {

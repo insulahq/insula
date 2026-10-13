@@ -283,6 +283,15 @@ re-attaching all look exactly like "down" for a few seconds, and none of them is
 a fault. Only an outage that outlives the window is treated as one — which is
 also why the dashboard card stays absent during routine churn.
 
+One case does not get the full window. When Longhorn has just salvaged the
+tenant's volume (a **Tenant storage failover**, within the last 30 minutes) and
+the volume then will not attach or mount, the window is **three minutes**. A
+salvage shuts the filesystem down, and a staging directory left stale by that is
+something the kubelet retries for ever; waiting longer changes nothing. A
+workload that is merely slow to return after the salvage — a database running
+crash recovery — keeps the eight minutes, because re-staging its volume would
+only restart the wait. The check itself runs every minute.
+
 ### Automatic recovery, and what it will not attempt
 
 Past the window the platform tries to fix it before telling you. The action is a

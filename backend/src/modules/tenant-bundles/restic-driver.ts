@@ -1300,10 +1300,19 @@ export async function runResticStats(args: RunResticStatsArgs): Promise<ResticSt
 /**
  * A restic failure that means "there is no repository at this URI" (exit 10),
  * as opposed to a wrong password, an unreachable backend or a corrupt repo.
+ *
+ * restic 0.17 and later say so in words. Older builds only fail to open the
+ * repository's config file — and so does a backend that cannot be reached,
+ * with the same opening words. There the backend's own "no such object" has to
+ * be in the message too: a target that is down for a minute must never read as
+ * a repository that is not there. One caller prunes on this answer, another
+ * chooses which repository to restore from.
  */
 export function isResticRepoMissingError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /repository does not exist|unable to open config file/i.test(msg);
+  if (/repository does not exist/i.test(msg)) return true;
+  return /unable to open config file/i.test(msg)
+    && /specified key does not exist|NoSuchKey|no such file or directory|file does not exist/i.test(msg);
 }
 
 /** A restic failure that means "the repo is locked", not "the repo is broken". */

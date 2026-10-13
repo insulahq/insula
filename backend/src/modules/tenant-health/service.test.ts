@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  computeOutageImpact, findingsForTenant,
+  computeOutageImpact, findingsForTenant, scheduleFailureOf,
   type OutageInput, type TenantFact, type NodeFact, type VolumeFact, type PodFact,
 } from './service.js';
 
@@ -556,5 +556,32 @@ describe('pod readiness: start-up grace and corpses', () => {
   it('a pod with no creationTimestamp is judged, not excused', () => {
     const out = at({ pods: [pod({ ready: false, createdAt: null })] });
     expect(out.affectedTenants[0].state).toBe('down');
+  });
+});
+
+describe('scheduleFailureOf', () => {
+  it('is null while Longhorn can schedule the volume, or says nothing', () => {
+    expect(scheduleFailureOf(undefined)).toBeNull();
+    expect(scheduleFailureOf([])).toBeNull();
+    expect(scheduleFailureOf([{ type: 'Scheduled', status: 'True', reason: '', message: '' }])).toBeNull();
+    // Another condition being False is not a scheduling failure.
+    expect(scheduleFailureOf([{ type: 'TooManySnapshots', status: 'False', message: 'insufficient storage' }])).toBeNull();
+  });
+
+  it('returns Longhorn\'s own words for a refused replica', () => {
+    expect(scheduleFailureOf([
+      { type: 'Restore', status: 'False' },
+      { type: 'Scheduled', status: 'False', reason: 'LocalReplicaSchedulingFailure', message: 'insufficient storage' },
+    ])).toBe('insufficient storage');
+  });
+
+  it('falls back to the reason, then to a placeholder — never to an empty string that reads as "fine"', () => {
+    expect(scheduleFailureOf([{ type: 'Scheduled', status: 'False', reason: 'ReplicaSchedulingFailure', message: '  ' }]))
+      .toBe('ReplicaSchedulingFailure');
+    expect(scheduleFailureOf([{ type: 'Scheduled', status: 'False' }])).toBe('no reason given');
+  });
+
+  it('keeps a long message within what a notification line can carry', () => {
+    expect(scheduleFailureOf([{ type: 'Scheduled', status: 'False', message: 'x'.repeat(500) }])).toHaveLength(200);
   });
 });

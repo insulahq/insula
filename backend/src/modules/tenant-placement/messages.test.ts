@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { observeTenantPlacement } from './compute.js';
 import { failoverMessage, misplacedMessage, type NamedFailover, type NamedPlacement } from './messages.js';
 
 const failover = (over: Partial<NamedFailover> = {}): NamedFailover => ({
@@ -48,5 +49,35 @@ describe('misplacedMessage', () => {
     const m = misplacedMessage([placement()]);
     expect(m.details).toEqual(['Acme School: primary node node-a, but running on node-b, data on node-b (seen since 2026-10-02 05:10 UTC).']);
     expect(m.guidance).toContain('Placement card');
+    // Nothing is stuck here: no talk of a copy Longhorn cannot make.
+    expect(m.guidance).not.toContain('cannot copy');
+  });
+
+  it('carries Longhorn\'s reason for a blocked copy, and says it will not resolve by waiting', () => {
+    const m = misplacedMessage([
+      placement({ primaryNode: 'node-b', reasons: ['data on node-a; Longhorn cannot copy it to node-b: insufficient storage'] }),
+      placement({ tenantId: 't2', tenantName: 'Bright Academy' }),
+    ]);
+    expect(m.details[0]).toBe('Acme School: primary node node-b, but data on node-a; Longhorn cannot copy it to node-b: '
+      + 'insufficient storage (seen since 2026-10-02 05:10 UTC).');
+    expect(m.guidance).toContain('Where Longhorn cannot copy the data it stays put');
+    expect(m.guidance).toContain('reserves the volume\'s full size');
+    expect(m.guidance).toContain('shrink the volume');
+  });
+
+  it('recognises a blocked copy by the wording the placement check writes', () => {
+    // The stored reason is plain text; the two modules must not drift apart.
+    const reason = observeTenantPlacement(
+      { id: 't1', name: 'Acme', namespace: 'tenant-acme', storageTier: 'local', pinnedNode: 'node-b', status: 'active', hasMailboxes: false },
+      {
+        pods: [],
+        volumes: [{
+          volumeName: 'pvc-1', namespace: 'tenant-acme', pvcName: 'tenant-acme-storage', robustness: 'healthy', attached: true,
+          pvcRefLostAt: null, attachedNode: 'node-b', remountRequestedAt: null, scheduleFailure: 'insufficient storage',
+        }],
+        replicas: [{ volumeName: 'pvc-1', nodeId: 'node-a', running: true, failed: false }],
+      },
+    ).reasons;
+    expect(misplacedMessage([placement({ reasons: [...reason] })]).guidance).toContain('Where Longhorn cannot copy the data');
   });
 });

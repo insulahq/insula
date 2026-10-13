@@ -57,6 +57,24 @@ describe('isResticRepoMissingError', () => {
     expect(isResticRepoMissingError(new Error('restic snapshots exited 1: Fatal: unable to open repository: dial tcp: connection refused'))).toBe(false);
   });
 
+  it('does not treat a backend that is down as a missing repository, although it fails on the same file', () => {
+    // What a target that cannot be reached looks like to restic: it could not
+    // open the config file either. A prune that took this for "nothing there"
+    // would call the repository pruned without having touched it.
+    expect(isResticRepoMissingError(new Error(
+      'restic prune exited 1: Fatal: unable to open config file: Stat: Get "http://shim.example.test:9000/tenant/restic/x/config": dial tcp 10.0.0.9:9000: connect: connection refused\nIs there a repository at the following location?',
+    ))).toBe(false);
+    expect(isResticRepoMissingError(new Error('restic prune exited 1: Fatal: unable to open config file: Stat: context deadline exceeded'))).toBe(false);
+  });
+
+  it.each([
+    ['an object store, as a restic before 0.17 says it', 'restic snapshots exited 1: Fatal: unable to open config file: Stat: The specified key does not exist.\nIs there a repository at the following location?'],
+    ['an object store answering NoSuchKey', 'restic snapshots exited 1: Fatal: unable to open config file: Stat: NoSuchKey: The resource you requested does not exist'],
+    ['a directory target', 'restic snapshots exited 1: Fatal: unable to open config file: stat /srv/backup/tenant/restic/x/config: no such file or directory'],
+  ])('recognises a repository that is not there on %s', (_where, message) => {
+    expect(isResticRepoMissingError(new Error(message))).toBe(true);
+  });
+
   it('accepts a non-Error throw', () => {
     expect(isResticRepoMissingError('repository does not exist')).toBe(true);
   });

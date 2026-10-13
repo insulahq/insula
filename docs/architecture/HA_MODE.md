@@ -179,42 +179,137 @@ detached, in the API process, after the request has been answered — and a
 deploy, a crash or a lost node ends that process in the middle. The row then
 reads "snapshotting" with nothing behind it.
 
-An archive holds a second run lock for as long as a process is working on it,
-`storage-op:<operation id>` (`archiveLockJob`,
-`backend/src/modules/storage-lifecycle/service.ts`), renewed like any run lock
-and given up after six hours. The quiesce watchdog reads "gone" from that lock
-and nothing else (`archive-resume.ts`):
+A resize, a restore, a filesystem check and an archive each hold a second run
+lock for as long as a process is working on them, `storage-op:<operation id>`
+(`opLockJob`, `backend/src/modules/storage-lifecycle/op-lock.ts`), renewed like
+any run lock and given up after six hours. Every starter takes it before it
+answers (`beginOp`); an operation whose lock cannot be taken is failed at once
+and its tenant released (`503 STORAGE_OP_NOT_STARTED`) — one without a lock
+would be nobody's, neither running nor ever picked up.
+
+A leased two-minute tick (`storage-op-pick-up`, `interrupted-ops.ts`) reads
+"gone" from that lock:
 
 - the lock's row is there and lapsed a minute or more ago — a process that
-  ends its archive deletes the row, one that dies leaves it to lapse. That
-  archive is started again, under the lock, so two watchdogs or a holder that
-  was only slow cannot both run it. Every step can be run twice (`runArchive`).
-- no row at all says nothing: an archive started by a release without the
-  lock, or one given up as hung, whose work may still be going on. Those stay
-  with the watchdog's age rule.
+  ends its operation deletes the row, one that dies leaves it to lapse
+  (a graceful shutdown keeps the locks of work still running, so those lapse
+  too);
+- no row at all, three minutes or more after the operation began, and the
+  operation younger than six hours. Every operation this release starts runs
+  under its lock, so one without is an earlier release's, or one whose own
+  ending failed. An earlier release's process may still be alive during a
+  rolling upgrade, so such an operation is touched only when every
+  `app=platform-api` pod that exists — on its way out or not — runs the image
+  this process runs. When that cannot be told (not running as a pod, list
+  unreadable) it is left alone.
+
+Such an operation is started again under its lock (`resumeOperation`), so two
+watchdogs, or a watchdog and a holder that was only slow, cannot both run it.
+Every runner can be run a second time from the top, whichever step the first
+run died in; what a second run must know is read from the cluster where it can
+be (is the claim the new size, is it bound to the retained volume, is the
+tenant archived, is the operation's state `unquiescing`) and written on the
+operation's `params` where it cannot (replica counts, storage class, the
+volume set aside, a filesystem check's result). Helper Jobs carry names a
+second run can find; one still running is waited for, never doubled.
+
+A suspend and a resume do not run detached: they hold the **tenant's** lock for
+as long as they take, and that lock is what is read for them. One cut off is
+finished under that lock (`resumeTransitionOp`): the workloads are scaled from
+the replica counts written down, and the cascades go through `applyOnceSince`
+like an archive's. It is not ended and asked for again, because a suspend cut
+off among its cascades has stamped the tenant suspended — a second suspend is
+refused — with the ingress still up. The operator's "do not notify the tenant"
+is written on the operation's `params`, since the process that finishes it was
+not asked.
+
+An operation picked up three times (`OP_MAX_RESUMES`), or one whose row does
+not say how to run it again, is ended at once by the same function the age
+rule uses (`endAbandonedOperation`), which takes the operation's lock, marks
+it failed first, removes the Jobs and attaches that hold its volume, starts
+the workloads from the replica counts written down, and notifies the admins.
+
+The workloads are **not** started when the tenant's volume does not hold its
+files (`whyWorkloadsStayStopped`): a shrink between deleting the old volume
+and finishing the restore into the new one, a restore from a retained volume
+with the claim deleted and not yet made again. The same rule applies to those
+operations' own failure paths. "Not started" is kept by leaving
+`tenants.active_storage_op_id` on the failed operation: the watchdog's
+leftover leg, the workload-health reconciler and the dashboards all skip a
+tenant that points at an operation, so none of them "heals" the stopped
+workloads onto an empty volume. **Reset to idle** (`clearFailedStorageState`) releases it.
+
+A claim carries `awaitingLock: true` in the operation's `params` until its run
+has the lock. One that still reads true never began — its starter told its
+caller so — and is withdrawn by the pick-up, never run.
+
+Cascades (`applyArchived`, `applyRestored`, `applySuspended`, `applyActive`) of
+an operation picked up again go
+through `applyOnceSince` (`tenant-lifecycle/cascades.ts`): the first run's own
+transition is found by tenant, kind and the operation's start. Finished — any
+way — nothing is run. Still `running`, its process is gone, and the dispatcher
+finishes it (`resumeTransitionId`): hooks that ended are skipped, the one that
+was running and the pending ones are run, a failed one stays the retry
+scheduler's. The tenant's status is not the test — it is stamped by one hook
+among several.
+
+**Transitions have the same lock.** The dispatcher runs a transition's hooks
+under `lifecycle-transition:<transition id>`
+(`tenant-lifecycle/registry/transition-lock.ts`). A transition that reads
+`running` with that lock lapsed — or with none, an earlier release's, once
+every API pod is this release — was cut off between two hooks, and nothing
+retried the rest: the retry scheduler takes `failed` rows only. The lifecycle
+tick (`lifecycle-hook-retry`, two minutes) finishes those first
+(`interrupted-transitions.ts`), under the tenant's lock:
+
+- not one whose tenant a storage operation in flight owns — that operation
+  finishes its own cascades when it is picked up;
+- a **delete** is taken to its end through the tenant delete's own body
+  (`finishInterruptedDelete`): remaining hooks, namespace, row. `applyDeleted`
+  holds the transition open (`holdOpen`, `endTransition`) until the row is
+  dropped, so a delete cut off after its last hook still reads `running` and is
+  found. When the dispatcher ran nothing because another process holds the
+  transition, nothing is dropped either — that process's hooks still read the
+  tenant's rows. Only `to_status = 'deleted'` without `detail.preservedTenant`
+  is a delete of the tenant: a decommission (`runDeprovision`) dispatches a
+  `deleted` transition and keeps the row, and is closed, never finished;
+- one the tenant has moved past (any later transition), one that began inside
+  a storage operation which has since ended `failed` (given up, cancelled,
+  abandoned), one older than six hours, one picked up three times, and one
+  whose tenant is gone (a delete excepted) is **closed**: `failed_partial`,
+  its unfinished hooks `failed` with the reason and no retry. Finishing a
+  suspend after the operator resumed the tenant would half suspend it again.
+
+The dispatcher writes `suppressTenantNotification` into the transition's
+`detail` and reads it back when it finishes one; it also counts there, under
+the transition's lock, how often a transition was finished (`resumes`) — a
+look that found the lock held has not run it. A hook the *retry scheduler*
+was running when its process died stays `running` under a transition that is
+no longer running; `requeueInterruptedRetries` hands it back after thirty
+minutes.
 
 A lapsed lock does not prove a dead process: one paused for minutes — a
 stalled VM, a database out of reach — looks the same from outside, and wakes
-up in the middle of its run after another replica has taken the archive over.
-So the archive asks before every step that writes or deletes whether the lock
-is still its own (`ownsRunLock`: the row still carries this process's name)
-and stops where it is when it is not — without marking the operation failed
-and without bringing the workloads back, both of which would happen under its
-successor's feet. What stays open is a stall between one such question and the
-action after it. An archive whose lock cannot be taken at its start is failed
-at once and its tenant released: an operation without a lock row would be
-nobody's, neither running nor ever picked up.
+up in the middle of its run after another replica has taken the operation
+over. So a runner asks before every step that writes or deletes whether the
+operation is still its own (`operationIsMine`) and stops where it is when it
+is not — without marking the operation failed and without bringing the
+workloads back, both of which would happen under its successor's feet. "Its
+own" is two things: the lock's row carries this process's name, **and** the
+operation has not ended. The second is not implied by the first: a run renews
+its lock by writing the row again when it is gone, so a process that wakes
+after its successor has finished and let go would simply take the lock back.
+It is also what makes an operator's cancel stop the run. What stays open is a
+stall between one such question and the action after it.
 
-The same tick removes run locks that lapsed more than a day ago
-(`forgetDeadRunLocks`) — a tenant's or an archive's, left by a process that
+The fifteen-minute watchdog removes run locks that lapsed more than a day ago
+(`forgetDeadRunLocks`) — a tenant's or an operation's, left by a process that
 died holding one. Nothing else releases them.
 
-The age rule (six hours without an end) no longer applies to an archive whose
-lock is held: an archive picked up late is working, whatever its age. Only
-archives are picked up again. A resize, a restore or a filesystem check that
-loses its process is still failed by the age rule — bringing a tenant's
-workloads back minutes after such a death could meet a helper Job of the dead
-run still writing to the volume.
+The age rule (six hours without an end; thirty minutes for a move) never ends
+an operation whose lock is held: one picked up late is working, whatever its
+age. It is what is left for a move, for an operation given up as hung, and for
+an operation without a lock while an API process of another release exists.
 
 #### The guard
 

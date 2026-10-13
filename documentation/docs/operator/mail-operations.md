@@ -106,6 +106,14 @@ health banner → details modal runs a **deliverability** section with live prob
   providers (e.g. Spamhaus). A listing is flagged as a fail.
 - **TLS certs** — each TLS port serves a valid cert.
 
+The DNS probes ask public resolvers, and a lookup now and then gets no answer.
+That is shown as **skipped** — *lookup got no answer* — and never as a failure:
+nothing is known about the record either way. What counts against you is an
+answer: that the record does not exist, that it points somewhere else, or
+SERVFAIL — the resolvers could not get anything from the zone's own name
+servers, and receiving mail servers will not either. If lookups stay unanswered
+for an hour you get a separate notice that those checks are not being made.
+
 Work the checklist:
 
 1. **Set reverse DNS (PTR)** for each sending node IP at your VPS provider's
@@ -133,6 +141,12 @@ your inbox instead of waiting to be noticed on a dashboard:
 - **Mailbox quota** — tenants are warned as mailboxes approach their size cap.
 - **DNS blocklist listing** — your sending IP appearing on a DNSBL alerts
   admins immediately, before customers notice bounces.
+- **Mail health check failing** — the mail server, its ports, its certificate
+  or a deliverability check is failing. The check runs every 15 minutes; a
+  failure is looked at again a minute later and only alerted if it is still
+  there, so one failed probe does not page you. The alert names what failed
+  and for which address — *reverse DNS for 203.0.113.10 (node-b): (no
+  records)* — and repeats twice a day while it lasts.
 - **Certificate expiry / renewal failure** — covers the mail TLS endpoints.
 
 Each source is individually routable and rate-limited under

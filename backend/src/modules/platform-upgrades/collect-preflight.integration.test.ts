@@ -66,8 +66,8 @@ describe.skipIf(!dbAvailable)('upgrade pre-flight: storage operations in flight 
     expect(await inFlightStorageOperations(db())).toEqual([]);
   });
 
-  it('feeds the gate: a resize in flight blocks a production upgrade and is named', async () => {
-    await tenantWithOp('Acme', 'resize', 'replacing');
+  it('feeds the gate: a move in flight blocks a production upgrade and is named', async () => {
+    await tenantWithOp('Acme', 'relocate', 'replacing');
     const result = evaluatePreflight({
       environment: 'production', cnpgReady: true, cnpgDetail: '', longhornAtRiskVolumes: 0, inFlightTransitions: 0,
       maxDiskUsedPct: 10, nodesWithDiskPressure: 0, freshestBackupAgeHours: 1, fluxSuspended: [],
@@ -75,7 +75,7 @@ describe.skipIf(!dbAvailable)('upgrade pre-flight: storage operations in flight 
     });
     const gate = result.gates.find((g) => g.id === 'no-storage-operation-running');
     expect(gate).toMatchObject({ status: 'fail' });
-    expect(gate?.detail).toContain('resize of Acme');
+    expect(gate?.detail).toContain('relocate of Acme');
     expect(result.ok).toBe(false);
   });
 

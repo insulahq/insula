@@ -4,7 +4,7 @@ import { ALL_CATEGORIES } from '../notifications/categories/seed.js';
 // The grace window and the heal gate are OWNED by the reconciler. Importing them
 // keeps the two consoles from drifting away from the state machine that writes
 // the rows they render — the whole point of both panels reading one table.
-import { GRACE_INTERVAL_SQL, isHealable, type HealReason } from '../storage-lifecycle/workload-health.js';
+import { episodePastGraceSql, isHealable, type HealReason } from '../storage-lifecycle/workload-health.js';
 import type { Database } from '../../db/index.js';
 import { aliasNodeNames, type NodeLabels } from '../nodes/labels.js';
 import type { Section } from './section.js';
@@ -142,7 +142,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
        -- the duration, so without this the operator watches a stale
        -- "auto-heal failed" tile age through their whole maintenance window.
        AND t.active_storage_op_id IS NULL
-       AND e.first_seen_at < now() - ${GRACE_INTERVAL_SQL}::interval
+       AND ${episodePastGraceSql()}
      ORDER BY e.first_seen_at ASC
      LIMIT 5
   `);
@@ -378,7 +378,7 @@ export async function buildTenantAlerts(
      WHERE e.tenant_id = ${tenantId}
        AND e.cleared_at IS NULL
        AND t.active_storage_op_id IS NULL
-       AND e.first_seen_at < now() - ${GRACE_INTERVAL_SQL}::interval
+       AND ${episodePastGraceSql()}
      ORDER BY e.first_seen_at ASC
      LIMIT 3
   `);

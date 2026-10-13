@@ -285,6 +285,31 @@ async function inspect(
 }
 
 /**
+ * One notification a day per tenant AND per outcome. Per tenant alone, the
+ * second thing a day's sweeps did to a tenant was never announced: the leftover
+ * volume of an archived tenant removed in the afternoon went unsaid because a
+ * quota had been repaired in the morning. Per outcome, a repair that keeps
+ * failing still says so once a day, not every half hour.
+ *
+ * The outcome is which findings were repaired and which were not — the
+ * finding's name, not the cluster's error text behind it, which may differ
+ * from one attempt to the next.
+ */
+export function integrityDedupeKey(
+  tenantId: string,
+  repaired: readonly string[],
+  errors: readonly string[],
+  now: Date,
+): string {
+  const failed = errors.map((e) => e.split(':', 1)[0]);
+  const outcome = [
+    ...[...new Set(repaired)].sort().map((f) => `+${f}`),
+    ...[...new Set(failed)].sort().map((f) => `-${f}`),
+  ].join(',');
+  return `ns-integrity:${tenantId}:${now.toISOString().slice(0, 10)}:${outcome}`;
+}
+
+/**
  * Whether the tenant is meant to have its storage volume right now.
  *
  * Not when it is archived: the archive deleted the volume, after copying the
@@ -490,7 +515,7 @@ export async function checkTenantNamespaceIntegrity(
       recommendedAction: errors.length > 0
         ? 'Inspect the tenant namespace; auto-repair could not finish.'
         : '',
-    }, `ns-integrity:${tenantId}:${new Date().toISOString().slice(0, 10)}`)
+    }, integrityDedupeKey(tenantId, repaired, errors, new Date()))
       .catch((err) => console.error('[namespace-integrity] notification dispatch failed:', (err as Error).message));
   }
 

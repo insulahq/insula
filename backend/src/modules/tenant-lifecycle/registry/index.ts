@@ -20,6 +20,7 @@ export {
 
 export {
   runTransition,
+  endTransition,
   type DispatchOptions,
   type DispatchResult,
 } from './dispatcher.js';
