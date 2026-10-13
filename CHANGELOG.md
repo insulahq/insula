@@ -337,6 +337,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   three tries) the operation ends as done and says that the filesystem grows when the tenant's
   next pod starts, with the reason. A volume that nothing has attached is extended offline and
   needs none of this.
+- **A deleted tenant's backups are removed from the backup target when they expire.** Deleting a
+  tenant keeps its off-site bundles for the retention window — they are its only way back — and
+  they are meant to be reclaimed once they expire. The sweep that forgets expired snapshots asked
+  a per-tenant row which repository to open, and that row is deleted with the tenant. For a
+  deleted tenant it therefore opened the historical layout, found no repository there, reported
+  `repo-missing`, and forgot nothing. Since bundles moved to one repository per tenant
+  (2026.9.38), every deleted tenant's backups stayed on the target for good, and its bundle rows
+  stayed "expired" and were never purged. The sweep now reads where to look from the tenant's own
+  bundles, for as long as one of their snapshots is unreclaimed. After the upgrade the backlog is
+  worked off by the regular six-hourly sweep, a batch at a time; snapshots younger than the
+  minimum age (48 hours by default) wait as before.
+
+  With it: a snapshot is only declared reclaimed from the contents of the repository its bundle
+  was written to. A tenant with bundles in both layouts could have a snapshot in one declared
+  gone because it was absent from the other — which let the bundle's row be purged with the
+  snapshot still on the target.
 - **A tenant's retained volume is listed again — and no longer reported as an orphan.** After a
   shrink or an archive the tenant's previous volume is kept, and when it carries a snapshot
   somebody took, the tenant can be restored from it (**Restore from a retained volume**). Whether

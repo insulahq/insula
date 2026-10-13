@@ -83,11 +83,12 @@ import {
   runResticStats,
   type BackupTarget,
   type ResticComponent,
+  type ResticRepoLayout,
 } from './restic-driver.js';
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
-import { layoutsWithLiveBundles, repoLayoutForStateRow } from './repo-layout.js';
+import { layoutsHoldingSnapshots, repoLayoutForStateRow } from './repo-layout.js';
 import { bundleIsLive } from './bundle-hold.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -380,8 +381,10 @@ export async function runResticRetentionSweep(
     // merge it stops naming the legacy one — and a tenant's pre-merge
     // snapshots would then never be swept again, leaking until someone
     // deleted the repository by hand. So sweep every layout the tenant still
-    // has live bundles in, not just the one the row happens to point at.
-    const layoutsToSweep = await layoutsWithLiveBundles(db, tenantId, component);
+    // has snapshots in — a live bundle's, or an expired one's that is yet to
+    // be reclaimed — not just the one the row happens to point at. (A deleted
+    // tenant has no such row at all: its bundles are what say where to look.)
+    const layoutsToSweep = await layoutsHoldingSnapshots(db, tenantId, component);
     for (const layout of layoutsToSweep) {
     const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
     try {
@@ -478,7 +481,7 @@ export async function runResticRetentionSweep(
         if (!dryRun) {
           try {
             await stampReclaimedComponents({
-              db, tenantId, component, stillPresent: new Set(kept), at: now(),
+              db, tenantId, component, layout, stillPresent: new Set(kept), at: now(),
             });
           } catch (err) {
             logger.warn({ err, tenantId, component }, 'restic retention: stamp reconcile failed (retried next sweep)');
@@ -532,7 +535,7 @@ export async function runResticRetentionSweep(
       try {
         const stillPresent = new Set(kept);
         await stampReclaimedComponents({
-          db, tenantId, component, stillPresent, at: now(),
+          db, tenantId, component, layout, stillPresent, at: now(),
         });
       } catch (err) {
         logger.warn({ err, tenantId, component }, 'restic retention: could not stamp reclaimed components (retried next sweep)');
@@ -804,10 +807,19 @@ async function recordSweepExamination(args: {
  * an interrupted sweep, a manual `restic forget`, a repo restored from
  * elsewhere. Uses the query builder so array binding is handled properly.
  */
-async function stampReclaimedComponents(args: {
+export async function stampReclaimedComponents(args: {
   db: Database;
   tenantId: string;
   component: string;
+  /**
+   * The layout of the repository that was looked into. Only components of
+   * bundles written to THAT repository are judged by its contents: a tenant
+   * can have bundles in both layouts, and a snapshot that lives in the other
+   * repository is absent from this one without being gone. Stamped all the
+   * same, it would let its bundle's row be purged — and take its layout out
+   * of the sweep — with the snapshot still on the target.
+   */
+  layout: ResticRepoLayout;
   /** Snapshot ids still in the repository. */
   stillPresent: ReadonlySet<string>;
   at: Date;
@@ -818,6 +830,8 @@ async function stampReclaimedComponents(args: {
     JOIN backup_jobs bj ON bj.id = bc.backup_job_id
     WHERE bj.tenant_id = ${args.tenantId}
       AND bc.component::text = ${args.component}
+      -- As normaliseRepoLayout reads it: anything but 'per-tenant' is the historical layout.
+      AND (CASE WHEN bj.repo_layout = 'per-tenant' THEN 'per-tenant' ELSE 'per-component' END) = ${args.layout}
       AND bc.sha256 IS NOT NULL
       AND bc.snapshot_reclaimed_at IS NULL
   `) as unknown as { rows: Array<{ id: string; sha256: string }> };
