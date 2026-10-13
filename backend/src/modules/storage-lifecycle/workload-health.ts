@@ -51,7 +51,7 @@
  *     wins; the losers do nothing.
  */
 
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -70,16 +70,51 @@ import type { QuiesceSnapshot } from './quiesce.js';
  */
 export const GRACE_MS = 8 * 60 * 1000;
 
+/** The same window as a Postgres interval literal. */
+const GRACE_INTERVAL_SQL = `${Math.round(GRACE_MS / 1000)} seconds`;
+
 /**
- * The same window as a Postgres interval literal, for the dashboard queries.
+ * The shorter window for a volume that will not mount right after Longhorn
+ * salvaged it (a recorded storage failover, tenant-placement/store.ts).
  *
- * Both dashboard cards read this table and independently gate on the grace
- * window. They used to hardcode `INTERVAL '8 minutes'`, so changing GRACE_MS
- * would silently desynchronise the panels from the reconciler that owns the
- * state — and the whole point of the shared table is that the two consoles
- * cannot disagree about whether a tenant is up.
+ * After a salvage Longhorn deletes the workload's pods itself, 30 s later, and
+ * they normally come straight back. When they cannot mount the volume instead,
+ * nothing about it is slow or still settling: the salvage shut the filesystem
+ * down, the staging directory went stale under kubelet, and kubelet retries
+ * that for ever. Eight more minutes buy nothing. Measured on production: a 60 s
+ * node freeze, two tenants on exactly this path, healed at the first try —
+ * 13 minutes after the freeze, almost all of it this window and the old 5 min
+ * tick.
+ *
+ * Only for `volume_attach`. A workload that is merely slow to come back after
+ * the salvage — a database in crash recovery is "not ready" for minutes —
+ * keeps the full window: re-staging its volume would restart the recovery.
  */
-export const GRACE_INTERVAL_SQL = `${Math.round(GRACE_MS / 1000)} seconds`;
+export const FAILOVER_GRACE_MS = 3 * 60 * 1000;
+
+/** How long after a salvage a volume that will not mount is put down to it. */
+export const FAILOVER_RECENT_MS = 30 * 60 * 1000;
+
+/**
+ * "This open episode has outlived its grace window" — the ONE gate, as a SQL
+ * condition on `tenant_workload_health_events e`.
+ *
+ * The reconciler acts on it and both dashboard cards filter by it: the whole
+ * point of the shared table is that the two consoles cannot disagree with the
+ * reconciler about whether a tenant is up. The cards once hardcoded
+ * `INTERVAL '8 minutes'`; with a second, shorter window that would be an alert
+ * about a tenant the dashboard still shows as fine. Every caller aliases the
+ * episode table as `e`.
+ */
+export function episodePastGraceSql(): SQL {
+  return sql`e.first_seen_at < now() - (CASE
+      WHEN e.reason = 'volume_attach' AND EXISTS (
+        SELECT 1 FROM tenant_storage_failovers f
+         WHERE f.tenant_id = e.tenant_id
+           AND f.remount_requested_at > now() - ${`${Math.round(FAILOVER_RECENT_MS / 1000)} seconds`}::interval)
+      THEN ${`${Math.round(FAILOVER_GRACE_MS / 1000)} seconds`}::interval
+      ELSE ${GRACE_INTERVAL_SQL}::interval END)`;
+}
 
 /** Heal attempts before we stop trying and leave it to the operator. */
 const MAX_HEAL_ATTEMPTS = 3;
@@ -119,9 +154,22 @@ export type HealReason = 'volume_attach' | 'quota_rejected' | 'unschedulable' | 
  * Translate what the cluster says into a cause the operator can act on, and the
  * healer can branch on.
  *
- * Order matters: a quota rejection and a volume failure can both be present
- * (the ReplicaSet refuses to create a pod that the volume could not have
- * mounted anyway), and the quota is the one a human has to decide about.
+ * Order matters, twice over.
+ *
+ * The stale staging directory comes first. It is the one message here that
+ * names its cause outright and never clears by itself, and the quota message
+ * that accompanies it is a by-product: Longhorn deletes the pods after a
+ * salvage, each replacement is refused while its predecessor is still
+ * terminating, and that refusal is still among the namespace's recent events
+ * when a later replacement exists and sits unmountable. Seen on production: two tenants down
+ * on a stale staging directory, both recorded as `quota_rejected` — had the
+ * heal failed, the alert would have told the operator to raise plan limits.
+ * A quota that really is too small still gets its turn: once the volume mounts
+ * the stale-directory message is gone and the next tick reads the quota one.
+ *
+ * Any OTHER volume failure stays behind the quota: the ReplicaSet refuses to
+ * create a pod that the volume could not have mounted anyway, and of those two
+ * the quota is the one a human has to decide about.
  */
 export function classifyUnavailability(
   replicaFailure: string | null,
@@ -130,13 +178,6 @@ export function classifyUnavailability(
   const all = [replicaFailure ?? '', ...podMessages].join(' | ');
   const detail = all.trim() ? all.trim().slice(0, 1000) : null;
 
-  if (/exceeded quota|forbidden:.*quota/i.test(all)) {
-    return {
-      reason: 'quota_rejected',
-      detail,
-      label: 'the namespace ResourceQuota refused to admit the pod',
-    };
-  }
   // The stale-staging-directory failure. kubelet retries this forever on a
   // 2m2s backoff and never repairs it; only a full detach + re-stage does.
   if (/globalmount.*file exists|failed to create dir.*globalmount/i.test(all)) {
@@ -144,6 +185,13 @@ export function classifyUnavailability(
       reason: 'volume_attach',
       detail,
       label: 'a stale CSI staging directory is blocking every mount (kubelet cannot self-repair this)',
+    };
+  }
+  if (/exceeded quota|forbidden:.*quota/i.test(all)) {
+    return {
+      reason: 'quota_rejected',
+      detail,
+      label: 'the namespace ResourceQuota refused to admit the pod',
     };
   }
   if (/not ready for workloads|AttachVolume\.Attach failed|FailedAttachVolume|FailedMount|volume .* not (?:yet )?attached/i.test(all)) {
@@ -299,42 +347,124 @@ async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]>
   return out;
 }
 
-/** Pod-level events for a namespace, which is where FailedMount/globalmount shows up. */
-async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<string[]> {
+/** A pod, as far as its present state matters to the diagnosis. */
+export interface EvidencePod {
+  readonly metadata?: { readonly uid?: string };
+  readonly status?: {
+    readonly phase?: string;
+    readonly conditions?: ReadonlyArray<{ type?: string; status?: string; reason?: string; message?: string }>;
+    readonly containerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string; message?: string } } }>;
+  };
+}
+
+/** A namespace event. The clients hand timestamps over as Date or string. */
+export interface EvidenceEvent {
+  readonly type?: string;
+  readonly reason?: string;
+  readonly message?: string;
+  readonly involvedObject?: { readonly kind?: string; readonly uid?: string };
+  readonly lastTimestamp?: Date | string | null;
+  readonly eventTime?: Date | string | null;
+  readonly series?: { readonly lastObservedTime?: Date | string | null } | null;
+  readonly metadata?: { readonly creationTimestamp?: Date | string | null };
+}
+
+/**
+ * How long an event about something other than a pod (a ReplicaSet's
+ * FailedCreate) still counts as the present. A rejection that persists is on
+ * the Deployment's ReplicaFailure condition anyway, which is read separately.
+ */
+export const RECENT_EVENT_MS = 10 * 60 * 1000;
+
+function eventLastSeenMs(e: EvidenceEvent): number | null {
+  const stamps = [e.series?.lastObservedTime, e.lastTimestamp, e.eventTime, e.metadata?.creationTimestamp]
+    .map((t) => (t ? new Date(t).getTime() : NaN))
+    .filter((t) => Number.isFinite(t));
+  return stamps.length > 0 ? Math.max(...stamps) : null;
+}
+
+/**
+ * What the namespace says is wrong NOW. Pure.
+ *
+ * Warning events outlive what they describe by about an hour, and the
+ * diagnosis decides when — and whether — a tenant's workloads are scaled to
+ * zero. Read without regard to age they misdiagnose in both directions:
+ *
+ *   • After a salvage every replacement pod logs a FailedMount or two before it
+ *     mounts. A database then spends minutes in crash recovery, "not ready" —
+ *     and with those events still counted it reads as a volume that will not
+ *     mount, on the short post-failover window, and is re-staged mid-recovery.
+ *   • A tenant healed of a stale staging directory and, twenty minutes later,
+ *     genuinely over its quota would be put down to the directory again and
+ *     bounced three times before anyone was told about the quota.
+ *
+ * So an event about a pod counts only while that pod exists and has not
+ * started (phase Pending): a mount, attach, pull or scheduling failure is by
+ * definition the trouble of a pod that is not running yet, and whatever ails a
+ * running one is on its container statuses. An event about anything else
+ * counts while it is recent. Pod conditions and waiting states are the present
+ * by nature.
+ */
+export function currentEvidence(pods: readonly EvidencePod[], events: readonly EvidenceEvent[], nowMs: number): string[] {
   const msgs: string[] = [];
-  try {
-    const pods = await k8s.core.listNamespacedPod({ namespace } as never) as {
-      items?: Array<{
-        status?: {
-          phase?: string;
-          conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
-          containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string } } }>;
-        };
-      }>;
-    };
-    for (const p of pods.items ?? []) {
-      if (p.status?.phase === 'Succeeded') continue;
-      for (const c of p.status?.conditions ?? []) {
-        if (c.status === 'False' && c.message) msgs.push(`${c.reason ?? c.type}: ${c.message}`);
-      }
-      for (const cs of p.status?.containerStatuses ?? []) {
-        const w = cs.state?.waiting;
-        if (w?.reason) msgs.push(`${w.reason}: ${w.message ?? ''}`);
-      }
+  const notStarted = new Set<string>();
+  for (const p of pods) {
+    if (p.status?.phase === 'Succeeded') continue;
+    if (p.status?.phase === 'Pending' && p.metadata?.uid) notStarted.add(p.metadata.uid);
+    for (const c of p.status?.conditions ?? []) {
+      if (c.status === 'False' && c.message) msgs.push(`${c.reason ?? c.type}: ${c.message}`);
     }
+    for (const cs of p.status?.containerStatuses ?? []) {
+      const w = cs.state?.waiting;
+      if (w?.reason) msgs.push(`${w.reason}: ${w.message ?? ''}`);
+    }
+  }
+  for (const e of events) {
+    if (e.type !== 'Warning' || !e.message) continue;
+    if (e.involvedObject?.kind === 'Pod') {
+      if (!e.involvedObject.uid || !notStarted.has(e.involvedObject.uid)) continue;
+    } else {
+      const seen = eventLastSeenMs(e);
+      // An event nobody can date is not evidence of the present.
+      if (seen === null || nowMs - seen > RECENT_EVENT_MS) continue;
+    }
+    msgs.push(`${e.reason ?? 'Warning'}: ${e.message}`);
+  }
+  return msgs.slice(0, 20);
+}
+
+/** The namespace's present pod states and events — where FailedMount/globalmount shows up. */
+async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<string[]> {
+  let pods: readonly EvidencePod[] = [];
+  let events: readonly EvidenceEvent[] = [];
+  try {
+    pods = (await k8s.core.listNamespacedPod({ namespace } as never) as { items?: EvidencePod[] }).items ?? [];
   } catch { /* best-effort enrichment only */ }
   try {
-    const ev = await (k8s.core as unknown as {
-      listNamespacedEvent: (a: { namespace: string }) => Promise<{
-        items?: Array<{ type?: string; reason?: string; message?: string }>;
-      }>;
-    }).listNamespacedEvent({ namespace });
-    for (const e of ev.items ?? []) {
-      if (e.type !== 'Warning' || !e.message) continue;
-      msgs.push(`${e.reason ?? 'Warning'}: ${e.message}`);
-    }
+    events = (await (k8s.core as unknown as {
+      listNamespacedEvent: (a: { namespace: string }) => Promise<{ items?: EvidenceEvent[] }>;
+    }).listNamespacedEvent({ namespace })).items ?? [];
   } catch { /* events may be rotated or RBAC-restricted */ }
-  return msgs.slice(0, 20);
+  return currentEvidence(pods, events, Date.now());
+}
+
+/**
+ * How often an outage that has outlived its grace window is diagnosed afresh.
+ * Until then it is read on every tick — that is when the diagnosis decides
+ * anything. Afterwards the cause seldom changes, and a tenant with a bad image
+ * reference would otherwise cost a pod list and an event list a minute for as
+ * long as it stays broken.
+ */
+const EVIDENCE_REFRESH_MS = 5 * 60 * 1000;
+
+/** Per namespace: since when THIS process has seen it down, and the evidence it last read. */
+const evidenceSeen = new Map<string, { since: number; at: number; msgs: string[] }>();
+
+/** Whether the namespace's evidence has to be read again. Pure. */
+export function evidenceIsStale(seen: { since: number; at: number } | undefined, nowMs: number): boolean {
+  if (!seen) return true;
+  if (nowMs - seen.since < GRACE_MS) return true;
+  return nowMs - seen.at >= EVIDENCE_REFRESH_MS;
 }
 
 /**
@@ -657,9 +787,20 @@ export async function reconcileTenantWorkloadHealth(
     downByNs.set(d.namespace, [...(downByNs.get(d.namespace) ?? []), d]);
   }
 
+  // A namespace that is up again starts from scratch the next time it is down.
+  for (const namespace of [...evidenceSeen.keys()]) {
+    if (!downByNs.has(namespace)) evidenceSeen.delete(namespace);
+  }
+
   for (const [namespace, downs] of downByNs) {
     const tenant = byNs.get(namespace)!;
-    const podMsgs = await podMessagesFor(k8s, namespace);
+    const nowMs = Date.now();
+    let seen = evidenceSeen.get(namespace);
+    if (!seen || evidenceIsStale(seen, nowMs)) {
+      seen = { since: seen?.since ?? nowMs, at: nowMs, msgs: await podMessagesFor(k8s, namespace) };
+      evidenceSeen.set(namespace, seen);
+    }
+    const podMsgs = seen.msgs;
 
     for (const d of downs) {
       const stranded = d.desired === 0 && d.held;
@@ -748,7 +889,7 @@ export async function reconcileTenantWorkloadHealth(
       FROM tenant_workload_health_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
-       AND e.first_seen_at < now() - ${`${Math.round(GRACE_MS / 1000)} seconds`}::interval
+       AND ${episodePastGraceSql()}
        AND t.status = 'active'
        AND t.active_storage_op_id IS NULL
      ORDER BY e.first_seen_at ASC
@@ -880,7 +1021,7 @@ export async function reconcileTenantWorkloadHealth(
 
     // The ADMIN copy is the one that matters: it is the alert whose absence let a
     // tenant stay down for 18 hours. If it did not go out, GIVE THE LADDER SLOT
-    // BACK so the next tick retries in 5 minutes instead of deferring by the
+    // BACK so the next tick retries instead of deferring by the
     // ladder step (1h → 6h → daily) over a delivery that never happened.
     if (!adminSent.ok) {
       await db.execute(sql`

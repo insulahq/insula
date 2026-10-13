@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  classifyUnavailability, isHealable, labelForReason, parsePreQuiesceReplicas,
-  type HealReason,
+  GRACE_MS, RECENT_EVENT_MS,
+  classifyUnavailability, currentEvidence, evidenceIsStale, isHealable, labelForReason, parsePreQuiesceReplicas,
+  type EvidenceEvent, type EvidencePod, type HealReason,
 } from './workload-health.js';
 
 /**
@@ -50,11 +51,28 @@ describe('classifyUnavailability — real production messages', () => {
     expect(r.label).toMatch(/ResourceQuota/);
   });
 
-  it('prefers the quota cause when quota and volume failures are both present', () => {
-    // Both happen together: the ReplicaSet refuses to create a pod that could
-    // not have mounted anyway. The quota is the one a human must decide about.
-    const r = classifyUnavailability(REAL_QUOTA, [REAL_STALE_GLOBALMOUNT]);
+  it('names the stale staging directory even when a quota rejection sits beside it (the production case)', () => {
+    // After a salvage Longhorn deletes the pods; each replacement is refused
+    // while its predecessor is still terminating, and that FailedCreate stays
+    // in the namespace's events while a later replacement sits unmountable.
+    // Two production tenants in exactly this state were recorded as
+    // quota_rejected — a failed heal would have said "raise the plan limits".
+    for (const r of [
+      classifyUnavailability(REAL_QUOTA, [REAL_STALE_GLOBALMOUNT]),
+      classifyUnavailability(null, [REAL_QUOTA, REAL_STALE_GLOBALMOUNT]),
+      classifyUnavailability(null, [REAL_STALE_GLOBALMOUNT, REAL_QUOTA]),
+    ]) {
+      expect(r.reason).toBe('volume_attach');
+      expect(r.label).toMatch(/stale CSI staging directory/);
+    }
+  });
+
+  it('still prefers the quota cause over any OTHER volume failure', () => {
+    // The ReplicaSet refuses to create a pod that could not have mounted
+    // anyway. Of those two the quota is the one a human must decide about.
+    const r = classifyUnavailability(REAL_QUOTA, [REAL_NOT_READY_FOR_WORKLOADS]);
     expect(r.reason).toBe('quota_rejected');
+    expect(classifyUnavailability(null, [REAL_NOT_READY_FOR_WORKLOADS, REAL_QUOTA]).reason).toBe('quota_rejected');
   });
 
   it('recognises unschedulable, image and crash causes', () => {
@@ -208,5 +226,133 @@ describe('parsePreQuiesceReplicas — untrusted annotation input', () => {
         expect(r).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+
+describe('currentEvidence — only what is wrong NOW', () => {
+  const NOW = Date.parse('2026-10-13T03:00:00Z');
+  const ago = (ms: number) => new Date(NOW - ms);
+  const pending = (uid: string, over: Partial<NonNullable<EvidencePod['status']>> = {}): EvidencePod => ({
+    metadata: { uid },
+    status: {
+      phase: 'Pending',
+      conditions: [{ type: 'ContainersReady', status: 'False', reason: 'ContainersNotReady', message: 'containers with unready status: [web]' }],
+      containerStatuses: [{ state: { waiting: { reason: 'ContainerCreating' } } }],
+      ...over,
+    },
+  });
+  const running = (uid: string, over: Partial<NonNullable<EvidencePod['status']>> = {}): EvidencePod => ({
+    metadata: { uid },
+    status: {
+      phase: 'Running',
+      conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady', message: 'containers with unready status: [mariadb]' }],
+      containerStatuses: [{ state: {} }],
+      ...over,
+    },
+  });
+  const podEvent = (uid: string, message: string, over: Partial<EvidenceEvent> = {}): EvidenceEvent => ({
+    type: 'Warning', reason: 'FailedMount', message, involvedObject: { kind: 'Pod', uid }, lastTimestamp: ago(60_000), ...over,
+  });
+  const rsEvent = (message: string, lastSeen: Date | string | null): EvidenceEvent => ({
+    type: 'Warning', reason: 'FailedCreate', message, involvedObject: { kind: 'ReplicaSet', uid: 'rs-1' }, lastTimestamp: lastSeen,
+  });
+  const reasonOf = (pods: EvidencePod[], events: EvidenceEvent[], replicaFailure: string | null = null) =>
+    classifyUnavailability(replicaFailure, currentEvidence(pods, events, NOW)).reason;
+
+  it('counts a mount failure of a pod that exists and has not started', () => {
+    expect(reasonOf([pending('p1')], [podEvent('p1', REAL_STALE_GLOBALMOUNT)])).toBe('volume_attach');
+  });
+
+  it('a database in crash recovery is NOT a volume that will not mount, whatever its start-up logged', () => {
+    // The pod mounted, started, and is merely not ready yet. Its own earlier
+    // FailedMount and the deleted predecessor's are both history.
+    const events = [
+      podEvent('db-now', REAL_NOT_READY_FOR_WORKLOADS, { reason: 'FailedAttachVolume' }),
+      podEvent('db-before-the-salvage', REAL_STALE_GLOBALMOUNT),
+    ];
+    const evidence = currentEvidence([running('db-now')], events, NOW);
+    expect(evidence).toEqual(['ContainersNotReady: containers with unready status: [mariadb]']);
+    expect(classifyUnavailability(null, evidence).reason).toBe('unknown');
+  });
+
+  it('drops the events of pods that no longer exist: a healed stale mount does not explain a later quota rejection', () => {
+    const old = podEvent('pod-healed-20-minutes-ago', REAL_STALE_GLOBALMOUNT, { lastTimestamp: ago(20 * 60_000) });
+    expect(reasonOf([], [old], REAL_QUOTA)).toBe('quota_rejected');
+    // ...and with no pod at all and nothing else said, it is not a volume problem either.
+    expect(reasonOf([], [old])).toBe('unknown');
+  });
+
+  it('still names the stale mount beside a quota rejection while a pod is really stuck on it', () => {
+    expect(reasonOf([pending('p1')], [podEvent('p1', REAL_STALE_GLOBALMOUNT), rsEvent(REAL_QUOTA, ago(120_000))], REAL_QUOTA))
+      .toBe('volume_attach');
+  });
+
+  it('counts an event about a ReplicaSet only while it is recent', () => {
+    expect(reasonOf([], [rsEvent(REAL_QUOTA, ago(RECENT_EVENT_MS - 1000))])).toBe('quota_rejected');
+    expect(reasonOf([], [rsEvent(REAL_QUOTA, ago(RECENT_EVENT_MS + 1000))])).toBe('unknown');
+  });
+
+  it('dates an event by its latest occurrence, in whichever field carries it', () => {
+    const base = { type: 'Warning', reason: 'FailedCreate', message: REAL_QUOTA, involvedObject: { kind: 'ReplicaSet' } };
+    const recent = ago(60_000);
+    const old = ago(RECENT_EVENT_MS * 3);
+    for (const e of [
+      { ...base, lastTimestamp: recent.toISOString() },
+      { ...base, lastTimestamp: null, eventTime: recent },
+      { ...base, eventTime: old, series: { lastObservedTime: recent } },
+      { ...base, metadata: { creationTimestamp: recent } },
+      { ...base, lastTimestamp: recent, metadata: { creationTimestamp: old } },
+    ] as EvidenceEvent[]) {
+      expect(currentEvidence([], [e], NOW)).toHaveLength(1);
+    }
+    expect(currentEvidence([], [{ ...base, lastTimestamp: old, metadata: { creationTimestamp: old } }], NOW)).toEqual([]);
+  });
+
+  it('does not take an event nobody can date as the present', () => {
+    expect(currentEvidence([], [{ type: 'Warning', reason: 'FailedCreate', message: REAL_QUOTA, involvedObject: { kind: 'ReplicaSet' } }], NOW)).toEqual([]);
+    expect(currentEvidence([], [rsEvent(REAL_QUOTA, 'not a date')], NOW)).toEqual([]);
+  });
+
+  it('keeps what a pod says about itself — crash loops and image pulls need no event', () => {
+    const crashing = running('p1', { containerStatuses: [{ state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off 5m0s restarting failed container=web' } } }] });
+    expect(reasonOf([crashing], [])).toBe('crash');
+    const pulling = pending('p2', { containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff', message: 'Back-off pulling image' } } }] });
+    expect(reasonOf([pulling], [])).toBe('image');
+    const unschedulable = pending('p3', {
+      conditions: [{ type: 'PodScheduled', status: 'False', reason: 'Unschedulable', message: '0/3 nodes are available: 3 Insufficient memory.' }],
+      containerStatuses: [],
+    });
+    expect(reasonOf([unschedulable], [])).toBe('unschedulable');
+  });
+
+  it('ignores finished pods, Normal events and events without text, and stays bounded', () => {
+    const done: EvidencePod = { metadata: { uid: 'job-1' }, status: { phase: 'Succeeded', conditions: [{ type: 'Ready', status: 'False', reason: 'PodCompleted', message: 'done' }] } };
+    expect(currentEvidence([done], [
+      podEvent('job-1', REAL_STALE_GLOBALMOUNT),
+      { type: 'Normal', reason: 'Pulled', message: 'ok', involvedObject: { kind: 'Pod', uid: 'p1' }, lastTimestamp: ago(1000) },
+      { type: 'Warning', reason: 'FailedMount', involvedObject: { kind: 'Pod', uid: 'p1' }, lastTimestamp: ago(1000) },
+    ], NOW)).toEqual([]);
+    const many = Array.from({ length: 50 }, (_, i) => podEvent('p1', `failure ${i}`));
+    expect(currentEvidence([pending('p1')], many, NOW)).toHaveLength(20);
+  });
+});
+
+describe('evidenceIsStale — how often an outage is diagnosed afresh', () => {
+  const T = 1_000_000_000;
+  it('reads a namespace it has not seen down before', () => {
+    expect(evidenceIsStale(undefined, T)).toBe(true);
+  });
+
+  it('reads on every tick while the diagnosis still decides something — inside the grace window', () => {
+    expect(evidenceIsStale({ since: T - 60_000, at: T - 1 }, T)).toBe(true);
+    expect(evidenceIsStale({ since: T - (GRACE_MS - 1), at: T - 1 }, T)).toBe(true);
+  });
+
+  it('past the grace window reads again only every five minutes', () => {
+    const since = T - GRACE_MS - 60_000;
+    expect(evidenceIsStale({ since, at: T - 60_000 }, T)).toBe(false);
+    expect(evidenceIsStale({ since, at: T - (5 * 60_000 - 1) }, T)).toBe(false);
+    expect(evidenceIsStale({ since, at: T - 5 * 60_000 }, T)).toBe(true);
   });
 });

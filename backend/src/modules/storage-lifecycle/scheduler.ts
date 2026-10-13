@@ -43,11 +43,17 @@ const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 const OP_PICK_UP_INTERVAL_MS = 2 * 60 * 1000;
 // Workload-health reconciler: the only check that asks whether a tenant's
 // workloads are actually RUNNING, auto-heals the ones that are not, and alerts
-// the operator when it cannot. 5 min, because the failure it exists to catch ran
-// for 18h38m unnoticed on production — every other check passed while the tenant
-// was completely down. Detection is bounded by this interval plus the reconciler
-// grace window, so ~13 min worst case instead of "until a human notices".
-const WORKLOAD_HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+// the operator when it cannot. The failure it exists to catch ran for 18h38m
+// unnoticed on production — every other check passed while the tenant was
+// completely down.
+//
+// Every minute. An outage lasts this interval plus the reconciler's grace
+// window before anything acts on it, and at 5 min the interval was most of
+// what a tenant waited after a storage failover (measured: healed at the first
+// try, 13 min after the node froze). A quiet tick is one cluster-wide
+// Deployment list and one tenants query — far less than the placement
+// reconciler reads every minute already.
+const WORKLOAD_HEALTH_INTERVAL_MS = 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
 
 export function startStorageLifecycleScheduler(

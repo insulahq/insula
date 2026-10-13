@@ -147,6 +147,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     (`storage-over-provisioning-percentage`, `storage-minimal-available-percentage`) — the check
     needs them. The database point-in-time-restore preflight reads the first one too and had been
     assuming 100% wherever it was set otherwise.
+- **Tenants are back sooner after a storage failover, and the cause is named correctly.** After a
+  node freeze Longhorn salvages the volumes that were being written to; a tenant whose volume then
+  cannot be mounted again (a stale staging directory, which the node never repairs by itself) is
+  healed by re-staging the volume. That worked, but only 13 minutes after the freeze: the check ran
+  every five minutes and waited eight more.
+  - The check runs every minute, and waits three minutes instead of eight when the volume will not
+    attach or mount within 30 minutes of a recorded storage failover. Every other cause keeps the
+    eight minutes — a database still in crash recovery must not be restarted.
+  - Such a tenant was recorded as *quota rejected*, because the replacement pods are briefly
+    refused by the quota while their predecessors terminate and that message was read first. Had
+    the heal failed, the alert would have said to raise the plan's limits. The stale staging
+    directory is now recognised ahead of the quota message.
+  - The cause is read from what is wrong *now*. Kubernetes keeps a pod's warning events for about
+    an hour, and they used to be read regardless of age: a mount failure a pod logged while
+    starting, or one from a pod since replaced, could explain an outage it had nothing to do with.
+    An event about a pod now counts only while that pod exists and has not started; an event
+    about anything else for ten minutes.
 - **Background jobs run once on a high-availability cluster.** With three API replicas every
   in-process timer starts three times, and only the jobs someone had listed ran on one replica. The
   backup-freshness check was not on the list: it started a Job that lists the mail backup
