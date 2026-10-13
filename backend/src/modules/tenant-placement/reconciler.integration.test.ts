@@ -44,7 +44,7 @@ const pod = (ns: string, node: string): PodFact => ({
 });
 const vol = (ns: string, node: string | null, remount: string | null = null): VolumeFact => ({
   volumeName: `pvc-${ns}`, namespace: ns, pvcName: `${ns}-storage`, robustness: 'healthy',
-  attached: node !== null, pvcRefLostAt: null, attachedNode: node, remountRequestedAt: remount,
+  attached: node !== null, pvcRefLostAt: null, attachedNode: node, remountRequestedAt: remount, scheduleFailure: null,
 });
 const rep = (ns: string, node: string): ReplicaFact => ({ volumeName: `pvc-${ns}`, nodeId: node, running: true, failed: false });
 

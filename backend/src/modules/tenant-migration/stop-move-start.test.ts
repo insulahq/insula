@@ -67,7 +67,7 @@ const SNAP: QuiesceSnapshot = { deployments: [{ name: 'web', replicas: 1 }], cro
 const COPY = { started: ['pvc-1'], skipped: [], error: null };
 
 /** Fake steps recording every call in order; `fail` makes the named step throw. */
-function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: boolean } = {}) {
+function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: boolean; blocker?: string } = {}) {
   const calls: string[] = [];
   const outcomes: MoveOutcome[] = [];
   const step = <T>(name: string, value: T) => async (): Promise<T> => {
@@ -88,6 +88,7 @@ function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: bool
     recordPrimary: step('recordPrimary', undefined),
     startCopy: step('startCopy', COPY),
     unquiesce: async (snap) => { calls.push(`unquiesce:${snap.deployments.length}`); if (opts.fail === 'unquiesce') throw new Error('unquiesce broke'); },
+    copyBlocker: step('copyBlocker', opts.blocker ?? null),
     restore: async (snap) => { calls.push(`restore:${snap ? 'snap' : 'none'}`); return opts.restored ?? true; },
     finish: async (o) => { calls.push(`finish:${o.ok ? 'ok' : 'failed'}`); outcomes.push(o); },
   };
@@ -102,10 +103,36 @@ describe('runTenantMove', () => {
     const { steps, calls, outcomes } = fakeSteps();
     await runTenantMove(steps, NODES);
     expect(withoutProgress(calls)).toEqual([
-      'quiesce', 'waitForPodsGone', 'waitForDetached', 'repin:node-a', 'recordPrimary', 'startCopy', 'unquiesce:1', 'finish:ok',
+      'quiesce', 'waitForPodsGone', 'waitForDetached', 'repin:node-a', 'recordPrimary', 'startCopy', 'unquiesce:1',
+      'copyBlocker', 'finish:ok',
     ]);
     expect(outcomes[0]).toMatchObject({ ok: true, dataRelocation: COPY });
     expect((outcomes[0] as { message: string }).message).toContain('copying the data');
+  });
+
+  it('does not claim a copy Longhorn has refused: says the data has not moved, why, and what to do', async () => {
+    const { steps, outcomes } = fakeSteps({ blocker: 'insufficient storage' });
+    await runTenantMove(steps, NODES);
+    // The tenant IS running on the target — the move is not undone or failed.
+    expect(outcomes[0]).toMatchObject({ ok: true, dataRelocation: COPY });
+    const message = (outcomes[0] as { message: string }).message;
+    expect(message).toContain('Running on node-a, but its data has NOT moved');
+    expect(message).toContain('Longhorn cannot place a copy there (insufficient storage)');
+    expect(message).toContain('across the network');
+    expect(message).toContain('shrink the volume');
+    expect(message).not.toContain('copying the data');
+  });
+
+  it('asks Longhorn only once the tenant is running on the target, never after a failed move', async () => {
+    const ok = fakeSteps({ blocker: 'insufficient storage' });
+    await runTenantMove(ok.steps, NODES);
+    const calls = withoutProgress(ok.calls);
+    expect(calls.indexOf('copyBlocker')).toBeGreaterThan(calls.indexOf('unquiesce:1'));
+
+    const failed = fakeSteps({ fail: 'unquiesce', blocker: 'insufficient storage' });
+    await runTenantMove(failed.steps, NODES);
+    expect(failed.calls).not.toContain('copyBlocker');
+    expect((failed.outcomes[0] as { error: string }).error).not.toContain('insufficient storage');
   });
 
   it('reports progress as quiescing until the start, then unquiescing', async () => {

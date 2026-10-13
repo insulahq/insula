@@ -129,6 +129,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A tenant is no longer moved to a node that cannot hold its data.** A move re-pins the tenant
+  and starts it on the target; Longhorn then builds the volume's copy there. When Longhorn refused
+  that copy — it reserves a volume's *full* size on the node, so a 100 GiB volume holding 28 GiB
+  does not fit where 66 GiB can still be scheduled — the tenant ran on the new node with all of
+  its data on the old one, did every disk read and write across the network, and stayed that way.
+  The move reported *Longhorn is copying the data*, and the *Not on its primary node* notification
+  said only *data on &lt;node&gt;*.
+  - The move now asks first, by Longhorn's own scheduling rule, and is refused before anything is
+    stopped, with the volume's size and the room left on the target. "Make this node the primary"
+    for a tenant already running there is never refused. A check that cannot be made does not
+    hold a move back; the log says it was skipped.
+  - If Longhorn refuses the copy all the same, the finished move says the data has **not** moved
+    and why, and the placement banner and the notification carry Longhorn's reason: *data on
+    node-a; Longhorn cannot copy it to node-b: insufficient storage*.
+  - The platform API may now read Longhorn's two scheduling settings
+    (`storage-over-provisioning-percentage`, `storage-minimal-available-percentage`) — the check
+    needs them. The database point-in-time-restore preflight reads the first one too and had been
+    assuming 100% wherever it was set otherwise.
 - **Background jobs run once on a high-availability cluster.** With three API replicas every
   in-process timer starts three times, and only the jobs someone had listed ran on one replica. The
   backup-freshness check was not on the list: it started a Job that lists the mail backup

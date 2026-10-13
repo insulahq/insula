@@ -275,6 +275,16 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs", "replicas", "engines"]
     verbs: ["get", "list", "watch"]
+  # The two settings of Longhorn's replica scheduler, read only. A tenant move
+  # asks beforehand whether the target node can hold the tenant's volume, by
+  # Longhorn's own rule (tenant-placement/target-capacity.ts) — and that rule
+  # is these two percentages. Without the read the check cannot be made and
+  # every move goes ahead unchecked (it says so in the log); the PITR budget
+  # preflight had been assuming 100% over-provisioning for the same reason.
+  - apiGroups: ["longhorn.io"]
+    resources: ["settings"]
+    resourceNames: ["storage-over-provisioning-percentage", "storage-minimal-available-percentage"]
+    verbs: ["get"]
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
     verbs: ["update", "patch"]

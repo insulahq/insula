@@ -42,7 +42,7 @@ import {
   updateOp,
   waitForVolumeDetachedByPvc,
 } from '../storage-lifecycle/service.js';
-import { startDataRelocation } from '../tenant-placement/relocate.js';
+import { readCopyBlocker, startDataRelocation } from '../tenant-placement/relocate.js';
 import { repinDeployments } from './repin.js';
 import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
 
@@ -145,6 +145,8 @@ export interface MoveSteps {
   /** Never throws: a failure is reported in the result. */
   readonly startCopy: () => Promise<DataRelocation>;
   readonly unquiesce: (snap: QuiesceSnapshot) => Promise<void>;
+  /** Never throws: Longhorn's reason for refusing the copy on the target, else null. */
+  readonly copyBlocker: () => Promise<string | null>;
   /** Never throws: true when the workloads came back. */
   readonly restore: (snap: QuiesceSnapshot | null) => Promise<boolean>;
   readonly finish: (outcome: MoveOutcome) => Promise<void>;
@@ -154,7 +156,14 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function successMessage(target: string, copy: DataRelocation): string {
+function successMessage(target: string, copy: DataRelocation, blocker: string | null): string {
+  // Longhorn has already said no: "copying in the background" would send the
+  // operator away from a tenant that now does all its disk I/O across nodes.
+  if (blocker) {
+    return `Running on ${target}, but its data has NOT moved: Longhorn cannot place a copy there (${blocker}). `
+      + 'The tenant now reads and writes its data across the network on the node it came from. '
+      + 'Move it to a node with room for its volume, or shrink the volume.';
+  }
   if (copy.started.length > 0) {
     return `Running on ${target}. Longhorn is copying the data there in the background; `
       + 'the placement view turns green once the copy is done.';
@@ -211,7 +220,10 @@ export async function runTenantMove(
     await steps.progress('unquiescing', 70, `Starting the tenant on ${target}`);
     await steps.unquiesce(snap);
 
-    await steps.finish({ ok: true, message: successMessage(target, copy), dataRelocation: copy });
+    // The volume is attached on the target by now and Longhorn's scheduler has
+    // decided whether the data can follow.
+    const blocker = await steps.copyBlocker();
+    await steps.finish({ ok: true, message: successMessage(target, copy, blocker), dataRelocation: copy });
   } catch (err) {
     const cause = errText(err);
     if (pinned === 'mixed') {
@@ -255,6 +267,7 @@ function bindSteps(db: Database, k8s: K8sClients, input: BeginMoveInput, opId: s
     },
     startCopy: () => startDataRelocation(k8s, namespace, target, input.storageTier),
     unquiesce: (snap) => unquiesce(k8s, namespace, snap),
+    copyBlocker: () => readCopyBlocker(k8s, namespace, target, input.storageTier),
     restore: (snap) => unquiesceBestEffort(db, k8s, opId, namespace, snap),
     finish: async (outcome) => {
       if (outcome.ok) {

@@ -29,14 +29,14 @@
 import type { DataRelocationSkipReason, MigrateToWorkerResult } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
-import type { ReplicaFact } from '../tenant-health/service.js';
+import { scheduleFailureOf, type LonghornCondition, type ReplicaFact } from '../tenant-health/service.js';
 
 export const RELOCATE_TICKET = 'insula-relocate';
 export const RELOCATE_STARTED_ANNOTATION = 'insula.host/relocate-started-at';
 /** A copy that has not finished by then is released anyway; the data stays where it is. */
 export const RELOCATE_MAX_MS = 4 * 60 * 60_000;
 
-const LH = { group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system' } as const;
+export const LH = { group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system' } as const;
 
 type Plan = MigrateToWorkerResult['dataRelocation'];
 
@@ -115,13 +115,14 @@ export function relocationVerdict(
   return 'waiting';
 }
 
-interface LhList<T> { readonly items?: readonly T[] }
+export interface LhList<T> { readonly items?: readonly T[] }
 interface LhVolumeRaw {
   readonly metadata?: { readonly name?: string };
   readonly spec?: { readonly numberOfReplicas?: number };
   readonly status?: {
     readonly state?: string;
     readonly currentNodeID?: string;
+    readonly conditions?: readonly LonghornCondition[];
     readonly kubernetesStatus?: { readonly namespace?: string; readonly lastPVCRefAt?: string };
   };
 }
@@ -134,7 +135,7 @@ interface LhAttachmentRaw {
   readonly spec?: { readonly attachmentTickets?: Record<string, { readonly nodeID?: string } | null> };
 }
 
-function lhList<T>(k8s: K8sClients, plural: string): Promise<LhList<T>> {
+export function lhList<T>(k8s: K8sClients, plural: string): Promise<LhList<T>> {
   return k8s.custom.listNamespacedCustomObject(
     { ...LH, plural } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0],
   ) as Promise<LhList<T>>;
@@ -239,6 +240,48 @@ export async function startDataRelocation(
     }
   }
   return { started, skipped: plan.skipped, error: errors.length > 0 ? errors.join('; ') : null };
+}
+
+/**
+ * Longhorn's own reason for not building, on `target`, the copy of a volume the
+ * move brought there (`Scheduled=False`), or null. Read once the tenant is
+ * running on its new node: the volume is attached by then and the scheduler has
+ * answered.
+ *
+ * Only a single-replica volume with nothing usable on the target counts. A
+ * volume replicated by design, or one whose data is already local, can carry a
+ * `Scheduled=False` of its own — a third replica with no node to go to — and
+ * that says nothing about this move.
+ *
+ * Never throws — it only words the move's result, and the placement view
+ * reports the same condition every minute.
+ */
+export async function readCopyBlocker(
+  k8s: K8sClients,
+  namespace: string,
+  target: string,
+  storageTier: string | null,
+): Promise<string | null> {
+  if (storageTier === 'ha') return null;
+  try {
+    const [vols, reps] = await Promise.all([
+      lhList<LhVolumeRaw>(k8s, 'volumes'),
+      lhList<LhReplicaRaw>(k8s, 'replicas'),
+    ]);
+    for (const v of vols.items ?? []) {
+      const ks = v.status?.kubernetesStatus;
+      if (ks?.namespace !== namespace || ks?.lastPVCRefAt || (v.spec?.numberOfReplicas ?? 1) > 1) continue;
+      const failure = scheduleFailureOf(v.status?.conditions);
+      if (!failure) continue;
+      const local = (reps.items ?? []).some((r) => r.spec?.volumeName === v.metadata?.name
+        && r.spec?.nodeID === target && !r.spec?.failedAt && r.status?.currentState !== 'error');
+      if (!local) return failure;
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[tenant-placement] could not read Longhorn's scheduling verdict in ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 /**

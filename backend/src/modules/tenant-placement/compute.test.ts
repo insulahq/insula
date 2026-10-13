@@ -13,7 +13,7 @@ const pod = (nodeName: string, over: Partial<PodFact> = {}): PodFact => ({
 });
 const vol = (over: Partial<VolumeFact> = {}): VolumeFact => ({
   volumeName: 'pvc-1', namespace: NS, pvcName: `${NS}-storage`, robustness: 'healthy',
-  attached: true, pvcRefLostAt: null, attachedNode: 'node-a', remountRequestedAt: null, ...over,
+  attached: true, pvcRefLostAt: null, attachedNode: 'node-a', remountRequestedAt: null, scheduleFailure: null, ...over,
 });
 const rep = (nodeId: string, over: Partial<ReplicaFact> = {}): ReplicaFact => ({
   volumeName: 'pvc-1', nodeId, running: true, failed: false, ...over,
@@ -47,6 +47,88 @@ describe('observeTenantPlacement — local tier', () => {
     expect(p.status).toBe('misplaced');
     expect(p.actualNodes).toEqual(['node-b']);
     expect(p.reasons).toEqual(['data on node-b']);
+  });
+
+  it('says WHY the data is not following when Longhorn refused the copy (the production case)', () => {
+    // Moved to node-a; pods and the attachment are there, the one replica is
+    // still on node-b, and Longhorn cannot schedule the local copy.
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-a')],
+      volumes: [vol({ attachedNode: 'node-a', scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-b')],
+    });
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('names the node the volume is attached to as the copy\'s target, the primary when it is detached', () => {
+    const attachedElsewhere = observeTenantPlacement(tenant(), {
+      pods: [pod('node-c')],
+      volumes: [vol({ attachedNode: 'node-c', scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-b')],
+    });
+    expect(attachedElsewhere.reasons).toContain('data on node-b; Longhorn cannot copy it to node-c: insufficient storage');
+    const detached = observeTenantPlacement(tenant(), {
+      pods: [],
+      volumes: [vol({ attached: false, attachedNode: null, scheduleFailure: 'disks are unavailable' })],
+      replicas: [rep('node-b', { running: false })],
+    });
+    expect(detached.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: disks are unavailable']);
+  });
+
+  it('does not read another tenant\'s or a leftover volume\'s scheduling failure into this one', () => {
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-a')],
+      volumes: [
+        vol({ attachedNode: 'node-a' }),
+        vol({ volumeName: 'pvc-other', namespace: 'tenant-other', scheduleFailure: 'insufficient storage' }),
+        vol({ volumeName: 'pvc-ghost', pvcRefLostAt: '2026-09-03T12:02:48Z', scheduleFailure: 'insufficient storage' }),
+      ],
+      replicas: [rep('node-b')],
+    });
+    expect(p.reasons).toEqual(['data on node-b']);
+  });
+
+  it('does not blame a volume whose data is already where the tenant runs', () => {
+    // Running on node-c (primary node-a). One volume is still on node-b with
+    // nothing wrong; the other is already on node-c, and its own
+    // Scheduled=False is about something else.
+    const volumes = [
+      vol({ volumeName: 'pvc-behind', attachedNode: 'node-c' }),
+      vol({ volumeName: 'pvc-local', attachedNode: 'node-c', scheduleFailure: 'replica count exceeds the nodes available' }),
+    ];
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-c')],
+      volumes,
+      replicas: [rep('node-b', { volumeName: 'pvc-behind' }), rep('node-c', { volumeName: 'pvc-local' })],
+    });
+    expect(p.reasons).toEqual(['running on node-c', 'data on node-b and node-c']);
+    // The same failure on the volume that IS behind is reported.
+    const behind = observeTenantPlacement(tenant(), {
+      pods: [pod('node-c')],
+      volumes: [{ ...volumes[0]!, scheduleFailure: 'insufficient storage' }, { ...volumes[1]!, scheduleFailure: null }],
+      replicas: [rep('node-b', { volumeName: 'pvc-behind' }), rep('node-c', { volumeName: 'pvc-local' })],
+    });
+    expect(behind.reasons).toEqual(['running on node-c', 'data on node-b and node-c; Longhorn cannot copy it to node-c: insufficient storage']);
+  });
+
+  it('a failed replica on the target is not a copy there', () => {
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-a')],
+      volumes: [vol({ attachedNode: 'node-a', scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-b'), rep('node-a', { failed: true, running: false })],
+    });
+    expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('a placed tenant stays placed whatever Longhorn says about scheduling', () => {
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-a')],
+      volumes: [vol({ scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-a')],
+    });
+    expect(p.status).toBe('placed');
+    expect(p.reasons).toEqual([]);
   });
 
   it('says the data is being copied while a locality rebuild has replicas on both', () => {

@@ -164,6 +164,21 @@ buttons (below). Underneath are several cards and a tabbed resource view.
       data, so the platform attaches its volume on the primary node itself
       until the copy is done; the result line says **Moving the data there
       now**, and the banner clears once it has.
+
+      A move to a node that **cannot hold the tenant's volume** is refused
+      before anything is stopped, with the numbers: how large the volume is
+      and how much Longhorn can still schedule on that node. Longhorn reserves
+      a volume's *full* size, not what is in use — a 100 GiB volume holding
+      28 GiB needs 100 GiB of schedulable room — so a node with plenty of free
+      disk can still be too small. Pick a node with more room, or shrink the
+      volume first (**Storage Lifecycle**). Without this check the tenant
+      would start on the new node with its data left behind, and do all of
+      its disk I/O across the network from then on.
+    - When Longhorn cannot copy the data to where the tenant runs, the banner
+      says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
+      node-b: insufficient storage* — and so does the notification. That does
+      not resolve by waiting: move the tenant to a node with room, or shrink
+      its volume.
     - **Make &lt;current node&gt; the primary node** accepts where it is: the
       workloads restart once on the same node to pick up the new pin, and no
       data is copied.
