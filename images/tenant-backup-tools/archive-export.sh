@@ -135,7 +135,9 @@ if [ "$MODE" = "restore" ]; then
   # /restic-stage/export/export.lz4/{subspace_a,…}. We want the same
   # tree at /export/export.lz4 for the downstream `stalwart -i` step.
   mkdir -p /restic-stage
-  restic restore "${RESTIC_SNAPSHOT_ID}" --target /restic-stage 2>&1 \
+  # The SELinux label is not restored: it belongs to the node a file is
+  # written on, and restic fails on a node of the other kind otherwise.
+  restic restore "${RESTIC_SNAPSHOT_ID}" --target /restic-stage --exclude-xattr security.selinux 2>&1 \
     || die "restic restore failed"
   if [ ! -d /restic-stage/export/export.lz4 ]; then
     ls -la /restic-stage /restic-stage/export 2>&1 || true

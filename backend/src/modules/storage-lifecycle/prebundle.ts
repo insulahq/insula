@@ -51,7 +51,7 @@ import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
 import { requireWritableTarget } from '../backup-config/writable-guard.js';
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
-import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../tenant-bundles/restic-driver.js';
+import { buildResticRepoUri, buildResticEnv, deriveResticPassword, RESTIC_RESTORE_SKIP_SELINUX_LABEL } from '../tenant-bundles/restic-driver.js';
 import {
   FILES_CAPTURE_ROOT,
   buildResticCredsStringData,
@@ -483,7 +483,7 @@ export function buildResticRestoreJobSpec(input: {
     // multi-GiB tenant; the restore Job runs where the RWO PVC attaches, so
     // it cannot pick a roomier node. Restoring straight into the Longhorn
     // PVC uses the tenant's actual storage, not node ephemeral.
-    `restic -r "$REPO" restore ${input.snapshotId} --target / --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+    `restic -r "$REPO" restore ${input.snapshotId} --target / --no-lock ${RESTIC_RESTORE_SKIP_SELINUX_LABEL.join(' ')} || { echo "ERROR: restic restore failed"; exit 1; }`,
     `COUNT=$(find ${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
     `echo "PRERESIZE_RESTORE_DONE bundle=${input.bundleId} count=\${COUNT:-0}"`,
   ].join('\n');

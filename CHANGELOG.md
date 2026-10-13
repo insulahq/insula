@@ -14,6 +14,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A restore no longer fails between a server with SELinux and one without.** On a cluster that
+  mixes RHEL-family servers (Rocky, Alma, CentOS Stream, Amazon Linux) with Debian or Ubuntu ones,
+  and for any backup restored on an install of the other kind, restoring files failed although
+  every byte had been written: a snapshot of files written on a server without SELinux could not
+  be restored on one with it, and the other way round on Ubuntu. A shrink of a tenant that had
+  been moved from a Debian server to a Rocky one ended failed with the tenant's workloads left
+  stopped; a mail failover in that direction found no snapshot it could restore, and the webmail
+  started empty. The cause was the SELinux label: the kernel sets one on every new file where
+  SELinux is on, restic restores extended attributes exactly and tried to remove it — which no
+  process may do — or, on a server without SELinux, to set one. No restore carries the label any
+  more: shrink and restore-from-archive, restoring files or mailboxes from a backup, the mail and
+  webmail restore at start, and the mail archive export. A file gets the label of the server it
+  is restored on. Clusters whose servers all run the same kind of system were not affected. The
+  mail server and the webmail restart once when this release is applied.
 - **A lost server no longer leaves its database sessions counting against the connection limit
   for two hours.** A connection whose client vanished without closing it — its server lost power,
   its network was cut — stayed open on the platform database until TCP noticed, and PostgreSQL's

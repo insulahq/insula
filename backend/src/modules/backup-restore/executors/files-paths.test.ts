@@ -98,6 +98,15 @@ describe('buildFilesPathsJobSpec', () => {
     expect(cmd).not.toContain('--include');
   });
 
+  it('does not restore the SELinux label, whichever paths are restored', () => {
+    const commandOf = (input: typeof baseInput): string => (buildFilesPathsJobSpec(input) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    }).spec.template.spec.containers[0]!.command.join(' ');
+    for (const input of [baseInput, { ...baseInput, includePaths: ['/source/site'] }]) {
+      expect(commandOf(input)).toMatch(/restic -r "\$REPO" restore [^|]* --no-lock --exclude-xattr security\.selinux \|\|/);
+    }
+  });
+
   it('cp -a /restore-tmp/source/. /source/ to overlay onto the live PVC', () => {
     const spec = buildFilesPathsJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };

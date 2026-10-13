@@ -11,6 +11,10 @@ on:
       # touches ONLY the backend must still trigger this workflow — otherwise
       # the guard silently skips exactly the change it exists to catch.
       - 'backend/src/modules/file-manager/**'
+      # ci-restic-restore-selinux-check.sh reads the restore commands these build.
+      - 'backend/src/modules/backup-restore/**'
+      - 'backend/src/modules/storage-lifecycle/**'
+      - 'backend/src/modules/tenant-bundles/**'
       - 'backend/src/modules/ingress-routes/**'
       - 'backend/src/modules/system-settings/**'
       # frontend-api-types-guard reads the panels' hooks; without this it would
@@ -82,6 +86,10 @@ on:
       - 'scripts/**'
       - 'security/**'
       - 'backend/src/modules/file-manager/**'
+      # ci-restic-restore-selinux-check.sh reads the restore commands these build.
+      - 'backend/src/modules/backup-restore/**'
+      - 'backend/src/modules/storage-lifecycle/**'
+      - 'backend/src/modules/tenant-bundles/**'
       - 'backend/src/modules/ingress-routes/**'
       - 'backend/src/modules/system-settings/**'
       # frontend-api-types-guard reads the panels' hooks; without this it would
@@ -799,6 +807,8 @@ jobs:
           yq --version
       - name: Verify production overlay does not deploy Dex
         run: ./scripts/ci-no-dex-in-production.sh
+      - name: Verify every restic restore leaves the SELinux label out
+        run: ./scripts/ci-restic-restore-selinux-check.sh
       - name: Verify platform_session spans subdomains (Stalwart web-admin gate)
         run: ./scripts/ci-session-cookie-domain-check.sh
 

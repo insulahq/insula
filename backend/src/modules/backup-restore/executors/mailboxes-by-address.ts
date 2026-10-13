@@ -87,6 +87,7 @@ import {
   buildResticRepoUri,
   buildResticEnv,
   deriveResticPassword,
+  RESTIC_RESTORE_SKIP_SELINUX_LABEL,
 } from '../../tenant-bundles/restic-driver.js';
 import {
   buildResticCredsStringData,
@@ -698,7 +699,7 @@ export function buildMailboxesByAddressJobSpec(input: {
     // long as those bundles are inside their retention window.
     ...(perAddress.length > 0 ? [] : [
       `echo "Restoring whole-tenant maildir snapshot ${input.snapshotId} (pre-ADR-061 bundle)..." >&2`,
-      `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+      `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock ${RESTIC_RESTORE_SKIP_SELINUX_LABEL.join(' ')} || { echo "ERROR: restic restore failed"; exit 1; }`,
       `TARBALL=${RESTORE_TMP}/${STDIN_TARBALL}`,
       `[ -f "$TARBALL" ] || TARBALL=$(find ${RESTORE_TMP} -type f -name ${STDIN_TARBALL} 2>/dev/null | head -n1)`,
       `{ [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; } || { echo "ERROR: ${STDIN_TARBALL} not found in restored snapshot"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,
@@ -722,7 +723,7 @@ export function buildMailboxesByAddressJobSpec(input: {
       `  rm -rf ${RESTORE_TMP}`,
       `  mkdir -p ${RESTORE_TMP}`,
       `  echo "Restoring $ADDR from snapshot $SNAP..." >&2`,
-      `  restic -r "$REPO" restore "$SNAP" --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed for $ADDR"; exit 1; }`,
+      `  restic -r "$REPO" restore "$SNAP" --target ${RESTORE_TMP} --no-lock ${RESTIC_RESTORE_SKIP_SELINUX_LABEL.join(' ')} || { echo "ERROR: restic restore failed for $ADDR"; exit 1; }`,
       `  SRC="${RESTORE_TMP}${MAILBOX_CAPTURE_ROOT}/$ADDRDIR"`,
       `  [ -d "$SRC" ] || SRC=$(find ${RESTORE_TMP} -maxdepth 4 -type d -name "$ADDRDIR" 2>/dev/null | head -n1)`,
       `  { [ -n "$SRC" ] && [ -d "$SRC" ]; } || { echo "ERROR: snapshot $SNAP holds no tree for $ADDR"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,

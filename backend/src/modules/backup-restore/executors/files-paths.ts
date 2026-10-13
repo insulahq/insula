@@ -42,6 +42,7 @@ import {
   buildResticRepoUri,
   buildResticEnv,
   deriveResticPassword,
+  RESTIC_RESTORE_SKIP_SELINUX_LABEL,
 } from '../../tenant-bundles/restic-driver.js';
 import {
   FILES_CAPTURE_ROOT,
@@ -382,7 +383,7 @@ function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<str
     `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
     `mkdir -p ${RESTORE_TMP}`,
     'echo "Running restic restore..."',
-    `restic -r "$REPO" restore ${opts.snapshotId} --target ${RESTORE_TMP} ${includeArgs} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+    `restic -r "$REPO" restore ${opts.snapshotId} --target ${RESTORE_TMP} ${includeArgs} --no-lock ${RESTIC_RESTORE_SKIP_SELINUX_LABEL.join(' ')} || { echo "ERROR: restic restore failed"; exit 1; }`,
     // restic lands files under <target>/source/<...> (capture root was
     // /source). Overlay them onto the live PVC. If nothing matched the
     // includes, the staged tree is empty and cp -a is a no-op.

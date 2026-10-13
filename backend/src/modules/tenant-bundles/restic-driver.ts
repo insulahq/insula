@@ -966,6 +966,25 @@ export interface RunResticRestoreArgs {
 }
 
 /**
+ * Passed to every `restic restore`: the SELinux label is not restored.
+ *
+ * A label belongs to the node a file is written on. Where SELinux is on, the
+ * kernel sets one on every new file; where it is off, files have none. restic
+ * restores extended attributes exactly, so a snapshot taken on a node of one
+ * kind failed to restore on a node of the other. Where SELinux is on, restic
+ * tried to remove the label the kernel had just set, which no process may do
+ * (`xattr.LRemove … security.selinux: permission denied`); where it is off, it
+ * tried to set one (`xattr.LSet … operation not permitted`). The data was
+ * written either way, but restic exited non-zero and the restore counted as
+ * failed. Needs restic 0.18 or newer. The same two words are written out in
+ * the restores that are not built here (the mail and webmail init containers,
+ * `images/tenant-backup-tools/archive-export.sh`,
+ * `scripts/restore-mail-from-shim.sh`); `ci-restic-restore-selinux-check.sh`
+ * holds them all to it.
+ */
+export const RESTIC_RESTORE_SKIP_SELINUX_LABEL = ['--exclude-xattr', 'security.selinux'] as const;
+
+/**
  * Run `restic restore <snapshotId> --target <dir> [--include …]
  * [--no-lock]`. Used both for in-region restores (readOnly=false) and
  * cross-region read-only restores from external repos
@@ -1009,6 +1028,7 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
     if (args.readOnly) cliArgs.push('--no-lock');
     cliArgs.push('restore', args.snapshotId);
     cliArgs.push('--target', args.targetDir);
+    cliArgs.push(...RESTIC_RESTORE_SKIP_SELINUX_LABEL);
     // Restore parallelism for S3: controlled by `s3.connections=10`
     // (set in performanceOpts() above). For SFTP: bounded by the single
     // SSH channel restic opens. There is NO `--workers` flag on
