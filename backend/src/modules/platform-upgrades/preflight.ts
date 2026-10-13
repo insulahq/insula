@@ -198,17 +198,17 @@ const STORAGE_OPS_NAMED = 5;
  * The kinds the new pods pick up again where the upgrade's restart cut them
  * off (storage-lifecycle/interrupted-ops.ts).
  */
-const PICKED_UP_AFTER_A_RESTART: ReadonlySet<string> = new Set(['archive', 'resize', 'restore', 'fsck']);
+const PICKED_UP_AFTER_A_RESTART: ReadonlySet<string> = new Set(['archive', 'resize', 'restore', 'fsck', 'suspend', 'resume']);
 
 /**
  * A storage operation runs inside the platform API, after the request that
  * started it has been answered — and the upgrade replaces every API pod. An
- * archive, a resize, a restore or a filesystem check cut off like that is
- * picked up again by the new pods within minutes; the operator is told, since
- * a tenant the operation has stopped stays stopped that much longer. A move is
- * not picked up: its tenant stays stopped until the watchdog calls the move
- * abandoned, half an hour later. A suspend or a resume is ended and has to be
- * asked for again. For those the operator on production has to wait.
+ * archive, a resize, a restore, a filesystem check, a suspend or a resume cut
+ * off like that is picked up again by the new pods within minutes; the
+ * operator is told, since a tenant the operation has stopped stays stopped
+ * that much longer. A move is not picked up: its tenant stays stopped until
+ * the watchdog calls the move abandoned, half an hour later. For that the
+ * operator on production has to wait.
  */
 
 function storageOperationGates(facts: PreflightFacts): PreflightGate[] {
@@ -232,7 +232,7 @@ function storageOperationGates(facts: PreflightFacts): PreflightGate[] {
     detail: `${named}${more} — the upgrade restarts the platform API that runs ${ops.length === 1 ? 'it' : 'them'}. `
       + (allPickedUp
         ? `${ops.length === 1 ? 'It is' : 'They are'} picked up again afterwards, a few minutes later; a tenant it has stopped stays stopped until then.`
-        : 'An archive, resize, restore or filesystem check is picked up again afterwards; a move, a suspend or a resume is not — it is ended, and a move leaves its tenant stopped for up to half an hour first. Wait for it to finish.'),
+        : 'A move is not picked up again afterwards: it is ended, and leaves its tenant stopped for up to half an hour first. Wait for it to finish.'),
   }];
 }
 

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { eq, and, sql, desc, lte, inArray } from 'drizzle-orm';
+import { eq, and, sql, desc, lte, inArray, notInArray } from 'drizzle-orm';
 import {
   tenants,
   storageSnapshots,
@@ -19,8 +19,9 @@ import {
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
-import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
-import { OP_MAX_RESUMES, launchOp, opGuard, operationIsMine } from './op-lock.js';
+import { TENANT_LOCK_MAX_HOLD_MS, tenantLockJob, withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
+import { OP_MAX_RESUMES, launchOp, launchUnder, opGuard, operationIsMine } from './op-lock.js';
+import { growMount, waitForGrownClaim, type GrowOutcome } from './grow-mount.js';
 import {
   EMPTY_TIMELINE,
   RESTORE_STEP_LABELS,
@@ -947,8 +948,21 @@ async function runGrowOnline(
     //    integration suites running back-to-back, leaving residual
     //    detach/replicate work) while still bounding indefinite hangs.
     await progress('resizing', 50, 'Extending Longhorn volume + xfs_growfs/resize2fs (kubelet)');
-    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 600_000,
-      async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); });
+    // The filesystem grows on a mount. A tenant with no running pod has none,
+    // so the grow starts the file manager for it (grow-mount.ts) — and where
+    // that cannot be started either, the filesystem grows at the next mount.
+    const mount = growMount(ctx.k8s, namespace, pvcName);
+    let outcome: GrowOutcome;
+    try {
+      outcome = await waitForGrownClaim(ctx.k8s, namespace, pvcName, newBytes, {
+        timeoutMs: 600_000,
+        mount,
+        onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+      });
+    } finally {
+      await mount.release();
+    }
+    const whyNoMount = mount.whyNone();
 
     // 4. Persist the new size on the tenant row so the ResourceQuota
     //    and any subsequent quota recompute see the same value.
@@ -964,7 +978,9 @@ async function runGrowOnline(
     await updateOp(ctx.db, opId, {
       state: 'idle',
       progressPct: 100,
-      progressMessage: `Grew ${currentMib} → ${newMib} MiB online (no downtime)`,
+      progressMessage: outcome === 'grown'
+        ? `Grew ${currentMib} → ${newMib} MiB online (no downtime)`
+        : `Volume extended ${currentMib} → ${newMib} MiB. No pod of the tenant mounts it now (${whyNoMount ?? 'none could be started'}), so its filesystem grows to the new size when the next one starts.`,
       completedAt: new Date(),
     });
     const cId = await currentTenantId(ctx.db, opId);
@@ -977,49 +993,6 @@ async function runGrowOnline(
     });
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
-  }
-}
-
-/**
- * Poll PVC.status.capacity.storage until it parses to >= the target
- * size in bytes. Throws `FS_RESIZE_TIMEOUT` if the deadline elapses
- * without progress.
- */
-async function waitForPvcCapacity(
-  k8s: K8sClients,
-  namespace: string,
-  pvcName: string,
-  targetBytes: number,
-  timeoutMs: number,
-  onProgress?: (msg: string) => Promise<void> | void,
-): Promise<void> {
-  const start = Date.now();
-  while (true) {
-    let pvc;
-    try {
-      pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
-    } catch (err) {
-      throw new ApiError('LONGHORN_BUSY', `Could not read PVC ${pvcName}: ${(err as Error).message}`, 502);
-    }
-    const cap = (pvc as { status?: { capacity?: { storage?: string } } }).status?.capacity?.storage;
-    if (cap) {
-      const capBytes = parseQuantityToBytes(cap);
-      if (capBytes >= targetBytes) return;
-      if (onProgress) {
-        const elapsed = Math.floor((Date.now() - start) / 1000);
-        const capGi = (capBytes / (1024 ** 3)).toFixed(2);
-        const targetGi = (targetBytes / (1024 ** 3)).toFixed(2);
-        await onProgress(`Extending volume — ${capGi} / ${targetGi} GiB after ${elapsed}s (Longhorn rebuild + xfs_growfs)`);
-      }
-    }
-    if (Date.now() - start > timeoutMs) {
-      throw new ApiError(
-        'FS_RESIZE_TIMEOUT',
-        `PVC ${pvcName}.status.capacity.storage did not reach ${targetBytes} bytes within ${timeoutMs}ms (last seen: ${cap ?? 'none'}). Longhorn volume may be busy or insufficient host capacity.`,
-        504,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 2000));
   }
 }
 
@@ -2121,10 +2094,25 @@ export async function suspendTenant(
   return withTenantLock(ctx.db, tenantId, () => suspendTenantLocked(ctx, tenantId, opts));
 }
 
+/** The operator's choices for a suspend or a resume, as its operation keeps them. */
+interface TransitionOpts {
+  readonly triggeredByUserId?: string | null;
+  readonly suppressTenantNotification?: boolean;
+}
+
+/**
+ * Kept on the operation because a suspend or a resume picked up again after
+ * its process died is finished by another process, which was not asked
+ * whether the tenant should be told.
+ */
+const paramsOf = (opts: TransitionOpts): Record<string, unknown> => (
+  opts.suppressTenantNotification === true ? { suppressTenantNotification: true } : {}
+);
+
 async function suspendTenantLocked(
   ctx: ServiceCtx,
   tenantId: string,
-  opts: NonNullable<Parameters<typeof suspendTenant>[2]>,
+  opts: TransitionOpts,
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -2137,6 +2125,7 @@ async function suspendTenantLocked(
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'suspend',
       state: 'quiescing', progressPct: 0, progressMessage: 'Scaling workloads to zero',
+      params: paramsOf(opts),
       triggeredByUserId: opts.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -2145,46 +2134,67 @@ async function suspendTenantLocked(
   });
 
   try {
-    // Persist the snapshot before scaling so a cancel during the cascades
-    // below can still un-quiesce (resume also reads it from the completed op).
-    const snap = await quiesce(ctx.k8s, tenant.kubernetesNamespace, (s) => persistQuiesceSnapshot(ctx.db, opId, s));
-
-    // Cross-cutting cascades (ingress swap, mailbox disable, domains
-    // status, webcron off). Runs AFTER quiesce so pods are already
-    // gone by the time we pull the ingress rug.
-    const { applySuspended } = await import('../tenant-lifecycle/cascades.js');
-    await applySuspended(
-      {
-        db: ctx.db,
-        k8s: ctx.k8s,
-        triggeredByUserId: opts.triggeredByUserId ?? null,
-        suppressTenantNotification: opts.suppressTenantNotification === true,
-      },
-      tenantId,
-      tenant.kubernetesNamespace,
-    );
-
-    await updateOp(ctx.db, opId, {
-      state: 'idle', progressPct: 100,
-      progressMessage: 'Tenant suspended',
-      completedAt: new Date(),
-      params: { quiesceSnapshot: snap as unknown as Record<string, unknown> },
-    });
-    // applySuspended dispatched the suspended-transition hooks
-    // (tenants-status-stamp wrote status='suspended'); here we just
-    // clear the storage-lifecycle state since that's not hook-owned.
-    await ctx.db.update(tenants).set({
-      storageLifecycleState: 'idle',
-      activeStorageOpId: null,
-    }).where(eq(tenants.id, tenantId));
+    await runSuspend(ctx, { opId, tenantId, namespace: tenant.kubernetesNamespace }, opts, false);
     return { operationId: opId };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const persisted = formatLifecycleError(err, 'workload');
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
-    await markTenantState(ctx.db, tenantId, 'idle', null);
-    throw new ApiError('SUSPEND_FAILED', msg, 502);
+    await failTransitionOp(ctx.db, opId, tenantId, err);
+    throw new ApiError('SUSPEND_FAILED', err instanceof Error ? err.message : String(err), 502);
   }
+}
+
+interface TransitionOp {
+  readonly opId: string;
+  readonly tenantId: string;
+  readonly namespace: string;
+}
+
+/**
+ * The suspend itself. Written so that it can be run again from the top after
+ * the process that ran it died (`resumed`): the replica counts written down
+ * the first time are kept, and the cascades are finished where they stopped
+ * instead of being run a second time.
+ */
+async function runSuspend(ctx: RunCtx, op: TransitionOp, opts: TransitionOpts, resumed: boolean): Promise<void> {
+  // Persist the snapshot before scaling so a cancel during the cascades
+  // below can still un-quiesce (resume also reads it from the completed op).
+  await quiesceForOp(ctx.db, ctx.k8s, op.opId, op.namespace, resumed);
+
+  // Cross-cutting cascades (ingress swap, mailbox disable, domains
+  // status, webcron off). Runs AFTER quiesce so pods are already
+  // gone by the time we pull the ingress rug.
+  const cascades = await import('../tenant-lifecycle/cascades.js');
+  const cascadeCtx = {
+    db: ctx.db,
+    k8s: ctx.k8s,
+    triggeredByUserId: opts.triggeredByUserId ?? null,
+    suppressTenantNotification: opts.suppressTenantNotification === true,
+  };
+  if (resumed) await cascades.applyOnceSince(cascadeCtx, op.tenantId, op.namespace, 'suspended', await startOf(ctx.db, op.opId));
+  else await cascades.applySuspended(cascadeCtx, op.tenantId, op.namespace);
+
+  // The replica counts a resume reads are on the operation already: the
+  // quiesce wrote them down before it scaled anything.
+  await updateOp(ctx.db, op.opId, {
+    state: 'idle', progressPct: 100,
+    progressMessage: 'Tenant suspended',
+    completedAt: new Date(),
+  });
+  // applySuspended dispatched the suspended-transition hooks
+  // (tenants-status-stamp wrote status='suspended'); here we just
+  // clear the storage-lifecycle state since that's not hook-owned.
+  await ctx.db.update(tenants).set({
+    storageLifecycleState: 'idle',
+    activeStorageOpId: null,
+  }).where(and(eq(tenants.id, op.tenantId), eq(tenants.activeStorageOpId, op.opId)));
+}
+
+/** A suspend or a resume that failed: the operation failed, the tenant free for the next one. */
+async function failTransitionOp(db: Database, opId: string, tenantId: string, err: unknown): Promise<void> {
+  const persisted = formatLifecycleError(err, 'workload');
+  await updateOp(db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+  await db.update(tenants)
+    .set({ storageLifecycleState: 'idle', activeStorageOpId: null })
+    .where(and(eq(tenants.id, tenantId), eq(tenants.activeStorageOpId, opId)));
 }
 
 export async function resumeTenant(
@@ -2204,7 +2214,7 @@ export async function resumeTenant(
 async function resumeTenantLocked(
   ctx: ServiceCtx,
   tenantId: string,
-  opts: NonNullable<Parameters<typeof resumeTenant>[2]>,
+  opts: TransitionOpts,
 ): Promise<{ operationId: string }> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
@@ -2212,18 +2222,12 @@ async function resumeTenantLocked(
     throw new ApiError('NOT_SUSPENDED', 'Tenant is not suspended', 409);
   }
 
-  // Look up the last suspend op for the quiesce snapshot it recorded.
-  const [suspendOp] = await ctx.db.select().from(storageOperations).where(
-    and(eq(storageOperations.tenantId, tenantId), eq(storageOperations.opType, 'suspend')),
-  ).orderBy(desc(storageOperations.createdAt)).limit(1);
-
-  const quiesceSnap = (suspendOp?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot;
-
   const opId = uuid();
   await ctx.db.transaction(async (tx) => {
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'resume',
       state: 'unquiescing', progressPct: 0, progressMessage: 'Scaling workloads back up',
+      params: paramsOf(opts),
       triggeredByUserId: opts.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -2232,42 +2236,104 @@ async function resumeTenantLocked(
   });
 
   try {
-    if (quiesceSnap) {
-      await unquiesce(ctx.k8s, tenant.kubernetesNamespace, quiesceSnap);
-    }
-
-    // Reverse the suspend cascades — restore ingress backends, re-enable
-    // mail, webcron, domains.
-    const { applyActive } = await import('../tenant-lifecycle/cascades.js');
-    await applyActive(
-      {
-        db: ctx.db,
-        k8s: ctx.k8s,
-        triggeredByUserId: opts.triggeredByUserId ?? null,
-        suppressTenantNotification: opts.suppressTenantNotification === true,
-      },
-      tenantId,
-      tenant.kubernetesNamespace,
-    );
-
-    await updateOp(ctx.db, opId, {
-      state: 'idle', progressPct: 100, progressMessage: 'Tenant resumed', completedAt: new Date(),
-    });
-    // applyActive dispatched the active-transition hooks
-    // (tenants-status-stamp wrote status='active' + cleared
-    // suspendedAt/archivedAt); clear the storage-lifecycle state.
-    await ctx.db.update(tenants).set({
-      storageLifecycleState: 'idle',
-      activeStorageOpId: null,
-    }).where(eq(tenants.id, tenantId));
+    await runResume(ctx, { opId, tenantId, namespace: tenant.kubernetesNamespace }, opts, false);
     return { operationId: opId };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const persisted = formatLifecycleError(err, 'workload');
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
-    await markTenantState(ctx.db, tenantId, 'idle', null);
-    throw new ApiError('RESUME_FAILED', msg, 502);
+    await failTransitionOp(ctx.db, opId, tenantId, err);
+    throw new ApiError('RESUME_FAILED', err instanceof Error ? err.message : String(err), 502);
   }
+}
+
+/**
+ * The resume itself, and — like the suspend — safe to run again from the top:
+ * scaling the workloads to the counts their suspend wrote down is the same
+ * the second time, and the cascades are finished where they stopped.
+ */
+async function runResume(ctx: RunCtx, op: TransitionOp, opts: TransitionOpts, resumed: boolean): Promise<void> {
+  // Look up the last suspend op for the quiesce snapshot it recorded.
+  const [suspendOp] = await ctx.db.select().from(storageOperations).where(
+    and(eq(storageOperations.tenantId, op.tenantId), eq(storageOperations.opType, 'suspend')),
+  ).orderBy(desc(storageOperations.createdAt)).limit(1);
+  const quiesceSnap = (suspendOp?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot;
+  if (quiesceSnap) {
+    await unquiesce(ctx.k8s, op.namespace, quiesceSnap);
+  }
+
+  // Reverse the suspend cascades — restore ingress backends, re-enable
+  // mail, webcron, domains.
+  const cascades = await import('../tenant-lifecycle/cascades.js');
+  const cascadeCtx = {
+    db: ctx.db,
+    k8s: ctx.k8s,
+    triggeredByUserId: opts.triggeredByUserId ?? null,
+    suppressTenantNotification: opts.suppressTenantNotification === true,
+  };
+  if (resumed) await cascades.applyOnceSince(cascadeCtx, op.tenantId, op.namespace, 'active', await startOf(ctx.db, op.opId));
+  else await cascades.applyActive(cascadeCtx, op.tenantId, op.namespace);
+
+  await updateOp(ctx.db, op.opId, {
+    state: 'idle', progressPct: 100, progressMessage: 'Tenant resumed', completedAt: new Date(),
+  });
+  // applyActive dispatched the active-transition hooks
+  // (tenants-status-stamp wrote status='active' + cleared
+  // suspendedAt/archivedAt); clear the storage-lifecycle state.
+  await ctx.db.update(tenants).set({
+    storageLifecycleState: 'idle',
+    activeStorageOpId: null,
+  }).where(and(eq(tenants.id, op.tenantId), eq(tenants.activeStorageOpId, op.opId)));
+}
+
+/**
+ * Pick up a suspend or a resume whose process is gone, and finish it. They run
+ * under the tenant's lock, not an operation's, so that is the lock taken here
+ * — a suspend that is running after all holds it, and is left to itself.
+ *
+ * Finished, not ended: one cut off among its cascades has stamped the tenant
+ * suspended and not yet taken its site down, or the other way round, and
+ * "suspend it again" is refused for a tenant that already reads suspended.
+ */
+export async function resumeTransitionOp(ctx: RunCtx, opId: string): Promise<ResumeOutcome> {
+  const [op] = await ctx.db
+    .select({
+      opType: storageOperations.opType,
+      state: storageOperations.state,
+      params: storageOperations.params,
+      tenantId: storageOperations.tenantId,
+      triggeredByUserId: storageOperations.triggeredByUserId,
+      namespace: tenants.kubernetesNamespace,
+      activeOpId: tenants.activeStorageOpId,
+    })
+    .from(storageOperations)
+    .innerJoin(tenants, eq(tenants.id, storageOperations.tenantId))
+    .where(eq(storageOperations.id, opId));
+  if (!op || op.state === 'idle' || op.state === 'failed' || op.activeOpId !== opId) return 'ended';
+  if (op.opType !== 'suspend' && op.opType !== 'resume') return 'unknown';
+  const params = op.params ?? {};
+  const resumes = Number(params.resumes ?? 0);
+  if (!Number.isFinite(resumes) || resumes >= OP_MAX_RESUMES) return 'spent';
+  const target: TransitionOp = { opId, tenantId: op.tenantId, namespace: op.namespace };
+  const opts: TransitionOpts = {
+    triggeredByUserId: op.triggeredByUserId,
+    suppressTenantNotification: params.suppressTenantNotification === true,
+  };
+  const began = await launchUnder(ctx.db, tenantLockJob(op.tenantId), TENANT_LOCK_MAX_HOLD_MS, async () => {
+    // The run that was only slow may have finished between the look above and
+    // the lock, or the operator may have cleared the tenant.
+    const [still] = await ctx.db.select({ id: storageOperations.id })
+      .from(storageOperations)
+      .innerJoin(tenants, and(eq(tenants.id, storageOperations.tenantId), eq(tenants.activeStorageOpId, storageOperations.id)))
+      .where(and(eq(storageOperations.id, opId), notInArray(storageOperations.state, ['idle', 'failed'])));
+    if (!still) return;
+    await noteOnOp(ctx.db, opId, { resumes: resumes + 1 });
+    await updateOp(ctx.db, opId, { progressMessage: 'Picked up again after the platform API restarted' });
+    try {
+      if (op.opType === 'suspend') await runSuspend(ctx, target, opts, true);
+      else await runResume(ctx, target, opts, true);
+    } catch (err) {
+      await failTransitionOp(ctx.db, opId, op.tenantId, err);
+    }
+  });
+  return began ? 'resumed' : 'held';
 }
 
 // ─── Archive / Restore ─────────────────────────────────────────────────
@@ -2366,8 +2432,8 @@ export type ResumeOutcome =
  * Pick an operation up again whose process is gone. Every operation run from
  * here is written so that it can be run a second time from the top, whichever
  * step the first run died in — the steps already done are passed over. Not
- * picked up: a suspend and a resume, which do not run detached (the watchdog
- * ends those), and a move, which has its own rule.
+ * picked up here: a suspend and a resume, which run under the tenant's lock
+ * (`resumeTransitionOp`), and a move, which has its own rule.
  */
 export async function resumeOperation(ctx: RunCtx, opId: string): Promise<ResumeOutcome> {
   const [op] = await ctx.db

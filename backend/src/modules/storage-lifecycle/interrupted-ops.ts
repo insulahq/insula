@@ -13,9 +13,10 @@
  * after the old volume was deleted has its files in the bundle only; "failed,
  * workloads started" there is a tenant running on an empty volume.
  *
- * A suspend and a resume do not run detached — they hold the tenant's lock for
- * as long as they take — and are not run a second time: one cut off is ended
- * the way its own failure ends it, and can be asked for again.
+ * A suspend and a resume run under the tenant's lock instead of one of their
+ * own, and are finished the same way under that lock: one cut off among its
+ * cascades has a tenant that reads suspended with its site still up, or the
+ * reverse, and cannot simply be asked for again.
  *
  * "Gone" is read from the lock:
  *
@@ -37,7 +38,6 @@
  * Picking up takes the lock, so two watchdogs — or a watchdog and a holder
  * that was only slow — cannot both run the operation.
  */
-import { hostname } from 'node:os';
 import { and, eq, notInArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -45,7 +45,8 @@ import { SCHEDULER_LEASE_KEY_PREFIX } from '../../shared/scheduler-lease.js';
 import { runExclusive, runLockName } from '../../shared/exclusive-run.js';
 import { tenantLockJob } from '../tenant-lifecycle/tenant-lock.js';
 import { OP_MAX_HOLD_MS, opLockJob } from './op-lock.js';
-import { resumeOperation, updateOp } from './service.js';
+import { resumeOperation, resumeTransitionOp, updateOp, type ResumeOutcome } from './service.js';
+import { everyApiProcessIsThisRelease } from '../../shared/api-release.js';
 import { endAbandonedOperation } from './quiesce-watchdog.js';
 import { storageOperations, tenants } from '../../db/schema.js';
 
@@ -62,6 +63,8 @@ export const UNLOCKED_GRACE_MS = 3 * 60_000;
 const DETACHED_KINDS = ['archive', 'resize', 'restore', 'fsck'] as const;
 const UNDER_TENANT_LOCK_KINDS = ['suspend', 'resume'] as const;
 
+export { everyApiProcessIsThisRelease, everyPodRunsTheSameRelease } from '../../shared/api-release.js';
+
 export interface InterruptedOperation {
   readonly opId: string;
   readonly opType: string;
@@ -74,7 +77,7 @@ export interface InterruptedOperation {
 export interface PickUpResult {
   /** Operations started again. */
   readonly resumed: number;
-  /** Operations ended: a suspend or a resume, or one picked up too often already. */
+  /** Operations ended: one picked up too often already, or one that never began. */
   readonly ended: number;
   /** Found without a live process, and left as they are for now. */
   readonly leftAlone: number;
@@ -124,46 +127,14 @@ export async function findInterruptedOperations(
   }));
 }
 
-interface PodLike {
-  readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly containers?: ReadonlyArray<{ readonly image?: string }> };
-  readonly status?: { readonly phase?: string };
-}
-
-/**
- * Whether every API process that exists is this release: true, false, or null
- * when that cannot be told — this process is not one of the listed pods (a
- * local run), or the list could not be read. Only `true` licenses anything.
- *
- * A pod on its way out still counts while it is listed: it may be finishing an
- * operation. One that has ended (Succeeded, Failed) runs nothing.
- */
-export function everyPodRunsTheSameRelease(pods: readonly PodLike[], self: string): boolean | null {
-  const image = (p: PodLike): string | null => p.spec?.containers?.[0]?.image ?? null;
-  const live = pods.filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed');
-  const mine = image(live.find((p) => p.metadata?.name === self) ?? {});
-  if (!mine) return null;
-  return live.every((p) => image(p) === mine);
-}
-
-export async function everyApiProcessIsThisRelease(k8s: K8sClients, namespace: string, self: string = hostname()): Promise<boolean | null> {
-  try {
-    const list = await (k8s.core as unknown as {
-      listNamespacedPod: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: PodLike[] }>;
-    }).listNamespacedPod({ namespace, labelSelector: 'app=platform-api' });
-    return everyPodRunsTheSameRelease(list.items ?? [], self);
-  } catch {
-    return null;
-  }
-}
-
 const INTERRUPTED = 'Interrupted: the platform API restarted while this was running.';
 
 /**
- * End a suspend or a resume whose process is gone, the way its own failure
- * ends it: the operation failed, the tenant free for the next one. Under the
- * tenant's lock, where a live suspend or resume would be — so one that is
- * running after all is never ended under its feet. False when it was not ended.
+ * End a suspend or a resume that was picked up as often as an operation is and
+ * cut off each time, the way its own failure ends it: the operation failed,
+ * the tenant free for the next one. Under the tenant's lock, where a live
+ * suspend or resume would be — so one that is running after all is never
+ * ended under its feet. False when it was not ended.
  */
 async function endInterruptedTransition(db: Database, op: InterruptedOperation): Promise<boolean> {
   const run = await runExclusive(db, tenantLockJob(op.tenantId), async () => {
@@ -176,7 +147,8 @@ async function endInterruptedTransition(db: Database, op: InterruptedOperation):
     await updateOp(db, op.opId, {
       state: 'failed',
       completedAt: new Date(),
-      lastError: `${INTERRUPTED} The tenant may be only partly ${what} — ${op.opType} it again.`,
+      lastError: `${INTERRUPTED} It was picked up again more than once and interrupted each time, so it was ended here. `
+        + `The tenant may be only partly ${what}: check its status, then ${op.opType === 'suspend' ? 'resume and suspend' : 'suspend and resume'} it again.`,
     });
     await db.update(tenants)
       .set({ storageLifecycleState: 'idle', activeStorageOpId: null })
@@ -211,22 +183,23 @@ export async function pickUpInterruptedOperations(
           continue;
         }
       }
-      if ((UNDER_TENANT_LOCK_KINDS as readonly string[]).includes(op.opType)) {
-        if (await endInterruptedTransition(db, op)) {
-          ended += 1;
-          log(`${name} had no live process behind it — ended, the tenant is free again`);
-        } else {
-          leftAlone += 1;
-        }
-        continue;
-      }
-      const outcome = await resumeOperation({ db, k8s }, op.opId);
+      const underTenantLock = (UNDER_TENANT_LOCK_KINDS as readonly string[]).includes(op.opType);
+      const outcome: ResumeOutcome = underTenantLock
+        ? await resumeTransitionOp({ db, k8s }, op.opId)
+        : await resumeOperation({ db, k8s }, op.opId);
       if (outcome === 'resumed') {
         resumed += 1;
         log(`${name} had no live process behind it — picked up again`);
       } else if (outcome === 'withdrawn') {
         ended += 1;
         log(`${name} never began — its starter did not get the lock — and its claim was withdrawn`);
+      } else if (outcome === 'spent' && underTenantLock) {
+        if (await endInterruptedTransition(db, op)) {
+          ended += 1;
+          log(`${name} had no live process behind it and was ended (picked up too often)`);
+        } else {
+          leftAlone += 1;
+        }
       } else if (outcome === 'spent' || outcome === 'unknown') {
         const why = outcome === 'spent'
           ? `${INTERRUPTED} It was picked up again more than once and interrupted each time, so it was ended here.`

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import {
   tenantLifecycleTransitions,
@@ -7,6 +7,7 @@ import {
 import type { Database } from '../../../db/index.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { topoSortForTransition } from './registry.js';
+import { underTransitionLock } from './transition-lock.js';
 import {
   DEFAULT_BACKOFF_MS,
   DEFAULT_MAX_ATTEMPTS,
@@ -71,8 +72,24 @@ export interface DispatchOptions {
    *
    * Nothing else finishes such a transition: the scheduler retries `failed`
    * rows only, so the hooks after the point of death would never run.
+   *
+   * When another process holds the transition's lock — it is finishing it
+   * already — nothing is run and the result reads `running`. One that has
+   * ended meanwhile is left as it ended.
    */
   readonly resumeTransitionId?: string;
+  /**
+   * Leave the transition's row `running` once its hooks are done; the caller
+   * ends it with `endTransition` when its own work after the hooks is done.
+   * The result's `state` is what the row will end as.
+   *
+   * For a delete, whose hooks are only its first half: the namespace and the
+   * tenant's row are dropped after them. A row that read `completed` in
+   * between told the pick-up that nothing was left to do, and a process that
+   * died there left a tenant with its mail and DNS gone and its row still
+   * listed. (`running` is never a result here: that means "not run".)
+   */
+  readonly holdOpen?: boolean;
 }
 
 function envelopeFromError(err: unknown): HookErrorEnvelope {
@@ -97,32 +114,90 @@ function envelopeFromError(err: unknown): HookErrorEnvelope {
  * rows where now() >= next_attempt_at.
  *
  * Persistence is per-hook (one UPDATE per hook before/after run) so a
- * crash mid-transition leaves an inspectable trail; the scheduler can
- * pick up `running` rows older than a threshold and force them to
- * `failed` on next tick.
+ * crash mid-transition leaves an inspectable trail. The whole run holds
+ * the transition's liveness lock (transition-lock.ts); a transition
+ * whose lock has lapsed was cut off, and the pick-up
+ * (interrupted-transitions.ts) finishes it with `resumeTransitionId`.
  */
 export async function runTransition(
   db: Database,
   k8s: K8sClients,
   opts: DispatchOptions,
 ): Promise<DispatchResult> {
-  const resuming = opts.resumeTransitionId !== undefined;
   const transitionId = opts.resumeTransitionId ?? randomUUID();
+  // Under the transition's lock from its first row to its last: the lock is
+  // what says a transition is being run (transition-lock.ts).
+  const run = await underTransitionLock(db, transitionId, () => runLocked(db, k8s, opts, transitionId));
+  if (run.ran) return run.value;
+  // A new transition's lock is nobody else's to hold. One being finished can
+  // be: by the process that is finishing it already.
+  if (opts.resumeTransitionId === undefined) throw new Error(`could not take the lock of the new transition ${transitionId}`);
+  return { transitionId, state: 'running', hooksAttempted: 0, hooksOk: 0, hooksFailed: 0 };
+}
+
+/** The operator's "Notify tenant" choice, as the transition's row keeps it. */
+const SUPPRESS_NOTIFICATION = 'suppressTenantNotification';
+
+/** How often a transition has been finished after its process died, in its `detail`. */
+const RESUMES = 'resumes';
+const resumesOf = (detail: Record<string, unknown> | null): number => {
+  const n = detail?.[RESUMES];
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+};
+
+/**
+ * End a transition that was held open (`holdOpen`). Only one still `running`:
+ * the retry scheduler may have ended it meanwhile, and its word stands.
+ */
+export async function endTransition(db: Database, transitionId: string, state: Exclude<DispatchResult['state'], 'running'>): Promise<void> {
+  await db.update(tenantLifecycleTransitions)
+    .set({ state, completedAt: new Date() })
+    .where(and(eq(tenantLifecycleTransitions.id, transitionId), eq(tenantLifecycleTransitions.state, 'running')));
+}
+
+async function runLocked(
+  db: Database,
+  k8s: K8sClients,
+  opts: DispatchOptions,
+  transitionId: string,
+): Promise<DispatchResult> {
+  const resuming = opts.resumeTransitionId !== undefined;
   const startedAt = new Date();
+  // Written on the row because whoever finishes a transition cut off in the
+  // middle is not the request that began it, and has no checkbox to read.
+  let suppressTenantNotification = opts.suppressTenantNotification === true;
 
   // 1. Insert parent row.
-  if (!resuming) await db.insert(tenantLifecycleTransitions).values({
-    id: transitionId,
-    tenantId: opts.tenantId,
-    transitionKind: opts.transition,
-    fromStatus: opts.fromStatus ?? null,
-    toStatus: opts.toStatus,
-    triggeredByUserId: opts.triggeredByUserId ?? null,
-    state: 'running',
-    startedAt,
-    namespace: opts.namespace ?? null,
-    detail: opts.detail ?? null,
-  });
+  if (!resuming) {
+    await db.insert(tenantLifecycleTransitions).values({
+      id: transitionId,
+      tenantId: opts.tenantId,
+      transitionKind: opts.transition,
+      fromStatus: opts.fromStatus ?? null,
+      toStatus: opts.toStatus,
+      triggeredByUserId: opts.triggeredByUserId ?? null,
+      state: 'running',
+      startedAt,
+      namespace: opts.namespace ?? null,
+      detail: suppressTenantNotification
+        ? { ...(opts.detail ?? {}), [SUPPRESS_NOTIFICATION]: true }
+        : opts.detail ?? null,
+    });
+  } else {
+    const [row] = await db.select().from(tenantLifecycleTransitions).where(eq(tenantLifecycleTransitions.id, transitionId));
+    // Ended meanwhile — by the run that was only slow, or by another pick-up.
+    if (!row || row.state !== 'running') {
+      return { transitionId, state: (row?.state ?? 'completed') as DispatchResult['state'], hooksAttempted: 0, hooksOk: 0, hooksFailed: 0 };
+    }
+    suppressTenantNotification ||= row.detail?.[SUPPRESS_NOTIFICATION] === true;
+    // Counted here — under the lock, before a hook runs — and nowhere else: a
+    // pick-up that found the lock held, or the transition ended, has not run
+    // it. A transition that takes the process down with it every time must
+    // not be finished for ever (interrupted-transitions.ts reads the count).
+    await db.update(tenantLifecycleTransitions)
+      .set({ detail: sql`coalesce(${tenantLifecycleTransitions.detail}, '{}'::jsonb) || jsonb_build_object(${RESUMES}::text, ${resumesOf(row.detail) + 1}::int)` })
+      .where(eq(tenantLifecycleTransitions.id, transitionId));
+  }
 
   // 1b. Register a Task Tracker row so the chip lights up. Idempotent on
   // (kind, ref_id) — re-runs of the same transitionId return the same
@@ -171,9 +246,11 @@ export async function runTransition(
 
   if (hooks.length === 0) {
     // Phase 1 path: nothing to do; mark completed and return.
-    await db.update(tenantLifecycleTransitions)
-      .set({ state: 'completed', completedAt: new Date() })
-      .where(eq(tenantLifecycleTransitions.id, transitionId));
+    if (!opts.holdOpen) {
+      await db.update(tenantLifecycleTransitions)
+        .set({ state: 'completed', completedAt: new Date() })
+        .where(eq(tenantLifecycleTransitions.id, transitionId));
+    }
     return {
       transitionId,
       state: 'completed',
@@ -257,7 +334,7 @@ export async function runTransition(
         // `notify-tenant-on-transition` has read it since the hook was
         // written, but it was never populated here — so the admin panel's
         // "Notify tenant" checkbox has never suppressed anything.
-        suppressTenantNotification: opts.suppressTenantNotification === true,
+        suppressTenantNotification,
       };
       result = await hook.run(ctx);
     } catch (err) {
@@ -307,12 +384,14 @@ export async function runTransition(
     finalState = 'completed';
   }
 
-  await db.update(tenantLifecycleTransitions)
-    .set({
-      state: finalState,
-      completedAt: new Date(),
-    })
-    .where(eq(tenantLifecycleTransitions.id, transitionId));
+  if (!opts.holdOpen) {
+    await db.update(tenantLifecycleTransitions)
+      .set({
+        state: finalState,
+        completedAt: new Date(),
+      })
+      .where(eq(tenantLifecycleTransitions.id, transitionId));
+  }
 
   // Mirror the terminal state into the Task Tracker so the chip flips
   // from running → succeeded/failed. We look up by ref_id (transitionId)

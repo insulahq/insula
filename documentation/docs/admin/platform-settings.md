@@ -48,13 +48,13 @@ migrations**, and gates **Apply** on pre-flight passing. After applying, a
 
 One of the gates is **No storage operation in flight**. A storage operation
 runs inside the management API, and an upgrade restarts every API replica. An
-**archive**, a **resize**, a **restore** or a **filesystem check** in flight is
-only a warning: the new replicas pick it up again a few minutes after the
-upgrade and carry it on from where it stood — but a tenant the operation has
-stopped stays stopped until then, so it is kinder to wait. A **move**, a
-**suspend** or a **resume** of a tenant is not picked up. The gate names the
-tenant and blocks the upgrade until such an operation has finished (on a
-production install; elsewhere it is a warning).
+**archive**, a **resize**, a **restore**, a **filesystem check**, a **suspend**
+or a **resume** in flight is only a warning: the new replicas pick it up again
+a few minutes after the upgrade and carry it on from where it stood — but a
+tenant the operation has stopped stays stopped until then, so it is kinder to
+wait. A **move** of a tenant is not picked up. The gate names the tenant and
+blocks the upgrade until the move has finished (on a production install;
+elsewhere it is a warning).
 
 ## Identity — name, panel URLs, support
 

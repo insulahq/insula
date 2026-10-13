@@ -58,18 +58,33 @@ export function launchOp(
   run: () => Promise<void>,
   onceMine?: () => Promise<void>,
 ): Promise<boolean> {
+  return launchUnder(db, opLockJob(opId), OP_MAX_HOLD_MS, async () => {
+    await onceMine?.();
+    await run();
+  });
+}
+
+/**
+ * `launchOp` for a run that belongs under another lock than its operation's —
+ * a suspend or a resume, which hold their tenant's (tenant-lock.ts).
+ */
+export function launchUnder(
+  db: Database,
+  job: string,
+  maxHoldMs: number,
+  run: () => Promise<void>,
+): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
     let began = false;
-    runExclusive(db, opLockJob(opId), async () => {
+    runExclusive(db, job, async () => {
       began = true;
       resolve(true);
-      await onceMine?.();
       await run();
-    }, { maxHoldMs: OP_MAX_HOLD_MS }).then((outcome) => {
+    }, { maxHoldMs }).then((outcome) => {
       if (!outcome.ran) resolve(false);
     }, (err: unknown) => {
       if (!began) reject(err instanceof Error ? err : new Error(String(err)));
-      else console.error(`[storage-lifecycle] operation ${opId} ended outside its own handling:`, err);
+      else console.error(`[storage-lifecycle] the run under ${job} ended outside its own handling:`, err);
     });
   });
 }

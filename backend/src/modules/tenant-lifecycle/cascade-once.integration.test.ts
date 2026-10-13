@@ -146,4 +146,32 @@ describe.skipIf(!dbAvailable)('cascades of an operation picked up again (real Po
     expect(ran).toEqual(['mail', 'status-stamp', 'ingress', 'tell-tenant']);
     expect((await hookStates(other)).ingress).toBe('running');           // left as it was
   });
+
+  // A suspend and a resume are picked up too (storage-lifecycle/service.ts).
+  it.each<['suspended' | 'active' | 'restored' | 'archived', string]>([
+    ['suspended', 'suspended'], ['active', 'active'], ['restored', 'active'], ['archived', 'archived'],
+  ])('a %s cascade that never began is run as one, to the status %s', async (kind, toStatus) => {
+    const id = await applyOnceSince({ db: db(), k8s }, tenantId, 'tenant-x', kind, opBegan);
+    expect(await transitions()).toMatchObject([{ id, transitionKind: kind, toStatus, state: 'completed' }]);
+  });
+
+  it('a suspend\'s cascades cut off in the middle are finished, with the choice not to tell the tenant kept', async () => {
+    _resetRegistryForTests();
+    const told: Array<boolean | undefined> = [];
+    for (const name of ['mail', 'tell-tenant']) {
+      registerLifecycleHook({
+        name, order: name === 'mail' ? 100 : 900, blocking: 'continue', transitions: ['suspended'],
+        run: async (ctx) => { ran.push(name); told.push(ctx.suppressTenantNotification); return { status: 'ok' }; },
+      } as LifecycleHook);
+    }
+    const { transitionId } = await runTransition(db(), k8s, {
+      tenantId, namespace: 'tenant-x', transition: 'suspended', toStatus: 'suspended', skipExecution: true, suppressTenantNotification: true,
+    });
+    await db().update(tenantLifecycleHookRuns).set({ state: 'ok', attempts: 1, completedAt: new Date() }).where(eq(tenantLifecycleHookRuns.hookName, 'mail'));
+    // Finished by a process that was not asked whether to tell the tenant.
+    expect(await applyOnceSince({ db: db(), k8s }, tenantId, 'tenant-x', 'suspended', opBegan)).toBe(transitionId);
+    expect(ran).toEqual(['tell-tenant']);
+    expect(told).toEqual([true]);
+    expect((await transitions())[0]).toMatchObject({ id: transitionId, state: 'completed' });
+  });
 });

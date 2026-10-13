@@ -234,7 +234,7 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
       expect(evaluatePreflight(healthy).gates.some((g) => g.id === id)).toBe(false);
     });
 
-    it.each(['relocate', 'suspend', 'resume', 'a-kind-from-a-later-release'])('production: a %s in flight blocks, and names the tenant', (kind) => {
+    it.each(['relocate', 'a-kind-from-a-later-release'])('production: a %s in flight blocks, and names the tenant', (kind) => {
       const r = evaluatePreflight({ ...healthy, storageOperations: ops(kind) });
       expect(gate(r, id).status).toBe('fail');
       expect(gate(r, id).detail).toContain(`${kind} of Tenant 1`);
@@ -242,7 +242,7 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
       expect(r.ok).toBe(false);
     });
 
-    it.each(['archive', 'resize', 'restore', 'fsck'])('a %s in flight never blocks: the new pods pick it up again — it is a warning that says so', (kind) => {
+    it.each(['archive', 'resize', 'restore', 'fsck', 'suspend', 'resume'])('a %s in flight never blocks: the new pods pick it up again — it is a warning that says so', (kind) => {
       const r = evaluatePreflight({ ...healthy, storageOperations: ops(kind) });
       expect(gate(r, id).status).toBe('warn');
       expect(gate(r, id).detail).toContain(`${kind} of Tenant 1`);
@@ -255,7 +255,7 @@ describe('evaluatePreflight — host state gates (ADR-064 §6)', () => {
     it('an operation that is picked up does not excuse one beside it that is not', () => {
       const r = evaluatePreflight({ ...healthy, storageOperations: ops('archive', 'resize', 'relocate') });
       expect(gate(r, id).status).toBe('fail');
-      expect(gate(r, id).detail).toContain('a move, a suspend or a resume is not');
+      expect(gate(r, id).detail).toContain('A move is not picked up again afterwards');
     });
 
     it('staging: the same operation is a warning, not a block', () => {

@@ -224,9 +224,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   The upgrade pre-flight has a gate, **No storage operation in flight**, that names the operations
   and their tenants. An archive, a resize, a restore or a filesystem check is only a warning: the
   new replicas pick it up again a few minutes later (below), and the gate says that a tenant the
-  operation has stopped stays stopped until then. A move, a suspend or a resume of a tenant is not
-  picked up, and blocks the upgrade on a production install until it has finished (a warning
-  elsewhere).
+  operation has stopped stays stopped until then. A suspend or a resume is a warning for the same
+  reason. A move of a tenant is not picked up, and blocks the upgrade on a production install
+  until it has finished (a warning elsewhere).
 - **A storage operation interrupted by an API restart is picked up again — every kind, within
   minutes.** A resize, a restore, a filesystem check and an archive run inside the platform API,
   after the request that started them has been answered. A deploy, a crash or a lost node in the
@@ -265,9 +265,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
   An operation picked up three times and interrupted each time is ended there and then — failed,
   its helper Jobs removed, its workloads started, the admins notified — instead of waiting for
-  the six-hour rule. A **suspend** or a **resume** cut off by a restart is not run again; it is
-  ended within minutes and can be asked for again (it used to hold the tenant for six hours). A
-  move keeps its own thirty-minute rule.
+  the six-hour rule. A move keeps its own thirty-minute rule.
+
+  A **suspend** or a **resume** cut off by a restart is finished the same way (it used to hold
+  the tenant for six hours): the workloads are scaled to the counts written down the first time,
+  and the cascades are finished where they stopped. Ending it and asking again would not do — a
+  suspend cut off among its cascades has a tenant that reads suspended, for which a second
+  suspend is refused, with its site still answering. The operator's choice not to tell the tenant
+  is kept on the operation, so the process that finishes it does not send the message after all.
 - **A failed shrink no longer starts the tenant on an empty volume.** A shrink deletes the volume
   and restores the files into a smaller one; in between they are in the pre-resize bundle only. A
   shrink that failed there — its restore Job failed, or it was ended by the watchdog — had its
@@ -293,6 +298,42 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **Operations started by an earlier release**, which wrote no lock, are picked up too — once no
   API process of another release is left that could still be running them. This is what happens
   to an operation in flight during the upgrade to this release.
+- **A tenant transition cut off by an API restart is finished — a delete included.** Suspending,
+  resuming, archiving, restoring and deleting a tenant each run a list of hooks (mail, DNS,
+  ingress, the status, the tenant's message), one after the other, in the platform API. A deploy,
+  a crash or a lost node between two of them left the transition reading "running" for ever with
+  the rest of its hooks pending: only hooks that *failed* were ever retried. A delete cut off
+  there left a tenant whose mailboxes and DNS zones were gone and whose row, namespace and volume
+  were not, still listed as active. Every transition now holds a lock while its hooks run; one
+  whose lock has lapsed is finished by the two-minute lifecycle tick, typically three to five
+  minutes after the process died: the hooks that had ended are not run again, the rest are, and a
+  delete goes on to drop the namespace and the tenant. A delete's transition now reads "running"
+  until the tenant's row is gone, so one cut off after its last hook is finished as well.
+
+  Not everything found is finished. A transition the tenant has since moved past — suspended, cut
+  off, and resumed by the operator before the tick — is closed instead: its remaining hooks would
+  put a running tenant half back into suspension. So is one whose storage operation has ended as
+  failed or was cancelled in the meantime (an archive's hooks finished afterwards would archive
+  the tenant all the same), a decommission's (recorded as a delete that keeps the tenant — it is
+  never finished as a delete; start the decommission again), one older than six hours, and one
+  picked up three times and cut off each time. Closed means the transition ends "failed (partial)" and
+  the hooks that never ran read failed, with the reason, under **Platform → Tenant Lifecycle
+  Hooks**. On the first tick after the upgrade this also closes transitions an earlier release
+  left "running" long ago — nothing is run for those. A transition of an earlier release, which
+  wrote no lock, is touched only once no API process of that release is left.
+
+  A hook that was being *retried* when the process died stayed "running" under a transition long
+  ended and was never retried again; it is handed back to the retry scheduler after half an hour.
+- **Growing the storage of a tenant with no running pod no longer fails.** A grow has two halves:
+  Longhorn extends the volume, then the kubelet grows the filesystem — on a node where the volume
+  is mounted. A tenant with no workloads yet and an idle file manager has no pod mounting it, so
+  the claim waited for one, the operation failed after ten minutes with `FS_RESIZE_TIMEOUT`, and
+  the claim was left asking for the new size with the tenant's limit still the old one. The grow
+  now starts the tenant's file manager for as long as the filesystem takes and hands it back
+  after. A suspended tenant's file manager stays stopped: there the operation ends as done and
+  says that the filesystem grows when the tenant's next pod starts, which is when the kubelet
+  does it. The same when the file manager cannot be started after three tries — with the reason
+  in the operation's message.
 - **The integrity sweep announces each thing it did to a tenant, not only the first of the day.**
   Its notification was limited to one per tenant per day, so the removal of an archived tenant's
   leftover volume went unsaid when the same tenant had had another repair that day. It is now one

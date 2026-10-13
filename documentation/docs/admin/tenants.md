@@ -322,10 +322,18 @@ operation again.
     deleted leaves the tenant stopped the same way: **Reset to idle**,
     then start that restore again — both volumes are kept.
 
- A **suspend** or **resume** cut off by a restart is
-not continued: it is ended within minutes, and you suspend or resume the
-tenant again. A **move** to another server that loses its process is ended
-after thirty minutes and the tenant's workloads are started again.
+A **suspend**, a **resume** and a **delete** cut off by a restart are finished
+the same way, a few minutes later: the steps that were done are not repeated
+(the tenant is not told twice), the rest are run, and a delete goes on to
+remove the tenant. If you have changed the tenant in the meantime — resumed
+one whose suspend was cut off, say, or cancelled the operation it belonged to
+— the interrupted change is not finished over yours: it is closed, and the
+steps it never ran read *failed — Interrupted* under **Platform → Tenant
+Lifecycle Hooks**. The same happens to one found more than six hours late,
+and to a **decommission** (which keeps the tenant): start that again.
+
+A **move** to another server that loses its process is ended after thirty
+minutes and the tenant's workloads are started again.
 
 **Cancel** on a running storage operation stops it where it is and starts the
 workloads again.
@@ -411,7 +419,12 @@ same way.
     you what it will do.
 
 - **Growing storage** happens online — the platform resizes the volume
-  and surfaces a progress modal.
+  and surfaces a progress modal. The filesystem grows on a running pod; a
+  tenant with none (no workloads yet) gets its file manager started for the
+  moment that takes. For a **suspended** tenant nothing is started: the volume
+  is extended, and the operation says that its filesystem grows when the
+  tenant is resumed. It says the same, with the reason, if the file manager
+  could not be started.
 - **Shrinking storage** is destructive (snapshot → drop volume → recreate
   smaller → restore). The platform refuses it on a normal save and prompts
   you with a confirmation explaining the steps before it runs.

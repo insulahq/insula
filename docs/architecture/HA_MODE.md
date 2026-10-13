@@ -215,8 +215,13 @@ second run can find; one still running is waited for, never doubled.
 
 A suspend and a resume do not run detached: they hold the **tenant's** lock for
 as long as they take, and that lock is what is read for them. One cut off is
-not run again but ended the way its own failure ends it — the operation failed,
-the tenant free — under the tenant's lock.
+finished under that lock (`resumeTransitionOp`): the workloads are scaled from
+the replica counts written down, and the cascades go through `applyOnceSince`
+like an archive's. It is not ended and asked for again, because a suspend cut
+off among its cascades has stamped the tenant suspended — a second suspend is
+refused — with the ingress still up. The operator's "do not notify the tenant"
+is written on the operation's `params`, since the process that finishes it was
+not asked.
 
 An operation picked up three times (`OP_MAX_RESUMES`), or one whose row does
 not say how to run it again, is ended at once by the same function the age
@@ -238,7 +243,8 @@ A claim carries `awaitingLock: true` in the operation's `params` until its run
 has the lock. One that still reads true never began — its starter told its
 caller so — and is withdrawn by the pick-up, never run.
 
-Cascades (`applyArchived`, `applyRestored`) of an operation picked up again go
+Cascades (`applyArchived`, `applyRestored`, `applySuspended`, `applyActive`) of
+an operation picked up again go
 through `applyOnceSince` (`tenant-lifecycle/cascades.ts`): the first run's own
 transition is found by tenant, kind and the operation's start. Finished — any
 way — nothing is run. Still `running`, its process is gone, and the dispatcher
@@ -246,6 +252,41 @@ finishes it (`resumeTransitionId`): hooks that ended are skipped, the one that
 was running and the pending ones are run, a failed one stays the retry
 scheduler's. The tenant's status is not the test — it is stamped by one hook
 among several.
+
+**Transitions have the same lock.** The dispatcher runs a transition's hooks
+under `lifecycle-transition:<transition id>`
+(`tenant-lifecycle/registry/transition-lock.ts`). A transition that reads
+`running` with that lock lapsed — or with none, an earlier release's, once
+every API pod is this release — was cut off between two hooks, and nothing
+retried the rest: the retry scheduler takes `failed` rows only. The lifecycle
+tick (`lifecycle-hook-retry`, two minutes) finishes those first
+(`interrupted-transitions.ts`), under the tenant's lock:
+
+- not one whose tenant a storage operation in flight owns — that operation
+  finishes its own cascades when it is picked up;
+- a **delete** is taken to its end through the tenant delete's own body
+  (`finishInterruptedDelete`): remaining hooks, namespace, row. `applyDeleted`
+  holds the transition open (`holdOpen`, `endTransition`) until the row is
+  dropped, so a delete cut off after its last hook still reads `running` and is
+  found. When the dispatcher ran nothing because another process holds the
+  transition, nothing is dropped either — that process's hooks still read the
+  tenant's rows. Only `to_status = 'deleted'` without `detail.preservedTenant`
+  is a delete of the tenant: a decommission (`runDeprovision`) dispatches a
+  `deleted` transition and keeps the row, and is closed, never finished;
+- one the tenant has moved past (any later transition), one that began inside
+  a storage operation which has since ended `failed` (given up, cancelled,
+  abandoned), one older than six hours, one picked up three times, and one
+  whose tenant is gone (a delete excepted) is **closed**: `failed_partial`,
+  its unfinished hooks `failed` with the reason and no retry. Finishing a
+  suspend after the operator resumed the tenant would half suspend it again.
+
+The dispatcher writes `suppressTenantNotification` into the transition's
+`detail` and reads it back when it finishes one; it also counts there, under
+the transition's lock, how often a transition was finished (`resumes`) — a
+look that found the lock held has not run it. A hook the *retry scheduler*
+was running when its process died stays `running` under a transition that is
+no longer running; `requeueInterruptedRetries` hands it back after thirty
+minutes.
 
 A lapsed lock does not prove a dead process: one paused for minutes — a
 stalled VM, a database out of reach — looks the same from outside, and wakes

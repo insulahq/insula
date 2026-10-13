@@ -11,7 +11,7 @@
  * Needs a database — CI's integration job provides DATABASE_URL.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { backupJobs, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
@@ -107,12 +107,23 @@ vi.mock('../tenant-lifecycle/cascades.js', () => ({
   },
   // What it does and does not run again is cascade-once.integration.test.ts's;
   // here: that a picked-up run asks for this, with the operation's own start.
-  applyOnceSince: async (ctx: { db: Database }, tenantId: string, _ns: string, transition: 'archived' | 'restored', since: Date) => {
+  applyOnceSince: async (
+    ctx: { db: Database; suppressTenantNotification?: boolean },
+    tenantId: string,
+    _ns: string,
+    transition: 'archived' | 'restored' | 'suspended' | 'active',
+    since: Date,
+  ) => {
+    // The tenant's newest operation is the one being picked up.
     const [op] = await ctx.db.select({ createdAt: storageOperations.createdAt }).from(storageOperations)
-      .where(eq(storageOperations.tenantId, tenantId));
-    did.push(`cascade ${transition}, once${since.getTime() === op?.createdAt.getTime() ? ' since the operation began' : ' SINCE THE WRONG MOMENT'}`);
+      .where(eq(storageOperations.tenantId, tenantId)).orderBy(desc(storageOperations.createdAt)).limit(1);
+    did.push(`cascade ${transition}, once${since.getTime() === op?.createdAt.getTime() ? ' since the operation began' : ' SINCE THE WRONG MOMENT'}`
+      + (ctx.suppressTenantNotification ? ', the tenant not told' : ''));
+    await gate;
+    failing('cascade');
+    const status = { archived: 'archived', suspended: 'suspended', restored: 'active', active: 'active' } as const;
     await ctx.db.update(tenants)
-      .set(transition === 'archived' ? { status: 'archived', archivedAt: new Date() } : { status: 'active', archivedAt: null })
+      .set({ status: status[transition], ...(transition === 'archived' ? { archivedAt: new Date() } : {}), ...(status[transition] === 'active' ? { archivedAt: null } : {}) })
       .where(eq(tenants.id, tenantId));
     return 'transition-3';
   },
@@ -123,6 +134,16 @@ vi.mock('../notifications/events.js', () => ({
   },
 }));
 vi.mock('../file-manager/idle-cleanup.js', () => ({ recordFileManagerAccess: () => undefined }));
+/** Whether the tenant's file manager can be started, and what its mount does to the claim. */
+let fileManager: { starts: boolean; stopped: boolean; onMount: () => void } = { starts: true, stopped: false, onMount: () => undefined };
+vi.mock('../file-manager/lease.js', () => ({
+  acquireFileManagerLease: async (_k8s: unknown, namespace: string, purpose: string) => {
+    did.push(`hold the file manager of ${namespace} for ${purpose}`);
+    if (!fileManager.starts) throw new Error('File manager not ready: timeout');
+    fileManager.onMount();
+    return { podName: 'file-manager-1', currentPod: async () => 'file-manager-1', release: async () => { did.push('hand the file manager back'); } };
+  },
+}));
 
 const {
   findInterruptedOperations, pickUpInterruptedOperations, everyPodRunsTheSameRelease,
@@ -164,7 +185,9 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
   let planId = '';
   const log: string[] = [];
   /** The tenant's claim as the stand-in cluster has it; null when absent. */
-  let claim: { request: string; storageClass: string; volumeName: string } | null = null;
+  let claim: { request: string; storageClass: string; volumeName: string; capacity?: string } | null = null;
+  /** A grow extends the block device only; the filesystem — and the claim's capacity — waits for a mount. */
+  let growAwaitsMount = false;
   /** The API pods the stand-in cluster lists. */
   let apiPods: Array<{ name: string; image: string }> = [];
   /** Namespaces whose Deployments carry the quiesce hold, as the watchdog's leftover leg lists them. */
@@ -177,7 +200,9 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       listDeploymentForAllNamespaces: async () => ({
         items: heldNamespaces.map((namespace) => ({ metadata: { namespace, annotations: { 'insula.host/storage-quiesced': 'true' } } })),
       }),
-      readNamespacedDeployment: async () => notFound(),
+      readNamespacedDeployment: async ({ name }: { name: string }) => (name === 'file-manager' && fileManager.stopped
+        ? { metadata: { annotations: { 'insula.host/storage-quiesced': 'true' } } }
+        : notFound()),
     },
     batch: {
       listNamespacedCronJob: async () => ({ items: [] }),
@@ -200,7 +225,11 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
         ? {
           metadata: {},
           spec: { storageClassName: claim.storageClass, volumeName: claim.volumeName, resources: { requests: { storage: claim.request } } },
-          status: { phase: 'Bound', capacity: { storage: claim.request } },
+          status: {
+            phase: 'Bound',
+            capacity: { storage: claim.capacity ?? claim.request },
+            conditions: claim.capacity && claim.capacity !== claim.request ? [{ type: 'FileSystemResizePending', status: 'True' }] : [],
+          },
         }
         : notFound();
       },
@@ -216,7 +245,7 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       },
       patchNamespacedPersistentVolumeClaim: async ({ body }: { body: { spec: { resources: { requests: { storage: string } } } } }) => {
         did.push(`grow claim to ${body.spec.resources.requests.storage}`);
-        if (claim) claim = { ...claim, request: body.spec.resources.requests.storage };
+        if (claim) claim = { ...claim, request: body.spec.resources.requests.storage, ...(growAwaitsMount ? { capacity: claim.capacity ?? claim.request } : {}) };
       },
       readPersistentVolume: async () => ({
         spec: { capacity: { storage: '20Gi' }, storageClassName: 'longhorn-tenant', csi: { volumeAttributes: { fsType: 'xfs' } } },
@@ -248,6 +277,7 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
     did.length = 0; log.length = 0;
     captureOutcome = { status: 'completed' }; gate = null; leftFsckJob = null; leftRestoreJob = null;
     fails = null; atUnquiesce = null; told.length = 0; heldNamespaces = []; claimUnreadable = false;
+    growAwaitsMount = false; fileManager = { starts: true, stopped: false, onMount: () => undefined };
     volume = { state: 'detached', frontendDisabled: false, node: 'node-a' };
     claim = { request: '20Gi', storageClass: 'longhorn-tenant', volumeName: 'pv-old' };
     apiPods = [];
@@ -747,6 +777,59 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       expect(await tenantRow(a.tenantId)).toMatchObject({ storageLifecycleState: 'idle', storageLimitOverride: '30.00' });
     });
 
+    const grow = () => inFlight('resize', { state: 'resizing', params: { fromMib: 20480, toMib: 30720, mode: 'grow_online' } });
+
+    it('an online grow of a tenant with no running pod: the file manager is held so the filesystem can grow, and handed back', async () => {
+      const a = await grow();
+      growAwaitsMount = true;
+      fileManager.onMount = () => { if (claim) claim = { ...claim, capacity: claim.request }; };
+      await lock(a.opId, DEAD);
+      await pickUp();
+      const row = await ended(a.opId);
+      expect(did).toEqual(['grow claim to 30Gi', `hold the file manager of ${a.namespace} for storage-grow`, 'hand the file manager back']);
+      expect(row).toMatchObject({ state: 'idle', progressMessage: 'Grew 20480 → 30720 MiB online (no downtime)' });
+      expect(await tenantRow(a.tenantId)).toMatchObject({ storageLifecycleState: 'idle', storageLimitOverride: '30.00' });
+    });
+
+    it('an online grow of a tenant whose workloads are stopped — suspended: done, its file manager left stopped, and it says the filesystem grows at the next start', async () => {
+      const a = await grow();
+      growAwaitsMount = true;
+      fileManager.stopped = true;
+      await lock(a.opId, DEAD);
+      await pickUp();
+      const row = await ended(a.opId);
+      expect(did).toEqual(['grow claim to 30Gi']);                    // nothing is started over the hold
+      expect(row.state).toBe('idle');
+      expect(row.lastError).toBeNull();
+      expect(row.progressMessage).toBe('Volume extended 20480 → 30720 MiB. No pod of the tenant mounts it now (its workloads are stopped), so its filesystem grows to the new size when the next one starts.');
+      // The limit follows the claim, which already asks for the new size.
+      expect(await tenantRow(a.tenantId)).toMatchObject({ storageLifecycleState: 'idle', activeStorageOpId: null, storageLimitOverride: '30.00' });
+    });
+
+    it('an online grow whose file manager cannot be started: tried again, then done — and the reason is in what it says', async () => {
+      const a = await grow();
+      growAwaitsMount = true;
+      fileManager.starts = false;
+      await lock(a.opId, DEAD);
+      await pickUp();
+      const row = await ended(a.opId);
+      expect(did.filter((d) => d.startsWith('hold the file manager'))).toHaveLength(3);
+      expect(row.state).toBe('idle');
+      expect(row.progressMessage).toContain('(its file manager could not be started: File manager not ready: timeout)');
+      expect(row.progressMessage).toContain('grows to the new size when the next one starts');
+    }, 20_000);
+
+    it('an online grow that fails still hands the file manager back', async () => {
+      const a = await grow();
+      growAwaitsMount = true;
+      fileManager.onMount = () => { claimUnreadable = true; };
+      await lock(a.opId, DEAD);
+      await pickUp();
+      const row = await ended(a.opId);
+      expect(row.state).toBe('failed');
+      expect(did).toContain('hand the file manager back');
+    });
+
     const revert = (over: Parameters<typeof inFlight>[1] = {}) => inFlight('restore', {
       state: 'restoring', ...over, params: { mode: 'snapshot_revert', volumeName: 'pv-old', snapshotName: 'snap-1', ...over.params },
     });
@@ -893,28 +976,122 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
   });
 
   describe('a suspend or a resume whose process is gone', () => {
-    it.each<[OpType, string]>([['suspend', 'suspended'], ['resume', 'resumed']])('a %s is ended, not run again: failed, and the tenant free for the next one', async (kind, word) => {
-      const a = await inFlight(kind);
+    /** Wait for a suspend or a resume picked up again to end, and for the tenant's lock to be given back. */
+    const settled = async (a: InFlight) => {
+      for (let i = 0; i < 150; i += 1) {
+        const row = await op(a.opId);
+        if (row?.completedAt) {
+          for (let j = 0; j < 50 && await lockRow(tenantLockJob(a.tenantId)); j += 1) await new Promise((resolve) => { setTimeout(resolve, 20); });
+          return row;
+        }
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
+      throw new Error(`operation ${a.opId} did not end; it did: ${did.join(' | ')}`);
+    };
+    /** A resume in flight, after the suspend that wrote the replica counts down. */
+    const resuming = async (over: Parameters<typeof inFlight>[1] = {}) => {
+      const a = await inFlight('resume', { state: 'unquiescing', tenantStatus: 'suspended', ...over, params: { quiesceSnapshot: undefined, ...over.params } });
+      await db().insert(storageOperations).values({
+        id: crypto.randomUUID(), tenantId: a.tenantId, opType: 'suspend', state: 'idle',
+        params: { quiesceSnapshot: WRITTEN },
+        createdAt: new Date(Date.now() - 3 * 86_400_000), completedAt: new Date(Date.now() - 3 * 86_400_000),
+      });
+      return a;
+    };
+
+    it('a suspend is finished: scaled down with the counts it wrote down kept, its cascades run once, the tenant suspended', async () => {
+      const a = await inFlight('suspend');
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      expect(await pickUp()).toEqual({ resumed: 1, ended: 0, leftAlone: 0 });
+      const row = await settled(a);
+      expect(did).toEqual(['quiesce', 'cascade suspended, once since the operation began']);
+      expect(row).toMatchObject({ state: 'idle', progressMessage: 'Tenant suspended', lastError: null });
+      // What a resume reads to start the workloads again: 2, not the 0 they are at now.
+      expect(row.params).toMatchObject({ quiesceSnapshot: WRITTEN, resumes: 1 });
+      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'suspended', storageLifecycleState: 'idle', activeStorageOpId: null });
+      expect(await lockRow(tenantLockJob(a.tenantId))).toBeNull();
+    });
+
+    it('a suspend cut off before it wrote any counts down takes them now', async () => {
+      const a = await inFlight('suspend', { params: { quiesceSnapshot: undefined } });
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      await pickUp();
+      await settled(a);
+      expect(did).toEqual(['quiesce (writing the counts down)', 'cascade suspended, once since the operation began']);
+    });
+
+    it('a resume is finished: the workloads started from the counts of its suspend, its cascades run once, the tenant active', async () => {
+      const a = await resuming();
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      expect(await pickUp()).toEqual({ resumed: 1, ended: 0, leftAlone: 0 });
+      const row = await settled(a);
+      expect(did).toEqual(['unquiesce to web=2', 'cascade active, once since the operation began']);
+      expect(row).toMatchObject({ state: 'idle', progressMessage: 'Tenant resumed', lastError: null });
+      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'active', storageLifecycleState: 'idle', activeStorageOpId: null });
+    });
+
+    it.each<[OpType, string]>([['suspend', 'suspended'], ['resume', 'active']])('a %s whose operator chose not to tell the tenant still does not tell it', async (kind, transition) => {
+      const a = kind === 'suspend'
+        ? await inFlight('suspend', { params: { suppressTenantNotification: true } })
+        : await resuming({ params: { suppressTenantNotification: true } });
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      await pickUp();
+      await settled(a);
+      expect(did).toContain(`cascade ${transition}, once since the operation began, the tenant not told`);
+    });
+
+    it('is run under the tenant\'s lock, so nothing else is started on the tenant meanwhile — and not picked up twice', async () => {
+      const a = await inFlight('suspend');
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      let open: () => void = () => undefined;
+      gate = new Promise<void>((resolve) => { open = resolve; });
+      expect(await pickUp()).toEqual({ resumed: 1, ended: 0, leftAlone: 0 });
+      await reached('cascade suspended');
+      expect(await lockRow(tenantLockJob(a.tenantId))).toMatchObject({ holder: REPLICA_ID });
+      expect(await pickUp()).toEqual({ resumed: 0, ended: 0, leftAlone: 0 });       // its lock is live: not even found
+      open();
+      await settled(a);
+      expect(did.filter((d) => d.startsWith('cascade'))).toHaveLength(1);
+    });
+
+    it('one that fails when it is picked up fails as its first run would: the operation failed, the tenant free', async () => {
+      const a = await inFlight('suspend');
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      fails = 'cascade';
+      await pickUp();
+      const row = await settled(a);
+      expect(row.state).toBe('failed');
+      expect(row.lastError).toContain('cascade failed');
+      expect(await tenantRow(a.tenantId)).toMatchObject({ storageLifecycleState: 'idle', activeStorageOpId: null });
+    });
+
+    it.each<[OpType, string]>([
+      ['suspend', 'resume and suspend it again'],
+      ['resume', 'suspend and resume it again'],
+    ])('a %s picked up as often as an operation is, and cut off each time, is ended: failed, the tenant free, nothing touched', async (kind, advice) => {
+      const a = await inFlight(kind, { params: { resumes: OP_MAX_RESUMES } });
       await lockAt(tenantLockJob(a.tenantId), DEAD);
       expect(await pickUp()).toEqual({ resumed: 0, ended: 1, leftAlone: 0 });
       const row = await op(a.opId);
       expect(row.state).toBe('failed');
-      expect(row.lastError).toContain(`may be only partly ${word} — ${kind} it again`);
+      expect(row.lastError).toContain('picked up again more than once');
+      expect(row.lastError).toContain(advice);
       expect(await tenantRow(a.tenantId)).toMatchObject({ storageLifecycleState: 'idle', activeStorageOpId: null });
       expect(did).toEqual([]);                                       // the workloads are not touched
       expect(await lockRow(tenantLockJob(a.tenantId))).toBeNull();
     });
 
-    it('is not ended when a process took the tenant\'s lock between the look and the ending', async () => {
+    it('is not picked up when a process took the tenant\'s lock between the look and the pick-up', async () => {
       const a = await inFlight('suspend');
       await lockAt(tenantLockJob(a.tenantId), DEAD);
       // Right after the finder's query, the tenant's lock is taken by a live process.
       const taken = racing(() => lockAt(tenantLockJob(a.tenantId), 90, 'a-live-suspend'));
       expect(await pickUpInterruptedOperations(taken, k8s, {}, (line) => { log.push(line); })).toEqual({ resumed: 0, ended: 0, leftAlone: 1 });
       expect((await op(a.opId)).state).toBe('quiescing');
+      expect(did).toEqual([]);
     });
 
-    it('is not failed when it finished between the look and the ending', async () => {
+    it('is not touched when it finished between the look and the pick-up', async () => {
       const a = await inFlight('resume', { state: 'unquiescing' });
       await lockAt(tenantLockJob(a.tenantId), DEAD);
       const finished = racing(async () => {
@@ -923,6 +1100,22 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       });
       expect(await pickUpInterruptedOperations(finished, k8s, {}, (line) => { log.push(line); })).toEqual({ resumed: 0, ended: 0, leftAlone: 1 });
       expect(await op(a.opId)).toMatchObject({ state: 'idle', lastError: null });
+      expect(did).toEqual([]);
+    });
+
+    it('is not run when it ended between the pick-up\'s look and its lock', async () => {
+      const a = await inFlight('suspend');
+      await lockAt(tenantLockJob(a.tenantId), DEAD);
+      const { resumeTransitionOp } = await import('./service.js');
+      // The lock's claim is the first raw query of the pick-up of one operation.
+      const cleared = racing(async () => {
+        await db().update(storageOperations).set({ state: 'failed', completedAt: new Date() }).where(eq(storageOperations.id, a.opId));
+        await db().update(tenants).set({ storageLifecycleState: 'idle', activeStorageOpId: null }).where(eq(tenants.id, a.tenantId));
+      });
+      expect(await resumeTransitionOp({ db: cleared, k8s }, a.opId)).toBe('resumed');
+      for (let j = 0; j < 50 && await lockRow(tenantLockJob(a.tenantId)); j += 1) await new Promise((resolve) => { setTimeout(resolve, 20); });
+      expect(did).toEqual([]);
+      expect((await op(a.opId)).params).not.toHaveProperty('resumes');
     });
   });
 
