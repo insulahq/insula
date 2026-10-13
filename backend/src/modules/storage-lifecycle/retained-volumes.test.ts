@@ -171,6 +171,24 @@ describe('classifyRetainedVolumes', () => {
       expect(classify([marker])).toEqual([]);
     });
 
+    // Longhorn flags a recurring job's snapshots as user-created too. Nothing
+    // rotates them on a volume that has been released — the job only runs on
+    // an attached one — so counting them would keep the volume "retained" for good.
+    const scheduled = { metadata: { name: 'hourly-snap-a1b2c3', labels: { longhornvolume: 'pvc-old' } }, spec: { createSnapshot: true, labels: { RecurringJob: 'hourly-snap' }, volume: 'pvc-old' }, status: status(true, { RecurringJob: 'hourly-snap' }) };
+
+    it('a volume with only a schedule\'s snapshots is not one either, although Longhorn flags those as user-created', () => {
+      expect(classify([scheduled, marker])).toEqual([]);
+    });
+
+    it('…and beside a snapshot a person took, the schedule\'s are not offered as restore points', () => {
+      expect(classify([scheduled, taken])[0].snapshots.map((x) => x.name)).toEqual(['snapshot-68f25756']);
+    });
+
+    it('the schedule\'s label counts wherever Longhorn has put it', () => {
+      expect(classify([{ ...scheduled, spec: { ...scheduled.spec, labels: null } }])).toEqual([]);
+      expect(classify([{ ...scheduled, status: status(true, {}) }])).toEqual([]);
+    });
+
     it('a flag in the spec — where no snapshot has one — counts for nothing', () => {
       expect(classify([{ ...taken, spec: { ...taken.spec, userCreated: true }, status: { ...taken.status, userCreated: undefined } }])).toEqual([]);
     });

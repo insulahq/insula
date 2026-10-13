@@ -4,6 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { RetainedVolume, RetainedSnapshot } from '@insula/api-contracts';
+import { isSnapshotSomebodyTook } from '../../shared/longhorn-snapshot.js';
 
 /**
  * Retained-volume discovery for the admin "restore from a retained volume"
@@ -48,7 +49,7 @@ interface RawLhVolume {
 
 interface RawLhSnapshot {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly volume?: string };
+  readonly spec?: { readonly volume?: string; readonly labels?: Readonly<Record<string, string>> | null };
   readonly status?: {
     /**
      * FALSE for Longhorn's own snapshots, e.g. the `expand-<bytes>` marker.
@@ -56,6 +57,7 @@ interface RawLhSnapshot {
      * and `labels`, and nothing about who asked for it.
      */
     readonly userCreated?: boolean;
+    readonly labels?: Readonly<Record<string, string>> | null;
     readonly readyToUse?: boolean;
     // Longhorn reports snapshot size as an int64 → a JSON number.
     readonly size?: string | number;
@@ -145,8 +147,9 @@ export function classifyRetainedVolumes(input: {
     // Read from the snapshot's STATUS, where Longhorn writes it. This read
     // `spec.userCreated`, which no snapshot has: every snapshot was skipped,
     // so no retained volume was ever listed and the restore from one could
-    // not be reached at all.
-    if (s.status?.userCreated !== true) continue;
+    // not be reached at all. A schedule's snapshots carry the flag too and
+    // are no more a restore point than the marker (shared/longhorn-snapshot.ts).
+    if (!isSnapshotSomebodyTook(s)) continue;
     const arr = snapsByVolume.get(vol) ?? [];
     arr.push({
       name,

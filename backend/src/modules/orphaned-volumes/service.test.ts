@@ -249,6 +249,27 @@ describe('detectOrphans', () => {
     expect(r.orphans.map((o) => `${o.pvName}:${o.reason}`)).toEqual(['pvc-x:pv_released_stale']);
   });
 
+  it('DOES flag a stale Released PV that holds only a recurring job\'s snapshots: nothing rotates those on a released volume', async () => {
+    const old = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-sched' },
+        spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
+        status: { phase: 'Released', lastTransitionTime: old },
+      }],
+      namespaces: ['tenant-x'],
+      longhornVolumes: [{ metadata: { name: 'pvc-sched' }, status: { kubernetesStatus: { pvName: 'pvc-sched' } } }],
+      // As Longhorn writes a schedule's snapshot: flagged user-created, labelled with its job.
+      longhornSnapshots: [{
+        metadata: { name: 'hourly-snap-a1b2c3' },
+        spec: { volume: 'pvc-sched', createSnapshot: true, labels: { RecurringJob: 'hourly-snap' } },
+        status: { userCreated: true, labels: { RecurringJob: 'hourly-snap' } },
+      }],
+    });
+    const r = await detectOrphans(makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]), k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans.map((o) => `${o.pvName}:${o.reason}`)).toEqual(['pvc-sched:pv_released_stale']);
+  });
+
   it('DOES flag a stale Released PV once only the volume-head snapshot remains (snapshots expired)', async () => {
     const old = new Date(Date.now() - 30 * 86400_000).toISOString();
     const k8s = makeK8s({

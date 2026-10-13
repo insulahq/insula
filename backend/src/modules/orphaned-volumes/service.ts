@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants } from '../../db/schema.js';
+import { isSnapshotSomebodyTook } from '../../shared/longhorn-snapshot.js';
 
 /**
  * Reasons a Persistent Volume / Longhorn volume is classified as orphaned.
@@ -123,7 +124,7 @@ interface RawLhReplica {
 
 interface RawLhSnapshot {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly volume?: string };
+  readonly spec?: { readonly volume?: string; readonly labels?: Readonly<Record<string, string>> | null };
   readonly status?: {
     /**
      * FALSE for snapshots Longhorn takes on its own behalf — notably the
@@ -132,6 +133,7 @@ interface RawLhSnapshot {
      * field: a snapshot's spec says nothing about who asked for it.
      */
     readonly userCreated?: boolean;
+    readonly labels?: Readonly<Record<string, string>> | null;
   };
 }
 
@@ -279,8 +281,11 @@ export async function detectOrphans(
     // Read from the snapshot's STATUS, where Longhorn writes it. This read
     // `spec.userCreated`, which no snapshot has — so the guard above never
     // held, and a volume retained with a snapshot a person took was reported
-    // as an orphan to purge like any other.
-    if (s.status?.userCreated !== true) continue;
+    // as an orphan to purge like any other. A recurring job's snapshots carry
+    // the flag as well and must not count: nothing rotates them on a released
+    // volume, so they would hide it from this scan for good
+    // (shared/longhorn-snapshot.ts).
+    if (!isSnapshotSomebodyTook(s)) continue;
     volumesWithSnapshots.add(vol);
   }
 

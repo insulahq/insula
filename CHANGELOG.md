@@ -403,8 +403,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   stayed "expired" and were never purged. The sweep now reads where to look from the tenant's own
   bundles, for as long as one of their snapshots is unreclaimed. The prune that follows — it is
   what frees the space — had the same blind spot and failed with "repository does not exist" on
-  every sweep; for a tenant that is gone it now looks into both layouts and takes a missing
-  repository for nothing to do. After the upgrade the backlog is worked off by the regular
+  every sweep. It often runs a day after the snapshot was forgotten, when the bundle's row is
+  gone and nothing says any more where it was, so it now prunes both layouts for every tenant:
+  a repository that is not there has nothing to prune, while a backup target that cannot be
+  reached is a failure and is tried again (the two used to be told apart by words both use).
+  This also frees a live tenant's older repository, which the prune no longer visited once the
+  tenant's last bundle in it was gone. After the upgrade the backlog is worked off by the regular
   six-hourly sweep, a batch at a time; snapshots younger than the minimum age (48 hours by
   default) wait as before.
 
@@ -421,8 +425,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   restore listed no volume at all, so it could not be started; and **Platform → Orphaned
   Volumes** reported a retained volume with a snapshot as a leftover like any other, so **Purge
   all** removed the fallback it was meant to leave alone once it was past the stale threshold.
-  Both now read the status. If you have purged orphaned volumes on 2026.10.1–2026.10.7, a
-  retained volume may have gone with them; nothing was removed automatically.
+  Both now read the status — and leave out the snapshots of a recurring job, which Longhorn
+  flags the same way but nothing rotates on a released volume. If you have purged orphaned
+  volumes on 2026.10.1–2026.10.7, a retained volume may have gone with them; nothing was removed
+  automatically.
 - **The integrity sweep announces each thing it did to a tenant, not only the first of the day.**
   Its notification was limited to one per tenant per day, so the removal of an archived tenant's
   leftover volume went unsaid when the same tenant had had another repair that day. It is now one
