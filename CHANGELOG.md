@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lost server no longer leaves its database sessions counting against the connection limit
+  for two hours.** A connection whose client vanished without closing it — its server lost power,
+  its network was cut — stayed open on the platform database until TCP noticed, and PostgreSQL's
+  default leaves that to the kernel: over two hours. Each management API replica keeps up to 25
+  connections and the limit is 100, so after losing a server its replica's sessions went on
+  counting while the replacement opened its own; a second loss inside those two hours had the API
+  answered "too many clients already". The database now probes an idle connection after a minute
+  and drops it when three probes ten seconds apart go unanswered. The setting is reloaded, the
+  database is not restarted for it.
+- **A deleted tenant leaves the backup reclaim sweep once nothing of it is left.** The sweep that
+  forgets expired snapshots looked for every tenant that ever had a backup, on every run, for
+  good — also long after a deleted tenant's last bundle was reclaimed and its repository was
+  gone. Each such tenant took one of the sweep's turns, pushing the live tenants' turns further
+  apart as the list grew. A tenant that is gone, with no bundle left that names a snapshot, no
+  prune owed and no repository in either layout, is now taken off the list. Before, the sweep
+  also only ever looked in the older repository layout for such a tenant; it now looks in both.
+
 ## [2026.10.8] - 2026-10-13
 
 ### BREAKING

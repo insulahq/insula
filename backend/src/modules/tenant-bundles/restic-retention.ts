@@ -385,6 +385,7 @@ export async function runResticRetentionSweep(
     // be reclaimed — not just the one the row happens to point at. (A deleted
     // tenant has no such row at all: its bundles are what say where to look.)
     const layoutsToSweep = await layoutsHoldingSnapshots(db, tenantId, component);
+    let reposMissing = 0;
     for (const layout of layoutsToSweep) {
     const repoUri = buildResticRepoUri(target, tenantId, component as ResticComponent, layout);
     try {
@@ -450,6 +451,7 @@ export async function runResticRetentionSweep(
           await note('repo-missing');
           repos.push({ ...base, repoUri, skipped: 'repo-missing', error: null });
           reposSkipped++;
+          reposMissing++;
           continue;
         }
         throw err;
@@ -560,6 +562,21 @@ export async function runResticRetentionSweep(
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
     }
+    }
+
+    // Nothing anywhere: no repository in any layout looked into. When the
+    // tenant is gone and no bundle of it names a snapshot any more, this pair
+    // has nothing left to reclaim and is taken out of the rotation — it used
+    // to be looked for on every sweep for good, one more for every tenant
+    // ever deleted, each pushing the live tenants' turn further out.
+    if (!dryRun && layoutsToSweep.length > 0 && reposMissing === layoutsToSweep.length) {
+      try {
+        if (await dropSpentReclaimState(db, tenantId, component)) {
+          logger.info({ tenantId, component }, 'restic retention: nothing is left of this deleted tenant on the target — taken out of the sweep');
+        }
+      } catch (err) {
+        logger.warn({ err, tenantId, component }, 'restic retention: could not take a spent repository out of the sweep (tried again next time)');
+      }
     }
   }
 
@@ -769,6 +786,35 @@ export async function runResticRetentionSweep(
     errors,
     repos,
   };
+}
+
+/**
+ * Take a (tenant, component) out of the sweep's rotation when nothing is left
+ * of it: the tenant's row is gone, no bundle of it names a snapshot any more,
+ * and no prune is owed. The caller has just found no repository for it in any
+ * layout. True when the row was removed.
+ *
+ * A live tenant's row stays whatever it has: its next bundle makes a
+ * repository. So does a row with a prune still owed — the prune pass looks
+ * for the repository itself and settles that.
+ */
+export async function dropSpentReclaimState(db: Pick<Database, 'execute'>, tenantId: string, component: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    DELETE FROM restic_repo_reclaim_state r
+     WHERE r.tenant_id = ${tenantId}
+       AND r.component = ${component}
+       AND r.prune_pending IS NOT TRUE
+       AND NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = r.tenant_id)
+       AND NOT EXISTS (
+             SELECT 1 FROM backup_components bc
+               JOIN backup_jobs bj ON bj.id = bc.backup_job_id
+              WHERE bj.tenant_id = r.tenant_id
+                AND bc.component::text = r.component
+                AND bc.sha256 IS NOT NULL
+           )
+    RETURNING r.tenant_id
+  `) as unknown as { rows?: unknown[] };
+  return (res.rows ?? []).length > 0;
 }
 
 /** What became of one repository's prune in this pass. */
