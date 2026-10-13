@@ -195,13 +195,22 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
 const STORAGE_OPS_NAMED = 5;
 
 /**
+ * The kinds the new pods pick up again where the upgrade's restart cut them
+ * off (storage-lifecycle/interrupted-ops.ts).
+ */
+const PICKED_UP_AFTER_A_RESTART: ReadonlySet<string> = new Set(['archive', 'resize', 'restore', 'fsck']);
+
+/**
  * A storage operation runs inside the platform API, after the request that
  * started it has been answered — and the upgrade replaces every API pod. An
- * archive cut off like that is picked up again by the new pods. A resize, a
- * restore, a filesystem check or a move is not: its tenant stays stopped until
- * the watchdog calls the operation abandoned, six hours later (a move: half an
- * hour). So the operator is told before, and on production has to wait.
+ * archive, a resize, a restore or a filesystem check cut off like that is
+ * picked up again by the new pods within minutes; the operator is told, since
+ * a tenant the operation has stopped stays stopped that much longer. A move is
+ * not picked up: its tenant stays stopped until the watchdog calls the move
+ * abandoned, half an hour later. A suspend or a resume is ended and has to be
+ * asked for again. For those the operator on production has to wait.
  */
+
 function storageOperationGates(facts: PreflightFacts): PreflightGate[] {
   if (facts.storageOperations === undefined) return [];
   const id = 'no-storage-operation-running';
@@ -213,17 +222,17 @@ function storageOperationGates(facts: PreflightFacts): PreflightGate[] {
   if (ops.length === 0) return [{ id, label, status: 'pass', detail: 'none in flight' }];
   const named = ops.slice(0, STORAGE_OPS_NAMED).map((o) => `${o.kind} of ${o.tenant}`).join(', ');
   const more = ops.length > STORAGE_OPS_NAMED ? ` and ${ops.length - STORAGE_OPS_NAMED} more` : '';
-  const onlyArchives = ops.every((o) => o.kind === 'archive');
+  const allPickedUp = ops.every((o) => PICKED_UP_AFTER_A_RESTART.has(o.kind));
   return [{
     id,
     label,
-    // An archive is carried on by the new pods; nothing is lost by upgrading
-    // over it, so it never blocks.
-    status: onlyArchives ? 'warn' : sev(facts.environment, true),
+    // An operation the new pods carry on loses nothing by being upgraded
+    // over, so it never blocks: its tenant is stopped a few minutes longer.
+    status: allPickedUp ? 'warn' : sev(facts.environment, true),
     detail: `${named}${more} — the upgrade restarts the platform API that runs ${ops.length === 1 ? 'it' : 'them'}. `
-      + (onlyArchives
-        ? `${ops.length === 1 ? 'It is' : 'They are'} picked up again afterwards, some twenty minutes later.`
-        : 'An archive is picked up again afterwards; a resize, restore, filesystem check or move is not, and leaves its tenant stopped until it is called abandoned hours later. Wait for it to finish.'),
+      + (allPickedUp
+        ? `${ops.length === 1 ? 'It is' : 'They are'} picked up again afterwards, a few minutes later; a tenant it has stopped stays stopped until then.`
+        : 'An archive, resize, restore or filesystem check is picked up again afterwards; a move, a suspend or a resume is not — it is ended, and a move leaves its tenant stopped for up to half an hour first. Wait for it to finish.'),
   }];
 }
 

@@ -112,6 +112,10 @@ interface FsckOpts {
   readonly nodeName: string;
   readonly jobImage?: string;
   readonly timeoutMs?: number;
+  /** The Job's name, when the caller must be able to find it again (`fsckJobName`). */
+  readonly jobName?: string;
+  /** Wait for a Job of that name left by a process that died, instead of starting one. */
+  readonly adopt?: boolean;
   /** Live progress callback — fed the latest log line from the
    *  fsck Job pod every poll cycle (~3s). Wired into
    *  storage_operations.progressMessage so the operator sees
@@ -169,10 +173,55 @@ export function buildFsckScript(fsType: string, dryRun: boolean): string {
   ].join('\n');
 }
 
+/** The Job of one check. `suffix` makes it unique: the operation's id, so that the Job can be found again. */
+export function fsckJobName(volumeName: string, dryRun: boolean, suffix: string): string {
+  return `fsck-${dryRun ? 'check' : 'repair'}-${volumeName.slice(-12)}-${suffix}`.slice(0, 63);
+}
+
+/** Whether a check's Job exists — running or finished. */
+export async function fsckJobExists(k8s: K8sClients, jobName: string): Promise<boolean> {
+  try {
+    await (k8s.batch as unknown as {
+      readNamespacedJob: (args: { name: string; namespace: string }) => Promise<unknown>;
+    }).readNamespacedJob({ name: jobName, namespace: PLATFORM_TENANT_OPS_NS });
+    return true;
+  } catch (err) {
+    const e = err as { statusCode?: number; code?: number; response?: { statusCode?: number } } | null;
+    if ((e?.statusCode ?? e?.code ?? e?.response?.statusCode) === 404) return false;
+    throw err;
+  }
+}
+
+/**
+ * The Job a dead process left for a check: the one of this name, or — for a
+ * check started by a release that named its Jobs by the clock — one of the
+ * tenant's that has not finished. A tenant has one check at a time, so an
+ * unfinished one is this check's. Null when there is none.
+ */
+export async function leftoverFsckJob(k8s: K8sClients, tenantId: string, jobName: string): Promise<string | null> {
+  if (await fsckJobExists(k8s, jobName)) return jobName;
+  const list = await (k8s.batch as unknown as {
+    listNamespacedJob: (args: { namespace: string; labelSelector?: string }) => Promise<{
+      items?: Array<{
+        metadata?: { name?: string };
+        status?: { conditions?: Array<{ type: string; status: string }>; succeeded?: number; failed?: number };
+      }>;
+    }>;
+  }).listNamespacedJob({
+    namespace: PLATFORM_TENANT_OPS_NS,
+    labelSelector: `platform.io/component=fsck,platform.io/tenant-id=${tenantId}`,
+  });
+  const unfinished = (list.items ?? []).find((job) => {
+    const done = (job.status?.conditions ?? []).some((c) => (c.type === 'Complete' || c.type === 'Failed') && c.status === 'True');
+    return !done && (job.status?.succeeded ?? 0) === 0 && (job.status?.failed ?? 0) === 0;
+  });
+  return unfinished?.metadata?.name ?? null;
+}
+
 export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResult> {
   const jobImage = opts.jobImage ?? DEFAULT_JOB_IMAGE;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
-  const jobName = `fsck-${opts.dryRun ? 'check' : 'repair'}-${opts.volumeName.slice(-12)}-${Date.now().toString(36)}`.slice(0, 63);
+  const jobName = opts.jobName ?? fsckJobName(opts.volumeName, opts.dryRun, Date.now().toString(36));
   const script = buildFsckScript(opts.fsType, opts.dryRun);
 
   // Job runs in the platform-tenant-ops namespace (no quota), NOT in
@@ -248,9 +297,14 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
     },
   };
 
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: jobNamespace, body: jobBody });
+  // A check picked up again after its process died waits for the Job that
+  // process started, if it is still there: the tool is reading or repairing
+  // the device, and a second one beside it would be working on the same blocks.
+  if (!(opts.adopt === true && await fsckJobExists(k8s, jobName))) {
+    await (k8s.batch as unknown as {
+      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: jobNamespace, body: jobBody });
+  }
 
   // Poll for completion
   const start = Date.now();

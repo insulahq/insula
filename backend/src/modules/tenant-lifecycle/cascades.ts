@@ -1,5 +1,5 @@
-import { eq, inArray } from 'drizzle-orm';
-import { tenants, ingressMtlsConfigs, tenantMtlsProviders } from '../../db/schema.js';
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { tenants, ingressMtlsConfigs, tenantMtlsProviders, tenantLifecycleTransitions } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runTransition, type Transition } from './registry/index.js';
@@ -141,6 +141,61 @@ export async function applyArchived(
   namespace: string,
 ): Promise<string | null> {
   return dispatchTransition(ctx, tenantId, namespace, 'archived', null, 'archived');
+}
+
+/**
+ * A tenant's cascades for an operation that was picked up again after its
+ * process died: run them, unless the first run already did — and finish them
+ * where it died in the middle.
+ *
+ * "Already did" is not "the tenant's status has changed". The status is
+ * stamped by one hook among several, and the ones after it — the ingress, the
+ * tenant's message — had not run when the process died between two of them.
+ * So the first run's own transition is looked up: started at or after `since`
+ * (the operation's start), of this kind, for this tenant.
+ *
+ *   - none: the cascades never began — run them;
+ *   - still `running`: nobody is, its process is gone — finish it, running
+ *     only the hooks that had not ended;
+ *   - ended, any way: nothing to do. Hooks that failed are the retry
+ *     scheduler's, as after any transition.
+ *
+ * Returns the transition's id, or null when the registry could not be written.
+ */
+export async function applyOnceSince(
+  ctx: CascadeCtx,
+  tenantId: string,
+  namespace: string,
+  transition: 'archived' | 'restored',
+  since: Date,
+): Promise<string | null> {
+  const toStatus = transition === 'archived' ? 'archived' : 'active';
+  const [first] = await ctx.db
+    .select({ id: tenantLifecycleTransitions.id, state: tenantLifecycleTransitions.state })
+    .from(tenantLifecycleTransitions)
+    .where(and(
+      eq(tenantLifecycleTransitions.tenantId, tenantId),
+      eq(tenantLifecycleTransitions.transitionKind, transition),
+      gte(tenantLifecycleTransitions.startedAt, since),
+    ))
+    .orderBy(desc(tenantLifecycleTransitions.startedAt))
+    .limit(1);
+  if (!first) return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus);
+  if (first.state !== 'running') return first.id;
+  try {
+    await runTransition(ctx.db, ctx.k8s, {
+      tenantId, namespace, transition, toStatus,
+      triggeredByUserId: ctx.triggeredByUserId ?? null,
+      suppressTenantNotification: ctx.suppressTenantNotification === true,
+      resumeTransitionId: first.id,
+    });
+    return first.id;
+  } catch (err) {
+    console.warn(
+      `[cascades.applyOnceSince] could not finish the ${transition} transition ${first.id} of tenant ${tenantId}: ${(err as Error).message}`,
+    );
+    return null;
+  }
 }
 
 // ─── active → suspended ──────────────────────────────────────────────────

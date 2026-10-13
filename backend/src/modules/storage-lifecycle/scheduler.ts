@@ -37,6 +37,10 @@ const INTEGRITY_INTERVAL_MS = 30 * 60 * 1000;
 // workloads left at 0 replicas. 15 min
 // bounds how long a stranded tenant site can stay down unnoticed.
 const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
+// Pick-up of operations a restart cut off (interrupted-ops.ts). Their tenant is
+// scaled to zero while it waits, so this runs far more often than the watchdog
+// it used to be part of: one query when there is nothing to pick up.
+const OP_PICK_UP_INTERVAL_MS = 2 * 60 * 1000;
 // Workload-health reconciler: the only check that asks whether a tenant's
 // workloads are actually RUNNING, auto-heals the ones that are not, and alerts
 // the operator when it cannot. 5 min, because the failure it exists to catch ran
@@ -222,10 +226,11 @@ export function startStorageLifecycleScheduler(
       // replicas ran the same recovery — one re-pinning the workloads while
       // the other scaled them up.
       await withSchedulerLease(db, 'storage-quiesce-watchdog', QUIESCE_WATCHDOG_INTERVAL_MS * 1.5, async () => {
-        // First the archives a restart cut off: they are started again, not failed.
-        const { resumeInterruptedArchives } = await import('./archive-resume.js');
-        await resumeInterruptedArchives(db, k8s, config).catch((err: unknown) => {
-          console.error('[archive-resume] failed:', err instanceof Error ? err.message : String(err));
+        // The locks of processes long dead — a tenant's, an operation's — are
+        // nobody's to release. Far beyond the six hours a lapsed lock is read for.
+        const { forgetDeadRunLocks } = await import('../../shared/exclusive-run.js');
+        await forgetDeadRunLocks(db, 24 * 60 * 60 * 1000).catch((err: unknown) => {
+          console.warn('[quiesce-watchdog] could not remove the locks of dead processes:', err instanceof Error ? err.message : String(err));
         });
         const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
         const result = await sweepAbandonedQuiesce(db, k8s);
@@ -237,6 +242,25 @@ export function startStorageLifecycleScheduler(
       console.error('[quiesce-watchdog] sweep failed:', (err as Error).message);
     }
     if (!stopped) quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, QUIESCE_WATCHDOG_INTERVAL_MS);
+  };
+
+  // Operations a restart cut off are started again, not failed. One replica
+  // looks; picking one up takes that operation's own lock.
+  let opPickUpTimer: NodeJS.Timeout | null = null;
+  const runOpPickUp = async () => {
+    if (stopped) return;
+    try {
+      await withSchedulerLease(db, 'storage-op-pick-up', OP_PICK_UP_INTERVAL_MS * 1.5, async () => {
+        const { pickUpInterruptedOperations } = await import('./interrupted-ops.js');
+        const result = await pickUpInterruptedOperations(db, k8s, config);
+        if (result.resumed > 0 || result.ended > 0 || result.leftAlone > 0) {
+          console.log(`[interrupted-ops] resumed=${result.resumed} ended=${result.ended} leftAlone=${result.leftAlone}`);
+        }
+      });
+    } catch (err) {
+      console.error('[interrupted-ops] pick-up failed:', (err as Error).message);
+    }
+    if (!stopped) opPickUpTimer = setTimeout(runOpPickUp, OP_PICK_UP_INTERVAL_MS);
   };
 
   // Workload-health reconciler — detect tenants whose workloads are not
@@ -271,6 +295,7 @@ export function startStorageLifecycleScheduler(
   integrityTimer = setTimeout(runIntegrity, INITIAL_DELAY_MS + 90_000);
   orphanSecretTimer = setTimeout(runOrphanSecretSweep, INITIAL_DELAY_MS + 120_000);
   quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, INITIAL_DELAY_MS + 150_000);
+  opPickUpTimer = setTimeout(runOpPickUp, INITIAL_DELAY_MS + 15_000);
   workloadHealthTimer = setTimeout(runWorkloadHealth, INITIAL_DELAY_MS + 180_000);
 
   return {
@@ -282,6 +307,7 @@ export function startStorageLifecycleScheduler(
       if (integrityTimer) clearTimeout(integrityTimer);
       if (orphanSecretTimer) clearTimeout(orphanSecretTimer);
       if (quiesceWatchdogTimer) clearTimeout(quiesceWatchdogTimer);
+      if (opPickUpTimer) clearTimeout(opPickUpTimer);
       if (workloadHealthTimer) clearTimeout(workloadHealthTimer);
     },
   };

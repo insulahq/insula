@@ -98,6 +98,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-snapshot-expiry' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-audit' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-quiesce-watchdog' },
+  { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-op-pick-up' },
   { file: 'modules/orphaned-volumes/janitor.ts', job: 'released-pv-janitor' },
   { file: 'modules/postgres-restore/watchdog.ts', job: 'released-pv-reaper', timers: 0 },
   { file: 'modules/longhorn-recurring-jobs/scheduler.ts', job: 'longhorn-recurring-jobs' },
@@ -332,7 +333,7 @@ describe('every recurring timer is leased, or runs on every replica for a stated
   it('finds the timers (a scan that finds none proves nothing)', () => {
     expect(found.size).toBeGreaterThan(80);
     expect(found.get('modules/backup-health/freshness-sweep.ts')).toBe(1);
-    expect(found.get('modules/storage-lifecycle/scheduler.ts')).toBe(7);
+    expect(found.get('modules/storage-lifecycle/scheduler.ts')).toBe(8);
   });
 
   it.each([...new Set([...found.keys(), ...classified])].sort())('%s accounts for each of its timers', (file) => {

@@ -62,6 +62,17 @@ export interface DispatchOptions {
    * filters children out of the chip when their parent is visible.
    */
   readonly parentTaskId?: string | null;
+  /**
+   * Finish a transition whose process died in the middle, instead of starting
+   * a new one: the id of that transition. Its hooks that ended (`ok`, `noop`)
+   * are not run again; the one that was running and the ones still pending
+   * are. A hook that failed stays the retry scheduler's — and still stops the
+   * rest when it is blocking, as it did the first time.
+   *
+   * Nothing else finishes such a transition: the scheduler retries `failed`
+   * rows only, so the hooks after the point of death would never run.
+   */
+  readonly resumeTransitionId?: string;
 }
 
 function envelopeFromError(err: unknown): HookErrorEnvelope {
@@ -95,11 +106,12 @@ export async function runTransition(
   k8s: K8sClients,
   opts: DispatchOptions,
 ): Promise<DispatchResult> {
-  const transitionId = randomUUID();
+  const resuming = opts.resumeTransitionId !== undefined;
+  const transitionId = opts.resumeTransitionId ?? randomUUID();
   const startedAt = new Date();
 
   // 1. Insert parent row.
-  await db.insert(tenantLifecycleTransitions).values({
+  if (!resuming) await db.insert(tenantLifecycleTransitions).values({
     id: transitionId,
     tenantId: opts.tenantId,
     transitionKind: opts.transition,
@@ -117,7 +129,7 @@ export async function runTransition(
   // task row. We only register when we have a triggering user (admin or
   // tenant op); cron-driven transitions (scope='system') stay
   // bell-only per the UX agreement.
-  if (opts.triggeredByUserId) {
+  if (opts.triggeredByUserId && !resuming) {
     try {
       const { start: startTask } = await import('../../tasks/service.js');
       const { toSafeText } = await import('@insula/api-contracts');
@@ -174,7 +186,7 @@ export async function runTransition(
   // 3. Pre-insert pending rows so an in-flight crash leaves the queue
   //    visible to the operator. UNIQUE(transition_id, hook_name) prevents
   //    accidental duplication.
-  for (let i = 0; i < hooks.length; i++) {
+  for (let i = 0; i < hooks.length && !resuming; i++) {
     const h = hooks[i];
     await db.insert(tenantLifecycleHookRuns).values({
       id: randomUUID(),
@@ -209,6 +221,16 @@ export async function runTransition(
       .where(eq(tenantLifecycleHookRuns.transitionId, transitionId))
       .then((rows) => rows.find((r) => r.hookName === hook.name));
     if (!runRow) continue; // shouldn't happen — pre-inserted above
+
+    if (resuming && (runRow.state === 'ok' || runRow.state === 'noop')) {
+      hooksOk++;
+      continue;
+    }
+    if (resuming && runRow.state === 'failed') {
+      hooksFailed++;
+      if (hook.blocking === 'abort') aborted = true;
+      continue;
+    }
 
     if (aborted) {
       // Leave remaining rows `pending` so the scheduler can resume after

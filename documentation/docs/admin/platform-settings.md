@@ -46,14 +46,15 @@ migrations**, and gates **Apply** on pre-flight passing. After applying, a
     the cluster. The operator runbook is in the
     [Operator guide](../operator/updates-and-releases.md).
 
-One of the gates is **No storage operation in flight**. A resize, a restore, a
-filesystem check or a move of a tenant runs inside the management API, and an
-upgrade restarts every API replica: the operation would be cut off and its
-tenant left stopped until the platform calls it abandoned, hours later. The
-gate names the tenant and blocks the upgrade until the operation has finished
-(on a production install; elsewhere it is a warning). An **archive** in flight
-is only a warning: the new replicas pick it up again some twenty minutes after
-the upgrade.
+One of the gates is **No storage operation in flight**. A storage operation
+runs inside the management API, and an upgrade restarts every API replica. An
+**archive**, a **resize**, a **restore** or a **filesystem check** in flight is
+only a warning: the new replicas pick it up again a few minutes after the
+upgrade and carry it on from where it stood — but a tenant the operation has
+stopped stays stopped until then, so it is kinder to wait. A **move**, a
+**suspend** or a **resume** of a tenant is not picked up. The gate names the
+tenant and blocks the upgrade until such an operation has finished (on a
+production install; elsewhere it is a warning).
 
 ## Identity — name, panel URLs, support
 
@@ -273,11 +274,13 @@ or failed to.
 
 **An archive interrupted by a restart.** An archive runs inside the platform
 API. If the API restarts in the middle — an upgrade, a crash, a lost node —
-the archive is picked up again within about twenty minutes and carried
-on from where it stood: a finished copy of the files is not taken twice, and
-the tenant is not told twice. This holds for an archive you start by hand too.
-An archive that is interrupted three times over is left to fail, and its
-tenant's page then offers **Clear failed state**.
+the archive is picked up again within a few minutes and carried on from where
+it stood: a finished copy of the files is not taken twice, and the tenant is
+not told twice. This holds for an archive you start by hand too, and for the
+other storage operations — see
+[Interrupted storage operations](tenants.md#interrupted-storage-operations).
+An archive that is interrupted three times over is ended as failed, and its
+tenant's page then offers **Reset to idle** on its Storage Operations card.
 
 The sweep works through its tenants one at a time, so the first run after
 switching it on can take a while when many are due. Just before it archives

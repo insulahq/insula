@@ -218,7 +218,7 @@ function recommendedAction(reason: HealReason): string {
     case 'stranded_at_zero':
       return 'The tenant is parked at 0 replicas by a storage operation that did not finish. '
         + 'Auto-heal restores from the operation\u2019s persisted replica snapshot; if that keeps failing, '
-        + 'use Clear failed state on the tenant\u2019s storage page, then check the ResourceQuota has room.';
+        + 'use Reset to idle on the tenant\u2019s Storage Operations card, then check the ResourceQuota has room.';
     case 'quota_rejected':
       return 'Raise the tenant’s plan limits or free memory in the namespace — the pod cannot be admitted until it fits. '
         + 'Note that a still-terminating pod counts against the quota, so a restore can need roughly double the headroom for a moment.';

@@ -20,7 +20,7 @@ import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './qui
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
-import { ownsRunLock, runExclusive } from '../../shared/exclusive-run.js';
+import { OP_MAX_RESUMES, launchOp, opGuard, operationIsMine } from './op-lock.js';
 import {
   EMPTY_TIMELINE,
   RESTORE_STEP_LABELS,
@@ -82,6 +82,9 @@ interface ServiceCtx {
   readonly backupClass?: import('@insula/api-contracts').SnapshotClass;
 }
 
+/** What an operation's run needs once it has been started: the rest of the context is the starter's. */
+type RunCtx = Pick<ServiceCtx, 'db' | 'k8s'>;
+
 async function mustGetTenant(db: Database, tenantId: string) {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
   if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
@@ -137,6 +140,237 @@ async function loadPersistedQuiesceSnapshot(db: Database, opId: string): Promise
   } catch {
     return null;
   }
+}
+
+/**
+ * Scale the tenant to zero for an operation. One that is picked up again keeps
+ * the replica counts written down the first time: taken again now, with the
+ * workloads already at zero, they would all be zero — and that is what the
+ * tenant would be "restored" to at the end.
+ */
+async function quiesceForOp(
+  db: Database,
+  k8s: K8sClients,
+  opId: string,
+  namespace: string,
+  resumed: boolean,
+): Promise<QuiesceSnapshot> {
+  const written = resumed ? await loadPersistedQuiesceSnapshot(db, opId) : null;
+  if (!written) return quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
+  await quiesce(k8s, namespace);
+  return written;
+}
+
+/**
+ * Write keys into an operation's params, leaving the others as they are. What
+ * a run notes here is what a second run reads to know how far the first got.
+ */
+async function noteOnOp(db: Database, opId: string, patch: Record<string, unknown>): Promise<void> {
+  await db.update(storageOperations)
+    .set({ params: sql`coalesce(${storageOperations.params}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
+    .where(eq(storageOperations.id, opId));
+}
+
+async function notedOnOp(db: Database, opId: string): Promise<Record<string, unknown>> {
+  const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
+  return op?.params ?? {};
+}
+
+/**
+ * Whether an operation picked up again was cut off while its workloads were
+ * being started again — its work on the volume over. Such a run must not scale
+ * the tenant down and do that work a second time: the tenant has been running
+ * since, and a second revert or restore would take back what it wrote.
+ *
+ * Read from the state the first run wrote before it started the workloads,
+ * which every release has written — so it also holds for an operation that a
+ * release without the pick-up began.
+ */
+async function cutOffWhileUnquiescing(db: Database, opId: string): Promise<boolean> {
+  const [op] = await db.select({ state: storageOperations.state }).from(storageOperations).where(eq(storageOperations.id, opId));
+  return op?.state === 'unquiescing';
+}
+
+/**
+ * The replica counts written down for an operation — for a run that is past
+ * its work on the volume and has only the workloads left to start. Without
+ * them it would start nothing and still call the operation done.
+ */
+async function writtenQuiesceSnapshot(db: Database, opId: string): Promise<QuiesceSnapshot> {
+  const snap = await loadPersistedQuiesceSnapshot(db, opId);
+  if (!snap) throw new Error('The replica counts written down for this operation could not be read, so its workloads cannot be started from them.');
+  return snap;
+}
+
+/**
+ * Start a claimed operation under its liveness lock, before the starter
+ * answers. An operation with no lock is nobody's — nothing is working on it,
+ * and the watchdog reads "interrupted" from a lock that lapsed, so it would
+ * never be picked up either. When the lock cannot be taken the claim is
+ * withdrawn and the caller is told that nothing was started.
+ */
+async function beginOp(
+  db: Database,
+  opId: string,
+  tenantId: string,
+  what: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const began = await launchOp(db, opId, run, () => noteOnOp(db, opId, { [AWAITING_LOCK]: false })).catch((err: unknown) => {
+    console.error(`[storage-lifecycle] ${what} ${opId} could not take its lock:`, err);
+    return false;
+  });
+  if (began) return;
+  // When the withdrawal cannot be written either — the database that refused
+  // the lock is likely the one refusing this — the claim stays, marked as
+  // never begun, and the pick-up withdraws it (interrupted-ops.ts).
+  await withdrawUnstartedOp(db, opId).catch((err: unknown) => {
+    console.error(`[storage-lifecycle] ${what} ${opId} could not be withdrawn after its lock could not be taken:`, err);
+  });
+  throw new ApiError('STORAGE_OP_NOT_STARTED', `The ${what} could not be started. Nothing was changed — try again.`, 503);
+}
+
+/**
+ * Written into an operation's params with its claim, and cleared under the
+ * operation's lock as its run begins. While it reads true the operation has
+ * never run: its starter did not get the lock, and told its caller that
+ * nothing was started. Such a claim is withdrawn, never picked up — the caller
+ * was not told a shrink would begin minutes later on its own.
+ */
+const AWAITING_LOCK = 'awaitingLock';
+
+/**
+ * Take back the claim of an operation that never began: the operation failed,
+ * a snapshot row written beside it failed, the tenant as it was. False when
+ * the operation has begun or ended meanwhile.
+ */
+export async function withdrawUnstartedOp(db: Database, opId: string): Promise<boolean> {
+  const [op] = await db
+    .select({ state: storageOperations.state, params: storageOperations.params, snapshotId: storageOperations.snapshotId, tenantId: storageOperations.tenantId })
+    .from(storageOperations)
+    .where(eq(storageOperations.id, opId));
+  if (!op || op.state === 'idle' || op.state === 'failed' || op.params?.[AWAITING_LOCK] !== true) return false;
+  const why = 'The operation could not be started: its lock could not be taken. Nothing was changed.';
+  await updateOp(db, opId, { state: 'failed', lastError: why, completedAt: new Date() });
+  if (op.snapshotId) {
+    await db.update(storageSnapshots).set({ status: 'failed', lastError: why })
+      .where(and(eq(storageSnapshots.id, op.snapshotId), eq(storageSnapshots.status, 'creating')));
+  }
+  await db.update(tenants)
+    .set({ storageLifecycleState: 'idle', activeStorageOpId: null })
+    .where(and(eq(tenants.id, op.tenantId), eq(tenants.activeStorageOpId, opId)));
+  return true;
+}
+
+/**
+ * Why a failed operation's tenant must not have its workloads started: its
+ * volume does not hold its files. Null when they can be started.
+ *
+ * Two operations take the files off the volume the tenant mounts. A shrink
+ * deletes the volume and restores the files into a smaller one: in between
+ * they are in the pre-resize bundle only. A restore from a retained volume
+ * deletes the claim and makes a new one on that volume: in between there is
+ * no claim. Workloads started then run on an empty volume — an application
+ * that finds no data sets itself up afresh, in public — and write over what a
+ * later restore brings back.
+ *
+ * Read from the cluster, not from how far the operation says it got: a shrink
+ * that failed before its delete went through still has the volume it began
+ * with. A claim that cannot be read counts as not holding the files.
+ */
+export async function whyWorkloadsStayStopped(
+  k8s: K8sClients,
+  op: { readonly opType: string; readonly stoppedIn: string; readonly params: Record<string, unknown> | null; readonly namespace: string },
+): Promise<string | null> {
+  const shrink = op.opType === 'resize' && op.params?.mode === 'destructive'
+    && (op.stoppedIn === 'replacing' || op.stoppedIn === 'restoring');
+  const swap = op.opType === 'restore' && op.params?.mode === 'retained_volume' && op.stoppedIn === 'replacing';
+  if (!shrink && !swap) return null;
+  const claim = await readClaim(k8s, op.namespace, `${op.namespace}-storage`).catch(() => 'unreadable' as const);
+  if (swap) {
+    return claim !== null && claim !== 'unreadable' && !claim.deleting
+      ? null
+      : 'The tenant\'s workloads were left stopped: its storage was being switched to the retained volume, and it has no storage claim right now. '
+        + 'Both volumes are kept. Use Reset to idle on the tenant\'s Storage Operations card, then start the restore from the retained volume again.';
+  }
+  const toMib = typeof op.params?.toMib === 'number' ? op.params.toMib : Number.NaN;
+  const stillTheOldVolume = claim !== null && claim !== 'unreadable' && !claim.deleting && claim.requestBytes !== toMib * 1024 * 1024;
+  return stillTheOldVolume
+    ? null
+    : 'The tenant\'s workloads were left stopped: its volume was being replaced by a smaller one and does not hold all of its files. '
+      + 'They are in the pre-resize bundle, which is kept for 7 days. Restore the files from that bundle into the tenant, then use Reset to idle on the tenant\'s Storage Operations card to start the workloads.';
+}
+
+/** A failure's text with the reason the workloads were left stopped, where the reader will see it. */
+export function withHold(lastError: string, hold: string | null): string {
+  if (!hold) return lastError;
+  try {
+    const envelope = JSON.parse(lastError) as { detail?: unknown; remediation?: unknown };
+    if (envelope && typeof envelope === 'object' && typeof envelope.detail === 'string') {
+      return JSON.stringify({
+        ...envelope,
+        remediation: [hold, ...(Array.isArray(envelope.remediation) ? envelope.remediation as unknown[] : [])],
+      });
+    }
+  } catch { /* plain text */ }
+  return `${lastError}\n\n${hold}`;
+}
+
+/**
+ * After an operation failed: start the tenant's workloads again and free the
+ * tenant for the next operation — or, when its volume does not hold its files
+ * (`hold`), leave both as they are.
+ *
+ * Left as it is means the tenant keeps pointing at the failed operation. That
+ * pointer is what the watchdog's leftover leg and the workload-health
+ * reconciler read before they "heal" workloads that sit at zero; without it
+ * they would start them within minutes. **Reset to idle** — an operator's
+ * decision — releases both.
+ */
+export async function settleTenantAfterFailure(
+  db: Database,
+  k8s: K8sClients,
+  op: { readonly opId: string; readonly tenantId: string; readonly namespace: string },
+  quiesceSnap: QuiesceSnapshot | null,
+  hold: string | null,
+): Promise<void> {
+  const mine = and(eq(tenants.id, op.tenantId), eq(tenants.activeStorageOpId, op.opId));
+  if (hold) {
+    await db.update(tenants).set({ storageLifecycleState: 'failed' }).where(mine);
+    return;
+  }
+  await unquiesceBestEffort(db, k8s, op.opId, op.namespace, quiesceSnap);
+  await db.update(tenants).set({ storageLifecycleState: 'failed', activeStorageOpId: null }).where(mine);
+}
+
+/**
+ * Tell the admins that a failed operation left its tenant stopped. The person
+ * who started it may not be looking, and a tenant that points at an operation
+ * raises no "workloads down" alert of its own. Never throws.
+ */
+async function tellAdminsTenantLeftStopped(db: Database, op: { readonly opId: string; readonly tenantId: string; readonly opType: string }, hold: string): Promise<void> {
+  try {
+    const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, op.tenantId));
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'integrity', {
+      subsystem: 'Storage operations',
+      objectLabel: tenant?.name ?? op.tenantId,
+      detail: `A ${op.opType} of this tenant failed.`,
+      severityLabel: 'failed — tenant left stopped',
+      recommendedAction: hold,
+    }, `storage-op-ended:${op.opId}`);
+  } catch (err) {
+    console.error(`[storage-lifecycle] could not notify that op ${op.opId} left its tenant stopped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** The state an operation stopped in and what it noted — read before the failure is written over it. */
+async function stoppedAt(db: Database, opId: string): Promise<{ stoppedIn: string; params: Record<string, unknown> | null; tenantId: string } | null> {
+  const [op] = await db
+    .select({ stoppedIn: storageOperations.state, params: storageOperations.params, tenantId: storageOperations.tenantId })
+    .from(storageOperations)
+    .where(eq(storageOperations.id, opId));
+  return op ?? null;
 }
 
 /**
@@ -570,7 +804,7 @@ async function resizeGrow(
       state: 'resizing',
       progressPct: 0,
       progressMessage: `Online-grow ${currentMib} → ${newMib} MiB`,
-      params: { fromMib: currentMib, toMib: newMib, mode: 'grow_online' },
+      params: { fromMib: currentMib, toMib: newMib, mode: 'grow_online', [AWAITING_LOCK]: true },
       triggeredByUserId,
     });
     await tx.update(tenants)
@@ -578,8 +812,7 @@ async function resizeGrow(
       .where(eq(tenants.id, tenantId));
   });
 
-  void runGrowOnline(ctx, opId, namespace, pvcName, currentMib, newMib)
-    .catch((err) => { console.error(`[storage-lifecycle] runGrowOnline pre-orchestrator throw for op ${opId}:`, err); });
+  await beginOp(ctx.db, opId, tenantId, 'resize', () => runGrowOnline(ctx, opId, namespace, pvcName, currentMib, newMib));
   return { operationId: opId };
 }
 
@@ -623,7 +856,7 @@ async function resizeDestructive(
       progressPct: 0,
       progressMessage: 'Starting resize',
       snapshotId: snapId,
-      params: { fromMib: currentMib, toMib: newMib, mode: 'destructive' },
+      params: { fromMib: currentMib, toMib: newMib, mode: 'destructive', [AWAITING_LOCK]: true },
       triggeredByUserId,
     });
     await tx.update(tenants)
@@ -631,12 +864,7 @@ async function resizeDestructive(
       .where(eq(tenants.id, tenantId));
   });
 
-  // Kick off orchestration async. runResizeDestructive has its own try/catch
-  // that writes failures to storage_operations — the outer .catch only
-  // fires on a *synchronous* throw before that runs (DB down, etc.). Log
-  // noisily so those don't get eaten silently.
-  void runResizeDestructive(ctx, opId, snapId, namespace, pvcName, newMib)
-    .catch((err) => { console.error(`[storage-lifecycle] runResizeDestructive pre-orchestrator throw for op ${opId}:`, err); });
+  await beginOp(ctx.db, opId, tenantId, 'resize', () => runResizeDestructive(ctx, opId, snapId, namespace, pvcName, newMib));
   return { operationId: opId };
 }
 
@@ -656,7 +884,7 @@ async function resizeDestructive(
  * `failed`. The PVC patch itself is best-effort idempotent.
  */
 async function runGrowOnline(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   namespace: string,
   pvcName: string,
@@ -665,7 +893,9 @@ async function runGrowOnline(
 ): Promise<void> {
   const newSizeStr = newMib % 1024 === 0 ? `${newMib / 1024}Gi` : `${newMib}Mi`;
   const newBytes = newMib * 1024 * 1024;
+  const guard = opGuard(ctx.db, opId);
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await guard.stillMine();
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
     await ctx.db.update(tenants)
       .set({ storageLifecycleState: state })
@@ -718,6 +948,7 @@ async function runGrowOnline(
 
     // 4. Persist the new size on the tenant row so the ResourceQuota
     //    and any subsequent quota recompute see the same value.
+    await guard.stillMine();
     const tenantId = await currentTenantId(ctx.db, opId);
     if (tenantId) {
       const giDecimal = Math.round((newMib / 1024) * 100) / 100;
@@ -735,6 +966,7 @@ async function runGrowOnline(
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'idle', null);
   } catch (err) {
+    if (!(await guard.failureIsMine(err))) return;
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, {
       state: 'failed', lastError: persisted, completedAt: new Date(),
@@ -837,17 +1069,20 @@ function parseQuantityToBytes(qty: string): number {
 }
 
 async function runResizeDestructive(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   snapId: string,
   namespace: string,
   pvcName: string,
   newMib: number,
+  resumed = false,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
   let preResizeBundleId: string | null = null;
+  const guard = opGuard(ctx.db, opId);
 
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await guard.stillMine();
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
     await ctx.db.update(tenants)
       .set({ storageLifecycleState: state })
@@ -855,94 +1090,131 @@ async function runResizeDestructive(
   };
 
   try {
-    await progress('quiescing', 5, 'Scaling workloads to zero');
-    // quiesce persists the pre-quiesce replica counts on the op BEFORE scaling
-    // anything down, so a force-cancel mid-flight can restore them instead of
-    // leaving the tenant scaled to 0 (DOWN).
-    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
-    await waitForQuiesced(ctx.k8s, namespace);
-
-    await progress('snapshotting', 15, 'Capturing pre-resize files bundle (off-site, restic)');
+    const noted = resumed ? await notedOnOp(ctx.db, opId) : {};
     const tenantIdForBundle = (await currentTenantId(ctx.db, opId))!;
-    // Pre-resize snapshot = files-only `system` tenant bundle. The
-    // tenant-ns Job tars the PVC and streams it to platform-api's
-    // `restic backup --stdin`, which chunks into 64 MiB packs — no single
-    // large object ever hits the shim's gofakes3 (the OOM bug). Off-site,
-    // restic, standard bundle lifecycle.
-    const bundle = await captureFilesOnlyBundle({
-      db: ctx.db,
-      k8s: ctx.k8s,
-      tenantId: tenantIdForBundle,
-      label: `Pre-resize ${pvcName} → ${newMib}MiB`,
-    });
-    // A `partial` bundle means the files component did not fully capture
-    // — refuse to delete the PVC without a complete rollback source.
-    if (bundle.status !== 'completed') {
-      throw new ApiError(
-        'SNAPSHOT_INCOMPLETE',
-        `Pre-resize files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to delete the PVC without a complete rollback snapshot.`,
-        500,
-      );
-    }
-    preResizeBundleId = bundle.bundleId;
-    await ctx.db.update(storageSnapshots).set({
-      status: 'ready',
-      archivePath: `bundle:${bundle.bundleId}`,
-      sizeBytes: String(bundle.sizeBytes),
-      sha256: null,
-    }).where(eq(storageSnapshots.id, snapId));
+    preResizeBundleId = resumed ? await bundleOnSnapshot(ctx.db, snapId) : null;
 
-    const newSizeStr = newMib % 1024 === 0
-      ? `${newMib / 1024}Gi`
-      : `${newMib}Mi`;
-    await progress('replacing', 40, `Recreating PVC at ${newSizeStr}`);
-    // Preserve the tenant's storage class across the recreate. The PVC was
-    // provisioned with selectTenantStorageClass() (`longhorn-tenant`, which
-    // ships replicas=1 for LOCAL); recreating with the platform DEFAULT class
-    // (`longhorn`, replicas=3) silently re-tiered a LOCAL tenant to 3 replicas.
-    // Read the live PVC's storageClassName BEFORE deleting it; fall back to the
-    // tenant-class selector if the read fails.
-    const { selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
-    let storageClass = selectTenantStorageClass(namespace);
-    try {
-      const existing = await ctx.k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.readNamespacedPersistentVolumeClaim>[0]);
-      const sc = (existing as { spec?: { storageClassName?: string } } | undefined)?.spec?.storageClassName;
-      if (sc) storageClass = sc;
-    } catch (err) {
-      if (!is404(err)) throw err;
-    }
-    // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
-    // if a previous failed op's rollback dropped it).
-    try {
-      await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
-    } catch (err) {
-      if (!is404(err)) throw err;
-    }
-    // Poll until gone
-    await waitForPvcGone(ctx.k8s, namespace, pvcName);
-    // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
-    // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
-    await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
+    if (resumed && await cutOffWhileUnquiescing(ctx.db, opId)) {
+      // Picked up after the data was back on the new volume: only the
+      // workloads and the bookkeeping are left.
+      quiesceSnap = await writtenQuiesceSnapshot(ctx.db, opId);
+    } else {
+      await progress('quiescing', 5, 'Scaling workloads to zero');
+      // quiesce persists the pre-quiesce replica counts on the op BEFORE scaling
+      // anything down, so a force-cancel mid-flight can restore them instead of
+      // leaving the tenant scaled to 0 (DOWN).
+      quiesceSnap = await quiesceForOp(ctx.db, ctx.k8s, opId, namespace, resumed);
+      await waitForQuiesced(ctx.k8s, namespace);
 
-    await progress('restoring', 60, 'Restoring data from pre-resize bundle');
-    // Restore the files bundle into the freshly recreated (smaller) PVC.
-    // A tenant-ns Job runs `restic restore` (restic-native) against the
-    // per-tenant shim repo and overlays it onto the PVC — the file-level
-    // repack a block snapshot can't do when shrinking.
-    await restoreFilesBundleIntoPvc({
-      db: ctx.db,
-      k8s: ctx.k8s,
-      bundleId: preResizeBundleId,
-      tenantId: tenantIdForBundle,
-      namespace,
-      pvcName,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
-    });
+      const newBytes = newMib * 1024 * 1024;
+      const newSizeStr = newMib % 1024 === 0
+        ? `${newMib / 1024}Gi`
+        : `${newMib}Mi`;
+      // Only a run picked up again can find the smaller volume already there.
+      let live = await readClaim(ctx.k8s, namespace, pvcName);
+      const replaced = resumed && live !== null && !live.deleting && live.requestBytes === newBytes;
+
+      if (!preResizeBundleId) {
+        // The files exist in one place only until they are captured: on the
+        // old volume. A run that finds no capture and no old volume has
+        // nothing to resize, and must not "capture" the empty new one.
+        if (resumed && (live === null || replaced)) {
+          throw new ApiError(
+            'SNAPSHOT_INCOMPLETE',
+            `The pre-resize files bundle was not captured and volume ${pvcName} is no longer the one it would be taken from — refusing to continue.`,
+            500,
+          );
+        }
+        await progress('snapshotting', 15, 'Capturing pre-resize files bundle (off-site, restic)');
+        if (resumed) {
+          // The capture the dead process was in the middle of: nobody is
+          // waiting for it, and its Job would hold the volume against the delete.
+          const [op] = await ctx.db.select({ createdAt: storageOperations.createdAt }).from(storageOperations).where(eq(storageOperations.id, opId));
+          const { settleInterruptedCaptures } = await import('./prebundle.js');
+          await settleInterruptedCaptures(ctx.db, ctx.k8s, tenantIdForBundle, op?.createdAt ?? new Date(0));
+        }
+        // Pre-resize snapshot = files-only `system` tenant bundle. The
+        // tenant-ns Job tars the PVC and streams it to platform-api's
+        // `restic backup --stdin`, which chunks into 64 MiB packs — no single
+        // large object ever hits the shim's gofakes3 (the OOM bug). Off-site,
+        // restic, standard bundle lifecycle.
+        const bundle = await captureFilesOnlyBundle({
+          db: ctx.db,
+          k8s: ctx.k8s,
+          tenantId: tenantIdForBundle,
+          label: `Pre-resize ${pvcName} → ${newMib}MiB`,
+        });
+        // A `partial` bundle means the files component did not fully capture
+        // — refuse to delete the PVC without a complete rollback source.
+        if (bundle.status !== 'completed') {
+          throw new ApiError(
+            'SNAPSHOT_INCOMPLETE',
+            `Pre-resize files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to delete the PVC without a complete rollback snapshot.`,
+            500,
+          );
+        }
+        await guard.stillMine();
+        preResizeBundleId = bundle.bundleId;
+        await ctx.db.update(storageSnapshots).set({
+          status: 'ready',
+          archivePath: `bundle:${bundle.bundleId}`,
+          sizeBytes: String(bundle.sizeBytes),
+          sha256: null,
+        }).where(eq(storageSnapshots.id, snapId));
+        live = await readClaim(ctx.k8s, namespace, pvcName);
+      }
+
+      await progress('replacing', 40, `Recreating PVC at ${newSizeStr}`);
+      if (!replaced) {
+        // Preserve the tenant's storage class across the recreate. The PVC was
+        // provisioned with selectTenantStorageClass() (`longhorn-tenant`, which
+        // ships replicas=1 for LOCAL); recreating with the platform DEFAULT class
+        // (`longhorn`, replicas=3) silently re-tiered a LOCAL tenant to 3 replicas.
+        // It is read from the live PVC BEFORE that is deleted, and noted on the
+        // operation: a run picked up after the delete has no PVC to read it from.
+        const { selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
+        const storageClass = (typeof noted.storageClass === 'string' && noted.storageClass)
+          || live?.storageClass
+          || selectTenantStorageClass(namespace);
+        await noteOnOp(ctx.db, opId, { storageClass });
+        await guard.stillMine();
+        // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
+        // if a previous failed op's rollback dropped it).
+        try {
+          await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+        } catch (err) {
+          if (!is404(err)) throw err;
+        }
+        // Poll until gone
+        await waitForPvcGone(ctx.k8s, namespace, pvcName);
+        await guard.stillMine();
+        // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
+        // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
+        await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
+      }
+
+      await progress('restoring', 60, 'Restoring data from pre-resize bundle');
+      // Restore the files bundle into the freshly recreated (smaller) PVC.
+      // A tenant-ns Job runs `restic restore` (restic-native) against the
+      // per-tenant shim repo and overlays it onto the PVC — the file-level
+      // repack a block snapshot can't do when shrinking.
+      await restoreFilesBundleIntoPvc({
+        db: ctx.db,
+        k8s: ctx.k8s,
+        bundleId: preResizeBundleId,
+        tenantId: tenantIdForBundle,
+        namespace,
+        pvcName,
+        resumed,
+        onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+      });
+    }
 
     await progress('unquiescing', 90, 'Scaling workloads back up');
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
 
     // Persist the new size on the tenant row (override) + refresh quota
+    await guard.stillMine();
     const tenantId = await currentTenantId(ctx.db, opId);
     if (tenantId) {
       // storage_limit_override is numeric(8,2) GiB; keep one-decimal
@@ -971,8 +1243,12 @@ async function runResizeDestructive(
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'idle', null);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const persisted = formatLifecycleError(err, 'pvc');
+    if (!(await guard.failureIsMine(err))) return;
+    const was = await stoppedAt(ctx.db, opId);
+    // A shrink that fails once the old volume is gone has the files in the
+    // bundle only: its workloads are not started on the empty volume.
+    const hold = was ? await whyWorkloadsStayStopped(ctx.k8s, { opType: 'resize', namespace, ...was }) : null;
+    const persisted = withHold(formatLifecycleError(err, 'pvc'), hold);
     await updateOp(ctx.db, opId, {
       state: 'failed', lastError: persisted, completedAt: new Date(),
     });
@@ -989,10 +1265,38 @@ async function runResizeDestructive(
       .catch(() => {});
     // Best-effort unquiesce so the old workloads come back up — falls
     // back to the op-persisted snapshot when quiesce() threw mid-flight.
-    await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
-    const cId = await currentTenantId(ctx.db, opId);
-    if (cId) await markTenantState(ctx.db, cId, 'failed', null);
+    if (was) await settleTenantAfterFailure(ctx.db, ctx.k8s, { opId, tenantId: was.tenantId, namespace }, quiesceSnap, hold);
+    if (was && hold) await tellAdminsTenantLeftStopped(ctx.db, { opId, tenantId: was.tenantId, opType: 'resize' }, hold);
   }
+}
+
+/** The tenant's claim as it stands: what it asks for, its class, and whether it is on its way out. Null when absent. */
+async function readClaim(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+): Promise<{ readonly requestBytes: number; readonly storageClass: string | null; readonly deleting: boolean } | null> {
+  try {
+    const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof k8s.core.readNamespacedPersistentVolumeClaim>[0]) as {
+      metadata?: { deletionTimestamp?: unknown };
+      spec?: { storageClassName?: string; resources?: { requests?: { storage?: string } } };
+    } | undefined;
+    const request = pvc?.spec?.resources?.requests?.storage;
+    return {
+      requestBytes: request ? parseQuantityToBytes(request) : Number.NaN,
+      storageClass: pvc?.spec?.storageClassName ?? null,
+      deleting: pvc?.metadata?.deletionTimestamp != null,
+    };
+  } catch (err) {
+    if (is404(err)) return null;
+    throw err;
+  }
+}
+
+/** When an operation began — what its first run's own transition is found by. */
+async function startOf(db: Database, opId: string): Promise<Date> {
+  const [op] = await db.select({ createdAt: storageOperations.createdAt }).from(storageOperations).where(eq(storageOperations.id, opId));
+  return op?.createdAt ?? new Date();
 }
 
 async function currentTenantId(db: Database, opId: string): Promise<string | null> {
@@ -1170,7 +1474,7 @@ async function startRestoreFromVolumeSnapshot(
       state: 'quiescing',
       progressPct: 0,
       progressMessage: 'Starting restore from snapshot',
-      params: { mode: 'snapshot_revert', volumeSnapshotName: args.volumeSnapshotName, volumeName, snapshotName, label: args.snapshotLabel ?? null },
+      params: { mode: 'snapshot_revert', volumeSnapshotName: args.volumeSnapshotName, volumeName, snapshotName, label: args.snapshotLabel ?? null, [AWAITING_LOCK]: true },
       triggeredByUserId: args.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -1178,8 +1482,7 @@ async function startRestoreFromVolumeSnapshot(
       .where(eq(tenants.id, args.tenantId));
   });
 
-  void runRestoreFromSnapshot(db, k8s, opId, namespace, volumeName, snapshotName)
-    .catch((err) => { console.error(`[storage-lifecycle] runRestoreFromSnapshot pre-orchestrator throw for op ${opId}:`, err); });
+  await beginOp(db, opId, args.tenantId, 'restore', () => runRestoreFromSnapshot(db, k8s, opId, namespace, volumeName, snapshotName));
   return { operationId: opId };
 }
 
@@ -1190,9 +1493,12 @@ async function runRestoreFromSnapshot(
   namespace: string,
   volumeName: string,
   snapshotName: string,
+  resumed = false,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
+  const guard = opGuard(db, opId);
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await guard.stillMine();
     await updateOp(db, opId, { state, progressPct: pct, progressMessage: msg });
     await db.update(tenants).set({ storageLifecycleState: state }).where(eq(tenants.activeStorageOpId, opId));
   };
@@ -1206,36 +1512,45 @@ async function runRestoreFromSnapshot(
   };
 
   try {
-    await progress('quiescing', 5, 'Scaling workloads to zero');
-    await track(beginStep(timeline, 'quiesce', new Date()));
-    // quiesce persists the snapshot before scaling (force-cancel safety).
-    quiesceSnap = await quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
-    await waitForQuiesced(k8s, namespace);
-    await track(endStep(timeline, 'quiesce', true, null, new Date()));
+    // Picked up after the volume was reverted: the tenant has been running on
+    // it since, and a second revert would take back what it wrote meanwhile.
+    if (resumed && await cutOffWhileUnquiescing(db, opId)) {
+      quiesceSnap = await writtenQuiesceSnapshot(db, opId);
+    } else {
+      await progress('quiescing', 5, 'Scaling workloads to zero');
+      await track(beginStep(timeline, 'quiesce', new Date()));
+      // quiesce persists the snapshot before scaling (force-cancel safety).
+      quiesceSnap = await quiesceForOp(db, k8s, opId, namespace, resumed);
+      await waitForQuiesced(k8s, namespace);
+      await track(endStep(timeline, 'quiesce', true, null, new Date()));
 
-    await progress('restoring', 40, 'Reverting your volume to the snapshot');
-    await track(beginStep(timeline, 'wait-detach', new Date()));
-    const { revertVolumeToSnapshot } = await import('./longhorn-revert.js');
-    await revertVolumeToSnapshot(k8s, volumeName, snapshotName, {
-      onStep: async (step) => {
-        await track(applyRevertStep(timeline, step, new Date()));
-        // The cleanup detach after a failure is reported as a successful
-        // step; writing its label here would read like progress for the
-        // moment until the failure path below takes over the message.
-        if (step.detail === 'after-failure') return;
-        // The message names the step now RUNNING, in the same words as the
-        // timeline. The step's raw `detail` (node name, volume state) stays
-        // in the timeline, which the tenant view strips — it never reaches
-        // this message, which tenants and the task chip both read.
-        const finished = timeline.steps[timeline.steps.length - 1]?.key;
-        const current = timeline.inFlight?.key ?? finished;
-        if (!finished || !current) return;
-        await updateOp(db, opId, {
-          progressPct: RESTORE_STEP_PCT[finished],
-          progressMessage: `Restoring — ${RESTORE_STEP_LABELS[current]}`,
-        });
-      },
-    });
+      await progress('restoring', 40, 'Reverting your volume to the snapshot');
+      await track(beginStep(timeline, 'wait-detach', new Date()));
+      const { revertVolumeToSnapshot, releaseLeftoverMaintenanceAttach } = await import('./longhorn-revert.js');
+      // The process that died may have left the volume attached for its own revert.
+      if (resumed) await releaseLeftoverMaintenanceAttach(k8s, volumeName);
+      await guard.stillMine();
+      await revertVolumeToSnapshot(k8s, volumeName, snapshotName, {
+        onStep: async (step) => {
+          await track(applyRevertStep(timeline, step, new Date()));
+          // The cleanup detach after a failure is reported as a successful
+          // step; writing its label here would read like progress for the
+          // moment until the failure path below takes over the message.
+          if (step.detail === 'after-failure') return;
+          // The message names the step now RUNNING, in the same words as the
+          // timeline. The step's raw `detail` (node name, volume state) stays
+          // in the timeline, which the tenant view strips — it never reaches
+          // this message, which tenants and the task chip both read.
+          const finished = timeline.steps[timeline.steps.length - 1]?.key;
+          const current = timeline.inFlight?.key ?? finished;
+          if (!finished || !current) return;
+          await updateOp(db, opId, {
+            progressPct: RESTORE_STEP_PCT[finished],
+            progressMessage: `Restoring — ${RESTORE_STEP_LABELS[current]}`,
+          });
+        },
+      });
+    }
 
     await progress('unquiescing', 90, 'Scaling workloads back up');
     await track(beginStep(timeline, 'unquiesce', new Date()));
@@ -1246,6 +1561,7 @@ async function runRestoreFromSnapshot(
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'idle', null);
   } catch (err) {
+    if (!(await guard.failureIsMine(err))) return;
     const persisted = formatLifecycleError(err, 'pvc');
     // Record where it stopped, then bring the workloads back BEFORE the op
     // turns terminal: a progress modal stops polling at `failed`, so the
@@ -1379,6 +1695,7 @@ async function startRestoreFromRetainedVolume(
         retainedVolumeName: retainedVolume,
         snapshotName: args.snapshotName,
         sizeBytes: chosen.sizeBytes,
+        [AWAITING_LOCK]: true,
       },
       triggeredByUserId: args.triggeredByUserId ?? null,
     });
@@ -1387,11 +1704,11 @@ async function startRestoreFromRetainedVolume(
       .where(eq(tenants.id, args.tenantId));
   });
 
-  void runRestoreFromRetained(db, k8s, opId, namespace, pvcName, {
+  await beginOp(db, opId, args.tenantId, 'restore', () => runRestoreFromRetained(db, k8s, opId, namespace, pvcName, {
     retainedPvName: args.pvName,
     retainedVolumeName: retainedVolume,
     snapshotName: args.snapshotName,
-  }).catch((err) => { console.error(`[storage-lifecycle] runRestoreFromRetained pre-orchestrator throw for op ${opId}:`, err); });
+  }));
   return { operationId: opId };
 }
 
@@ -1402,59 +1719,80 @@ async function runRestoreFromRetained(
   namespace: string,
   pvcName: string,
   plan: { readonly retainedPvName: string; readonly retainedVolumeName: string; readonly snapshotName: string },
+  resumed = false,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
+  const guard = opGuard(db, opId);
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await guard.stillMine();
     await updateOp(db, opId, { state, progressPct: pct, progressMessage: msg });
     await db.update(tenants).set({ storageLifecycleState: state }).where(eq(tenants.activeStorageOpId, opId));
   };
 
   try {
-    await progress('quiescing', 5, 'Scaling workloads to zero');
-    // quiesce persists the snapshot before scaling (force-cancel safety).
-    quiesceSnap = await quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
-    await waitForQuiesced(k8s, namespace);
+    const noted = resumed ? await notedOnOp(db, opId) : {};
+    if (resumed && await cutOffWhileUnquiescing(db, opId)) {
+      // Picked up after the swap: the tenant may be running on the retained
+      // volume already. Only the workloads and the bookkeeping are left.
+      quiesceSnap = await writtenQuiesceSnapshot(db, opId);
+    } else {
+      await progress('quiescing', 5, 'Scaling workloads to zero');
+      // quiesce persists the snapshot before scaling (force-cancel safety).
+      quiesceSnap = await quiesceForOp(db, k8s, opId, namespace, resumed);
+      await waitForQuiesced(k8s, namespace);
 
-    // 1. Revert the retained (detached) volume to the chosen snapshot. It's
-    //    a different volume from the one the PVC is bound to, so this is
-    //    safe to do before the swap.
-    await progress('restoring', 30, 'Reverting the retained volume to the chosen snapshot');
-    const { revertVolumeToSnapshot } = await import('./longhorn-revert.js');
-    await revertVolumeToSnapshot(k8s, plan.retainedVolumeName, plan.snapshotName, {
-      onStep: async (step) => {
-        await updateOp(db, opId, { progressMessage: `Reverting — ${step.step}${step.detail ? ` (${step.detail})` : ''}` });
-      },
-    });
+      // A run picked up again may find the claim on the retained volume
+      // already. Reverting that volume a second time would be harmless;
+      // swapping a second time would set the retained volume itself aside as
+      // "the fallback".
+      const bound = await readPvcBoundVolume(k8s, namespace, pvcName);
+      let restoredCapacity: string;
+      if (resumed && bound === plan.retainedPvName) {
+        await waitForPvcBound(k8s, namespace, pvcName);
+        restoredCapacity = await readPvCapacity(k8s, plan.retainedPvName);
+      } else {
+        // 1. Revert the retained (detached) volume to the chosen snapshot. It's
+        //    a different volume from the one the PVC is bound to, so this is
+        //    safe to do before the swap.
+        await progress('restoring', 30, 'Reverting the retained volume to the chosen snapshot');
+        const { revertVolumeToSnapshot, releaseLeftoverMaintenanceAttach } = await import('./longhorn-revert.js');
+        // The process that died may have left the volume attached for its own revert.
+        if (resumed) await releaseLeftoverMaintenanceAttach(k8s, plan.retainedVolumeName);
+        await guard.stillMine();
+        await revertVolumeToSnapshot(k8s, plan.retainedVolumeName, plan.snapshotName, {
+          onStep: async (step) => {
+            await updateOp(db, opId, { progressMessage: `Reverting — ${step.step}${step.detail ? ` (${step.detail})` : ''}` });
+          },
+        });
 
-    // 2. The volume the PVC is currently bound to becomes the fallback (Q1).
-    const fallbackVolume = await readPvcBoundVolume(k8s, namespace, pvcName);
+        // 2. The volume the PVC is currently bound to becomes the fallback (Q1).
+        //    Noted on the op BEFORE the swap — so the orphan surface and an
+        //    operator can see exactly what was set aside, and so a run picked
+        //    up in mid-swap, with the claim already gone, still knows it.
+        if (!('fallbackVolume' in noted)) await noteOnOp(db, opId, { fallbackVolume: bound });
 
-    // 3. Swap the PVC onto the retained volume. Deleting the current PVC
-    //    leaves its volume Released (Retain SC) = the fallback.
-    await progress('replacing', 60, 'Switching your storage to the retained volume');
-    const restoredCapacity = await rebindPvcToRetainedVolume(k8s, namespace, pvcName, plan.retainedPvName);
+        // 3. Swap the PVC onto the retained volume. Deleting the current PVC
+        //    leaves its volume Released (Retain SC) = the fallback.
+        await progress('replacing', 60, 'Switching your storage to the retained volume');
+        restoredCapacity = await rebindPvcToRetainedVolume(k8s, namespace, pvcName, plan.retainedPvName);
+      }
 
-    // Persist the restored size (the retained volume may be larger than the
-    // current — e.g. a rollback of a shrink) so the quota reconciler keeps the
-    // raised `<ns>-storage-quota` instead of reconciling it back down to the
-    // shrunk override and fighting the now-larger PVC.
-    const restoredGi = Math.max(1, Math.round(parseQuantityToBytes(restoredCapacity) / (1024 ** 3)));
-    const tIdForSize = await currentTenantId(db, opId);
-    if (tIdForSize) {
-      await db.update(tenants).set({ storageLimitOverride: restoredGi.toFixed(2) }).where(eq(tenants.id, tIdForSize));
+      // Persist the restored size (the retained volume may be larger than the
+      // current — e.g. a rollback of a shrink) so the quota reconciler keeps the
+      // raised `<ns>-storage-quota` instead of reconciling it back down to the
+      // shrunk override and fighting the now-larger PVC.
+      await guard.stillMine();
+      const restoredGi = Math.max(1, Math.round(parseQuantityToBytes(restoredCapacity) / (1024 ** 3)));
+      const tIdForSize = await currentTenantId(db, opId);
+      if (tIdForSize) {
+        await db.update(tenants).set({ storageLimitOverride: restoredGi.toFixed(2) }).where(eq(tenants.id, tIdForSize));
+      }
     }
-
-    // Record the fallback volume on the op so the orphan surface + an
-    // operator can see exactly what was set aside.
-    const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
-    const params = (op?.params as Record<string, unknown> | null) ?? {};
-    await db.update(storageOperations)
-      .set({ params: { ...params, fallbackVolume: fallbackVolume ?? null } })
-      .where(eq(storageOperations.id, opId));
 
     await progress('unquiescing', 90, 'Scaling workloads back up');
     if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap);
 
+    await guard.stillMine();
     await updateOp(db, opId, {
       state: 'idle', progressPct: 100,
       progressMessage: 'Restore complete — your previous volume is retained as a fallback',
@@ -1463,17 +1801,29 @@ async function runRestoreFromRetained(
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'idle', null);
   } catch (err) {
-    const persisted = formatLifecycleError(err, 'pvc');
+    if (!(await guard.failureIsMine(err))) return;
+    const was = await stoppedAt(db, opId);
+    const hold = was ? await whyWorkloadsStayStopped(k8s, { opType: 'restore', namespace, ...was }) : null;
+    const persisted = withHold(formatLifecycleError(err, 'pvc'), hold);
     await updateOp(db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     // Best-effort unquiesce. The current PVC is only deleted once the
     // retained volume is reverted + Available, so a failure before the swap
     // leaves the original volume bound and remountable; a failure after the
-    // swap leaves the (reverted) retained volume bound. Falls back to the
-    // op-persisted snapshot when quiesce() threw mid-flight.
-    await unquiesceBestEffort(db, k8s, opId, namespace, quiesceSnap);
-    const cId = await currentTenantId(db, opId);
-    if (cId) await markTenantState(db, cId, 'failed', null);
+    // swap leaves the (reverted) retained volume bound. One in the middle of
+    // it leaves no claim at all, and then the workloads are not started.
+    // Falls back to the op-persisted snapshot when quiesce() threw mid-flight.
+    if (was) await settleTenantAfterFailure(db, k8s, { opId, tenantId: was.tenantId, namespace }, quiesceSnap, hold);
+    if (was && hold) await tellAdminsTenantLeftStopped(db, { opId, tenantId: was.tenantId, opType: 'restore' }, hold);
   }
+}
+
+async function readPvCapacity(k8s: K8sClients, pvName: string): Promise<string> {
+  const pv = await (k8s.core as unknown as {
+    readPersistentVolume: (a: { name: string }) => Promise<{ spec?: { capacity?: { storage?: string } } }>;
+  }).readPersistentVolume({ name: pvName });
+  const capacity = pv.spec?.capacity?.storage;
+  if (!capacity) throw new ApiError('RETAINED_PV_INVALID', `Retained PV ${pvName} has no capacity`, 500);
+  return capacity;
 }
 
 /**
@@ -1680,6 +2030,21 @@ export async function cancelStorageOperation(
     return { previousState: 'idle', deletedJobs: 0, cancelledOpId: null };
   }
 
+  // The operation is ended FIRST. A run that is still alive asks before every
+  // step whether the operation is its own (op-lock.ts); marked failed, it
+  // stops — it must not go on to delete a volume under the workloads this
+  // cancel is about to start. One that had already ended keeps what it said.
+  if (c.activeOpId) {
+    await ctx.db
+      .update(storageOperations)
+      .set({
+        state: 'failed',
+        completedAt: new Date(),
+        lastError: `Cancelled by operator (was state='${c.state}')`,
+      })
+      .where(and(eq(storageOperations.id, c.activeOpId), sql`${storageOperations.state} NOT IN ('idle', 'failed')`));
+  }
+
   // Best-effort delete K8s Jobs in both namespaces because Tier-1
   // (fsck) lives in platform-tenant-ops while Tier-2 (snapshot /
   // restore) lives in the tenant namespace.
@@ -1726,17 +2091,6 @@ export async function cancelStorageOperation(
   if (c.namespace) {
     const { clearQuiesceHold } = await import('./quiesce.js');
     await clearQuiesceHold(ctx.k8s, c.namespace);
-  }
-
-  if (c.activeOpId) {
-    await ctx.db
-      .update(storageOperations)
-      .set({
-        state: 'failed',
-        completedAt: new Date(),
-        lastError: `Cancelled by operator (was state='${c.state}')`,
-      })
-      .where(eq(storageOperations.id, c.activeOpId));
   }
 
   await ctx.db
@@ -1977,7 +2331,7 @@ async function startArchive(
       id: opId, tenantId, opType: 'archive',
       state: 'quiescing', progressPct: 0, progressMessage: 'Preparing archive',
       snapshotId: snapId,
-      params: { retentionDays },
+      params: { retentionDays, [AWAITING_LOCK]: true },
       triggeredByUserId: params.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -1985,103 +2339,33 @@ async function startArchive(
       .where(eq(tenants.id, tenantId));
   });
 
-  // The claim is written. The archive must now be running under its lock
-  // before this call answers: an operation with no lock is nobody's — nothing
-  // is working on it, and the watchdog reads "interrupted" from a lock that
-  // lapsed, so it would never be picked up either.
-  const began = await launchArchive(ctx, opId, snapId, tenant.kubernetesNamespace, false).catch((err: unknown) => {
-    console.error(`[storage-lifecycle] archive ${opId} could not take its lock:`, err);
-    return false;
-  });
-  if (!began) {
-    const why = 'The archive could not be started: its lock could not be taken. Nothing was changed.';
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: why, completedAt: new Date() }).catch(() => undefined);
-    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: why }).where(eq(storageSnapshots.id, snapId)).catch(() => undefined);
-    await markTenantState(ctx.db, tenantId, 'idle', null).catch(() => undefined);
-    throw new ApiError('ARCHIVE_NOT_STARTED', 'The archive could not be started. Nothing was changed — try again.', 503);
-  }
+  await beginOp(ctx.db, opId, tenantId, 'archive', () => runArchive(ctx, opId, snapId, tenant.kubernetesNamespace));
   return { operationId: opId, snapshotId: snapId };
 }
 
-/**
- * The lock a process holds for as long as it is working on an archive.
- *
- * An archive runs detached from the request that started it, in the API
- * process — and a deploy, a crash or a node loss ends that process in the
- * middle. The operation row then says "snapshotting" for ever and nothing is
- * working on it. The lock is what tells the two apart: a live archive renews
- * it, a dead one's lapses within minutes, and the watchdog
- * (archive-resume.ts) picks the archive up again. Before, such an archive
- * waited six hours to be marked failed, and its tenant stayed scaled to zero
- * until an operator cleared it.
- *
- * The lock is a lease, so "lapsed" does not prove "dead": a process paused
- * for minutes — a stalled VM, a database out of reach — looks the same from
- * outside. The archive therefore asks before every step that writes or
- * deletes whether the lock is still its own (`ownsRunLock`), and stops where
- * it is when it is not, without failing the operation or touching the
- * workloads. What that leaves open is a stall between one such question and
- * the action after it.
- */
-export const archiveLockJob = (opId: string): string => `storage-op:${opId}`;
-
-/** As long as the watchdog gives any operation before it calls it abandoned. */
-const ARCHIVE_MAX_HOLD_MS = 6 * 60 * 60 * 1000;
-
-/** How often an interrupted archive is picked up again before it is left to fail. */
-export const ARCHIVE_MAX_RESUMES = 3;
+/** What became of an operation the watchdog found without a live process. */
+export type ResumeOutcome =
+  /** Picked up: this process is running it now. */
+  | 'resumed'
+  /** Another process holds its lock: it was only slow, or has just been picked up. */
+  | 'held'
+  /** It ended meanwhile, or is no longer the tenant's operation. */
+  | 'ended'
+  /** It never began: its starter did not get the lock and said so. Its claim was withdrawn. */
+  | 'withdrawn'
+  /** Picked up as often as an operation is; it is the watchdog's to end. */
+  | 'spent'
+  /** Nothing here knows how to run it again; it is the watchdog's to end. */
+  | 'unknown';
 
 /**
- * Run an archive detached from its caller, under its liveness lock. Resolves
- * as soon as it is known whether it began: true — this process holds the lock
- * and the archive is running; false — another process holds it. Rejects when
- * the lock could not even be asked for. `onceMine` runs first, under the lock.
+ * Pick an operation up again whose process is gone. Every operation run from
+ * here is written so that it can be run a second time from the top, whichever
+ * step the first run died in — the steps already done are passed over. Not
+ * picked up: a suspend and a resume, which do not run detached (the watchdog
+ * ends those), and a move, which has its own rule.
  */
-function launchArchive(
-  ctx: ServiceCtx,
-  opId: string,
-  snapId: string,
-  namespace: string,
-  resumed: boolean,
-  onceMine?: () => Promise<void>,
-): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
-    let began = false;
-    runExclusive(ctx.db, archiveLockJob(opId), async () => {
-      began = true;
-      resolve(true);
-      await onceMine?.();
-      await runArchive(ctx, opId, snapId, namespace, resumed);
-    }, { maxHoldMs: ARCHIVE_MAX_HOLD_MS }).then((outcome) => {
-      if (!outcome.ran) resolve(false);
-    }, (err: unknown) => {
-      if (!began) reject(err instanceof Error ? err : new Error(String(err)));
-      else console.error(`[storage-lifecycle] archive ${opId} ended outside its own handling:`, err);
-    });
-  });
-}
-
-/**
- * Thrown inside an archive that finds its lock is no longer its own: the
- * process stalled for longer than the lock lasts, and another one has picked
- * the archive up — or the watchdog has ended it. The run stops where it is and
- * touches nothing more, not the operation's row and not the tenant's
- * workloads: all of that is its successor's now.
- */
-class ArchiveTakenOver extends Error {
-  constructor(opId: string) {
-    super(`archive ${opId} is no longer this process's to run`);
-    this.name = 'ArchiveTakenOver';
-  }
-}
-
-/**
- * Pick an archive up again whose process is gone. Every step of an archive
- * can be run a second time — see `runArchive` — so this starts it from the
- * top and the steps already done are passed over. False when there is
- * nothing to resume: the operation has ended, or has been resumed too often.
- */
-export async function resumeArchive(ctx: ServiceCtx, opId: string): Promise<boolean> {
+export async function resumeOperation(ctx: RunCtx, opId: string): Promise<ResumeOutcome> {
   const [op] = await ctx.db
     .select({
       opType: storageOperations.opType,
@@ -2094,19 +2378,82 @@ export async function resumeArchive(ctx: ServiceCtx, opId: string): Promise<bool
     .from(storageOperations)
     .innerJoin(tenants, eq(tenants.id, storageOperations.tenantId))
     .where(eq(storageOperations.id, opId));
-  if (!op || op.opType !== 'archive' || op.state === 'idle' || op.state === 'failed') return false;
-  if (op.activeOpId !== opId || !op.snapshotId) return false;
+  if (!op || op.state === 'idle' || op.state === 'failed' || op.activeOpId !== opId) return 'ended';
   const params = op.params ?? {};
-  const resumes = Number((params as { resumes?: unknown }).resumes ?? 0);
-  // An archive that takes the process down with it every time must not be
-  // started for ever; the watchdog's age rule ends it.
-  if (!Number.isFinite(resumes) || resumes >= ARCHIVE_MAX_RESUMES) return false;
-  // The lock first, the count after: an archive another process turns out to
-  // hold is not one that was resumed.
-  return launchArchive(ctx, opId, op.snapshotId, op.namespace, true, () => updateOp(ctx.db, opId, {
-    params: { ...params, resumes: resumes + 1 },
-    progressMessage: 'Picked up again after the platform API restarted',
-  }));
+  if (params[AWAITING_LOCK] === true) return await withdrawUnstartedOp(ctx.db, opId) ? 'withdrawn' : 'ended';
+  const run = await runnerFor(ctx, opId, { ...op, params });
+  if (!run) return 'unknown';
+  const resumes = Number(params.resumes ?? 0);
+  // An operation that takes the process down with it every time must not be
+  // started for ever.
+  if (!Number.isFinite(resumes) || resumes >= OP_MAX_RESUMES) return 'spent';
+  // The lock first, the count after: an operation another process turns out
+  // to hold is not one that was resumed.
+  const began = await launchOp(ctx.db, opId, async () => {
+    // The run that was only slow may have finished between the look above and
+    // the lock: then there is nothing to pick up, and nothing to write on it.
+    if (!(await operationIsMine(ctx.db, opId))) return;
+    await noteOnOp(ctx.db, opId, { resumes: resumes + 1 });
+    await updateOp(ctx.db, opId, { progressMessage: 'Picked up again after the platform API restarted' });
+    await run();
+  });
+  return began ? 'resumed' : 'held';
+}
+
+/**
+ * The second run of an operation, from what its row says it is. Null when the
+ * row does not say enough — a kind this release does not know, or params it
+ * cannot read.
+ */
+async function runnerFor(
+  ctx: RunCtx,
+  opId: string,
+  op: { readonly opType: string; readonly snapshotId: string | null; readonly params: Record<string, unknown>; readonly namespace: string },
+): Promise<(() => Promise<void>) | null> {
+  const { params, namespace } = op;
+  const pvcName = `${namespace}-storage`;
+  const text = (key: string): string | null => (typeof params[key] === 'string' && params[key] !== '' ? params[key] as string : null);
+  const count = (key: string): number | null => (typeof params[key] === 'number' && Number.isFinite(params[key]) ? params[key] as number : null);
+
+  if (op.opType === 'archive') {
+    const snapId = op.snapshotId;
+    return snapId ? () => runArchive(ctx, opId, snapId, namespace, true) : null;
+  }
+  if (op.opType === 'resize') {
+    const fromMib = count('fromMib');
+    const toMib = count('toMib');
+    if (fromMib === null || toMib === null) return null;
+    if (params.mode === 'grow_online') return () => runGrowOnline(ctx, opId, namespace, pvcName, fromMib, toMib);
+    const snapId = op.snapshotId;
+    if (params.mode === 'destructive' && snapId) return () => runResizeDestructive(ctx, opId, snapId, namespace, pvcName, toMib, true);
+    return null;
+  }
+  if (op.opType === 'restore') {
+    const snapshotName = text('snapshotName');
+    if (params.mode === 'snapshot_revert') {
+      const volumeName = text('volumeName');
+      return volumeName && snapshotName
+        ? () => runRestoreFromSnapshot(ctx.db, ctx.k8s, opId, namespace, volumeName, snapshotName, true)
+        : null;
+    }
+    if (params.mode === 'retained_volume') {
+      const retainedPvName = text('retainedPvName');
+      const retainedVolumeName = text('retainedVolumeName');
+      return retainedPvName && retainedVolumeName && snapshotName
+        ? () => runRestoreFromRetained(ctx.db, ctx.k8s, opId, namespace, pvcName, { retainedPvName, retainedVolumeName, snapshotName }, true)
+        : null;
+    }
+    // A restore of an archived tenant: it names the archive it restores from.
+    const snapId = text('fromSnapshot');
+    const targetGi = count('targetGi');
+    if (!snapId || targetGi === null) return null;
+    const [snap] = await ctx.db.select({ archivePath: storageSnapshots.archivePath }).from(storageSnapshots).where(eq(storageSnapshots.id, snapId));
+    return snap ? () => runRestoreArchive(ctx, opId, snapId, snap.archivePath, namespace, targetGi, true) : null;
+  }
+  if (op.opType === 'fsck') {
+    return typeof params.dryRun === 'boolean' ? () => runFsckOp(ctx, opId, namespace, params.dryRun === true, true) : null;
+  }
+  return null;
 }
 
 /**
@@ -2120,10 +2467,11 @@ export async function resumeArchive(ctx: ServiceCtx, opId: string): Promise<bool
  *     one that was cut off is failed, its Job removed, and a new one taken;
  *   - deleting the workloads and the volume a second time finds them gone;
  *   - the tenant's cascades (mailboxes, domains, status, the tenant's own
- *     notification) are not run again once the tenant reads archived.
+ *     notification) are not run again when the first run finished them, and
+ *     are finished — the hooks that had not ended — when it died among them.
  */
 async function runArchive(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   snapId: string,
   namespace: string,
@@ -2131,12 +2479,8 @@ async function runArchive(
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
   let preArchiveBundleId: string | null = null;
-  // Asked before every step that writes or deletes: a process that stalled
-  // past its lock's lifetime wakes up here in mid-run, and by then another
-  // one may be running this archive.
-  const stillMine = async (): Promise<void> => {
-    if (!(await ownsRunLock(ctx.db, archiveLockJob(opId)))) throw new ArchiveTakenOver(opId);
-  };
+  const guard = opGuard(ctx.db, opId);
+  const { stillMine } = guard;
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
     await stillMine();
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
@@ -2146,18 +2490,12 @@ async function runArchive(
     // quiesce persists the pre-quiesce replica counts before scaling so a
     // force-cancel / pod restart mid-archive can unquiesce the tenant instead
     // of leaving it at 0 replicas.
-    const written = resumed ? await loadPersistedQuiesceSnapshot(ctx.db, opId) : null;
-    if (written) {
-      await quiesce(ctx.k8s, namespace);
-      quiesceSnap = written;
-    } else {
-      quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
-    }
+    quiesceSnap = await quiesceForOp(ctx.db, ctx.k8s, opId, namespace, resumed);
     await waitForQuiesced(ctx.k8s, namespace);
 
     const tenantId = (await currentTenantId(ctx.db, opId))!;
     const pvcName = `${namespace}-storage`;
-    preArchiveBundleId = (resumed ? await archiveAlreadyTaken(ctx.db, snapId) : null)
+    preArchiveBundleId = (resumed ? await bundleOnSnapshot(ctx.db, snapId) : null)
       ?? await (async () => {
         await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
         return takeArchive(ctx, opId, snapId, tenantId, resumed, stillMine);
@@ -2176,13 +2514,15 @@ async function runArchive(
     // Cross-cutting archive cascades: delete mailboxes + aliases,
     // mark domains suspended, stop deployments in DB, set status.
     await progress('archiving', 90, 'Cleaning up mail + domains');
-    const [now] = resumed
-      ? await ctx.db.select({ status: tenants.status }).from(tenants).where(eq(tenants.id, tenantId))
-      : [];
-    if (now?.status !== 'archived') {
-      await stillMine();
-      const { applyArchived } = await import('../tenant-lifecycle/cascades.js');
-      await applyArchived({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
+    await stillMine();
+    const cascades = await import('../tenant-lifecycle/cascades.js');
+    if (resumed) {
+      // Not again when the first run did them — and to their end when it died
+      // among them: the tenant's status is stamped by one hook, with others
+      // after it.
+      await cascades.applyOnceSince({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace, 'archived', await startOf(ctx.db, opId));
+    } else {
+      await cascades.applyArchived({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
     }
 
     await stillMine();
@@ -2194,17 +2534,7 @@ async function runArchive(
       activeStorageOpId: null,
     }).where(eq(tenants.id, tenantId));
   } catch (err) {
-    // Not this process's archive any more: whatever failed here — its capture
-    // Job removed by the process that took over, most likely — is not that
-    // archive failing. Marking it failed and bringing the workloads back would
-    // do both under the successor's feet. An ownership that cannot be read is
-    // treated the same way: the lock then lapses, and the archive is picked up.
-    const mine = !(err instanceof ArchiveTakenOver)
-      && await ownsRunLock(ctx.db, archiveLockJob(opId)).catch(() => false);
-    if (!mine) {
-      console.warn(`[storage-lifecycle] archive ${opId}: stopped here, it is no longer this process's to run (${err instanceof Error ? err.message : String(err)})`);
-      return;
-    }
+    if (!(await guard.failureIsMine(err))) return;
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     // Settle the archive snapshot row. If the bundle DID capture before the
@@ -2223,8 +2553,8 @@ async function runArchive(
   }
 }
 
-/** The bundle a finished capture left on the archive's snapshot row, or null. */
-async function archiveAlreadyTaken(db: Database, snapId: string): Promise<string | null> {
+/** The bundle a finished capture left on an operation's snapshot row, or null. */
+async function bundleOnSnapshot(db: Database, snapId: string): Promise<string | null> {
   const [taken] = await db
     .select({ status: storageSnapshots.status, archivePath: storageSnapshots.archivePath })
     .from(storageSnapshots)
@@ -2239,7 +2569,7 @@ async function archiveAlreadyTaken(db: Database, snapId: string): Promise<string
  * is over, before anything is written.
  */
 async function takeArchive(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   snapId: string,
   tenantId: string,
@@ -2351,7 +2681,7 @@ async function startRestoreArchived(
       id: opId, tenantId, opType: 'restore',
       state: 'replacing', progressPct: 0, progressMessage: 'Recreating PVC',
       snapshotId: snap.id,
-      params: { fromSnapshot: snap.id, targetGi },
+      params: { fromSnapshot: snap.id, targetGi, [AWAITING_LOCK]: true },
       triggeredByUserId: params.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -2359,8 +2689,7 @@ async function startRestoreArchived(
       .where(eq(tenants.id, tenantId));
   });
 
-  void runRestoreArchive(ctx, opId, snap.id, snap.archivePath, tenant.kubernetesNamespace, targetGi)
-    .catch((err) => { console.error(`[storage-lifecycle] runRestoreArchive pre-orchestrator throw for op ${opId}:`, err); });
+  await beginOp(ctx.db, opId, tenantId, 'restore', () => runRestoreArchive(ctx, opId, snap.id, snap.archivePath, tenant.kubernetesNamespace, targetGi));
   return { operationId: opId, snapshotId: snap.id };
 }
 
@@ -2431,15 +2760,24 @@ async function resolveRestoreStore(
   return store;
 }
 
+/**
+ * Bring an archived tenant's files back. Can be run again from the top after
+ * the process that ran it died (`resumed`): the claim is left alone when it is
+ * there, the restore Job the dead process started is waited for rather than
+ * started a second time, and a tenant that already reads restored is not put
+ * through the restore again — its cascades are finished, not repeated.
+ */
 async function runRestoreArchive(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   snapId: string,
   archivePath: string,
   namespace: string,
   newGi: number,
+  resumed = false,
 ): Promise<void> {
   const pvcName = `${namespace}-storage`;
+  const guard = opGuard(ctx.db, opId);
   try {
     // Validate the archive is restorable BEFORE recreating the PVC — an
     // unrestorable archive (legacy tar, or a `bundle:pending` row whose
@@ -2459,51 +2797,70 @@ async function runRestoreArchive(
     // PVC was deleted at archive time, so there's nothing to read back; map
     // from the namespace the same way provisioning does.
     const tenantId = (await currentTenantId(ctx.db, opId))!;
-    // A volume may be there all the same: the empty one an earlier release's
-    // integrity sweep created for every archived tenant, of a size it picked.
-    // `applyPVC` leaves an existing claim alone, so the restore would go into
-    // that — and fail when the files do not fit. One that was never written to
-    // is removed first, and the tenant gets the size asked for; one that holds
-    // anything is used as it is.
-    const { inspectArchivedVolume, removeUnusedVolume } = await import('./archived-volume.js');
-    const [archived] = await ctx.db.select({ archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
-    const leftover = await inspectArchivedVolume(ctx.k8s, namespace, archived?.archivedAt ?? null);
-    if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
+    const [tenant] = await ctx.db.select({ status: tenants.status, archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
+    // The files are back and the tenant has been told so: a run picked up
+    // here has only the bookkeeping left. Restoring again would write the
+    // archive over whatever the tenant has done since.
+    if (!(resumed && tenant?.status !== 'archived')) {
+      // A volume may be there all the same: the empty one an earlier release's
+      // integrity sweep created for every archived tenant, of a size it picked.
+      // `applyPVC` leaves an existing claim alone, so the restore would go into
+      // that — and fail when the files do not fit. One that was never written to
+      // is removed first, and the tenant gets the size asked for; one that holds
+      // anything is used as it is.
+      const { inspectArchivedVolume, removeUnusedVolume } = await import('./archived-volume.js');
+      const leftover = await inspectArchivedVolume(ctx.k8s, namespace, tenant?.archivedAt ?? null);
+      await guard.stillMine();
+      if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
 
-    const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
-    const storageClass = selectTenantStorageClass(namespace);
-    await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
-    await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
+      const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
+      const storageClass = selectTenantStorageClass(namespace);
+      await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
+      await guard.stillMine();
+      await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
-    // The PVC was just recreated above; restore the bundle's files into it.
-    await restoreFilesBundleIntoPvc({
-      db: ctx.db,
-      k8s: ctx.k8s,
-      bundleId,
-      tenantId,
-      namespace,
-      pvcName,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
-    });
+      // The PVC was just recreated above; restore the bundle's files into it.
+      await restoreFilesBundleIntoPvc({
+        db: ctx.db,
+        k8s: ctx.k8s,
+        bundleId,
+        tenantId,
+        namespace,
+        pvcName,
+        resumed,
+        onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+      });
+    }
 
+    // Phase A1: dispatch the explicit `restored` transition so the
+    // hook_runs audit trail records this as restore-from-archive
+    // rather than plain unsuspend. tenants-status-stamp hook writes
+    // status='active' + clears archivedAt; here we only clear the
+    // storage-lifecycle state. Before the operation reads complete: one
+    // that died between the two would otherwise be an ended operation on a
+    // tenant still archived, which nothing picks up.
+    await guard.stillMine();
+    const cascades = await import('../tenant-lifecycle/cascades.js');
+    if (resumed) {
+      // Also when the tenant already reads restored: its status is stamped by
+      // one hook, and the ones after it had not run if the process died there.
+      await cascades.applyOnceSince({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace, 'restored', await startOf(ctx.db, opId));
+    } else {
+      await cascades.applyRestored({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
+    }
+
+    await guard.stillMine();
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
       progressMessage: 'Restore complete — redeploy workloads via deployments API to bring the tenant back online',
       completedAt: new Date(),
     });
-    // Phase A1: dispatch the explicit `restored` transition so the
-    // hook_runs audit trail records this as restore-from-archive
-    // rather than plain unsuspend. tenants-status-stamp hook writes
-    // status='active' + clears archivedAt; here we only clear the
-    // storage-lifecycle state.
-    const { applyRestored } = await import('../tenant-lifecycle/cascades.js');
-    await applyRestored({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
     await ctx.db.update(tenants).set({
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
     }).where(eq(tenants.id, tenantId));
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    if (!(await guard.failureIsMine(err))) return;
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     const cId = await currentTenantId(ctx.db, opId);
@@ -2519,7 +2876,7 @@ async function runRestoreArchive(
  * yet or Longhorn doesn't have a record.
  */
 async function locateTenantVolume(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   namespace: string,
   pvcName: string,
 ): Promise<{ volumeName: string; nodeName: string; fsType: string } | null> {
@@ -2620,7 +2977,7 @@ async function startFsck(
       state: 'quiescing',
       progressPct: 0,
       progressMessage: dryRun ? 'Starting fsck (dry-run)' : 'Starting fsck repair',
-      params: { dryRun },
+      params: { dryRun, [AWAITING_LOCK]: true },
       triggeredByUserId: opts.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -2629,20 +2986,36 @@ async function startFsck(
   });
 
   // Async — caller polls /admin/storage/operations/:id for progress.
-  void runFsckOp(ctx, opId, tenant.kubernetesNamespace, dryRun)
-    .catch((err) => { console.error(`[storage-lifecycle] runFsckOp pre-orchestrator throw for op ${opId}:`, err); });
+  await beginOp(ctx.db, opId, tenantId, 'filesystem check', () => runFsckOp(ctx, opId, tenant.kubernetesNamespace, dryRun));
   return { operationId: opId };
 }
 
+/**
+ * The check itself. Can be run again from the top after the process that ran
+ * it died (`resumed`):
+ *
+ *   - the volume, its node and its filesystem are noted the first time, while
+ *     the volume is still attached and says where it is;
+ *   - the tool's Job carries the operation's id. One the dead process left
+ *     running is waited for — a second tool beside it would be working on the
+ *     same blocks — and with it stays the attach that process made;
+ *   - with no such Job, that attach is released and the check starts over;
+ *   - the tool's result is noted before the workloads are started again, so a
+ *     run picked up after that does not stop the tenant a second time to find
+ *     out what was already known.
+ */
 async function runFsckOp(
-  ctx: ServiceCtx,
+  ctx: RunCtx,
   opId: string,
   namespace: string,
   dryRun: boolean,
+  resumed = false,
 ): Promise<void> {
   const pvcName = `${namespace}-storage`;
   let quiesceSnap: QuiesceSnapshot | null = null;
+  const guard = opGuard(ctx.db, opId);
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await guard.stillMine();
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
     await ctx.db.update(tenants)
       .set({ storageLifecycleState: state })
@@ -2650,59 +3023,78 @@ async function runFsckOp(
   };
 
   try {
-    // Locate the volume BEFORE quiesce so we know where to schedule
-    // the fsck Pod. The currentNodeID is captured while the volume
-    // is still attached; after detach, the device path goes away
-    // briefly, but the same node will re-attach when the fsck Pod
-    // claims the PVC.
-    const located = await locateTenantVolume(ctx, namespace, pvcName);
-    if (!located) {
-      throw new ApiError('FSCK_VOLUME_NOT_FOUND', `Tenant PVC ${pvcName} or its Longhorn volume not found`, 404);
+    const noted = resumed ? await notedOnOp(ctx.db, opId) : {};
+    let result = notedFsckResult(noted.fsckResult);
+    if (result) {
+      quiesceSnap = await writtenQuiesceSnapshot(ctx.db, opId);
+    } else {
+      // Locate the volume BEFORE quiesce so we know where to schedule
+      // the fsck Pod. The currentNodeID is captured while the volume
+      // is still attached; after detach, the device path goes away
+      // briefly, but the same node will re-attach when the fsck Pod
+      // claims the PVC.
+      const located = notedFsckVolume(noted.fsckVolume) ?? await locateTenantVolume(ctx, namespace, pvcName);
+      if (!located) {
+        throw new ApiError('FSCK_VOLUME_NOT_FOUND', `Tenant PVC ${pvcName} or its Longhorn volume not found`, 404);
+      }
+      if (located.fsType !== 'xfs' && located.fsType !== 'ext4' && located.fsType !== 'ext3' && located.fsType !== 'ext2') {
+        throw new ApiError('FSCK_UNSUPPORTED_FS', `Unsupported fsType '${located.fsType}' — only xfs and ext4 are supported`, 400);
+      }
+      const { runFsck, fsckJobName, leftoverFsckJob } = await import('./fsck.js');
+      const tenantId = (await currentTenantId(ctx.db, opId))!;
+      await noteOnOp(ctx.db, opId, { fsckVolume: located });
+
+      await progress('quiescing', 5, 'Scaling workloads to zero');
+      // Persist before scaling so a force-cancel mid-fsck can un-quiesce.
+      quiesceSnap = await quiesceForOp(ctx.db, ctx.k8s, opId, namespace, resumed);
+      await waitForQuiesced(ctx.k8s, namespace);
+
+      const ownJob = fsckJobName(located.volumeName, dryRun, opId.slice(0, 8));
+      const leftJob = resumed ? await leftoverFsckJob(ctx.k8s, tenantId, ownJob) : null;
+      if (!leftJob) {
+        // The attach the dead process made for its own check keeps the volume
+        // from ever reading detached.
+        if (resumed) await detachLonghornVolume(ctx.k8s, located.volumeName).catch(() => {});
+        // Volume is detached after quiesce. fsck Pod uses hostPath
+        // /dev/longhorn/<vol> which only exists when Longhorn has the
+        // volume attached. Force-attach to the chosen node before
+        // running fsck. Frontend stays as blockdev (default) so the
+        // device file appears; nothing mounts the filesystem (xfs_repair/
+        // e2fsck require unmounted), so it's safe to operate.
+        // Wait for the filesystem to be genuinely unmounted (Longhorn 'detached')
+        // before touching the device. waitForQuiesced only proves the POD objects
+        // are gone; the umount that flushes the journal happens after. Running
+        // xfs_repair -n before it completes produces a spurious "errors found" —
+        // see waitForVolumeDetached for the measured timeline.
+        await progress('quiescing', 20, 'Waiting for the volume to detach (flushes the filesystem journal)');
+        await waitForVolumeDetached(ctx.k8s, located.volumeName);
+
+        await progress('quiescing', 25, `Attaching volume to ${located.nodeName} for fsck`);
+        await attachLonghornVolume(ctx.k8s, located.volumeName, located.nodeName);
+        await waitForVolumeAttached(ctx.k8s, located.volumeName, located.nodeName);
+      }
+
+      await progress('quiescing', 30, dryRun ? `Running ${located.fsType} dry-run check` : `Running ${located.fsType} repair`);
+      result = await runFsck(ctx.k8s, {
+        namespace,
+        volumeName: located.volumeName,
+        tenantId,
+        fsType: located.fsType,
+        dryRun,
+        nodeName: located.nodeName,
+        jobName: leftJob ?? ownJob,
+        adopt: leftJob !== null,
+        onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+      });
+      await guard.stillMine();
+      await noteOnOp(ctx.db, opId, { fsckResult: { ...result, output: result.output.slice(0, 16000) } });
+
+      // Release the explicit attach. ensureVolumeReattached below will
+      // re-attach via file-manager if the tenant has nothing else to
+      // run; otherwise unquiesce restores tenant workloads which give
+      // the PVC a real consumer.
+      await detachLonghornVolume(ctx.k8s, located.volumeName).catch(() => {});
     }
-    if (located.fsType !== 'xfs' && located.fsType !== 'ext4' && located.fsType !== 'ext3' && located.fsType !== 'ext2') {
-      throw new ApiError('FSCK_UNSUPPORTED_FS', `Unsupported fsType '${located.fsType}' — only xfs and ext4 are supported`, 400);
-    }
-
-    await progress('quiescing', 5, 'Scaling workloads to zero');
-    // Persist before scaling so a force-cancel mid-fsck can un-quiesce.
-    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
-    await waitForQuiesced(ctx.k8s, namespace);
-
-    // Volume is detached after quiesce. fsck Pod uses hostPath
-    // /dev/longhorn/<vol> which only exists when Longhorn has the
-    // volume attached. Force-attach to the chosen node before
-    // running fsck. Frontend stays as blockdev (default) so the
-    // device file appears; nothing mounts the filesystem (xfs_repair/
-    // e2fsck require unmounted), so it's safe to operate.
-    // Wait for the filesystem to be genuinely unmounted (Longhorn 'detached')
-    // before touching the device. waitForQuiesced only proves the POD objects
-    // are gone; the umount that flushes the journal happens after. Running
-    // xfs_repair -n before it completes produces a spurious "errors found" —
-    // see waitForVolumeDetached for the measured timeline.
-    await progress('quiescing', 20, 'Waiting for the volume to detach (flushes the filesystem journal)');
-    await waitForVolumeDetached(ctx.k8s, located.volumeName);
-
-    await progress('quiescing', 25, `Attaching volume to ${located.nodeName} for fsck`);
-    await attachLonghornVolume(ctx.k8s, located.volumeName, located.nodeName);
-    await waitForVolumeAttached(ctx.k8s, located.volumeName, located.nodeName);
-
-    await progress('quiescing', 30, dryRun ? `Running ${located.fsType} dry-run check` : `Running ${located.fsType} repair`);
-    const { runFsck } = await import('./fsck.js');
-    const result = await runFsck(ctx.k8s, {
-      namespace,
-      volumeName: located.volumeName,
-      tenantId: (await currentTenantId(ctx.db, opId))!,
-      fsType: located.fsType,
-      dryRun,
-      nodeName: located.nodeName,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
-    });
-
-    // Release the explicit attach. ensureVolumeReattached below will
-    // re-attach via file-manager if the tenant has nothing else to
-    // run; otherwise unquiesce restores tenant workloads which give
-    // the PVC a real consumer.
-    await detachLonghornVolume(ctx.k8s, located.volumeName).catch(() => {});
 
     // ── RESTORE LEG ──
     // Deliberately NOT allowed to destroy the filesystem verdict we just paid
@@ -2775,6 +3167,7 @@ async function runFsckOp(
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, restoreError ? 'failed' : 'idle', null);
   } catch (err) {
+    if (!(await guard.failureIsMine(err))) return;
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, {
       state: 'failed', lastError: persisted, completedAt: new Date(),
@@ -2789,6 +3182,23 @@ async function runFsckOp(
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
   }
+}
+
+/** A check's result as a first run noted it on the operation, or null. */
+function notedFsckResult(noted: unknown): import('./fsck.js').FsckResult | null {
+  const r = noted as Partial<import('./fsck.js').FsckResult> | null | undefined;
+  if (!r || typeof r !== 'object') return null;
+  if (r.verdict !== 'clean' && r.verdict !== 'errors' && r.verdict !== 'inconclusive') return null;
+  if (typeof r.summary !== 'string' || typeof r.output !== 'string') return null;
+  return r as import('./fsck.js').FsckResult;
+}
+
+/** Where a check's volume is, as a first run noted it on the operation, or null. */
+function notedFsckVolume(noted: unknown): { volumeName: string; nodeName: string; fsType: string } | null {
+  const v = noted as { volumeName?: unknown; nodeName?: unknown; fsType?: unknown } | null | undefined;
+  if (!v || typeof v.volumeName !== 'string' || typeof v.nodeName !== 'string' || typeof v.fsType !== 'string') return null;
+  if (!v.volumeName || !v.nodeName) return null;
+  return { volumeName: v.volumeName, nodeName: v.nodeName, fsType: v.fsType };
 }
 
 /**
@@ -2857,6 +3267,11 @@ async function detachLonghornVolume(k8s: K8sClients, volumeName: string): Promis
     },
     MERGE_PATCH,
   );
+}
+
+/** Release the attach a filesystem check made for itself — for the watchdog, ending a check nobody is running. */
+export async function releaseFsckAttach(k8s: K8sClients, volumeName: string): Promise<void> {
+  await detachLonghornVolume(k8s, volumeName);
 }
 
 /** Convenience: look up volumeName from the tenant's PVC, then detach. */

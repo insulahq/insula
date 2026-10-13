@@ -279,6 +279,57 @@ won't recover, jump to [Platform → Tenant Lifecycle Hooks](platform-settings.m
 where you can inspect per-hook success rates and reset a stuck hook's
 circuit breaker.
 
+### Interrupted storage operations
+
+A resize, a restore, a filesystem check and an archive run inside the platform
+API after you have started them, and can take from a minute to more than an
+hour. If the API restarts in the middle — an upgrade, a crash, a lost node —
+the operation is **picked up again** a few minutes later and carried on from
+where it stood. Its progress reads *Picked up again after the platform API
+restarted* for a moment; nothing is asked of you.
+
+What "carried on" means:
+
+- the tenant's workloads come back at the replica counts they had before the
+  operation stopped them, not at zero;
+- a copy of the files that was already taken is not taken twice;
+- a **shrink** that had already replaced the volume restores the files into
+  the new one — it never starts the tenant on the empty volume;
+- a **restore** does not revert or overwrite a second time once the tenant is
+  running again;
+- a **filesystem check** waits for the tool that was already running instead
+  of starting a second one on the same volume.
+
+Until it is picked up, a tenant the operation had stopped stays stopped —
+typically three to five minutes.
+
+An operation interrupted **three times over** is ended as *failed* with its
+workloads started again, and the admins are notified; check the tenant, then
+**Reset to idle** (on the tenant's Storage Operations card) and start the
+operation again.
+
+!!! warning "A failed shrink can leave the tenant stopped on purpose"
+    A shrink deletes the tenant's volume and restores the files into a smaller
+    one. If it fails in between — the restore Job failed, or it was ended
+    after three interruptions — the files are in the **pre-resize bundle**
+    (kept 7 days) and the volume is empty or half restored. The platform then
+    leaves the workloads **stopped** rather than start the tenant on an empty
+    volume, and the failure says so. Restore the files from that bundle into
+    the tenant (**Backups**), then **Reset to idle**, which starts the
+    workloads. Resetting first starts them on the volume as it is.
+
+    A restore from a retained volume that fails with the storage claim
+    deleted leaves the tenant stopped the same way: **Reset to idle**,
+    then start that restore again — both volumes are kept.
+
+ A **suspend** or **resume** cut off by a restart is
+not continued: it is ended within minutes, and you suspend or resume the
+tenant again. A **move** to another server that loses its process is ended
+after thirty minutes and the tenant's workloads are started again.
+
+**Cancel** on a running storage operation stops it where it is and starts the
+workloads again.
+
 ## Bulk actions
 
 On the **Tenants** tab, tick the checkbox on one or more rows to reveal

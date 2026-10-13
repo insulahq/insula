@@ -21,9 +21,12 @@
  *   failed ("abandoned"), its tenant's workloads are restored from the
  *   op-persisted replica snapshot, and the tenant's lifecycle state is
  *   set to 'failed' (visible + actionable; clear-failed also restores).
- *   An archive is the exception while a process holds its liveness lock:
- *   it may have been picked up again late (archive-resume.ts) and be
- *   working — its age then says nothing.
+ *   An operation whose liveness lock a process holds is the exception:
+ *   it may have been picked up again late (interrupted-ops.ts) and be
+ *   working — its age then says nothing. Most interrupted operations
+ *   never get this old: that leg picks them up within minutes. What
+ *   reaches this one is what it left alone — a move, an operation of a
+ *   kind it does not know, one given up as hung.
  *
  *   Leg B — hold-annotation leftovers: one cluster-wide Deployment LIST
  *   finds hold-annotated Deployments; any belonging to an ACTIVE tenant
@@ -32,15 +35,16 @@
  *   tenants are skipped — quiesced-at-0 is their designed state.
  */
 
-import { and, desc, eq, lt, ne, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, ne, notInArray, or } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { storageOperations, tenants } from '../../db/schema.js';
+import { storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { repinDeployments } from '../tenant-migration/repin.js';
-import { archiveLockJob, unquiesceBestEffort } from './service.js';
-import { isRunUnderWay, runLockName } from '../../shared/exclusive-run.js';
-import { SCHEDULER_LEASE_KEY_PREFIX } from '../../shared/scheduler-lease.js';
+import { settleTenantAfterFailure, unquiesceBestEffort, updateOp, whyWorkloadsStayStopped, withHold } from './service.js';
+import { runExclusive } from '../../shared/exclusive-run.js';
+import { opLockJob } from './op-lock.js';
+import { PLATFORM_TENANT_OPS_NS } from './platform-ns.js';
 
 /**
  * Ops legitimately run long (a destructive resize streams a full-PVC
@@ -97,6 +101,141 @@ async function settleAbandonedMove(
   }
 }
 
+/**
+ * Remove what an ended operation left working on the tenant's volume: the
+ * filesystem tool's Job, and the Job restoring a bundle into it. Workloads
+ * started beside either would be writing to a volume that is being repaired or
+ * overwritten. Also the attach each of them made for itself, which no pod can
+ * get past. Best-effort, never throws.
+ */
+async function releaseVolumeFromHelpers(
+  k8s: K8sClients,
+  op: { readonly tenantId: string; readonly namespace: string; readonly params: Record<string, unknown> | null },
+): Promise<void> {
+  const batch = k8s.batch as unknown as {
+    listNamespacedJob: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }>;
+    deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+  };
+  const writers: ReadonlyArray<readonly [string, string]> = [
+    [PLATFORM_TENANT_OPS_NS, `platform.io/component=fsck,platform.io/tenant-id=${op.tenantId}`],
+    [op.namespace, `platform.io/pre-resize-bundle,platform.io/tenant-id=${op.tenantId}`],
+  ];
+  for (const [namespace, labelSelector] of writers) {
+    try {
+      const list = await batch.listNamespacedJob({ namespace, labelSelector });
+      for (const job of list.items ?? []) {
+        if (job.metadata?.name) await batch.deleteNamespacedJob({ name: job.metadata.name, namespace, propagationPolicy: 'Background' }).catch(() => undefined);
+      }
+    } catch (err) {
+      console.warn(`[quiesce-watchdog] could not list the helper Jobs of tenant ${op.tenantId} in ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const noted = (key: string): string | null => {
+    const v = (op.params?.[key] as { volumeName?: unknown } | string | undefined);
+    if (typeof v === 'string' && v) return v;
+    return v && typeof v === 'object' && typeof v.volumeName === 'string' && v.volumeName ? v.volumeName : null;
+  };
+  const { releaseLeftoverMaintenanceAttach } = await import('./longhorn-revert.js');
+  for (const volume of new Set([noted('volumeName'), noted('retainedVolumeName')].filter((v): v is string => v !== null))) {
+    await releaseLeftoverMaintenanceAttach(k8s, volume).catch((err: unknown) => {
+      console.warn(`[quiesce-watchdog] could not release the maintenance attach of ${volume}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+  const checked = noted('fsckVolume');
+  if (checked) {
+    const { releaseFsckAttach } = await import('./service.js');
+    await releaseFsckAttach(k8s, checked).catch(() => undefined);
+  }
+}
+
+/**
+ * End an operation nobody is working on: mark it failed, start the tenant's
+ * workloads again from the replica counts written down when they were stopped,
+ * and leave the tenant `failed` (visible, and clear-failed restores too). The
+ * admins are told: nobody was watching it.
+ *
+ * The workloads are NOT started when the operation left the tenant's volume
+ * without its files — a shrink ended between deleting the old volume and
+ * restoring into the new one (`whyWorkloadsStayStopped`). The tenant then
+ * stays stopped and the failure says how to bring the files back.
+ *
+ * Under the operation's lock, so that one a process is running after all — or
+ * is picked up in the same moment — is never ended under its feet. False when
+ * it was not ended: the lock is held, or the operation has ended meanwhile.
+ * `lastError` may read the state the operation stopped in.
+ */
+export async function endAbandonedOperation(
+  db: Database,
+  k8s: K8sClients,
+  opId: string,
+  lastError: string | ((stoppedIn: string) => string),
+): Promise<boolean> {
+  const run = await runExclusive(db, opLockJob(opId), async () => {
+    const [op] = await db
+      .select({
+        opType: storageOperations.opType,
+        opState: storageOperations.state,
+        params: storageOperations.params,
+        snapshotId: storageOperations.snapshotId,
+        createdAt: storageOperations.createdAt,
+        tenantId: storageOperations.tenantId,
+        tenantName: tenants.name,
+        namespace: tenants.kubernetesNamespace,
+        activeOpId: tenants.activeStorageOpId,
+      })
+      .from(storageOperations)
+      .innerJoin(tenants, eq(tenants.id, storageOperations.tenantId))
+      .where(and(eq(storageOperations.id, opId), notInArray(storageOperations.state, [...TERMINAL_OP_STATES])));
+    if (!op) return false;
+    console.warn(
+      `[quiesce-watchdog] ${op.opType} op ${opId} stuck in '${op.opState}' — marking failed and restoring workloads (tenant ${op.tenantId})`,
+    );
+    // Failed first: a process that only stalled reads this before its next
+    // step and stops (op-lock.ts).
+    const hold = op.namespace
+      ? await whyWorkloadsStayStopped(k8s, { opType: op.opType, stoppedIn: op.opState, params: op.params, namespace: op.namespace })
+      : null;
+    const why = withHold(typeof lastError === 'string' ? lastError : lastError(op.opState), hold);
+    await updateOp(db, opId, { state: 'failed', completedAt: new Date(), lastError: why });
+    if (op.snapshotId) {
+      // The capture the operation was waiting for never arrived.
+      await db.update(storageSnapshots)
+        .set({ status: 'failed', lastError: why })
+        .where(and(eq(storageSnapshots.id, op.snapshotId), eq(storageSnapshots.status, 'creating')))
+        .catch(() => undefined);
+    }
+    if (op.namespace) {
+      if (op.opType === 'relocate') {
+        await settleAbandonedMove(db, k8s, op.tenantId, op.namespace, op.params);
+      } else {
+        const { settleInterruptedCaptures } = await import('./prebundle.js');
+        await settleInterruptedCaptures(db, k8s, op.tenantId, op.createdAt).catch(() => 0);
+        await releaseVolumeFromHelpers(k8s, { tenantId: op.tenantId, namespace: op.namespace, params: op.params });
+      }
+      // Only touches the tenant if it still points at THIS op — never
+      // clobbers a newer, live operation.
+      await settleTenantAfterFailure(db, k8s, { opId, tenantId: op.tenantId, namespace: op.namespace }, null, hold);
+    } else if (op.activeOpId === opId) {
+      await db.update(tenants)
+        .set({ storageLifecycleState: 'failed', activeStorageOpId: null })
+        .where(and(eq(tenants.id, op.tenantId), eq(tenants.activeStorageOpId, opId)));
+    }
+    const { notifyAdminOperationalEvent } = await import('../notifications/events.js');
+    await notifyAdminOperationalEvent(db, 'integrity', {
+      subsystem: 'Storage operations',
+      objectLabel: op.tenantName,
+      detail: `A ${op.opType} of this tenant had no process working on it and was ended as failed.`,
+      severityLabel: hold ? 'failed — tenant left stopped' : 'failed',
+      recommendedAction: hold
+        ?? 'The tenant\'s workloads were started again. Check the tenant, then use Reset to idle on its Storage Operations card and start the operation again.',
+    }, `storage-op-ended:${opId}`).catch((err: unknown) => {
+      console.error(`[quiesce-watchdog] could not notify about ended op ${opId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return true;
+  });
+  return run.ran && run.value;
+}
+
 export async function sweepAbandonedQuiesce(
   db: Database,
   k8s: K8sClients,
@@ -108,17 +247,8 @@ export async function sweepAbandonedQuiesce(
   const cutoff = new Date(Date.now() - ABANDONED_OP_MAX_AGE_MS);
   const relocateCutoff = new Date(Date.now() - ABANDONED_RELOCATE_MAX_AGE_MS);
   const stale = await db
-    .select({
-      opId: storageOperations.id,
-      opType: storageOperations.opType,
-      opState: storageOperations.state,
-      params: storageOperations.params,
-      tenantId: storageOperations.tenantId,
-      namespace: tenants.kubernetesNamespace,
-      activeOpId: tenants.activeStorageOpId,
-    })
+    .select({ opId: storageOperations.id })
     .from(storageOperations)
-    .innerJoin(tenants, eq(tenants.id, storageOperations.tenantId))
     .where(and(
       notInArray(storageOperations.state, [...TERMINAL_OP_STATES]),
       or(
@@ -127,40 +257,17 @@ export async function sweepAbandonedQuiesce(
       ),
     ));
 
-  for (const op of stale) {
-    // Old, but somebody is working on it: an archive picked up again after
-    // its first process died. Its lock is given up after six hours of its
-    // own, and then this rule applies.
-    if (op.opType === 'archive' && await isRunUnderWay(db, archiveLockJob(op.opId)).catch(() => false)) continue;
-    abandonedOps += 1;
-    console.warn(
-      `[quiesce-watchdog] ${op.opType} op ${op.opId} stuck in '${op.opState}' — marking failed and restoring workloads (tenant ${op.tenantId})`,
-    );
-    await db.update(storageOperations)
-      .set({
-        state: 'failed',
-        completedAt: new Date(),
-        lastError: `Abandoned in state '${op.opState}' (platform-api likely restarted mid-operation); watchdog restored the tenant's workloads`,
-      })
-      .where(eq(storageOperations.id, op.opId));
-    // The lock a dead process left behind has no further use; nothing else removes it.
-    if (op.opType === 'archive') {
-      await db.execute(sql`
-        DELETE FROM platform_settings
-         WHERE setting_key = ${`${SCHEDULER_LEASE_KEY_PREFIX}${runLockName(archiveLockJob(op.opId))}`}
-      `).catch(() => undefined);
-    }
-    if (op.namespace) {
-      if (op.opType === 'relocate') await settleAbandonedMove(db, k8s, op.tenantId, op.namespace, op.params);
-      await unquiesceBestEffort(db, k8s, op.opId, op.namespace, null);
-    }
-    // Only touch the tenant pointer if it still references THIS op —
-    // never clobber a newer, live operation.
-    if (op.activeOpId === op.opId) {
-      await db.update(tenants)
-        .set({ storageLifecycleState: 'failed', activeStorageOpId: null })
-        .where(eq(tenants.id, op.tenantId));
-    }
+  for (const { opId } of stale) {
+    // Old, but somebody may be working on it: an operation picked up again
+    // after its first process died holds its lock, and is then not ended. Its
+    // lock is given up after six hours of its own, and then this rule applies.
+    const ended = await endAbandonedOperation(db, k8s, opId, (stoppedIn) => (
+      `Abandoned in state '${stoppedIn}' (platform-api likely restarted mid-operation); watchdog restored the tenant's workloads`
+    )).catch((err: unknown) => {
+      console.warn(`[quiesce-watchdog] could not end abandoned op ${opId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
+    if (ended) abandonedOps += 1;
   }
 
   // ── Leg B: hold-annotation leftovers ─────────────────────────────
