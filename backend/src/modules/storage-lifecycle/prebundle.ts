@@ -373,20 +373,29 @@ export async function restoreFilesBundleIntoPvc(args: {
   const jobName = `rs-preresize-${safe}`.slice(0, 63);
   const credsSecretName = `rs-preresize-creds-${safe}`.slice(0, 63);
 
+  // The Job is named after the bundle, so one of an earlier attempt may be
+  // there, and the API server refuses a second of the same name.
+  //
   // A restore picked up again may find the Job the dead process started:
   // still writing, finished, or failed with the node it ran on. The first two
   // are waited for — a second Job beside a running one would write the same
   // files twice at once. A failed one is removed, with the credentials it
   // owned, and the restore is run again: restic writes over what is there.
-  const left = args.resumed ? await leftoverJob(k8s, namespace, jobName) : 'none';
-  if (left === 'failed') {
+  //
+  // A restore started anew finds one when the operator runs the operation
+  // again after it failed: a finished Job is kept for ten minutes, and until
+  // it was gone the second attempt ended at once on "already exists". That
+  // Job belongs to an operation that has ended, whatever state it is in — it
+  // is removed before this run's is created.
+  const left = await leftoverJob(k8s, namespace, jobName);
+  if (left === 'failed' || (left === 'there' && !args.resumed)) {
     await removeJobAndWait(k8s, namespace, jobName);
     await (k8s.core as unknown as {
       deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
     }).deleteNamespacedSecret({ name: credsSecretName, namespace }).catch(() => undefined);
   }
   const timeoutMs = args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS;
-  if (left === 'there') {
+  if (left === 'there' && args.resumed) {
     await waitForJob(k8s, namespace, jobName, timeoutMs, args.onProgress);
     await (k8s.batch as unknown as {
       deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;

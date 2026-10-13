@@ -28,6 +28,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   webmail restore at start, and the mail archive export. A file gets the label of the server it
   is restored on. Clusters whose servers all run the same kind of system were not affected. The
   mail server and the webmail restart once when this release is applied.
+- **A shrink or a restore from an archive that failed can be run again straight away.** The job
+  that writes the files back is named after the backup it restores, and a finished job is kept
+  for ten minutes. Running the operation again inside those ten minutes — after *Reset to idle*,
+  as its message tells the operator to — ended at once with the raw answer of the Kubernetes API
+  (`409 … already exists`). The job of the earlier attempt is now removed first.
 - **A lost server no longer leaves its database sessions counting against the connection limit
   for two hours.** A connection whose client vanished without closing it — its server lost power,
   its network was cut — stayed open on the platform database until TCP noticed, and PostgreSQL's
