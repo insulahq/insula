@@ -16,15 +16,25 @@
  *     keeps warnings healthy by design (a missing AAAA is a reachability nicety,
  *     not an outage), so those stay in the UI and never page anyone.
  *   • `not_implemented` never fires — that is "not configured", not "broken".
+ *   • A failure must be seen TWICE, a minute apart, before anyone is told. One
+ *     failing pass is not an outage: a probe that execs into the pod or asks a
+ *     resolver on the internet fails now and then for reasons that are gone a
+ *     second later, and this alert says "Mail delivery is likely affected".
+ *     The second look comes after a minute, not at the next 15-minute pass, so
+ *     a real outage is announced as fast as before.
  *   • One notification PER COMPONENT, deduped into a 12h bucket, so a sustained
  *     outage alerts twice a day per component instead of every pass.
+ *   • It names what failed. "1 deliverability failure — open Details" for a
+ *     failure that had cleared by the time anyone opened Details told the
+ *     operator nothing, and nothing else recorded which check it had been.
  */
 
 import { getMailHealth } from './health.js';
 import { resolveMailEndpoints } from './mail-endpoints.js';
 import type { MailEndpointSet } from '@insula/api-contracts';
-import { notifyAdminMailHealthDegraded } from '../notifications/events.js';
+import { notifyAdminMailHealthDegraded, notifyAdminOperationalEvent } from '../notifications/events.js';
 import { capacityItems, mailCapacityReader } from './health-capacity.js';
+import { cappedList } from '../notifications/list-items.js';
 import type { Database } from '../../db/index.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
@@ -57,33 +67,88 @@ export function dedupeBucket(now: number): string {
  * component carries a different shape, so this is deliberately defensive
  * rather than clever — a missing detail is fine, a thrown scheduler is not.
  * Returns '' or a string with a LEADING SPACE (templates have no conditionals).
+ *
+ * `items` are the failing checks listed under it (componentProbes, or the ones
+ * a second pass confirmed). Deliverability is many independent checks under one
+ * name, so when they are listed the sentence only counts them; its own error
+ * line ("N failures — open Details to inspect") is for the panel.
  */
-export function componentDetail(key: string, component: unknown): string {
+export function componentDetail(key: string, component: unknown, items: readonly string[] = componentProbes(key, component)): string {
   const c = component as Record<string, unknown> | null;
   if (!c || typeof c !== 'object') return '';
+  if (key === 'deliverability' && items.length > 0) {
+    return ` ${items.length} failing check${items.length === 1 ? '' : 's'}:`;
+  }
   const direct = typeof c.error === 'string' ? c.error : null;
-  if (direct) return ` ${direct}`;
-  // The failing sub-probes are named in `items` (componentProbes), one list
-  // entry each — not run into this sentence.
-  if (key === 'deliverability' && componentProbes(key, component).length > 0) return ' Failing probes:';
-  return '';
+  return direct ? ` ${direct}` : '';
+}
+
+/** Operator-facing names of the deliverability sub-checks. An unknown key is shown as it is. */
+const DELIVERABILITY_LABELS: Record<string, string> = {
+  forwardDns: 'forward DNS',
+  ipv6Dns: 'IPv6 DNS',
+  reverseDns: 'reverse DNS',
+  blocklists: 'blocklist',
+  certSanMatch: 'TLS certificate name',
+  smtpBanner: 'SMTP banner',
+};
+
+const oneLine = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+
+/** One deliverability sub-check, for the operator to read and for two passes to be compared by. */
+export interface DeliverabilityCheck {
+  /**
+   * Which check this is — the sub-check, its address, its blocklist — and
+   * nothing that can differ between two looks at the same fault. The line below
+   * quotes what DNS returned, and a resolver may hand the same records back in
+   * another order.
+   */
+  readonly id: string;
+  /** A line an operator can act on. */
+  readonly line: string;
+}
+
+/** The sub-checks of the deliverability component with the given severity test. */
+function deliverabilityChecks(component: unknown, wanted: (probe: Record<string, unknown>) => boolean): DeliverabilityCheck[] {
+  if (!component || typeof component !== 'object') return [];
+  const out: DeliverabilityCheck[] = [];
+  for (const [key, v] of Object.entries(component as Record<string, unknown>)) {
+    for (const probe of Array.isArray(v) ? v : [v]) {
+      const p = probe as Record<string, unknown> | null;
+      if (!p || typeof p !== 'object' || typeof p.severity !== 'string' || !wanted(p)) continue;
+      const ip = oneLine(p.ip);
+      const where = ip ? `${ip}${oneLine(p.node) ? ` (${oneLine(p.node)})` : ''}` : '';
+      const list = key === 'blocklists' ? oneLine(p.list) || oneLine(p.zone) || 'a blocklist' : '';
+      const reason = oneLine(p.reasonTxt);
+      const found = oneLine(p.actual) || oneLine(p.assertion);
+      const label = DELIVERABILITY_LABELS[key] ?? key;
+      const line = list && where
+        ? `${where} is listed on ${list}${reason ? `: ${reason}` : ''}`
+        : `${label}${where ? ` for ${where}` : ''}${found ? `: ${found}` : ''}`;
+      out.push({ id: `${key}|${ip}|${list}`, line: line.slice(0, 240) });
+    }
+  }
+  return out;
+}
+
+/** The failing deliverability sub-checks. Pure. */
+export function failingChecks(component: unknown): DeliverabilityCheck[] {
+  return deliverabilityChecks(component, (p) => p.severity === 'fail');
 }
 
 /**
- * The failing deliverability sub-probes, one list item each; that is what
- * makes this alert actionable (e.g. "certSanMatch" is the self-signed-cert
- * case). Warnings are not failures and are not named. For the standby and
- * storage components, the nodes behind the failure (health-capacity.ts). Pure.
+ * What exactly is failing, one list item each; that is what makes the alert
+ * actionable. For deliverability: every sub-check with severity `fail`, WITH
+ * the address it is about — reverse DNS and the blocklists are checked per
+ * address and come as lists, which the first version of this function did not
+ * look inside, so the most common failures were the ones it could not name.
+ * Warnings are not failures and are not named. For the standby and storage
+ * components, the nodes behind the failure (health-capacity.ts). Pure, uncapped.
  */
 export function componentProbes(key: string, component: unknown): string[] {
   if (key === 'standby' || key === 'storage') return capacityItems(key, component);
-  if (key !== 'deliverability' || !component || typeof component !== 'object') return [];
-  const failing: string[] = [];
-  for (const [k, v] of Object.entries(component as Record<string, unknown>)) {
-    const probe = v as Record<string, unknown> | null;
-    if (probe && typeof probe === 'object' && probe.severity === 'fail') failing.push(k);
-  }
-  return failing;
+  if (key !== 'deliverability') return [];
+  return failingChecks(component).map((c) => c.line);
 }
 
 /**
@@ -106,12 +171,87 @@ export function componentsToAlert(components: Record<string, unknown>): Array<[s
   ));
 }
 
+/** How long after a failing pass the probes are run again before anyone is told. */
+export const CONFIRM_AFTER_MS = 60_000;
+
+/** At most this many failing checks are spelled out in one alert. */
+const MAX_LISTED_CHECKS = 12;
+
+export interface ConfirmedFailure {
+  readonly key: string;
+  readonly component: unknown;
+  /** The failing checks to list — for deliverability, only those failing in BOTH passes. */
+  readonly items: string[];
+}
+
+/**
+ * The failures a second pass still shows. Pure.
+ *
+ * A component has to fail in both. Deliverability is a dozen independent checks
+ * under one name, so there the SAME check has to fail twice: a lookup that
+ * failed for one address in the first pass and a different one in the second is
+ * two blips, not one fault. "The same" is the check and its address, never its
+ * wording — the wording quotes DNS answers, whose order a resolver may rotate,
+ * and comparing it would drop a real, persistent fault every other time. The
+ * second pass's wording is what is reported.
+ */
+export function confirmedFailures(
+  first: Record<string, unknown>,
+  second: Record<string, unknown>,
+): ConfirmedFailure[] {
+  const before = new Map(componentsToAlert(first));
+  const confirmed: ConfirmedFailure[] = [];
+  for (const [key, component] of componentsToAlert(second)) {
+    if (!before.has(key)) continue;
+    const now = key === 'deliverability' ? failingChecks(component) : [];
+    if (now.length === 0) {
+      confirmed.push({ key, component, items: componentProbes(key, component) });
+      continue;
+    }
+    const earlier = new Set(failingChecks(before.get(key)).map((c) => c.id));
+    const both = now.filter((c) => earlier.has(c.id));
+    if (both.length > 0) confirmed.push({ key, component, items: both.map((c) => c.line) });
+  }
+  return confirmed;
+}
+
+/**
+ * The deliverability lookups that got no answer this pass — the checks that
+ * were therefore not made, by name. Reported as skipped, never as failing.
+ */
+export function unansweredLookups(components: Record<string, unknown>): string[] {
+  return deliverabilityChecks(components.deliverability, (p) => p.severity === 'skipped'
+    && typeof p.actual === 'string' && p.actual.startsWith('lookup got no answer'))
+    // What the lookup was FOR; the quoted resolver error adds nothing to a list.
+    .map((c) => c.line.replace(/: lookup got no answer.*$/, ''));
+}
+
+/**
+ * After this many passes in a row with unanswered lookups — an hour — the
+ * operator is told that the checks are not being made. One unanswered lookup is
+ * packet loss; an hour of them is a resolver this cluster cannot reach, and
+ * "skipped" must not become a way for half the deliverability checks to switch
+ * themselves off in silence.
+ */
+export const UNANSWERED_NOTICE_AFTER_PASSES = 4;
+
+/** Passes in a row, in this process, that had unanswered lookups. The lease holder is sticky, so it is the one counting. */
+let unansweredStreak = 0;
+
+/** Test seam. */
+export function resetUnansweredStreak(): void {
+  unansweredStreak = 0;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
+
 /** One mail-health pass. Never throws (fire-and-forget contract). */
 export async function runMailHealthCheckOnce(
   db: Database,
   log: MailHealthSchedulerLog,
   kubeconfigPath: string | undefined,
   clock: () => number = Date.now,
+  wait: (ms: number) => Promise<void> = sleep,
 ): Promise<number> {
   let k8s: Awaited<ReturnType<typeof import('../k8s-provisioner/k8s-client.js')['createK8sClients']>>;
   try {
@@ -181,15 +321,55 @@ export async function runMailHealthCheckOnce(
   // refresh:true — the on-demand cache would otherwise let this scheduler
   // re-read a stale response and alert (or stay silent) on old data.
   const capacity = mailCapacityReader({ k8s, db, kubeconfigPath, log });
-  const health = await getMailHealth(
+  const probe = () => getMailHealth(
     { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity },
     { refresh: true },
   );
-  if (health.healthy) return 0;
+  const first = await probe();
+  // A check that could not be made is not a failure — and not nothing either.
+  const unanswered = unansweredLookups(first.components);
+  unansweredStreak = unanswered.length > 0 ? unansweredStreak + 1 : 0;
+  if (unanswered.length > 0) {
+    log.warn(`[mail-health] ${unanswered.length} DNS lookup(s) got no answer; those deliverability checks were not made on this pass `
+      + `(${unansweredStreak} pass(es) in a row): ${unanswered.join('; ')}`);
+  }
+  if (unansweredStreak >= UNANSWERED_NOTICE_AFTER_PASSES) {
+    await notifyAdminOperationalEvent(db, 'mail', {
+      subsystem: 'Mail deliverability checks',
+      objectLabel: mailHostname,
+      detail: `${unanswered.length} DNS lookup${unanswered.length === 1 ? '' : 's'} of the deliverability check `
+        + `${unanswered.length === 1 ? 'has' : 'have'} had no answer on ${unansweredStreak} passes in a row, so `
+        + `${unanswered.length === 1 ? 'this check is' : 'these checks are'} not being made. This says nothing about the records themselves.`,
+      severityLabel: 'not checked',
+      recommendedAction: 'Check that platform-api can reach its DNS resolvers (Platform → DNS, or MAIL_HEALTH_EXTERNAL_DNS).',
+      items: cappedList(unanswered, MAX_LISTED_CHECKS),
+    }, `mail-health:unanswered:${dedupeBucket(clock())}`).catch((err: unknown) => {
+      log.warn({ err }, 'mail-health-scheduler: unanswered-lookups notice failed');
+    });
+  }
+  if (first.healthy) return 0;
+
+  // Look again before telling anyone (see POLICY above).
+  const firstFailing = componentsToAlert(first.components).map(([key]) => key);
+  await wait(CONFIRM_AFTER_MS);
+  let second: Awaited<ReturnType<typeof probe>>;
+  try {
+    second = await probe();
+  } catch (err) {
+    // Not confirmed, and not disproved either: say so and leave it to the next
+    // pass, which probes afresh. Alerting on one look is what this is here to stop.
+    log.warn({ err, components: firstFailing }, 'mail-health-scheduler: the second look failed to run — failure not confirmed, not alerted');
+    return 0;
+  }
+  const confirmed = second.healthy ? [] : confirmedFailures(first.components, second.components);
+  if (confirmed.length === 0) {
+    log.info({ components: firstFailing }, 'mail-health-scheduler: failure gone on the second look — not alerted');
+    return 0;
+  }
 
   const bucket = dedupeBucket(clock());
   let fired = 0;
-  for (const [key, component] of componentsToAlert(health.components)) {
+  for (const { key, component, items } of confirmed) {
     const label = COMPONENT_LABELS[key] ?? key;
     try {
       await notifyAdminMailHealthDegraded(
@@ -197,8 +377,8 @@ export async function runMailHealthCheckOnce(
         {
           component: label,
           mailHostname,
-          detail: componentDetail(key, component),
-          items: componentProbes(key, component),
+          detail: componentDetail(key, component, items),
+          items: cappedList(items, MAX_LISTED_CHECKS),
           panelUrl: '/monitoring/mail',
         },
         `mail-health:${key}:${bucket}`,
@@ -209,7 +389,10 @@ export async function runMailHealthCheckOnce(
     }
   }
   if (fired > 0) {
-    log.info({ fired, hostname: mailHostname }, 'mail-health-scheduler: mail health failures alerted');
+    log.info(
+      { fired, hostname: mailHostname, failing: confirmed.map((f) => ({ component: f.key, checks: f.items })) },
+      'mail-health-scheduler: mail health failures alerted',
+    );
   }
   return fired;
 }

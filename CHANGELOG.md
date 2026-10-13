@@ -129,6 +129,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **"Mail deliverability check failing" no longer fires on one slow DNS answer, and says what
+  failed.** The alert reads *Mail delivery is likely affected*. On a production cluster it went out
+  three times in a week with reverse DNS, blocklists and certificate all in order: each time one
+  DNS lookup out of about a hundred passes had not been answered inside its three seconds.
+  - A lookup that gets no answer (timeout, refused, resolver unreachable) is now *skipped — lookup
+    got no answer*, as blocklist lookups already were. It used to be reported as a missing PTR or A
+    record. A record that really does not exist still fails, and so does SERVFAIL: there the
+    resolvers did answer — that the zone's own name servers gave them nothing — and receiving mail
+    servers get the same.
+  - Skipped is not silent. After an hour of passes with unanswered lookups a separate notice says
+    which checks are **not being made**, without claiming anything about mail delivery.
+  - The second configured resolver is now actually reached in time. The lookups ask two resolvers,
+    but moving on to the second took three seconds — as long as the whole lookup was allowed.
+  - A failing check is looked at again after a minute and alerted only if the same check — the
+    check and its address, not its wording — still fails. A real outage is announced a minute
+    later than before, not at the next 15-minute pass.
+  - The alert lists each failing check with its address — *reverse DNS for 203.0.113.10 (node-b):
+    (no records)*, *203.0.113.10 is listed on SpamCop* — instead of *1 deliverability failure —
+    open Details to inspect*. Reverse-DNS and blocklist failures, the per-address ones, were
+    exactly the ones it could not name. The API log records them as well.
+
 - **A tenant is no longer moved to a node that cannot hold its data.** A move re-pins the tenant
   and starts it on the target; Longhorn then builds the volume's copy there. When Longhorn refused
   that copy — it reserves a volume's *full* size on the node, so a 100 GiB volume holding 28 GiB

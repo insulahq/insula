@@ -44,6 +44,17 @@ const DELIVERABILITY_WALL_TIMEOUT_MS = 8_000;
 // independently if e.g. operators run with a slow recursor.
 const DNS_LOOKUP_TIMEOUT_MS = 3_000;
 const DNSBL_TIMEOUT_MS = 3_000;
+/**
+ * How long ONE resolver is given before the next is asked, and how often each
+ * is asked. Node's defaults leave the first resolver ~3 s per try — measured on
+ * production: with 1.1.1.1 silent, the answer from 8.8.8.8 arrived after
+ * 3023 ms, 23 ms after the lookup above had already given up. The second
+ * resolver was configured and could never help, so one unanswered UDP packet
+ * was a failed lookup. With 1 s per try both resolvers are asked well inside
+ * the budget.
+ */
+const DNS_TRY_TIMEOUT_MS = 1_000;
+const DNS_TRIES = 2;
 const SMTP_BANNER_TIMEOUT_MS = 5_000;
 const TLS_HANDSHAKE_TIMEOUT_MS = 5_000;
 
@@ -145,6 +156,56 @@ export interface DeliverabilityDeps {
   readonly tlsConnect?: (host: string, port: number, sni: string, timeoutMs: number) => Promise<{ peerCertificate: tls.PeerCertificate | null; error: string | null }>;
   /** Override for tests: SMTP banner / EHLO exchange. */
   readonly smtpBannerExchange?: (host: string, port: number, ehloName: string, timeoutMs: number) => Promise<{ banner: string | null; ehloLine: string | null; error: string | null }>;
+}
+
+/**
+ * Did DNS ANSWER that the name or record does not exist — as opposed to not
+ * answering at all?
+ *
+ * The two were treated alike, and they are opposites. "No such record"
+ * (NXDOMAIN / no data) is a fact about the zone: the PTR or A record really is
+ * missing and receivers will see that too. A timeout, SERVFAIL or refused query
+ * says nothing about the zone — only that this lookup, from here, got no
+ * answer. Reporting that as a missing record sent "Mail delivery is likely
+ * affected … No PTR record" to an operator whose reverse DNS was correct, three
+ * times in a week, each on a single slow answer from a public resolver.
+ *
+ * Node's resolver puts the cause in `code`; an error without one (our own
+ * timeout, an injected resolver) is judged by its message.
+ */
+export function isNoRecordError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  if (code === 'ENOTFOUND' || code === 'ENODATA') return true;
+  if (typeof code === 'string') return false;
+  return /\b(ENOTFOUND|ENODATA|NXDOMAIN)\b/.test(err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Did the resolvers ANSWER that they could not resolve the name (SERVFAIL)?
+ *
+ * Not "no answer": the resolver replied, and what it said is that the zone's own
+ * name servers did not give it one — a broken delegation, name servers that are
+ * down, a DNSSEC failure. A receiving mail server asking the same resolvers
+ * gets the same, so this counts against deliverability like a missing record
+ * does. (A passing hiccup is filtered where every failure is: the scheduler
+ * looks twice before it alerts.)
+ */
+export function isServfailError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  if (code === 'ESERVFAIL') return true;
+  if (typeof code === 'string') return false;
+  return /\bE?SERVFAIL\b/.test(err instanceof Error ? err.message : String(err));
+}
+
+const SERVFAIL_REMEDIATION = 'The public resolvers answered SERVFAIL: they could not get an answer from the zone\'s own name '
+  + 'servers. Receiving mail servers asking the same resolvers see the same. Check that the zone\'s name servers '
+  + 'respond, that its delegation at the parent is correct, and — if the zone is signed — that DNSSEC validates.';
+
+/** Wording for a lookup that got no answer: what is — and is not — known. */
+function couldNotCheck(what: string): string {
+  return `The lookup got no usable answer, so ${what} could not be checked on this pass. This is NOT a finding about the `
+    + 'record: nothing is known either way. One such pass is ordinary packet loss; if it persists, check outbound DNS '
+    + 'from platform-api to the resolvers under Platform → DNS (or MAIL_HEALTH_EXTERNAL_DNS).';
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -437,6 +498,8 @@ async function probeForwardDns(
   const resolveAddrs = deps.resolveAddresses ?? defaultResolveAddresses;
   let resolvedIps: string[] = [];
   let resolveErr: string | null = null;
+  let unanswered = false;
+  let servfail = false;
   try {
     const { a, aaaa } = await withTimeout(
       resolveAddrs(hostname),
@@ -446,6 +509,8 @@ async function probeForwardDns(
     resolvedIps = [...a, ...aaaa];
   } catch (err) {
     resolveErr = (err as Error).message ?? String(err);
+    servfail = isServfailError(err);
+    unanswered = !servfail && !isNoRecordError(err);
   }
 
   // The expected set spans BOTH families, while `expectedIps` (used for
@@ -463,6 +528,36 @@ async function probeForwardDns(
   const resolvedSet = new Set(resolvedIps);
   const missingIps = expectedIps.filter((ip) => !resolvedSet.has(ip));
   const extraIps = resolvedIps.filter((ip) => !expectedSet.has(ip));
+
+  if (resolveErr && unanswered) {
+    return {
+      severity: 'skipped',
+      assertion: `${hostname} resolves to every mail endpoint IP`,
+      actual: `lookup got no answer: ${resolveErr}`,
+      expected: expectedIps.join(', '),
+      remediation: couldNotCheck(`the A record of ${hostname}`),
+      hostname,
+      resolvedIps: [],
+      expectedIps: [...expectedIps],
+      missingIps: [],
+      extraIps: [],
+    };
+  }
+
+  if (resolveErr && servfail) {
+    return {
+      severity: 'fail',
+      assertion: `${hostname} resolves to every mail endpoint IP`,
+      actual: `resolvers answered SERVFAIL: ${resolveErr}`,
+      expected: expectedIps.join(', '),
+      remediation: SERVFAIL_REMEDIATION,
+      hostname,
+      resolvedIps: [],
+      expectedIps: [...expectedIps],
+      missingIps: [],
+      extraIps: [],
+    };
+  }
 
   if (resolveErr) {
     return {
@@ -571,6 +666,8 @@ async function probeReverseDnsOne(
   const resolvePtr = deps.resolvePtr ?? defaultResolvePtr;
   let ptrRecords: string[] = [];
   let err: string | null = null;
+  let unanswered = false;
+  let servfail = false;
   try {
     ptrRecords = await withTimeout(
       resolvePtr(ip),
@@ -579,6 +676,8 @@ async function probeReverseDnsOne(
     );
   } catch (e) {
     err = (e as Error).message ?? String(e);
+    servfail = isServfailError(e);
+    unanswered = !servfail && !isNoRecordError(e);
   }
 
   // Normalise trailing dot so comparison is robust against dig vs nslookup output.
@@ -586,6 +685,35 @@ async function probeReverseDnsOne(
   const expectedNorm = norm(hostname);
   const ptrsNorm = ptrRecords.map(norm);
   const fcrdnsOk = ptrsNorm.includes(expectedNorm);
+
+  // No answer is not "no record" — see isNoRecordError. Either family.
+  if (err && unanswered) {
+    return {
+      severity: 'skipped',
+      assertion: `PTR for ${ip} resolves to ${hostname}`,
+      actual: `lookup got no answer: ${err}`,
+      expected: hostname,
+      remediation: couldNotCheck(`the PTR record of ${ip}`),
+      ip,
+      ptrRecords: [],
+      expectedPtr: hostname,
+      fcrdnsOk: false,
+    };
+  }
+
+  if (err && servfail) {
+    return {
+      severity: missSeverity,
+      assertion: `PTR for ${ip} resolves to ${hostname}`,
+      actual: `resolvers answered SERVFAIL: ${err}`,
+      expected: hostname,
+      remediation: SERVFAIL_REMEDIATION + ' The reverse zone belongs to the IP\'s network provider.' + familyNote,
+      ip,
+      ptrRecords: [],
+      expectedPtr: hostname,
+      fcrdnsOk: false,
+    };
+  }
 
   if (err) {
     return {
@@ -1046,16 +1174,29 @@ function externalDnsServers(): string[] {
   return ['1.1.1.1', '8.8.8.8'];
 }
 
-function externalResolver(): Resolver {
-  const r = new Resolver();
-  r.setServers(externalDnsServers());
+/** A resolver over `servers` that moves on to the next one inside the lookup budget. */
+export function resolverFor(servers: readonly string[]): Resolver {
+  const r = new Resolver({ timeout: DNS_TRY_TIMEOUT_MS, tries: DNS_TRIES });
+  r.setServers([...servers]);
   return r;
+}
+
+function externalResolver(): Resolver {
+  return resolverFor(externalDnsServers());
 }
 
 async function defaultResolveAddresses(hostname: string): Promise<{ a: string[]; aaaa: string[] }> {
   const r = externalResolver();
   const [a, aaaa] = await Promise.all([
-    r.resolve4(hostname).catch(() => [] as string[]),
+    // "No A record" is an answer and comes back as none. Anything else — a
+    // timeout, SERVFAIL — is no answer at all and must reach the caller: turned
+    // into an empty list here it read as "every A record is missing".
+    r.resolve4(hostname).catch((err: unknown) => {
+      if (isNoRecordError(err)) return [] as string[];
+      throw err;
+    }),
+    // AAAA is only used here to spot a stray address; its own probe
+    // (probeIpv6Dns) reports a failed AAAA lookup.
     r.resolve6(hostname).catch(() => [] as string[]),
   ]);
   return { a, aaaa };
