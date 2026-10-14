@@ -14,6 +14,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Searching the admin tenant list for a word from the cluster's domain no longer lists every
+  tenant.** The placement search matched anywhere in a node's name, and a cluster's nodes share
+  their domain (`node-2.cluster.<apex>`), so a search for the operator's own brand matched the
+  node of every pinned tenant: production listed all 31 where about 4 matched by name or email.
+  A node is now matched by its alias, by the first part of its name or hostname (`node-2`), or
+  by its full name typed from the start (a node named by its IP address, by any part of it) —
+  the same for the node a tenant is pinned to and the one a misplaced tenant is actually on.
 - **The 48-hour unread reminder is about your own notifications only, and says what each one
   said.** It used to chase tenants' notifications to the platform admins: production's read
   "Email sending at 88% of the hour limit (unread since 2026-10-12)", with no tenant and no
