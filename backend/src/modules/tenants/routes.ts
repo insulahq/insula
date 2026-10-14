@@ -289,7 +289,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         properties: {
           cursor: { type: 'string', description: 'Opaque pagination cursor' },
           limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
-          search: { type: 'string', description: 'Search by company name or email' },
+          search: { type: 'string', description: 'Search by name, contact email, plan name, or placement (node name, hostname or alias; "auto" for no node pin; "misplaced")' },
         },
       },
       response: {

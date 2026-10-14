@@ -239,7 +239,9 @@ spec:
               fi
               echo "restore-state: standby unavailable — attempting restic restore"
               mkdir -p /restore-tmp
-              if ! restic restore latest --target /restore-tmp 2>&1; then
+              # The SELinux label is not restored: it belongs to the node a file
+              # is written on, and restic fails on a node of the other kind otherwise.
+              if ! restic restore latest --target /restore-tmp --exclude-xattr security.selinux 2>&1; then
                 standby_fallback && exit 0
                 echo "RESTORE-STATE-WARNING: restic restore failed — Bulwark will FRESH-START. Restic repo may be unreachable; check network + Secret."
                 mkdir -p /app/data/admin

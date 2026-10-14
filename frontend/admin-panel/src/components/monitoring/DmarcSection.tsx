@@ -18,8 +18,16 @@ import { Fragment, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, ShieldAlert, Info, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TableSearch from '@/components/ui/TableSearch';
+import TablePager from '@/components/ui/TablePager';
+import { useTableView } from '@/hooks/use-table-view';
+import type { SortAccessors } from '@/hooks/use-sortable';
 import type { DmarcOverview, DmarcDomainSummary, DmarcSourceSummary } from '@insula/api-contracts';
 import DmarcPolicyActions from '@/components/dmarc/DmarcPolicyActions';
+
+/** The most the sources endpoint returns; the table searches and pages them in the browser. */
+const SOURCES_FETCHED = 500;
 
 function useDmarcOverview() {
   return useQuery({
@@ -33,15 +41,26 @@ function useDmarcSources(domain: string | null) {
   return useQuery({
     queryKey: ['mail', 'dmarc', 'sources', domain],
     queryFn: () => apiFetch<{ data: DmarcSourceSummary[] }>(
-      `/api/v1/admin/mail/dmarc/sources?domain=${encodeURIComponent(domain ?? '')}`,
+      `/api/v1/admin/mail/dmarc/sources?domain=${encodeURIComponent(domain ?? '')}&limit=${SOURCES_FETCHED}`,
     ),
     enabled: domain !== null,
     staleTime: 60_000,
   });
 }
 
-const TH = 'px-3 py-2 text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400';
+const TH = 'text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400';
+const TH_PAD = 'px-3 py-2';
 const TD = 'px-3 py-2 text-sm text-gray-700 dark:text-gray-300';
+
+const domainText = (d: DmarcDomainSummary): string => `${d.policyDomain} ${d.currentPolicy ?? ''}`;
+const DOMAIN_SORT: SortAccessors<DmarcDomainSummary> = {
+  // A domain with no reported mail has no rate: it sorts after every real one.
+  passRate: (d) => (d.totalMessages === 0 ? null : d.passRate),
+  // "move to p=…" before "keep observing" when ascending.
+  recommendation: (d) => (d.recommendation.ready ? 0 : 1),
+};
+const sourceText = (s: DmarcSourceSummary): string => s.sourceIp;
+const NO_SOURCE_ACCESSORS: SortAccessors<DmarcSourceSummary> = {};
 
 /**
  * Render a pass rate, or say plainly that there isn't one.
@@ -83,32 +102,56 @@ function SourceTable({ domain }: { domain: string }) {
   if (rows.length === 0) {
     return <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">No per-source rows in this window.</div>;
   }
+  return <SourceRows domain={domain} rows={rows} />;
+}
+
+function SourceRows({ domain, rows }: { readonly domain: string; readonly rows: readonly DmarcSourceSummary[] }) {
+  // Failing messages first, as the server orders them — the biggest sender is
+  // rarely the problem.
+  const view = useTableView(rows, {
+    searchText: sourceText, defaultSortKey: 'failCount', defaultDirection: 'desc', accessors: NO_SOURCE_ACCESSORS,
+  });
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={view.sortKey} direction={view.sortDirection}
+      onSort={view.onSort} padding={TH_PAD} className={TH} />
+  );
   return (
-    <table className="w-full" data-testid={`dmarc-sources-${domain}`}>
-      <thead>
-        <tr className="border-b border-gray-200 dark:border-gray-700">
-          <th className={TH}>Source IP</th><th className={TH}>Messages</th>
-          <th className={TH}>Passing</th><th className={TH}>Failing</th><th className={TH}>Last seen</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.sourceIp} className="border-b border-gray-100 dark:border-gray-700/50">
-            <td className={`${TD} font-mono text-xs`}>{r.sourceIp}</td>
-            <td className={TD}>{r.messageCount.toLocaleString()}</td>
-            <td className={`${TD} text-emerald-600 dark:text-emerald-400`}>{r.passCount.toLocaleString()}</td>
-            <td className={`${TD} ${r.failCount > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.failCount.toLocaleString()}</td>
-            <td className={TD}>{r.lastSeenAt ? new Date(r.lastSeenAt).toLocaleDateString() : '—'}</td>
+    <>
+      <div className="px-3 pt-3">
+        <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search source IP…" testId={`dmarc-sources-search-${domain}`} />
+      </div>
+      <table className="w-full" data-testid={`dmarc-sources-${domain}`}>
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-gray-700">
+            {header('Source IP', 'sourceIp')}
+            {header('Messages', 'messageCount')}
+            {header('Passing', 'passCount')}
+            {header('Failing', 'failCount')}
+            {header('Last seen', 'lastSeenAt')}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {view.rows.map((r) => (
+            <tr key={r.sourceIp} className="border-b border-gray-100 dark:border-gray-700/50">
+              <td className={`${TD} font-mono text-xs`}>{r.sourceIp}</td>
+              <td className={TD}>{r.messageCount.toLocaleString()}</td>
+              <td className={`${TD} text-emerald-600 dark:text-emerald-400`}>{r.passCount.toLocaleString()}</td>
+              <td className={`${TD} ${r.failCount > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.failCount.toLocaleString()}</td>
+              <td className={TD}>{r.lastSeenAt ? new Date(r.lastSeenAt).toLocaleDateString() : '—'}</td>
+            </tr>
+          ))}
+          {view.rows.length === 0 && (
+            <tr><td colSpan={5} className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No source matches “{view.search}”.</td></tr>
+          )}
+        </tbody>
+      </table>
+      <TablePager view={view} testIdPrefix={`dmarc-sources-${domain}-`} />
+    </>
   );
 }
 
 export default function DmarcSection() {
   const q = useDmarcOverview();
-  const [open, setOpen] = useState<string | null>(null);
 
   if (q.isLoading) {
     return (
@@ -148,76 +191,97 @@ export default function DmarcSection() {
           arriving within 24–48 hours of publishing the record.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-          <table className="w-full" data-testid="dmarc-domains">
-            <thead>
-              <tr className="border-b border-gray-200 dark:border-gray-700">
-                <th className={TH}>Domain</th>
-                <th className={TH}>DMARC pass rate</th>
-                <th className={TH}>Published</th>
-                <th className={TH}>Failing sources</th>
-                <th className={TH}>Reports</th>
-                <th className={TH}>Recommendation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {domains.map((d) => (
-                <Fragment key={d.policyDomain}>
-                  <tr
-                    className="cursor-pointer border-b border-gray-100 hover:bg-gray-50 dark:border-gray-700/50 dark:hover:bg-gray-700/30"
-                    onClick={() => setOpen(open === d.policyDomain ? null : d.policyDomain)}
-                  >
-                    <td className={`${TD} font-medium text-gray-900 dark:text-gray-100`}>
-                      {open === d.policyDomain
-                        ? <ChevronDown size={13} className="mr-1 inline" />
-                        : <ChevronRight size={13} className="mr-1 inline" />}
-                      {d.policyDomain}
-                    </td>
-                    <td className={TD}><PassRate rate={d.passRate} total={d.totalMessages} /></td>
-                    <td className={TD}><PolicyBadge policy={d.currentPolicy} /></td>
-                    <td className={TD}>
-                      {d.failingSources > 0
-                        ? <span className="text-red-600 dark:text-red-400">{d.failingSources}</span>
-                        : <span className="text-gray-400 dark:text-gray-500">none</span>}
-                    </td>
-                    <td className={TD}>{d.reportCount}</td>
-                    <td className={TD}>
-                      {/* Gated on `ready`, not on recommendedPolicy != null, so a
-                          null-because-unknown cannot render as a green go-ahead. */}
-                      {d.recommendation.ready ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                          <ShieldCheck size={13} />
-                          move to p={d.recommendation.recommendedPolicy}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400">
-                          <ShieldAlert size={13} />
-                          keep observing
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                  {open === d.policyDomain && (
-                    <tr className="bg-gray-50/60 dark:bg-gray-900/30">
-                      <td colSpan={6} className="px-3 py-3">
-                        <p className="mb-3 text-sm text-gray-700 dark:text-gray-300" data-testid={`dmarc-reason-${d.policyDomain}`}>
-                          {d.recommendation.reason}
-                        </p>
-                        <div className="mb-3">
-                          <DmarcPolicyActions summary={d} endpoint="/api/v1/admin/mail/dmarc/policy" invalidateKey={['mail', 'dmarc']} />
-                        </div>
-                        <div className="overflow-x-auto rounded border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-                          <SourceTable domain={d.policyDomain} />
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DomainsTable domains={domains} />
       )}
     </div>
+  );
+}
+
+function DomainsTable({ domains }: { readonly domains: readonly DmarcDomainSummary[] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const view = useTableView(domains, {
+    searchText: domainText, defaultSortKey: 'policyDomain', defaultDirection: 'asc', accessors: DOMAIN_SORT,
+  });
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={view.sortKey} direction={view.sortDirection}
+      onSort={view.onSort} padding={TH_PAD} className={TH} />
+  );
+  return (
+    <>
+      <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search domain…" testId="dmarc-search" />
+      <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        <table className="w-full" data-testid="dmarc-domains">
+          <thead>
+            <tr className="border-b border-gray-200 dark:border-gray-700">
+              {header('Domain', 'policyDomain')}
+              {header('DMARC pass rate', 'passRate')}
+              {header('Published', 'currentPolicy')}
+              {header('Failing sources', 'failingSources')}
+              {header('Reports', 'reportCount')}
+              {header('Recommendation', 'recommendation')}
+            </tr>
+          </thead>
+          <tbody>
+            {view.rows.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No domain matches “{view.search}”.</td></tr>
+            )}
+            {view.rows.map((d) => (
+              <Fragment key={d.policyDomain}>
+                <tr
+                  className="cursor-pointer border-b border-gray-100 hover:bg-gray-50 dark:border-gray-700/50 dark:hover:bg-gray-700/30"
+                  onClick={() => setOpen(open === d.policyDomain ? null : d.policyDomain)}
+                >
+                  <td className={`${TD} font-medium text-gray-900 dark:text-gray-100`}>
+                    {open === d.policyDomain
+                      ? <ChevronDown size={13} className="mr-1 inline" />
+                      : <ChevronRight size={13} className="mr-1 inline" />}
+                    {d.policyDomain}
+                  </td>
+                  <td className={TD}><PassRate rate={d.passRate} total={d.totalMessages} /></td>
+                  <td className={TD}><PolicyBadge policy={d.currentPolicy} /></td>
+                  <td className={TD}>
+                    {d.failingSources > 0
+                      ? <span className="text-red-600 dark:text-red-400">{d.failingSources}</span>
+                      : <span className="text-gray-400 dark:text-gray-500">none</span>}
+                  </td>
+                  <td className={TD}>{d.reportCount}</td>
+                  <td className={TD}>
+                    {/* Gated on `ready`, not on recommendedPolicy != null, so a
+                        null-because-unknown cannot render as a green go-ahead. */}
+                    {d.recommendation.ready ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                        <ShieldCheck size={13} />
+                        move to p={d.recommendation.recommendedPolicy}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400">
+                        <ShieldAlert size={13} />
+                        keep observing
+                      </span>
+                    )}
+                  </td>
+                </tr>
+                {open === d.policyDomain && (
+                  <tr className="bg-gray-50/60 dark:bg-gray-900/30">
+                    <td colSpan={6} className="px-3 py-3">
+                      <p className="mb-3 text-sm text-gray-700 dark:text-gray-300" data-testid={`dmarc-reason-${d.policyDomain}`}>
+                        {d.recommendation.reason}
+                      </p>
+                      <div className="mb-3">
+                        <DmarcPolicyActions summary={d} endpoint="/api/v1/admin/mail/dmarc/policy" invalidateKey={['mail', 'dmarc']} />
+                      </div>
+                      <div className="overflow-x-auto rounded border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                        <SourceTable domain={d.policyDomain} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <TablePager view={view} testIdPrefix="dmarc-" />
+    </>
   );
 }

@@ -1,7 +1,7 @@
-import { eq, ilike, and, sql, desc, asc, lt, gt, getTableColumns } from 'drizzle-orm';
+import { eq, ilike, and, or, isNull, sql, desc, asc, lt, gt, getTableColumns, type SQL } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
 import bcrypt from 'bcrypt';
-import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions } from '../../db/schema.js';
+import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions, tenantPlacementState } from '../../db/schema.js';
 import { tenantNotFound } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -797,15 +797,63 @@ async function loadPreArchiveRetentionDays(db: Database): Promise<number> {
 /** One admin tenant-list row: the tenant plus its hosting plan's name. */
 export type TenantListRow = typeof tenants.$inferSelect & { readonly planName: string | null };
 
+/** Placement words the search box understands, as the Placement column shows them. */
+export const PLACEMENT_SEARCH_WORDS = { unpinned: 'auto', misplaced: 'misplaced' } as const;
+
+/**
+ * What the admin tenant list's search matches: the tenant's name and contact
+ * email, its plan's name, and its placement as the Placement column shows it.
+ *
+ * A node is found by its Kubernetes name, its hostname or its alias — the
+ * column shows the alias, and an operator types what they read. A misplaced
+ * tenant is also found by the node it is actually on, which the column shows
+ * in red above its primary. `auto` finds the tenants with no node pin and
+ * `misplaced` the ones off their primary node, the two words the column shows
+ * in place of a node.
+ *
+ * The caller's query must LEFT JOIN hosting_plans (the plan name is matched
+ * on the joined row).
+ */
+export function tenantSearchCondition(term: string): SQL {
+  const trimmed = term.trim();
+  const pattern = likePattern(trimmed);
+  const word = trimmed.toLowerCase();
+  // Both names a node goes by, for every node whose name, hostname or alias
+  // matches: tenants.node_name holds the Kubernetes name, while placement
+  // observations may carry either.
+  const matchingNodes = sql`
+    SELECT v.node FROM ${clusterNodes} cn,
+      LATERAL (VALUES (cn.name), (cn.labels->>'kubernetes.io/hostname')) AS v(node)
+     WHERE v.node IS NOT NULL
+       AND (cn.name ILIKE ${pattern} OR cn.display_name ILIKE ${pattern}
+            OR cn.labels->>'kubernetes.io/hostname' ILIKE ${pattern})`;
+  const clauses: SQL[] = [
+    ilike(tenants.name, pattern),
+    ilike(tenants.primaryEmail, pattern),
+    ilike(hostingPlans.name, pattern),
+    ilike(tenants.nodeName, pattern),
+    sql`${tenants.nodeName} IN (${matchingNodes})`, // allow-array-binding: matchingNodes is a SQL subquery, not an array
+    sql`EXISTS (
+      SELECT 1 FROM ${tenantPlacementState} tps, unnest(tps.actual_nodes) AS an(node)
+       WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced'
+         AND (an.node ILIKE ${pattern} OR an.node IN (${matchingNodes})))`, // allow-array-binding: a SQL subquery, not an array
+  ];
+  if (word === PLACEMENT_SEARCH_WORDS.unpinned) clauses.push(isNull(tenants.nodeName));
+  if (word === PLACEMENT_SEARCH_WORDS.misplaced) {
+    clauses.push(sql`EXISTS (SELECT 1 FROM ${tenantPlacementState} tps WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced')`);
+  }
+  return or(...clauses) as SQL;
+}
+
 export async function listTenants(
   db: Database,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
 ): Promise<{ data: TenantListRow[]; pagination: PaginationMeta }> {
   const { limit, cursor, sort, search } = params;
 
-  const conditions = [];
-  if (search) {
-    conditions.push(ilike(tenants.name, likePattern(search)));
+  const conditions: SQL[] = [];
+  if (search && search.trim() !== '') {
+    conditions.push(tenantSearchCondition(search));
   }
 
   if (cursor) {
@@ -843,7 +891,12 @@ export async function listTenants(
     });
   }
 
-  const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(tenants).where(where);
+  // Joined like the rows: the search matches the plan's name.
+  const [countResult] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(tenants)
+    .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
+    .where(where);
 
   return {
     data,

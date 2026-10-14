@@ -124,6 +124,20 @@ describe('buildMailboxesByAddressJobSpec', () => {
     expect(vol?.secret?.defaultMode).toBe(0o400);
   });
 
+  it('does not restore the SELinux label from a per-mailbox snapshot either', () => {
+    const spec = buildMailboxesByAddressJobSpec({
+      ...baseInput,
+      snapshotByAddress: [
+        { address: 'a@example.com', addressDir: 'a@example.com', snapshotId: 'b'.repeat(64) },
+        { address: 'b@example.com', addressDir: 'b@example.com', snapshotId: 'c'.repeat(64) },
+      ],
+    }) as { spec: { template: { spec: { containers: Array<{ command: string[] }> } } } };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('restore "$SNAP" --target /tmp/restic-out --no-lock --exclude-xattr security.selinux ||');
+    // The whole-tenant restore is not in this script: every restore in it has the flag.
+    expect(cmd.match(/restic -r "\$REPO" restore /g)).toHaveLength(1);
+  });
+
   it('script runs restic restore, extracts maildir.tar, then jmap-restore.py per address', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[]; image: string }> } } };
@@ -133,6 +147,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     // One restic restore of the whole-tenant snapshot, then tar-extract.
     expect(cmd).toContain(`restic -r "$REPO" restore ${'a'.repeat(64)} --target /tmp/restic-out`);
     expect(cmd).toContain('--no-lock');
+    expect(cmd).toContain('--target /tmp/restic-out --no-lock --exclude-xattr security.selinux ||');
     expect(cmd).toContain('tar xf "$TARBALL" -C /tmp/maildir-all');
     // restic creds come from the mounted Secret, never argv.
     expect(cmd).toContain('export RESTIC_PASSWORD="$(cat /var/run/restic-creds/restic_password)"');

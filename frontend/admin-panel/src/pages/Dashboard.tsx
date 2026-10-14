@@ -31,6 +31,7 @@ import {
 } from '@/components/console/ConsoleTiles';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import { triadFigures } from '@/lib/resource-triad';
 
 /**
  * Where the disk went, for the Storage tile's hover card.
@@ -245,40 +246,56 @@ export default function Dashboard() {
 
 /* ── node strip ──────────────────────────────────────────────────── */
 
-function MiniTriad({ label, inUse: measured, committed, total, unit }: {
-  label: string; inUse: number | null; committed: number; total: number; unit: string;
+function MiniTriad({ label, inUse: measured, committed, total, unit, decimals = 2 }: {
+  label: string; inUse: number | null; committed: number; total: number; unit: string; decimals?: number;
 }) {
-  const pct = total > 0 ? (committed / total) * 100 : 0;
-  // null = the node had no metrics sample. An em-dash says so; 0.00 would
-  // claim the node is idle, which is the opposite of "we do not know".
+  const f = triadFigures(measured, committed, total);
+  // null = the node had no sample. An em-dash says so; 0.00 would claim the
+  // node is idle, which is the opposite of "we do not know".
   const inUse = measured ?? 0;
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" title={`${label}: ${measured === null ? 'in use not reported' : `${inUse.toFixed(decimals)} ${unit} in use`}, `
+      + `${committed.toFixed(decimals)} committed, ${f.free.toFixed(decimals)} free of ${total.toFixed(decimals)} ${unit}`}>
       <div className="mb-1 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         <span className="whitespace-nowrap">
-          <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(2)}</span> / {committed.toFixed(2)}
+          <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(decimals)}</span> / {committed.toFixed(decimals)}
         </span>
-        <span className="min-w-0 truncate opacity-60">of {total.toFixed(2)} {unit}</span>
-        {/* The percentage is committed/total — a RESERVATION, not utilisation.
+        <span className="min-w-0 truncate opacity-60">of {total.toFixed(decimals)} {unit}</span>
+        {/* The percentage is committed/total — a promise, not utilisation.
             Unlabelled it reads as "the node is 96% busy", which is the single
-            misreading this strip can produce: a node can sit at 96% reserved
-            and 12% used, refuse new work, and look identical to one that is
+            misreading this strip can produce: a node can sit at 96% committed
+            and 12% in use, refuse new work, and look identical to one that is
             genuinely saturated. The word is the whole fix. */}
         <span className="ml-auto whitespace-nowrap">
-          {Math.round(pct)}%<span className="ml-1 opacity-60">reserved</span>
+          {Math.round(f.committedPct)}%<span className="ml-1 opacity-60">committed</span>
         </span>
       </div>
       <div className="flex h-1.5 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
-        <div className={pct >= 90 ? 'bg-amber-500' : 'bg-teal-600 dark:bg-teal-400'}
-             style={{ width: `${Math.min(100, (inUse / (total || 1)) * 100).toFixed(1)}%` }} />
-        <div className={`opacity-60 ${pct >= 90 ? 'bg-amber-300' : 'bg-teal-300 dark:bg-teal-700'}`}
-             style={{ width: `${Math.max(0, Math.min(100, ((committed - inUse) / (total || 1)) * 100)).toFixed(1)}%` }} />
+        <div className={f.committedPct >= 90 ? 'bg-amber-500' : 'bg-teal-600 dark:bg-teal-400'}
+             style={{ width: `${f.inUsePct.toFixed(1)}%` }} />
+        <div className={`opacity-60 ${f.committedPct >= 90 ? 'bg-amber-300' : 'bg-teal-300 dark:bg-teal-700'}`}
+             style={{ width: `${Math.max(0, f.committedPct - f.inUsePct).toFixed(1)}%` }} />
       </div>
       <span className="sr-only">{label}</span>
     </div>
   );
 }
 
+/**
+ * The Disk column: Longhorn's in use / committed / total when it has the node,
+ * else the kubelet's root-disk fill — a percentage only, but a measurement.
+ */
+function DiskCell({ node }: { node: AdminNode }) {
+  if (node.disk) {
+    return <MiniTriad label="Disk" inUse={node.disk.inUse} committed={node.disk.committed} total={node.disk.total} unit={node.disk.unit} decimals={0} />;
+  }
+  return (
+    <span className="font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400"
+      title="Longhorn has no figures for this node; this is its root disk's fill, from the kubelet">
+      {node.diskUsedPct == null ? '—' : `${Math.round(node.diskUsedPct)}% in use`}
+    </span>
+  );
+}
 
 function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: boolean }) {
   const nodeLabel = useNodeLabel();
@@ -308,10 +325,10 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
           out twice on purpose: Tailwind only emits CSS for class names it
           can see literally in the source. dashboard-node-grid.test.ts pins
           the two copies together. */}
-      <div className="hidden grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
-        <span>Node</span><span>Role</span><span>CPU — in use / reserved</span>
+      <div className="hidden grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2fr)_minmax(0,2fr)_minmax(0,2fr)_3.5rem] items-center gap-3 rounded-t-xl bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 lg:grid dark:bg-gray-900/40 dark:text-gray-400">
+        <span>Node</span><span>Role</span><span>CPU — in use / committed</span>
         <span>Memory — in use / committed</span>
-        <span className="text-right">Disk</span><span className="text-right">Pods</span>
+        <span>Disk — in use / committed</span><span className="text-right">Pods</span>
       </div>
       {nodes.map((n, i) => {
         const sev = !n.ready ? 'crit' : (n.pressures.length > 0 || n.evictionsLastHour > 0 || (n.diskUsedPct ?? 0) >= 70) ? 'warn' : 'ok';
@@ -319,7 +336,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
           <Link
             key={n.name}
             to="/cluster/nodes"
-            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2.4fr)_minmax(0,2.4fr)_4rem_3.5rem] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,1.3fr)_5rem_minmax(0,2fr)_minmax(0,2fr)_minmax(0,2fr)_3.5rem] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
               i === nodes.length - 1 ? 'rounded-b-xl' : ''
             }`}
           >
@@ -334,18 +351,21 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
             </span>
             <MiniTriad label="CPU" inUse={n.cpu.inUse} committed={n.cpu.committed} total={n.cpu.total} unit="cores" />
             <MiniTriad label="Memory" inUse={n.memory.inUse} committed={n.memory.committed} total={n.memory.total} unit="GiB" />
-            <span className="text-right font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400">
-              {n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`}
-            </span>
+            <DiskCell node={n} />
             <span className="text-right font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400">{n.pods}</span>
             <HoverCard
               title={`${n.name} — node detail`}
               rows={[
                 ['CPU in use / committed', `${n.cpu.inUse === null ? 'not reported' : n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
+                ['CPU free', `${triadFigures(n.cpu.inUse, n.cpu.committed, n.cpu.total).free.toFixed(2)} cores`],
                 ['Memory in use / committed', `${n.memory.inUse === null ? 'not reported' : n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
-                ['Schedulable CPU left', `${Math.max(0, n.cpu.total - n.cpu.committed).toFixed(2)} cores`],
-                ['Pods scheduled', String(n.pods)],
-                ['Disk used', n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`],
+                ['Memory free', `${triadFigures(n.memory.inUse, n.memory.committed, n.memory.total).free.toFixed(2)} GiB`],
+                ['Disk in use / committed', n.disk
+                  ? `${n.disk.inUse === null ? 'not reported' : n.disk.inUse.toFixed(0)} / ${n.disk.committed.toFixed(0)} of ${n.disk.total.toFixed(0)} GB`
+                  : 'not reported'],
+                ['Disk free', n.disk ? `${triadFigures(n.disk.inUse, n.disk.committed, n.disk.total).free.toFixed(0)} GB` : '—'],
+                ['Root disk in use', n.diskUsedPct == null ? '—' : `${Math.round(n.diskUsedPct)}%`],
+                ['Pods', String(n.pods)],
                 ['Evictions, last hour', String(n.evictionsLastHour)],
                 ['Pressures', n.pressures.length ? n.pressures.join(', ') : 'none'],
                 ['Kubelet', n.kubeletVersion ?? '—'],
@@ -367,9 +387,16 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
 type Summary = ReturnType<typeof useConsoleSummary>['data'] extends { data: infer T } | undefined ? T : never;
 type Live = ReturnType<typeof useConsoleLive>['data'] extends { data: infer T } | undefined ? T : never;
 
+/**
+ * The tile's figures — sent, queue, rate-limited — are the ones Monitoring →
+ * Mail breaks down per domain, so that is where a click lands. Email →
+ * Operations is mail-server placement and storage, none of which is on the tile.
+ */
+const MAIL_TILE_TARGET = '/monitoring/mail';
+
 function MailTile({ live }: { live: Live | undefined }) {
   const m = live?.mail.data;
-  if (!m) return <SectionFallback title="Mail" to="/email/operations" section={live?.mail ?? { state: 'stale', reason: null, observedAt: null }} />;
+  if (!m) return <SectionFallback title="Mail" to={MAIL_TILE_TARGET} section={live?.mail ?? { state: 'stale', reason: null, observedAt: null }} />;
   const cells: MatrixCell[] = [
     { k: 'Sent · 7d', v: m.sent7d.toLocaleString() },
     { k: 'Queue', v: m.queueReachable ? String(m.queueDepth) : 'unreachable', tone: m.queueReachable ? 'ok' : 'crit' },
@@ -377,7 +404,7 @@ function MailTile({ live }: { live: Live | undefined }) {
     { k: 'Over quota', v: String(m.overQuotaMailboxes), tone: m.overQuotaMailboxes > 0 ? 'crit' : 'ok' },
   ];
   return (
-    <MatrixTile title="Mail" to="/email/operations" cells={cells} card={(
+    <MatrixTile title="Mail" to={MAIL_TILE_TARGET} cells={cells} card={(
       <HoverCard title="Mail — last 7 days" rows={[
         ['Delivered', m.sent7d.toLocaleString()],
         ['Rate-limited', m.rateLimited7d.toLocaleString()],

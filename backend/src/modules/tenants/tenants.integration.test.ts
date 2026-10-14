@@ -88,6 +88,69 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
     expect(res.json().data[0].name).toBe('Searchable Corp');
   });
 
+  describe('search by plan and by placement', () => {
+    const NODES = ['search-a.cluster.example.test', 'search-b.cluster.example.test', 'search-c.cluster.example.test'];
+    const search = async (term: string): Promise<{ names: string[]; total: number }> => {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/tenants?limit=100&search=${encodeURIComponent(term)}`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { data: Array<{ name: string }>; pagination: { total_count: number } };
+      return { names: body.data.map((t) => t.name).sort(), total: body.pagination.total_count };
+    };
+
+    beforeEach(async () => {
+      const db = getTestDb();
+      await db.execute(sql`DELETE FROM cluster_nodes WHERE name LIKE 'search-%'`);
+      await db.execute(sql`
+        INSERT INTO cluster_nodes (name, display_name, labels) VALUES
+          (${NODES[0]}, 'Primary', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-a' })}::jsonb),
+          (${NODES[1]}, 'Secondary', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-b' })}::jsonb),
+          (${NODES[2]}, 'Spare', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-c' })}::jsonb)`);
+      const business = await seedPlan(db, { name: 'Business Plus' });
+      await seedTenant(db, regionId, business.id, { name: 'On Primary', nodeName: NODES[0] });
+      const moved = await seedTenant(db, regionId, planId, { name: 'Moved Away', nodeName: NODES[1] });
+      await seedTenant(db, regionId, planId, { name: 'Unpinned', nodeName: null });
+      // Pinned to Secondary, running on Spare: the column shows Spare in red.
+      await db.execute(sql`
+        INSERT INTO tenant_placement_state (tenant_id, status, primary_node, actual_nodes)
+        VALUES (${moved.id}, 'misplaced', ${NODES[1]}, ARRAY[${NODES[2]}]::text[])`);
+    });
+
+    afterAll(async () => {
+      await getTestDb().execute(sql`DELETE FROM cluster_nodes WHERE name LIKE 'search-%'`);
+    });
+
+    it('finds tenants by their plan name, and counts what it found', async () => {
+      expect(await search('business')).toEqual({ names: ['On Primary'], total: 1 });
+    });
+
+    it('finds tenants by the node alias the Placement column shows, its hostname, or its Kubernetes name', async () => {
+      expect((await search('primary')).names).toEqual(['On Primary']);
+      expect((await search('search-a')).names).toEqual(['On Primary']);
+      expect((await search('search-b.cluster')).names).toEqual(['Moved Away']);
+    });
+
+    it('finds a misplaced tenant by the node it is actually on', async () => {
+      expect((await search('spare')).names).toEqual(['Moved Away']);
+      expect((await search('search-c')).names).toEqual(['Moved Away']);
+    });
+
+    it('understands the two words the column shows instead of a node', async () => {
+      expect((await search('auto')).names).toEqual(['Unpinned']);
+      expect((await search('misplaced')).names).toEqual(['Moved Away']);
+    });
+
+    it('still finds a tenant by name and by contact email', async () => {
+      expect((await search('unpinned')).names).toEqual(['Unpinned']);
+      const db = getTestDb();
+      await seedTenant(db, regionId, planId, { name: 'Mailed', primaryEmail: 'owner@mailed-co.example.test' });
+      expect((await search('mailed-co')).names).toEqual(['Mailed']);
+    });
+  });
+
   it('GET /api/v1/tenants/:id — returns single tenant', async () => {
     const db = getTestDb();
     const tenant = await seedTenant(db, regionId, planId);

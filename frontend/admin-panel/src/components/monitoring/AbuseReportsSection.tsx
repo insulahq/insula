@@ -15,17 +15,33 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ShieldAlert, Inbox, Loader2, ChevronRight, ChevronDown, Info } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TableSearch from '@/components/ui/TableSearch';
+import TablePager from '@/components/ui/TablePager';
+import { useTableView } from '@/hooks/use-table-view';
+import type { SortAccessors } from '@/hooks/use-sortable';
 import type { AbuseReportsOverview, AbuseReport, AbuseFeedbackType } from '@insula/api-contracts';
+
+/** The most the endpoint returns; the table searches and pages them in the browser. */
+const REPORTS_FETCHED = 200;
 
 function useAbuseReports(windowDays: number) {
   return useQuery({
     queryKey: ['mail', 'abuse-reports', windowDays],
     queryFn: () => apiFetch<{ data: AbuseReportsOverview }>(
-      `/api/v1/admin/mail/abuse-reports?windowDays=${windowDays}`,
+      `/api/v1/admin/mail/abuse-reports?windowDays=${windowDays}&limit=${REPORTS_FETCHED}`,
     ),
     staleTime: 60_000,
   });
 }
+
+const reportText = (r: AbuseReport): string => [
+  r.feedbackType, r.domain, r.tenantName ?? 'unattributed', r.reporter, r.originalMailFrom,
+  r.originalRcptTo, r.sourceIp, r.subject,
+].filter(Boolean).join(' ');
+const REPORT_SORT: SortAccessors<AbuseReport> = { tenant: (r) => r.tenantName };
+const TH = 'font-medium';
+const TH_PAD = 'px-3 py-2';
 
 const TYPE_STYLE: Record<AbuseFeedbackType, { label: string; cls: string }> = {
   abuse: {
@@ -174,32 +190,48 @@ export default function AbuseReportsSection() {
         </div>
       )}
 
-      {overview && overview.reports.length > 0 && (
-        <>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left">
-              <thead>
-                <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Reported domain</th>
-                  <th className="px-3 py-2 font-medium">Tenant</th>
-                  <th className="px-3 py-2 font-medium">Incidents</th>
-                  <th className="px-3 py-2 font-medium">Received</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overview.reports.map((r) => <Row key={r.id} report={r} />)}
-              </tbody>
-            </table>
-          </div>
-          {overview.total > overview.reports.length && (
-            <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-              <Info size={13} />
-              Showing the {overview.reports.length} most recent of {overview.total} in this window.
-            </p>
-          )}
-        </>
-      )}
+      {overview && overview.reports.length > 0 && <ReportsTable overview={overview} />}
     </section>
+  );
+}
+
+function ReportsTable({ overview }: { readonly overview: AbuseReportsOverview }) {
+  const view = useTableView(overview.reports, {
+    searchText: reportText, defaultSortKey: 'receivedAt', defaultDirection: 'desc', accessors: REPORT_SORT,
+  });
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={view.sortKey} direction={view.sortDirection}
+      onSort={view.onSort} padding={TH_PAD} className={TH} />
+  );
+  return (
+    <>
+      <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search domain, tenant, sender, IP…" testId="abuse-search" />
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left">
+          <thead>
+            <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              {header('Type', 'feedbackType')}
+              {header('Reported domain', 'domain')}
+              {header('Tenant', 'tenant')}
+              {header('Incidents', 'incidents')}
+              {header('Received', 'receivedAt')}
+            </tr>
+          </thead>
+          <tbody>
+            {view.rows.map((r) => <Row key={r.id} report={r} />)}
+            {view.rows.length === 0 && (
+              <tr><td colSpan={5} className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No report matches “{view.search}”.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <TablePager view={view} testIdPrefix="abuse-" />
+      {overview.total > overview.reports.length && (
+        <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <Info size={13} />
+          Showing the {overview.reports.length} most recent of {overview.total} in this window.
+        </p>
+      )}
+    </>
   );
 }

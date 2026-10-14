@@ -520,7 +520,11 @@ spec:
                   RESTORE_ATTEMPT=$$((RESTORE_ATTEMPT + 1))
                   echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3 (id=$$CAND)..."
                   rm -rf /restore-tmp/* /restore-tmp/.* 2>/dev/null || true
-                  if restic restore "$$CAND" --target /restore-tmp 2>&1; then
+                  # The SELinux label is not restored: it belongs to the node a
+                  # file is written on. With it, a snapshot taken on a node
+                  # without SELinux fails on one with it (and the other way
+                  # round) on every attempt, though the data was written.
+                  if restic restore "$$CAND" --target /restore-tmp --exclude-xattr security.selinux 2>&1; then
                     RESTORE_OK=true
                     break
                   fi

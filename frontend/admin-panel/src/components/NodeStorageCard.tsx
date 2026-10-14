@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { HardDrive, AlertTriangle, Loader2, Check, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useNodeStorage, usePatchNodeDisk, type NodeDiskInfo } from '@/hooks/use-node-storage';
+import { triadFigures } from '@/lib/resource-triad';
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TiB`;
@@ -64,7 +65,10 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
   const max = disk.storageMaximum;
   const sched = disk.storageScheduled;
   const reserved = disk.storageReserved;
-  const free = disk.freeToSchedule;
+  // In use / committed / free, as every capacity figure in the panel reads
+  // (lib/resource-triad.ts). Committed is Longhorn's "scheduled": the size of
+  // every volume replica placed on this disk.
+  const figures = triadFigures(Math.max(0, max - disk.storageAvailable), sched, max);
   const usedPct = max > 0 ? Math.round(((sched + reserved) / max) * 100) : 0;
 
   // Over-provisioning: scheduled exceeds physical maximum minus reserved.
@@ -73,9 +77,9 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
   const overProvisioned = sched > Math.max(0, max - reserved);
 
   const tone =
-    usedPct >= 90 ? 'bg-red-500'
-      : usedPct >= 75 ? 'bg-amber-500'
-        : 'bg-green-500';
+    usedPct >= 90 ? { used: 'bg-red-500', committed: 'bg-red-300 dark:bg-red-800' }
+      : usedPct >= 75 ? { used: 'bg-amber-500', committed: 'bg-amber-300 dark:bg-amber-800' }
+        : { used: 'bg-green-500', committed: 'bg-green-300 dark:bg-green-800' };
 
   const onSave = (): void => {
     const reservedBytes = gibToBytes(parseFloat(reservedGib));
@@ -118,8 +122,11 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
               </span>
             )}
           </div>
-          <div className="mt-0.5 text-xs tabular-nums text-gray-500 dark:text-gray-400">
-            scheduled {formatBytes(sched)} · reserved {formatBytes(reserved)} · free {formatBytes(free)} / max {formatBytes(max)}
+          <div className="mt-0.5 text-xs tabular-nums text-gray-500 dark:text-gray-400" data-testid={`disk-${disk.diskKey}-figures`}>
+            In use {formatBytes(figures.inUse ?? 0)} · Committed {formatBytes(sched)} · Free {formatBytes(figures.free)} of {formatBytes(max)}
+            {reserved > 0 && (
+              <span title="Space Longhorn never commits to volumes (its storageReserved setting)"> · {formatBytes(reserved)} held back</span>
+            )}
           </div>
         </div>
         {!editing ? (
@@ -156,8 +163,9 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
         )}
       </div>
 
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        <div className={clsx('h-full transition-all', tone)} style={{ width: `${Math.min(100, usedPct)}%` }} />
+      <div className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        <div className={clsx('h-full transition-all', tone.used)} style={{ width: `${figures.inUsePct.toFixed(1)}%` }} />
+        <div className={clsx('h-full transition-all', tone.committed)} style={{ width: `${Math.max(0, figures.committedPct - figures.inUsePct).toFixed(1)}%` }} />
       </div>
 
       {(overProvisioned || usedPct >= 90) && (
@@ -166,12 +174,12 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
           <div>
             {overProvisioned && (
               <div>
-                <span className="font-semibold">Over-provisioned:</span> sum of replica sizes ({formatBytes(sched)}) exceeds physical capacity minus reserved ({formatBytes(Math.max(0, max - reserved))}). New PVCs may fail to allocate if existing volumes fill.
+                <span className="font-semibold">Over-committed:</span> volumes committed to this disk ({formatBytes(sched)}) exceed its size less the space held back ({formatBytes(Math.max(0, max - reserved))}). New PVCs may fail to allocate if existing volumes fill.
               </div>
             )}
             {usedPct >= 90 && !overProvisioned && (
               <div>
-                <span className="font-semibold">Capacity pressure:</span> {usedPct}% of physical capacity already scheduled or reserved. Consider scaling up storage before next provision.
+                <span className="font-semibold">Capacity pressure:</span> {usedPct}% of the disk is committed or held back. Consider adding storage before the next provision.
               </div>
             )}
           </div>
@@ -181,7 +189,7 @@ function DiskRow({ nodeName, disk }: { readonly nodeName: string; readonly disk:
       {editing && (
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <label className="text-xs text-gray-600 dark:text-gray-300">
-            <span className="block">Reserved (GiB) — operator-only headroom</span>
+            <span className="block">Held back (GiB) — space Longhorn never commits to volumes</span>
             <input
               type="number"
               min="0"

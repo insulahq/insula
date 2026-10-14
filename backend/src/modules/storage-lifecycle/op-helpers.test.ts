@@ -13,6 +13,7 @@ vi.mock('../tenant-bundles/restic-driver.js', () => ({
   buildResticRepoUri: () => 's3:http://shim.example.test/repo',
   buildResticEnv: () => ({}),
   deriveResticPassword: () => 'ab'.repeat(32),
+  RESTIC_RESTORE_SKIP_SELINUX_LABEL: ['--exclude-xattr', 'security.selinux'],
 }));
 vi.mock('../tenant-placement/data-node.js', () => ({ resolveTenantDataNode: async () => ({ node: 'node-a' }) }));
 vi.mock('./job-log-tail.js', () => ({ tailJobLog: async () => null }));
@@ -45,6 +46,8 @@ describe('restoring a bundle into a volume, picked up again', () => {
     batch: {
       readNamespacedJob: async () => read() ?? notFound(),
       createNamespacedJob: async ({ body }: { body: { metadata: { name: string } } }) => {
+        // As the API server answers while a Job of that name exists, whatever state it is in.
+        if (job[0] !== null) throw Object.assign(new Error(`jobs.batch "${body.metadata.name}" already exists`), { statusCode: 409 });
         did.push(`create job ${body.metadata.name}`);
         job = [RUNNING, COMPLETE];
         return { metadata: { uid: 'uid-1' } };
@@ -78,10 +81,27 @@ describe('restoring a bundle into a volume, picked up again', () => {
     if (failure) throw failure;
   };
 
-  it('a first run does not look for a Job: it creates its own', async () => {
-    job = [COMPLETE];                                    // whatever is there is not asked about
+  it('a first run with nothing left creates its own Job', async () => {
     await settled(restore(false));
     expect(did.slice(0, 2)).toEqual(['create secret rs-preresize-creds-bkp1', 'create job rs-preresize-bkp1']);
+  });
+
+  // The operator runs a failed restore again while the Job of the first attempt
+  // is still kept (ten minutes): the name is the bundle's, so it is in the way.
+  it.each<[string, typeof job]>([
+    ['failed', [FAILED]],
+    ['finished', [COMPLETE]],
+    ['still running', [RUNNING]],
+  ])('a first run removes the Job an earlier attempt left %s, with its credentials, before creating its own', async (_what, left) => {
+    job = left;
+    await settled(restore(false));
+    expect(did).toEqual([
+      'delete job rs-preresize-bkp1 (Foreground)',
+      'delete secret rs-preresize-creds-bkp1',
+      'create secret rs-preresize-creds-bkp1',
+      'create job rs-preresize-bkp1',
+      'delete job rs-preresize-bkp1 (Background)',
+    ]);
   });
 
   it.each<[string, typeof job]>([

@@ -179,9 +179,20 @@ export async function layoutsHoldingSnapshots(
 
   const layouts = new Set<ResticRepoLayout>();
   for (const r of rows.rows) layouts.add(normaliseRepoLayout(r.layout));
-  // A tenant with no such bundle for this component still gets one pass over
-  // the repository its state row names, so an orphaned snapshot there is still
-  // reachable by the reclaimer.
-  if (layouts.size === 0) layouts.add(await repoLayoutForStateRow(db, tenantId, component));
-  return [...layouts];
+  if (layouts.size > 0) return [...layouts];
+  // No bundle names a repository. A live tenant still gets one pass over the
+  // one its state row names, so an orphaned snapshot there is still reachable
+  // by the reclaimer. With no state row either — a tenant that is gone, its
+  // bundle rows purged — nothing says where to look, so both are looked into:
+  // the historical layout alone answered "no repository" for such a tenant on
+  // every sweep, for good, whatever was or was not left in the other one.
+  const [state] = await db
+    .select({ repoUri: tenantResticRepoState.repoUri })
+    .from(tenantResticRepoState)
+    .where(and(
+      eq(tenantResticRepoState.tenantId, tenantId),
+      eq(tenantResticRepoState.component, component),
+    ))
+    .limit(1);
+  return state ? [layoutFromRepoUri(state.repoUri, tenantId)] : [...ALL_REPO_LAYOUTS];
 }

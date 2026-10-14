@@ -222,6 +222,7 @@ describe('Operator console — capacity', () => {
           calico: 'ok' as const, csi: 'ok' as const, ingressMode: 'default', tenantWorkloads: true,
           cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
           memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
+          disk: { inUse: 101, committed: 160, total: 540, unit: 'GB', kind: 'reserve' as const },
         }]) as AdminDashboardLive['nodes'],
       }) }, isLoading: false,
     });
@@ -236,6 +237,31 @@ describe('Operator console — capacity', () => {
     expect(tpl(row)).not.toBe('');
     expect(tpl(header)).toBe(tpl(row));
     expect(tpl(header)).not.toMatch(/_auto[_\]]/);
+  });
+
+  it('shows the disk of each node as in use / committed of total, in the words CPU and memory use', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({
+        nodes: okSection([{
+          name: 'sv1', role: 'server', ready: true, pressures: [], evictionsLastHour: 0,
+          diskUsedPct: 21, pods: 48, kubeletVersion: 'v1.36.2+k3s1',
+          calico: 'ok' as const, csi: 'ok' as const, ingressMode: 'default', tenantWorkloads: true,
+          cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
+          disk: { inUse: 101, committed: 160, total: 540, unit: 'GB', kind: 'reserve' as const },
+        }]) as AdminDashboardLive['nodes'],
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+    const header = container.querySelector('[class*="rounded-t-xl"][class*="grid-cols-"]');
+    expect(header?.textContent).toContain('CPU — in use / committed');
+    expect(header?.textContent).toContain('Disk — in use / committed');
+    expect(header?.textContent).not.toMatch(/reserved/);
+    const row = container.querySelector('a[href="/cluster/nodes"][class*="grid-cols-"]');
+    // 160 of 540 GB committed is 30%; the disk reads like the bars beside it.
+    expect(row?.textContent).toContain('101 / 160of 540 GB30%committed');
+    // Free is neither in use nor committed: 540 less the larger of the two.
+    expect(row?.textContent).toContain('Disk free380 GB');
   });
 
   it('answers status, last backup and size for EVERY backup class', () => {

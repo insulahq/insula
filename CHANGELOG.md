@@ -12,6 +12,85 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Tenants see what each of their domains sent.** A new *Statistics* tab on the tenant panel's
+  Email page shows, per domain, the mail sent in the last 24 hours and 7 days, its recipients,
+  and how much the sending limits deferred or rejected — the figures the operator reads on
+  Monitoring → Mail, for that tenant's domains only. A domain that sent nothing is listed with
+  zeros; one that only sends through the relay is marked as such.
+- **Every table on Monitoring → Mail searches, sorts and pages.** Sending domains, the outbound
+  queue, DMARC domains and their sources, abuse reports and TLS reports each have a search box,
+  sortable columns and 20 / 50 / 100 / All rows per page. The sending-domain table lists every
+  domain that sent in the last 7 days rather than ten.
+- **The admin tenant list searches by plan and placement, and shows all rows.** The search box
+  also matches the plan's name and the placement as the column shows it: a node by its name,
+  hostname or alias, the node a misplaced tenant is actually on, `auto` for tenants with no node
+  pin and `misplaced` for those off their primary node. It matches the contact email too, as the
+  API documentation already said it did. *Rows per page* offers *All*.
+
+### Changed
+
+- **Capacity reads in use, committed and free everywhere.** Cluster → Nodes shows each node's
+  CPU, memory and disk as *in use · committed · free of total*, with a two-band bar, instead of
+  "requests / allocatable" bars, "scheduled pods" and "ephemeral storage allocatable". The
+  dashboard's Nodes tile shows disk as the same bar as CPU and memory instead of a percentage,
+  and its CPU column says *committed* where it said *reserved*. Free is one thing on every page:
+  what is neither in use nor committed. A node's disk comes from Longhorn — everything on the
+  disk, and the size of every volume placed on it — the same source as the cluster Storage tile.
+  The Longhorn disk rows say *held back* for Longhorn's reserved space.
+- **Mail alerts open Monitoring → Mail.** Mail health (delivery and deliverability checks among
+  them), blocklisting, sending abuse, received abuse reports and the deliverability check that
+  could not be made now open Monitoring → Mail, which their text already pointed to, instead of
+  Email → Operations. Monitoring → Mail now opens with the mail server's live health checks.
+  The dashboard's Mail tile opens it too.
+- **The tenant page's Traffic card says inbound and outbound**, the words Monitoring → Traffic
+  uses, instead of download and upload, and its chart fills the card.
+
+### Fixed
+
+- **The "most active senders" on Monitoring → Mail were the ten domains last in the alphabet.**
+  The list was ordered by the domain column rather than by mail sent, so a busy sender whose
+  name sorted early was never shown. It is now ordered by mail sent in the last 7 days.
+
+- **A restore no longer fails between a server with SELinux and one without.** On a cluster that
+  mixes RHEL-family servers (Rocky, Alma, CentOS Stream, Amazon Linux) with Debian or Ubuntu ones,
+  and for any backup restored on an install of the other kind, restoring files failed although
+  every byte had been written: a snapshot of files written on a server without SELinux could not
+  be restored on one with it, and the other way round on Ubuntu. A shrink of a tenant that had
+  been moved from a Debian server to a Rocky one ended failed with the tenant's workloads left
+  stopped; a mail failover in that direction found no snapshot it could restore, and the webmail
+  started empty. The cause was the SELinux label: the kernel sets one on every new file where
+  SELinux is on, restic restores extended attributes exactly and tried to remove it — which no
+  process may do — or, on a server without SELinux, to set one. No restore carries the label any
+  more: shrink and restore-from-archive, restoring files or mailboxes from a backup, the mail and
+  webmail restore at start, and the mail archive export. A file gets the label of the server it
+  is restored on. Clusters whose servers all run the same kind of system were not affected. The
+  mail server and the webmail restart once when this release is applied.
+- **A shrink or a restore from an archive that failed can be run again straight away.** The job
+  that writes the files back is named after the backup it restores, and a finished job is kept
+  for ten minutes. Running the operation again inside those ten minutes — after *Reset to idle*,
+  as its message tells the operator to — ended at once with the raw answer of the Kubernetes API
+  (`409 … already exists`). The job of the earlier attempt is now removed first.
+- **A lost server no longer leaves its database sessions counting against the connection limit
+  for two hours.** A connection whose client vanished without closing it — its server lost power,
+  its network was cut — stayed open on the platform database until TCP noticed, and PostgreSQL's
+  default leaves that to the kernel: over two hours. Each management API replica keeps up to 25
+  connections and the limit is 100, so after losing a server its replica's sessions went on
+  counting while the replacement opened its own; a second loss inside those two hours had the API
+  answered "too many clients already". The database now probes an idle connection after a minute
+  and drops it when three probes ten seconds apart go unanswered. The setting is reloaded, the
+  database is not restarted for it.
+- **A deleted tenant leaves the backup reclaim sweep once nothing of it is left.** The sweep that
+  forgets expired snapshots looked for every tenant that ever had a backup, on every run, for
+  good — also long after a deleted tenant's last bundle was reclaimed and its repository was
+  gone. Each such tenant took one of the sweep's turns, pushing the live tenants' turns further
+  apart as the list grew. A tenant that is gone, with no bundle left that names a snapshot, no
+  prune owed and no snapshot in any repository of it, is now taken off the list. Before, the
+  sweep also only ever looked in the older repository layout for such a tenant; it now looks in
+  both. A repository that still holds snapshots the database has no record of stays on the list
+  and keeps being reported, as before.
+
 ## [2026.10.8] - 2026-10-13
 
 ### BREAKING

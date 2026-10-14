@@ -1,4 +1,6 @@
+import { useId } from 'react';
 import clsx from 'clsx';
+import { ALL_ROWS } from '@/hooks/use-table-view';
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
@@ -11,6 +13,10 @@ interface PaginationBarProps {
   readonly onNext: () => void;
   readonly onPrev: () => void;
   readonly onPageSizeChange: (size: number) => void;
+  /** Offer "All" ({@link ALL_ROWS}) beside the fixed sizes. */
+  readonly allowAll?: boolean;
+  /** Distinguishes the controls when a page carries several tables. */
+  readonly testIdPrefix?: string;
 }
 
 export default function PaginationBar({
@@ -22,14 +28,19 @@ export default function PaginationBar({
   onNext,
   onPrev,
   onPageSizeChange,
+  allowAll = false,
+  testIdPrefix = '',
 }: PaginationBarProps) {
-  const rangeStart = totalCount === 0 ? 0 : pageIndex * pageSize + 1;
-  const rangeEnd = Math.min(rangeStart + pageSize - 1, totalCount);
+  const selectId = useId();
+  const showingAll = pageSize === ALL_ROWS;
+  const rangeStart = totalCount === 0 ? 0 : showingAll ? 1 : pageIndex * pageSize + 1;
+  const rangeEnd = showingAll ? totalCount : Math.min(rangeStart + pageSize - 1, totalCount);
+  const tid = (name: string): string => `${testIdPrefix}${name}`;
 
   return (
     <div
       className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800"
-      data-testid="pagination-bar"
+      data-testid={tid('pagination-bar')}
     >
       {/* Left: range text */}
       <p className="text-sm text-gray-700 dark:text-gray-300">
@@ -44,13 +55,13 @@ export default function PaginationBar({
       {/* Center: page size dropdown */}
       <div className="flex items-center gap-2">
         <label
-          htmlFor="page-size-select"
+          htmlFor={selectId}
           className="text-sm text-gray-600 dark:text-gray-400"
         >
           Rows per page:
         </label>
         <select
-          id="page-size-select"
+          id={selectId}
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
           className={clsx(
@@ -59,13 +70,14 @@ export default function PaginationBar({
             'dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200',
             'dark:focus:border-blue-400 dark:focus:ring-blue-400',
           )}
-          data-testid="page-size-select"
+          data-testid={tid('page-size-select')}
         >
           {PAGE_SIZE_OPTIONS.map((size) => (
             <option key={size} value={size}>
               {size}
             </option>
           ))}
+          {allowAll && <option value={ALL_ROWS}>All</option>}
         </select>
       </div>
 
@@ -81,7 +93,7 @@ export default function PaginationBar({
               ? 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
               : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600',
           )}
-          data-testid="pagination-prev"
+          data-testid={tid('pagination-prev')}
         >
           Previous
         </button>
@@ -95,7 +107,7 @@ export default function PaginationBar({
               ? 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
               : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600',
           )}
-          data-testid="pagination-next"
+          data-testid={tid('pagination-next')}
         >
           Next
         </button>

@@ -253,8 +253,8 @@ describe('TenantDetail resource tabs', () => {
     renderTenantDetail();
     const link = await screen.findByTestId('tenant-traffic-link');
     expect(link.getAttribute('href')).toBe('/monitoring?scope=tenant&subject=acme-ns&range=7d');
-    await waitFor(() => expect(screen.getByTestId('tenant-traffic-upload').textContent).toBe('7.20 GB'));
-    expect(screen.getByTestId('tenant-traffic-download').textContent).toBe('3.60 GB');
+    await waitFor(() => expect(screen.getByTestId('tenant-traffic-outbound').textContent).toBe('7.20 GB'));
+    expect(screen.getByTestId('tenant-traffic-inbound').textContent).toBe('3.60 GB');
     expect(screen.queryByText('Client ID')).not.toBeInTheDocument();
     const call = mockApiFetch.mock.calls.map(([p]) => String(p)).find((p) => p.includes('/traffic/series'))!;
     const q = new URLSearchParams(call.slice(call.indexOf('?')));
