@@ -853,7 +853,10 @@ function TriadRow({ label, icon, figures, format, testId }: {
 
 const cores = (n: number): string => `${n.toFixed(2)} cores`;
 const gib = (n: number): string => `${n.toFixed(1)} GiB`;
-const gb = (n: number): string => `${Math.round(n)} GB`;
+// The disk triad arrives in GB (the dashboard's unit, like the cluster Storage
+// tile); shown here in GiB, the unit of the Longhorn disk rows beneath it, so
+// one disk does not read as two sizes on one card.
+const gibFromGb = (n: number): string => `${((n * 1e9) / 1024 ** 3).toFixed(1)} GiB`;
 
 function NodeDetails({ node, triads, pods }: {
   readonly node: ClusterNodeResponse;
@@ -865,7 +868,7 @@ function NodeDetails({ node, triads, pods }: {
       <div className="space-y-3" data-testid={`node-resources-${node.name}`}>
         <TriadRow label="CPU" icon={<Cpu size={16} />} figures={triads.cpu} format={cores} testId={`node-cpu-${node.name}`} />
         <TriadRow label="Memory" icon={<MemoryStick size={16} />} figures={triads.memory} format={gib} testId={`node-memory-${node.name}`} />
-        <TriadRow label="Disk" icon={<HardDrive size={16} />} figures={triads.disk} format={gb} testId={`node-disk-${node.name}`} />
+        <TriadRow label="Disk" icon={<HardDrive size={16} />} figures={triads.disk} format={gibFromGb} testId={`node-disk-${node.name}`} />
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Committed is what pods have requested (CPU, memory) and what volumes placed here have been sized to (disk) —
           held for them even while idle. Free is neither in use nor committed.

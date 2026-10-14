@@ -380,7 +380,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           </Swatch>
         )}
         <Swatch className={SW_FREE}>
-          {consume ? 'free' : 'schedulable'} {fmt(free, unit, dec)}
+          free {fmt(free, unit, dec)}
         </Swatch>
       </div>
     </Tile>

@@ -350,7 +350,8 @@ describe('ClusterNodes — in use, committed, free', () => {
     expect(screen.getByTestId('node-cpu-n1').textContent).toContain('In use 0.90 cores · Committed 3.00 cores · Free 1.00 cores of 4.00 cores');
     // Memory in use above its commitment: free is what is left of the larger.
     expect(screen.getByTestId('node-memory-n1').textContent).toContain('In use 6.0 GiB · Committed 2.0 GiB · Free 2.0 GiB of 8.0 GiB');
-    expect(screen.getByTestId('node-disk-n1').textContent).toContain('In use 101 GB · Committed 160 GB · Free 380 GB of 540 GB');
+    // In GiB, like the Longhorn disk rows: 101 / 160 / 380 / 540 GB.
+    expect(screen.getByTestId('node-disk-n1').textContent).toContain('In use 94.1 GiB · Committed 149.0 GiB · Free 353.9 GiB of 502.9 GiB');
     const body = screen.getByTestId('node-card-body-n1').textContent ?? '';
     for (const word of ['requests', 'allocatable', 'Allocatable', 'scheduled', 'Scheduled', 'reserved', 'Ephemeral']) {
       expect(body).not.toContain(word);

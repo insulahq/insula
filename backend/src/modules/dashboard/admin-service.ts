@@ -227,7 +227,10 @@ async function readNodeDisks(k8s: K8sClients, logger?: Logger): Promise<Map<stri
       storageMaximum?: number | string; storageAvailable?: number | string; storageScheduled?: number | string;
     }> } }> };
     const num = (v: number | string | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0) || 0);
-    const gb = (bytes: number): number => Math.round((bytes / 1e9) * 10) / 10;
+    // Two decimals: Cluster → Nodes shows these in GiB beside Longhorn's own
+    // disk rows, and a GB figure rounded to a tenth converts to a GiB figure a
+    // tenth off theirs.
+    const gb = (bytes: number): number => Math.round((bytes / 1e9) * 100) / 100;
     const out = new Map<string, ResourceTriad>();
     for (const n of res.items ?? []) {
       const name = n.metadata?.name;
