@@ -172,8 +172,8 @@ Capacity is shown as **three** figures per resource, not one:
 | Figure | Meaning |
 |---|---|
 | **In use** | What is actually being consumed right now. |
-| **Committed** | What workloads have *reserved*, whether or not they are using it. |
-| **Available** | What is left to schedule. |
+| **Committed** | What workloads have asked for, whether or not they are using it. |
+| **Free** | What is neither in use nor committed: the total less the larger of the two. |
 
 These differ enormously, and the difference is the thing that bites: a
 cluster can sit at 12% actual usage and still refuse to start anything,
@@ -199,17 +199,21 @@ would survive losing its busiest node.
 Section headings are names only — no counts or legends beside them, and no
 rules running off to the page edge. The number is in the section itself.
 
-One row per node with the same in-use / committed / available breakdown, so
-you can see which node is carrying the cluster. Hovering a row opens its
-full detail — kubelet version, age, pod count and conditions. Long node
-names are truncated rather than pushing the layout sideways.
+One row per node with its CPU, memory and disk each as an in use / committed
+bar, so you can see which node is carrying the cluster. A node's disk comes
+from Longhorn: in use is everything on the disk, committed the size of every
+volume placed on it. A node Longhorn has no figures for shows its root disk's
+fill instead. Hovering a row opens its full detail — what is free of each,
+pods, evictions, pressures, kubelet version and readiness. Long node names are
+truncated rather than pushing the layout sideways. The same figures, with the
+same meaning, are on [Cluster → Nodes](../operator/nodes-and-cluster.md#in-use-committed-free).
 
 ### The rest of the console
 
 | Tile | What it tells you |
 |---|---|
 | **Tenants & workloads** | Tenant count by state, and how many workloads are running, pending or failing. |
-| **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. |
+| **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. Opens [Monitoring → Mail](../operator/monitoring.md#mail). |
 | **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. **Banned IPs** is the number of addresses on the *Banned IPs* list right now — WAF and traffic auto-bans, operator and permanent bans; the community blocklist is not counted. It reads *—* when CrowdSec could not be reached. |
 | **Backups & DR** | The three backup classes, each with when it last succeeded, how much it stores at its target, and whether it is on schedule. **System** is the platform database's base backups and WAL, the etcd snapshots and the DR bundles; its size is measured hourly. **Tenant** is the tenant repositories. **Mail** is the whole mail store's snapshot repository. Hover for the target and, when a class is amber, why. |
 | **Certificates** | What is issued, what renews soon, and anything that failed to renew. |

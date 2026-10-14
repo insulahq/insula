@@ -29,14 +29,35 @@ Each node is a card. The header tells you, at a glance:
   condition).
 - **last-seen** — colour-coded: green (< 5 min, healthy), amber (5–30 min,
   stale), red (> 30 min, likely dead).
-- **CPU / Mem dots + pod count** — a quick saturation read (green < 75 %,
-  amber ≥ 75 %, red ≥ 90 %).
+- **Committed CPU / Mem / Disk dots + pod count** — how much of each the node
+  has committed (green < 75 %, amber ≥ 75 %, red ≥ 90 %).
 - **Cordoned / Drained / Orphaned** tags when relevant, and a **severity
   badge** (warning / critical) when node-health detects a problem.
 
-Expand a card for live CPU, memory, ephemeral storage, scheduled pods, taints,
-operator notes, and the node's storage. A red **subsystem** banner appears if
-Calico (the network plugin) or the Longhorn CSI driver is degraded on that node.
+Expand a card for the node's CPU, memory and disk, its pods, taints, operator
+notes, and its Longhorn storage. A red **subsystem** banner appears if Calico
+(the network plugin) or the Longhorn CSI driver is degraded on that node.
+
+### In use, committed, free
+
+Every capacity figure in the panel — on this page, on the dashboard's Nodes
+tile and in its capacity tiles — reads the same three ways, with a two-band bar
+(in use solid, committed beyond it lighter, free as the bare track):
+
+| Figure | CPU and memory | Disk |
+|---|---|---|
+| **In use** | what the node's pods use right now | everything on the disk |
+| **Committed** | what the node's pods have asked Kubernetes for | the size of every Longhorn volume placed on it |
+| **Free** | the total less whichever of the two is larger | the same |
+
+A node's disk comes from Longhorn, the same source as the cluster Storage tile,
+and reads in GiB, like the Longhorn disk rows under it. Those rows say **held
+back** for the space Longhorn never commits to volumes (its `storageReserved`
+setting); **Over-committed** means the volumes placed on a disk add up to more
+than its size less what is held back.
+
+If the live figures cannot be read, the card says so and falls back to the
+node inventory: committed and total stay right, in use and disk do not.
 
 The card actions are **Edit**, **Terminal** (super_admin, Ready nodes only),
 **Drain Node**, and — once drained — **Delete**.

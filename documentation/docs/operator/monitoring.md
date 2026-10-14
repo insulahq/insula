@@ -223,6 +223,26 @@ daily egress rollup survives, and the page says which regime it is in: a
 wider request at any other breakdown is served short, and says so, rather
 than padding the missing months with zeroes.
 
+## Mail
+
+**Monitoring → Mail** opens with the mail server's live health checks — the
+same banner that heads every Email page — and then the mail flow:
+
+| Table | What it shows |
+|---|---|
+| **Sending domains (7d)** | Every domain that sent in the last 7 days, busiest first: its tenant, mail sent in the last 24 hours and 7 days, and how much the sending limits deferred or rejected |
+| **Outbound queue** | Messages waiting to be delivered; a `+` after the count means there are more than the table lists |
+| **DMARC**, **Abuse reports**, **Inbound TLS reports** | The reports described under [Report ingestion](../admin/email.md#report-ingestion) |
+
+Every table on the tab has a search box, sortable columns and 20 / 50 / 100 /
+All rows per page. A tenant sees the same sending figures for its own domains
+on its **Email → Statistics** tab.
+
+Mail notifications open this tab: mail health (the delivery and
+deliverability checks among them), a mail IP on a blocklist, sending abuse,
+received abuse reports, and a deliverability check that could not be made. The
+mailbox-quota notice links to it too, and so does the dashboard's **Mail** tile.
+
 ## Dead pod records
 
 The **Pods** tab lists every pod on the cluster, including ones that have already

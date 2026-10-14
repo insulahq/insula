@@ -75,8 +75,16 @@ is visible without reading dates:
 | Red date | Already past — the subscription has lapsed |
 | `never` | No expiry was ever set. Common and intentional for perpetual accounts. |
 
+The **search box** matches a tenant's name, its contact email, its plan's name
+and its placement as the column shows it: a node by its name, hostname or
+alias, the node a tenant that is off its primary node is actually on, `auto`
+for every tenant with no node pin, and `misplaced` for every tenant off its
+primary node.
+
 Sorting applies to the page you are looking at, not the whole tenant list, so
-sort after narrowing with the search box if you have many accounts.
+sort after narrowing with the search box if you have many accounts — or set
+**Rows per page** to **All**, which loads every tenant that matches the search
+onto one page.
 
 The **SYSTEM** tenant always appears in the list with an amber `SYSTEM`
 badge. It owns the platform's apex domain and reserved mailboxes
