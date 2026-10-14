@@ -14,6 +14,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The 48-hour unread reminder says whose notification it is and what it said.** It read
+  "Email sending at 88% of the hour limit (unread since 2026-10-12)" — no tenant, no mailbox.
+  The original was a tenant's notification, so it was in neither the admin's bell nor their
+  history, and *Mark all as read* could not stop reminders that were never about the admin's
+  own notifications. Every reminder production sent in its first month was about a
+  tenant's. Each line now names the tenant and quotes the original: the mailbox, the sending
+  accounts, the task. The reminder explains that only the tenant can mark theirs read.
+  - Warnings about the hourly or daily sending limit are no longer chased: their window
+    closed long before 48 hours.
+  - A notification is not chased once any of its recipients has read it.
+  - Unread notifications that are never chased no longer fill the 200 rows each sweep reads.
+    Past 200 of them, no notification needing action would have been chased again.
+  - A reminder that names a tenant no longer goes to the shared ntfy push topic.
+  - The reminder is never itself chased, and two recipients' copies of one notification count
+    once.
+  - A sweep whose reminder reached nobody (rate-limited, no template) no longer marks the
+    notifications as chased; it tries again the next day.
+  - A reminder template you have edited keeps your wording; **Restore stock template** under
+    **Templates** gets the new one.
+
 - **The upgrade review lists everything the upgrade restarts, not only the management API and
   the panels.** Its *What will be interrupted* box never mentioned the mail server, webmail or
   the platform database, although a release that changes them restarts them: 2026.10.8

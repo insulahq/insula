@@ -47,6 +47,8 @@ export interface EffectiveChannelsInput {
   readonly storedChannels: readonly string[];
   /** Present when the event concerns exactly one tenant. */
   readonly tenantId?: string | null;
+  /** The content names tenants without a single tenantId (the unread reminder). */
+  readonly tenantScopedContent?: boolean;
   /** Explicit audience override, for events bound to a non-default audience. */
   readonly audience?: NotificationAudienceId;
 }
@@ -72,6 +74,6 @@ export function effectiveChannels(input: EffectiveChannelsInput): ResolvedChanne
     override: input.storedChannels as readonly NotificationChannelId[],
     // A tenant-scoped payload must never reach a broadcast channel, whatever
     // the category's own audience says.
-    tenantScoped: Boolean(input.tenantId),
+    tenantScoped: Boolean(input.tenantId) || input.tenantScopedContent === true,
   });
 }

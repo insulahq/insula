@@ -6,6 +6,7 @@ import {
   canCarryTenantScopedContent,
   ALL_AUDIENCES,
 } from './channel-spec.js';
+import { effectiveChannels } from './effective-channels.js';
 
 describe('channel specs', () => {
   it('bars ntfy for every audience except the operator', () => {
@@ -106,6 +107,17 @@ describe('resolveChannels — tenant-scoped content', () => {
   it('allows the same event on push when it is not tenant-scoped', () => {
     const r = resolveChannels({ cls: 'incident', audience: 'platform_admin', tenantScoped: false });
     expect(r.channels).toContain('ntfy');
+  });
+
+  // The unread reminder names several tenants and quotes their notifications,
+  // so no single tenantId applies — it says so instead.
+  it('treats content that names tenants without one tenantId as tenant-scoped', () => {
+    const all = ['in_app', 'email', 'ntfy'];
+    const named = effectiveChannels({ categoryId: 'admin.notification_escalated', storedChannels: all, tenantScopedContent: true });
+    expect(named.channels).not.toContain('ntfy');
+    expect(named.channels).toEqual(expect.arrayContaining(['in_app', 'email']));
+    const own = effectiveChannels({ categoryId: 'admin.notification_escalated', storedChannels: all });
+    expect(own.channels).toContain('ntfy');
   });
 });
 
