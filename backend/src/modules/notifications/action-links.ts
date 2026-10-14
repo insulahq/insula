@@ -49,10 +49,10 @@ export interface ResolvedLink {
  */
 const EXTRA_LINKS: Readonly<Record<string, readonly LinkSpec[]>> = {
   // A saturated sender is either a compromise or a capacity problem. The
-  // tenant's own page answers "who is this", mail operations answers "what is
-  // the platform doing about it".
+  // tenant's own page answers "who is this", mail monitoring answers "what is
+  // it sending" — its per-domain table carries the deferred and rejected counts.
   'admin.email_quota_exceeded': [
-    { text: 'Open mail operations', path: '/email/operations', style: 'secondary' },
+    { text: 'Open mail monitoring', path: '/monitoring/mail', style: 'secondary' },
   ],
   // The limit lives on the tenant record; the usage lives on the mail page.
   'admin.mailbox_quota_fleet': [

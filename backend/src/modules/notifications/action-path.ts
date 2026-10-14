@@ -73,10 +73,15 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.cert_check_unavailable': '/cluster/ingress-tls',
   'admin.cert_check_resumed': '/cluster/ingress-tls',
   'admin.cert_recovered': '/cluster/ingress-tls',
-  'admin.mail_blocklisted': '/email/operations',
-  'admin.mail_health_degraded': '/email/operations',
-  'admin.email_abuse_warning': '/email/operations',
-  'admin.email_abuse_critical': '/email/operations',
+  // Mail health, blocklisting and sending abuse are read on Monitoring → Mail:
+  // the live health checks (deliverability and DNSBL among them) head it, and
+  // its per-domain table carries the deferred and rejected counts an abuse
+  // alert is about. Email → Operations is placement and storage, and showed
+  // none of it — while the alert text already said "see Monitoring → Mail".
+  'admin.mail_blocklisted': '/monitoring/mail',
+  'admin.mail_health_degraded': '/monitoring/mail',
+  'admin.email_abuse_warning': '/monitoring/mail',
+  'admin.email_abuse_critical': '/monitoring/mail',
 
   // ---- tenant self-service (tenant-panel routes) ----
   'tenant.bandwidth_exceeded': '/resource-usage',
@@ -146,6 +151,12 @@ const STATIC_PATHS: Record<string, string> = {
 /** `resourceType` of a principal-sync drift alert (`admin.mail_event`). */
 export const MAIL_DRIFT_RESOURCE = 'mail_drift';
 
+/**
+ * `resourceType` of an `admin.mail_event` read on Monitoring → Mail: a received
+ * abuse report, and the deliverability check that could not be made.
+ */
+export const MAIL_MONITORING_RESOURCE = 'mail_monitoring';
+
 /** `resourceType` of a backup-retention (restic forget/prune) alert (`admin.storage_event`). */
 export const BACKUP_RETENTION_RESOURCE = 'backup_retention';
 
@@ -162,7 +173,7 @@ export const TENANT_AUTOMATION_RESOURCE = 'tenant_lifecycle_automation';
  * alone cannot tell the two apart.
  */
 export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  'admin.mail_event': { [MAIL_DRIFT_RESOURCE]: '/email/drift' },
+  'admin.mail_event': { [MAIL_DRIFT_RESOURCE]: '/email/drift', [MAIL_MONITORING_RESOURCE]: '/monitoring/mail' },
   // Backup retention (restic forget/prune) is storage housekeeping, but the
   // operator acts on it from Backups, not from the cluster storage page.
   'admin.storage_event': { [BACKUP_RETENTION_RESOURCE]: '/backups' },

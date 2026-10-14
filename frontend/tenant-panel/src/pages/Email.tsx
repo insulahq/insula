@@ -74,6 +74,7 @@ const DmarcTab = lazy(() => import('@/components/email/DmarcTab'));
 // never to need.
 const AbuseTab = lazy(() => import('@/components/email/AbuseTab'));
 const TlsTab = lazy(() => import('@/components/email/TlsTab'));
+const StatisticsTab = lazy(() => import('@/components/email/StatisticsTab'));
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -202,6 +203,7 @@ export default function Email() {
               { key: 'mailboxes' as Tab, label: 'Mailboxes' },
               { key: 'aliases' as Tab, label: 'Mailing Lists' },
               { key: 'settings' as Tab, label: 'Settings & DNS' },
+              { key: 'statistics' as Tab, label: 'Statistics' },
               { key: 'dmarc' as Tab, label: 'Authentication' },
               { key: 'abuse' as Tab, label: 'Abuse Reports' },
               { key: 'tls' as Tab, label: 'Delivery Security' },
@@ -231,6 +233,14 @@ export default function Email() {
               tenantId={tenantId!}
               emailDomain={selectedEmailDomain}
             />
+          )}
+          {tab === 'statistics' && (
+            <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>
+              <StatisticsTab
+                tenantId={tenantId!}
+                selectedDomain={selectedEmailDomain.domainName}
+              />
+            </Suspense>
           )}
           {tab === 'dmarc' && (
             <Suspense fallback={<div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}>

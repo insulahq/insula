@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import type { AdminDashboardSummary, AdminDashboardLive, AdminNode } from '@insula/api-contracts';
+import type { AdminDashboardSummary, AdminDashboardLive, AdminNode, ResourceTriad } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
@@ -205,109 +205,173 @@ export interface AdminLiveDeps {
   readonly countActiveBans: () => Promise<number>;
 }
 
+/**
+ * Each node's disk as a triad, from Longhorn's node status — the same source
+ * and arithmetic as the cluster Storage tile, so the nodes add up to it.
+ *
+ *   inUse     = storageMaximum − storageAvailable: everything on the disk,
+ *               images and logs included, not only what volumes wrote.
+ *   committed = storageScheduled: the size of every volume replica placed on
+ *               the node — promised to them whether or not they have filled it.
+ *   total     = storageMaximum.
+ *
+ * Unlike the cluster tile this one draws the committed band: an operator
+ * deciding where the next volume goes needs what is already promised.
+ * null when Longhorn cannot be read; a node Longhorn does not know is absent.
+ */
+async function readNodeDisks(k8s: K8sClients, logger?: Logger): Promise<Map<string, ResourceTriad> | null> {
+  try {
+    const res = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system', plural: 'nodes',
+    }) as { items?: Array<{ metadata?: { name?: string }; status?: { diskStatus?: Record<string, {
+      storageMaximum?: number | string; storageAvailable?: number | string; storageScheduled?: number | string;
+    }> } }> };
+    const num = (v: number | string | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0) || 0);
+    const gb = (bytes: number): number => Math.round((bytes / 1e9) * 10) / 10;
+    const out = new Map<string, ResourceTriad>();
+    for (const n of res.items ?? []) {
+      const name = n.metadata?.name;
+      if (!name) continue;
+      let max = 0, avail = 0, scheduled = 0;
+      for (const d of Object.values(n.status?.diskStatus ?? {})) {
+        max += num(d.storageMaximum);
+        avail += num(d.storageAvailable);
+        scheduled += num(d.storageScheduled);
+      }
+      if (max <= 0) continue;
+      out.set(name, {
+        inUse: gb(Math.max(0, max - avail)), committed: gb(scheduled), total: gb(max),
+        unit: 'GB', kind: 'reserve',
+      });
+    }
+    return out;
+  } catch (err) {
+    logger?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'dashboard: Longhorn nodes unreadable — node disks will read as not measured',
+    );
+    return null;
+  }
+}
+
+/**
+ * Every node with its CPU, memory and disk as in use / committed / total.
+ * The dashboard's Nodes strip and Cluster → Nodes both read this, so a node's
+ * figures are measured and defined the same way on both pages. Each page
+ * reads on its own refresh (the dashboard's live payload is cached 120 s, the
+ * nodes page's 30 s), so the two can be up to that far apart in time.
+ */
+export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Logger): Promise<AdminNode[]> {
+  const list = (await k8s.core.listNode()) as unknown as { items?: RawNode[] };
+  const pods = (await k8s.core.listPodForAllNamespaces()) as unknown as {
+    items?: Array<{
+      metadata?: { name?: string; namespace?: string };
+      status?: { phase?: string };
+      spec?: { nodeName?: string; containers?: Array<{ resources?: { requests?: Record<string, string> } }> };
+    }>;
+  };
+
+  const perNode = new Map<string, { cpuReq: number; memReq: number; count: number }>();
+  for (const p of pods.items ?? []) {
+    const n = p.spec?.nodeName;
+    if (!n) continue;
+    // A Succeeded or Failed pod still has a record and still lists its
+    // requests, but it holds nothing: the scheduler has already released
+    // them. Counting terminal pods made committed CPU exceed the node's own
+    // allocatable — 3.60 of 3.50 cores — and inflated the pod count by the
+    // reboot corpses sitting on the node.
+    const phase = p.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+    const acc = perNode.get(n) ?? { cpuReq: 0, memReq: 0, count: 0 };
+    for (const c of p.spec?.containers ?? []) {
+      acc.cpuReq += cpuToCores(c.resources?.requests?.cpu);
+      acc.memReq += memToGiB(c.resources?.requests?.memory);
+    }
+    acc.count += 1;
+    perNode.set(n, acc);
+  }
+
+  // Actual usage, from the metrics API. Without it the triad's headline
+  // figure would be a hardcoded zero, which is worse than absent: the tile
+  // would read "0.00 cores in use" on a busy cluster.
+  const usage = new Map<string, { cpu: number; mem: number }>();
+  try {
+    const nm = await k8s.custom.listClusterCustomObject({
+      group: 'metrics.k8s.io', version: 'v1beta1', plural: 'nodes',
+    }) as { items?: Array<{ metadata?: { name?: string }; usage?: { cpu?: string; memory?: string } }> };
+    for (const m of nm.items ?? []) {
+      const name = m.metadata?.name;
+      if (!name) continue;
+      usage.set(name, { cpu: cpuToCores(m.usage?.cpu), mem: memToGiB(m.usage?.memory) });
+    }
+  } catch (err) {
+    // An EMPTY catch here cost a debugging cycle: the tiles rendered
+    // "0.00 cores in use" on a live cluster and there was nothing anywhere
+    // saying why. Whatever goes wrong must be visible.
+    logger?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'dashboard: node metrics unavailable — usage will read as unknown',
+    );
+  }
+
+  const disks = await readNodeDisks(k8s, logger);
+
+  const health = await db.execute<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }>(sql`
+    SELECT node_name, severity, disk_used_pct, evictions_last_hour AS evictions, pressures
+      FROM node_health_state
+  `).catch(() => ({ rows: [] as Array<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }> }));
+  const byName = new Map((health.rows ?? []).map((h) => [h.node_name, h]));
+
+  return (list.items ?? []).map((n): AdminNode => {
+    const name = n.metadata?.name ?? '(unnamed)';
+    const req = perNode.get(name) ?? { cpuReq: 0, memReq: 0, count: 0 };
+    const h = byName.get(name);
+    const ready = (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+    const u = usage.get(name);
+    const isServer = (n.metadata?.labels ?? {})['node-role.kubernetes.io/control-plane'] != null;
+    return {
+      name,
+      role: isServer ? 'server' : 'worker',
+      ready,
+      cpu: {
+        // Requests are what the scheduler honours; usage is what is really
+        // happening. The gap between them is the whole point of the tile.
+        // null when this node has no metrics sample: `?? 0` made an
+        // unmeasured node indistinguishable from a silent one, and the tile
+        // then had to guess which it was looking at.
+        inUse: u ? Math.round(u.cpu * 1_000_000) / 1_000_000 : null,
+        committed: Math.round(req.cpuReq * 1000) / 1000,
+        total: cpuToCores(n.status?.allocatable?.cpu), unit: 'cores', kind: 'reserve',
+      },
+      memory: {
+        inUse: u ? Math.round(u.mem * 100) / 100 : null,
+        committed: Math.round(req.memReq * 100) / 100,
+        total: Math.round(memToGiB(n.status?.allocatable?.memory) * 100) / 100,
+        unit: 'GiB', kind: 'reserve',
+      },
+      // Longhorn's view of the node's disk — what is on it, and what the
+      // volumes placed here have been promised. null when Longhorn could not
+      // be read or does not know the node: not measured, not empty.
+      disk: disks?.get(name) ?? null,
+      diskUsedPct: h?.disk_used_pct == null ? null : Number(h.disk_used_pct),
+      pods: req.count,
+      calico: 'unknown', csi: 'unknown',
+      evictionsLastHour: Number(h?.evictions ?? 0),
+      pressures: h?.pressures ?? [],
+      kubeletVersion: n.status?.nodeInfo?.kubeletVersion ?? null,
+      ingressMode: null,
+      tenantWorkloads: true,
+    };
+  });
+}
+
 export async function buildAdminLive(
   db: Database,
   k8s: K8sClients,
   deps: AdminLiveDeps,
   logger?: Logger,
 ): Promise<AdminDashboardLive> {
-  const nodesSection = await collect('nodes', async () => {
-    const list = (await k8s.core.listNode()) as unknown as { items?: RawNode[] };
-    const pods = (await k8s.core.listPodForAllNamespaces()) as unknown as {
-      items?: Array<{
-        metadata?: { name?: string; namespace?: string };
-        status?: { phase?: string };
-        spec?: { nodeName?: string; containers?: Array<{ resources?: { requests?: Record<string, string> } }> };
-      }>;
-    };
-
-    const perNode = new Map<string, { cpuReq: number; memReq: number; count: number }>();
-    for (const p of pods.items ?? []) {
-      const n = p.spec?.nodeName;
-      if (!n) continue;
-      // A Succeeded or Failed pod still has a record and still lists its
-      // requests, but it holds nothing: the scheduler has already released
-      // them. Counting terminal pods made committed CPU exceed the node's own
-      // allocatable — 3.60 of 3.50 cores — and inflated the pod count by the
-      // reboot corpses sitting on the node.
-      const phase = p.status?.phase;
-      if (phase === 'Succeeded' || phase === 'Failed') continue;
-      const acc = perNode.get(n) ?? { cpuReq: 0, memReq: 0, count: 0 };
-      for (const c of p.spec?.containers ?? []) {
-        acc.cpuReq += cpuToCores(c.resources?.requests?.cpu);
-        acc.memReq += memToGiB(c.resources?.requests?.memory);
-      }
-      acc.count += 1;
-      perNode.set(n, acc);
-    }
-
-    // Actual usage, from the metrics API. Without it the triad's headline
-    // figure would be a hardcoded zero, which is worse than absent: the tile
-    // would read "0.00 cores in use" on a busy cluster.
-    const usage = new Map<string, { cpu: number; mem: number }>();
-    try {
-      const nm = await k8s.custom.listClusterCustomObject({
-        group: 'metrics.k8s.io', version: 'v1beta1', plural: 'nodes',
-      }) as { items?: Array<{ metadata?: { name?: string }; usage?: { cpu?: string; memory?: string } }> };
-      for (const m of nm.items ?? []) {
-        const name = m.metadata?.name;
-        if (!name) continue;
-        usage.set(name, { cpu: cpuToCores(m.usage?.cpu), mem: memToGiB(m.usage?.memory) });
-      }
-    } catch (err) {
-      // An EMPTY catch here cost a debugging cycle: the tiles rendered
-      // "0.00 cores in use" on a live cluster and there was nothing anywhere
-      // saying why. Whatever goes wrong must be visible.
-      logger?.warn?.(
-        { err: err instanceof Error ? err.message : String(err) },
-        'dashboard: node metrics unavailable — usage will read as unknown',
-      );
-    }
-
-    const health = await db.execute<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }>(sql`
-      SELECT node_name, severity, disk_used_pct, evictions_last_hour AS evictions, pressures
-        FROM node_health_state
-    `).catch(() => ({ rows: [] as Array<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }> }));
-    const byName = new Map((health.rows ?? []).map((h) => [h.node_name, h]));
-
-    return (list.items ?? []).map((n): AdminNode => {
-      const name = n.metadata?.name ?? '(unnamed)';
-      const req = perNode.get(name) ?? { cpuReq: 0, memReq: 0, count: 0 };
-      const h = byName.get(name);
-      const ready = (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
-      const u = usage.get(name);
-      const isServer = (n.metadata?.labels ?? {})['node-role.kubernetes.io/control-plane'] != null;
-      return {
-        name,
-        role: isServer ? 'server' : 'worker',
-        ready,
-        cpu: {
-          // Requests are what the scheduler honours; usage is what is really
-          // happening. The gap between them is the whole point of the tile.
-          // null when this node has no metrics sample: `?? 0` made an
-          // unmeasured node indistinguishable from a silent one, and the tile
-          // then had to guess which it was looking at.
-          inUse: u ? Math.round(u.cpu * 1_000_000) / 1_000_000 : null,
-          committed: Math.round(req.cpuReq * 1000) / 1000,
-          total: cpuToCores(n.status?.allocatable?.cpu), unit: 'cores', kind: 'reserve',
-        },
-        memory: {
-          inUse: u ? Math.round(u.mem * 100) / 100 : null,
-          committed: Math.round(req.memReq * 100) / 100,
-          total: Math.round(memToGiB(n.status?.allocatable?.memory) * 100) / 100,
-          unit: 'GiB', kind: 'reserve',
-        },
-        diskUsedPct: h?.disk_used_pct == null ? null : Number(h.disk_used_pct),
-        pods: req.count,
-        calico: 'unknown', csi: 'unknown',
-        evictionsLastHour: Number(h?.evictions ?? 0),
-        pressures: h?.pressures ?? [],
-        kubeletVersion: n.status?.nodeInfo?.kubeletVersion ?? null,
-        ingressMode: null,
-        tenantWorkloads: true,
-      };
-    });
-  }, { logger, timeoutMs: 4_000 });
+  const nodesSection = await collect('nodes', () => readAdminNodes(db, k8s, logger), { logger, timeoutMs: 4_000 });
 
   const cluster = await collect('cluster', async () => {
     const nodes = nodesSection.data ?? [];

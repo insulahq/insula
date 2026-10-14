@@ -12,7 +12,46 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Tenants see what each of their domains sent.** A new *Statistics* tab on the tenant panel's
+  Email page shows, per domain, the mail sent in the last 24 hours and 7 days, its recipients,
+  and how much the sending limits deferred or rejected — the figures the operator reads on
+  Monitoring → Mail, for that tenant's domains only. A domain that sent nothing is listed with
+  zeros; one that only sends through the relay is marked as such.
+- **Every table on Monitoring → Mail searches, sorts and pages.** Sending domains, the outbound
+  queue, DMARC domains and their sources, abuse reports and TLS reports each have a search box,
+  sortable columns and 20 / 50 / 100 / All rows per page. The sending-domain table lists every
+  domain that sent in the last 7 days rather than ten.
+- **The admin tenant list searches by plan and placement, and shows all rows.** The search box
+  also matches the plan's name and the placement as the column shows it: a node by its name,
+  hostname or alias, the node a misplaced tenant is actually on, `auto` for tenants with no node
+  pin and `misplaced` for those off their primary node. It matches the contact email too, as the
+  API documentation already said it did. *Rows per page* offers *All*.
+
+### Changed
+
+- **Capacity reads in use, committed and free everywhere.** Cluster → Nodes shows each node's
+  CPU, memory and disk as *in use · committed · free of total*, with a two-band bar, instead of
+  "requests / allocatable" bars, "scheduled pods" and "ephemeral storage allocatable". The
+  dashboard's Nodes tile shows disk as the same bar as CPU and memory instead of a percentage,
+  and its CPU column says *committed* where it said *reserved*. Free is one thing on every page:
+  what is neither in use nor committed. A node's disk comes from Longhorn — everything on the
+  disk, and the size of every volume placed on it — the same source as the cluster Storage tile.
+  The Longhorn disk rows say *held back* for Longhorn's reserved space.
+- **Mail alerts open Monitoring → Mail.** Mail health (delivery and deliverability checks among
+  them), blocklisting, sending abuse, received abuse reports and the deliverability check that
+  could not be made now open Monitoring → Mail, which their text already pointed to, instead of
+  Email → Operations. Monitoring → Mail now opens with the mail server's live health checks.
+  The dashboard's Mail tile opens it too.
+- **The tenant page's Traffic card says inbound and outbound**, the words Monitoring → Traffic
+  uses, instead of download and upload, and its chart fills the card.
+
 ### Fixed
+
+- **The "most active senders" on Monitoring → Mail were the ten domains last in the alphabet.**
+  The list was ordered by the domain column rather than by mail sent, so a busy sender whose
+  name sorted early was never shown. It is now ordered by mail sent in the last 7 days.
 
 - **A restore no longer fails between a server with SELinux and one without.** On a cluster that
   mixes RHEL-family servers (Rocky, Alma, CentOS Stream, Amazon Linux) with Debian or Ubuntu ones,

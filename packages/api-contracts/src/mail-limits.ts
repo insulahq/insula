@@ -69,6 +69,27 @@ export const mailUsageResponseSchema = z.object({
 
 export type MailUsageResponse = z.infer<typeof mailUsageResponseSchema>;
 
+/**
+ * One tenant's outbound mail per domain (tenant panel → Email → Statistics).
+ * The windows and counters of the operator's Monitoring → Mail table, for
+ * this tenant's domains only.
+ */
+export const mailDomainStatsResponseSchema = z.object({
+  windowDays: z.number().int().min(1),
+  domains: z.array(z.object({
+    domain: z.string(),
+    /** An email domain of the tenant; false for a domain that only sends through the relay. */
+    emailHosted: z.boolean(),
+    sent24h: z.number().int().min(0),
+    sent7d: z.number().int().min(0),
+    recipients7d: z.number().int().min(0),
+    rateLimited7d: z.number().int().min(0),
+    quotaRejected7d: z.number().int().min(0),
+  })),
+});
+
+export type MailDomainStatsResponse = z.infer<typeof mailDomainStatsResponseSchema>;
+
 // PR 5 — Monitoring -> Mail tab aggregate.
 export const mailOverviewResponseSchema = z.object({
   totals: z.object({
@@ -81,6 +102,7 @@ export const mailOverviewResponseSchema = z.object({
     rateLimited7d: z.number().int().min(0),
     quotaRejected7d: z.number().int().min(0),
   }),
+  /** Every domain that sent in the last 7 days, most mail first — up to 1,000 rows, not only the top ten. */
   topSenders: z.array(z.object({
     tenantId: z.string(),
     tenantName: z.string().nullable(),
@@ -93,6 +115,8 @@ export const mailOverviewResponseSchema = z.object({
   queue: z.object({
     reachable: z.boolean(),
     depth: z.number().int().min(0),
+    /** More messages are queued than were listed — the depth is a floor. */
+    truncated: z.boolean().default(false),
     entries: z.array(z.object({
       id: z.string(),
       from: z.string(),

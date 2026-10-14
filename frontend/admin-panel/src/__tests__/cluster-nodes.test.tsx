@@ -11,8 +11,10 @@ import ClusterNodes from '../pages/ClusterNodes';
 const mockNodes = vi.fn();
 const mockSubsystem = vi.fn();
 const mockDeleteMutate = vi.fn();
+const mockUsage = vi.fn(() => ({ data: undefined as unknown }));
 vi.mock('@/hooks/use-cluster-nodes', () => ({
   useClusterNodes: () => mockNodes(),
+  useNodeUsage: () => mockUsage(),
   useDeleteNode: () => ({ mutate: mockDeleteMutate, isPending: false }),
   useUpdateClusterNode: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
 }));
@@ -103,7 +105,7 @@ describe('ClusterNodes — health bar + collapsible node cards', () => {
     renderPage();
     const bar = screen.getByTestId('cluster-health-bar');
     const cpuChip = within(bar).getByTestId('health-cpu');
-    expect(cpuChip.textContent).toContain('CPU pressure: 1');
+    expect(cpuChip.textContent).toContain('CPU mostly committed: 1');
     // No memory or subsystem chips
     expect(within(bar).queryByTestId('health-memory')).toBeNull();
     expect(within(bar).queryByTestId('health-subsystem')).toBeNull();
@@ -327,3 +329,44 @@ describe('ClusterNodes — the node CLI version (ADR-064)', () => {
   });
 });
 
+
+describe('ClusterNodes — in use, committed, free', () => {
+  const triad = (inUse: number | null, committed: number, total: number, unit: string) => ({ inUse, committed, total, unit, kind: 'reserve' as const });
+
+  function withUsage(usage: unknown) {
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'n1' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+    mockUsage.mockReturnValue({ data: usage });
+    renderPage();
+    fireEvent.click(screen.getByTestId('node-card-header-n1'));
+  }
+
+  it('shows CPU, memory and disk in the same three words, free being neither in use nor committed', () => {
+    // and no "unavailable" note while the reader answers
+    withUsage({ data: [{
+      name: 'n1', pods: 31,
+      cpu: triad(0.9, 3, 4, 'cores'), memory: triad(6, 2, 8, 'GiB'), disk: triad(101, 160, 540, 'GB'),
+    }] });
+    expect(screen.getByTestId('node-cpu-n1').textContent).toContain('In use 0.90 cores · Committed 3.00 cores · Free 1.00 cores of 4.00 cores');
+    // Memory in use above its commitment: free is what is left of the larger.
+    expect(screen.getByTestId('node-memory-n1').textContent).toContain('In use 6.0 GiB · Committed 2.0 GiB · Free 2.0 GiB of 8.0 GiB');
+    expect(screen.getByTestId('node-disk-n1').textContent).toContain('In use 101 GB · Committed 160 GB · Free 380 GB of 540 GB');
+    const body = screen.getByTestId('node-card-body-n1').textContent ?? '';
+    for (const word of ['requests', 'allocatable', 'Allocatable', 'scheduled', 'Scheduled', 'reserved', 'Ephemeral']) {
+      expect(body).not.toContain(word);
+    }
+    expect(screen.getByTestId('node-summary-n1').textContent).toMatch(/committed.*CPU 75%.*Mem 25%.*Disk 30%.*31 pods/);
+    expect(screen.queryByTestId('node-usage-unavailable')).toBeNull();
+  });
+
+  it('says so when the usage reader failed, and falls back to the inventory: committed known, in use and disk not', () => {
+    mockUsage.mockReturnValue({ data: undefined, isError: true } as never);
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'n1' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+    renderPage();
+    fireEvent.click(screen.getByTestId('node-card-header-n1'));
+    expect(screen.getByTestId('node-usage-unavailable').textContent).toMatch(/Live usage could not be read/);
+    expect(screen.getByTestId('node-cpu-n1').textContent).toContain('In use — · Committed 1.00 cores · Free 3.00 cores of 4.00 cores');
+    expect(screen.getByTestId('node-disk-n1').textContent).toContain('Disk: not measured');
+  });
+});

@@ -48,7 +48,7 @@ describe('resolveNotificationLinks', () => {
     });
     expect(links.length).toBeGreaterThan(1);
     expect(links[0]?.style).toBe('primary');
-    expect(links.some((l) => l.text === 'Open mail operations')).toBe(true);
+    expect(links).toContainEqual({ text: 'Open mail monitoring', url: `${ADMIN}/monitoring/mail`, style: 'secondary' });
   });
 
   it('strips a trailing slash from the configured base', () => {

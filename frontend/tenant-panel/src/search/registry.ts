@@ -49,6 +49,8 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     keywords: ['alias', 'forwarding', 'distribution', 'group address'] },
   { id: 'email.settings', label: 'Email Settings & DNS', group: 'Email', to: '/email/settings',
     keywords: ['spf', 'dkim', 'dmarc', 'mx', 'records', 'autodiscover', 'connection'] },
+  { id: 'email.statistics', label: 'Email Statistics', group: 'Email', to: '/email/statistics',
+    keywords: ['sent', 'outbound', 'per domain', 'deferred', 'rejected', 'recipients', 'sending limit'] },
 
   { id: 'backups', label: 'Backups', group: 'Data', to: '/backups',
     keywords: ['restore', 'download', 'archive', 'bundle', 'export', 'recovery'] },

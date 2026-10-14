@@ -16,7 +16,7 @@
 export const TABBED_PAGES = {
   '/applications': ['installed', 'catalog', 'custom'],
   '/monitoring': ['traffic', 'resource-usage'],
-  '/email': ['mailboxes', 'aliases', 'settings', 'dmarc', 'abuse', 'tls'],
+  '/email': ['mailboxes', 'aliases', 'settings', 'statistics', 'dmarc', 'abuse', 'tls'],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type TabbedPage = keyof typeof TABBED_PAGES;

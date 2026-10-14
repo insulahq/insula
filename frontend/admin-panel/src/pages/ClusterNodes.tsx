@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import {
-  Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle,
+  Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle, MemoryStick, Boxes,
   Trash2, ChevronRight, ChevronDown, CheckCircle2, Activity, Terminal as TerminalIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
+import { useClusterNodes, useDeleteNode, useNodeUsage } from '@/hooks/use-cluster-nodes';
+import { triadFigures, type TriadFigures } from '@/lib/resource-triad';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import { useAuth } from '@/hooks/use-auth';
-import type { ClusterNodeResponse, NodeIngressMode, HostMigrationNodeStatus } from '@insula/api-contracts';
+import type { AdminNode, ClusterNodeResponse, NodeIngressMode, HostMigrationNodeStatus } from '@insula/api-contracts';
 import { nodeChecksForUpdatesHourly } from '@insula/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
@@ -24,9 +25,42 @@ import FailbackReviewPanel from '@/components/outage/FailbackReviewPanel';
 const PRESSURE_AMBER = 75;
 const PRESSURE_RED = 90;
 
-function nodePct(used: number | null | undefined, capacity: number | null | undefined): number | null {
-  if (used == null || capacity == null || capacity <= 0) return null;
-  return Math.min(100, Math.round((used / capacity) * 100));
+interface NodeTriads {
+  readonly cpu: TriadFigures | null;
+  readonly memory: TriadFigures | null;
+  readonly disk: TriadFigures | null;
+}
+
+/**
+ * A node's CPU, memory and disk as in use / committed / free / total.
+ *
+ * From the usage reader (the dashboard's) when it answered for this node;
+ * otherwise CPU and memory fall back to the node inventory's committed and
+ * total, with in use unknown, and disk is not measured.
+ */
+function nodeTriads(node: ClusterNodeResponse, usage: AdminNode | undefined): NodeTriads {
+  if (usage) {
+    return {
+      cpu: triadFigures(usage.cpu.inUse, usage.cpu.committed, usage.cpu.total),
+      memory: triadFigures(usage.memory.inUse, usage.memory.committed, usage.memory.total),
+      disk: usage.disk ? triadFigures(usage.disk.inUse, usage.disk.committed, usage.disk.total) : null,
+    };
+  }
+  const gib = (b: number) => b / 1024 ** 3;
+  return {
+    cpu: node.cpuMillicores != null && node.cpuMillicores > 0
+      ? triadFigures(null, (node.cpuRequestsMillicores ?? 0) / 1000, node.cpuMillicores / 1000)
+      : null,
+    memory: node.memoryBytes != null && node.memoryBytes > 0
+      ? triadFigures(null, gib(node.memoryRequestsBytes ?? 0), gib(node.memoryBytes))
+      : null,
+    disk: null,
+  };
+}
+
+/** The share of the total committed, as the summary and the pressure chips read it. */
+function committedPct(t: TriadFigures | null): number | null {
+  return t ? Math.round(t.committedPct) : null;
 }
 
 function pctTone(pct: number | null): 'green' | 'amber' | 'red' | 'gray' {
@@ -39,20 +73,6 @@ function pctTone(pct: number | null): 'green' | 'amber' | 'red' | 'gray' {
 function isSubsystemUnhealthy(s: NodeSubsystemReport | undefined): boolean {
   if (!s) return false;
   return s.calico !== 'healthy' || s.longhornCsi !== 'healthy' || !s.csiDriverRegistered;
-}
-
-function formatBytes(bytes: number | null): string {
-  if (bytes == null) return '—';
-  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TiB`;
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
-  return `${bytes} B`;
-}
-
-function formatMillicores(millis: number | null): string {
-  if (millis == null) return '—';
-  if (millis >= 1000) return `${(millis / 1000).toFixed(1)} cores`;
-  return `${millis}m`;
 }
 
 function staleness(lastSeenAt: string): { label: string; tone: 'fresh' | 'stale' | 'dead' } {
@@ -79,6 +99,8 @@ interface ClusterNodesProps {
 
 export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {}) {
   const { data, isLoading, error } = useClusterNodes();
+  const { data: usageData, isError: usageFailed } = useNodeUsage();
+  const usageByName = new Map<string, AdminNode>((usageData?.data ?? []).map((n) => [n.name, n]));
   const { data: subsystemData } = useNodeSubsystemHealth();
   const { data: nodeHealthData } = useNodeHealth();
   const nodes = (data?.data ?? []) as readonly ClusterNodeResponse[];
@@ -142,10 +164,22 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
         </div>
       ) : (
         <>
-          <ClusterHealthBar nodes={nodes} subsystemByName={subsystemByName} />
+          <ClusterHealthBar nodes={nodes} subsystemByName={subsystemByName} usageByName={usageByName} />
+          {/* Without the live reader the cards fall back to the node inventory:
+              committed and total are still right, in use and disk are not
+              known. Said here, so the gap is not read as an idle node. */}
+          {usageFailed && (
+            <p
+              className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+              data-testid="node-usage-unavailable"
+            >
+              Live usage could not be read, so in-use figures and disks are not shown. Committed and totals
+              come from the node inventory, updated every minute.
+            </p>
+          )}
           <div className="space-y-3">
             {nodes.map((node) => (
-              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} health={nodeHealthByName.get(node.name)} cli={cliByName.get(node.name)} />
+              <NodeCard key={node.name} node={node} usage={usageByName.get(node.name)} subsystem={subsystemByName.get(node.name)} health={nodeHealthByName.get(node.name)} cli={cliByName.get(node.name)} />
             ))}
           </div>
         </>
@@ -163,9 +197,11 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
 function ClusterHealthBar({
   nodes,
   subsystemByName,
+  usageByName,
 }: {
   readonly nodes: readonly ClusterNodeResponse[];
   readonly subsystemByName: Map<string, NodeSubsystemReport>;
+  readonly usageByName: Map<string, AdminNode>;
 }) {
   let readyCount = 0;
   let notReadyCount = 0;
@@ -184,11 +220,12 @@ function ClusterHealthBar({
     if (node.cordoned && !node.drained) cordonedCount++;
     if (node.drained) drainedCount++;
 
-    const cpuTone = pctTone(nodePct(node.cpuRequestsMillicores ?? null, node.cpuMillicores));
+    const triads = nodeTriads(node, usageByName.get(node.name));
+    const cpuTone = pctTone(committedPct(triads.cpu));
     if (cpuTone === 'red') cpuRedCount++;
     else if (cpuTone === 'amber') cpuAmberCount++;
 
-    const memTone = pctTone(nodePct(node.memoryRequestsBytes ?? null, node.memoryBytes));
+    const memTone = pctTone(committedPct(triads.memory));
     if (memTone === 'red') memRedCount++;
     else if (memTone === 'amber') memAmberCount++;
 
@@ -233,13 +270,13 @@ function ClusterHealthBar({
           </HealthChip>
           {cpuTotal > 0 && (
             <HealthChip tone={cpuRedCount > 0 ? 'red' : 'amber'} testId="health-cpu">
-              <Cpu size={12} /> CPU pressure: {cpuTotal} node{cpuTotal !== 1 ? 's' : ''}
+              <Cpu size={12} /> CPU mostly committed: {cpuTotal} node{cpuTotal !== 1 ? 's' : ''}
               {cpuRedCount > 0 && ` (${cpuRedCount} ≥${PRESSURE_RED}%)`}
             </HealthChip>
           )}
           {memTotal > 0 && (
             <HealthChip tone={memRedCount > 0 ? 'red' : 'amber'} testId="health-memory">
-              <HardDrive size={12} /> Memory pressure: {memTotal} node{memTotal !== 1 ? 's' : ''}
+              <MemoryStick size={12} /> Memory mostly committed: {memTotal} node{memTotal !== 1 ? 's' : ''}
               {memRedCount > 0 && ` (${memRedCount} ≥${PRESSURE_RED}%)`}
             </HealthChip>
           )}
@@ -283,8 +320,9 @@ function HealthChip({
   return <span className={cls} data-testid={testId}>{children}</span>;
 }
 
-function NodeCard({ node, subsystem, health, cli }: {
+function NodeCard({ node, usage, subsystem, health, cli }: {
   readonly node: ClusterNodeResponse;
+  readonly usage?: AdminNode;
   readonly subsystem?: NodeSubsystemReport;
   readonly health?: NodeHealthEntry;
   readonly cli?: HostMigrationNodeStatus;
@@ -312,8 +350,7 @@ function NodeCard({ node, subsystem, health, cli }: {
   // A confirm names the node as the operator knows it, and as kubectl does.
   const confirmName = headerName !== node.name ? `"${headerName}" (${node.name})` : `"${node.name}"`;
 
-  const cpuPct = nodePct(node.cpuRequestsMillicores ?? null, node.cpuMillicores);
-  const memPct = nodePct(node.memoryRequestsBytes ?? null, node.memoryBytes);
+  const triads = nodeTriads(node, usage);
   const subsystemBad = isSubsystemUnhealthy(subsystem);
 
   const handleDelete = () => {
@@ -503,13 +540,15 @@ function NodeCard({ node, subsystem, health, cli }: {
             "CPU 47% · Mem 36% · 38 pods · just now" next to a NotReady pill —
             is how the 2026-09-11 drill's Cluster Nodes page contradicted
             itself. Show the last-known values as explicitly stale instead. */}
-        <div className="hidden md:flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300 shrink-0">
+        <div className="hidden md:flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300 shrink-0" data-testid={`node-summary-${node.name}`}>
           {ready === 'Ready' ? (
             <>
-              <SummaryDot label="CPU" pct={cpuPct} />
-              <SummaryDot label="Mem" pct={memPct} />
-              <span className="tabular-nums" title="scheduled pods">
-                {node.scheduledPods ?? '—'} pods
+              <span className="text-gray-400 dark:text-gray-500">committed</span>
+              <SummaryDot label="CPU" pct={committedPct(triads.cpu)} />
+              <SummaryDot label="Mem" pct={committedPct(triads.memory)} />
+              <SummaryDot label="Disk" pct={committedPct(triads.disk)} />
+              <span className="tabular-nums" title="Pods on this node">
+                {usage?.pods ?? node.scheduledPods ?? '—'} pods
               </span>
             </>
           ) : (
@@ -606,7 +645,7 @@ function NodeCard({ node, subsystem, health, cli }: {
       {expanded && (
         <div id={`node-body-${node.name}`} data-testid={`node-card-body-${node.name}`}>
           {subsystem && <SubsystemHealthRow subsystem={subsystem} />}
-          <NodeDetails node={node} />
+          <NodeDetails node={node} triads={triads} pods={usage?.pods ?? node.scheduledPods ?? null} />
           <NodeStorageCard nodeName={node.name} />
         </div>
       )}
@@ -630,7 +669,7 @@ function SummaryDot({ label, pct }: { readonly label: string; readonly pct: numb
     tone === 'gray' && 'bg-gray-300 dark:bg-gray-600',
   );
   return (
-    <span className="inline-flex items-center gap-1 tabular-nums" title={`${label} requests / allocatable`}>
+    <span className="inline-flex items-center gap-1 tabular-nums" title={`${label}: ${pct == null ? 'not measured' : `${pct}% of the node's total is committed`}`}>
       <span className={dotClass} />
       {label} {pct == null ? '—' : `${pct}%`}
     </span>
@@ -764,76 +803,79 @@ function ReadyPill({ ready }: { readonly ready: 'Ready' | 'NotReady' | 'Unknown'
   return <span className={clsx('rounded-full px-2 py-0.5 text-xs font-medium', styles[ready])}>{ready}</span>;
 }
 
-function UsageBar({ used, capacity, label, formatValue }: {
-  readonly used: number | null | undefined;
-  readonly capacity: number | null | undefined;
+const BAR_TONE = (pct: number): { used: string; committed: string } => (
+  pct >= PRESSURE_RED ? { used: 'bg-red-500', committed: 'bg-red-300 dark:bg-red-800' }
+    : pct >= PRESSURE_AMBER ? { used: 'bg-amber-500', committed: 'bg-amber-300 dark:bg-amber-800' }
+      : { used: 'bg-green-500', committed: 'bg-green-300 dark:bg-green-800' }
+);
+
+/**
+ * One resource as in use / committed / free of total, with a two-band bar:
+ * in use solid, committed beyond it lighter, free as the bare track.
+ */
+function TriadRow({ label, icon, figures, format, testId }: {
   readonly label: string;
-  readonly formatValue: (n: number | null) => string;
+  readonly icon: React.ReactNode;
+  readonly figures: TriadFigures | null;
+  readonly format: (n: number) => string;
+  readonly testId: string;
 }) {
-  const hasData = used != null && capacity != null && capacity > 0;
-  const pct = hasData ? Math.min(100, Math.round((used / capacity) * 100)) : 0;
-  const tone =
-    pct >= 90 ? 'bg-red-500' :
-      pct >= 75 ? 'bg-amber-500' :
-        'bg-green-500';
-  return (
-    <div>
-      <div className="flex items-baseline justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>{label}</span>
-        <span className="tabular-nums">
-          {hasData
-            ? `${formatValue(used)} / ${formatValue(capacity)} (${pct}%)`
-            : `— / ${formatValue(capacity ?? null)}`}
-        </span>
+  if (!figures) {
+    return (
+      <div className="flex items-center gap-2" data-testid={testId}>
+        <span className="text-gray-400">{icon}</span>
+        <div className="flex-1 text-xs text-gray-500 dark:text-gray-400">{label}: not measured</div>
       </div>
-      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        <div className={clsx('h-full transition-all', tone)} style={{ width: `${pct}%` }} />
+    );
+  }
+  const tone = BAR_TONE(Math.max(figures.inUsePct, figures.committedPct));
+  return (
+    <div className="flex items-center gap-2" data-testid={testId}>
+      <span className="text-gray-400">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs text-gray-500 dark:text-gray-400">
+          <span className="font-medium text-gray-700 dark:text-gray-200">{label}</span>
+          <span className="tabular-nums">
+            In use <b className="font-semibold text-gray-900 dark:text-gray-100">{figures.inUse === null ? '—' : format(figures.inUse)}</b>
+            {' · '}Committed <b className="font-semibold text-gray-900 dark:text-gray-100">{format(figures.committed)}</b>
+            {' · '}Free <b className="font-semibold text-gray-900 dark:text-gray-100">{format(figures.free)}</b>
+            {' '}of {format(figures.total)}
+          </span>
+        </div>
+        <div className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+          <div className={clsx('h-full', tone.used)} style={{ width: `${figures.inUsePct.toFixed(1)}%` }} />
+          <div className={clsx('h-full', tone.committed)} style={{ width: `${Math.max(0, figures.committedPct - figures.inUsePct).toFixed(1)}%` }} />
+        </div>
       </div>
     </div>
   );
 }
 
-function NodeDetails({ node }: { readonly node: ClusterNodeResponse }) {
+const cores = (n: number): string => `${n.toFixed(2)} cores`;
+const gib = (n: number): string => `${n.toFixed(1)} GiB`;
+const gb = (n: number): string => `${Math.round(n)} GB`;
+
+function NodeDetails({ node, triads, pods }: {
+  readonly node: ClusterNodeResponse;
+  readonly triads: NodeTriads;
+  readonly pods: number | null;
+}) {
   return (
     <div className="space-y-4 px-5 py-4 text-sm">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="flex items-center gap-2">
-          <Cpu size={16} className="text-gray-400" />
-          <div className="flex-1">
-            <UsageBar
-              label="CPU (requests / allocatable)"
-              used={node.cpuRequestsMillicores ?? null}
-              capacity={node.cpuMillicores}
-              formatValue={formatMillicores}
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <HardDrive size={16} className="text-gray-400" />
-          <div className="flex-1">
-            <UsageBar
-              label="Memory (requests / allocatable)"
-              used={node.memoryRequestsBytes ?? null}
-              capacity={node.memoryBytes}
-              formatValue={formatBytes}
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <HardDrive size={16} className="text-gray-400" />
-          <div>
-            <div className="text-xs text-gray-500 dark:text-gray-400">Scheduled pods</div>
-            <div className="font-medium text-gray-900 dark:text-gray-100">
-              {node.scheduledPods ?? '—'}
-            </div>
-          </div>
-        </div>
+      <div className="space-y-3" data-testid={`node-resources-${node.name}`}>
+        <TriadRow label="CPU" icon={<Cpu size={16} />} figures={triads.cpu} format={cores} testId={`node-cpu-${node.name}`} />
+        <TriadRow label="Memory" icon={<MemoryStick size={16} />} figures={triads.memory} format={gib} testId={`node-memory-${node.name}`} />
+        <TriadRow label="Disk" icon={<HardDrive size={16} />} figures={triads.disk} format={gb} testId={`node-disk-${node.name}`} />
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Committed is what pods have requested (CPU, memory) and what volumes placed here have been sized to (disk) —
+          held for them even while idle. Free is neither in use nor committed.
+        </p>
       </div>
       <div className="flex items-center gap-2">
-        <HardDrive size={16} className="text-gray-400" />
+        <Boxes size={16} className="text-gray-400" />
         <div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">Ephemeral storage allocatable</div>
-          <div className="font-medium text-gray-900 dark:text-gray-100">{formatBytes(node.storageBytes)}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">Pods</div>
+          <div className="font-medium text-gray-900 dark:text-gray-100">{pods ?? '—'}</div>
         </div>
       </div>
       {node.notes && (

@@ -12,28 +12,35 @@ import { trafficTabUrl } from '@/components/traffic/traffic-url';
  * Tenant detail → Traffic (7 days).
  *
  * What the tenant's sites moved through the ingress over the last week —
- * upload (served to visitors: outbound) and download (received from them:
- * inbound) — with a small chart of both. The same series Monitoring → Traffic
- * draws for this tenant (`scope=tenant`, one subject, both directions), so the
- * figures here and there agree; the whole card links to that view with the
- * tenant and the 7-day range already chosen.
+ * inbound (received from visitors) and outbound (served to them) — with a
+ * chart of both. The same series Monitoring → Traffic draws for this tenant
+ * (`scope=tenant`, one subject, both directions), so the figures here and
+ * there agree; the whole card links to that view with the tenant and the
+ * 7-day range already chosen.
+ *
+ * Inbound / outbound, the words Monitoring → Traffic uses. "Upload" and
+ * "download" named the same two directions from the visitor's side, so the
+ * card and the page it links to called one figure by two names.
+ *
+ * The chart takes whatever height the card has: the card sits beside the
+ * tenant's details, and a fixed 56px strip left most of it empty.
  */
 
 const RANGE_DAYS = 7;
 const SPARK_W = 300;
-const SPARK_H = 56;
+const SPARK_H = 100;
 
 // Fixed hues, matching the out/in pair on the Traffic tab's chart.
-const UPLOAD_COLOUR = '#6366f1';
-const DOWNLOAD_COLOUR = '#14b8a6';
+const OUTBOUND_COLOUR = '#6366f1';
+const INBOUND_COLOUR = '#14b8a6';
 
 export interface TenantTrafficSummary {
-  /** Bytes the tenant's sites sent (outbound). */
-  readonly upload: number;
-  /** Bytes they received (inbound). */
-  readonly download: number;
-  readonly uploadPoints: ReadonlyArray<number | null>;
-  readonly downloadPoints: ReadonlyArray<number | null>;
+  /** Bytes the tenant's sites received. */
+  readonly inbound: number;
+  /** Bytes they sent. */
+  readonly outbound: number;
+  readonly inboundPoints: ReadonlyArray<number | null>;
+  readonly outboundPoints: ReadonlyArray<number | null>;
   /** True when no point in either direction was measured. */
   readonly empty: boolean;
 }
@@ -45,7 +52,7 @@ function totalOf(points: ReadonlyArray<number | null>, stepSeconds: number): num
 /**
  * The out / in series of a single-tenant frame. A single subject is drawn as
  * one line per direction, keyed `out` / `in` (a daily-rollup frame keys its
- * one line by tenant id and carries egress only — that is the upload).
+ * one line by tenant id and carries egress only — that is outbound).
  */
 function directionSeries(series: readonly TrafficSeries[]): { out?: TrafficSeries; in?: TrafficSeries } {
   const out = series.find((s) => s.key === 'out' || s.key.endsWith(':out'));
@@ -63,14 +70,14 @@ export function summarizeTenantTraffic(frame: TrafficFrame): TenantTrafficSummar
   const series = Array.isArray(frame?.series) ? frame.series : [];
   const step = Number.isFinite(frame?.stepSeconds) ? frame.stepSeconds : 0;
   const { out, in: inbound } = directionSeries(series);
-  const uploadPoints = Array.isArray(out?.points) ? out.points : [];
-  const downloadPoints = Array.isArray(inbound?.points) ? inbound.points : [];
+  const outboundPoints = Array.isArray(out?.points) ? out.points : [];
+  const inboundPoints = Array.isArray(inbound?.points) ? inbound.points : [];
   return {
-    upload: totalOf(uploadPoints, step),
-    download: totalOf(downloadPoints, step),
-    uploadPoints,
-    downloadPoints,
-    empty: [...uploadPoints, ...downloadPoints].every((v) => v === null),
+    inbound: totalOf(inboundPoints, step),
+    outbound: totalOf(outboundPoints, step),
+    inboundPoints,
+    outboundPoints,
+    empty: [...outboundPoints, ...inboundPoints].every((v) => v === null),
   };
 }
 
@@ -126,7 +133,7 @@ export default function TenantTrafficCard({ namespace }: TenantTrafficCardProps)
           <p className="text-sm text-gray-500 dark:text-gray-400">No namespace yet — traffic is measured once the tenant is provisioned.</p>
         )}
         {namespace && isLoading && (
-          <div className="flex h-[96px] items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+          <div className="flex min-h-[96px] flex-1 items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <Loader2 size={16} className="animate-spin" /> Loading…
           </div>
         )}
@@ -134,20 +141,20 @@ export default function TenantTrafficCard({ namespace }: TenantTrafficCardProps)
           <>
             <div className="grid grid-cols-2 gap-3">
               <Figure
-                label="Upload"
-                hint="Served to visitors (outbound)"
-                value={formatTrafficVolume(summary.upload, frame.unit)}
-                colour={UPLOAD_COLOUR}
-                icon={<ArrowUp size={12} />}
-                testId="tenant-traffic-upload"
+                label="Inbound"
+                hint="Received from visitors"
+                value={formatTrafficVolume(summary.inbound, frame.unit)}
+                colour={INBOUND_COLOUR}
+                icon={<ArrowDown size={12} />}
+                testId="tenant-traffic-inbound"
               />
               <Figure
-                label="Download"
-                hint="Received from visitors (inbound)"
-                value={formatTrafficVolume(summary.download, frame.unit)}
-                colour={DOWNLOAD_COLOUR}
-                icon={<ArrowDown size={12} />}
-                testId="tenant-traffic-download"
+                label="Outbound"
+                hint="Served to visitors"
+                value={formatTrafficVolume(summary.outbound, frame.unit)}
+                colour={OUTBOUND_COLOUR}
+                icon={<ArrowUp size={12} />}
+                testId="tenant-traffic-outbound"
               />
             </div>
             <Spark summary={summary} />
@@ -186,31 +193,38 @@ function Figure({ label, hint, value, colour, icon, testId }: {
 }
 
 function Spark({ summary }: { readonly summary: TenantTrafficSummary }) {
-  const peak = [...summary.uploadPoints, ...summary.downloadPoints]
+  const peak = [...summary.outboundPoints, ...summary.inboundPoints]
     .reduce<number>((max, v) => (v !== null && v > max ? v : max), 0);
   const ceiling = Math.max(peak * 1.08, 1);
   return (
-    <svg
-      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-      className="mt-3 h-14 w-full rounded bg-gray-50 dark:bg-gray-900/40"
-      data-testid="tenant-traffic-spark"
-    >
-      {[
-        { key: 'upload', points: summary.uploadPoints, colour: UPLOAD_COLOUR },
-        { key: 'download', points: summary.downloadPoints, colour: DOWNLOAD_COLOUR },
-      ].map((l) => (
-        <polyline
-          key={l.key}
-          points={polyline(l.points, ceiling)}
-          fill="none"
-          stroke={l.colour}
-          strokeWidth={2}
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
-    </svg>
+    // flex-1 takes the card's spare height; min-h keeps a chart when the card
+    // stands alone (stacked on a narrow screen) and has none to give. The SVG
+    // is laid over the box rather than sized as a flex item: its viewBox gives
+    // it an intrinsic height, which would set the box's height instead of
+    // following it.
+    <div className="relative mt-3 min-h-[56px] flex-1" data-testid="tenant-traffic-chart">
+      <svg
+        viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        className="absolute inset-0 h-full w-full rounded bg-gray-50 dark:bg-gray-900/40"
+        data-testid="tenant-traffic-spark"
+      >
+        {[
+          { key: 'inbound', points: summary.inboundPoints, colour: INBOUND_COLOUR },
+          { key: 'outbound', points: summary.outboundPoints, colour: OUTBOUND_COLOUR },
+        ].map((l) => (
+          <polyline
+            key={l.key}
+            points={polyline(l.points, ceiling)}
+            fill="none"
+            stroke={l.colour}
+            strokeWidth={2}
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </svg>
+    </div>
   );
 }
