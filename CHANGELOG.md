@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.9] - 2026-10-14
+
 ### Added
 
 - **Tenants see what each of their domains sent.** A new *Statistics* tab on the tenant panel's
