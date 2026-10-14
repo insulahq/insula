@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The upgrade review lists everything the upgrade restarts, not only the management API and
+  the panels.** Its *What will be interrupted* box never mentioned the mail server, webmail or
+  the platform database, although a release that changes them restarts them: 2026.10.8
+  restarted the mail server for its new Stalwart, and 2026.10.9 restarted the mail server, the
+  webmail and the mail standby copy. The operator read about it only in the release notes.
+  Each release now works out, when it is cut, what an upgrade from each of the 40 stable
+  releases before it, and the release candidates of the last five, restarts, starts or removes. It renders its manifests and theirs and compares what
+  each workload's pods run, including the ConfigMaps a workload is restarted for. For the
+  database it compares every field except those known not to restart it, and of its settings
+  only those PostgreSQL applies at start. The signed release manifest carries
+  the list. The review shows the entry for the installed version under *What will be
+  interrupted*, with what each restart does: *Mail server — one replica, stopped before its
+  replacement starts… no mail is received or sent meanwhile: sending servers retry, mail
+  clients reconnect*. When the release has no entry for the installed version, or the list
+  cannot be read, the review says it cannot tell rather than nothing. That covers releases cut
+  before this one, versions older than that window, and development builds. The review is shown by the release being upgraded
+  *from*, so the list first appears on upgrades from this release onwards.
+
 ## [2026.10.9] - 2026-10-14
 
 ### Added

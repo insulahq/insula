@@ -4,7 +4,7 @@
  * diffed against this cluster's own ledgers and each node's reported host state.
  */
 import { sql } from 'drizzle-orm';
-import type { HostMigrationNodeStatus, ReleaseContents, UpgradeChangesResponse } from '@insula/api-contracts';
+import type { HostMigrationNodeStatus, ReleaseContents, ReleaseWorkloadChange, UpgradeChangesResponse } from '@insula/api-contracts';
 import { releaseContentsSchema } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -13,6 +13,8 @@ import { listMigrationStatus } from './index.js';
 import { readHostMigrationStatus } from './host-migration-status.js';
 import { listNodeFacts } from './run/k8s.js';
 import { kubernetesOffer, lowestKubelet } from './run/k8s-step.js';
+import type { DeploymentShape } from './progress.js';
+import { deploymentsToRead, upgradeWorkloads, workloadKey } from './workload-restarts.js';
 
 /** A node has this host change behind it — run, already present, or skipped by an operator. */
 const DONE = new Set(['applied', 'already-applied', 'skipped']);
@@ -26,6 +28,8 @@ export interface ChangesInput {
   readonly sqlApplied: ReadonlySet<string>;
   readonly platformApplied: ReadonlySet<string>;
   readonly nodes: readonly HostMigrationNodeStatus[];
+  /** Live spec of the Deployments the release restarts, keyed Kind/namespace/name. */
+  readonly liveDeployments?: ReadonlyMap<string, DeploymentShape>;
 }
 
 /**
@@ -37,7 +41,8 @@ export interface ChangesInput {
 export function computeUpgradeChanges(input: ChangesInput): UpgradeChangesResponse {
   const target = input.contents?.k3sVersion ?? null;
   const kubernetes = { current: input.kubelet ?? null, target, ...kubernetesOffer(input.kubelet ?? null, target) };
-  const base = { fromVersion: input.fromVersion, toVersion: input.toVersion, kubernetes };
+  const workloads = upgradeWorkloads(input.contents?.workloadChanges, input.fromVersion, input.liveDeployments);
+  const base = { fromVersion: input.fromVersion, toVersion: input.toVersion, kubernetes, workloads };
   if (!input.contents) {
     return { ...base, known: false, databaseMigrations: 0, platformMigrations: 0, hostChanges: [], unreportedNodes: [] };
   }
@@ -67,6 +72,23 @@ function parseContents(raw: string | null): ReleaseContents | null {
   }
 }
 
+/** The listed Deployments' replicas and strategy; one that cannot be read is left out (its line says "restarts"). */
+async function readDeployments(
+  k8s: K8sClients,
+  list: readonly ReleaseWorkloadChange[],
+): Promise<ReadonlyMap<string, DeploymentShape>> {
+  const read = await Promise.all(list.map(async (w) => {
+    try {
+      const d = (await k8s.apps.readNamespacedDeployment({ name: w.name, namespace: w.namespace } as unknown as
+        Parameters<typeof k8s.apps.readNamespacedDeployment>[0])) as { spec?: DeploymentShape };
+      return d.spec ? [workloadKey(w), d.spec] as const : null;
+    } catch {
+      return null;
+    }
+  }));
+  return new Map(read.filter((e): e is readonly [string, DeploymentShape] => e !== null));
+}
+
 export async function readUpgradeChanges(
   db: Database,
   k8s: K8sClients,
@@ -87,10 +109,13 @@ export async function readUpgradeChanges(
     listNodeFacts(k8s).catch(() => []),
   ]);
   const rows = ledger.rows ?? [];
+  const contents = parseContents(rawContents);
+  const fromVersion = installed?.trim() || null;
   return computeUpgradeChanges({
-    fromVersion: installed?.trim() || null,
+    fromVersion,
     toVersion: available?.trim() || null,
-    contents: parseContents(rawContents),
+    contents,
+    liveDeployments: await readDeployments(k8s, deploymentsToRead(contents?.workloadChanges, fromVersion)),
     sqlApplied: new Set(rows.map((r) => r.filename)),
     platformApplied: new Set(platform.filter((m) => m.status !== 'pending').map((m) => m.id)),
     nodes: hosts.nodes,

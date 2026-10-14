@@ -278,4 +278,40 @@ describe('pollAvailableVersion — release contents (ADR-064 §6)', () => {
     expect(h.settings.get(SETTING_KEYS.availableVersion)).toBe('2026.6.5');
     expect(h.logs.some((l) => /dropped 1 malformed/.test(l.msg))).toBe(true);
   });
+
+  describe('what an upgrade restarts, per earlier version (workloadChanges)', () => {
+    const mail = { kind: 'Deployment', namespace: 'mail', name: 'stalwart-mail', change: 'restart' };
+    const db = { kind: 'Cluster', namespace: 'platform', name: 'system-db', change: 'restart' };
+    const stored = (h: ReturnType<typeof build>) => JSON.parse(h.settings.get(SETTING_KEYS.availableContents) ?? 'null');
+
+    it('keeps the table, version by version', async () => {
+      const table = { '2026.6.4': [mail, db], '2026.6.4-rc.2': [mail], '2026.6.3': [] };
+      const { manifest, sig } = signed({ ...contents, workloadChanges: table });
+      const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+      await pollAvailableVersion(h.deps);
+      expect(stored(h).workloadChanges).toEqual(table);
+    });
+
+    it('drops a key that is not a release version with its entries, and a malformed entry alone', async () => {
+      const { manifest, sig } = signed({
+        ...contents,
+        workloadChanges: {
+          '2026.6.4': [mail, { kind: 'Deployment', namespace: 'mail', name: 'Bad Name; rm', change: 'restart' }, { ...db, change: 'explode' }],
+          'latest': [db],
+          '2026.6.3': 'not a list',
+        },
+      });
+      const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+      await pollAvailableVersion(h.deps);
+      expect(stored(h).workloadChanges).toEqual({ '2026.6.4': [mail] });
+      expect(h.logs.some((l) => /dropped 4 malformed/.test(l.msg))).toBe(true);
+    });
+
+    it('a manifest from before the table stores no table — unknown, not "nothing restarts"', async () => {
+      const { manifest, sig } = signed(contents);
+      const h = build({ releases: [release()], manifestBytes: manifest, sigBytes: sig });
+      await pollAvailableVersion(h.deps);
+      expect(stored(h)).not.toHaveProperty('workloadChanges');
+    });
+  });
 });

@@ -135,5 +135,18 @@ describe('platform-upgrade routes (Fastify validation)', () => {
     expect(res.statusCode).toBe(200);
     expect(readUpgradeChanges.mock.calls.at(-1)?.[3]).toEqual(['w1']);
   });
+
+  it('the changes endpoint returns what else the release restarts — the response schema does not strip it', async () => {
+    const workloads = {
+      known: true,
+      items: [{ kind: 'Deployment', namespace: 'mail', name: 'stalwart-mail', change: 'restart', label: 'Mail server', impact: 'restarts' }],
+    };
+    readUpgradeChanges.mockResolvedValue({ toVersion: '2026.10.10', kubernetes: { current: null, target: null, offer: false, reason: null }, workloads });
+    const res = await app.inject({
+      method: 'GET', url: '/api/v1/admin/platform/upgrade/changes', headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.workloads).toEqual(workloads);
+  });
 });
 

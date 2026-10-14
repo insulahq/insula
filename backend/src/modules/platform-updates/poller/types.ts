@@ -33,6 +33,8 @@ export interface ReleaseManifest {
   readonly migrations?: unknown;
   /** ADR-064 §8: { k3s: "v1.36.5+k3s1" } — the release's k3s pin. */
   readonly kubernetes?: unknown;
+  /** Per earlier version, the workloads an upgrade from it restarts (scripts/release-workload-changes.py). */
+  readonly workloadChanges?: unknown;
 }
 
 /**

@@ -85,6 +85,9 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
 
   const resolvedTarget = preview?.target ?? targetVersion;
   const canApprove = Boolean(pf?.ok && preview?.proceed && !loading && !applying);
+  // The release's restart list belongs to the release the changes were read for.
+  const changes = changesQ.data?.data;
+  const workloads = changes && changes.toVersion === resolvedTarget ? changes.workloads : undefined;
 
   const onApproveClick = async () => {
     setApplying(true);
@@ -140,7 +143,7 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
 
               {/* Interruption preview */}
               {preview?.interruption && (
-                <div className={`text-xs rounded border p-3 space-y-2 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'}`}>
+                <div data-testid="upgrade-interruption" className={`text-xs rounded border p-3 space-y-2 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'}`}>
                   <div className="flex items-center gap-1.5 font-medium text-gray-900 dark:text-gray-100">
                     <AlertTriangle className={`h-4 w-4 ${(preview.interruption.noRedundancy ?? preview.interruption.singleNode) ? 'text-amber-500' : 'text-blue-500'}`} />
                     What will be interrupted
@@ -156,7 +159,33 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
                         <span><span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span> <span className="text-gray-500 dark:text-gray-400">— {s.impact}</span></span>
                       </li>
                     ))}
+                    {/* Everything else this release restarts — the mail server, webmail, the
+                        database… — as its signed manifest lists it for the installed version. */}
+                    {workloads?.known && workloads.items.map((w) => (
+                      <li key={`${w.kind}/${w.namespace}/${w.name}`} className="flex items-start gap-1.5" data-testid={`upgrade-workload-${w.namespace}-${w.name}`}>
+                        <Server className="h-3.5 w-3.5 mt-0.5 text-gray-400 flex-shrink-0" />
+                        <span><span className="font-medium text-gray-800 dark:text-gray-200">{w.label}</span> <span className="text-gray-500 dark:text-gray-400">— {w.impact}</span></span>
+                      </li>
+                    ))}
                   </ul>
+                  {workloads && !workloads.known && (
+                    <p className="text-gray-600 dark:text-gray-400" data-testid="upgrade-workloads-unknown">
+                      This release does not list what else it restarts on an upgrade
+                      from {changes?.fromVersion ? formatVersion(changes.fromVersion) : 'this version'}: the mail
+                      server, webmail or the platform database may restart too. Read its release notes before approving.
+                    </p>
+                  )}
+                  {changesQ.isLoading && (
+                    <p className="flex items-center gap-1.5 text-gray-500 dark:text-gray-400" data-testid="upgrade-workloads-loading">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking what else this release restarts…
+                    </p>
+                  )}
+                  {changesQ.isError && (
+                    <p className="text-amber-700 dark:text-amber-400" data-testid="upgrade-workloads-unreadable">
+                      What else this release restarts could not be read: the mail server, webmail or the platform
+                      database may restart too. Read its release notes before approving.
+                    </p>
+                  )}
                   {!preview.interruption.tenantWorkloadsAffected && (
                     <div className="flex items-center gap-1.5 text-green-700 dark:text-green-400"><CheckCircle className="h-3.5 w-3.5" /> Tenant websites and databases keep serving throughout.</div>
                   )}

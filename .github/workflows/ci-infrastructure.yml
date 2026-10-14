@@ -232,6 +232,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: ./scripts/test-image-org.sh
       - run: ./scripts/test-cut-release.sh
+      # release.yml signs what an upgrade restarts into the release manifest (the upgrade
+      # review's list); a script or an overlay that breaks it must fail here, not at a cut.
+      - run: python3 scripts/test-release-workload-changes.py
+      - name: The production overlay renders into a restart table
+        run: python3 scripts/release-workload-changes.py --version 2099.1.0 --max-earlier 0 > /dev/null
       - run: ./scripts/test-sync-development-changelog.sh
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
