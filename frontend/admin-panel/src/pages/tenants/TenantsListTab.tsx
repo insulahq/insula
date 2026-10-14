@@ -7,6 +7,7 @@ import PlacementCell from '@/components/tenants/PlacementCell';
 import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import TenantHealthChip from '@/components/outage/TenantHealthChip';
 import PaginationBar from '@/components/ui/PaginationBar';
+import { ALL_ROWS } from '@/hooks/use-table-view';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import BulkRunModal from '@/components/BulkRunModal';
 import CreateTenantModal from '@/components/CreateTenantModal';
@@ -49,11 +50,12 @@ export default function TenantsListTab() {
     pagination.resetPagination();
   }, [debouncedSearch]);
 
-  const { data, isLoading, error } = useTenants({
-    search: debouncedSearch || undefined,
-    limit: pagination.limit,
-    cursor: pagination.cursor,
-  });
+  // "All" rows per page reads every page of the list; the table then sorts
+  // all of them, not only the 20 it happened to receive.
+  const showAll = pagination.limit === ALL_ROWS;
+  const { data, isLoading, error } = useTenants(showAll
+    ? { search: debouncedSearch || undefined, all: true }
+    : { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor });
 
   const tenants = useMemo(() => data?.data ?? [], [data]);
   const totalCount = data?.pagination?.total_count ?? 0;
@@ -192,7 +194,9 @@ export default function TenantsListTab() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="search"
-            placeholder="Search by name..."
+            placeholder="Search name, plan or placement…"
+            title={'Matches the tenant name and contact email, the plan, and the placement: a node by its name or alias, '
+              + '"auto" for tenants with no node pin, "misplaced" for tenants off their primary node.'}
             value={search}
             onChange={(e) => handleSearchChange(e.target.value)}
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
@@ -361,6 +365,7 @@ export default function TenantsListTab() {
               onNext={() => nextCursor && pagination.goNext(nextCursor)}
               onPrev={pagination.goPrev}
               onPageSizeChange={pagination.setPageSize}
+              allowAll
             />
           </>
         )}

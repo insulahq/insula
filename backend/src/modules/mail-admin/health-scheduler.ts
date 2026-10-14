@@ -35,6 +35,7 @@ import type { MailEndpointSet } from '@insula/api-contracts';
 import { notifyAdminMailHealthDegraded, notifyAdminOperationalEvent } from '../notifications/events.js';
 import { capacityItems, mailCapacityReader } from './health-capacity.js';
 import { cappedList } from '../notifications/list-items.js';
+import { MAIL_MONITORING_RESOURCE } from '../notifications/action-path.js';
 import type { Database } from '../../db/index.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
@@ -343,7 +344,7 @@ export async function runMailHealthCheckOnce(
       severityLabel: 'not checked',
       recommendedAction: 'Check that platform-api can reach its DNS resolvers (Platform → DNS, or MAIL_HEALTH_EXTERNAL_DNS).',
       items: cappedList(unanswered, MAX_LISTED_CHECKS),
-    }, `mail-health:unanswered:${dedupeBucket(clock())}`).catch((err: unknown) => {
+    }, `mail-health:unanswered:${dedupeBucket(clock())}`, MAIL_MONITORING_RESOURCE).catch((err: unknown) => {
       log.warn({ err }, 'mail-health-scheduler: unanswered-lookups notice failed');
     });
   }

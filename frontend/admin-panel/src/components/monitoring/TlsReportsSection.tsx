@@ -15,16 +15,80 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Lock, LockOpen, Loader2, ChevronRight, ChevronDown, Info } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TableSearch from '@/components/ui/TableSearch';
+import TablePager from '@/components/ui/TablePager';
+import { useTableView } from '@/hooks/use-table-view';
+import type { SortAccessors } from '@/hooks/use-sortable';
 import type { TlsReportsOverview, TlsReport } from '@insula/api-contracts';
+
+/** The most the endpoint returns; the table searches and pages them in the browser. */
+const REPORTS_FETCHED = 200;
 
 function useTlsReports(windowDays: number, failingOnly: boolean) {
   return useQuery({
     queryKey: ['mail', 'tls-reports', windowDays, failingOnly],
     queryFn: () => apiFetch<{ data: TlsReportsOverview }>(
-      `/api/v1/admin/mail/tls-reports?windowDays=${windowDays}${failingOnly ? '&failingOnly=true' : ''}`,
+      `/api/v1/admin/mail/tls-reports?windowDays=${windowDays}&limit=${REPORTS_FETCHED}${failingOnly ? '&failingOnly=true' : ''}`,
     ),
     staleTime: 60_000,
   });
+}
+
+type Failure = TlsReport['failures'][number];
+
+const reportText = (r: TlsReport): string => [
+  r.policyDomain, r.orgName, r.contactInfo,
+  ...r.failures.flatMap((f) => [f.resultType, f.receivingMxHostname, f.sendingMtaIp]),
+].filter(Boolean).join(' ');
+// The lock column sorts failing reports together, by how many sessions failed.
+const REPORT_SORT: SortAccessors<TlsReport> = { tls: (r) => r.failedSessions };
+const failureText = (f: Failure): string => [f.resultType, f.receivingMxHostname, f.sendingMtaIp].filter(Boolean).join(' ');
+const NO_ACCESSORS: SortAccessors<Failure> = {};
+const TH = 'font-medium';
+const TH_PAD = 'px-3 py-2';
+const SUB_TH_PAD = 'pb-1 pr-4';
+/** Detail rows rarely fill a page; the search box appears only when they do. */
+const SEARCH_FROM_ROWS = 20;
+
+function FailureTable({ report }: { readonly report: TlsReport }) {
+  const view = useTableView(report.failures, {
+    searchText: failureText, defaultSortKey: 'failedSessionCount', defaultDirection: 'desc', accessors: NO_ACCESSORS,
+  });
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={view.sortKey} direction={view.sortDirection}
+      onSort={view.onSort} padding={SUB_TH_PAD} className="font-medium" />
+  );
+  return (
+    <>
+      {report.failures.length > SEARCH_FROM_ROWS && (
+        <div className="mb-2">
+          <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search failure, MX or IP…" testId={`tls-failures-search-${report.id}`} />
+        </div>
+      )}
+      <table className="min-w-full text-left text-xs">
+        <thead>
+          <tr className="text-gray-500 dark:text-gray-400">
+            {header('Failure', 'resultType')}
+            {header('Sessions', 'failedSessionCount')}
+            {header('Receiving MX', 'receivingMxHostname')}
+            {header('Sending IP', 'sendingMtaIp')}
+          </tr>
+        </thead>
+        <tbody>
+          {view.rows.map((f, i) => (
+            <tr key={`${f.resultType}-${f.receivingMxHostname ?? ''}-${f.sendingMtaIp ?? ''}-${i}`} className="text-gray-800 dark:text-gray-200">
+              <td className="py-0.5 pr-4 font-mono">{f.resultType}</td>
+              <td className="py-0.5 pr-4 tabular-nums">{f.failedSessionCount}</td>
+              <td className="py-0.5 pr-4 font-mono">{f.receivingMxHostname ?? '—'}</td>
+              <td className="py-0.5 font-mono">{f.sendingMtaIp ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <TablePager view={view} testIdPrefix={`tls-failures-${report.id}-`} />
+    </>
+  );
 }
 
 function formatWhen(iso: string): string {
@@ -72,26 +136,7 @@ export function Row({ report }: { report: TlsReport }) {
                 No failures reported. Every session this reporter opened to us negotiated TLS.
               </p>
             ) : (
-              <table className="min-w-full text-left text-xs">
-                <thead>
-                  <tr className="text-gray-500 dark:text-gray-400">
-                    <th className="pb-1 pr-4 font-medium">Failure</th>
-                    <th className="pb-1 pr-4 font-medium">Sessions</th>
-                    <th className="pb-1 pr-4 font-medium">Receiving MX</th>
-                    <th className="pb-1 font-medium">Sending IP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.failures.map((f, i) => (
-                    <tr key={`${f.resultType}-${i}`} className="text-gray-800 dark:text-gray-200">
-                      <td className="py-0.5 pr-4 font-mono">{f.resultType}</td>
-                      <td className="py-0.5 pr-4 tabular-nums">{f.failedSessionCount}</td>
-                      <td className="py-0.5 pr-4 font-mono">{f.receivingMxHostname ?? '—'}</td>
-                      <td className="py-0.5 font-mono">{f.sendingMtaIp ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <FailureTable report={report} />
             )}
             {report.contactInfo && (
               <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
@@ -197,34 +242,50 @@ export default function TlsReportsSection() {
         </p>
       )}
 
-      {overview && overview.reports.length > 0 && (
-        <>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left">
-              <thead>
-                <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  <th className="px-3 py-2 font-medium">TLS</th>
-                  <th className="px-3 py-2 font-medium">Domain</th>
-                  <th className="px-3 py-2 font-medium">Reported by</th>
-                  <th className="px-3 py-2 font-medium">OK</th>
-                  <th className="px-3 py-2 font-medium">Failed</th>
-                  <th className="px-3 py-2 font-medium">Received</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overview.reports.map((r) => <Row key={r.id} report={r} />)}
-              </tbody>
-            </table>
-          </div>
-          {overview.total > overview.reports.length && (
-            <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-              <Info size={13} />
-              Showing the {overview.reports.length} most recent of {overview.total} in this window.
-            </p>
-          )}
-        </>
-      )}
+      {overview && overview.reports.length > 0 && <ReportsTable overview={overview} />}
     </section>
+  );
+}
+
+function ReportsTable({ overview }: { readonly overview: TlsReportsOverview }) {
+  const view = useTableView(overview.reports, {
+    searchText: reportText, defaultSortKey: 'receivedAt', defaultDirection: 'desc', accessors: REPORT_SORT,
+  });
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={view.sortKey} direction={view.sortDirection}
+      onSort={view.onSort} padding={TH_PAD} className={TH} />
+  );
+  return (
+    <>
+      <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search domain, reporter, MX…" testId="tls-search" />
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left">
+          <thead>
+            <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              {header('TLS', 'tls')}
+              {header('Domain', 'policyDomain')}
+              {header('Reported by', 'orgName')}
+              {header('OK', 'successfulSessions')}
+              {header('Failed', 'failedSessions')}
+              {header('Received', 'receivedAt')}
+            </tr>
+          </thead>
+          <tbody>
+            {view.rows.map((r) => <Row key={r.id} report={r} />)}
+            {view.rows.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No report matches “{view.search}”.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <TablePager view={view} testIdPrefix="tls-" />
+      {overview.total > overview.reports.length && (
+        <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <Info size={13} />
+          Showing the {overview.reports.length} most recent of {overview.total} in this window.
+        </p>
+      )}
+    </>
   );
 }
 

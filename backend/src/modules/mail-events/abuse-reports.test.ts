@@ -162,9 +162,11 @@ describe('ingesting ARF abuse reports', () => {
     const r = await pollAbuseReports(makeDb(), logger);
     expect(r.notified).toBe(1);
     expect(notifyAdminOperationalEvent).toHaveBeenCalledTimes(1);
-    const [, subsystem, payload, dedupeKey] = notifyAdminOperationalEvent.mock.calls[0];
+    const [, subsystem, payload, dedupeKey, resourceType] = notifyAdminOperationalEvent.mock.calls[0];
     expect(subsystem).toBe('mail');
     expect(dedupeKey).toBe('abuse-report:sw-1');
+    // Opens Monitoring → Mail, which lists the abuse reports.
+    expect(resourceType).toBe('mail_monitoring');
     expect(payload.detail).toContain('tenant.test');
     expect(payload.recommendedAction).not.toBe('');
   });

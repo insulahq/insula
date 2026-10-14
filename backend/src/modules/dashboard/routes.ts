@@ -4,7 +4,7 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { tenants, domains, backupJobs } from '../../db/schema.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { buildAdminSummary, buildAdminLive } from './admin-service.js';
+import { buildAdminSummary, buildAdminLive, readAdminNodes } from './admin-service.js';
 import { countActivePlatformBans } from '../security-hardening/crowdsec-ban-list.js';
 
 /**
@@ -44,6 +44,19 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         countActiveBans: () => countActivePlatformBans(kubeconfigPath),
       }, app.log),
     };
+  });
+
+  // Cluster → Nodes: every node's CPU, memory and disk as in use / committed /
+  // total — the reader behind the dashboard's Nodes strip, on its own so the
+  // nodes page does not pay for the whole live payload. Cached like the rest
+  // (the figures are platform-wide), for less long than the live payload:
+  // this page is where an operator watches a node while acting on it.
+  app.get('/admin/dashboard/nodes', {
+    preHandler: createCacheMiddleware(30_000),
+    schema: { tags: ['Dashboard'], summary: 'Every node: CPU, memory and disk in use, committed and total' },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    return { data: await readAdminNodes(app.db, createK8sClients(kubeconfigPath), app.log) };
   });
 
   // Retained: the old four-counter payload. Removing it would break any

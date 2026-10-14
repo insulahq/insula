@@ -1,5 +1,5 @@
 /**
- * Tenant detail → Traffic (7 days): upload/download totals for the tenant
+ * Tenant detail → Traffic (7 days): inbound/outbound totals for the tenant
  * over the last week, and a click-through to Monitoring → Traffic with that
  * tenant and range pre-selected.
  */
@@ -31,18 +31,18 @@ const { default: TenantTrafficCard, summarizeTenantTraffic } = await import('@/c
 describe('summarizeTenantTraffic', () => {
   it('totals each direction from rate × step, skipping gaps', () => {
     const s = summarizeTenantTraffic(FRAME);
-    expect(s.upload).toBe(3 * 1_000_000 * 3600);
-    expect(s.download).toBe(4 * 100_000 * 3600);
+    expect(s.outbound).toBe(3 * 1_000_000 * 3600);
+    expect(s.inbound).toBe(4 * 100_000 * 3600);
     expect(s.empty).toBe(false);
   });
 
-  it('reads a daily-rollup frame (one egress line keyed by tenant id) as upload only', () => {
+  it('reads a daily-rollup frame (one egress line keyed by tenant id) as outbound only', () => {
     const daily: TrafficFrame = { ...FRAME, stepSeconds: 86_400, resolution: 'daily', series: [
       { key: 'tenant-uuid', name: 'Acme', kind: 'direction', points: [10, 20, 30, 40] },
     ] };
     const s = summarizeTenantTraffic(daily);
-    expect(s.upload).toBe(100 * 86_400);
-    expect(s.download).toBe(0);
+    expect(s.outbound).toBe(100 * 86_400);
+    expect(s.inbound).toBe(0);
   });
 
   it('is empty when nothing was measured', () => {
@@ -61,11 +61,21 @@ describe('TenantTrafficCard', () => {
     expect(span).toBe(7 * 86_400_000);
   });
 
-  it('shows upload and download and a graph', () => {
+  it('shows inbound and outbound, in those words, and a graph', () => {
     render(<MemoryRouter><TenantTrafficCard namespace="tenant-acme-1a2b3c4d" /></MemoryRouter>);
-    expect(screen.getByTestId('tenant-traffic-upload').textContent).toBe('10.8 GB');
-    expect(screen.getByTestId('tenant-traffic-download').textContent).toBe('1.44 GB');
+    expect(screen.getByTestId('tenant-traffic-outbound').textContent).toBe('10.8 GB');
+    expect(screen.getByTestId('tenant-traffic-inbound').textContent).toBe('1.44 GB');
+    expect(screen.getByText('Inbound')).toBeInTheDocument();
+    expect(screen.getByText('Outbound')).toBeInTheDocument();
+    expect(screen.queryByText(/upload|download/i)).toBeNull();
     expect(screen.getByTestId('tenant-traffic-spark').querySelectorAll('polyline')).toHaveLength(2);
+  });
+
+  it('lets the chart take the spare height of the card', () => {
+    render(<MemoryRouter><TenantTrafficCard namespace="tenant-acme-1a2b3c4d" /></MemoryRouter>);
+    // The card sits beside the tenant details, which set the row's height.
+    expect(screen.getByTestId('tenant-traffic-chart').className).toMatch(/\bflex-1\b/);
+    expect(screen.getByTestId('tenant-traffic-spark').getAttribute('class')).toMatch(/\bh-full\b/);
   });
 
   it('links to Monitoring → Traffic with the tenant and 7 days selected', () => {

@@ -15,10 +15,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
-import { backupComponents, backupJobs, tenantResticRepoState, tenants } from '../../db/schema.js';
+import { backupComponents, backupJobs, resticRepoReclaimState, tenantResticRepoState, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { layoutsHoldingSnapshots } from './repo-layout.js';
-import { stampReclaimedComponents } from './restic-retention.js';
+import { dropSpentReclaimState, stampReclaimedComponents } from './restic-retention.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -32,6 +32,7 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
   beforeEach(async () => {
     await cleanTables();
     await db().execute(sql.raw('TRUNCATE TABLE backup_jobs CASCADE'));
+    await db().execute(sql.raw('TRUNCATE TABLE restic_repo_reclaim_state'));
     const region = await seedRegion(db());
     const plan = await seedPlan(db());
     tenantId = (await seedTenant(db(), region.id, plan.id)).id;
@@ -102,19 +103,23 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
       expect(await layouts()).toEqual(['per-tenant']);
     });
 
-    it('once its snapshot is reclaimed an expired bundle names nothing any more: the layout drops out', async () => {
+    const BOTH = ['per-component', 'per-tenant'];
+
+    it('once its snapshot is reclaimed an expired bundle names nothing any more: its layout no longer counts', async () => {
       await bundle({ status: 'expired', layout: 'per-tenant', reclaimed: true });
-      await deleteTenant();
-      expect(await layouts()).toEqual(['per-component']);              // nothing left to say: the historical default
+      await stateRow(`s3:http://shim.example.test/tenant/restic-files/${tenantId}`);
+      expect(await layouts()).toEqual(['per-component']);              // only the state row speaks now
     });
 
     it('a bundle that recorded no snapshot names nothing', async () => {
       await bundle({ status: 'expired', layout: 'per-tenant', snapshot: null });
+      await stateRow(`s3:http://shim.example.test/tenant/restic-files/${tenantId}`);
       expect(await layouts()).toEqual(['per-component']);
     });
 
     it('another component\'s bundle does not speak for this one', async () => {
       await bundle({ status: 'expired', layout: 'per-tenant', component: 'mailboxes' });
+      await stateRow(`s3:http://shim.example.test/tenant/restic-files/${tenantId}`);
       expect(await layouts('files')).toEqual(['per-component']);
       expect(await layouts('mailboxes')).toEqual(['per-tenant']);
     });
@@ -122,6 +127,73 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
     it('with no bundle at all, a live tenant\'s state row is asked', async () => {
       await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
       expect(await layouts()).toEqual(['per-tenant']);
+    });
+
+    it('…and another component\'s state row is not', async () => {
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`, 'mailboxes');
+      expect((await layouts('files')).sort()).toEqual(BOTH);
+    });
+
+    it('a DELETED tenant whose bundle rows are purged: nothing says where to look, so both layouts are looked into', async () => {
+      await bundle({ status: 'expired', layout: 'per-tenant', reclaimed: true });
+      await stateRow(`s3:http://shim.example.test/tenant/restic/${tenantId}`);
+      await deleteTenant();
+      expect((await layouts()).sort()).toEqual(BOTH);
+    });
+  });
+
+  describe('taking a spent repository out of the sweep', () => {
+    const rotation = (over: { component?: string; prunePending?: boolean } = {}) => db().insert(resticRepoReclaimState).values({
+      tenantId, component: over.component ?? 'files', prunePending: over.prunePending ?? false, lastSweepAt: new Date(), lastSweepOutcome: 'repo-missing',
+    } as typeof resticRepoReclaimState.$inferInsert);
+    const inRotation = async (): Promise<string[]> => (await db().select({ c: resticRepoReclaimState.component }).from(resticRepoReclaimState)
+      .where(eq(resticRepoReclaimState.tenantId, tenantId))).map((r) => r.c).sort();
+    const drop = (component = 'files') => dropSpentReclaimState(db(), tenantId, component);
+
+    it('a tenant that is gone, with no bundle left that names a snapshot: out', async () => {
+      await rotation();
+      await rotation({ component: 'mailboxes' });
+      await deleteTenant();
+      expect(await drop()).toBe(true);
+      expect(await inRotation()).toEqual(['mailboxes']);               // only the pair that was asked about
+    });
+
+    it('a bundle that never recorded a snapshot does not keep it in', async () => {
+      await rotation();
+      await bundle({ status: 'expired', snapshot: null });
+      await deleteTenant();
+      expect(await drop()).toBe(true);
+    });
+
+    it('a LIVE tenant stays in, whatever it has: its next bundle makes a repository', async () => {
+      await rotation();
+      expect(await drop()).toBe(false);
+      expect(await inRotation()).toEqual(['files']);
+    });
+
+    it.each<[string, Parameters<typeof bundle>[0]]>([
+      ['an expired bundle whose snapshot is still to be reclaimed', { status: 'expired' }],
+      ['an expired bundle whose row is still to be purged', { status: 'expired', reclaimed: true }],
+      ['a live bundle', { status: 'completed' }],
+    ])('a gone tenant with %s stays in', async (_what, over) => {
+      await rotation();
+      await bundle(over);
+      await deleteTenant();
+      expect(await drop()).toBe(false);
+      expect(await inRotation()).toEqual(['files']);
+    });
+
+    it('a gone tenant that is still owed a prune stays in until the prune has run', async () => {
+      await rotation({ prunePending: true });
+      await deleteTenant();
+      expect(await drop()).toBe(false);
+    });
+
+    it('another component\'s bundle does not keep this one in', async () => {
+      await rotation();
+      await bundle({ status: 'expired', component: 'mailboxes' });
+      await deleteTenant();
+      expect(await drop('files')).toBe(true);
     });
   });
 

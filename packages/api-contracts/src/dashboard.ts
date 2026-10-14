@@ -133,6 +133,13 @@ export const adminNodeSchema = z.object({
   ready: z.boolean(),
   cpu: resourceTriadSchema,
   memory: resourceTriadSchema,
+  /**
+   * The node's disk as Longhorn sees it: in use (everything on the disk),
+   * committed (the size of every volume replica placed here), total. null
+   * when Longhorn could not be read or does not know the node.
+   */
+  disk: resourceTriadSchema.nullable().default(null),
+  /** Root filesystem fill (bytes or inodes, whichever is fuller), from the kubelet. */
   diskUsedPct: z.number().nullable(),
   pods: z.number(),
   calico: z.enum(['ok', 'warn', 'crit', 'unknown']),

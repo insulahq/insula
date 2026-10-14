@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
+  AdminNode,
   ClusterNodeResponse,
   UpdateClusterNodeInput,
   DrainImpact,
@@ -24,6 +25,19 @@ export function useClusterNodes() {
   return useQuery({
     queryKey: ['cluster-nodes'],
     queryFn: () => apiFetch<ListNodesEnvelope>('/api/v1/admin/nodes'),
+  });
+}
+
+/**
+ * Every node's CPU, memory and disk as in use / committed / total — the same
+ * reader as the dashboard's Nodes strip, so both pages measure and name a
+ * node's figures the same way.
+ */
+export function useNodeUsage() {
+  return useQuery({
+    queryKey: ['cluster-nodes', 'usage'],
+    queryFn: () => apiFetch<{ readonly data: readonly AdminNode[] }>('/api/v1/admin/dashboard/nodes'),
+    refetchInterval: 60_000,
   });
 }
 

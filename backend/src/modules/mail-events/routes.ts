@@ -41,6 +41,7 @@ import { ApiError } from '../../shared/errors.js';
 import { deriveMailWebhookKey, verifyWebhookSignature } from './hmac.js';
 import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
+import { getTenantMailDomainStats } from './domain-stats.js';
 import { schedulePollSoon } from './dmarc.js';
 import { getMailOverview } from './overview.js';
 import { applyDmarcPolicy } from './dmarc-apply.js';
@@ -229,6 +230,20 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     return success(await getTenantMailUsage(app.db, tenantId));
+  });
+
+  // Per-domain send figures for the tenant's Email → Statistics tab. Readable
+  // by tenant_user as well as tenant_admin, like the DMARC results beside it:
+  // what a domain sent is not a setting, and anyone on the account may read it.
+  app.get('/tenants/:tenantId/mail/domain-stats', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await getTenantMailDomainStats(app.db, tenantId));
   });
 
   // ── DMARC results, for the domain owner ──────────────────────────────────

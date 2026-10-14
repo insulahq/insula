@@ -73,6 +73,9 @@ describe('buildResticRestoreJobSpec', () => {
   it('restores restic-native DIRECTLY into the PVC (--target /), NOT via /restore-tmp + cp', () => {
     const script = spec.spec.template.spec.containers[0].command.join('\n');
     expect(script).toContain('restic -r "$REPO" restore a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --target / --no-lock');
+    // The SELinux label stays out of it: a snapshot of files written on a
+    // node without SELinux otherwise fails to restore on a node with it.
+    expect(script).toContain('--target / --no-lock --exclude-xattr security.selinux ||');
     // The fix: no node-ephemeral /restore-tmp staging and no cp overlay.
     expect(script).not.toContain('--target /restore-tmp');
     expect(script).not.toContain('cp -a /restore-tmp');

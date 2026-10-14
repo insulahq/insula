@@ -777,6 +777,8 @@ describe('runResticRestore', () => {
     expect(args).toContain('--no-lock');
     expect(args).toContain('--target');
     expect(args[args.indexOf('--target') + 1]).toBe('/tmp/restore');
+    // The SELinux label is left out, as one flag with its value.
+    expect(args[args.indexOf('--exclude-xattr') + 1]).toBe('security.selinux');
   });
 
   it('omits --no-lock when readOnly=false (in-region restore)', async () => {

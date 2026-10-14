@@ -1,4 +1,4 @@
-import type { MailUsageResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
+import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -674,6 +674,17 @@ export function useMailUsage(tenantId?: string) {
     queryKey: ['mail-usage', tenantId],
     queryFn: () =>
       apiFetch<{ data: MailUsageResponse }>(`/api/v1/tenants/${tenantId}/mail/usage`),
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
+  });
+}
+
+/** Outbound mail per domain, rolling 24 hours and 7 days — Email → Statistics. */
+export function useMailDomainStats(tenantId?: string) {
+  return useQuery({
+    queryKey: ['mail-domain-stats', tenantId],
+    queryFn: () =>
+      apiFetch<{ data: MailDomainStatsResponse }>(`/api/v1/tenants/${tenantId}/mail/domain-stats`),
     enabled: !!tenantId,
     refetchInterval: 60_000,
   });

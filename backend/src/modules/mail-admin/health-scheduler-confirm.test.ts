@@ -15,7 +15,7 @@ const state = vi.hoisted(() => ({
   healths: [] as Array<{ healthy: boolean; components: Record<string, unknown> } | Error>,
   probes: 0,
   notified: [] as Array<{ payload: Record<string, unknown>; dedupeKey: string | undefined }>,
-  notices: [] as Array<{ subsystem: string; payload: Record<string, unknown>; dedupeKey: string | undefined }>,
+  notices: [] as Array<{ subsystem: string; payload: Record<string, unknown>; dedupeKey: string | undefined; resourceType?: string }>,
 }));
 
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({ createK8sClients: () => ({}) }));
@@ -37,8 +37,8 @@ vi.mock('../notifications/events.js', () => ({
   notifyAdminMailHealthDegraded: async (_db: unknown, payload: Record<string, unknown>, dedupeKey?: string) => {
     state.notified.push({ payload, dedupeKey });
   },
-  notifyAdminOperationalEvent: async (_db: unknown, subsystem: string, payload: Record<string, unknown>, dedupeKey?: string) => {
-    state.notices.push({ subsystem, payload, dedupeKey });
+  notifyAdminOperationalEvent: async (_db: unknown, subsystem: string, payload: Record<string, unknown>, dedupeKey?: string, resourceType?: string) => {
+    state.notices.push({ subsystem, payload, dedupeKey, resourceType });
   },
 }));
 
@@ -179,8 +179,10 @@ describe('mail health pass: lookups that get no answer', () => {
     state.probes = 0;
     await pass([unanswered]);
     expect(state.notices).toHaveLength(1);
-    const { subsystem, payload, dedupeKey } = state.notices[0]!;
+    const { subsystem, payload, dedupeKey, resourceType } = state.notices[0]!;
     expect(subsystem).toBe('mail');
+    // Opens Monitoring → Mail, where the deliverability checks are shown.
+    expect(resourceType).toBe('mail_monitoring');
     expect(payload).toMatchObject({
       subsystem: 'Mail deliverability checks',
       objectLabel: 'mail.example.test',

@@ -111,6 +111,28 @@ spec:
   # twelve times an hour and captured by every hourly Longhorn snapshot:
   # 1.8 GiB of chain behind a 124 MB database.
 
+  # Notice a client that is gone within about a minute and a half.
+  #
+  # A connection whose client vanished without closing it — its node lost
+  # power, its network was cut — stays open on the server until TCP notices,
+  # and with PostgreSQL's default (0 = the kernel's) that is over two hours.
+  # Each platform-api replica keeps up to 25 connections, and max_connections
+  # is 100: after a server is lost, its replica's sessions went on counting
+  # against the limit while the replacement opened its own, and a second loss
+  # inside those two hours had the API answered "too many clients already".
+  # Reproduced on a single node: four API processes ended without their
+  # sockets being closed left 92 dead sessions, and the fifth could not start.
+  #
+  # Only these three keys are set: this Cluster is applied with
+  # `kustomize.toolkit.fluxcd.io/ssa: merge`, which re-asserts every field the
+  # manifest names and leaves the others — `archive_timeout`, set from the UI —
+  # as they are. They are reloaded, not restarted for.
+  postgresql:
+    parameters:
+      tcp_keepalives_idle: "60"
+      tcp_keepalives_interval: "10"
+      tcp_keepalives_count: "3"
+
   bootstrap:
     initdb:
       database: platform

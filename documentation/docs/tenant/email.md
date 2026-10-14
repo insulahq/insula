@@ -8,7 +8,7 @@ The **Email** page lets you run mailboxes on your own domains —
 `you@example.com` — read them in webmail or your phone, forward mail, and
 migrate an old account in. Open **Email** from the left menu.
 
-At the top, pick the **domain** you want to manage. The page then shows three
+At the top, pick the **domain** you want to manage. The page then shows these
 tabs:
 
 - **Mailboxes** — create and manage individual accounts (including each
@@ -17,6 +17,10 @@ tabs:
   or more destinations.
 - **Settings & DNS** — per-domain settings, the DNS records mail needs, and
   migration tools.
+- **Statistics** — how much mail each of your domains sent; see
+  [Statistics](#statistics-how-much-your-domains-sent).
+- **Authentication**, **Abuse Reports** and **Delivery Security** — what other
+  mail servers report about your domain; see the sections below.
 
 !!! note "Email must be enabled per domain"
     Mail works on a domain only after the right DNS records are in place. The
@@ -160,6 +164,20 @@ more).
 
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
+
+## Statistics (how much your domains sent)
+
+The **Statistics** tab shows, for the domain selected at the top, the mail it
+sent in the last 24 hours and the last 7 days, its recipients over those 7
+days, and how much your sending limits affected:
+
+- **Deferred** — held back by the sending rate limit and delivered later.
+- **Rejected** — refused because the sending quota was used up.
+
+Below that, **All your domains** lists the same figures for every one of your
+domains, sortable by any column. A domain that sent nothing shows zeros. One
+marked **sending only** sends through the platform's mail relay but hosts no
+mailboxes here.
 
 ## Authentication (who is sending as your domain)
 

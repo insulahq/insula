@@ -296,8 +296,10 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
   const dec = coreDecimalsFor(triad.total);
   const consume = kind === 'consume';
   // Storage is consumed, not reserved: free is limit minus what is on disk,
-  // and there is no reserved band to draw.
-  const claimed = consume ? inUse : committed;
+  // and there is no reserved band to draw. CPU and memory are free when
+  // neither in use nor committed (lib/resource-triad.ts — one definition of
+  // Free for the whole panel).
+  const claimed = consume ? inUse : Math.max(inUse, committed);
   const free = Math.max(0, total - claimed);
   const usedPct = total > 0 ? (inUse / total) * 100 : 0;
   const cmtPct = consume || total <= 0 ? 0 : Math.max(0, ((committed - inUse) / total) * 100);
@@ -320,15 +322,15 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
         <HoverCard
           title={`${label} — where it goes`}
           rows={[
-            ['Allocatable', `${fmt(total, unit, dec)} ${unit}`],
+            ['Total', `${fmt(total, unit, dec)} ${unit}`],
             ...(consume ? [] : [['Committed', `${fmt(committed, unit, dec)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
             ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit, dec)} ${unit} · ${Math.round(usedPct)}%`],
-            [consume ? 'Free' : 'Schedulable left', `${fmt(free, unit, dec)} ${unit}`],
+            ['Free', `${fmt(free, unit, dec)} ${unit}`],
             ...extraRows,
           ]}
           note={consume
             ? 'Snapshots and replicas sit on disk without being a request.'
-            : 'Requests are what the scheduler honours. Idle capacity behind a request cannot be handed to anything else.'}
+            : 'Committed is what pods have requested: the scheduler holds it for them even while they sit idle. Free is neither in use nor committed.'}
         />
       )}
     >
@@ -378,7 +380,7 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           </Swatch>
         )}
         <Swatch className={SW_FREE}>
-          {consume ? 'free' : 'schedulable'} {fmt(free, unit, dec)}
+          free {fmt(free, unit, dec)}
         </Swatch>
       </div>
     </Tile>

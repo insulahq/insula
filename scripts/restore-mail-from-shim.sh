@@ -124,7 +124,7 @@ $KUBECTL -n "$MAIL_NS" run "$RESTORE_POD_NAME" \
       "containers": [{
         "name": "restic",
         "image": "restic/restic:0.18",
-        "command": ["sh", "-c", "restic restore '"$SNAP_ID"' --target / && echo RESTIC_RESTORE_OK"],
+        "command": ["sh", "-c", "restic restore '"$SNAP_ID"' --target / --exclude-xattr security.selinux && echo RESTIC_RESTORE_OK"],
         "env": [
           {"name":"RESTIC_REPOSITORY","value":"'"$RESTIC_REPOSITORY"'"},
           {"name":"RESTIC_PASSWORD","value":"'"$RESTIC_PASSWORD"'"},

@@ -42,6 +42,7 @@ import {
   type StalwartArfReportRow,
 } from '../stalwart-jmap/client.js';
 import { notifyAdminOperationalEvent } from '../notifications/events.js';
+import { MAIL_MONITORING_RESOURCE } from '../notifications/action-path.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 
@@ -195,7 +196,7 @@ async function announce(
     recommendedAction: row.tenantId
       ? 'Review the tenant’s outbound mail under Monitoring → Mail, and suspend outbound if the complaint is substantiated.'
       : 'Review Monitoring → Mail. The reported domain is not an email domain on this platform, so the complaint may be about a spoof of it.',
-  }, `abuse-report:${row.stalwartReportId}`);
+  }, `abuse-report:${row.stalwartReportId}`, MAIL_MONITORING_RESOURCE);
 }
 
 /**
