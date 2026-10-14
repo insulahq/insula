@@ -502,22 +502,22 @@ the full list. Alert values are shown in the metric's own units — a percentage
 
 ### Unread-notification reminders
 
-A notification that asks someone to act — a mailbox nearly full, a
-subscription about to expire, a scheduled task that failed — and stays unread
-for **48 hours by everyone it was sent to** comes back to the platform admins
-once, as **N notification(s) unread for over 48h**. Almost always these are a
-**tenant's** notifications, so they are not in your own bell or history, and
-*Mark all as read* does not touch them. Only that tenant can mark them read.
-That's why each line of the reminder is self-contained:
+A notification that asks the platform admins to act, such as *Backups never
+ran* or a certificate failing to renew, may go unread by **every admin for 48
+hours**. It then comes back once, as **N notification(s) unread for over
+48h**. Each line says what it was, which tenant it is about (if any), since
+when it is unread, and what it said. Reading the original before the 48 hours
+are up — or *Mark all as read* — means no reminder.
 
-> Tenant Acme: Mailbox box@example.test is 99% full — unread since 2026-10-12.
-> It said: …
+Tenants' notifications never come here. They reach the tenant, usually by
+email, and are the tenant's to read. If you need to know about a tenant
+condition, it has its own admin notification: send-limit saturation,
+mailboxes near quota, subscriptions expiring.
 
-Each notification is reported once, and never if one of its recipients
-already read it. Warnings about a window that is over long before 48 hours —
-the hourly and daily sending limits — are not chased at all. Reminders that
-name a tenant never go to the shared push topic. The source is **Unacknowledged
-notifications escalated** under **Sources**, where you can turn it off.
+Warnings about a window that is over long before 48 hours (outbound send-limit
+saturation in the last hour) are not chased. Reminders about a tenant never go
+to the shared push topic. The source is **Unacknowledged notifications
+escalated** under **Sources**, where you can turn it off.
 
 !!! tip "Wire up a Provider on day one"
     Configure at least one SMTP Provider and confirm a test notification arrives.

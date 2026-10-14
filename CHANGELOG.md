@@ -14,23 +14,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
-- **The 48-hour unread reminder says whose notification it is and what it said.** It read
-  "Email sending at 88% of the hour limit (unread since 2026-10-12)" — no tenant, no mailbox.
-  The original was a tenant's notification, so it was in neither the admin's bell nor their
-  history, and *Mark all as read* could not stop reminders that were never about the admin's
-  own notifications. Every reminder production sent in its first month was about a
-  tenant's. Each line now names the tenant and quotes the original: the mailbox, the sending
-  accounts, the task. The reminder explains that only the tenant can mark theirs read.
-  - Warnings about the hourly or daily sending limit are no longer chased: their window
-    closed long before 48 hours.
-  - A notification is not chased once any of its recipients has read it.
+- **The 48-hour unread reminder is about your own notifications only, and says what each one
+  said.** It used to chase tenants' notifications to the platform admins: production's read
+  "Email sending at 88% of the hour limit (unread since 2026-10-12)", with no tenant and no
+  mailbox. It was about a tenant user's notification, which is in neither the admin's bell nor
+  their history, so *Mark all as read* could never stop such reminders. All 36 reminders
+  production sent in their first month were of this kind. "Unread" is the in-app copy, and a
+  tenant who reads the email and never opens the panel looked like one ignoring it. Tenants'
+  notifications no longer escalate at all (operator decision).
+  - What remains is a reminder about notifications to the platform admins that no admin has
+    read for 48 hours. Each line says which tenant it is about, if any, and quotes what it
+    said.
+  - Outbound send-limit saturation warnings are not chased: their hour is over long before 48
+    hours. Nor is an event another admin has read, or the reminder itself.
+  - Two admins' copies of one notification count once.
   - Unread notifications that are never chased no longer fill the 200 rows each sweep reads.
     Past 200 of them, no notification needing action would have been chased again.
-  - A reminder that names a tenant no longer goes to the shared ntfy push topic.
-  - The reminder is never itself chased, and two recipients' copies of one notification count
-    once.
   - A sweep whose reminder reached nobody (rate-limited, no template) no longer marks the
     notifications as chased; it tries again the next day.
+  - A reminder about a tenant never goes to the shared ntfy push topic.
   - A reminder template you have edited keeps your wording; **Restore stock template** under
     **Templates** gets the new one.
 

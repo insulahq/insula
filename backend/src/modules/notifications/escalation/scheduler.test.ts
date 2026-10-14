@@ -21,7 +21,7 @@ vi.mock('./service.js', async (orig) => {
 
 let candidates: Array<{
   id: string; userId: string; categoryId: string; title: string; message: string; createdAt: Date;
-  eventId: string | null; recipientPanel: 'admin' | 'tenant'; tenantName: string | null; tenantScoped: boolean;
+  eventId: string | null; tenantName: string | null; tenantScoped: boolean;
 }> = [];
 
 const { runOnce } = await import('./scheduler.js');
@@ -35,7 +35,7 @@ function db(rows: unknown[]) {
 const cand = (id: string, tenantName: string | null = null) => ({
   id, userId: 'u1', categoryId: 'mailbox.quota_threshold',
   title: `title ${id}`, message: 'm', createdAt: new Date('2026-08-09T00:00:00Z'),
-  eventId: `e-${id}`, recipientPanel: tenantName ? 'tenant' as const : 'admin' as const, tenantName, tenantScoped: tenantName !== null,
+  eventId: `e-${id}`, tenantName, tenantScoped: tenantName !== null,
 });
 
 beforeEach(() => { notifySpy.mockClear(); markSpy.mockClear(); });
@@ -83,8 +83,8 @@ describe('escalation sweep', () => {
   });
 
   it("keeps a reminder that names a tenant off the shared push topic", async () => {
-    // The items quote the tenant's notification — its mailbox, its sending
-    // accounts. ntfy is one topic for everyone subscribed to it.
+    // The items quote notifications about a tenant — its workloads, its
+    // mailboxes. ntfy is one topic for everyone subscribed to it.
     candidates = [cand('a'), cand('b', 'Acme')];
     await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T12:00:00Z'));
     expect(notifySpy.mock.calls[0][3]).toEqual({ tenantScopedContent: true });

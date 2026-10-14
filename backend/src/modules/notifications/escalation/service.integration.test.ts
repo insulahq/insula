@@ -1,11 +1,11 @@
 /**
- * The unread-reminder query against a real Postgres: which notifications it
- * chases, and that it can say whose they are.
+ * The unread reminder against a real Postgres: which notifications it chases,
+ * and what it says about them.
  *
  * Production's reminder said "Email sending at 88% of the hour limit" and
- * nothing else — no tenant, no mailbox — about a tenant's notification the
- * operator could not see anywhere, for a sending window that had closed two
- * days earlier.
+ * nothing else, about a TENANT's notification the operator could not see,
+ * read, or act on, for a sending window that had closed two days earlier.
+ * Now only the platform admins' own notifications are chased.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
@@ -26,7 +26,6 @@ describe.skipIf(skipIntegration)('unread reminder candidates (integration)', () 
   const planId = crypto.randomUUID();
   const tenantId = crypto.randomUUID();
   const tenantUser = crypto.randomUUID();
-  const tenantUser2 = crypto.randomUUID();
   const adminA = crypto.randomUUID();
   const adminB = crypto.randomUUID();
   const ids: string[] = [];
@@ -74,7 +73,6 @@ describe.skipIf(skipIntegration)('unread reminder candidates (integration)', () 
     });
     await db.insert(users).values([
       { id: tenantUser, email: `t-${uid}@example.test`, passwordHash: 'x', fullName: 'T', roleName: 'tenant_admin', panel: 'tenant', status: 'active', tenantId },
-      { id: tenantUser2, email: `t2-${uid}@example.test`, passwordHash: 'x', fullName: 'T2', roleName: 'tenant_admin', panel: 'tenant', status: 'active', tenantId },
       { id: adminA, email: `a-${uid}@example.test`, passwordHash: 'x', fullName: 'A', roleName: 'admin', panel: 'admin', status: 'active' },
       { id: adminB, email: `b-${uid}@example.test`, passwordHash: 'x', fullName: 'B', roleName: 'admin', panel: 'admin', status: 'active' },
     ]);
@@ -82,100 +80,96 @@ describe.skipIf(skipIntegration)('unread reminder candidates (integration)', () 
 
   afterAll(async () => {
     if (ids.length > 0) await db.delete(notifications).where(inArray(notifications.id, ids));
-    await db.delete(notifications).where(inArray(notifications.userId, [tenantUser, tenantUser2, adminA, adminB]));
-    await db.delete(users).where(inArray(users.id, [tenantUser, tenantUser2, adminA, adminB]));
+    await db.delete(notifications).where(inArray(notifications.userId, [tenantUser, adminA, adminB]));
+    await db.delete(users).where(inArray(users.id, [tenantUser, adminA, adminB]));
     await db.delete(tenants).where(inArray(tenants.id, [tenantId]));
     await db.delete(hostingPlans).where(inArray(hostingPlans.id, [planId]));
     await db.delete(regions).where(inArray(regions.id, [regionId]));
   });
 
-  it("names the tenant — from the row, or from its recipient's account when the row has none", async () => {
-    const stamped = await notify({
-      userId: tenantUser, tenantId, categoryId: 'mailbox.quota_threshold',
-      title: `Mailbox box@${uid}.example.test is 99% full`, message: 'Mailbox is at 99% of its 5 GB quota.',
-    });
-    const unstamped = await notify({ userId: tenantUser, categoryId: 'subscription.expiry_warning', title: 'Subscription expiring soon' });
-    const got = await mine();
-    expect(got.find((c) => c.id === stamped)?.tenantName).toBe(`Acme ${uid}`);
-    expect(got.find((c) => c.id === unstamped)?.tenantName).toBe(`Acme ${uid}`);
+  // Operator decision: a tenant's notification is the tenant's.
+  // Production's 36 reminders were all about tenants' notifications the
+  // operator could not see, read, or act on.
+  it("never chases a tenant user's notification", async () => {
+    const tenants = await Promise.all(['mailbox.quota_threshold', 'subscription.expiry_warning', 'tasks.scheduled_failure']
+      .map((categoryId) => notify({ userId: tenantUser, tenantId, categoryId, title: `tenant ${categoryId}` })));
+    const unstamped = await notify({ userId: tenantUser, categoryId: 'mailbox.quota_threshold', title: 'tenant, no tenant_id' });
+    const got = (await mine()).map((c) => c.id);
+    for (const id of [...tenants, unstamped]) expect(got).not.toContain(id);
+  });
 
-    const lines = describeCandidates(got.filter((c) => c.id === stamped));
-    expect(lines).toEqual([
-      `Tenant Acme ${uid}: Mailbox box@${uid}.example.test is 99% full — unread since ${old.toISOString().slice(0, 10)}. `
-      + 'It said: Mailbox is at 99% of its 5 GB quota.',
+  it('names the tenant an admin notification is about, and quotes it', async () => {
+    const about = await notify({
+      userId: adminA, tenantId, categoryId: 'admin.tenant_pod_oom',
+      title: 'Tenant workload OOM-killed', message: 'web was killed at its 512 MiB limit:\n• web-1\n• web-2',
+    });
+    const c = (await mine()).find((x) => x.id === about);
+    expect(c).toMatchObject({ tenantName: `Acme ${uid}`, tenantScoped: true });
+    expect(describeCandidates([c!])).toEqual([
+      `Tenant workload OOM-killed (tenant Acme ${uid}) — unread since ${old.toISOString().slice(0, 10)}. `
+      + 'It said: web was killed at its 512 MiB limit: web-1, web-2',
     ]);
   });
 
-  it('never chases a sending-window warning: its hour is long over at 48 h', async () => {
-    const id = await notify({
-      userId: tenantUser, tenantId, categoryId: 'tenant.email_quota_warning',
-      title: 'Email sending at 88% of the hour limit',
-      message: '44 of 50 messages sent this hour. Sending accounts:\n• box@example.test (44 sent)',
-    });
-    expect((await mine()).map((c) => c.id)).not.toContain(id);
+  it('never chases a window that closed before 48 h, or a reminder', async () => {
+    const abuse = await notify({ userId: adminA, tenantId, categoryId: 'admin.email_abuse_warning', title: 'Send-limit saturation' });
+    const reminder = await notify({ userId: adminA, categoryId: 'admin.notification_escalated', title: 'a reminder' });
+    const got = (await mine()).map((c) => c.id);
+    expect(got).not.toContain(abuse);
+    expect(got).not.toContain(reminder);
   });
 
-  it('does not chase an event one of its recipients has read', async () => {
+  it('does not chase an event another admin has read', async () => {
     const seen = crypto.randomUUID();
     const readByA = await notify({ userId: adminA, eventId: seen, isRead: 1, categoryId: 'admin.backup_never_run', title: 'Backups never ran' });
     const unreadByB = await notify({ userId: adminB, eventId: seen, categoryId: 'admin.backup_never_run', title: 'Backups never ran' });
     const unseen = crypto.randomUUID();
     const b1 = await notify({ userId: adminA, eventId: unseen, categoryId: 'admin.backup_never_run', title: 'Backups never ran (2)' });
     const b2 = await notify({ userId: adminB, eventId: unseen, categoryId: 'admin.backup_never_run', title: 'Backups never ran (2)' });
-    const got = (await mine()).map((c) => c.id);
-    expect(got).not.toContain(readByA);
-    expect(got).not.toContain(unreadByB);
-    expect(got).toEqual(expect.arrayContaining([b1, b2]));
-    expect((await mine()).find((c) => c.id === b1)?.tenantName).toBeNull();
+    const got = await mine();
+    expect(got.map((c) => c.id)).not.toContain(readByA);
+    expect(got.map((c) => c.id)).not.toContain(unreadByB);
+    expect(got.map((c) => c.id)).toEqual(expect.arrayContaining([b1, b2]));
+    expect(got.find((c) => c.id === b1)).toMatchObject({ tenantName: null, tenantScoped: false });
   });
 
   it('chases a row from before the event model, which has no event id', async () => {
-    const legacy = await notify({ userId: tenantUser, tenantId, eventId: null, categoryId: 'mailbox.quota_threshold', title: `legacy ${uid}` });
+    const legacy = await notify({ userId: adminA, eventId: null, categoryId: 'admin.backup_never_run', title: `legacy ${uid}` });
     expect((await mine()).map((c) => c.id)).toContain(legacy);
   });
 
   it('skips the young, the escalated, and every class but Action', async () => {
-    const young = await notify({ userId: tenantUser, tenantId, categoryId: 'mailbox.quota_threshold', title: 'young', createdAt: new Date(now.getTime() - DAY) });
-    const done = await notify({ userId: tenantUser, tenantId, categoryId: 'mailbox.quota_threshold', title: 'done', escalatedAt: now });
-    const record = await notify({ userId: tenantUser, tenantId, categoryId: 'subscription.renewed', title: 'record' });
+    const young = await notify({ userId: adminA, categoryId: 'admin.backup_never_run', title: 'young', createdAt: new Date(now.getTime() - DAY) });
+    const done = await notify({ userId: adminA, categoryId: 'admin.backup_never_run', title: 'done', escalatedAt: now });
+    const ambient = await notify({ userId: adminA, categoryId: 'admin.slo_alert_resolved', title: 'ambient' });
     const got = (await mine()).map((c) => c.id);
     expect(got).not.toContain(young);
     expect(got).not.toContain(done);
-    expect(got).not.toContain(record);
+    expect(got).not.toContain(ambient);
   });
 
   it('is not starved by unread rows it will never chase', async () => {
-    // Ambient and Record rows are never marked escalated. Filtered after a
-    // LIMIT they came back every tick; past the limit, no Action row would
-    // ever have been seen again.
+    // Ambient and Record rows, and tenants' rows, are never marked escalated.
+    // Filtered after a LIMIT they came back every tick; past the limit, no
+    // Action row would ever have been seen again.
     const older = new Date(now.getTime() - 10 * DAY);
-    for (let i = 0; i < 30; i += 1) {
+    for (let i = 0; i < 20; i += 1) {
       await notify({ userId: adminA, categoryId: 'admin.slo_alert_resolved', title: `noise ${i}`, createdAt: older });
+      await notify({ userId: tenantUser, tenantId, categoryId: 'mailbox.quota_threshold', title: `tenant noise ${i}`, createdAt: older });
     }
-    const action = await notify({ userId: tenantUser, tenantId, categoryId: 'subscription.expiry_warning', title: 'after the noise' });
+    const action = await notify({ userId: adminB, categoryId: 'admin.backup_never_run', title: 'after the noise' });
     const all = await findEscalationCandidates(db, now, 10_000);
     expect(all.map((c) => c.id)).toContain(action);
     expect(all.filter((c) => !isEscalatable(c.categoryId))).toEqual([]);
     // Exactly as many rows as there is work: the older noise must not take any.
-    const work = all.filter((c) => isEscalatable(c.categoryId)).length;
-    const exact = await findEscalationCandidates(db, now, work);
+    const exact = await findEscalationCandidates(db, now, all.length);
     expect(exact.map((c) => c.id)).toContain(action);
-  });
-
-  it('labels an admin copy about a tenant as the admins\', and never chases a reminder', async () => {
-    const aboutTenant = await notify({ userId: adminA, tenantId, categoryId: 'admin.backup_never_run', title: `about ${uid}` });
-    const reminder = await notify({ userId: adminA, categoryId: 'admin.notification_escalated', title: 'a reminder' });
-    const got = await mine();
-    expect(got.map((c) => c.id)).not.toContain(reminder);
-    const c = got.find((x) => x.id === aboutTenant);
-    expect(c).toMatchObject({ recipientPanel: 'admin', tenantName: `Acme ${uid}`, tenantScoped: true });
-    expect(describeCandidates([c!])[0]).toMatch(new RegExp(`^Platform admins, about tenant Acme ${uid}: about ${uid}`));
   });
 
   it('marks every copy of an event, even one the row limit left out of the batch', async () => {
     const event = crypto.randomUUID();
-    const inBatch = await notify({ userId: tenantUser, tenantId, eventId: event, categoryId: 'subscription.expiry_warning', title: `split ${uid}` });
-    const leftOut = await notify({ userId: tenantUser2, tenantId, eventId: event, categoryId: 'subscription.expiry_warning', title: `split ${uid}` });
+    const inBatch = await notify({ userId: adminA, eventId: event, categoryId: 'admin.backup_never_run', title: `split ${uid}` });
+    const leftOut = await notify({ userId: adminB, eventId: event, categoryId: 'admin.backup_never_run', title: `split ${uid}` });
     const batch = (await mine()).filter((c) => c.id === inBatch);
     await markEscalated(db, batch, now);
     expect((await mine()).map((c) => c.id)).not.toContain(leftOut);
@@ -200,14 +194,14 @@ describe.skipIf(skipIntegration)('unread reminder candidates (integration)', () 
     it('marks nothing when the reminder reached nobody, then tells the admins and marks every copy', async () => {
       const event = crypto.randomUUID();
       const copy1 = await notify({
-        userId: tenantUser, tenantId, eventId: event, categoryId: 'mailbox.quota_threshold',
-        title: `Mailbox sweep-${uid}@example.test is 99% full`,
-        message: 'Mailbox is at 99%. Largest folders:\n• Inbox (4.1 GB)\n• Sent (0.8 GB)',
+        userId: adminA, tenantId, eventId: event, categoryId: 'admin.tenant_pod_oom',
+        title: `Tenant workload OOM-killed ${uid}`,
+        message: 'web was killed at its 512 MiB limit:\n• web-1\n• web-2',
       });
       const copy2 = await notify({
-        userId: tenantUser2, tenantId, eventId: event, categoryId: 'mailbox.quota_threshold',
-        title: `Mailbox sweep-${uid}@example.test is 99% full`,
-        message: 'Mailbox is at 99%. Largest folders:\n• Inbox (4.1 GB)\n• Sent (0.8 GB)',
+        userId: adminB, tenantId, eventId: event, categoryId: 'admin.tenant_pod_oom',
+        title: `Tenant workload OOM-killed ${uid}`,
+        message: 'web was killed at its 512 MiB limit:\n• web-1\n• web-2',
       });
 
       // No template: every leg is written `skipped` under the batch's key. That
@@ -231,12 +225,12 @@ describe.skipIf(skipIntegration)('unread reminder candidates (integration)', () 
         .where(and(eq(notifications.userId, adminA), eq(notifications.categoryId, 'admin.notification_escalated')))
         .orderBy(desc(notifications.createdAt))
         .limit(1);
-      // Two tenant users' copies are ONE notification: no "x2".
+      // Two admins' copies are ONE notification: no "x2".
       expect(told.message).toContain(
-        `• Tenant Acme ${uid}: Mailbox sweep-${uid}@example.test is 99% full — unread since ${old.toISOString().slice(0, 10)}. `
-        + 'It said: Mailbox is at 99%. Largest folders: Inbox (4.1 GB), Sent (0.8 GB)',
+        `• Tenant workload OOM-killed ${uid} (tenant Acme ${uid}) — unread since ${old.toISOString().slice(0, 10)}. `
+        + 'It said: web was killed at its 512 MiB limit: web-1, web-2',
       );
-      expect(told.message).toContain('reading this does not mark theirs read');
+      expect(told.message).toContain('not read by any platform admin');
 
       // Reported once: nothing of it is left to chase.
       expect((await mine()).map((c) => c.id)).not.toEqual(expect.arrayContaining([copy1]));

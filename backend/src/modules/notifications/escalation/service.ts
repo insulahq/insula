@@ -15,12 +15,18 @@
  * audience has at the moment they fire — there is no higher level to go to,
  * and pretending otherwise would just send a second copy.
  *
- * Where it goes
- * -------------
- * A tenant-facing action that goes unread escalates to the PLATFORM ADMIN:
- * the operator is the party who can act when the customer has not. An
- * admin-facing action escalates to the operator's push channel, which is the
- * one route that reaches them away from the panel.
+ * Whose
+ * -----
+ * Only the platform admins' own notifications, unread by every admin.
+ *
+ * Tenants' notifications used to escalate to the admins too, on the theory
+ * that the operator can act when a customer has not. Removed by operator
+ * decision. "Unread" is the in-app copy, and a tenant who reads
+ * the email and never opens the panel looked like a tenant ignoring it: all
+ * 36 reminders production sent in its first month were about tenants'
+ * notifications. None was one the operator could see, open, mark read, or act
+ * on. What the operator should know about a tenant has its own admin
+ * notification (send abuse, mailboxes near quota, subscriptions expiring).
  *
  * Exactly once, enforced by `notifications.escalated_at`. An escalation that
  * repeats every tick is the noise it was built to cut through.
@@ -43,22 +49,11 @@ export interface EscalationCandidate {
   readonly createdAt: Date;
   /** Copies of one event share it; null on rows older than the event model. */
   readonly eventId: string | null;
-  /** Which panel the recipient reads it in — whose notification it is. */
-  readonly recipientPanel: 'admin' | 'tenant';
-  /**
-   * The tenant it concerns: the tenant user's own, or the one an admin's copy
-   * is about. Null for a platform admin's copy about no tenant.
-   *
-   * Every reminder production sent in its first month was about a TENANT's
-   * notification, and none said which tenant — "Email sending at 88% of the
-   * hour limit" reached the operator with no tenant, no mailbox, and nothing
-   * in their own bell or history to look it up by.
-   */
+  /** The tenant the admin's notification is about, if any. */
   readonly tenantName: string | null;
   /**
-   * Its text is a tenant's (a tenant user's notification, or an admin's about
-   * one). Read from the row, not from the tenant name, so it cannot read false
-   * for tenant text that happens to have no name beside it.
+   * Its text concerns a tenant (the row carries a tenant). Read from the row,
+   * not from the name, so a reminder quoting it stays off the shared push topic.
    */
   readonly tenantScoped: boolean;
 }
@@ -80,18 +75,17 @@ export function isEscalatable(categoryId: string | null | undefined): boolean {
 }
 
 /**
- * Unread, never-escalated, escalatable notifications past the deadline that
- * NOBODY they were sent to has read, oldest first.
+ * Platform admins' unread, never-escalated, escalatable notifications past the
+ * deadline that no admin has read, oldest first.
  *
  * The category filter is in SQL. It used to run after the query, so the 200
  * rows the query returned included unread Ambient and Record rows — which are
  * never marked escalated and so came back on every tick, and once there were
  * 200 of them no Action row would ever have been seen again.
  *
- * "Nobody read it": one event writes a row per recipient (every platform
- * admin; every user of a tenant). When one of them has read it, it was seen,
- * and chasing the others' copies is exactly the reminder "mark all as read"
- * cannot stop.
+ * "No admin read it": one event writes a row per admin. When one of them has
+ * read it, it was seen, and chasing the others' copies is a reminder "mark
+ * all as read" cannot stop.
  */
 export async function findEscalationCandidates(
   db: Database,
@@ -108,21 +102,22 @@ export async function findEscalationCandidates(
       message: notifications.message,
       createdAt: notifications.createdAt,
       eventId: notifications.eventId,
-      recipientPanel: users.panel,
       tenantName: tenants.name,
-      tenantScoped: sql<boolean>`(${notifications.tenantId} is not null or ${users.panel} <> 'admin')`,
+      tenantScoped: sql<boolean>`(${notifications.tenantId} is not null)`,
     })
     .from(notifications)
     // Inner: a copy whose recipient is gone can never be read, so it is not chased.
     .innerJoin(users, eq(users.id, notifications.userId))
-    .leftJoin(tenants, eq(tenants.id, sql`coalesce(${notifications.tenantId}, ${users.tenantId})`))
+    .leftJoin(tenants, eq(tenants.id, notifications.tenantId))
     .where(and(
+      // An admin's own. Never a tenant user's: see "Whose" above.
+      eq(users.panel, 'admin'),
       eq(notifications.isRead, 0),
       isNull(notifications.escalatedAt),
       lt(notifications.createdAt, cutoff),
       inArray(notifications.categoryId, [...ESCALATABLE]),
-      // Nor is one about a tenant that no longer exists.
-      or(isNull(sql`coalesce(${notifications.tenantId}, ${users.tenantId})`), isNotNull(tenants.id)),
+      // Nor one about a tenant that no longer exists.
+      or(isNull(notifications.tenantId), isNotNull(tenants.id)),
       sql`not exists (select 1 from notifications read_copy
         where read_copy.event_id = ${notifications.eventId} and read_copy.is_read = 1)`,
     ))
@@ -157,7 +152,7 @@ export async function markEscalated(
   if (candidates.length === 0) return;
   const ids = candidates.map((c) => c.id);
   // Every copy of each event, not only those in the batch: the row limit can
-  // cut between two recipients' copies, and the one left behind would be
+  // cut between two admins' copies, and the one left behind would be
   // reported again next hour as if it were new.
   const eventIds = [...new Set(candidates.flatMap((c) => (c.eventId ? [c.eventId] : [])))];
   await db
@@ -205,54 +200,47 @@ export function oneLine(message: string): string {
   return `${(space > MAX_DETAIL_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-/** Whether any item is a tenant's — which keeps the reminder off broadcast channels. */
+/** Whether any item concerns a tenant — which keeps the reminder off broadcast channels. */
 export function concernsTenants(candidates: readonly EscalationCandidate[]): boolean {
   return candidates.some((c) => c.tenantScoped);
 }
 
-/** Whose notification it is, in the words the operator reads. */
-function recipientLabel(c: EscalationCandidate): string {
-  if (c.recipientPanel === 'tenant') return `Tenant ${c.tenantName ?? '(unnamed)'}`;
-  return c.tenantName === null ? 'Platform admins' : `Platform admins, about tenant ${c.tenantName}`;
-}
-
 /**
- * One line per (recipient, title): who received it, what it was, how long it
- * has been unread, and what it said.
+ * One line per (title, tenant): what it was, which tenant it is about, how
+ * long it has been unread, and what it said.
  *
  * Grouped, because the first real escalation on DEV listed the SAME SLO
  * warning six times — the reminder reproduced the repetition it exists to cut
- * through. Grouped per RECIPIENT as well as title, because "Subscription
- * expiring soon x3" across three tenants names none of them.
+ * through. Grouped per TENANT as well as title, because "Pod OOM-killed x3"
+ * across three tenants names none of them.
  *
  * What it said is the newest copy's message, because that is where the
- * subject lives: the mailbox that is full, the accounts that were sending, the
- * task that failed. The title alone never named it.
+ * subject lives: the node, the workload, the backup target. The title alone
+ * often does not name it — production's reminder "Email sending at 88% of the
+ * hour limit" named no tenant and no mailbox.
  */
 export function describeCandidates(candidates: readonly EscalationCandidate[]): string[] {
-  const groups = new Map<string, { who: string; title: string; events: Set<string>; oldest: Date; newest: EscalationCandidate }>();
+  const groups = new Map<string, { title: string; tenantName: string | null; events: Set<string>; oldest: Date; newest: EscalationCandidate }>();
   for (const c of candidates) {
-    const who = recipientLabel(c);
-    const key = `${who}\u0000${c.title}`;
+    const key = `${c.tenantName ?? ''}\u0000${c.title}`;
     const seen = groups.get(key);
     if (seen) {
       seen.events.add(eventKey(c));
       if (c.createdAt < seen.oldest) seen.oldest = c.createdAt;
       if (c.createdAt > seen.newest.createdAt) seen.newest = c;
     } else {
-      groups.set(key, { who, title: c.title, events: new Set([eventKey(c)]), oldest: c.createdAt, newest: c });
+      groups.set(key, { title: c.title, tenantName: c.tenantName, events: new Set([eventKey(c)]), oldest: c.createdAt, newest: c });
     }
   }
   // Most-repeated first: the loudest unhandled thing is the one to act on.
   // Counted in events: two admins' copies of one notification are one thing.
   const lines = [...groups.values()]
     .sort((a, b) => b.events.size - a.events.size)
-    .map(({ who, title, events, oldest, newest }) => {
+    .map(({ title, tenantName, events, oldest, newest }) => {
       const n = events.size;
       const day = oldest.toISOString().slice(0, 10);
-      const head = n === 1
-        ? `${who}: ${title} — unread since ${day}`
-        : `${who}: ${title} x${n} — oldest unread since ${day}`;
+      const what = `${title}${n === 1 ? '' : ` x${n}`}${tenantName === null ? '' : ` (tenant ${tenantName})`}`;
+      const head = n === 1 ? `${what} — unread since ${day}` : `${what} — oldest unread since ${day}`;
       const detail = oneLine(newest.message);
       if (detail === '' || detail === title) return `${head}.`;
       return `${head}. ${n === 1 ? 'It said' : 'The latest said'}: ${detail}`;

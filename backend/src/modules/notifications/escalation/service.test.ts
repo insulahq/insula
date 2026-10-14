@@ -57,7 +57,7 @@ describe('isEscalatable — what is worth chasing', () => {
   });
 });
 
-// The query itself (class filter, read copies, tenant names) is proven against
+// The query itself (admins' own only, class filter, read copies, tenant names) is proven against
 // a real Postgres in service.integration.test.ts — a mock would agree with
 // whatever SQL it was handed.
 
@@ -69,62 +69,61 @@ const row = (categoryId: string, daysAgo = 3) => ({
   message: 'm',
   createdAt: new Date(Date.now() - daysAgo * 86_400_000),
   eventId: null as string | null,
-  recipientPanel: 'admin' as 'admin' | 'tenant',
   tenantName: null as string | null,
   tenantScoped: false,
 });
-const tenantRow = (categoryId: string, tenantName: string) => ({
-  ...row(categoryId), recipientPanel: 'tenant' as const, tenantName, tenantScoped: true,
+const aboutTenant = (categoryId: string, tenantName: string) => ({
+  ...row(categoryId), tenantName, tenantScoped: true,
 });
 
 describe('describeCandidates', () => {
-  it('says who received it, what it was, since when, and what it said', () => {
+  it('says what it was, which tenant it is about, since when, and what it said', () => {
     const s = describeCandidates([{
-      ...tenantRow('tenant.email_quota_warning', 'Acme'),
-      title: 'Email sending at 88% of the hour limit',
-      message: '44 of 50 messages sent this hour as of 2026-10-12 18:48 UTC. Sending accounts: \n• box@example.test (44 sent)',
+      ...aboutTenant('admin.tenant_misplaced', 'Acme'),
+      title: 'Tenant workloads on the wrong node',
+      message: 'Acme runs on node b, pinned to node a:\n• web (1 pod)\n• mail-sync (1 pod)',
       createdAt: new Date('2026-10-12T18:48:41Z'),
     }]);
     expect(s).toEqual([
-      'Tenant Acme: Email sending at 88% of the hour limit — unread since 2026-10-12. It said: '
-      + '44 of 50 messages sent this hour as of 2026-10-12 18:48 UTC. Sending accounts: box@example.test (44 sent)',
+      'Tenant workloads on the wrong node (tenant Acme) — unread since 2026-10-12. It said: '
+      + 'Acme runs on node b, pinned to node a: web (1 pod), mail-sync (1 pod)',
     ]);
   });
 
-  it("labels a platform admin's own copy as theirs", () => {
+  it('ends the line at the date when there is nothing more to quote', () => {
     const s = describeCandidates([{ ...row('admin.backup_never_run'), title: 'Backups never ran', message: '' }]);
-    expect(s[0]).toMatch(/^Platform admins: Backups never ran — unread since \d{4}-\d{2}-\d{2}\.$/);
+    expect(s[0]).toMatch(/^Backups never ran — unread since \d{4}-\d{2}-\d{2}\.$/);
   });
 
-  it('collapses repeated titles for the same recipient into one counted line, quoting the newest', () => {
+  it('collapses repeated titles into one counted line, quoting the newest', () => {
     // The first real escalation on DEV listed the SAME SLO warning six times.
     // An escalation that repeats itself is the noise it exists to cut through.
     const dup = Array.from({ length: 6 }, (_, i) => ({
-      ...row('mailbox.quota_threshold'),
+      ...row('admin.slo_alert_warning'),
       id: `n${i}`,
       title: 'Ingress p95 latency',
       message: `p95 at ${600 + i}ms`,
       createdAt: new Date(Date.UTC(2026, 7, 9 + i)),
     }));
     const s = describeCandidates(dup);
-    expect(s).toEqual(['Platform admins: Ingress p95 latency x6 — oldest unread since 2026-08-09. The latest said: p95 at 605ms']);
+    expect(s).toEqual(['Ingress p95 latency x6 — oldest unread since 2026-08-09. The latest said: p95 at 605ms']);
   });
 
-  it('keeps the same title for two tenants apart — a count names neither', () => {
+  it('keeps the same title about two tenants apart — a count names neither', () => {
     const s = describeCandidates([
-      { ...tenantRow('subscription.expiry_warning', 'Acme'), id: 'a', title: 'Subscription expiring soon' },
-      { ...tenantRow('subscription.expiry_warning', 'Globex'), id: 'b', title: 'Subscription expiring soon' },
+      { ...aboutTenant('admin.tenant_pod_oom', 'Acme'), id: 'a', title: 'Tenant workload OOM-killed' },
+      { ...aboutTenant('admin.tenant_pod_oom', 'Globex'), id: 'b', title: 'Tenant workload OOM-killed' },
     ]);
     expect(s).toHaveLength(2);
-    expect(s.some((l) => l.startsWith('Tenant Acme: Subscription expiring soon'))).toBe(true);
-    expect(s.some((l) => l.startsWith('Tenant Globex: Subscription expiring soon'))).toBe(true);
+    expect(s.some((l) => l.startsWith('Tenant workload OOM-killed (tenant Acme)'))).toBe(true);
+    expect(s.some((l) => l.startsWith('Tenant workload OOM-killed (tenant Globex)'))).toBe(true);
   });
 
-  it('counts an event once, however many recipients left their copy unread', () => {
+  it('counts an event once, however many admins left their copy unread', () => {
     const copies = ['u1', 'u2', 'u3'].map((userId, i) => ({
-      ...tenantRow('mailbox.quota_threshold', 'Acme'), id: `c${i}`, userId, eventId: 'e1', title: 'Mailbox full', message: '',
+      ...row('admin.backup_never_run'), id: `c${i}`, userId, eventId: 'e1', title: 'Backups never ran', message: '',
     }));
-    expect(describeCandidates(copies)).toEqual([expect.stringMatching(/^Tenant Acme: Mailbox full — unread since/)]);
+    expect(describeCandidates(copies)).toEqual([expect.stringMatching(/^Backups never ran — unread since/)]);
     expect(countEvents(copies)).toBe(1);
   });
 
@@ -135,8 +134,8 @@ describe('describeCandidates', () => {
       { ...row('mailbox.quota_threshold'), id: 'c', title: 'Twice' },
     ];
     const s = describeCandidates(mixed);
-    expect(s[0]).toMatch(/^Platform admins: Twice x2/);
-    expect(s[1]).toMatch(/^Platform admins: Once/);
+    expect(s[0]).toMatch(/^Twice x2/);
+    expect(s[1]).toMatch(/^Once/);
   });
 
   it('caps the list by count, so one bad day cannot produce an unbounded body', () => {
@@ -164,9 +163,9 @@ describe('oneLine', () => {
 
 describe('concernsTenants', () => {
   // A tenant's mailbox address must never reach the operator's shared push topic.
-  it('is true as soon as one item is a tenant\'s', () => {
+  it('is true as soon as one item is about a tenant', () => {
     expect(concernsTenants([row('admin.backup_never_run')])).toBe(false);
-    expect(concernsTenants([row('admin.backup_never_run'), tenantRow('mailbox.quota_threshold', 'Acme')])).toBe(true);
+    expect(concernsTenants([row('admin.backup_never_run'), aboutTenant('admin.tenant_pod_oom', 'Acme')])).toBe(true);
   });
 
   it('reads the row\'s scope, not the tenant name beside it', () => {

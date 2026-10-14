@@ -460,14 +460,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
     bodyTemplate: emailMjml(
       'Unacknowledged notifications',
-      // Says whose they are: these are almost always a TENANT's notifications,
-      // which the operator's own bell, history and "mark all as read" never
-      // touch. Without that, a reminder that keeps coming after "mark all as
-      // read" looks like a bug.
-      '{{count}} notification(s) asking for action have been unread for more than {{ageHours}} '
-      + 'hours by everyone they were sent to, as of {{occurredAt}}. Each is listed once, with who '
-      + 'received it and what it said. A tenant\'s notification is read in that tenant\'s panel; '
-      + 'reading this one does not change it. {{summary}}',
+      // Only the admins' own notifications escalate (tenants' never do), so
+      // reading the original — or "mark all as read" — is what clears it.
+      '{{count}} notification(s) asking for action have not been read by any platform admin for '
+      + 'more than {{ageHours}} hours, as of {{occurredAt}}. Each is listed once, with what it said. '
+      + '{{summary}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -482,8 +479,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
-    bodyTemplate: '{{count}} notification(s) asking for action unread by everyone they were sent to for more than '
-      + '{{ageHours}}h as of {{occurredAt}}. Each is listed once; reading this does not mark theirs read. {{summary}}',
+    bodyTemplate: '{{count}} notification(s) asking for action not read by any platform admin for more than '
+      + '{{ageHours}}h as of {{occurredAt}}. Each is listed once. {{summary}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,

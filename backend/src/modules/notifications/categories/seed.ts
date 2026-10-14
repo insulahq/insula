@@ -1029,8 +1029,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: null,
     displayName: 'Unacknowledged notifications escalated',
-    description: 'A notification that asked someone to act — usually a tenant — has gone unread for 48 hours by everyone it was sent to. '
-      + 'Lists each one once, with who received it and what it said. Reading this does not mark theirs read.',
+    description: 'A notification that asked the platform admins to act has gone unread by every admin for 48 hours. '
+      + 'Lists each one once, with what it said. Tenants\' notifications never escalate here.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
