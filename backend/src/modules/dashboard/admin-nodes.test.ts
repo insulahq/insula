@@ -49,6 +49,18 @@ describe('readAdminNodes', () => {
     expect(n1.memory).toMatchObject({ inUse: 2, committed: 1, total: 8 });
   });
 
+  it('keeps the disk to the megabyte, so its GiB figure matches the Longhorn row to the tenth', async () => {
+    // DEV's disk: 82,086,711,296 bytes is 76.449 GiB. Rounded to 82.09 GB it
+    // would read 76.45 → "76.5 GiB" beside Longhorn's "76.4 GiB".
+    const nodes = await readAdminNodes(db, k8sWith(async () => ({ items: [{
+      metadata: { name: 'n1' },
+      status: { diskStatus: { a: { storageMaximum: 82_086_711_296, storageAvailable: 58_091_110_400, storageScheduled: 13_958_643_712 } } },
+    }] })));
+    const disk = nodes.find((n) => n.name === 'n1')!.disk!;
+    expect(disk.total).toBe(82.087);
+    expect(((disk.total * 1e9) / 1024 ** 3).toFixed(1)).toBe((82_086_711_296 / 1024 ** 3).toFixed(1));
+  });
+
   it('says a node Longhorn does not know is not measured, not empty', async () => {
     const nodes = await readAdminNodes(db, k8sWith(async () => ({ items: [] })));
     expect(nodes.map((n) => n.disk)).toEqual([null, null]);
