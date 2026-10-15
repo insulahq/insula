@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode, useNodeUsage } from '@/hooks/use-cluster-nodes';
-import { triadFigures, type TriadFigures } from '@/lib/resource-triad';
+import { CACHE_BAND, triadFigures, type TriadFigures } from '@/lib/resource-triad';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
@@ -42,7 +42,7 @@ function nodeTriads(node: ClusterNodeResponse, usage: AdminNode | undefined): No
   if (usage) {
     return {
       cpu: triadFigures(usage.cpu.inUse, usage.cpu.committed, usage.cpu.total),
-      memory: triadFigures(usage.memory.inUse, usage.memory.committed, usage.memory.total),
+      memory: triadFigures(usage.memory.inUse, usage.memory.committed, usage.memory.total, usage.memory.cache ?? null),
       disk: usage.disk ? triadFigures(usage.disk.inUse, usage.disk.committed, usage.disk.total) : null,
     };
   }
@@ -811,7 +811,9 @@ const BAR_TONE = (pct: number): { used: string; committed: string } => (
 
 /**
  * One resource as in use / committed / free of total, with a two-band bar:
- * in use solid, committed beyond it lighter, free as the bare track.
+ * in use solid, committed beyond it lighter, free as the bare track. Memory
+ * adds its cache as a third band at the start of free — part of free, which
+ * the text says too.
  */
 function TriadRow({ label, icon, figures, format, testId }: {
   readonly label: string;
@@ -839,12 +841,21 @@ function TriadRow({ label, icon, figures, format, testId }: {
             In use <b className="font-semibold text-gray-900 dark:text-gray-100">{figures.inUse === null ? '—' : format(figures.inUse)}</b>
             {' · '}Committed <b className="font-semibold text-gray-900 dark:text-gray-100">{format(figures.committed)}</b>
             {' · '}Free <b className="font-semibold text-gray-900 dark:text-gray-100">{format(figures.free)}</b>
+            {figures.cacheInFree !== null && (
+              <span title={`Cache: ${format(figures.cache ?? 0)} — mostly file cache, which the kernel hands back when memory runs short. `
+                + 'It also holds shared memory (database buffers, memory-backed volumes), which it cannot.'}>
+                {' '}(cache {format(figures.cacheInFree)})
+              </span>
+            )}
             {' '}of {format(figures.total)}
           </span>
         </div>
         <div className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
           <div className={clsx('h-full', tone.used)} style={{ width: `${figures.inUsePct.toFixed(1)}%` }} />
           <div className={clsx('h-full', tone.committed)} style={{ width: `${Math.max(0, figures.committedPct - figures.inUsePct).toFixed(1)}%` }} />
+          {figures.cache !== null && (
+            <div data-band="cache" className={clsx('h-full', CACHE_BAND)} style={{ width: `${figures.cachePct.toFixed(1)}%` }} />
+          )}
         </div>
       </div>
     </div>
@@ -872,6 +883,10 @@ function NodeDetails({ node, triads, pods }: {
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Committed is what pods have requested (CPU, memory) and what volumes placed here have been sized to (disk) —
           held for them even while idle. Free is neither in use nor committed.
+          {triads.memory?.cache != null && (
+            <> Memory in use is what processes hold. The cache is mostly file cache, which the kernel hands back
+              when memory runs short, so it is drawn inside free; it also holds shared memory, which it cannot.</>
+          )}
         </p>
       </div>
       <div className="flex items-center gap-2">

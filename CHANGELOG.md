@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Node memory "in use" is what processes hold; file cache is shown apart, as part of free.**
+  It used to be the kubelet's working set, which also counts active page cache — the kernel
+  hands that back when memory runs short. On production a node with no tenant on it read
+  8.0 GiB in use, the most of any node; 4.9 GiB of that was processes and 3.2 GiB cache. The
+  dashboard's Memory tile and node strip and Cluster → Nodes now draw the cache as a light band
+  at the start of free and name it in the legend and hover card; free itself is unchanged. The
+  cache figure is the working set less process memory, so it also holds shared memory (database
+  buffers, memory-backed volumes) the kernel cannot hand back — the panel says "mostly".
+  Both halves come from one kubelet `/stats/summary` sample per node; a node whose kubelet does
+  not answer falls back to the working set, and the cluster tile then uses the working set for
+  every node. Memory alerts still use the working set — it is what the kubelet evicts on.
+
 ### Fixed
 
 - **A nightly files backup reads only what changed, and a capture Job has 2 hours instead of

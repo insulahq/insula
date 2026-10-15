@@ -11,6 +11,7 @@ import {
 import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 import { buildBackupClasses } from './backup-classes.js';
 import { buildWebDefence } from './web-defence.js';
+import { readNodeMemoryStats, type NodeMemoryStats } from '../node-health/kubelet-disk.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -199,6 +200,10 @@ function memToGiB(v: string | undefined): number {
   const mult: Record<string, number> = { Ki: 1 / 1048576, Mi: 1 / 1024, Gi: 1, Ti: 1024 };
   return n * (mult[m[2] ?? 'Ki'] ?? 1 / 1048576);
 }
+/** Bytes → GiB at the memory triad's two decimals. */
+const gib2 = (bytes: number): number => Math.round((bytes / 1024 ** 3) * 100) / 100;
+/** Per-node kubelet read for the memory split; the nodes section's deadline is 4 s. */
+const MEMORY_SPLIT_TIMEOUT_MS = 2_500;
 
 export interface AdminLiveDeps {
   /** The Banned IPs list's own count — security-hardening/crowdsec-ban-list.ts. */
@@ -266,6 +271,19 @@ async function readNodeDisks(k8s: K8sClients, logger?: Logger): Promise<Map<stri
  */
 export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Logger): Promise<AdminNode[]> {
   const list = (await k8s.core.listNode()) as unknown as { items?: RawNode[] };
+  // Started now, read below: one kubelet round-trip per node, run alongside
+  // the pod list and the metrics API rather than after them. Its timeout sits
+  // well inside the dashboard's 4 s deadline for this whole section.
+  const memorySplit = readNodeMemoryStats(
+    (list.items ?? []).flatMap((n) => (n.metadata?.name ? [n.metadata.name] : [])),
+    { timeoutMs: MEMORY_SPLIT_TIMEOUT_MS },
+  ).catch((err: unknown) => {
+    logger?.warn?.(
+      { err: err instanceof Error ? err.message : String(err) },
+      'dashboard: kubelet memory split unavailable — memory in use will be the working set',
+    );
+    return new Map<string, NodeMemoryStats>();
+  });
   const pods = (await k8s.core.listPodForAllNamespaces()) as unknown as {
     items?: Array<{
       metadata?: { name?: string; namespace?: string };
@@ -318,6 +336,7 @@ export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Log
   }
 
   const disks = await readNodeDisks(k8s, logger);
+  const memory = await memorySplit;
 
   const health = await db.execute<{ node_name: string; severity: string; disk_used_pct: string | null; evictions: number; pressures: string[] | null }>(sql`
     SELECT node_name, severity, disk_used_pct, evictions_last_hour AS evictions, pressures
@@ -331,6 +350,7 @@ export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Log
     const h = byName.get(name);
     const ready = (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
     const u = usage.get(name);
+    const mem = memory.get(name);
     const isServer = (n.metadata?.labels ?? {})['node-role.kubernetes.io/control-plane'] != null;
     return {
       name,
@@ -347,7 +367,13 @@ export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Log
         total: cpuToCores(n.status?.allocatable?.cpu), unit: 'cores', kind: 'reserve',
       },
       memory: {
-        inUse: u ? Math.round(u.mem * 100) / 100 : null,
+        // Process memory, with the cache the working set also counts apart:
+        // the working set alone read a node with no tenant on it as the
+        // busiest. Both halves come from one kubelet sample so they add up;
+        // without it, in use is the metrics API's working set and cache is
+        // not measured.
+        inUse: mem ? gib2(mem.processBytes) : u ? Math.round(u.mem * 100) / 100 : null,
+        cache: mem ? gib2(mem.cacheBytes) : null,
         committed: Math.round(req.memReq * 100) / 100,
         total: Math.round(memToGiB(n.status?.allocatable?.memory) * 100) / 100,
         unit: 'GiB', kind: 'reserve',
@@ -366,6 +392,31 @@ export async function readAdminNodes(db: Database, k8s: K8sClients, logger?: Log
       tenantWorkloads: true,
     };
   });
+}
+
+/**
+ * The cluster's memory in use and cache, from its nodes'.
+ *
+ * Unknown (null) when any node is unmeasured, like every cluster usage figure.
+ * And split into process and cache only when EVERY node was split: a node that
+ * fell back reports its whole working set as in use, and adding that to other
+ * nodes' process memory makes a number that is neither — so one unsplit node
+ * puts the whole cluster back on working set, cache not measured.
+ */
+export function clusterMemoryUsage(nodes: ReadonlyArray<Pick<AdminNode, 'memory'>>): { inUse: number | null; cache: number | null } {
+  const sum = (pick: (m: AdminNode['memory']) => number | null): number | null => {
+    let acc = 0;
+    for (const n of nodes) {
+      const v = pick(n.memory);
+      if (v === null) return null;
+      acc += v;
+    }
+    return Math.round(acc * 100) / 100;
+  };
+  // No nodes: nothing measured a cache, so none is drawn.
+  const cache = nodes.length === 0 ? null : sum((m) => m.cache ?? null);
+  if (cache !== null) return { inUse: sum((m) => m.inUse), cache };
+  return { inUse: sum((m) => (m.inUse === null ? null : m.inUse + (m.cache ?? 0))), cache: null };
 }
 
 export async function buildAdminLive(
@@ -488,13 +539,15 @@ export async function buildAdminLive(
     };
     const biggest = nodes.reduce<AdminNode | null>(
       (a, b) => (a === null || b.cpu.total > a.cpu.total ? b : a), null);
+    const mem = clusterMemoryUsage(nodes);
     return {
       cpu: {
         inUse: sumUsage((n) => n.cpu.inUse), committed: cpuReq,
         total: cpuTotal, unit: 'cores', kind: 'reserve' as const,
       },
       memory: {
-        inUse: sumUsage((n) => n.memory.inUse),
+        inUse: mem.inUse,
+        cache: mem.cache,
         committed: sum((n) => n.memory.committed),
         total: sum((n) => n.memory.total), unit: 'GiB', kind: 'reserve' as const,
       },

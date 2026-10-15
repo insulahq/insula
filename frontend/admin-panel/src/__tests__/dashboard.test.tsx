@@ -264,6 +264,67 @@ describe('Operator console — capacity', () => {
     expect(row?.textContent).toContain('Disk free380 GB');
   });
 
+  it('splits each node\'s memory into process memory and the cache inside free', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({
+        nodes: okSection([{
+          name: 'sv1', role: 'server', ready: true, pressures: [], evictionsLastHour: 0,
+          diskUsedPct: 21, pods: 48, kubeletVersion: 'v1.36.2+k3s1',
+          calico: 'ok' as const, csi: 'ok' as const, ingressMode: 'default', tenantWorkloads: true,
+          cpu: { inUse: 0.7, committed: 2, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 4.85, cache: 3.19, committed: 3.45, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
+          disk: null,
+        }]) as AdminDashboardLive['nodes'],
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+    const row = container.querySelector('a[href="/cluster/nodes"][class*="grid-cols-"]');
+    expect(row?.textContent).toContain('4.85 / 3.45');
+    expect(row?.textContent).toContain('Memory cache3.19 GiB');
+    expect(row?.textContent).toContain('Memory free9.51 GiB');
+    expect(row?.querySelectorAll('[data-band="cache"]').length).toBe(1);
+  });
+
+  it('shows the cluster\'s memory cache as a band and in the legend, counted in free', () => {
+    liveFn.mockReturnValue({
+      data: { data: live({
+        cluster: okSection({
+          cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 15.2, cache: 5.8, committed: 15.84, total: 43.08, unit: 'GiB', kind: 'reserve' as const },
+          storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
+          storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
+          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1',
+        }),
+      }) }, isLoading: false,
+    });
+    const { container } = show();
+    expect(container.querySelectorAll('[data-band="cache"]').length).toBe(1);
+    expect(screen.getByText(/^cache 5\.8/)).toBeInTheDocument();
+    // Free stays total less the larger claim — 43.08 − 15.84 — and the hover
+    // card says the cache is inside it.
+    expect(screen.getByText('27.2 free')).toBeInTheDocument();
+    expect(screen.getByText(/counted in free/)).toBeInTheDocument();
+  });
+
+  it('names only the cache that fits in free beside the band, and the rest in the hover card', () => {
+    // Committed 40 of 43.08 leaves 3.08 free; 5.8 of cache cannot all be in it.
+    liveFn.mockReturnValue({
+      data: { data: live({
+        cluster: okSection({
+          cpu: { inUse: 0.9, committed: 6.87, total: 7.5, unit: 'cores', kind: 'reserve' as const },
+          memory: { inUse: 15.2, cache: 5.8, committed: 40, total: 43.08, unit: 'GiB', kind: 'reserve' as const },
+          storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
+          storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
+          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1',
+        }),
+      }) }, isLoading: false,
+    });
+    show();
+    expect(screen.getByText(/^cache 3\.1/)).toBeInTheDocument();
+    expect(screen.queryByText(/^cache 5\.8/)).toBeNull();
+    expect(screen.getByText(/5\.8 GiB · 3\.1 GiB of it in free/)).toBeInTheDocument();
+  });
+
   it('answers status, last backup and size for EVERY backup class', () => {
     // The old grid answered "last backup" for `tenant` only — system and mail
     // were permanently blank — and spent its fourth square on a bundle count.

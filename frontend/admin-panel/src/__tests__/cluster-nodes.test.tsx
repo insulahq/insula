@@ -360,6 +360,21 @@ describe('ClusterNodes — in use, committed, free', () => {
     expect(screen.queryByTestId('node-usage-unavailable')).toBeNull();
   });
 
+  it('shows memory in use as process memory and the cache inside free, drawn as its own band', () => {
+    withUsage({ data: [{
+      name: 'n1', pods: 12,
+      cpu: triad(0.7, 2, 4, 'cores'), memory: { ...triad(4.9, 3.5, 14.4, 'GiB'), cache: 3.2 }, disk: null,
+    }] });
+    const row = screen.getByTestId('node-memory-n1');
+    expect(row.textContent).toContain('In use 4.9 GiB · Committed 3.5 GiB · Free 9.5 GiB (cache 3.2 GiB) of 14.4 GiB');
+    const band = row.querySelector('[data-band="cache"]') as HTMLElement | null;
+    expect(band).not.toBeNull();
+    expect(band!.style.width).toBe(`${((3.2 / 14.4) * 100).toFixed(1)}%`);
+    // CPU has no cache: no band, no word.
+    expect(screen.getByTestId('node-cpu-n1').querySelector('[data-band="cache"]')).toBeNull();
+    expect(screen.getByTestId('node-cpu-n1').textContent).not.toContain('cache');
+  });
+
   it('says so when the usage reader failed, and falls back to the inventory: committed known, in use and disk not', () => {
     mockUsage.mockReturnValue({ data: undefined, isError: true } as never);
     mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'n1' })] }, isLoading: false, error: null });

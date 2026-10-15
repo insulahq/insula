@@ -122,6 +122,19 @@ export const resourceTriadSchema = z.object({
   unit: z.string(),
   /** storage is consumed, not reserved — the UI hides the committed band. */
   kind: z.enum(['reserve', 'consume']).default('reserve'),
+  /**
+   * Node memory only: the working set less process memory, kept OUT of
+   * `inUse` (which is then process memory). Mostly page cache, which the
+   * kernel hands back when memory runs short, so it is drawn inside free; it
+   * also holds shared memory (database buffers, memory-backed volumes) and
+   * kernel memory, which the kubelet does not report apart and the kernel
+   * cannot hand back. Before the split, a production node
+   * with no tenant on it read 8.0 GiB in use — 4.9 GiB processes, 3.2 GiB
+   * cache — and looked like the busiest node in the cluster. Absent or null
+   * when not measured (or not applicable: CPU, disk, tenants); `inUse` is then
+   * the whole working set, as before.
+   */
+  cache: z.number().nullable().optional(),
 });
 export type ResourceTriad = z.infer<typeof resourceTriadSchema>;
 
