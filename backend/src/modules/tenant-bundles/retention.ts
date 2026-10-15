@@ -5,7 +5,8 @@
  *   1. Delete bundles whose `expires_at` is in the past — call
  *      BackupStore.delete() on the off-site target, then flip the
  *      DB row's `status` to 'expired'.
- *   2. GC stuck `running` bundles older than 24h — set their
+ *   2. GC stuck `running` bundles older than the longest a healthy
+ *      bundle can take (BUNDLE_MAX_RUNNING_MS, 3 h) — set their
  *      status to 'failed' with a clear lastError so the operator
  *      can re-trigger.
  *
@@ -34,16 +35,20 @@ import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
 import { bundleNotificationLabel } from './notification-label.js';
+import { BUNDLE_MAX_RUNNING_MS } from './components/capture-timeouts.js';
 
-// Lowered from the legacy 24h to 1h: the restic capture path's
-// 95-percentile is ~5 min at the current 5.4 GiB tenant size, and
-// Phase 1's `runResticBackup` has a 1h internal timeout (DEFAULT_BACKUP_TIMEOUT_MS).
-// Anything still 'running' past 1h is a stuck row left behind by a
-// platform-api OOMKill or pod eviction — the orchestrator process is
-// gone, no progress is happening, and the chip would otherwise spin
+// A bundle still 'running' past the longest a healthy one can take is a stuck
+// row left behind by a platform-api OOMKill or pod eviction — the orchestrator
+// process is gone, no progress is happening, and the chip would otherwise spin
 // forever. Operator can re-trigger from the bundle list.
+//
+// The default is DERIVED from the capture timeouts, never set beside them: at
+// 1 h it reaped bundles whose capture Job was still allowed to run (mailboxes
+// had 60 min, alongside the files capture), marking a healthy bundle failed and
+// telling the tenant so — after which the orchestrator finished and wrote
+// `completed` over it.
 const STUCK_RUNNING_HOURS = Number.parseFloat(
-  process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS ?? '1',
+  process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS ?? String(BUNDLE_MAX_RUNNING_MS / (60 * 60 * 1000)),
 );
 
 export interface RetentionSweepResult {

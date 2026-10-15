@@ -14,6 +14,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A nightly files backup reads only what changed, and a capture Job has 2 hours instead of
+  30 minutes (files) or 60 (mailboxes).** restic picks the snapshot to compare against by host
+  name, and the files capture left that as the pod's name, which is new on every Job. So no
+  earlier snapshot was ever found, and every night re-read and re-hashed the whole volume to
+  store a few megabytes: about 10 minutes for 30 GB. On a production night when one node's
+  disk ran several times slower, that ran past the 29-minute Job deadline and left the
+  tenant's bundle `partial`. The capture now names the tenant as the host, as the mailbox
+  capture already did, so a file whose modification time, size, inode and change time all
+  match is not read again. Each snapshot still holds the complete file tree, so restores,
+  exports and the file browser are unchanged. The first files capture after upgrading still
+  reads everything, because no snapshot carries the new host name yet. The longer limit covers
+  the full reads that remain — a tenant's first bundle, and the first after a restore or a
+  storage shrink — on the largest volumes or a slow node. The stuck-bundle sweep now waits
+  3 hours, derived from those limits: it marked any bundle still running after 1 hour as
+  failed — sooner than the mailbox capture's own 60 minutes plus the work before it — told
+  the tenant their backup had failed, and was then overwritten by `completed` when the
+  bundle finished.
+
 - **Searching the admin tenant list for a word from the cluster's domain no longer lists every
   tenant.** The placement search matched anywhere in a node's name, and a cluster's nodes share
   their domain (`node-2.cluster.<apex>`), so a search for the operator's own brand matched the

@@ -149,7 +149,7 @@ export interface BuildMailboxesResticJobSpecInput {
  * `--host` is set to the tenant id. Without it restic defaults to the POD
  * hostname, which changes on every Job, so no parent snapshot is ever matched
  * and restic re-reads and re-hashes every file even when it stores none of
- * them. (The files component has the same omission and pays the same cost.)
+ * them. The files component pins it the same way.
  *
  * `--ignore-inode --ignore-ctime` are required alongside it: the tree is
  * rebuilt in a fresh pod each run, so inode numbers and ctimes always differ

@@ -89,15 +89,16 @@ describe('runRetentionSweep', () => {
         updated_at      TIMESTAMP NOT NULL DEFAULT now()
       );
     `);
-    // Two bundles: one stuck far past the cutoff (should be marked
-    // failed), one fresh (should be left alone). The current cutoff is
-    // 1h (process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS, default 1) —
-    // see retention.ts. The test uses 48h / 5 min to be well past /
-    // under the boundary regardless of any small future tweaks.
+    // Three bundles: one stuck far past the cutoff (should be marked
+    // failed), one fresh, and one 150 min into a capture that is still
+    // allowed to run (both left alone). The cutoff is derived from the
+    // capture timeouts (BUNDLE_MAX_RUNNING_MS, 3 h) — at 1 h it reaped
+    // healthy bundles whose capture Job had 2 h.
     mem.public.none(`
       INSERT INTO backup_jobs(id, tenant_id, status, started_at) VALUES
         ('bkp-stuck', 'c1', 'running', now() - interval '48 hours'),
-        ('bkp-fresh', 'c1', 'running', now() - interval '5 minutes');
+        ('bkp-fresh', 'c1', 'running', now() - interval '5 minutes'),
+        ('bkp-long', 'c1', 'running', now() - interval '150 minutes');
     `);
     const db = pgMemDatabase(mem);
     const app = {
@@ -112,6 +113,7 @@ describe('runRetentionSweep', () => {
     });
     expect(after.rows.find((row) => row.id === 'bkp-stuck')?.status).toBe('failed');
     expect(after.rows.find((row) => row.id === 'bkp-fresh')?.status).toBe('running');
+    expect(after.rows.find((row) => row.id === 'bkp-long')?.status).toBe('running');
   });
 
   it('counts zero on a clean DB', async () => {
