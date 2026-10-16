@@ -60,6 +60,9 @@ _lab_run_bootstrap() {
 _lab_bootstrap_create() {
   local vm="$1" ip="$2" release=()
   [[ -n "${CL_RELEASE_TAG:-}" ]] && release=(--release-tag "$CL_RELEASE_TAG")
+  # The lab's IPv6 is ULA, which bootstrap.sh's auto-detection rightly treats as
+  # "no IPv6" — so a dual-stack lab cluster says so explicitly.
+  (( ${CL_DUAL_STACK:-0} == 1 )) && release+=(--dual-stack)
   echo "── creating the ${CL_NAME} cluster on ${vm} @ ${ip}: --env ${CL_ENV}${CL_RELEASE_TAG:+ --release-tag ${CL_RELEASE_TAG}} ──" >&2
   _lab_run_bootstrap "$vm" "$ip" --domain "$CL_APEX" --env "$CL_ENV" ${release[@]+"${release[@]}"} \
     --acme-email "admin@${CL_APEX}" --acme-server "$(lab_acme_directory)" \
@@ -71,11 +74,21 @@ _lab_bootstrap_create() {
 # flags only (bootstrap.sh refuses cluster-scoped ones on a join), and the join must leave
 # the cluster as it found it (lib/join-invariance.sh).
 _lab_bootstrap_join() {
-  local vm="$1" ip="$2" role="$3" s1="$4" token="$5" before
+  local vm="$1" ip="$2" role="$3" s1="$4" token="$5" before dual=()
   echo "── joining ${vm} @ ${ip} as ${role} ──" >&2
+  # A join never decides the address families — the first server did; it must be told.
+  # Told wrongly (a staging installed IPv4-only before LAB_STG_DUAL_STACK defaulted on),
+  # the node registers two families into a one-family cluster and kubelet fails: refuse.
+  if (( ${CL_DUAL_STACK:-0} == 1 )); then
+    if [[ "$(_vssh "$s1" "k3s kubectl get node -o jsonpath='{.items[0].status.addresses[*].address}'" 2>/dev/null)" != *:* ]]; then
+      echo "lab: ${CL_NAME} was installed IPv4-only — reinstall it to go dual-stack, or set LAB_${CL_NAME^^}_DUAL_STACK=0" >&2
+      return 1
+    fi
+    dual=(--dual-stack)
+  fi
   before="$(join_snapshot "$s1")"
   _lab_run_bootstrap "$vm" "$ip" --join-as "$role" --server "$s1" --token "$token" \
-    --cluster-network-cidr "${CL_PREFIX}.0/24" || return 1
+    --cluster-network-cidr "${CL_PREFIX}.0/24" ${dual[@]+"${dual[@]}"} || return 1
   join_assert_unchanged "${role} join ${vm}" "$before" "$(join_snapshot "$s1")" || return 1
   join_node_hygiene "$ip" "$role" || return 1
 }
