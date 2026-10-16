@@ -266,6 +266,25 @@ sysctl_ctx=$(grep -B 12 'net.ipv6.conf.all.forwarding = 1' <<<"$src")
 has "$sysctl_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the v6 sysctl block is inside the dual-stack guard"
 
 echo
+echo "Calico WireGuard carries IPv6 pod traffic too (dual-stack only)"
+# Without it Calico falls back to plain VXLAN over the nodes' IPv6 (UDP/4789),
+# which the firewall drops: cross-node IPv6 between pods was dead on production.
+has "$src" 'wireguardEnabledV6: true'             "Felix enables WireGuard for IPv6"
+has "$src" 'wireguardListeningPortV6: 51822'      "…on 51822, clear of NetBird (51820) and Calico IPv4 (51821)"
+felix_v6_ctx=$(grep -B 4 'wireguardEnabledV6: true' <<<"$src")
+has "$felix_v6_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the Felix IPv6 lines are inside the dual-stack guard"
+# Whole line: the scoped rule below contains this one as a substring.
+if grep -qxF '    udp dport 51822 accept   # Calico WireGuard, IPv6"' <<<"$src"; then
+  ok "the firewall opens 51822 publicly, like 51821"
+else
+  bad "the firewall opens 51822 publicly, like 51821"
+fi
+has "$src" 'ip6 saddr @trusted_ranges_v6 udp dport 51822 accept   # Calico WireGuard, IPv6' "…or scoped to trusted_ranges_v6 under --calico-wg-public=false"
+wg_v6_ctx=$(grep -B 8 'udp dport 51822 accept   # Calico WireGuard, IPv6"' <<<"$src" | head -12)
+has "$wg_v6_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the 51822 accept is inside the dual-stack guard"
+hasnt "$src" 'dport 4789 accept'                  "no plaintext VXLAN accept (pod traffic would cross the internet unencrypted)"
+
+echo
 echo "validation refuses impossible requests"
 has "$src" 'Kubernetes caps the IPv6 service CIDR'  "service-cidr-v6 size is validated"
 has "$src" '--dual-stack requires an IPv6 address'  "--dual-stack is refused on a node with no v6"

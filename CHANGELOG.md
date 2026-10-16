@@ -28,6 +28,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **On a dual-stack cluster, pods can reach pods on other nodes over IPv6.** They never
+  could: Calico WireGuard was enabled for IPv4 only, so IPv6 pod traffic between nodes
+  fell back to plain VXLAN over the nodes' IPv6 addresses (UDP/4789), which the host
+  firewall drops. On production that included CoreDNS's IPv6 service address for every
+  pod on a node without a CoreDNS replica — the mail server's second nameserver timed
+  out, which helped outbound mail to `.na`, `.org` and `.co.za` fail DNSSEC validation.
+  IPv6 pod traffic now rides Calico WireGuard on UDP/51822, with the same exposure as
+  IPv4's 51821 (public, or `trusted_ranges` under `--calico-wg-public=false`).
+  Host-migration `0001-calico-wireguard-ipv6` opens the port and enables it on
+  existing clusters; single-stack clusters are untouched. Node traffic accounting
+  counts 51822 as tunnel traffic.
+
 - **A nightly files backup reads only what changed, and a capture Job has 2 hours instead of
   30 minutes (files) or 60 (mailboxes).** restic picks the snapshot to compare against by host
   name, and the files capture left that as the pod's name, which is new on every Job. So no

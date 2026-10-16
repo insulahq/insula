@@ -115,7 +115,7 @@ func TestTrafficRules_n2nClassOrder(t *testing.T) {
 			"kubeapi", "kubeapi", // sport, dport 6443
 			"etcd", "etcd", // 2379-2380
 			"kubelet", "kubelet", // 10250
-			"tunnel", "tunnel", "tunnel", "tunnel", "tunnel", // 51820-51821 ×2, 4789 ×2, IPIP
+			"tunnel", "tunnel", "tunnel", "tunnel", "tunnel", // 51820-51822 ×2, 4789 ×2, IPIP
 			"n2nother",
 		}
 		for i := range want {
@@ -166,7 +166,7 @@ func TestTrafficRules_n2nPortsAndProtocols(t *testing.T) {
 		{6, 0, 6443, 6443}, {6, 2, 6443, 6443},
 		{6, 0, 2379, 2380}, {6, 2, 2379, 2380},
 		{6, 0, 10250, 10250}, {6, 2, 10250, 10250},
-		{17, 0, 51820, 51821}, {17, 2, 51820, 51821},
+		{17, 0, 51820, 51822}, {17, 2, 51820, 51822}, // NetBird, Calico WireGuard v4 + v6
 		{17, 0, 4789, 4789}, {17, 2, 4789, 4789},
 	}
 	for i, w := range want {

@@ -2748,6 +2748,20 @@ configure_firewall() {
     ip  saddr @trusted_ranges_v4 udp dport 51821 accept
     ip6 saddr @trusted_ranges_v6 udp dport 51821 accept"
   fi
+  # Calico WireGuard for IPv6 pod traffic (UDP/51822), dual-stack only — same
+  # exposure as 51821. Without it Calico carries IPv6 pod traffic between nodes as
+  # plain VXLAN over the nodes' IPv6 addresses (UDP/4789), which nothing here
+  # accepts: every cross-node IPv6 pod connection was silently dropped. Empty on
+  # single-stack, keeping that ruleset byte-identical.
+  if [[ "$DUAL_STACK" == true ]]; then
+    if [[ "$CALICO_WG_PUBLIC" == "false" ]]; then
+      calico_wg_rule="${calico_wg_rule}
+    ip6 saddr @trusted_ranges_v6 udp dport 51822 accept   # Calico WireGuard, IPv6"
+    else
+      calico_wg_rule="${calico_wg_rule}
+    udp dport 51822 accept   # Calico WireGuard, IPv6"
+    fi
+  fi
 
   # ─── SSH rule rendering ───────────────────────────────────────────────
   # Pod-CIDR control-plane exemption, IPv6 half. Empty on single-stack so the
@@ -5152,15 +5166,25 @@ EOF
   # kubectl apply often fails with "no matches for kind FelixConfiguration".
   # Retry up to 5 minutes total before giving up. Caught fresh-install
   # on Ubuntu 24.04 testing host.
-  local _felix_yaml='apiVersion: projectcalico.org/v3
+  # Dual-stack: WireGuard for IPv6 pod traffic too, on 51822 (51820 NetBird, 51821
+  # Calico IPv4). Without it Calico falls back to plain VXLAN over the nodes' IPv6
+  # addresses, which the host firewall drops — cross-node IPv6 between pods never
+  # worked on a dual-stack cluster until this was set.
+  local _felix_v6=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    _felix_v6='
+  wireguardEnabledV6: true
+  wireguardListeningPortV6: 51822'
+  fi
+  local _felix_yaml="apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
 metadata:
   name: default
 spec:
   wireguardEnabled: true
-  wireguardListeningPort: 51821
+  wireguardListeningPort: 51821${_felix_v6}
   xdpEnabled: false
-  genericXDPEnabled: false'
+  genericXDPEnabled: false"
   local _apply_attempts=0
   while true; do
     if printf '%s\n' "$_felix_yaml" | kubectl apply -f - 2>/dev/null; then
@@ -5174,7 +5198,7 @@ spec:
   done
 
   marker_set "calico-installed"
-  log "Calico CNI installed (WireGuard enabled, port 51821)."
+  log "Calico CNI installed (WireGuard enabled, port 51821$([[ "$DUAL_STACK" == true ]] && echo "; IPv6 on 51822"))."
 }
 
 # ─── Phase 3: Platform Components ────────────────────────────────────────────
