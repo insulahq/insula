@@ -10,7 +10,8 @@
 #          asks for (the cluster's private network CIDR).
 #   leave  drain (admin: Drain, POST /admin/nodes/<name>/drain) → delete (POST
 #          …/delete; the host stays running) → the runbook's host step
-#          (k3s-agent-uninstall.sh). The VM keeps its OS for the next join.
+#          (k3s-agent-uninstall.sh, then the platform firewall and timers). The VM keeps its
+#          OS for the next join.
 #
 # Both are judged from the cluster's side: join invariance, the node Ready, the platform's
 # inventory, the pre-enrolment claimed; after leave, the node gone from Kubernetes,
@@ -186,6 +187,19 @@ lab_worker_leave() {
   if VIRSH dominfo "$W_VM" >/dev/null 2>&1; then
     _vssh "$W_IP" "if [ -x /usr/local/bin/k3s-agent-uninstall.sh ]; then /usr/local/bin/k3s-agent-uninstall.sh >/dev/null 2>&1; fi; ! test -e /usr/local/bin/k3s" \
       || { echo "lab: k3s is still installed on ${W_VM}" >&2; return 1; }
+    # Runbook step 4 (MULTI_NODE_RUNBOOK.md "Remove a node permanently"): the platform's
+    # host firewall and timers — the uninstall leaves both, and a reused host kept a
+    # ruleset that dropped its DHCPv6 replies. Same commands as the runbook.
+    echo "── host step (runbook): remove the platform firewall and timers on ${W_VM} ──" >&2
+    _vssh "$W_IP" '
+      systemctl disable --now platform-ops-update.timer platform-ops-host-config.timer 2>/dev/null
+      nft delete table inet filter 2>/dev/null
+      mv /etc/nftables.conf /etc/nftables.conf.insula-removed
+      printf "#!/usr/sbin/nft -f\nflush ruleset\n" > /etc/nftables.conf
+      [ -f /etc/sysconfig/nftables.conf ] && sed -i "/^# Insula platform firewall/d; /^include \"\/etc\/nftables.conf\"$/d" /etc/sysconfig/nftables.conf
+      true' >&2
+    _vssh "$W_IP" '! nft list table inet filter >/dev/null 2>&1 && ! systemctl is-enabled -q platform-ops-host-config.timer 2>/dev/null' \
+      || { echo "lab: ${W_VM} still has the platform firewall or its timers after the runbook step" >&2; return 1; }
     # The uninstall removes /etc/rancher — the next join must pull through the mirrors again.
     if [[ -n "${VMTEST_REGISTRY_MIRROR:-}" ]]; then
       registry_mirrors_yaml | _vssh "$W_IP" "mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml" \

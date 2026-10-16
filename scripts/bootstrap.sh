@@ -3021,6 +3021,15 @@ NFT
   # had a reconcile pass.
   [ -e /etc/nftables.d/00-placeholder.conf ] || printf '# populated by firewall-reconciler\n' > /etc/nftables.d/00-placeholder.conf
   systemctl enable nftables
+  # The RHEL family's nftables.service loads /etc/sysconfig/nftables.conf (empty by
+  # default), not /etc/nftables.conf — without this include the platform firewall
+  # was gone after the first reboot (measured on Rocky 9: no `inet filter` table at
+  # all). Debian/Ubuntu load /etc/nftables.conf directly and are untouched.
+  if systemctl cat nftables.service 2>/dev/null | grep -q '^ExecStart=.*/etc/sysconfig/nftables\.conf' \
+     && ! grep -qxF 'include "/etc/nftables.conf"' /etc/sysconfig/nftables.conf 2>/dev/null; then
+    printf '\n# Insula platform firewall (bootstrap.sh) — loaded at boot by nftables.service.\ninclude "/etc/nftables.conf"\n' >> /etc/sysconfig/nftables.conf
+    log "  nftables.service (RHEL family) now loads /etc/nftables.conf at boot."
+  fi
   nft -f /etc/nftables.conf
   log "Firewall configured (always-on set mode)."
 

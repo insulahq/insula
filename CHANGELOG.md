@@ -28,6 +28,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Security: RHEL-family nodes keep the platform firewall across a reboot.** bootstrap.sh wrote
+  the firewall to `/etc/nftables.conf` and enabled `nftables.service` — which on RHEL, Rocky,
+  Alma, CentOS Stream and Amazon Linux loads `/etc/sysconfig/nftables.conf` instead (empty by
+  default). After the first reboot such a node ran with no platform firewall at all: no tenant
+  port rules, no operator blacklist, no CrowdSec drops. Debian and Ubuntu were not affected.
+  The include is now added at install; host-migration `0000-rhel-nftables-boot-load` adds it on
+  existing nodes and restores the firewall immediately on one that already rebooted without it.
 - **Outbound mail to `.na`, `.org`, `.co.za` and other domains no longer stalls on "DNSSEC
   validation failed".** Stalwart queried both of a pod's nameservers (the cluster DNS
   service's IPv4 and IPv6 addresses) at once, and its DNS library (hickory-dns#3963) gives up
