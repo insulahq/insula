@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.10-rc.1] - 2026-10-16
-
 ### Changed
 
 - **Node memory "in use" is what processes hold; file cache is shown apart, as part of free.**
