@@ -194,7 +194,6 @@ lab_svc_ensure() {
     rm -f "${VMTEST_TMP_DIR}/ud-${LAB_SVC_VM}.yaml" "${VMTEST_TMP_DIR}/md-${LAB_SVC_VM}.yaml"
     img_clone "$golden" "$overlay" "$LAB_SVC_DISK_GB" >&2
     vm_create "$LAB_SVC_VM" "$overlay" "$seed" insula-lab-svc "$LAB_SVC_VCPU" "$LAB_SVC_RAM_MB" "$mac" >&2
-    VIRSH autostart "$LAB_SVC_VM" >&2
     wait_ssh "$ip" 600 >&2 && wait_cloudinit "$ip" 1200 >&2
   else
     state="$(VIRSH domstate "$LAB_SVC_VM" 2>/dev/null || true)"
@@ -217,6 +216,7 @@ chmod 0755 /usr/local/sbin/lab-services.sh
 /usr/local/sbin/lab-services.sh
 CONVERGE
   fi
+  lab_vm_autostart "$LAB_SVC_VM" "${LAB_AUTOSTART:-0}"
   lab_zone_ensure "$LAB_APEX" "ns1 A $ip" "ca A $ip" "s3 A $ip" "sftp A $ip" "cifs A $ip" "apt A $ip"
 }
 
