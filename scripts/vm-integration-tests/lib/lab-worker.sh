@@ -51,6 +51,8 @@ _lab_worker_vm() {
     VIRSH start "$W_VM" >&2
     wait_ssh "$W_IP" 600 >&2 || return 1
   fi
+  # A dual-stack staging's worker needs a lasting IPv6 address like its servers.
+  [[ -z "${CL_V6_PREFIX:-}" ]] || _lab_node_pin_v6 "$W_VM" "$W_IP" || return 1
 }
 
 # _lab_worker_script <file> — pre-enrol the worker and write the admin panel's join script

@@ -283,6 +283,12 @@ has "$src" 'ip6 saddr @trusted_ranges_v6 udp dport 51822 accept   # Calico WireG
 wg_v6_ctx=$(grep -B 8 'udp dport 51822 accept   # Calico WireGuard, IPv6"' <<<"$src" | head -12)
 has "$wg_v6_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the 51822 accept is inside the dual-stack guard"
 hasnt "$src" 'dport 4789 accept'                  "no plaintext VXLAN accept (pod traffic would cross the internet unencrypted)"
+# DHCPv6 client replies (link-local, 547 → 546) are never "established": without the
+# accept a node that takes its IPv6 by DHCPv6 loses it. Every install, not only
+# dual-stack — a single-stack cluster's hosts have their own IPv6.
+has "$src" '    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept' "the firewall lets DHCPv6 replies in"
+dhcp6_ctx=$(grep -B 12 '    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept' <<<"$src")
+hasnt "$dhcp6_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "…on every install, not only under --dual-stack"
 # The port inventory the posture page reads: 51821 when public, 51822 only on dual-stack.
 inv_ctx=$(grep -A 5 'local public_udp="51820 29899"' <<<"$src")
 has "$inv_ctx" 'if [[ "$CALICO_WG_PUBLIC" != "false" ]]; then'   "51821 is recorded as public only when it is"

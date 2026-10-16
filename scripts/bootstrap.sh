@@ -2888,6 +2888,13 @@ ${set_decls}
     ip protocol icmp accept
     ip6 nexthdr icmpv6 accept
 
+    # DHCPv6 client. A server's reply comes from its link-local address, port
+    # 547, but the request went to a multicast group, so the reply is never
+    # "established" — and unlike the DHCPv4 client (a raw socket) the DHCPv6
+    # client receives through this chain. Without it a node that takes its
+    # IPv6 by DHCPv6 loses it at the next renewal or network restart.
+    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+
     # Public-facing — tenants and operators must always reach these.
     tcp dport 80 accept      # HTTP
     tcp dport 443 accept     # HTTPS

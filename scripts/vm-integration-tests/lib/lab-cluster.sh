@@ -44,15 +44,17 @@ lab_cluster_def() {
 # _lab_node_pin_v6 <vm> <ip> — keep a dual-stack node's IPv6 address for good.
 #
 # The address comes from the network's DHCPv6 range, and only IPv4 is reserved per
-# MAC. Worse, once bootstrap.sh turns IPv6 forwarding on, systemd-networkd stops
-# accepting router advertisements — and its DHCPv6 client starts only from one — so
-# the next networkd restart drops the address for good (staging's Ubuntu node lost
-# it two seconds into the install; kubelet then logged "node IP not found" every
-# 10 s and that node's IPv6 WireGuard sourced from a pod address). So the address the
-# node holds now — the one the install registers — is written into its own network
-# config as a static address, with router advertisements accepted for the routes.
-# Before the install this is free; on a running cluster a netplan apply blips
-# Calico's interfaces for about a minute, which is why it only ever applies a change.
+# MAC. A release's host firewall dropped DHCPv6 replies until host-migration
+# 2026.10.10/0003-dhcpv6-client-firewall (the reply is never "established"), so a
+# node kept its lease only until the next renewal or network restart — staging's
+# Ubuntu node lost it two seconds after a networkd restart during the install;
+# kubelet then logged "node IP not found" every 10 s and that node's IPv6 WireGuard
+# sourced from a pod address. Staging installs production's release, which may
+# predate that fix, so the address the node holds now — the one the install
+# registers — is written into its own network config as a static address, with
+# router advertisements accepted for the routes. Before the install this is free;
+# on a running cluster a netplan apply blips Calico's interfaces for about a minute,
+# which is why it only ever applies a change.
 _lab_node_pin_v6() {
   local vm="$1" ip="$2" addr
   addr="$(_vssh "$ip" "ip -6 -o addr show scope global" 2>/dev/null \
@@ -74,7 +76,9 @@ if command -v netplan >/dev/null 2>&1 && [ -d /etc/netplan ]; then
   fi
 elif command -v nmcli >/dev/null 2>&1 && systemctl is-active -q NetworkManager; then
   con="$(nmcli -g GENERAL.CONNECTION device show "$dev")"
-  if ! nmcli -g ipv6.addresses connection show "$con" | grep -qF "${addr}/64"; then
+  # `nmcli -g` escapes the colons (fd98\:120\:\:126/64): unescape before comparing,
+  # or every `lab up` re-applies the connection.
+  if ! nmcli -g ipv6.addresses connection show "$con" | tr -d '\\' | grep -qF "${addr}/64"; then
     nmcli connection modify "$con" +ipv6.addresses "${addr}/64"
     nmcli device reapply "$dev"
     echo "  ${addr} pinned on NetworkManager connection '${con}'"

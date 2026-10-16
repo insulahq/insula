@@ -36,6 +36,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   The platform now keeps Stalwart's resolver at one query in flight (a new reconciler, every
   10 min and at start; `STALWART_DNS_RESOLVER_CONCURRENCY` overrides once the upstream fix
   ships) and reloads its settings — no mail-server restart.
+- **A node that gets its IPv6 address by DHCPv6 keeps it.** The host firewall accepted ICMPv6
+  (so SLAAC worked) but nothing for DHCPv6: a server's reply is never "established" — the
+  request went to a multicast group — and unlike the DHCPv4 client, the DHCPv6 client receives
+  through the firewall. Such a node (EC2 and many VPS providers) kept the address it had before
+  the platform was installed only until the next lease renewal or network restart. DHCPv6
+  replies from link-local servers are now accepted on every install; host-migration
+  `0003-dhcpv6-client-firewall` fixes existing nodes.
 - **The posture page's Calico WireGuard card counts the nodes that run it.** It counts nodes
   whose `firewall.conf` lists UDP/51821 as public, and bootstrap.sh never listed it — every
   cluster read "0 of N". Public Calico WireGuard ports (51821; 51822 on dual-stack) are now
