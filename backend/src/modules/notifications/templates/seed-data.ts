@@ -460,8 +460,11 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
     bodyTemplate: emailMjml(
       'Unacknowledged notifications',
-      '{{count}} action notification(s) have gone unread for more than {{ageHours}} hours, as of '
-      + '{{occurredAt}}: {{summary}}',
+      // Only the admins' own notifications escalate (tenants' never do), so
+      // reading the original — or "mark all as read" — is what clears it.
+      '{{count}} notification(s) asking for action have not been read by any platform admin for '
+      + 'more than {{ageHours}} hours, as of {{occurredAt}}. Each is listed once, with what it said. '
+      + '{{summary}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -475,8 +478,9 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.notification_escalated',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '{{count}} unread for over {{ageHours}}h',
-    bodyTemplate: '{{count}} action notification(s) unread for more than {{ageHours}}h as of {{occurredAt}}: {{summary}}',
+    subjectTemplate: '{{count}} notification(s) unread for over {{ageHours}}h',
+    bodyTemplate: '{{count}} notification(s) asking for action not read by any platform admin for more than '
+      + '{{ageHours}}h as of {{occurredAt}}. Each is listed once. {{summary}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,

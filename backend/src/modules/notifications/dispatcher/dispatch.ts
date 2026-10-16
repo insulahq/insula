@@ -86,6 +86,12 @@ export interface EmitEventOptions {
    */
   readonly resourceType?: string | null;
   readonly resourceId?: string | null;
+  /**
+   * The content names tenants although no single `tenantId` applies — the
+   * unread reminder lists several tenants' notifications. Routes it like a
+   * tenant-scoped event: never to a broadcast channel.
+   */
+  readonly tenantScopedContent?: boolean;
   readonly suppressTenantNotification?: boolean;
   readonly eventId?: string;
   /** Override locale for the template lookup (rare). */
@@ -482,6 +488,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     categoryId: category.id,
     storedChannels: category.defaultChannels,
     tenantId: opts.tenantId ?? null,
+    tenantScopedContent: opts.tenantScopedContent,
   });
   const routedChannels = routed.channels;
   if (routed.excluded.length > 0 && process.env.NOTIFICATION_ROUTING_DEBUG === 'true') {

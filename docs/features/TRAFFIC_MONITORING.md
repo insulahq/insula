@@ -29,7 +29,7 @@ was half of it — invisible while "node-to-node" meant the tunnel interface.
 **Per-node counters.** The `firewall-reconciler` DaemonSet owns an nft table
 `inet insula_traffic` on every node: base chains at `prerouting -90` and
 `postrouting 90` (after de-SNAT, before SNAT) count packets whose peer is
-another node's address, by port class (6443 · 2379-2380 · 10250 · 51820-51821/
+another node's address, by port class (6443 · 2379-2380 · 10250 · 51820-51822/
 4789/IPIP · other), and the backup shim pods' traffic leaving through a
 physical interface to a non-node peer. No rule changes a verdict. Counters are
 published every 30 s to `platform-system/node-traffic-<node>` (`data.snapshot`

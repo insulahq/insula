@@ -268,7 +268,29 @@ kubectl uncordon <nodename>
 2. `kubectl delete node <nodename>` — removes from the cluster.
 3. `ssh root@<node> /usr/local/bin/k3s-uninstall.sh` — if it was a
    server — or `k3s-agent-uninstall.sh` for workers.
-4. Release the VPS.
+4. Remove the platform's host firewall and timers. k3s's uninstall leaves
+   both: the host keeps a `policy drop` input chain built for cluster
+   membership (and, on releases before 2026.10.10, one that drops DHCPv6
+   replies — a DHCPv6-addressed host then loses its IPv6), reloaded at every
+   boot, and `platform-ops` keeps converging host config for a cluster it has
+   left. Skip this only if the host is re-bootstrapped right away (bootstrap
+   rewrites both).
+
+   ```bash
+   ssh root@<node> '
+     systemctl disable --now platform-ops-update.timer platform-ops-host-config.timer 2>/dev/null
+     nft delete table inet filter 2>/dev/null
+     mv /etc/nftables.conf /etc/nftables.conf.insula-removed
+     printf "#!/usr/sbin/nft -f\nflush ruleset\n" > /etc/nftables.conf
+     # RHEL family: drop the boot-time include of the old ruleset.
+     [ -f /etc/sysconfig/nftables.conf ] && sed -i "/^# Insula platform firewall/d; /^include \"\/etc\/nftables.conf\"$/d" /etc/sysconfig/nftables.conf
+     true'
+   ```
+
+   The host is then back to an empty ruleset. bootstrap.sh masked
+   `firewalld` (RHEL family) and `ufw`; unmask them if the host should run
+   its distribution's firewall again (`systemctl unmask --now firewalld`).
+5. Release the VPS — or keep it for a later join.
 
 The node-sync reconciler drops the stale `cluster_nodes` row on the
 next tick (it upserts from `kubectl get nodes`; anything missing

@@ -1,8 +1,9 @@
 /**
- * Kubelet `/stats/summary` readers — host root-disk fill for node-health, and
- * per-PVC filesystem fill for the dashboard's volume alert. Both come from the
- * same document, so they share one fetch, one HTTPS context and one set of
- * best-effort rules.
+ * Kubelet `/stats/summary` readers — host root-disk fill for node-health,
+ * per-PVC filesystem fill for the dashboard's volume alert, and each node's
+ * memory split (process / cache) for the dashboard's node figures. All come
+ * from the same document, so they share one fetch, one HTTPS context and one
+ * set of best-effort rules.
  *
  * Root-disk usage for node-health:
  *
@@ -42,8 +43,16 @@ interface KubeletPodVolume {
   readonly inodes?: number;
   readonly pvcRef?: { readonly name?: string; readonly namespace?: string };
 }
+/** The node's memory as the kubelet reports it (bytes). */
+interface KubeletNodeMemory {
+  /** Usage less inactive file cache — what the kubelet evicts on. */
+  readonly workingSetBytes?: number;
+  /** Anonymous (process) memory. */
+  readonly rssBytes?: number;
+  readonly usageBytes?: number;
+}
 interface KubeletSummary {
-  readonly node?: { readonly fs?: KubeletNodeFs };
+  readonly node?: { readonly fs?: KubeletNodeFs; readonly memory?: KubeletNodeMemory };
   readonly pods?: ReadonlyArray<{ readonly volume?: readonly KubeletPodVolume[] }>;
 }
 
@@ -110,7 +119,26 @@ export function computeNodeDiskPct(fs: KubeletNodeFs | undefined): number | null
   return Math.round(Math.max(...pcts) * 10) / 10;
 }
 
-function fetchSummary(ctx: KubeletHttpsContext, node: string): Promise<KubeletSummary | null> {
+/** A node's memory split: what processes hold, and the cache the working set also counts. */
+export interface NodeMemoryStats {
+  readonly processBytes: number;
+  readonly cacheBytes: number;
+}
+
+/**
+ * Pure: kubelet node.memory → process memory (rss) and the rest of the working
+ * set — mostly active page cache, but also shared memory (database buffers,
+ * memory-backed volumes) and kernel memory, which the kubelet does not report
+ * apart and the kernel cannot hand back. null unless
+ * both are present; cache is clamped at zero, since the two are sampled from
+ * different cgroup files and can disagree by a sample.
+ */
+export function computeNodeMemory(m: KubeletNodeMemory | undefined): NodeMemoryStats | null {
+  if (typeof m?.workingSetBytes !== 'number' || typeof m.rssBytes !== 'number') return null;
+  return { processBytes: m.rssBytes, cacheBytes: Math.max(0, m.workingSetBytes - m.rssBytes) };
+}
+
+function fetchSummary(ctx: KubeletHttpsContext, node: string, timeoutMs = 6_000): Promise<KubeletSummary | null> {
   return new Promise((resolve) => {
     void (async () => {
       const https = await import('node:https');
@@ -125,7 +153,7 @@ function fetchSummary(ctx: KubeletHttpsContext, node: string): Promise<KubeletSu
         key: ctx.opts.key,
         headers: ctx.opts.headers ?? {},
         agent: ctx.agent,
-        timeout: 6_000,
+        timeout: timeoutMs,
       }, (res) => {
         if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
         let data = '';
@@ -139,7 +167,7 @@ function fetchSummary(ctx: KubeletHttpsContext, node: string): Promise<KubeletSu
       req.on('error', () => resolve(null));
       req.on('timeout', () => { req.destroy(); resolve(null); });
       req.end();
-    })();
+    })().catch(() => resolve(null)); // a synchronous throw must not leave the caller waiting forever
   });
 }
 
@@ -159,6 +187,37 @@ export async function readNodeDiskStats(nodeNames: readonly string[]): Promise<M
     if (pct !== null) out.set(node, pct);
   }));
   return out;
+}
+
+/**
+ * Each node's memory split (process / cache) via kubelet /stats/summary, for
+ * the dashboard's node figures. Best-effort like the others: a node that does
+ * not answer within `timeoutMs` is absent, and the caller falls back to the
+ * metrics API's working set. The timeout is the caller's because the dashboard
+ * reads nodes under its own deadline.
+ */
+export async function readNodeMemoryStats(
+  nodeNames: readonly string[],
+  opts: { readonly timeoutMs: number },
+): Promise<Map<string, NodeMemoryStats>> {
+  const out = new Map<string, NodeMemoryStats>();
+  if (nodeNames.length === 0) return out;
+  const ctx = await getContext();
+  if (!ctx) return out;
+  await Promise.all(nodeNames.map(async (node) => {
+    // fetchSummary's own timeout is an idle-socket one; this is the total.
+    const summary = await settleWithin(fetchSummary(ctx, node, opts.timeoutMs), opts.timeoutMs, null);
+    const mem = computeNodeMemory(summary?.node?.memory);
+    if (mem) out.set(node, mem);
+  }));
+  return out;
+}
+
+/** `p`, or `fallback` once `ms` have passed — whichever comes first. */
+export function settleWithin<T, F>(p: Promise<T>, ms: number, fallback: F): Promise<T | F> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<F>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
 /**

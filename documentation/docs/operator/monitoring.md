@@ -500,6 +500,25 @@ bandwidth, a failed custom deployment) opens **that tenant's** page rather than
 the full list. Alert values are shown in the metric's own units — a percentage
 (`3.87%`), a duration (`620ms`, `1.1d`), or a plain count — never a raw ratio.
 
+### Unread-notification reminders
+
+A notification that asks the platform admins to act, such as *Backups never
+ran* or a certificate failing to renew, may go unread by **every admin for 48
+hours**. It then comes back once, as **N notification(s) unread for over
+48h**. Each line says what it was, which tenant it is about (if any), since
+when it is unread, and what it said. Reading the original before the 48 hours
+are up — or *Mark all as read* — means no reminder.
+
+Tenants' notifications never come here. They reach the tenant, usually by
+email, and are the tenant's to read. If you need to know about a tenant
+condition, it has its own admin notification: send-limit saturation,
+mailboxes near quota, subscriptions expiring.
+
+Warnings about a window that is over long before 48 hours (outbound send-limit
+saturation in the last hour) are not chased. Reminders about a tenant never go
+to the shared push topic. The source is **Unacknowledged notifications
+escalated** under **Sources**, where you can turn it off.
+
 !!! tip "Wire up a Provider on day one"
     Configure at least one SMTP Provider and confirm a test notification arrives.
     Monitoring you never see is monitoring you don't have.

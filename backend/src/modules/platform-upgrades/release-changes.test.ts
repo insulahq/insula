@@ -69,5 +69,23 @@ describe('computeUpgradeChanges', () => {
     const none = computeUpgradeChanges(input({ kubelet: 'v1.36.2+k3s1' }));
     expect(none.kubernetes).toEqual({ current: 'v1.36.2+k3s1', target: null, offer: false, reason: null });
   });
+
+  it('lists what else the release restarts for the INSTALLED version, with the live Deployment read for its impact', () => {
+    const mail = { kind: 'Deployment', namespace: 'mail', name: 'stalwart-mail', change: 'restart' } as const;
+    const withTable = { ...contents, workloadChanges: { '2026.10.6': [mail], '2026.10.5': [] } };
+    const r = computeUpgradeChanges(input({
+      contents: withTable,
+      liveDeployments: new Map([['Deployment/mail/stalwart-mail', { replicas: 1, strategy: { type: 'Recreate' } }]]),
+    }));
+    expect(r.workloads?.known).toBe(true);
+    expect(r.workloads?.items).toEqual([{ ...mail, label: 'Mail server', impact: expect.stringMatching(/^one replica, stopped before its replacement starts/) }]);
+    // Another installed version reads its own entry, not the newest one.
+    expect(computeUpgradeChanges(input({ fromVersion: '2026.10.5', contents: withTable })).workloads).toEqual({ known: true, items: [] });
+  });
+
+  it('a release without the table, or without contents at all, says the restarts are unknown', () => {
+    expect(computeUpgradeChanges(input()).workloads).toEqual({ known: false, items: [] });
+    expect(computeUpgradeChanges(input({ contents: null })).workloads).toEqual({ known: false, items: [] });
+  });
 });
 

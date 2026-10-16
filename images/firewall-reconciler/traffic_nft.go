@@ -28,7 +28,7 @@
 //	    tcp sport|dport 6443         → kubeapi
 //	    tcp sport|dport 2379-2380    → etcd
 //	    tcp sport|dport 10250        → kubelet
-//	    udp sport|dport 51820-51821, udp sport|dport 4789, meta l4proto 4 → tunnel
+//	    udp sport|dport 51820-51822, udp sport|dport 4789, meta l4proto 4 → tunnel
 //	    anything else                → n2nother }
 //	}
 //
@@ -149,7 +149,8 @@ var n2nClasses = []n2nClass{
 	{class: classEtcd, ports: []portMatch{{l4ProtoTCP, 2379, 2380}}},
 	{class: classKubelet, ports: []portMatch{{l4ProtoTCP, 10250, 10250}}},
 	{class: classTunnel,
-		ports:    []portMatch{{l4ProtoUDP, 51820, 51821}, {l4ProtoUDP, 4789, 4789}},
+		// 51820 NetBird, 51821 Calico WireGuard IPv4, 51822 Calico WireGuard IPv6.
+		ports:    []portMatch{{l4ProtoUDP, 51820, 51822}, {l4ProtoUDP, 4789, 4789}},
 		l4protos: []byte{l4ProtoIPIP}},
 }
 

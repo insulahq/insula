@@ -1,5 +1,42 @@
-import { describe, it, expect } from 'vitest';
-import { computeNodeDiskPct, computePvcFillFraction } from './kubelet-disk.js';
+import { describe, it, expect, vi } from 'vitest';
+import { computeNodeDiskPct, computeNodeMemory, computePvcFillFraction, settleWithin } from './kubelet-disk.js';
+
+describe('settleWithin', () => {
+  it('gives the fallback once the deadline passes, however long the promise would take', async () => {
+    vi.useFakeTimers();
+    try {
+      const never = new Promise<string>(() => { /* a kubelet that never answers */ });
+      const result = settleWithin(never, 2_500, null);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect(result).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives the answer when it arrives first', async () => {
+    await expect(settleWithin(Promise.resolve('summary'), 2_500, null)).resolves.toBe('summary');
+  });
+});
+
+describe('computeNodeMemory', () => {
+  it('splits the working set into process memory and the cache counted in it', () => {
+    // A production node with no tenant on it: working set 8.04 GiB, 4.85 GiB of it processes.
+    expect(computeNodeMemory({ workingSetBytes: 8_000, rssBytes: 4_850, usageBytes: 12_000 }))
+      .toEqual({ processBytes: 4_850, cacheBytes: 3_150 });
+  });
+
+  it('never reports negative cache when the two samples disagree', () => {
+    expect(computeNodeMemory({ workingSetBytes: 4_000, rssBytes: 4_100 }))
+      .toEqual({ processBytes: 4_100, cacheBytes: 0 });
+  });
+
+  it('is not measured when either figure is missing', () => {
+    expect(computeNodeMemory(undefined)).toBeNull();
+    expect(computeNodeMemory({ workingSetBytes: 8_000 })).toBeNull();
+    expect(computeNodeMemory({ rssBytes: 4_850 })).toBeNull();
+  });
+});
 
 describe('computeNodeDiskPct', () => {
   it('returns byte-fill percentage', () => {

@@ -10,13 +10,15 @@
  * signal.
  */
 import { createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { safeTick } from '../../../shared/safe-tick.js';
 import { notificationDeliveries } from '../../../db/schema.js';
 import {
   findEscalationCandidates,
   markEscalated,
   describeCandidates,
+  concernsTenants,
+  countEvents,
   ESCALATE_AFTER_HOURS,
 } from './service.js';
 import { notifyAdminEscalation } from '../events.js';
@@ -24,6 +26,9 @@ import type { Database } from '../../../db/index.js';
 import { withSchedulerLease } from '../../../shared/scheduler-lease.js';
 
 const TICK_MS = 60 * 60 * 1000;
+
+/** Delivery statuses that mean an admin was told (or chose not to be). */
+const TOLD = ['queued', 'sending', 'sent', 'muted'] as const;
 
 export function startEscalationScheduler(db: Database): NodeJS.Timeout {
   // One replica escalates: the batch is sent before its rows are marked, so two
@@ -66,11 +71,15 @@ export async function runOnce(db: Database, now: Date = new Date()): Promise<num
   // ONE aggregated escalation, not one per notification. The operator needs a
   // list of what is being ignored, not a replay of every message the recipient
   // already received and did not read.
+  //
+  // The items name tenants and quote their notifications (the full mailbox,
+  // the sending accounts), so the reminder is tenant-scoped content: it may go
+  // to each admin's bell and email, never to a shared push topic.
   await notifyAdminEscalation(db, {
-    count: String(candidates.length),
+    count: String(countEvents(candidates)),
     ageHours: String(ESCALATE_AFTER_HOURS),
     summary: describeCandidates(candidates),
-  }, dedupeKey);
+  }, dedupeKey, { tenantScopedContent: concernsTenants(candidates) });
 
   // Mark ONLY if the operator was actually told.
   //
@@ -79,10 +88,20 @@ export async function runOnce(db: Database, now: Date = new Date()): Promise<num
   // table instead. No delivery means no one was told, so the rows stay
   // eligible and the next tick retries them — which is the whole point of
   // marking after dispatch rather than before.
+  //
+  // A row under the key is not enough: `rate_limited` and `skipped` (no email
+  // address, no template) are written under it too, and told nobody. `muted`
+  // counts — the admin chose not to hear it, and retrying hourly would not
+  // change that. A batch that reached nobody is retried under the NEXT day's
+  // key: the dispatcher treats any row under a key as already fired, so the
+  // rest of today's ticks dedupe against it.
   const [delivered] = await db
     .select({ id: notificationDeliveries.id })
     .from(notificationDeliveries)
-    .where(eq(notificationDeliveries.dedupeKey, dedupeKey))
+    .where(and(
+      eq(notificationDeliveries.dedupeKey, dedupeKey),
+      inArray(notificationDeliveries.status, [...TOLD]),
+    ))
     .limit(1);
   if (!delivered) {
     console.warn(
@@ -91,7 +110,7 @@ export async function runOnce(db: Database, now: Date = new Date()): Promise<num
     return 0;
   }
 
-  await markEscalated(db, candidates.map((c) => c.id), now);
+  await markEscalated(db, candidates, now);
   console.log(`[notification-escalation] escalated ${candidates.length} unread action notification(s)`);
   return candidates.length;
 }

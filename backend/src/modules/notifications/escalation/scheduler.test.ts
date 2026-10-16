@@ -19,7 +19,10 @@ vi.mock('./service.js', async (orig) => {
   };
 });
 
-let candidates: Array<{ id: string; userId: string; categoryId: string; title: string; message: string; createdAt: Date }> = [];
+let candidates: Array<{
+  id: string; userId: string; categoryId: string; title: string; message: string; createdAt: Date;
+  eventId: string | null; tenantName: string | null; tenantScoped: boolean;
+}> = [];
 
 const { runOnce } = await import('./scheduler.js');
 
@@ -29,9 +32,10 @@ function db(rows: unknown[]) {
   return { select: () => chain } as never;
 }
 
-const cand = (id: string) => ({
+const cand = (id: string, tenantName: string | null = null) => ({
   id, userId: 'u1', categoryId: 'mailbox.quota_threshold',
   title: `title ${id}`, message: 'm', createdAt: new Date('2026-08-09T00:00:00Z'),
+  eventId: `e-${id}`, tenantName, tenantScoped: tenantName !== null,
 });
 
 beforeEach(() => { notifySpy.mockClear(); markSpy.mockClear(); });
@@ -52,7 +56,7 @@ describe('escalation sweep', () => {
     candidates = [cand('a'), cand('b')];
     const n = await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T12:00:00Z'));
     expect(markSpy).toHaveBeenCalledOnce();
-    expect(markSpy.mock.calls[0][1]).toEqual(['a', 'b']);
+    expect((markSpy.mock.calls[0][1] as Array<{ id: string }>).map((c) => c.id)).toEqual(['a', 'b']);
     expect(n).toBe(2);
   });
 
@@ -76,5 +80,23 @@ describe('escalation sweep', () => {
     await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T12:00:00Z'));
     await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T18:00:00Z'));
     expect(notifySpy.mock.calls[0][2]).toEqual(notifySpy.mock.calls[1][2]);
+  });
+
+  it("keeps a reminder that names a tenant off the shared push topic", async () => {
+    // The items quote notifications about a tenant — its workloads, its
+    // mailboxes. ntfy is one topic for everyone subscribed to it.
+    candidates = [cand('a'), cand('b', 'Acme')];
+    await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T12:00:00Z'));
+    expect(notifySpy.mock.calls[0][3]).toEqual({ tenantScopedContent: true });
+
+    candidates = [cand('c')];
+    await runOnce(db([{ id: 'd2' }]), new Date('2026-09-15T13:00:00Z'));
+    expect(notifySpy.mock.calls[1][3]).toEqual({ tenantScopedContent: false });
+  });
+
+  it('counts notifications, not the recipients\' copies of them', async () => {
+    candidates = [cand('a'), { ...cand('b'), eventId: 'e-a' }, cand('c')];
+    await runOnce(db([{ id: 'd1' }]), new Date('2026-09-15T12:00:00Z'));
+    expect(notifySpy.mock.calls[0][1]).toMatchObject({ count: '2' });
   });
 });

@@ -178,6 +178,7 @@ Only these ports face `0.0.0.0/0` (and `::/0`):
 | `25, 110, 143, 465, 587, 993, 995, 4190 / tcp` | Stalwart mail |
 | `51820/udp` | NetBird WireGuard (public-key auth) |
 | `51821/udp` | Calico WireGuard (public-key auth) |
+| `51822/udp` | Calico WireGuard for IPv6 pod traffic — dual-stack clusters only (public-key auth) |
 | `29899/udp` | NetBird direct connection |
 | `icmp`, `icmpv6` | diagnostics |
 
@@ -403,7 +404,17 @@ your laptop:
   punches a hole in the design and is not recommended for sustained
   use.)
 
-## Calico WireGuard (UDP/51821) policy
+## Calico WireGuard (UDP/51821, IPv6 UDP/51822) policy
+
+Pod traffic between nodes rides Calico WireGuard: IPv4 on 51821 and, on a
+dual-stack cluster, IPv6 on 51822 (`wireguardEnabledV6`). Both ports get the
+same exposure. Before 51822 existed, a dual-stack cluster had no IPv6
+WireGuard: Calico fell back to plain VXLAN over the nodes' IPv6 addresses
+(UDP/4789), which the input chain drops, so pods could not reach pods on
+another node over IPv6 at all. Host-migration
+`2026.10.10/0001-calico-wireguard-ipv6.sh` fixes existing clusters. Do not
+"fix" it by accepting 4789 — that carries pod traffic unencrypted between
+nodes.
 
 Default: public. Reasoning:
 

@@ -236,6 +236,11 @@ const IMPACT_TEXT: Readonly<Record<ServiceImpactKind, string>> = {
   gap: 'one replica, stopped before its replacement starts — unavailable for ~30–90 s',
 };
 
+/** What restarting a Deployment of this shape does to its availability, in the review's words. */
+export function deploymentImpact(d: DeploymentShape): string {
+  return IMPACT_TEXT[serviceImpactKind(d)];
+}
+
 /**
  * Preview what an upgrade will interrupt, BEFORE the operator commits. Computed
  * from the live platform Deployments that will restart — their replica counts

@@ -2648,6 +2648,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const imapConcurrencyStop = startImapConcurrencyReverter(app.db);
         app.addHook('onClose', () => imapConcurrencyStop());
 
+        // DNS-resolver reconciler: keeps Stalwart's resolver at one in-flight
+        // query. Two concurrent nameservers (every dual-stack pod has them)
+        // trip a hickory-dns bug that fails DNSSEC validation on any chain
+        // with a truncated answer — mail to .na/.org/.co.za stalled for days.
+        // See backend/src/modules/mail-admin/dns-resolver-reconciler.ts.
+        const { startDnsResolverReconciler } = await import(
+          './modules/mail-admin/dns-resolver-reconciler.js'
+        );
+        const dnsResolverStop = startDnsResolverReconciler();
+        app.addHook('onClose', () => dnsResolverStop());
+
         // Mail-task orphan reaper: mark stale 'running'
         // mail.migration / mail.port-exposure tasks as 'failed' on boot.
         // Without this, an orphaned task from a previous pod's

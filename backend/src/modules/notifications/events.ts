@@ -42,6 +42,8 @@ async function dispatchSafe(
     /** What the event is ABOUT, when that differs from the scope. */
     readonly resourceType?: string;
     readonly resourceId?: string;
+    /** See EmitEventOptions.tenantScopedContent. */
+    readonly tenantScopedContent?: boolean;
   },
 ): Promise<EmitResult | null> {
   try {
@@ -55,6 +57,7 @@ async function dispatchSafe(
       externalRecipientsOptedIn: extraOpts?.externalRecipientsOptedIn,
       resourceType: extraOpts?.resourceType,
       resourceId: extraOpts?.resourceId,
+      tenantScopedContent: extraOpts?.tenantScopedContent,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -1253,8 +1256,12 @@ export async function notifyAdminEscalation(
   db: Database,
   payload: EscalationPayload,
   dedupeKey?: string,
+  opts: { readonly tenantScopedContent?: boolean } = {},
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.notification_escalated', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, 'admin.notification_escalated', { kind: 'admin' }, payload, undefined, {
+    dedupeKey,
+    tenantScopedContent: opts.tenantScopedContent,
+  });
 }
 
 export interface DigestPayload {

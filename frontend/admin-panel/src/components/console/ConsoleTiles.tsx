@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowUpRight, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { DashboardAlert, DashboardAlertAction, DashboardSection, ResourceTriad } from '@insula/api-contracts';
+import { CACHE_BAND, triadFigures } from '@/lib/resource-triad';
 
 /**
  * The console's tile vocabulary.
@@ -303,6 +304,9 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
   const free = Math.max(0, total - claimed);
   const usedPct = total > 0 ? (inUse / total) * 100 : 0;
   const cmtPct = consume || total <= 0 ? 0 : Math.max(0, ((committed - inUse) / total) * 100);
+  // Memory's cache: kept out of in use, part of free, drawn at its start.
+  const cache = consume ? null : triad.cache ?? null;
+  const { cacheInFree, cachePct } = triadFigures(measured, committed, total, cache);
   /**
    * Two thresholds, not one. The mockup warns at 75% of the claim; a cluster
    * past 95% is a different conversation from one at 80%, and the mockup's
@@ -325,12 +329,16 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
             ['Total', `${fmt(total, unit, dec)} ${unit}`],
             ...(consume ? [] : [['Committed', `${fmt(committed, unit, dec)} ${unit} · ${Math.round((committed / (total || 1)) * 100)}%`] as const]),
             ['In use', usageUnknown ? 'not reported' : `${fmt(inUse, unit, dec)} ${unit} · ${Math.round(usedPct)}%`],
+            ...(cache === null || cacheInFree === null ? [] : [['Cache', `${fmt(cache, unit, dec)} ${unit} · `
+              + (cacheInFree < cache ? `${fmt(cacheInFree, unit, dec)} ${unit} of it in free` : 'counted in free')] as const]),
             ['Free', `${fmt(free, unit, dec)} ${unit}`],
             ...extraRows,
           ]}
           note={consume
             ? 'Snapshots and replicas sit on disk without being a request.'
-            : 'Committed is what pods have requested: the scheduler holds it for them even while they sit idle. Free is neither in use nor committed.'}
+            : 'Committed is what pods have requested: the scheduler holds it for them even while they sit idle. Free is neither in use nor committed.'
+              + (cache === null ? '' : ' In use is what processes hold. Cache is mostly file cache, which the kernel hands back'
+                + ' when memory runs short; it also holds shared memory (database buffers, memory-backed volumes), which it cannot.')}
         />
       )}
     >
@@ -366,6 +374,9 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           className={clsx('h-full', band.cmt)}
           style={{ width: `${Math.min(100, cmtPct).toFixed(2)}%` }}
         />
+        {cacheInFree !== null && (
+          <div data-band="cache" className={clsx('h-full', CACHE_BAND)} style={{ width: `${cachePct.toFixed(2)}%` }} />
+        )}
       </div>
 
       {/* Colour-coded legend: every band on the bar is named, and the swatch
@@ -378,6 +389,9 @@ export function TriadBar({ triad, label, to, vocab = 'committed', extraRows = []
           <Swatch className={band.swCmt}>
             {vocab} {Math.round((committed / (total || 1)) * 100)}%
           </Swatch>
+        )}
+        {cacheInFree !== null && (
+          <Swatch className={CACHE_BAND}>cache {fmt(cacheInFree, unit, dec)}</Swatch>
         )}
         <Swatch className={SW_FREE}>
           free {fmt(free, unit, dec)}

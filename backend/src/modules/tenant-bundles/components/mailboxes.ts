@@ -107,6 +107,7 @@ import {
   parseMailboxDoneLines,
   type MailboxCaptureResult,
 } from './mailboxes-restic.js';
+import { MAILBOXES_CAPTURE_TIMEOUT_MS } from './capture-timeouts.js';
 
 const mlog = mailLogger().child({ module: 'tenant-bundles-mailboxes' });
 
@@ -186,7 +187,7 @@ export interface CaptureMailboxesComponentOpts {
   readonly engineOverride?: MailboxBackupEngine;
 }
 
-const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = MAILBOXES_CAPTURE_TIMEOUT_MS;
 // K8s `activeDeadlineSeconds` is the orchestrator timeout minus this
 // buffer so K8s force-kills first and the orchestrator's next poll
 // sees `DeadlineExceeded` rather than its own generic timeout.

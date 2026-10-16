@@ -19,14 +19,20 @@ lab_mac() {
   printf '52:54:00:%02x:00:%02x' "${prefix##*.}" "$host"
 }
 
-# lab_net_ensure <net-name> <net-prefix a.b.c> <dhcp-dns-ip> — define + start +
-# autostart a routed network. Idempotent: an existing network is only started.
+# lab_net_ensure <net-name> <net-prefix a.b.c> <dhcp-dns-ip> [<v6-prefix>] — define +
+# start + autostart a routed network. Idempotent: an existing network is only started.
 #
 # DNS off (`<dns enable='no'/>`): a host-wide resolver (AdGuard Home, pi-hole)
 # commonly binds *:53, and libvirt's per-network dnsmasq then cannot start. DHCP
 # stays on and hands out <dhcp-dns-ip> as the resolver (option 6).
+#
+# <v6-prefix> (e.g. fd98:120) adds a ULA <v6-prefix>::/64 with DHCPv6, for a cluster
+# installed --dual-stack. ULA, like the throw-away tier's (driver.sh vm_net_create):
+# what is under test is the cluster's own IPv6 paths, identical on fd… or 2001:…,
+# and RFC 6724 keeps a ULA-only host on IPv4 for everything outside the lab.
 lab_net_ensure() {
-  local name="$1" prefix="$2" dns="$3" info
+  local name="$1" prefix="$2" dns="$3" v6="${4:-}" info v6_block=""
+  [[ -z "$v6" ]] || v6_block="$(_lab_net_v6_block "$v6")"
   if ! VIRSH net-info "$name" >/dev/null 2>&1; then
     local xmlf="${VMTEST_TMP_DIR:-/tmp}/net-${name}.xml"
     cat > "$xmlf" <<XML
@@ -37,7 +43,8 @@ lab_net_ensure() {
   <dns enable='no'/>
   <ip address='${prefix}.1' netmask='255.255.255.0'>
     <dhcp><range start='${prefix}.200' end='${prefix}.250'/></dhcp>
-  </ip>
+  </ip>${v6_block:+
+${v6_block}}
   <dnsmasq:options>
     <dnsmasq:option value='dhcp-option=6,${dns}'/>
   </dnsmasq:options>
@@ -45,11 +52,46 @@ lab_net_ensure() {
 XML
     VIRSH net-define "$xmlf" >&2
     rm -f "$xmlf"
+  elif [[ -n "$v6" ]]; then
+    _lab_net_add_v6 "$name" "$v6_block" || return 1
   fi
   # Capture, then match: `virsh … | grep -q` races under pipefail.
   info="$(VIRSH net-info "$name" 2>/dev/null || true)"
   [[ "$info" =~ Active:[[:space:]]+yes ]] || VIRSH net-start "$name" >&2
   [[ "$info" =~ Autostart:[[:space:]]+yes ]] || VIRSH net-autostart "$name" >&2
+}
+
+# _lab_net_v6_block <v6-prefix> — the network's IPv6 <ip> element.
+_lab_net_v6_block() {
+  printf "  <ip family='ipv6' address='%s::1' prefix='64'>\n    <dhcp><range start='%s::100' end='%s::1ff'/></dhcp>\n  </ip>" "$1" "$1" "$1"
+}
+
+# _lab_net_add_v6 <net-name> <v6-block> — give an existing network its IPv6 subnet.
+# libvirt cannot add an <ip> element live, so the network is redefined (its DHCP
+# host reservations ride along in the dumped XML) and restarted — which detaches
+# every guest on it, so this refuses while one of them is active (running or
+# paused: a paused guest's NIC does not come back on resume either).
+_lab_net_add_v6() {
+  local name="$1" block="$2" xml xmlf dom running=()
+  xml="$(VIRSH net-dumpxml --inactive "$name")" || return 1
+  [[ "$xml" == *"family='ipv6'"* ]] && return 0
+  while read -r dom; do
+    [[ -n "$dom" ]] || continue
+    [[ "$(VIRSH domiflist "$dom" 2>/dev/null || true)" == *" ${name} "* ]] && running+=("$dom")
+  done <<<"$(VIRSH list --name 2>/dev/null || true)"
+  if (( ${#running[@]} > 0 )); then
+    echo "lab: ${name} needs its IPv6 subnet, but ${running[*]} are active on it — stop them first" >&2
+    return 1
+  fi
+  xmlf="${VMTEST_TMP_DIR:-/tmp}/net-${name}.xml"
+  printf '%s\n' "${xml/<\/network>/${block}
+</network>}" > "$xmlf"
+  echo "── ${name}: adding its IPv6 subnet ──" >&2
+  VIRSH net-define "$xmlf" >&2 || { rm -f "$xmlf"; return 1; }
+  rm -f "$xmlf"
+  if [[ "$(VIRSH net-info "$name" 2>/dev/null || true)" =~ Active:[[:space:]]+yes ]]; then
+    VIRSH net-destroy "$name" >&2 && VIRSH net-start "$name" >&2
+  fi
 }
 
 # lab_net_reserve <net-name> <net-prefix> <vm-name> <host-octet> — pin <vm-name>'s
