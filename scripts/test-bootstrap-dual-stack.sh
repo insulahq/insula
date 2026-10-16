@@ -283,6 +283,11 @@ has "$src" 'ip6 saddr @trusted_ranges_v6 udp dport 51822 accept   # Calico WireG
 wg_v6_ctx=$(grep -B 8 'udp dport 51822 accept   # Calico WireGuard, IPv6"' <<<"$src" | head -12)
 has "$wg_v6_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the 51822 accept is inside the dual-stack guard"
 hasnt "$src" 'dport 4789 accept'                  "no plaintext VXLAN accept (pod traffic would cross the internet unencrypted)"
+# The port inventory the posture page reads: 51821 when public, 51822 only on dual-stack.
+inv_ctx=$(grep -A 5 'local public_udp="51820 29899"' <<<"$src")
+has "$inv_ctx" 'if [[ "$CALICO_WG_PUBLIC" != "false" ]]; then'   "51821 is recorded as public only when it is"
+has "$inv_ctx" 'if [[ "$DUAL_STACK" == true ]]; then public_udp="${public_udp} 51822"; fi' "51822 is recorded only on dual-stack"
+has "$src" 'PUBLIC_UDP_PORTS=${public_udp}'        "firewall.conf carries the computed list"
 
 echo
 echo "validation refuses impossible requests"

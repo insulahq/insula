@@ -28,6 +28,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Outbound mail to `.na`, `.org`, `.co.za` and other domains no longer stalls on "DNSSEC
+  validation failed".** Stalwart queried both of a pod's nameservers (the cluster DNS
+  service's IPv4 and IPv6 addresses) at once, and its DNS library (hickory-dns#3963) gives up
+  when more than one answers truncated — which a TLD's large DNSKEY set does over UDP. The
+  recipients' DNS was fine; on production mail to every `.na` domain sat in the queue for days.
+  The platform now keeps Stalwart's resolver at one query in flight (a new reconciler, every
+  10 min and at start; `STALWART_DNS_RESOLVER_CONCURRENCY` overrides once the upstream fix
+  ships) and reloads its settings — no mail-server restart.
+- **The posture page's Calico WireGuard card counts the nodes that run it.** It counts nodes
+  whose `firewall.conf` lists UDP/51821 as public, and bootstrap.sh never listed it — every
+  cluster read "0 of N". Public Calico WireGuard ports (51821; 51822 on dual-stack) are now
+  recorded; host-migration `0002-public-udp-ports-inventory` fixes existing nodes from what
+  each node's firewall actually accepts.
 - **On a dual-stack cluster, pods can reach pods on other nodes over IPv6.** They never
   could: Calico WireGuard was enabled for IPv4 only, so IPv6 pod traffic between nodes
   fell back to plain VXLAN over the nodes' IPv6 addresses (UDP/4789), which the host

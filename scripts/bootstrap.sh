@@ -3028,11 +3028,19 @@ NFT
     rm -f /etc/hosting-platform/firewall.conf
   fi
   ln -sfn firewall/firewall.conf /etc/hosting-platform/firewall.conf
+  # Calico WireGuard is public unless --calico-wg-public=false: list it (51821, and
+  # 51822 for IPv6 on dual-stack). The posture page's Calico WireGuard card counts
+  # nodes whose list carries 51821 — without it every cluster read "0 of N".
+  local public_udp="51820 29899"
+  if [[ "$CALICO_WG_PUBLIC" != "false" ]]; then
+    public_udp="${public_udp} 51821"
+    if [[ "$DUAL_STACK" == true ]]; then public_udp="${public_udp} 51822"; fi
+  fi
   cat > /etc/hosting-platform/firewall/firewall.conf <<HPFW
 # Written by bootstrap.sh — DO NOT EDIT BY HAND.
 # Re-run bootstrap with appropriate flags to change posture.
 PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190 23022
-PUBLIC_UDP_PORTS=51820 29899
+PUBLIC_UDP_PORTS=${public_udp}
 SSH_VIA_MESH=${ssh_via_mesh_persist}
 SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}
 HPFW

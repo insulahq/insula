@@ -226,13 +226,13 @@ export function startImapConcurrencyReverter(
 
 // ── Internal: JMAP plumbing ─────────────────────────────────────────────────
 
-interface ResolvedTransport {
+export interface ResolvedTransport {
   readonly authHeader: string;
   readonly baseUrl: string;
   readonly jmapPost: (auth: string, body: unknown) => Promise<JmapResponseShape>;
 }
 
-async function resolveTransport(deps: ImapConcurrencyDeps): Promise<ResolvedTransport> {
+export async function resolveTransport(deps: ImapConcurrencyDeps): Promise<ResolvedTransport> {
   const baseUrl = deps.baseUrl ?? STALWART_MGMT_URL;
   const authHeader = deps.authHeader ?? (await loadAdminAuthHeader());
   const jmapPost = deps.jmapPost ?? makeFetchJmapPost(baseUrl);
