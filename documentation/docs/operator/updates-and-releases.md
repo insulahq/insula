@@ -81,6 +81,25 @@ On **Platform Settings → Upgrades** (`super_admin`):
    The dialog also names the services that run a **single replica**. Those see a
    short gap while they restart, even on a multi-node cluster. Services with more
    than one replica roll over without one.
+
+    Under **What will be interrupted**, after the management API and the panels,
+    the dialog lists everything else the release restarts on an upgrade from the
+    version you run: the **mail server** (no mail is received or sent while it
+    restarts; sending servers retry and mail clients reconnect), **webmail**, the
+    **platform database**, the SFTP gateway, the reconcilers. Each line says what
+    the restart does, from the service's own replicas and rollout strategy. Anything
+    the release adds or removes is listed too. A service the release does not change
+    is not listed, because it does not restart.
+
+    The release works this out when it is cut. It compares its manifests with those
+    of each of the 40 stable releases before it, and of the release candidates of
+    the last five. The signed release manifest carries the result. When the release
+    has no list for the version you run, the dialog says it cannot tell and points
+    you to the release notes. That happens for releases up to 2026.10.9, versions
+    older than that window, and development builds. If the list cannot be read at
+    all, the dialog says that too. It never reads as "nothing else restarts". The
+    dialog of the version you run decides what is shown, so the list first appears
+    when upgrading *from* a release that has it.
 4. **Run upgrade** — leave the version box blank to take the latest, or type a
    specific version (e.g. `2026.7.0`). Click **Preview** to see the decision
    and target, then **Apply upgrade →**. Apply is a deliberate two-click

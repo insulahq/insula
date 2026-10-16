@@ -230,6 +230,15 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
           current: { type: 'string', nullable: true }, target: { type: 'string', nullable: true },
           offer: { type: 'boolean' }, reason: { type: 'string', nullable: true },
         } },
+        // What else the upgrade restarts (mail server, webmail, database…), per the
+        // release's table for the installed version. Listed here or Fastify strips it.
+        workloads: { type: 'object', properties: {
+          known: { type: 'boolean' },
+          items: { type: 'array', items: { type: 'object', properties: {
+            kind: { type: 'string' }, namespace: { type: 'string' }, name: { type: 'string' },
+            change: { type: 'string' }, label: { type: 'string' }, impact: { type: 'string' },
+          } } },
+        } },
       } } } } },
     },
   }, async (request) => {

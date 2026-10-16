@@ -21,9 +21,17 @@
  * case-insensitive behaviour.
  */
 export function likePattern(term: string): string {
-  const escaped = term
+  return `%${escapeLike(term)}%`;
+}
+
+/** A safe `…%` pattern: the term at the START of the value. Same escaping as {@link likePattern}. */
+export function likePrefixPattern(term: string): string {
+  return `${escapeLike(term)}%`;
+}
+
+function escapeLike(term: string): string {
+  return term
     .replace(/\\/g, '\\\\')
     .replace(/%/g, '\\%')
     .replace(/_/g, '\\_');
-  return `%${escaped}%`;
 }

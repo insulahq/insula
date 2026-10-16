@@ -3,7 +3,7 @@
  *
  * Pipeline (single tenant-namespace Job):
  *
- *   restic -r "$REPO" backup /source <tags…> --pack-size 64
+ *   restic -r "$REPO" backup /source <tags…> --host <tenantId> --pack-size 64
  *       --option s3.connections=5 --json > /tmp/out.json
  *
  * The Job runs `restic backup /source` DIRECTLY against the per-tenant
@@ -88,6 +88,7 @@ import { makeRepoInitSerialiser } from '../repo-init-lock.js';
 import { resolvePlatformImage } from '../../../shared/platform-images.js';
 import { resolveTenantDataNode, type DataNodeChoice } from '../../tenant-placement/data-node.js';
 import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
+import { FILES_CAPTURE_TIMEOUT_MS } from './capture-timeouts.js';
 
 /**
  * PVC mount point inside the capture Job. `restic backup /source`
@@ -160,7 +161,7 @@ export class FilesComponentSkippedError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = FILES_CAPTURE_TIMEOUT_MS;
 const JOB_DEADLINE_BUFFER_SEC = 60;
 
 const CREDS_MOUNT_PATH = '/var/run/restic-creds';
@@ -172,7 +173,7 @@ const CREDS_MOUNT_PATH = '/var/run/restic-creds';
  *
  *  1. Export RESTIC_PASSWORD / AWS_* from the mounted creds Secret.
  *  2. REPO=$(cat …/repo_uri).
- *  3. `restic … backup /source <--tag …> --pack-size 64
+ *  3. `restic … backup /source <--tag …> --host <tenantId> --pack-size 64
  *     --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`.
  *  4. Assert exit 0 (else echo ERROR + tail err + exit 1).
  *  5. Parse snapshot_id / total_bytes_processed / total_files_processed
@@ -180,7 +181,11 @@ const CREDS_MOUNT_PATH = '/var/run/restic-creds';
  *     assert a 64-hex snapshot id is present.
  *  6. Echo the canonical FILES_DONE line.
  */
-function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): string {
+function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string; tenantId: string }): string {
+  // The tenant id becomes restic's --host; it must not be able to inject a flag.
+  if (!/^[A-Za-z0-9._-]+$/.test(opts.tenantId)) {
+    throw new Error(`files-component: invalid tenantId '${opts.tenantId}'`);
+  }
   // Each tag is a `--tag k=v` pair. buildSnapshotTags already restricts
   // values to TAG_VALUE_RE ([A-Za-z0-9._@+/-]) — shell-safe, no quoting
   // needed, but quote defensively anyway.
@@ -206,8 +211,19 @@ function buildScript(opts: { tags: ReadonlyArray<string>; bundleId: string }): s
     // warning rather than failing the whole bundle. Any other non-zero is
     // fatal. Only a short stderr tail is surfaced (the repo is the
     // in-cluster shim — no off-site presigned URLs leak here).
+    //
+    // `--host` is pinned to the tenant id. restic picks the parent snapshot
+    // by host + paths, and its default host is the pod name, which is new on
+    // every Job — so no parent was ever found and every run re-read and
+    // re-hashed the whole volume to store a few MB (~10 min for 30 GB, which
+    // a slow disk pushed past the deadline). With a parent, a file whose
+    // mtime, size, inode and ctime all match is not read again; the snapshot
+    // still holds the complete tree, so restores and exports are unchanged.
+    // Inode and ctime checks stay ON (unlike the mailbox capture, whose tree
+    // is rebuilt each run): this is the tenant's own filesystem, where both
+    // are stable, and ctime is what catches a write that kept the mtime.
     'set +e',
-    `restic -r "$REPO" backup ${FILES_CAPTURE_ROOT} ${tagArgs} --compression auto --pack-size 64 --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`,
+    `restic -r "$REPO" backup ${FILES_CAPTURE_ROOT} ${tagArgs} --host '${opts.tenantId}' --compression auto --pack-size 64 --option s3.connections=5 --json > /tmp/out.json 2>/tmp/err`,
     'RC=$?',
     'set -e',
     '[ "$RC" = "3" ] && echo "WARN: restic backup completed with partial read errors (exit 3)"',
@@ -257,7 +273,7 @@ export function buildFilesComponentJobSpec(input: {
   pinToNode?: string | null;
   activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
-  const script = buildScript({ tags: input.tags, bundleId: input.backupId });
+  const script = buildScript({ tags: input.tags, bundleId: input.backupId, tenantId: input.tenantId });
   const podSpec: Record<string, unknown> = {
     restartPolicy: 'Never',
     priorityClassName: 'platform-tenant-overhead',

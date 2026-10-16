@@ -108,7 +108,7 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
         INSERT INTO cluster_nodes (name, display_name, labels) VALUES
           (${NODES[0]}, 'Primary', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-a' })}::jsonb),
           (${NODES[1]}, 'Secondary', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-b' })}::jsonb),
-          (${NODES[2]}, 'Spare', ${JSON.stringify({ 'kubernetes.io/hostname': 'search-c' })}::jsonb)`);
+          (${NODES[2]}, 'Spare', ${JSON.stringify({ 'kubernetes.io/hostname': NODES[2] })}::jsonb)`);
       const business = await seedPlan(db, { name: 'Business Plus' });
       await seedTenant(db, regionId, business.id, { name: 'On Primary', nodeName: NODES[0] });
       const moved = await seedTenant(db, regionId, planId, { name: 'Moved Away', nodeName: NODES[1] });
@@ -136,6 +136,38 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
     it('finds a misplaced tenant by the node it is actually on', async () => {
       expect((await search('spare')).names).toEqual(['Moved Away']);
       expect((await search('search-c')).names).toEqual(['Moved Away']);
+    });
+
+    /** A tenant pinned to a node the cluster no longer lists and running on another: only
+     *  tenants.node_name and the placement row itself carry these names. */
+    const seedGhost = async (): Promise<void> => {
+      const db = getTestDb();
+      const ghost = await seedTenant(db, regionId, planId, { name: 'Ghost Pin', nodeName: 'search-gone.cluster.example.test' });
+      await db.execute(sql`
+        INSERT INTO tenant_placement_state (tenant_id, status, primary_node, actual_nodes)
+        VALUES (${ghost.id}, 'misplaced', 'search-gone.cluster.example.test',
+                ARRAY['search-left.cluster.example.test']::text[])`);
+    };
+
+    it('does not match every pinned tenant on the domain all the nodes share', async () => {
+      // Nodes named node-2.cluster.<apex>, node-3.cluster.<apex>: a search for the operator's
+      // own brand matched the node of every pinned tenant and listed them all. Every node
+      // clause is covered — the ghost is reachable only through node_name and actual_nodes.
+      await seedGhost();
+      expect(await search('cluster')).toEqual({ names: [], total: 0 });
+      expect(await search('cluster.example.test')).toEqual({ names: [], total: 0 });
+    });
+
+    it('finds a tenant by a node the cluster no longer lists, by its short or its full name', async () => {
+      await seedGhost();
+      expect((await search('gone')).names).toEqual(['Ghost Pin']);
+      expect((await search('search-gone.cluster.example.test')).names).toEqual(['Ghost Pin']);
+      expect((await search('search-left')).names).toEqual(['Ghost Pin']);
+    });
+
+    it('finds a tenant on a node named by its IP address by any part of the address', async () => {
+      await seedTenant(getTestDb(), regionId, planId, { name: 'By Address', nodeName: '192.0.2.15' });
+      expect((await search('2.15')).names).toEqual(['By Address']);
     });
 
     it('understands the two words the column shows instead of a node', async () => {

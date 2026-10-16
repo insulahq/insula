@@ -12,6 +12,7 @@ const checkMutate = vi.fn();
 let clusterNodes: Array<Record<string, unknown>> = [];
 let historyRuns: Array<Record<string, unknown>> = [];
 let changes: Record<string, unknown> | null = null;
+let changesError = false;
 const preflightCalls: string[][] = [];
 const applyMutate = vi.fn(async (vars: { apply: boolean }) => ({ data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: vars.apply, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } }));
 
@@ -63,7 +64,7 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
   useUpgradeRun: () => ({ data: { data: { run: null } }, failureCount: 0 }),
   useCancelUpgradeRun: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useUpgradeRuns: () => ({ data: { data: historyRuns }, isLoading: false }),
-  useUpgradeChanges: () => ({ data: changes ? { data: changes } : undefined, isLoading: false }),
+  useUpgradeChanges: () => ({ data: changes ? { data: changes } : undefined, isLoading: false, isError: changesError }),
   usePostflight: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
   useUpgradeProgress: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
 }));
@@ -333,3 +334,57 @@ describe('UpgradesPage — the opt-in Kubernetes step (ADR-064 §8)', () => {
   });
 });
 
+
+describe('UpgradesPage — what else the upgrade restarts (the mail server, webmail, the database…)', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; applyMutate.mockClear(); });
+  const base = { fromVersion: '2026.6.2', toVersion: '2026.7.0', known: true, databaseMigrations: 0, platformMigrations: 0, hostChanges: [], unreportedNodes: [] };
+  const mail = {
+    kind: 'Deployment', namespace: 'mail', name: 'stalwart-mail', change: 'restart', label: 'Mail server',
+    impact: 'one replica, stopped before its replacement starts — unavailable for ~30–90 s; no mail is received or sent meanwhile: sending servers retry, mail clients reconnect',
+  };
+  const webmail = { kind: 'Deployment', namespace: 'mail', name: 'bulwark', change: 'restart', label: 'Webmail (Bulwark)', impact: 'restarts; open webmail sessions reconnect' };
+
+  it('lists them under "What will be interrupted", beside the platform services', async () => {
+    changes = { ...base, workloads: { known: true, items: [mail, webmail] } };
+    renderPage('/platform/updates?review=1');
+    const row = await screen.findByTestId('upgrade-workload-mail-stalwart-mail');
+    expect(row).toHaveTextContent(/Mail server — one replica, stopped before its replacement starts .* no mail is received or sent meanwhile/);
+    expect(within(screen.getByTestId('upgrade-interruption')).getByTestId('upgrade-workload-mail-stalwart-mail')).toBe(row);
+    expect(screen.getByTestId('upgrade-workload-mail-bulwark')).toHaveTextContent('Webmail (Bulwark) — restarts; open webmail sessions reconnect');
+    expect(screen.queryByTestId('upgrade-workloads-unknown')).toBeNull();
+  });
+
+  it('a release that does not list them for the installed version says it cannot tell — never "nothing else restarts"', async () => {
+    changes = { ...base, workloads: { known: false, items: [] } };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-workloads-unknown'))
+      .toHaveTextContent(/does not list what else it restarts on an upgrade from v2026\.6\.2: the mail server, webmail or the platform database may restart too/);
+  });
+
+  it('when the list cannot be read, the box says so instead of showing nothing', async () => {
+    changes = null;
+    changesError = true;
+    try {
+      renderPage('/platform/updates?review=1');
+      expect(await screen.findByTestId('upgrade-workloads-unreadable')).toHaveTextContent(/could not be read: the mail server, webmail or the platform database may restart too/);
+    } finally {
+      changesError = false;
+    }
+  });
+
+  it('a known empty list adds no rows and no caveat', async () => {
+    changes = { ...base, workloads: { known: true, items: [] } };
+    renderPage('/platform/updates?review=1');
+    await screen.findByTestId('upgrade-changes');
+    expect(screen.queryByTestId('upgrade-workloads-unknown')).toBeNull();
+    expect(screen.queryByTestId(/^upgrade-workload-/)).toBeNull();
+  });
+
+  it('a list read for another release than the one under review is not shown', async () => {
+    changes = { ...base, toVersion: '2026.6.9', workloads: { known: true, items: [mail] } };
+    renderPage('/platform/updates?review=1');
+    await screen.findByTestId('upgrade-review-modal');
+    await vi.waitFor(() => expect(screen.getByTestId('approve-upgrade-btn')).toBeEnabled());
+    expect(screen.queryByTestId('upgrade-workload-mail-stalwart-mail')).toBeNull();
+  });
+});

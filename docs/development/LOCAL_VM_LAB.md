@@ -117,6 +117,15 @@ the lab's credentials are generated once and kept in the operator's lab state fi
 - **Install like production:** `bootstrap.sh --env production --release-tag <production's tag>` —
   signed release, `platform-ops`, the production overlay (no Dex), host-migrations converged by the
   node CLI.
+- **Dual-stack like production** (`LAB_STG_DUAL_STACK=1`, the default since 2026-10-16): the
+  staging network carries a ULA `fd98:<third octet>::/64` beside its IPv4 /24, and staging is
+  installed and joined `--dual-stack` (bootstrap.sh does not auto-enable it on ULA-only hosts).
+  Each node's IPv6 address is pinned into its own network config (netplan or NetworkManager)
+  before the install: the host firewall of releases before host-migration
+  `2026.10.10/0003-dhcpv6-client-firewall` dropped DHCPv6 replies, so a networkd restart left
+  an Ubuntu node with no IPv6 at all — and staging installs production's release. IPv4-only, staging had shown nothing of production's
+  cross-node IPv6 being dropped. Switching an installed staging between the two needs a
+  reinstall (cluster CIDRs are fixed at create); a join refuses the mismatch.
 - **Release candidates:** `auto_update_include_prereleases = true` (off by default in production).
   A cut RC then reaches staging through the same pull path production uses for a stable release:
   signed tag verified on the node, host-migrations, database migrations, image roll — in place,

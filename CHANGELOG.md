@@ -12,6 +12,126 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Node memory "in use" is what processes hold; file cache is shown apart, as part of free.**
+  It used to be the kubelet's working set, which also counts active page cache — the kernel
+  hands that back when memory runs short. On production a node with no tenant on it read
+  8.0 GiB in use, the most of any node; 4.9 GiB of that was processes and 3.2 GiB cache. The
+  dashboard's Memory tile and node strip and Cluster → Nodes now draw the cache as a light band
+  at the start of free and name it in the legend and hover card; free itself is unchanged. The
+  cache figure is the working set less process memory, so it also holds shared memory (database
+  buffers, memory-backed volumes) the kernel cannot hand back — the panel says "mostly".
+  Both halves come from one kubelet `/stats/summary` sample per node; a node whose kubelet does
+  not answer falls back to the working set, and the cluster tile then uses the working set for
+  every node. Memory alerts still use the working set — it is what the kubelet evicts on.
+
+### Fixed
+
+- **Security: RHEL-family nodes keep the platform firewall across a reboot.** bootstrap.sh wrote
+  the firewall to `/etc/nftables.conf` and enabled `nftables.service` — which on RHEL, Rocky,
+  Alma, CentOS Stream and Amazon Linux loads `/etc/sysconfig/nftables.conf` instead (empty by
+  default). After the first reboot such a node ran with no platform firewall at all: no tenant
+  port rules, no operator blacklist, no CrowdSec drops. Debian and Ubuntu were not affected.
+  The include is now added at install; host-migration `0000-rhel-nftables-boot-load` adds it on
+  existing nodes and restores the firewall immediately on one that already rebooted without it.
+- **Outbound mail to `.na`, `.org`, `.co.za` and other domains no longer stalls on "DNSSEC
+  validation failed".** Stalwart queried both of a pod's nameservers (the cluster DNS
+  service's IPv4 and IPv6 addresses) at once, and its DNS library (hickory-dns#3963) gives up
+  when more than one answers truncated — which a TLD's large DNSKEY set does over UDP. The
+  recipients' DNS was fine; on production mail to every `.na` domain sat in the queue for days.
+  The platform now keeps Stalwart's resolver at one query in flight (a new reconciler, every
+  10 min and at start; `STALWART_DNS_RESOLVER_CONCURRENCY` overrides once the upstream fix
+  ships) and reloads its settings — no mail-server restart.
+- **A node that gets its IPv6 address by DHCPv6 keeps it.** The host firewall accepted ICMPv6
+  (so SLAAC worked) but nothing for DHCPv6: a server's reply is never "established" — the
+  request went to a multicast group — and unlike the DHCPv4 client, the DHCPv6 client receives
+  through the firewall. Such a node (EC2 and many VPS providers) kept the address it had before
+  the platform was installed only until the next lease renewal or network restart. DHCPv6
+  replies from link-local servers are now accepted on every install; host-migration
+  `0003-dhcpv6-client-firewall` fixes existing nodes.
+- **The posture page's Calico WireGuard card counts the nodes that run it.** It counts nodes
+  whose `firewall.conf` lists UDP/51821 as public, and bootstrap.sh never listed it — every
+  cluster read "0 of N". Public Calico WireGuard ports (51821; 51822 on dual-stack) are now
+  recorded; host-migration `0002-public-udp-ports-inventory` fixes existing nodes from what
+  each node's firewall actually accepts.
+- **On a dual-stack cluster, pods can reach pods on other nodes over IPv6.** They never
+  could: Calico WireGuard was enabled for IPv4 only, so IPv6 pod traffic between nodes
+  fell back to plain VXLAN over the nodes' IPv6 addresses (UDP/4789), which the host
+  firewall drops. On production that included CoreDNS's IPv6 service address for every
+  pod on a node without a CoreDNS replica — the mail server's second nameserver timed
+  out, which helped outbound mail to `.na`, `.org` and `.co.za` fail DNSSEC validation.
+  IPv6 pod traffic now rides Calico WireGuard on UDP/51822, with the same exposure as
+  IPv4's 51821 (public, or `trusted_ranges` under `--calico-wg-public=false`).
+  Host-migration `0001-calico-wireguard-ipv6` opens the port and enables it on
+  existing clusters; single-stack clusters are untouched. Node traffic accounting
+  counts 51822 as tunnel traffic.
+
+- **A nightly files backup reads only what changed, and a capture Job has 2 hours instead of
+  30 minutes (files) or 60 (mailboxes).** restic picks the snapshot to compare against by host
+  name, and the files capture left that as the pod's name, which is new on every Job. So no
+  earlier snapshot was ever found, and every night re-read and re-hashed the whole volume to
+  store a few megabytes: about 10 minutes for 30 GB. On a production night when one node's
+  disk ran several times slower, that ran past the 29-minute Job deadline and left the
+  tenant's bundle `partial`. The capture now names the tenant as the host, as the mailbox
+  capture already did, so a file whose modification time, size, inode and change time all
+  match is not read again. Each snapshot still holds the complete file tree, so restores,
+  exports and the file browser are unchanged. The first files capture after upgrading still
+  reads everything, because no snapshot carries the new host name yet. The longer limit covers
+  the full reads that remain — a tenant's first bundle, and the first after a restore or a
+  storage shrink — on the largest volumes or a slow node. The stuck-bundle sweep now waits
+  3 hours, derived from those limits: it marked any bundle still running after 1 hour as
+  failed — sooner than the mailbox capture's own 60 minutes plus the work before it — told
+  the tenant their backup had failed, and was then overwritten by `completed` when the
+  bundle finished.
+
+- **Searching the admin tenant list for a word from the cluster's domain no longer lists every
+  tenant.** The placement search matched anywhere in a node's name, and a cluster's nodes share
+  their domain (`node-2.cluster.<apex>`), so a search for the operator's own brand matched the
+  node of every pinned tenant: production listed all 31 where about 4 matched by name or email.
+  A node is now matched by its alias, by the first part of its name or hostname (`node-2`), or
+  by its full name typed from the start (a node named by its IP address, by any part of it) —
+  the same for the node a tenant is pinned to and the one a misplaced tenant is actually on.
+- **The 48-hour unread reminder is about your own notifications only, and says what each one
+  said.** It used to chase tenants' notifications to the platform admins: production's read
+  "Email sending at 88% of the hour limit (unread since 2026-10-12)", with no tenant and no
+  mailbox. It was about a tenant user's notification, which is in neither the admin's bell nor
+  their history, so *Mark all as read* could never stop such reminders. All 36 reminders
+  production sent in their first month were of this kind. "Unread" is the in-app copy, and a
+  tenant who reads the email and never opens the panel looked like one ignoring it. Tenants'
+  notifications no longer escalate at all (operator decision).
+  - What remains is a reminder about notifications to the platform admins that no admin has
+    read for 48 hours. Each line says which tenant it is about, if any, and quotes what it
+    said.
+  - Outbound send-limit saturation warnings are not chased: their hour is over long before 48
+    hours. Nor is an event another admin has read, or the reminder itself.
+  - Two admins' copies of one notification count once.
+  - Unread notifications that are never chased no longer fill the 200 rows each sweep reads.
+    Past 200 of them, no notification needing action would have been chased again.
+  - A sweep whose reminder reached nobody (rate-limited, no template) no longer marks the
+    notifications as chased; it tries again the next day.
+  - A reminder about a tenant never goes to the shared ntfy push topic.
+  - A reminder template you have edited keeps your wording; **Restore stock template** under
+    **Templates** gets the new one.
+
+- **The upgrade review lists everything the upgrade restarts, not only the management API and
+  the panels.** Its *What will be interrupted* box never mentioned the mail server, webmail or
+  the platform database, although a release that changes them restarts them: 2026.10.8
+  restarted the mail server for its new Stalwart, and 2026.10.9 restarted the mail server, the
+  webmail and the mail standby copy. The operator read about it only in the release notes.
+  Each release now works out, when it is cut, what an upgrade from each of the 40 stable
+  releases before it, and the release candidates of the last five, restarts, starts or removes. It renders its manifests and theirs and compares what
+  each workload's pods run, including the ConfigMaps a workload is restarted for. For the
+  database it compares every field except those known not to restart it, and of its settings
+  only those PostgreSQL applies at start. The signed release manifest carries
+  the list. The review shows the entry for the installed version under *What will be
+  interrupted*, with what each restart does: *Mail server — one replica, stopped before its
+  replacement starts… no mail is received or sent meanwhile: sending servers retry, mail
+  clients reconnect*. When the release has no entry for the installed version, or the list
+  cannot be read, the review says it cannot tell rather than nothing. That covers releases cut
+  before this one, versions older than that window, and development builds. The review is shown by the release being upgraded
+  *from*, so the list first appears on upgrades from this release onwards.
+
 ## [2026.10.9] - 2026-10-14
 
 ### Added

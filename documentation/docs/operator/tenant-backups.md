@@ -26,7 +26,7 @@ Every bundle is split into four **components**:
 
 | Component | What |
 |---|---|
-| `files` | The tenant's data volume, as a tar.gz |
+| `files` | The tenant's data volume, as a restic snapshot |
 | `mailboxes` | Per-mailbox exports from the mail server |
 | `config` | The database rows the tenant owns (clients, users, domains, deployments, …) |
 | `secrets` | The tenant's TLS Secrets, encrypted |
@@ -44,6 +44,22 @@ meantime, it is left running and stops after its usual idle time.
     A bundle is only restorable once `meta.json` is written, which happens
     **last** and **only when every enabled component succeeded**. A bundle on
     the target with no `meta.json` is incomplete — treat it as failed.
+
+### How long a capture takes
+
+The `files` capture compares the volume with the tenant's previous snapshot and
+reads only the files whose modification time, size, inode or change time
+differ, so a nightly capture of a mostly unchanged volume takes seconds to a
+few minutes. Every snapshot still holds the complete file tree, so restores and
+exports do not depend on earlier snapshots. The capture reads the **whole**
+volume when there is no earlier snapshot to compare with, or when the files
+were rewritten: a tenant's first bundle, and the first one after a restore or a
+storage shrink (which restores the files into a new, smaller volume).
+
+The `files` and `mailboxes` capture Jobs each have **2 hours**. A Job that runs
+out fails its component with `DeadlineExceeded` and the bundle ends `partial`.
+Scheduled bundles run one tenant at a time, so a capture that uses its full
+2 hours delays the tenants after it by as much.
 
 ## Scheduling
 
@@ -86,7 +102,9 @@ repositories make it quick.
 - Each bundle gets an expiry at creation time from its retention setting.
 - A **retention sweeper** runs every few minutes, deletes expired bundles from
   the target, and marks them `expired`.
-- Stuck bundles still `running` after 24 hours are garbage-collected to `failed`
+- Stuck bundles still `running` after 3 hours (a 2-hour capture plus the
+  database dumps before it and the finishing steps after it) are
+  garbage-collected to `failed`
   so they don't hang forever.
 - **Plans cap retention.** A hosting plan's maximum retention days caps both
   ad-hoc and scheduled bundles — a tenant cannot request a longer retention than

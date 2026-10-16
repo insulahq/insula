@@ -174,6 +174,22 @@ if ! grep -qE '^\s*set blacklist_v4 \{' "$SCRIPT" || ! grep -qE '^\s*set blackli
   failures=$((failures + 1))
 fi
 
+# F8 — the firewall must survive a reboot on the RHEL family, whose nftables.service
+# loads /etc/sysconfig/nftables.conf, not /etc/nftables.conf (a Rocky node ran with
+# no platform firewall after its first reboot).
+if ! grep -qF "include \"/etc/nftables.conf\"" "$SCRIPT" \
+   || ! grep -qF '/etc/sysconfig/nftables.conf' "$SCRIPT"; then
+  echo "FAIL F8: bootstrap.sh does not make the RHEL-family nftables.service load /etc/nftables.conf at boot"
+  failures=$((failures + 1))
+fi
+
+# F9 — DHCPv6 replies (link-local :547 → :546) are never "established"; without the
+# accept a DHCPv6-addressed node loses its IPv6 at the next renewal.
+if ! grep -qE '^\s*ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept' "$SCRIPT"; then
+  echo "FAIL F9: the DHCPv6 client accept is missing from the input chain"
+  failures=$((failures + 1))
+fi
+
 if (( failures > 0 )); then
   echo
   echo "✗ $failures firewall-rule violation(s) in $SCRIPT"

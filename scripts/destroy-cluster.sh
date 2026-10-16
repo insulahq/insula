@@ -109,8 +109,10 @@ sleep 2
 
 # Tear down Calico tunnels + workload veths
 ip link delete vxlan.calico 2>/dev/null || true
+ip link delete vxlan-v6.calico 2>/dev/null || true
 ip link delete tunl0 2>/dev/null || true
 ip link delete wireguard.cali 2>/dev/null || true
+ip link delete wg-v6.cali 2>/dev/null || true
 for v in $(ip -br link show 2>/dev/null | awk '/^cali[0-9a-f]/ {print $1}' | cut -d@ -f1); do
   ip link delete "$v" 2>/dev/null || true
 done

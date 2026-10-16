@@ -160,6 +160,19 @@ export const releaseSqlMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0
 export const releasePlatformMigrationSchema = z.string().max(120).regex(/^\d{4}_[a-z0-9_]+$/);
 /** A k3s release version: v1.36.5+k3s1. */
 export const K3S_VERSION_RE = /^v\d+\.\d+\.\d+\+k3s\d+$/;
+/** A released platform version, as its tag names it without the v: 2026.10.9 or 2026.10.9-rc.2. */
+export const RELEASE_VERSION_RE = /^\d{4}\.\d{1,2}\.\d+(-rc\.\d+)?$/;
+/**
+ * One workload an upgrade restarts, starts or removes — scripts/release-workload-changes.py
+ * renders the release's production overlay and each earlier tag's, and lists what differs.
+ */
+export const releaseWorkloadChangeSchema = z.object({
+  kind: z.enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Cluster']),
+  namespace: z.string().max(63).regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+  name: z.string().max(253).regex(/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/),
+  change: z.enum(['restart', 'added', 'removed']),
+});
+export type ReleaseWorkloadChange = z.infer<typeof releaseWorkloadChangeSchema>;
 export const releaseContentsSchema = z.object({
   hostMigrations: z.array(releaseHostMigrationSchema).max(1000),
   migrations: z.object({
@@ -168,8 +181,22 @@ export const releaseContentsSchema = z.object({
   }),
   /** ADR-064 §8: the k3s version the release's bootstrap pins (absent before 2026.10.7). */
   k3sVersion: z.string().max(40).regex(K3S_VERSION_RE).nullable().optional(),
+  /**
+   * Per earlier version, the workloads an upgrade from it restarts, starts or removes
+   * (absent in 2026.10.9 and older). The review looks up the installed version.
+   */
+  workloadChanges: z.record(z.string().max(40).regex(RELEASE_VERSION_RE), z.array(releaseWorkloadChangeSchema).max(500)).optional(),
 });
 export type ReleaseContents = z.infer<typeof releaseContentsSchema>;
+
+/** A workload the upgrade restarts beside the platform's own services, as the review lists it. */
+export const upgradeWorkloadItemSchema = releaseWorkloadChangeSchema.extend({
+  /** What it is, for an operator: "Mail server", "Webmail (Bulwark)", "Platform database". */
+  label: z.string(),
+  /** What the restart does to it, from its live replicas and rollout strategy where they can be read. */
+  impact: z.string(),
+});
+export type UpgradeWorkloadItem = z.infer<typeof upgradeWorkloadItemSchema>;
 
 /** GET /admin/platform/upgrade/changes — what an upgrade to the available release changes. */
 export const upgradeChangesResponseSchema = z.object({
@@ -198,6 +225,17 @@ export const upgradeChangesResponseSchema = z.object({
     target: z.string().nullable(),
     offer: z.boolean(),
     reason: z.string().nullable(),
+  }).optional(),
+  /**
+   * What else the upgrade restarts, starts or removes besides the management API and the
+   * panels (the interruption preview reads those live): the mail server, webmail, the
+   * platform database, the reconcilers. `known` = false when the release does not list
+   * them for the installed version (a release cut before the list existed, a version
+   * older than the list goes back, or a development build) — unknown, not "nothing".
+   */
+  workloads: z.object({
+    known: z.boolean(),
+    items: z.array(upgradeWorkloadItemSchema),
   }).optional(),
 });
 export type UpgradeChangesResponse = z.infer<typeof upgradeChangesResponseSchema>;

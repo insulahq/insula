@@ -118,6 +118,26 @@ describe('buildFilesComponentJobSpec', () => {
     expect(cmd).not.toContain('--compression off');
   });
 
+  it('pins --host to the tenant so a parent snapshot is matched across Jobs', () => {
+    // Without it restic's host is the pod name — new on every Job — so no
+    // parent is ever found and every run re-reads the whole volume.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain(`--host '${baseInput.tenantId}'`);
+    // Inode + ctime change detection stays on for the tenant's own filesystem.
+    expect(cmd).not.toContain('--ignore-inode');
+    expect(cmd).not.toContain('--ignore-ctime');
+    expect(cmd).not.toContain('--force');
+  });
+
+  it('rejects a tenant id that could inject a restic flag through --host', () => {
+    for (const tenantId of ['', "a' --force '", 'a b', 'a;b', 'a$(id)']) {
+      expect(() => buildFilesComponentJobSpec({ ...baseInput, tenantId })).toThrow(/invalid tenantId/);
+    }
+  });
+
   it('passes every snapshot tag as a --tag argument', () => {
     const spec = buildFilesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };

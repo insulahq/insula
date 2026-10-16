@@ -21,6 +21,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The manifest step (after the binaries are built) runs release-workload-changes.py,
+      # which needs PyYAML and `kubectl kustomize` — check now, so a missing tool fails the
+      # release in seconds instead of after the build.
+      - name: Release tooling present
+        run: python3 -c 'import yaml' && kubectl kustomize --help >/dev/null
+
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -128,6 +134,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-release
+          # What an upgrade from each earlier release restarts beside the platform's own
+          # services — the mail server, webmail, the database… — for the upgrade review's
+          # "What will be interrupted". Renders this tag's production overlay and each
+          # earlier tag's with the runner's kubectl kustomize (fetch-depth 0 above brings
+          # the tags). Fails the release if this tag's own overlay does not render.
+          python3 scripts/release-workload-changes.py --version "$VERSION" > "$RUNNER_TEMP/workload-changes.json"
           # Build the JSON with python (no heredoc-whitespace pitfalls). The
           # `version` field MUST equal the tag (the poller binds them) — it's the
           # tag-validated platform/VERSION, so they match by construction.
@@ -195,9 +207,10 @@ jobs:
               "hostMigrations": host_migrations,
               "migrations": {"sql": sql_migrations, "platform": platform_migrations},
               "kubernetes": {"k3s": k3s_pin.group(1)} if k3s_pin else None,
+              "workloadChanges": json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "workload-changes.json"), encoding="utf-8")),
           }, separators=(",", ":")))
           PY
-          echo "manifest: $(cat dist-release/release-manifest.json)"
+          echo "manifest: $(head -c 4000 dist-release/release-manifest.json)…"
           if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
             cosign sign-blob --key env://COSIGN_PRIVATE_KEY --tlog-upload=false --yes \
               dist-release/release-manifest.json > dist-release/release-manifest.json.sig

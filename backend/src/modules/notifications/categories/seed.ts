@@ -68,6 +68,13 @@ export interface CategoryDefinition {
   readonly gdprBasis: NotificationGdprBasis;
   readonly rateLimitWindowS?: number;
   readonly rateLimitMax?: number;
+  /**
+   * `false` for an Action whose condition is over long before the unread
+   * reminder could chase it (escalation/service.ts, 48 h). A warning about
+   * this hour's sending window, raised again two days later, asks the operator
+   * about a window that closed 47 hours ago.
+   */
+  readonly escalates?: false;
 }
 
 const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
@@ -676,6 +683,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'contract',
+    // The hour or day it measured is over before 48 h pass.
+    escalates: false,
   },
   {
     id: 'tenant.email_quota_exceeded',
@@ -704,6 +713,8 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
+    // Measured over the last hour, which is over before 48 h pass.
+    escalates: false,
   },
   {
     id: 'admin.email_abuse_critical',
@@ -1018,12 +1029,16 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'action',
     reportsOn: null,
     displayName: 'Unacknowledged notifications escalated',
-    description: 'A notification that asked someone to act has gone unread past its deadline. It escalates to the operator because the original recipient has not responded and somebody still needs to.',
+    description: 'A notification that asked the platform admins to act has gone unread by every admin for 48 hours. '
+      + 'Lists each one once, with what it said. Tenants\' notifications never escalate here.',
     audience: 'admin',
     defaultSeverity: 'warning',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
+    // A reminder about an unread reminder is noise, and its quote of the first
+    // one would carry tenant text as a "platform admins" item.
+    escalates: false,
   },
   {
     id: 'admin.tenant_bandwidth_warning',

@@ -19,13 +19,19 @@ lab_cluster_def() {
   case "$1" in
     dev)
       CL_NAME=dev; CL_NET=insula-lab-dev; CL_PREFIX="$LAB_DEV_NET"; CL_APEX="dev.${LAB_APEX}"
-      CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART=1
+      CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART=1; CL_DUAL_STACK=0; CL_V6_PREFIX=""
       CL_VCPU="$LAB_DEV_VCPU"; CL_RAM="$LAB_DEV_RAM_MB"; CL_DISK="$LAB_DEV_DISK_GB"
       CL_NODES=("lab-dev-1 11"); CL_WORKER="" ;;
     stg)
       [[ -n "${LAB_STG_RELEASE_TAG:-}" ]] || { echo "lab: set LAB_STG_RELEASE_TAG to the release production runs (e.g. v2026.10.6)" >&2; return 1; }
       CL_NAME=stg; CL_NET=insula-lab-stg; CL_PREFIX="$LAB_STG_NET"; CL_APEX="stg.${LAB_APEX}"
       CL_ENV=production; CL_RELEASE_TAG="$LAB_STG_RELEASE_TAG"; CL_AUTOSTART=0
+      # Dual-stack like production (LAB_STG_DUAL_STACK=0 opts out): a ULA /64 per lab
+      # subnet, fd98:<third octet>::/64 beside 10.98.<third octet>.0/24. IPv4-only,
+      # staging could not show what production does with IPv6 — its cross-node pod
+      # IPv6 was dropped for weeks while staging had none to drop.
+      CL_DUAL_STACK="${LAB_STG_DUAL_STACK:-1}"; CL_V6_PREFIX=""
+      (( CL_DUAL_STACK == 1 )) && CL_V6_PREFIX="fd98:${LAB_STG_NET##*.}"
       CL_VCPU="$LAB_STG_VCPU"; CL_RAM="$LAB_STG_RAM_MB"; CL_DISK="$LAB_STG_DISK_GB"
       CL_NODES=()
       for i in $(seq 1 "${LAB_STG_SERVERS:-3}"); do CL_NODES+=("lab-stg-s${i} $((10 + i))"); done
@@ -33,6 +39,54 @@ lab_cluster_def() {
       CL_W_VCPU="${LAB_STG_WORKER_VCPU:-4}"; CL_W_RAM="${LAB_STG_WORKER_RAM_MB:-6144}"; CL_W_DISK="${LAB_STG_WORKER_DISK_GB:-40}" ;;
     *) echo "lab: unknown cluster '$1' (dev|stg)" >&2; return 1 ;;
   esac
+}
+
+# _lab_node_pin_v6 <vm> <ip> — keep a dual-stack node's IPv6 address for good.
+#
+# The address comes from the network's DHCPv6 range, and only IPv4 is reserved per
+# MAC. A release's host firewall dropped DHCPv6 replies until host-migration
+# 2026.10.10/0003-dhcpv6-client-firewall (the reply is never "established"), so a
+# node kept its lease only until the next renewal or network restart — staging's
+# Ubuntu node lost it two seconds after a networkd restart during the install;
+# kubelet then logged "node IP not found" every 10 s and that node's IPv6 WireGuard
+# sourced from a pod address. Staging installs production's release, which may
+# predate that fix, so the address the node holds now — the one the install
+# registers — is written into its own network config as a static address, with
+# router advertisements accepted for the routes. Before the install this is free;
+# on a running cluster a netplan apply blips Calico's interfaces for about a minute,
+# which is why it only ever applies a change.
+_lab_node_pin_v6() {
+  local vm="$1" ip="$2" addr
+  addr="$(_vssh "$ip" "ip -6 -o addr show scope global" 2>/dev/null \
+    | awk -v p="${CL_V6_PREFIX}:" 'index($4, p) == 1 { sub("/.*", "", $4); print $4; exit }')"
+  if [[ -z "$addr" ]]; then
+    echo "lab: ${vm} has no ${CL_V6_PREFIX}::/64 address — the network's DHCPv6 did not reach it" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2016  # expanded on the node
+  _vssh "$ip" "bash -s $(printf %q "$addr")" <<'SH' >&2
+set -euo pipefail
+addr="$1"; dev="$(ip -4 route show default | awk '{print $5; exit}')"
+if command -v netplan >/dev/null 2>&1 && [ -d /etc/netplan ]; then
+  f=/etc/netplan/60-lab-ipv6.yaml
+  want="$(printf 'network:\n  version: 2\n  ethernets:\n    %s:\n      accept-ra: true\n      addresses: ["%s/64"]' "$dev" "$addr")"
+  if [ "$(cat "$f" 2>/dev/null || true)" != "$want" ]; then
+    printf '%s\n' "$want" > "$f"; chmod 600 "$f"; netplan apply 2>/dev/null
+    echo "  ${addr} pinned in ${f}"
+  fi
+elif command -v nmcli >/dev/null 2>&1 && systemctl is-active -q NetworkManager; then
+  con="$(nmcli -g GENERAL.CONNECTION device show "$dev")"
+  # `nmcli -g` escapes the colons (fd98\:120\:\:126/64): unescape before comparing,
+  # or every `lab up` re-applies the connection.
+  if ! nmcli -g ipv6.addresses connection show "$con" | tr -d '\\' | grep -qF "${addr}/64"; then
+    nmcli connection modify "$con" +ipv6.addresses "${addr}/64"
+    nmcli device reapply "$dev"
+    echo "  ${addr} pinned on NetworkManager connection '${con}'"
+  fi
+else
+  echo "  WARNING: neither netplan nor NetworkManager here — ${addr} stays a DHCPv6 lease" >&2
+fi
+SH
 }
 
 # lab_node_os <vm> — the OS of a lab node. Drawn ONCE, when the VM is first created, from
@@ -155,7 +209,7 @@ _lab_node_create() {
 lab_cluster_up() {
   lab_cluster_def "$1" || return 1
   local entry vm host ip s1 ca_b64 install=0 marker="LAB_${1^^}_INSTALLED" missing=() stopped=()
-  lab_net_ensure "$CL_NET" "$CL_PREFIX" "$(lab_svc_ip)"
+  lab_net_ensure "$CL_NET" "$CL_PREFIX" "$(lab_svc_ip)" "$CL_V6_PREFIX" || return 1
   for entry in "${CL_NODES[@]}"; do
     read -r vm host <<<"$entry"; lab_net_reserve "$CL_NET" "$CL_PREFIX" "$vm" "$host"
     if ! VIRSH dominfo "$vm" >/dev/null 2>&1; then missing+=("$entry")
@@ -190,6 +244,7 @@ lab_cluster_up() {
     read -r vm host <<<"$entry"; ip="${CL_PREFIX}.${host}"
     wait_ssh "$ip" 600 >&2 || return 1
     (( install == 0 )) || wait_cloudinit "$ip" 1200 >&2
+    [[ -z "${CL_V6_PREFIX:-}" ]] || _lab_node_pin_v6 "$vm" "$ip" || return 1
   done
   if (( install == 0 )) && [[ "${!marker:-}" != 1 ]]; then
     echo "── ${CL_NAME}: VMs exist but the install never finished — wiping the platform (OS kept) and installing again ──" >&2

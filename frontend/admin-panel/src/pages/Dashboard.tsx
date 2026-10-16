@@ -31,7 +31,7 @@ import {
 } from '@/components/console/ConsoleTiles';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
-import { triadFigures } from '@/lib/resource-triad';
+import { CACHE_BAND, triadFigures } from '@/lib/resource-triad';
 
 /**
  * Where the disk went, for the Storage tile's hover card.
@@ -246,16 +246,19 @@ export default function Dashboard() {
 
 /* ── node strip ──────────────────────────────────────────────────── */
 
-function MiniTriad({ label, inUse: measured, committed, total, unit, decimals = 2 }: {
+function MiniTriad({ label, inUse: measured, committed, total, unit, decimals = 2, cache = null }: {
   label: string; inUse: number | null; committed: number; total: number; unit: string; decimals?: number;
+  /** Memory only: the cache kept out of in use, drawn inside free. */
+  cache?: number | null;
 }) {
-  const f = triadFigures(measured, committed, total);
+  const f = triadFigures(measured, committed, total, cache);
   // null = the node had no sample. An em-dash says so; 0.00 would claim the
   // node is idle, which is the opposite of "we do not know".
   const inUse = measured ?? 0;
   return (
     <div className="min-w-0" title={`${label}: ${measured === null ? 'in use not reported' : `${inUse.toFixed(decimals)} ${unit} in use`}, `
-      + `${committed.toFixed(decimals)} committed, ${f.free.toFixed(decimals)} free of ${total.toFixed(decimals)} ${unit}`}>
+      + `${committed.toFixed(decimals)} committed, ${f.free.toFixed(decimals)} free`
+      + `${f.cacheInFree === null ? '' : ` (${f.cacheInFree.toFixed(decimals)} cache)`} of ${total.toFixed(decimals)} ${unit}`}>
       <div className="mb-1 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         <span className="whitespace-nowrap">
           <span className="text-gray-900 dark:text-gray-100">{measured === null ? '—' : inUse.toFixed(decimals)}</span> / {committed.toFixed(decimals)}
@@ -275,6 +278,9 @@ function MiniTriad({ label, inUse: measured, committed, total, unit, decimals = 
              style={{ width: `${f.inUsePct.toFixed(1)}%` }} />
         <div className={`opacity-60 ${f.committedPct >= 90 ? 'bg-amber-300' : 'bg-teal-300 dark:bg-teal-700'}`}
              style={{ width: `${Math.max(0, f.committedPct - f.inUsePct).toFixed(1)}%` }} />
+        {f.cache !== null && (
+          <div data-band="cache" className={CACHE_BAND} style={{ width: `${f.cachePct.toFixed(1)}%` }} />
+        )}
       </div>
       <span className="sr-only">{label}</span>
     </div>
@@ -350,7 +356,7 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
               {n.role}
             </span>
             <MiniTriad label="CPU" inUse={n.cpu.inUse} committed={n.cpu.committed} total={n.cpu.total} unit="cores" />
-            <MiniTriad label="Memory" inUse={n.memory.inUse} committed={n.memory.committed} total={n.memory.total} unit="GiB" />
+            <MiniTriad label="Memory" inUse={n.memory.inUse} committed={n.memory.committed} total={n.memory.total} unit="GiB" cache={n.memory.cache ?? null} />
             <DiskCell node={n} />
             <span className="text-right font-mono text-xs tabular-nums text-gray-600 dark:text-gray-400">{n.pods}</span>
             <HoverCard
@@ -359,7 +365,12 @@ function NodeStrip({ nodes, loading }: { nodes: readonly AdminNode[]; loading: b
                 ['CPU in use / committed', `${n.cpu.inUse === null ? 'not reported' : n.cpu.inUse.toFixed(2)} / ${n.cpu.committed.toFixed(2)} of ${n.cpu.total.toFixed(2)}`],
                 ['CPU free', `${triadFigures(n.cpu.inUse, n.cpu.committed, n.cpu.total).free.toFixed(2)} cores`],
                 ['Memory in use / committed', `${n.memory.inUse === null ? 'not reported' : n.memory.inUse.toFixed(2)} / ${n.memory.committed.toFixed(2)} of ${n.memory.total.toFixed(2)} GiB`],
-                ['Memory free', `${triadFigures(n.memory.inUse, n.memory.committed, n.memory.total).free.toFixed(2)} GiB`],
+                ...(n.memory.cache == null ? [] : [
+                  ['Memory cache', `${n.memory.cache.toFixed(2)} GiB, mostly file cache the kernel hands back`] as const,
+                ]),
+                ['Memory free', ((f) => `${f.free.toFixed(2)} GiB`
+                  + (f.cacheInFree === null ? '' : ` (${f.cacheInFree.toFixed(2)} cache)`))(
+                  triadFigures(n.memory.inUse, n.memory.committed, n.memory.total, n.memory.cache ?? null))],
                 ['Disk in use / committed', n.disk
                   ? `${n.disk.inUse === null ? 'not reported' : n.disk.inUse.toFixed(0)} / ${n.disk.committed.toFixed(0)} of ${n.disk.total.toFixed(0)} GB`
                   : 'not reported'],
