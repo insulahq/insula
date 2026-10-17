@@ -9,6 +9,7 @@ import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
 import { invalidateNodeLabels } from './labels.js';
 import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './postgres-cover.js';
+import { isUsableCopy } from './replica-copy.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -825,12 +826,12 @@ export async function buildDrainImpact(
   try {
     interface LhReplica {
       metadata?: { name?: string };
-      spec?: { volumeName?: string; nodeID?: string };
+      spec?: { volumeName?: string; nodeID?: string; failedAt?: string };
       status?: { currentState?: string };
     }
     interface LhVolumeMeta {
       metadata?: { name?: string };
-      status?: { kubernetesStatus?: { pvcName?: string; namespace?: string } };
+      status?: { state?: string; kubernetesStatus?: { pvcName?: string; namespace?: string } };
     }
     // Fan out replicas + volumes lookup in parallel — both are cheap LISTs
     // against longhorn-system, and we need both to attribute owners.
@@ -845,24 +846,27 @@ export async function buildDrainImpact(
       } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolumeMeta[] }>,
     ]);
 
-    // volume name → { namespace, pvcName }
-    const volumeMeta = new Map<string, { namespace: string; pvcName: string }>();
+    // volume name → { namespace, pvcName, state }
+    const volumeMeta = new Map<string, { namespace: string; pvcName: string; state: string | undefined }>();
     for (const v of volumeResp.items ?? []) {
       const volName = v.metadata?.name ?? '';
       if (!volName) continue;
       volumeMeta.set(volName, {
         namespace: v.status?.kubernetesStatus?.namespace ?? '',
         pvcName: v.status?.kubernetesStatus?.pvcName ?? '',
+        state: v.status?.state,
       });
     }
 
-    // Pre-aggregate healthy replicas per volume so we can flag last-replica risk.
+    // Pre-aggregate the usable copies per volume so we can flag last-replica
+    // risk — running replicas, or any unfailed one of a detached volume
+    // (replica-copy.ts).
     const healthyByVolume = new Map<string, number>();
     const healthyNodesByVolume = new Map<string, Set<string>>();
     for (const r of replicaResp.items ?? []) {
       const vol = r.spec?.volumeName;
       if (!vol) continue;
-      if (r.status?.currentState === 'running') {
+      if (isUsableCopy(r, volumeMeta.get(vol)?.state)) {
         healthyByVolume.set(vol, (healthyByVolume.get(vol) ?? 0) + 1);
         const nodes = healthyNodesByVolume.get(vol) ?? new Set<string>();
         if (r.spec?.nodeID) nodes.add(r.spec.nodeID);
@@ -940,7 +944,7 @@ export async function buildDrainImpact(
     interface LhVolume {
       metadata?: { name?: string };
       spec?: { size?: string; numberOfReplicas?: number; nodeSelector?: string[] };
-      status?: { kubernetesStatus?: { pvcName?: string; namespace?: string } };
+      status?: { state?: string; kubernetesStatus?: { pvcName?: string; namespace?: string } };
     }
     const vols = await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2',
@@ -953,9 +957,10 @@ export async function buildDrainImpact(
     //                         on the draining node (a stopped replica
     //                         still needs the operator's attention; it's
     //                         the case where re-pinning is most urgent).
-    //   healthyReplicaNodes → only running replicas — used for the
-    //                         operator-facing "replicas" count and the
-    //                         isLastReplica risk classification.
+    //   healthyReplicaNodes → usable copies only (running, or unfailed
+    //                         on a detached volume — replica-copy.ts) —
+    //                         used for the operator-facing "replicas"
+    //                         count and the isLastReplica classification.
     // Symmetric with the platform-replica loop above (which enumerates
     // all replica records on this node, healthy or not). Without this,
     // a tenant volume whose single replica is currently `stopped` on
@@ -969,8 +974,9 @@ export async function buildDrainImpact(
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'replicas',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as {
-      items?: Array<{ spec?: { volumeName?: string; nodeID?: string }; status?: { currentState?: string } }>;
+      items?: Array<{ spec?: { volumeName?: string; nodeID?: string; failedAt?: string }; status?: { currentState?: string } }>;
     };
+    const volumeStates = new Map((vols.items ?? []).map((v) => [v.metadata?.name ?? '', v.status?.state]));
     for (const r of replicaListResp.items ?? []) {
       const v = r.spec?.volumeName;
       const n = r.spec?.nodeID;
@@ -978,7 +984,7 @@ export async function buildDrainImpact(
       const arr = replicaNodes.get(v) ?? [];
       arr.push(n);
       replicaNodes.set(v, arr);
-      if (r.status?.currentState === 'running') {
+      if (isUsableCopy(r, volumeStates.get(v))) {
         const ha = healthyReplicaNodes.get(v) ?? [];
         ha.push(n);
         healthyReplicaNodes.set(v, ha);

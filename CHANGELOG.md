@@ -35,6 +35,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `pg_stat_replication` — a Ready pod alone does not prove a caught-up copy). The drain modal
   lists covered instances under **Database instances on this node** and marks the primary; an
   instance nothing covers, or one whose facts cannot be read, still blocks as before.
+- **A detached volume no longer reads as a "last replica" on every node.** Longhorn keeps every
+  replica of a detached volume `stopped`, and the drain counted only running replicas as copies —
+  so a retained volume nothing mounts (the CrowdSec store, 3 copies in HA) flagged a last-replica
+  risk on each node holding one and blocked the drain there too. A detached volume's replicas
+  that have not failed now count as its copies.
 - **Deleting a server that holds a database instance's only copy is refused**
   (`NODE_DELETE_HOLDS_DATABASE`, 409; Delete stays disabled in the modal). Removing it left
   PostgreSQL with an instance it could not start anywhere else, and the scale-down that followed

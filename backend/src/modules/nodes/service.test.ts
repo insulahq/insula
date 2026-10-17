@@ -296,6 +296,41 @@ describe('buildDrainImpact', () => {
     });
   });
 
+  it('a detached volume\'s stopped copies count — a retained 3-replica volume is not a last replica', async () => {
+    // Longhorn keeps every replica of a detached volume `stopped`. Counting
+    // only running replicas made it read as zero copies, so the retained
+    // CrowdSec store blocked the drain of every server holding one.
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-crowdsec' },
+        status: { state: 'detached', kubernetesStatus: { pvcName: 'crowdsec-data', namespace: 'crowdsec' } },
+      }],
+      longhornReplicas: ['s1', 's2', 's3'].map((n) => ({
+        metadata: { name: `r-crowdsec-${n}` },
+        spec: { volumeName: 'pvc-crowdsec', nodeID: n, failedAt: '' },
+        status: { currentState: 'stopped' },
+      })),
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 's2');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ pvcName: 'crowdsec-data', isLastReplica: false })]);
+  });
+
+  it('a detached volume whose other copies failed is still a last replica here', async () => {
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-crowdsec' },
+        status: { state: 'detached', kubernetesStatus: { pvcName: 'crowdsec-data', namespace: 'crowdsec' } },
+      }],
+      longhornReplicas: ['s1', 's2', 's3'].map((n) => ({
+        metadata: { name: `r-crowdsec-${n}` },
+        spec: { volumeName: 'pvc-crowdsec', nodeID: n, failedAt: n === 's2' ? '' : '2026-10-17T10:00:00Z' },
+        status: { currentState: 'stopped' },
+      })),
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 's2');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ pvcName: 'crowdsec-data', isLastReplica: true })]);
+  });
+
   it('skips system namespaces from pinnedWorkloads enumeration', async () => {
     const k8s = makeK8s({
       deployments: [{
