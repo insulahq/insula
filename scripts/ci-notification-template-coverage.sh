@@ -76,12 +76,16 @@ done
 # naive grep matches that prose — the guard would fail on its own
 # explanation, then get "fixed" by deleting the explanation.
 code_only() { grep -vE '^[[:space:]]*(\*|//|/\*)' "$1"; }
+# Capture, then match: `code_only … | grep -q` races under pipefail — grep -q
+# exits at the first match, the producer gets SIGPIPE, and the pipeline reads
+# as "not found" (it failed CI on an unrelated push).
+UNIT_GUARD_CODE="$(code_only "$UNIT_GUARD")"
 
-if code_only "$UNIT_GUARD" | grep -qE "channel !== 'in_app'"; then
+if grep -qE "channel !== 'in_app'" <<<"$UNIT_GUARD_CODE"; then
   err "$UNIT_GUARD re-introduces the in_app/email channel exclusion."
   echo "     That exclusion is why the ntfy channel shipped with no templates." >&2
 fi
-if ! code_only "$UNIT_GUARD" | grep -q 'NOTIFICATION_CHANNEL_ID'; then
+if ! grep -q 'NOTIFICATION_CHANNEL_ID' <<<"$UNIT_GUARD_CODE"; then
   err "$UNIT_GUARD no longer iterates NOTIFICATION_CHANNEL_ID."
   echo "     The matrix must be driven off the contract enum, not a local list." >&2
 fi
