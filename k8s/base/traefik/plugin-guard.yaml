@@ -29,7 +29,9 @@
 # Traefik still calls the registry unconditionally and still disables plugins
 # ("dial tcp: lookup plugins.traefik.io: network is unreachable"). The download
 # is not cache-gated, so only vendoring (--experimental.localPlugins) removes
-# the startup network dependency. Until then, this guard bounds the outage.
+# the startup network dependency. The ModSecurity plugin is vendored that way
+# (k8s/base/traefik/plugins/modsecurity); CrowdSec's bouncer still downloads,
+# so this guard still bounds the outage.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # SECOND CONCERN: a plugin's CONFIG is also read only at process start.

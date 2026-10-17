@@ -54,7 +54,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # exists, so the remote bootstrap then fails with "phase library missing at
   # /tmp/lib/bootstrap-phases.sh". Removing them first guarantees scp recreates
   # them at the expected paths.(Observed on a clean re-bootstrap.)
-  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" 'rm -rf /tmp/lib /tmp/platform' || true
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" 'rm -rf /tmp/lib /tmp/platform /tmp/k8s' || true
 
   # Also copy the lib/ sibling dir so resources the script reads at
   # runtime (e.g. lib/secrets-denylist.jq used by the Tier-1 bundle
@@ -76,6 +76,14 @@ if [[ -n "$REMOTE_HOST" ]]; then
   if [[ -d "${local_script_dir}/../platform" ]]; then
     echo "Copying platform/ to $REMOTE_HOST..."
     scp -r "${SSH_OPTS[@]}" "${local_script_dir}/../platform" "${SSH_USER}@${REMOTE_HOST}:/tmp/platform"
+  fi
+  # And the ModSecurity plugin source: install_traefik turns it into a
+  # ConfigMap before Traefik starts, long before the k8s/ tree is cloned.
+  if [[ -d "${local_script_dir}/../k8s/base/traefik/plugins/modsecurity" ]]; then
+    echo "Copying the ModSecurity plugin source to $REMOTE_HOST..."
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" 'mkdir -p /tmp/k8s/base/traefik/plugins'
+    scp -r "${SSH_OPTS[@]}" "${local_script_dir}/../k8s/base/traefik/plugins/modsecurity" \
+      "${SSH_USER}@${REMOTE_HOST}:/tmp/k8s/base/traefik/plugins/modsecurity"
   fi
 
   # Pass the original args via a base64-encoded blob so spaces, quotes,
@@ -665,10 +673,15 @@ CROWDSEC_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
 # in k8s/base/traefik/middlewares-crowdsec.yaml needs no further changes.
 CROWDSEC_PLUGIN_VERSION="v1.6.0"
 # ModSecurity-CRS proxy — tenant-opt-in WAF (the `modsecurity-crs@
-# traefik` Middleware). Proxies request bodies to the modsec-crs
-# Deployment in k8s/base/modsecurity-crs/ for OWASP CRS verdict.
-MODSECURITY_PLUGIN_MODULE="github.com/madebymode/traefik-modsecurity-plugin"
-MODSECURITY_PLUGIN_VERSION="v1.6.0"
+# traefik` Middleware). NOT fetched from the catalog: the platform carries its
+# own copy (k8s/base/traefik/plugins/modsecurity/README.md — upstream v1.6.0
+# let any request past the WAF with one header and held bodies in Traefik's
+# heap). install_traefik loads it as a LOCAL plugin from the
+# traefik-plugin-modsecurity ConfigMap; existing clusters switch over in
+# host-migration 2026.10.11/0002. The key stays `modsecurity`, so the
+# Middleware CRs are unchanged. Must equal the `import:` in the plugin's
+# .traefik.yml (scripts/test-traefik-modsecurity-plugin-migration.sh).
+MODSECURITY_PLUGIN_MODULE="github.com/insulahq/insula/traefik-plugins/modsecurity"
 # Coraza in-process WAF — DEAD CODE. The smoke test
 # established neither the Yaegi vendored path nor the WASM build is
 # usable today (see docker/traefik-plugin-coraza/README.md). Empty
@@ -5665,6 +5678,12 @@ deployment:
       hostPath:
         path: /var/log/traefik
         type: DirectoryOrCreate
+    # Insula's ModSecurity plugin source. install_traefik creates the ConfigMap
+    # before this install; Flux owns it afterwards
+    # (k8s/base/traefik/kustomization.yaml).
+    - name: traefik-plugin-modsecurity
+      configMap:
+        name: traefik-plugin-modsecurity
   initContainers:
     # The mount alone is NOT enough, verified on a live node.
     #
@@ -5746,7 +5765,46 @@ deployment:
             sleep 5
           done
           echo "wait-for-plugin-registry: registry reachable after $tries retries"
+# The ModSecurity plugin is LOCAL: Traefik interprets the files mounted from
+# the traefik-plugin-modsecurity volume above instead of downloading it.
+# moduleName and mountPath come from MODSECURITY_PLUGIN_MODULE (--set below).
+# CrowdSec stays a catalog plugin, which is why wait-for-plugin-registry is
+# still needed.
+experimental:
+  localPlugins:
+    modsecurity:
+      type: localPath
+      volumeName: traefik-plugin-modsecurity
 TRAEFIKVALUES
+
+  # The plugin's source must exist before the DaemonSet that mounts it, or every
+  # Traefik pod waits in ContainerCreating and this install never gets Ready.
+  # Same three files, same name, as the Flux-generated ConfigMap, so Flux
+  # adopts it unchanged. Its content hash goes on the pod template: Traefik
+  # reads plugin source only at startup, and a changed hash is what rolls the
+  # DaemonSet when a later host-migration ships new source.
+  # A repo checkout and the platform-ops binary carry k8s/ beside scripts/;
+  # --remote copies just this directory next to the flattened /tmp/bootstrap.sh.
+  local modsec_src="" modsec_dir modsec_sha
+  for modsec_dir in "${BOOTSTRAP_SCRIPT_DIR}/../k8s/base/traefik/plugins/modsecurity" \
+                    "${BOOTSTRAP_SCRIPT_DIR}/k8s/base/traefik/plugins/modsecurity"; do
+    if [[ -r "${modsec_dir}/modsecurity.go" ]]; then modsec_src="$modsec_dir"; break; fi
+  done
+  [[ -n "$modsec_src" ]] || error "ModSecurity plugin source (k8s/base/traefik/plugins/modsecurity) not found beside bootstrap.sh — run from a repo checkout, with --remote, or via the platform-ops binary."
+  kubectl create namespace traefik --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl -n traefik create configmap traefik-plugin-modsecurity \
+    --from-file=modsecurity.go="${modsec_src}/modsecurity.go" \
+    --from-file=go.mod="${modsec_src}/go.mod" \
+    --from-file=.traefik.yml="${modsec_src}/.traefik.yml" \
+    --dry-run=client -o json \
+    | jq '.metadata.annotations["kustomize.toolkit.fluxcd.io/prune"] = "disabled"
+          | .metadata.labels = {"app.kubernetes.io/name": "traefik-plugin-modsecurity",
+                                "app.kubernetes.io/part-of": "hosting-platform",
+                                "app.kubernetes.io/component": "traefik"}' \
+    | kubectl apply -f - >/dev/null
+  modsec_sha="$(kubectl -n traefik get configmap traefik-plugin-modsecurity -o json \
+    | jq -S -c .data | sha256sum | awk '{print $1}')"
+  [[ "$modsec_sha" =~ ^[0-9a-f]{64}$ ]] || { error "could not hash the traefik-plugin-modsecurity ConfigMap"; return 1; }
 
   # Memory bounds (the DaemonSet was OOM-killed on two nodes of a production
   # cluster 9 s apart by a webmail page loading dozens of images at once — see
@@ -5781,8 +5839,9 @@ TRAEFIKVALUES
     --set providers.kubernetesIngress.labelSelector="acme.cert-manager.io/http01-solver=true" \
     --set "experimental.plugins.crowdsec.moduleName=${CROWDSEC_PLUGIN_MODULE}" \
     --set "experimental.plugins.crowdsec.version=${CROWDSEC_PLUGIN_VERSION}" \
-    --set "experimental.plugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE}" \
-    --set "experimental.plugins.modsecurity.version=${MODSECURITY_PLUGIN_VERSION}" \
+    --set "experimental.localPlugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE}" \
+    --set "experimental.localPlugins.modsecurity.mountPath=/plugins-local/src/${MODSECURITY_PLUGIN_MODULE}" \
+    --set-string "deployment.podAnnotations.insula\\.host/modsecurity-plugin-sha256=${modsec_sha}" \
     ${CORAZA_PLUGIN_MODULE:+--set "experimental.plugins.coraza.moduleName=${CORAZA_PLUGIN_MODULE}"} \
     ${CORAZA_PLUGIN_VERSION:+--set "experimental.plugins.coraza.version=${CORAZA_PLUGIN_VERSION}"} \
     --set 'volumes[0].name=crowdsec-bouncer-key' \

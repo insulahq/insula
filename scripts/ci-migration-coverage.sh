@@ -23,6 +23,7 @@
 # 3. install_time_unit_shape — the systemd units/timers bootstrap emits
 #   4. helm_values_shape       — the --set flags and values-file heredocs of
 # bootstrap's helm installs
+#   5. traefik_plugin_source_shape — the ModSecurity plugin files Traefik loads
 #
 # (3) was added after the converge-on-self-upgrade trigger (v2026.8.7) nearly
 # shipped as fresh-install-only: bootstrap writes each unit ONCE, so editing one
@@ -229,10 +230,37 @@ helm_values_shape() {
     ' "$BOOTSTRAP"
 }
 
-# The coverage hash spans the firewall shape, the infra version pins AND the
-# install-time systemd units — a change to any of the three is a "fresh-render
-# vs existing-node" delta that an existing cluster only gets via a migration.
-render_shape() { firewall_shape; infra_pin_shape; install_time_unit_shape; helm_values_shape; }
+# The ModSecurity plugin Traefik loads from the traefik-plugin-modsecurity
+# ConfigMap (k8s/base/traefik/plugins/modsecurity/README.md). Flux ships an edit
+# with the release, but Traefik reads plugin source only at startup, so running
+# pods keep the old code until a host-migration re-stamps the pod-template hash
+# (copy 2026.10.11/0002-traefik-modsecurity-plugin-local.sh). That is the same
+# fresh-vs-existing delta as a pin bump. Anchored to this script, like LIB_DIR.
+PLUGIN_DIR="${FWSHAPE_PLUGIN_DIR:-$SCRIPT_DIR/../k8s/base/traefik/plugins/modsecurity}"
+PLUGIN_FILES="modsecurity.go go.mod .traefik.yml"
+traefik_plugin_source_shape() {
+  local f
+  for f in $PLUGIN_FILES; do
+    printf 'plugin|%s|%s\n' "$f" "$(sha256sum < "$PLUGIN_DIR/$f" | awk '{print $1}')"
+  done
+}
+# A missing file is a broken guard, not an empty shape. Checked up front like
+# the other canaries: render_shape runs inside a pipeline, where an exit is lost.
+assert_plugin_source_present() {
+  local f
+  for f in $PLUGIN_FILES; do
+    if [[ ! -r "$PLUGIN_DIR/$f" ]]; then
+      echo "::error::ci-migration-coverage: Traefik plugin source $PLUGIN_DIR/$f is missing — the plugin shape would be vacuous." >&2
+      return 1
+    fi
+  done
+}
+
+# The coverage hash spans the firewall shape, the infra version pins, the
+# install-time systemd units, bootstrap's helm values AND the Traefik plugin
+# source — a change to any of them is a "fresh-render vs existing-node" delta
+# that an existing cluster only gets via a migration.
+render_shape() { firewall_shape; infra_pin_shape; install_time_unit_shape; helm_values_shape; traefik_plugin_source_shape; }
 current_hash() { render_shape | sha256sum | awk '{print $1}'; }
 
 # Fail closed if the unit extraction found nothing (or lost a known unit) — see
@@ -326,6 +354,7 @@ shape_at_base() {
 
 assert_unit_shape_non_vacuous || exit 1
 assert_helm_shape_non_vacuous || exit 1
+assert_plugin_source_present || exit 1
 
 case "${1:-}" in
   --print) render_shape; exit 0 ;;

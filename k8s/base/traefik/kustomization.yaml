@@ -16,6 +16,33 @@ resources:
   # for when upstream stabilises. See the file's header comment.
   # - middlewares-waf.yaml
 
+# Insula's copy of the ModSecurity plugin (plugins/modsecurity/README.md),
+# which the Traefik DaemonSet mounts as a local plugin
+# (experimental.localPlugins.modsecurity). Only the three files Traefik loads
+# go in; the tests stay out.
+#
+# * Fixed name: the DaemonSet's volume names it. Traefik reads plugin source
+#   only at startup, so a content change reaches the process through the
+#   `insula.host/modsecurity-plugin-sha256` pod annotation, which a
+#   host-migration re-stamps — scripts/ci-migration-coverage.sh fails an edit to
+#   these files without one.
+# * prune: disabled — rolling back to a release without this ConfigMap must not
+#   delete it from under a DaemonSet that mounts it: a Traefik pod restarting
+#   on any node would then hang in ContainerCreating.
+configMapGenerator:
+  - name: traefik-plugin-modsecurity
+    namespace: traefik
+    files:
+      - modsecurity.go=plugins/modsecurity/modsecurity.go
+      - go.mod=plugins/modsecurity/go.mod
+      - .traefik.yml=plugins/modsecurity/.traefik.yml
+    options:
+      disableNameSuffixHash: true
+      annotations:
+        kustomize.toolkit.fluxcd.io/prune: disabled
+      labels:
+        app.kubernetes.io/name: traefik-plugin-modsecurity
+
 labels:
   - pairs:
       app.kubernetes.io/part-of: hosting-platform

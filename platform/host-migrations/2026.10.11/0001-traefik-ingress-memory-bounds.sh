@@ -183,6 +183,8 @@ jq -n --argjson args "$args" --arg mem "$memory" \
   '{additionalArguments: $args, resources: {limits: {memory: $mem}}}' > "$PATCH_FILE"
 
 echo "${MIG}: memory limit ${cur_mem:-unset} → ${memory}, http2.maxConcurrentStreams → ${WANT_STREAMS} (chart ${deployed_ver}) …"
+# --atomic: an upgrade that never becomes ready is rolled back by helm instead
+# of leaving one node without ingress (maxUnavailable=1, no surge).
 # --reuse-values keeps the bootstrap-computed release (DaemonSet mode, hostPorts,
 # plugin pins, access log, init containers); -f merges maps on top of it, so
 # resources.requests survive and only limits.memory changes.
@@ -191,6 +193,7 @@ echo "${MIG}: memory limit ${cur_mem:-unset} → ${memory}, http2.maxConcurrentS
   --version "${deployed_ver}" \
   --reuse-values \
   -f "$PATCH_FILE" \
+  --atomic \
   --wait \
   --timeout 300s
 

@@ -1,0 +1,10 @@
+displayName: Insula ModSecurity-CRS
+type: middleware
+
+import: github.com/insulahq/insula/traefik-plugins/modsecurity
+
+summary: Asks an OWASP ModSecurity-CRS container for a verdict on every request. Insula's copy of madebymode/traefik-modsecurity-plugin v1.6.0.
+
+testData:
+  modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
+  timeoutMillis: 2000

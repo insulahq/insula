@@ -2,15 +2,15 @@
 #
 # CI guard — the ModSecurity WAF is never attached without its body cap.
 #
-# The madebymode ModSecurity plugin buffers the ENTIRE request body before it
-# can ask the sidecar for a verdict:
-#
-#     body, err := io.ReadAll(req.Body)      // modsecurity.go — no limit
-#
-# and it has no size knob: `maxBodySize` is not a field of its Config struct, so
-# a value set on the Middleware is silently dropped by Traefik. Traefik runs as a
-# DaemonSet fronting the whole cluster (limits.memory=512Mi when this was
-# measured; 1Gi since 2026.10.11).
+# The ModSecurity plugin needs the ENTIRE request body before it can ask the
+# sidecar for a verdict. The madebymode plugin the platform ran until 2026.10.11
+# read it with an unbounded `io.ReadAll(req.Body)` and had no size knob
+# (`maxBodySize` was not a field of its Config). Traefik runs as a DaemonSet
+# fronting the whole cluster (limits.memory=512Mi when this was measured; 1Gi
+# since 2026.10.11). The platform's own copy (k8s/base/traefik/plugins/
+# modsecurity) caps bodies itself and reuses this middleware's buffer instead
+# of copying it — the cap stays, as the edge refusal and the plugin's body
+# store, and as the bound for any plugin a rollback brings back.
 #
 # Measured on a live cluster: ONE unauthenticated 600 MB POST to
 # /api/v1/auth/login OOM-killed Traefik in ~3 seconds
@@ -133,7 +133,7 @@ fi
 #    and in the right push order, which a per-route `.filter()` sidesteps
 #    entirely. The invariant that actually matters is per ROUTE — keeping the
 #    WAF while dropping the cap is safe only where there is no request body for
-#    the plugin's unbounded io.ReadAll to read.
+#    the plugin to buffer.
 if ! python3 "$SCRIPT_DIR/ci-waf-body-limit-route-scan.py" "$REPO_ROOT"; then
   fail=1
 fi
