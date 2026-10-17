@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.11-rc.1] - 2026-10-17
+
 ### Fixed
 
 - **Security: the WAF can no longer be skipped with one request header, and no longer holds
