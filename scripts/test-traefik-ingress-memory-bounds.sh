@@ -30,7 +30,7 @@ GOOD_ROUTE_MW='- name: inflight-per-client
   namespace: traefik
 - name: compress
   namespace: traefik'
-GOOD_INFLIGHT='amount: 100
+GOOD_INFLIGHT='amount: 300
 sourceCriterion:
   ipStrategy:
     ipv6Subnet: 64'
@@ -45,7 +45,9 @@ mw() {
     printf -- '---\napiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: compress\n  namespace: traefik\nspec:\n  compress:\n'
     printf '%s\n' "$body" | sed 's/^/    /'
     if [[ "$inflight" != NONE ]]; then
-      printf -- '---\napiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: inflight-per-client\n  namespace: traefik\nspec:\n  inFlightReq:\n'
+      printf -- '---\napiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: inflight-per-client\n  namespace: traefik\n'
+      [[ "${NO_PRUNE_ANNOTATION:-}" == 1 ]] || printf '  annotations:\n    kustomize.toolkit.fluxcd.io/prune: disabled\n'
+      printf 'spec:\n  inFlightReq:\n'
       printf '%s\n' "$inflight" | sed 's/^/    /'
     fi
   } > "$dir/mw.yaml"
@@ -164,7 +166,34 @@ mw "$WORK/c-amount" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 500
 sourceCriterion:
   ipStrategy:
     ipv6Subnet: 64'
-expect_fail "amount above 100 fails" "$WORK/c-amount" "amount must be 1-100, got '500'"
+expect_fail "amount above 300 fails" "$WORK/c-amount" "amount must be 1-300, got '500'"
+NO_PRUNE_ANNOTATION=1 mw "$WORK/c-prune" "$GOOD_C"
+expect_fail "a cap Middleware Flux may prune on rollback fails" "$WORK/c-prune" "prune: disabled"
+mw "$WORK/c-quoted" "$GOOD_C" '- name: "inflight-per-client"
+  namespace: "traefik"   # quoted, with a comment
+- name: '"'"'compress'"'"'
+  namespace: traefik'
+out="$(guard "$WORK/c-quoted")" && ok "quoted names and trailing comments are read correctly" || no "quoted fixture failed: $out"
+mw "$WORK/c-flow" "$GOOD_C" '- {name: compress, namespace: traefik}'
+expect_fail "a flow-style compress entry fails (it would evade the order check)" "$WORK/c-flow" "flow-style middleware entry"
+mw "$WORK/c-keycomment" "$GOOD_C"
+cat >> "$WORK/c-keycomment/mw.yaml" <<'YAML'
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: third
+spec:
+  routes:
+    - match: Host(`d.example.test`)
+      middlewares: # trailing comment on the key
+        - name: compress
+          namespace: traefik
+YAML
+expect_fail "'middlewares: # comment' still starts a new list" "$WORK/c-keycomment" "not directly preceded"
+mw "$WORK/c-broken" "$GOOD_C"
+printf 'kind: Middleware\nmetadata:\n  name: compress\nspec:\n  compress:\n    encodings: [gzip\n' > "$WORK/c-broken/broken.yaml"
+expect_fail "an unparseable file mentioning compress fails instead of being skipped" "$WORK/c-broken" "not parseable YAML"
 mw "$WORK/c-nomw" "$GOOD_C" "$GOOD_ROUTE_MW" NONE
 expect_fail "routes reference a cap that is defined nowhere: fails" "$WORK/c-nomw" "no 'inflight-per-client' Middleware"
 
@@ -200,10 +229,13 @@ EOF
 cat > "$FAKEBIN/helm" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE/helm.calls"
+echo "WARNING: Kubernetes configuration file is group-readable. This is insecure." >&2
 case "$1" in
-  list) echo '[{"name":"traefik","namespace":"traefik","chart":"traefik-41.0.2"}]' ;;
+  list) [ -n "${FAKE_FAIL_LIST:-}" ] && { echo "Error: Kubernetes cluster unreachable" >&2; exit 1; }
+        echo '[{"name":"traefik","namespace":"traefik","chart":"traefik-41.0.2"}]' ;;
   repo) exit 0 ;;
-  get) cat "$FAKE/values.json" ;;
+  get) [ -n "${FAKE_FAIL_GET:-}" ] && { echo "Error: context deadline exceeded" >&2; exit 1; }
+       cat "$FAKE/values.json" ;;
   upgrade)
     f=""; prev=""; for a in "$@"; do [ "$prev" = "-f" ] && f="$a"; prev="$a"; done
     cp "$f" "$FAKE/patch.json"
@@ -235,6 +267,7 @@ fixture() {
        env: [{name: "GOMEMLIMIT", value: "460MiB"}]}]}}}}' > "$d/ds.json"
 }
 run() { FAKE="$1" HM_KUBECONFIG="$1/k3s.yaml" PATH="$FAKEBIN:$PATH" FAKE_NO_RENDER="${2:-}" bash "$MIG" 2>&1; }
+run_env() { local d="$1"; shift; env FAKE="$d" HM_KUBECONFIG="$d/k3s.yaml" PATH="$FAKEBIN:$PATH" "$@" bash "$MIG" 2>&1; }
 upgrades() { grep -c '^upgrade' "$1/helm.calls" || true; }
 patch_args() { jq -r '.additionalArguments[]' "$1/patch.json"; }
 
@@ -291,6 +324,24 @@ done
 d="$WORK/q-1000Mi"; fixture "$d" 1000Mi "$caps"
 run "$d" >/dev/null || true
 [[ "$(upgrades "$d")" == 1 ]] && ok "limit 1000Mi is below 1Gi and gets raised" || no "1000Mi not raised"
+
+for q in 2e9 1Pi 2Ei; do
+  d="$WORK/q-$q"; fixture "$d" "$q" "$caps"
+  out="$(run "$d")"
+  grep -q "already applied" <<<"$out" && ok "limit $q is read as >= 1Gi (never lowered)" || no "$q: $out"
+done
+d="$WORK/zero"; fixture "$d" 1Gi '["--entryPoints.web.http2.maxConcurrentStreams=0","--entryPoints.websecure.http2.maxConcurrentStreams=0"]'
+run "$d" >/dev/null || true
+[[ "$(patch_args "$d" | grep -c 'maxConcurrentStreams=100')" == 2 ]] \
+  && ok "a cap of 0 (Go's default, 250) is not kept as 'tighter' — replaced by 100" || no "args: $(patch_args "$d" | tr '\n' ' ')"
+d="$WORK/listfail"; fixture "$d" 512Mi
+rc=0; out="$(run_env "$d" FAKE_FAIL_LIST=1)" || rc=$?
+[[ "$rc" -ne 0 ]] && grep -q "helm list failed — will retry" <<<"$out" && ! grep -q '^upgrade' "$d/helm.calls" \
+  && ok "helm list failing: exits non-zero with the reason (not a silent skip)" || no "listfail rc=$rc: $out"
+d="$WORK/getfail"; fixture "$d" 512Mi
+rc=0; out="$(run_env "$d" FAKE_FAIL_GET=1)" || rc=$?
+[[ "$rc" -ne 0 ]] && grep -q "helm get values failed" <<<"$out" && ! grep -q '^upgrade' "$d/helm.calls" \
+  && ok "helm get values failing: exits non-zero, never upgrades from an empty read" || no "getfail rc=$rc: $out"
 
 d="$WORK/worker"; fixture "$d" 512Mi; rm -f "$d/k3s.yaml"
 out="$(run "$d")" && grep -q "worker/least-priv" <<<"$out" && [[ ! -s "$d/helm.calls" ]] \

@@ -71,7 +71,10 @@ interface IngressRouteObject {
 /**
  * Converge the disowned compressing routes. Best-effort and idempotent: a
  * missing route or a failed patch is logged and skipped; the next boot tries
- * again. The patch carries the resourceVersion it was computed from, so a
+ * again. Nothing is patched until the Middleware itself exists — Traefik
+ * drops a router that references a missing Middleware, so referencing it
+ * before Flux has applied it (a boot racing the release apply) would take
+ * webmail and the Stalwart routes down. The patch carries the resourceVersion it was computed from, so a
  * concurrent writer (e.g. a webmail engine switch) wins with a 409 instead of
  * being silently overwritten — MERGE_PATCH replaces the whole routes array.
  */
@@ -80,6 +83,21 @@ export async function reconcileCompressRouteBounds(
   log: Pick<Logger, 'info' | 'warn'>,
 ): Promise<{ readonly patched: string[] }> {
   const patched: string[] = [];
+  try {
+    await custom.getNamespacedCustomObject({
+      group: 'traefik.io',
+      version: 'v1alpha1',
+      namespace: INFLIGHT_MIDDLEWARE.namespace,
+      plural: 'middlewares',
+      name: INFLIGHT_MIDDLEWARE.name,
+    } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0]);
+  } catch (err) {
+    log.warn(
+      { err, middleware: `${INFLIGHT_MIDDLEWARE.namespace}/${INFLIGHT_MIDDLEWARE.name}` },
+      'traefik: concurrency-cap Middleware not present yet — routes left as they are until the next boot',
+    );
+    return { patched };
+  }
   for (const ref of DISOWNED_COMPRESS_ROUTES) {
     const id = `${ref.namespace}/${ref.name}`;
     try {

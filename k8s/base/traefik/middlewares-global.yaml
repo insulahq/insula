@@ -58,6 +58,8 @@ spec:
       - text/plain
       - text/javascript
       - text/xml
+      - text/calendar
+      - text/vcard
       - application/javascript
       - application/x-javascript
       - application/json
@@ -66,34 +68,44 @@ spec:
       - application/wasm
       - image/svg+xml
 ---
-# inflight-per-client — at most 100 requests in flight per client on each
-# route that uses it; the 101st gets 429 until one finishes. It sits directly
-# before `compress` on every route that compresses, so what one client can hold
-# open is bounded however many connections it opens (the HTTP/2 stream cap in
-# bootstrap.sh only bounds a single connection). Three of those routes are
-# Flux-disowned; the platform API converges them on boot
+# inflight-per-client — at most 300 requests in flight per client on each
+# route that uses it; the next one gets 429 until one finishes. It sits
+# directly before `compress` on every route that compresses, so what one client
+# can hold open is bounded however many connections it opens (the HTTP/2 stream
+# cap in bootstrap.sh only bounds a single connection). Three of those routes
+# are Flux-disowned; the platform API converges them on boot
 # (backend/src/shared/traefik-compress-bounds.ts).
 #
 # * sourceCriterion is REQUIRED, not decoration: without one, Traefik keys
-#   inFlightReq by the Host header, i.e. ONE shared budget of 100 for every
-#   user of the route together.
+#   inFlightReq by the Host header, i.e. ONE shared budget for every user of
+#   the route together.
 # * ipStrategy without depth/excludedIPs = the connection's remote address.
 #   Traefik runs on hostPorts and trusts forwarded headers from 127.0.0.1
 #   only, so that address is the client — a client cannot pick its own key
 #   with X-Forwarded-For. IPv6 clients are grouped by /64: one host owns a
 #   whole /64 and could otherwise rotate addresses past the limit.
-# * 100: production access logs (two weeks, every compressing route) show at
-#   most 39 in flight for one client on one route; the burst that OOM-killed
-#   Traefik peaked at 51. 100 matches the per-connection stream cap.
+# * 300, not lower: the key is an ADDRESS, and an office or a carrier-grade
+#   NAT puts many users behind one. A request counts for its whole life, and
+#   every open webmail tab holds a JMAP push stream (SSE) on the Stalwart
+#   route, so a tight cap would lock a shared address out on push streams
+#   alone. One real client peaked at 39 (two weeks of production access logs,
+#   every compressing route; the burst behind the OOM peaked at 51). The
+#   ceiling is memory: ~1 MiB per slow gzip response puts one address at
+#   ~300 MiB worst case, inside Traefik's 921MiB Go memory limit.
+# * prune: disabled — the disowned routes keep referencing this Middleware
+#   after a rollback to a release that does not ship it. Pruned, Traefik would
+#   drop those routers and webmail would 404.
 # Instances are per router: the budget is per client PER ROUTE.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: inflight-per-client
   namespace: traefik
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   inFlightReq:
-    amount: 100
+    amount: 300
     sourceCriterion:
       ipStrategy:
         ipv6Subnet: 64

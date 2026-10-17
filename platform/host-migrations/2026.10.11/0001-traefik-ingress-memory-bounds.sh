@@ -63,6 +63,11 @@ to_mib() {
     M)  awk -v n="$n" 'BEGIN{printf "%d", n*1000000/1048576}' ;;
     G)  awk -v n="$n" 'BEGIN{printf "%d", n*1000000000/1048576}' ;;
     T)  awk -v n="$n" 'BEGIN{printf "%d", n*1000000000000/1048576}' ;;
+    Pi) awk -v n="$n" 'BEGIN{printf "%d", n*1073741824}' ;;
+    Ei) awk -v n="$n" 'BEGIN{printf "%d", n*1099511627776}' ;;
+    P)  awk -v n="$n" 'BEGIN{printf "%d", n*1e15/1048576}' ;;
+    E)  awk -v n="$n" 'BEGIN{printf "%d", n*1e18/1048576}' ;;
+    e[0-9]*|E[0-9]*) awk -v n="$n" -v e="${unit#?}" 'BEGIN{printf "%d", n*(10^e)/1048576}' ;;
     "") awk -v n="$n" 'BEGIN{printf "%d", n/1048576}' ;;
     *)  echo 0 ;;
   esac
@@ -84,7 +89,8 @@ satisfied() { # <live-state-json>
   for ep in $ENTRYPOINTS; do
     v="$(streams_arg "$(jq -c .args <<<"$st")" "$ep")"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$v" -le "$WANT_STREAMS" ] || return 1
+    # 0 is not "tighter": Go's HTTP/2 server reads 0 as its default (250).
+    [ "$v" -ge 1 ] && [ "$v" -le "$WANT_STREAMS" ] || return 1
   done
 }
 
@@ -109,8 +115,17 @@ export HELM_DATA_HOME="$HELM_HOME_DIR/data"
 mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
 # --- pin the chart to what is ALREADY deployed (never move it) --------------
-deployed_ver=$("$HELM" list -n traefik -o json 2>/dev/null \
-  | jq -r '.[] | select(.name == "traefik") | .chart' | sed -n 's/^traefik-//p' | head -n1)
+# A failed READ exits non-zero (the runner retries next converge); only a
+# successful listing without the release means "nothing to do here".
+# stderr goes to a file, not into the JSON: a helm warning there would make
+# jq read "no release" and the script skip silently.
+HELM_ERR="$HELM_HOME_DIR/helm.err"
+if ! releases="$("$HELM" list -n traefik -o json 2>"$HELM_ERR")"; then
+  echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_ERR")" >&2
+  exit 1
+fi
+deployed_ver="$(jq -r '.[]? | select(.name == "traefik") | .chart' <<<"$releases" 2>/dev/null \
+  | sed -n 's/^traefik-//p' | head -n1 || true)"
 if [ -z "$deployed_ver" ]; then
   echo "${MIG}: traefik helm release not found in ns traefik (installed out-of-band?) — skipping." >&2
   exit 0
@@ -118,7 +133,12 @@ fi
 "$HELM" repo add traefik https://traefik.github.io/charts 2>/dev/null || true
 "$HELM" repo update traefik >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
 
-values="$("$HELM" get values traefik -n traefik -o json 2>/dev/null || echo '{}')"
+# Fail rather than fall back to {}: the additionalArguments list is rebuilt
+# from these values, and an empty read would drop everything the release holds.
+if ! values="$("$HELM" get values traefik -n traefik -o json 2>"$HELM_ERR")"; then
+  echo "${MIG}: helm get values failed — will retry on the next converge: $(cat "$HELM_ERR")" >&2
+  exit 1
+fi
 [ "$values" = "null" ] && values='{}'
 
 # --- desired values ------------------------------------------------------------
@@ -153,7 +173,7 @@ for ep in $ENTRYPOINTS; do
   prefix="--entryPoints.${ep}.http2.maxConcurrentStreams="
   v="$(streams_arg "$args" "$ep")"
   case "$v" in ''|*[!0-9]*) v="" ;; esac
-  if [ -z "$v" ] || [ "$v" -gt "$WANT_STREAMS" ]; then v="$WANT_STREAMS"; fi
+  if [ -z "$v" ] || [ "$v" -lt 1 ] || [ "$v" -gt "$WANT_STREAMS" ]; then v="$WANT_STREAMS"; fi
   args="$(jq -c --arg p "$prefix" --arg a "${prefix}${v}" \
     '[.[] | select((type == "string" and startswith($p)) | not)] + [$a]' <<<"$args")"
 done

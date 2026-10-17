@@ -13,6 +13,7 @@ import {
   type MiddlewareRef,
 } from './traefik-compress-bounds.js';
 import { reconcileTunnelAnchorMiddlewares } from '../modules/private-workers/anchor-ingress-reconciler.js';
+import { MERGE_PATCH } from './k8s-patch.js';
 
 const mw = (name: string, namespace = 'traefik'): MiddlewareRef => ({ name, namespace });
 const names = (l: ReadonlyArray<MiddlewareRef>): string[] => l.map((m) => m.name ?? '');
@@ -78,10 +79,14 @@ function legacyRoutes(): Record<string, { metadata: { resourceVersion: string };
   };
 }
 
-function fakeCustom(objects: Record<string, unknown>, failPatch: Set<string> = new Set()) {
+function fakeCustom(objects: Record<string, unknown>, failPatch: Set<string> = new Set(), middlewarePresent = true) {
   const patches: Array<Record<string, unknown>> = [];
   const api = {
-    getNamespacedCustomObject: vi.fn(async (a: { namespace: string; name: string }) => {
+    getNamespacedCustomObject: vi.fn(async (a: { plural: string; namespace: string; name: string }) => {
+      if (a.plural === 'middlewares') {
+        if (middlewarePresent && a.namespace === 'traefik' && a.name === 'inflight-per-client') return { spec: { inFlightReq: { amount: 300 } } };
+        throw new Error('404 not found');
+      }
       const o = objects[`${a.namespace}/${a.name}`];
       if (!o) throw new Error('404 not found');
       return structuredClone(o);
@@ -138,9 +143,9 @@ describe('reconcileCompressRouteBounds', () => {
   it('sends merge-patch (the client defaults to json-patch and the apiserver rejects an object)', async () => {
     const c = fakeCustom(legacyRoutes());
     await reconcileCompressRouteBounds(c.api as never, log);
+    expect(c.api.patchNamespacedCustomObject).toHaveBeenCalled();
     for (const call of c.api.patchNamespacedCustomObject.mock.calls) {
-      expect(call.length).toBe(2);
-      expect(call[1]).toBeDefined();
+      expect(call[1]).toBe(MERGE_PATCH);
     }
   });
 
@@ -163,6 +168,15 @@ describe('reconcileCompressRouteBounds', () => {
     const res = await reconcileCompressRouteBounds(c.api as never, { info: vi.fn(), warn });
     expect(res.patched).toEqual(['mail/platform-webmail-ingress']);
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('patches nothing while the Middleware itself is missing (Traefik would drop those routers → 404)', async () => {
+    const c = fakeCustom(legacyRoutes(), new Set(), false);
+    const warn = vi.fn();
+    const res = await reconcileCompressRouteBounds(c.api as never, { info: vi.fn(), warn });
+    expect(res.patched).toEqual([]);
+    expect(c.api.patchNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('does not fight the tunnel anchor WAF reconciler: a capped anchor needs no WAF patch', async () => {
