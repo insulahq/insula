@@ -376,8 +376,9 @@ _ensure_k3s_running() {
 TRAEFIK_CHART_VERSION_LOCAL="40.2.0"
 CROWDSEC_PLUGIN_MODULE_LOCAL="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
 CROWDSEC_PLUGIN_VERSION_LOCAL="v1.4.4"
-MODSECURITY_PLUGIN_MODULE_LOCAL="github.com/madebymode/traefik-modsecurity-plugin"
-MODSECURITY_PLUGIN_VERSION_LOCAL="v1.6.0"
+# Insula's own ModSecurity plugin, loaded locally from a ConfigMap (see
+# MODSECURITY_PLUGIN_MODULE in scripts/bootstrap.sh).
+MODSECURITY_PLUGIN_MODULE_LOCAL="github.com/insulahq/insula/traefik-plugins/modsecurity"
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
 # exists as a K8s Secret in BOTH `crowdsec` AND `traefik` namespaces.
@@ -421,6 +422,17 @@ _install_traefik_local() {
   echo "Generating CrowdSec bouncer key Secret (crowdsec + traefik namespaces)..."
   _generate_crowdsec_bouncer_key_local
 
+  # The ModSecurity plugin source, before the DaemonSet that mounts it.
+  local modsec_src="${SCRIPT_DIR}/../k8s/base/traefik/plugins/modsecurity" modsec_cm
+  k3s_exec kubectl create namespace traefik --dry-run=client -o yaml \
+    | docker exec -i "$K3S_CONTAINER" kubectl apply -f - >/dev/null
+  modsec_cm="$(jq -n --rawfile go "${modsec_src}/modsecurity.go" --rawfile mod "${modsec_src}/go.mod" \
+    --rawfile yml "${modsec_src}/.traefik.yml" '{apiVersion: "v1", kind: "ConfigMap",
+      metadata: {name: "traefik-plugin-modsecurity", namespace: "traefik",
+                 annotations: {"kustomize.toolkit.fluxcd.io/prune": "disabled"}},
+      data: {"modsecurity.go": $go, "go.mod": $mod, ".traefik.yml": $yml}}')"
+  echo "$modsec_cm" | docker exec -i "$K3S_CONTAINER" kubectl apply -f - >/dev/null
+
   echo "Installing Traefik v3 (helm template + kubectl apply)..."
   helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
   helm repo update >/dev/null 2>&1
@@ -452,16 +464,22 @@ _install_traefik_local() {
     --set providers.kubernetesIngress.enabled=false \
     --set "experimental.plugins.crowdsec.moduleName=${CROWDSEC_PLUGIN_MODULE_LOCAL}" \
     --set "experimental.plugins.crowdsec.version=${CROWDSEC_PLUGIN_VERSION_LOCAL}" \
-    --set "experimental.plugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE_LOCAL}" \
-    --set "experimental.plugins.modsecurity.version=${MODSECURITY_PLUGIN_VERSION_LOCAL}" \
+    --set 'experimental.localPlugins.modsecurity.type=localPath' \
+    --set "experimental.localPlugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE_LOCAL}" \
+    --set "experimental.localPlugins.modsecurity.mountPath=/plugins-local/src/${MODSECURITY_PLUGIN_MODULE_LOCAL}" \
+    --set 'experimental.localPlugins.modsecurity.volumeName=traefik-plugin-modsecurity' \
+    --set 'deployment.additionalVolumes[0].name=traefik-plugin-modsecurity' \
+    --set 'deployment.additionalVolumes[0].configMap.name=traefik-plugin-modsecurity' \
     --set 'volumes[0].name=crowdsec-bouncer-key' \
     --set 'volumes[0].mountPath=/var/run/secrets/crowdsec' \
     --set 'volumes[0].type=secret' \
     --set 'additionalArguments[0]=--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32' \
     --set 'additionalArguments[1]=--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32' \
+    --set 'additionalArguments[2]=--entryPoints.web.http2.maxConcurrentStreams=100' \
+    --set 'additionalArguments[3]=--entryPoints.websecure.http2.maxConcurrentStreams=100' \
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
-    --set resources.limits.memory=512Mi)
+    --set resources.limits.memory=1Gi)
 
   # Pipe via stdin so we don't have to copy the file into the container.
   echo "$rendered" | docker exec -i "$K3S_CONTAINER" kubectl apply -f -

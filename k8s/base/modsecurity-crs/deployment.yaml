@@ -1,7 +1,8 @@
 # OWASP ModSecurity-CRS sidecar Deployment.
 #
-# Fronted by the madebymode/traefik-modsecurity-plugin Yaegi plugin
-# loaded into the Traefik DaemonSet (see scripts/bootstrap.sh's
+# Fronted by the platform's ModSecurity Yaegi plugin
+# (k8s/base/traefik/plugins/modsecurity), loaded into the Traefik
+# DaemonSet as a local plugin (see scripts/bootstrap.sh's
 # install_traefik helm flags + k8s/base/traefik/
 # middlewares-modsecurity.yaml). When a tenant route opts into WAF
 # (wafEnabled=1), annotation-sync emits a reference to the shared
@@ -64,8 +65,8 @@ spec:
               # original request URI to the BACKEND URL — so a fixed-
               # path BACKEND like `.../health` becomes `/health/assets/
               # x.js` etc. for any non-root request, returning 404 from
-              # the upstream. The Traefik madebymode/traefik-modsecurity-
-              # plugin then forwards that 404 to the client (it does NOT
+              # the upstream. The Traefik ModSecurity plugin then
+              # forwards that 404 to the client (it does NOT
               # discard the upstream response as a prior comment claimed
               # empirical test on staging.example.test:
               # / returned 200 because /health/ exists, but /assets/x.js

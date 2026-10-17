@@ -70,8 +70,16 @@ LAB_STG_VCPU=4 LAB_STG_RAM_MB=6144 LAB_STG_DISK_GB=60
   && ok "staging: production mode at its release, 3 servers, on demand" || bad "staging definition"
 ( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_SERVERS=1; lab_cluster_def stg; [[ ${#CL_NODES[@]} == 1 ]] ) \
   && ok "LAB_STG_SERVERS sizes staging" || bad "LAB_STG_SERVERS"
-( lab_cluster_def dev; [[ "$CL_ENV" == dev && -z "$CL_RELEASE_TAG" && "$CL_AUTOSTART" == 1 && "${CL_NODES[*]}" == "lab-dev-1 11" ]] ) \
-  && ok "dev: this checkout, always on, one node" || bad "dev definition"
+( unset LAB_AUTOSTART; lab_cluster_def dev
+  [[ "$CL_ENV" == dev && -z "$CL_RELEASE_TAG" && "$CL_AUTOSTART" == 0 && "${CL_NODES[*]}" == "lab-dev-1 11" ]] ) \
+  && ok "dev: this checkout, on demand (no autostart by default), one node" || bad "dev definition"
+( LAB_AUTOSTART=1; lab_cluster_def dev; [[ "$CL_AUTOSTART" == 1 ]] ) \
+  && ok "LAB_AUTOSTART=1 makes DEV start with the host" || bad "LAB_AUTOSTART for dev"
+( LAB_AUTOSTART=1 LAB_STG_RELEASE_TAG=v2026.10.6; lab_cluster_def stg; [[ "$CL_AUTOSTART" == 0 ]] ) \
+  && ok "staging never autostarts, LAB_AUTOSTART or not" || bad "LAB_AUTOSTART leaked into staging"
+autostart_call() { ( VIRSH() { echo "$*" >&2; }; lab_vm_autostart lab-dev-1 "$1" ) 2>&1; }   # stderr: the helper silences stdout
+check "lab_vm_autostart 0 clears the flag (a VM created with it on loses it)" '[[ "$(autostart_call 0)" == "autostart --disable lab-dev-1" ]]'
+check "lab_vm_autostart 1 sets the flag" '[[ "$(autostart_call 1)" == "autostart lab-dev-1" ]]'
 ( lab_cluster_def dev; [[ -z "$CL_WORKER" ]] ) && ok "dev has no worker" || bad "dev worker"
 ( LAB_STG_RELEASE_TAG=v2026.10.6 LAB_STG_SERVERS=3; lab_cluster_def stg
   [[ "$CL_WORKER" == "lab-stg-w1 21" && "$CL_W_VCPU" == 4 && "$CL_W_RAM" == 6144 && "$CL_W_DISK" == 40 ]] ) \
@@ -80,18 +88,17 @@ LAB_STG_VCPU=4 LAB_STG_RAM_MB=6144 LAB_STG_DISK_GB=60
   && ok "LAB_STG_WORKER_RAM_MB sizes the worker" || bad "worker sizing"
 
 # ── DEV and staging take turns on the host ──
-turns() {   # <running VMs> <paused marker> <fn> → the cluster calls the fn made, then the marker
+turns() {   # <running VMs> <fn> → the cluster calls the fn made
   : > "$T/calls"
   ( VIRSH() { [[ "$1" == list ]] && tr ' ' '\n' <<<"$RUNNING"; return 0; }
     lab_cluster_down() { echo "down $1" >> "$T/calls"; }
     lab_cluster_up() { echo "up $1" >> "$T/calls"; }
-    RUNNING="$1"; lab_state_set LAB_DEV_PAUSED_FOR_STG "$2"
-    "$3" 2>/dev/null; cat "$T/calls"; echo "paused=$(lab_state_get LAB_DEV_PAUSED_FOR_STG)" ) | xargs
+    RUNNING="$1"; "$2" 2>/dev/null; cat "$T/calls" ) | xargs
 }
-check "up stg stops a running DEV and remembers it" '[[ "$(turns "lab-svc lab-dev-1" 0 lab_dev_yield)" == "down dev paused=1" ]]'
-check "up stg leaves a stopped DEV alone" '[[ "$(turns "lab-svc" 0 lab_dev_yield)" == "paused=0" ]]'
-check "down stg starts the DEV it stopped" '[[ "$(turns "lab-svc" 1 lab_dev_resume)" == "up dev paused=0" ]]'
-check "down stg does not start a DEV it never stopped" '[[ "$(turns "lab-svc" 0 lab_dev_resume)" == "paused=0" ]]'
+check "up stg stops a running DEV" '[[ "$(turns "lab-svc lab-dev-1" lab_dev_yield)" == "down dev" ]]'
+check "up stg leaves a stopped DEV alone" '[[ -z "$(turns "lab-svc" lab_dev_yield)" ]]'
+# Nothing restarts DEV after staging (operator rule: an idle lab runs nothing).
+check "down stg only stops staging" 'grep -qxE "  \"down stg\"\) lab_cluster_down stg ;;" "$ROOT/scripts/vm-integration-tests/lab.sh"'
 check "staging counts as running from any of its VMs" '( VIRSH() { printf "lab-svc\nlab-stg-s2\n"; }; _lab_running stg && ! _lab_running dev )'
 
 # ── the join script's one operator edit (lab_join_script_cidr) ──

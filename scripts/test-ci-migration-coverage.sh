@@ -309,6 +309,25 @@ rc=$?
 body=$(FWSHAPE_BOOTSTRAP="$D/helm.sh" FWSHAPE_REQUIRED_HELM_RELEASES=traefik bash "$GUARD" --print 2>/dev/null | grep -c "^helmvalues|")
 [ "$body" = "0" ] && ok "non-*VALUES heredoc is NOT silently hashed" || bad "non-*VALUES heredoc leaked into shape ($body lines)"
 
+echo "== the Traefik ModSecurity plugin source is fingerprinted =="
+# Traefik reads plugin source only at startup; an edit reaches running pods only
+# through a host-migration that re-stamps the pod-template hash.
+mkdir -p "$D/plugin"
+for f in modsecurity.go go.mod .traefik.yml; do
+  cp "$(dirname "$GUARD")/../k8s/base/traefik/plugins/modsecurity/$f" "$D/plugin/$f"
+done
+run_plugin() { FWSHAPE_PLUGIN_DIR="$D/plugin" FWSHAPE_BASELINE="$D/pluginbase" \
+  MIGRATION_ADDED="$1" WAIVER=0 BASELINE_UPDATED="$2" bash "$GUARD" >/dev/null 2>&1; }
+FWSHAPE_PLUGIN_DIR="$D/plugin" FWSHAPE_BASELINE="$D/pluginbase" bash "$GUARD" --update-baseline >/dev/null
+run_plugin 0 0; expect "plugin source unchanged → OK" 0 $?
+echo '// one more line' >> "$D/plugin/modsecurity.go"
+run_plugin 0 0; expect "plugin source edited + no migration → FAIL" 1 $?
+run_plugin 1 1; expect "plugin source edited + migration + baseline → OK" 0 $?
+printf 'import: github.com/example/other\n' > "$D/plugin/.traefik.yml"
+run_plugin 0 0; expect "plugin manifest edited + no migration → FAIL" 1 $?
+rm "$D/plugin/go.mod"
+run_plugin 1 1; expect "plugin file missing → hard FAIL (not an empty shape)" 1 $?
+
 echo "== real repo passes its own committed baseline =="
 bash "$GUARD" >/dev/null 2>&1; expect "live repo OK" 0 $?
 

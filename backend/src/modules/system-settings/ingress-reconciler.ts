@@ -125,7 +125,8 @@ const PANEL_SERVICES: Record<'admin' | 'tenant', string> = {
 /**
  * WAF Middleware attached to platform-ingress panel routes. Currently
  * `modsecurity-crs` (the ModSecurity-CRS sidecar Deployment in the
- * traefik namespace, fronted by the madebymode plugin). The Coraza
+ * traefik namespace, fronted by the platform's ModSecurity plugin in
+ * k8s/base/traefik/plugins/modsecurity). The Coraza
  * scaffolding under k8s/base/traefik/middlewares-waf.yaml remains
  * documented dead code; when a working in-process Coraza plugin lands
  * upstream this flips back to `coraza-platform` with no schema change.
@@ -134,9 +135,11 @@ const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
 
 /**
  * Request-body cap chained immediately BEFORE the WAF, everywhere the WAF is
- * attached. The ModSecurity plugin does an unbounded `io.ReadAll(req.Body)`
- * before it can ask the sidecar for a verdict, and Traefik is a DaemonSet with
- * limits.memory=512Mi fronting the whole cluster: measured on a live cluster, a
+ * attached. The ModSecurity plugin needs the whole body before it can ask the
+ * sidecar for a verdict — the madebymode plugin the platform ran until
+ * 2026.10.11 read it unbounded into memory; the platform's own copy reuses this
+ * middleware's buffer — and Traefik is a DaemonSet fronting the whole cluster
+ * (limits.memory=512Mi at the time): measured on a live cluster, a
  * single UNAUTHENTICATED 600 MB POST to /api/v1/auth/login OOM-killed it in ~3s
  * (exitCode 137) and took every site down. Never attach the WAF without this.
  * See k8s/base/traefik/middlewares-waf-body-limit.yaml; guard:
@@ -174,15 +177,13 @@ export const PANEL_EDGE_GUARDS: {
 /**
  * The file-manager's streaming upload endpoint, carved out of WAF coverage.
  *
- * The madebymode ModSecurity plugin does `body, _ := io.ReadAll(req.Body)` with
- * NO size limit — verified by reading the plugin source off a running Traefik
- * pod. Its `maxBodySize` knob, which our Middleware sets to 5 MiB
- * and which earlier comments here described as a cap, is not in the plugin's
- * `Config` struct at all: Traefik drops the unknown key and the plugin never
- * consults it. So EVERY request body on a WAF-covered route is buffered whole
- * in the Traefik pod, then POSTed to the ModSecurity sidecar, which buffers it
- * AGAIN to a temp file on disk before the request is finally replayed upstream.
- * Traefik's limit is 512Mi and it is a DaemonSet fronting the whole cluster.
+ * The WAF needs the whole request body before its verdict, so EVERY body on a
+ * WAF-covered route is buffered in the Traefik pod (by `waf-body-limit`, on disk
+ * past 1 MiB), then POSTed to the ModSecurity sidecar, which buffers it AGAIN to
+ * a temp file on disk before the request is finally replayed upstream. When
+ * this carve-out was written the madebymode plugin also copied it whole into
+ * Traefik's heap with no size limit (its `maxBodySize` was not a Config field);
+ * the platform's own copy (k8s/base/traefik/plugins/modsecurity) no longer does.
  *
  * That cost buys nothing here. `9000105` in the CRS exclusion ConfigMap already
  * strips REQUEST_BODY and ARGS_POST from every rule for this exact URI, because
@@ -255,8 +256,9 @@ const UPLOAD_ROUTE_PRIORITY = 101;
  *
  * ★ Only `waf-body-limit` is dropped here — `crowdsec` AND `modsecurity-crs`
  * both stay. That is deliberate and differs from the upload carve-out above,
- * which drops the WAF too. Verified by reading the madebymode plugin source off
- * a running Traefik pod: `ServeHTTP` buffers only `req.Body` and ends with
+ * which drops the WAF too. Verified by reading the plugin source (the madebymode
+ * original then; the platform's copy keeps this): `ServeHTTP` buffers only
+ * `req.Body` and ends with
  * `a.next.ServeHTTP(rw, req)`, passing the RAW ResponseWriter through. It never
  * wraps or records the response, so it costs nothing on a download and its
  * request-side inspection is retained. A download request is a GET with an

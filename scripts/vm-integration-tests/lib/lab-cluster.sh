@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # scripts/vm-integration-tests/lib/lab-cluster.sh — the lab's long-lived clusters.
 #
-#   dev  1 node, `bootstrap.sh --env dev`: Flux follows the development branch; always
-#        on (autostarts with the host).
+#   dev  1 node, `bootstrap.sh --env dev`: Flux follows the development branch. On
+#        demand like staging: started for DEV work, stopped otherwise (no autostart
+#        unless LAB_AUTOSTART=1).
 #   stg  LAB_STG_SERVERS servers installed like production — `--env production` from a
 #        checkout of LAB_STG_RELEASE_TAG (production's version) — and opted into release
 #        candidates, so every RC is an in-place upgrade from where production is. On
@@ -19,7 +20,7 @@ lab_cluster_def() {
   case "$1" in
     dev)
       CL_NAME=dev; CL_NET=insula-lab-dev; CL_PREFIX="$LAB_DEV_NET"; CL_APEX="dev.${LAB_APEX}"
-      CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART=1; CL_DUAL_STACK=0; CL_V6_PREFIX=""
+      CL_ENV=dev; CL_RELEASE_TAG=""; CL_AUTOSTART="${LAB_AUTOSTART:-0}"; CL_DUAL_STACK=0; CL_V6_PREFIX=""
       CL_VCPU="$LAB_DEV_VCPU"; CL_RAM="$LAB_DEV_RAM_MB"; CL_DISK="$LAB_DEV_DISK_GB"
       CL_NODES=("lab-dev-1 11"); CL_WORKER="" ;;
     stg)
@@ -233,13 +234,13 @@ lab_cluster_up() {
       read -r vm host <<<"$entry"
       echo "── creating ${vm} @ ${CL_PREFIX}.${host} (${CL_VCPU} vCPU, ${CL_RAM} MB, ${CL_DISK} GB, $(lab_node_os "$vm")) ──" >&2
       _lab_node_create "$vm" "$host" "$ca_b64" || return 1
-      (( CL_AUTOSTART == 0 )) || VIRSH autostart "$vm" >&2
     done
     install=1
   elif (( ${#stopped[@]} > 0 )); then
     _lab_mem_guard $(( CL_RAM * ${#stopped[@]} )) || return 1
   fi
   for entry in "${stopped[@]}"; do read -r vm host <<<"$entry"; VIRSH start "$vm" >&2; done
+  for entry in "${CL_NODES[@]}"; do read -r vm host <<<"$entry"; lab_vm_autostart "$vm" "$CL_AUTOSTART"; done
   for entry in "${CL_NODES[@]}"; do
     read -r vm host <<<"$entry"; ip="${CL_PREFIX}.${host}"
     wait_ssh "$ip" 600 >&2 || return 1
@@ -307,9 +308,17 @@ lab_cluster_down() {
   done
 }
 
+# lab_vm_autostart <vm> <0|1> — libvirt's start-with-the-host flag, set to the setting on
+# every `up` rather than only at create, so a changed LAB_AUTOSTART reaches existing VMs.
+lab_vm_autostart() {
+  if [[ "$2" == 1 ]]; then VIRSH autostart "$1" >/dev/null
+  else VIRSH autostart --disable "$1" >/dev/null; fi
+}
+
 # DEV and staging take turns on the host (operator rule): it holds one of them with the
-# memory margin, not both. `up stg` stops a running DEV and remembers that; `down stg`
-# starts it again; `up dev` is refused while staging runs.
+# memory margin, not both. `up stg` stops a running DEV; `up dev` is refused while staging
+# runs. `down stg` leaves DEV stopped: nothing in the lab runs while nobody works in it
+# (operator rule) — `lab.sh up dev` when a task needs DEV.
 
 # _lab_running <dev|stg> — any VM of that cluster is running.
 _lab_running() {
@@ -322,12 +331,4 @@ lab_dev_yield() {
   _lab_running dev || return 0
   echo "── stopping local DEV first: DEV and staging take turns on this host ──" >&2
   lab_cluster_down dev >&2 || return 1
-  lab_state_set LAB_DEV_PAUSED_FOR_STG 1
-}
-
-lab_dev_resume() {
-  [[ "$(lab_state_get LAB_DEV_PAUSED_FOR_STG)" == 1 ]] || return 0
-  echo "── starting local DEV again (it was stopped for the staging run) ──" >&2
-  lab_cluster_up dev || return 1
-  lab_state_set LAB_DEV_PAUSED_FOR_STG 0
 }

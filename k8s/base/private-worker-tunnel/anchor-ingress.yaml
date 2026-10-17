@@ -109,6 +109,8 @@ spec:
           namespace: traefik
         - name: tunnel-anchor-ratelimit
           namespace: platform-system
+        - name: inflight-per-client
+          namespace: traefik
         - name: compress
           namespace: traefik
       services:

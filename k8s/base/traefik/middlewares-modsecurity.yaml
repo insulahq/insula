@@ -9,12 +9,12 @@
 # regardless of tenant-level waf_enabled (which only controls tenant
 # routes).
 #
-# Plugin loader: github.com/madebymode/traefik-modsecurity-plugin
-# registered in Traefik's helm install via
-# `--set experimental.plugins.modsecurity.moduleName=...` (see
-# scripts/bootstrap.sh install_traefik). The plugin proxies request
-# bodies to the ModSecurity-CRS sidecar
-# (k8s/base/modsecurity-crs/) for verdict.
+# Plugin: Insula's own copy of madebymode/traefik-modsecurity-plugin v1.6.0,
+# k8s/base/traefik/plugins/modsecurity/ (README.md there says why and what
+# changed). Traefik loads it as a LOCAL plugin under the key `modsecurity`
+# from the traefik-plugin-modsecurity ConfigMap. It forwards each request —
+# method, URI, headers, body — to the ModSecurity-CRS sidecar
+# (k8s/base/modsecurity-crs/) and passes it on only on a 2xx verdict.
 #
 # Single shared sidecar — option-C hybrid per-route directives are not
 # achievable with this plugin (it lacks a Middleware-level config knob
@@ -37,49 +37,22 @@ spec:
       # URL the plugin POSTs request bodies to. The modsec-crs Service
       # in the same namespace (Service DNS short form is fine).
       modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
-      # NO BODY-SIZE CAP EXISTS. This used to set `maxBodySize: 5242880`
-      # with a comment claiming larger bodies skip inspection. They do
-      # not: `maxBodySize` is not a field of the plugin's Config struct,
-      # so Traefik drops the unknown key and the plugin never reads it.
-      # by reading modsecurity.go off a running
-      # Traefik pod — the single source file has no such field, and
-      # ServeHTTP does an unbounded `io.ReadAll(req.Body)` before
-      # forwarding the buffered copy to the sidecar (which then spools it
-      # to a temp file of its own).
+      # Request bodies: the plugin reuses the buffer `waf-body-limit` (always
+      # chained right before it) already holds, so a body is never copied into
+      # Traefik's heap — upstream v1.6.0 did exactly that, up to the cap, for
+      # the whole request. Its own maxBodyBytes defaults to the same 12.5 MiB
+      # (413 above it), so a route missing waf-body-limit is still bounded.
       #
-      # Consequences to weigh before attaching this Middleware anywhere:
-      #   * the FULL request body of every covered request is held in the
-      #     Traefik pod's memory. Traefik is a DaemonSet fronting the
-      #     whole cluster with limits.memory=512Mi, so a large enough
-      #     upload on ANY covered route is a cluster-wide ingress OOM,
-      #     not just a slow request.
-      #   * the body is transferred twice (client→Traefik→sidecar) and
-      #     written to disk once, before the upstream ever sees it.
+      # Plugin settings are read when Traefik STARTS; an edit here reaches the
+      # process only once traefik-plugin-guard recycles the pods.
       #
-      # The platform's own streaming upload path is therefore routed
-      # around this Middleware — see UPLOAD_PATH_REGEXP in
-      # backend/src/modules/system-settings/ingress-reconciler.ts.
-      # For TENANT routes, `wafEnabled` is the tenant's opt-in: a tenant
-      # that enables WAF and then accepts large uploads (media libraries,
-      # backups) buffers those bodies through the shared ingress. Until
-      # the plugin honours a cap, treat WAF-on as "small bodies only".
-      # Timeout (ms) for the ModSec verdict round-trip. Bumped from
-      # the initial 1000 to 3000 because:
-      #
-      # Security: with the plugin's fail-open-on-timeout semantics, a
-      # hostile tenant backend that responds slowly (POST body that
-      # takes >1s to read upstream → ModSec sidecar mirrors that wait)
-      # could trip the timeout and skip WAF inspection. A 3s budget
-      # is wide enough that legitimate traffic + CRS evaluation
-      # (typically 5–50ms LAN + paranoia-level-1 rule set) almost
-      # never hits it, and forcing it requires deliberate slow-loris
-      # behaviour from the tenant's own upstream — which an attacker
-      # exploiting a tenant's WAF-protected backend would not control.
-      # Operators with stricter latency budgets can lower this in an
-      # overlay; operators with paranoia level 3+ rules (slower CRS
-      # eval) may need to raise it further.
-      #
-      # Performance: at 99p the inspection round-trip stays under
-      # 50ms in the smoke test; the 3s wall is a safety net, not a
-      # planned cost.
+      # Timeout (ms) for the verdict once the request has been sent. If the
+      # sidecar errors, times out or answers 5xx, the request FAILS CLOSED with
+      # 502 (the plugin's opt-in fail-open back-off stays off: a WAF an
+      # attacker can switch off by overloading it is not a WAF). Sending the
+      # body has its own budget (bodyTimeoutMillis, default 10 s), so a large
+      # upload cannot eat this one. 3000 rather than the 2000 default because
+      # paranoia-level-1 CRS evaluation is 5–50 ms but tails exist; at 99p the
+      # round-trip stays under 50 ms in the smoke test, so this is a safety
+      # net, not a planned cost.
       timeoutMillis: 3000

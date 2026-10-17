@@ -6,9 +6,46 @@
 #     - name: compress
 #       namespace: traefik
 #
-# compress — replaces ingress-nginx's gzip + brotli ConfigMap directives.
-# Traefik v3 supports brotli natively; encodings are tried in listed order
-# and the first one the client accepts wins.
+# Route order: inflight-per-client DIRECTLY before compress (see both below).
+#
+# compress — replaces ingress-nginx's gzip directives. Traefik's gzip path ONLY
+# (never its own brotli or zstd encoders), and only for an allowlist of text
+# types. Both limits exist because this middleware
+# OOM-killed the Traefik DaemonSet on a production cluster (two nodes 9 s
+# apart), and both are guarded by scripts/ci-traefik-compress-check.sh.
+#
+# Every response being compressed holds its own compression writer for as
+# long as the client takes to read it. The writers are pooled and survive two
+# GC cycles, and an idle Traefik only collects every 2 minutes, so the memory
+# outlives the burst by minutes. Measured with traefik:v3.7.6 at a 512Mi
+# limit, 100 parallel 220 KB images to a slow HTTP/2 client:
+#
+#   no compression 62 MiB peak · gzip path 120 · Traefik zstd 263 · brotli 292-295
+#
+# and 250 parallel 300 KB text responses from ONE client (three HTTP/2
+# connections) OOM-killed Traefik under brotli within 5 s; this config peaks
+# at 254 MiB. Go reserves ~11 MiB of heap per brotli writer and touches more
+# of it the larger the response; a slow reader just holds it longer.
+#
+# * The "gzip" encoding is klauspost gzhttp, and gzhttp itself answers a
+#   client that accepts both gzip and zstd with zstd — a pooled encoder with a
+#   128 KiB window at its fastest level, nothing like Traefik's own zstd
+#   handler (8 MiB window). Browsers therefore get zstd from this config, and
+#   that is fine: 100 slow 300 KB text responses peak at 118 MiB as gzip and
+#   115 as gzhttp zstd (~1 MiB each), against 56 uncompressed.
+# * encodings is [gzip] alone, not "gzip first": the CLIENT picks the
+#   encoding. With br or zstd in the list, `Accept-Encoding: br` (or zstd)
+#   alone selects Traefik's own encoder, and the costly path is one header away
+#   for anyone on an unauthenticated route (the webmail ingress has no auth in
+#   front). A client that offers only br or zstd now gets the response
+#   uncompressed.
+# * includedContentTypes is an ALLOWLIST: images, video, archives, PDFs and
+#   octet-stream mail attachments are already compressed — re-compressing
+#   them burned a writer per image for nothing (the production trigger was
+#   a webmail thread loading dozens of inline signature images at once).
+#   text/event-stream (JMAP push) is deliberately absent: an SSE response
+#   stays open for as long as the client listens, and a compressed one would
+#   pin a writer for that whole time — one per open webmail tab.
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -17,11 +54,66 @@ metadata:
   namespace: traefik
 spec:
   compress:
-    # Match nginx's gzip-min-length=256 / brotli-min-length=256.
+    # Match nginx's gzip-min-length=256.
     minResponseBodyBytes: 256
-    # Prefer brotli > gzip > zstd (zstd for modern clients).
-    # Traefik picks the first encoding the client's Accept-Encoding supports.
     encodings:
-      - br
       - gzip
-      - zstd
+    # A type without parameters matches the same type with any parameters
+    # (text/html matches text/html; charset=utf-8).
+    includedContentTypes:
+      - text/html
+      - text/css
+      - text/plain
+      - text/javascript
+      - text/xml
+      - text/calendar
+      - text/vcard
+      - application/javascript
+      - application/x-javascript
+      - application/json
+      - application/manifest+json
+      - application/xml
+      - application/wasm
+      - image/svg+xml
+---
+# inflight-per-client — at most 300 requests in flight per client on each
+# route that uses it; the next one gets 429 until one finishes. It sits
+# directly before `compress` on every route that compresses, so what one client
+# can hold open is bounded however many connections it opens (the HTTP/2 stream
+# cap in bootstrap.sh only bounds a single connection). Three of those routes
+# are Flux-disowned; the platform API converges them on boot
+# (backend/src/shared/traefik-compress-bounds.ts).
+#
+# * sourceCriterion is REQUIRED, not decoration: without one, Traefik keys
+#   inFlightReq by the Host header, i.e. ONE shared budget for every user of
+#   the route together.
+# * ipStrategy without depth/excludedIPs = the connection's remote address.
+#   Traefik runs on hostPorts and trusts forwarded headers from 127.0.0.1
+#   only, so that address is the client — a client cannot pick its own key
+#   with X-Forwarded-For. IPv6 clients are grouped by /64: one host owns a
+#   whole /64 and could otherwise rotate addresses past the limit.
+# * 300, not lower: the key is an ADDRESS, and an office or a carrier-grade
+#   NAT puts many users behind one. A request counts for its whole life, and
+#   every open webmail tab holds a JMAP push stream (SSE) on the Stalwart
+#   route, so a tight cap would lock a shared address out on push streams
+#   alone. One real client peaked at 39 (two weeks of production access logs,
+#   every compressing route; the burst behind the OOM peaked at 51). The
+#   ceiling is memory: ~1 MiB per slow gzip response puts one address at
+#   ~300 MiB worst case, inside Traefik's 921MiB Go memory limit.
+# * prune: disabled — the disowned routes keep referencing this Middleware
+#   after a rollback to a release that does not ship it. Pruned, Traefik would
+#   drop those routers and webmail would 404.
+# Instances are per router: the budget is per client PER ROUTE.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: inflight-per-client
+  namespace: traefik
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  inFlightReq:
+    amount: 300
+    sourceCriterion:
+      ipStrategy:
+        ipv6Subnet: 64

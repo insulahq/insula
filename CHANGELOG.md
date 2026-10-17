@@ -12,6 +12,71 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security: the WAF can no longer be skipped with one request header, and no longer holds
+  request bodies in Traefik's memory.** The ModSecurity plugin the platform ran
+  (`madebymode/traefik-modsecurity-plugin` v1.6.0, its latest release) passed any request
+  carrying `Upgrade: websocket` straight to the backend without asking ModSecurity — any
+  method, any body, over HTTP/1.1 — and ModSecurity never logged it. That covered every tenant
+  route with the WAF on and the admin and tenant panels. The same plugin also copied every
+  request body, up to the 12.5 MiB cap, into Traefik's heap for the whole request; with a 1Gi
+  limit, 15 parallel 12 MiB uploads took 541 MiB of heap and 40 OOM-killed Traefik
+  (traefik:v3.7.6, backend answering in 2 s). Upstream has not released since, so the platform
+  now carries its own copy in `k8s/base/traefik/plugins/modsecurity` (Apache-2.0; `NOTICE`
+  lists the changes): every request is inspected, a websocket handshake included, and still
+  upgrades; text after a raw `#` in a query string is no longer hidden from ModSecurity (the
+  plugin cut it off when asking for a verdict, while Traefik passed it to the backend); the body `waf-body-limit` already buffered is reused instead of copied — 80
+  parallel 12 MiB uploads now serve with 285 MiB of heap; a body over the cap gets 413 from the
+  plugin too; ModSecurity sees the client in `X-Forwarded-For`; sending a large body no longer
+  eats the verdict timeout; and the jail feature, which could deadlock, is gone (CrowdSec
+  bans). A failed verdict still blocks with 502. Traefik loads the plugin from the
+  `traefik-plugin-modsecurity` ConfigMap instead of downloading it, so it no longer depends on
+  plugins.traefik.io at startup (CrowdSec's bouncer still does). Fresh installs get it from
+  `bootstrap.sh`; host-migration `0002-traefik-modsecurity-plugin-local` switches existing
+  clusters once this release's services are up, rolls Traefik one node at a time, confirms
+  every pod loaded the plugin, and rolls back — without retrying the same source — if one
+  did not. A later change to the plugin source needs a host-migration that re-stamps its hash;
+  `ci-migration-coverage.sh` enforces that. CI runs the plugin's tests compiled, under Yaegi
+  (the interpreter Traefik uses) and inside a real Traefik.
+- **Security: Traefik no longer runs out of memory when a page loads many images at once.**
+  On production the Traefik DaemonSet was OOM-killed on two nodes 9 s apart, kernel-confirmed
+  at its 512Mi limit, while one webmail page loaded dozens of inline images over HTTP/2. The
+  shared `compress` Middleware preferred brotli and compressed every response, images included,
+  and every response in flight held its own brotli writer: Go reserves ~11 MiB for each, and a
+  burst of 100 images cost ~270 MiB (measured on traefik:v3.7.6). The writers are pooled and
+  only released two garbage collections later — minutes on an idle Traefik. The client chooses
+  the encoding, so `Accept-Encoding: br` was enough for anyone to take that path on purpose,
+  including on the webmail route, which has no login in front of it; one client with 250
+  requests OOM-killed a test Traefik within 5 s. `compress` no longer uses Traefik's own
+  brotli and zstd encoders (~2.7 and ~2.4 MiB a response); its gzip path — which answers
+  browsers with a small-window zstd — costs ~1 MiB for a slow text response, and only an
+  allowlist of text types is compressed at all — no images, archives, attachments or SSE
+  streams. The same image burst now peaks at the uncompressed figure, and a client that
+  offers only `br` or `zstd` gets the response uncompressed.
+  Traefik also gets a 1Gi memory limit (its Go memory limit follows at 90%) and at most 100
+  parallel HTTP/2 streams per connection (was 250). Host-migration
+  `0001-traefik-ingress-memory-bounds` applies both to existing clusters and rolls Traefik once,
+  one node at a time, keeping the trusted-proxy list the platform maintains on the live
+  DaemonSet.
+- **Security: one client can hold at most 300 requests in flight on any route that
+  compresses.** The stream cap bounds a single connection; a client that opens more
+  connections is now bounded too. A new `inflight-per-client` Middleware sits directly before
+  `compress` on webmail, Stalwart's JMAP and admin routes, the VictoriaMetrics and Longhorn
+  UIs and the tunnel anchor; the next request gets 429 until one finishes. Webmail, both
+  Stalwart routes and the anchor are seeded once by Flux and owned by the platform API after
+  that, so the API puts the cap in on startup on clusters that already run them — only once
+  the Middleware exists, since Traefik drops a router whose Middleware is missing. Flux never
+  prunes the Middleware, so a rollback cannot leave those routes pointing at nothing. Clients
+  are told apart by connection address (IPv6 by /64), never by a forwarded header. The number
+  is sized for shared addresses: an office or a carrier-grade NAT puts many users behind one,
+  and every open webmail tab holds a JMAP push stream that counts for its whole life. One real
+  client peaked at 39 in two weeks of production access logs, the burst behind the OOM above
+  at 51; at ~1 MiB per slow compressed response, 300 keeps one address inside Traefik's new
+  limit. `ci-traefik-compress-check.sh` keeps every compressing route capped, the Middleware
+  gzip-only with a text allowlist, and the cap keyed by client — without an explicit key
+  Traefik counts per Host header, one budget shared by every user.
+
 ## [2026.10.10] - 2026-10-16
 
 ### Changed

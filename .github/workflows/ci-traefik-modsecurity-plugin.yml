@@ -1,0 +1,72 @@
+name: Traefik ModSecurity plugin CI
+
+# Insula's copy of the WAF plugin (k8s/base/traefik/plugins/modsecurity). Traefik
+# runs it in the Yaegi interpreter, not as compiled Go, and constructs that
+# compile have failed under Yaegi — so the tests run under both, and once more
+# inside a real Traefik with the buffering middleware in front.
+on:
+  push:
+    branches: [development]
+    paths:
+      - 'k8s/base/traefik/plugins/modsecurity/**'
+      - 'scripts/test-traefik-modsecurity-plugin-live.sh'
+      - '.github/workflows/ci-traefik-modsecurity-plugin.yml'
+  pull_request:
+    branches: [development, main]
+    paths:
+      - 'k8s/base/traefik/plugins/modsecurity/**'
+      - 'scripts/test-traefik-modsecurity-plugin-live.sh'
+      - '.github/workflows/ci-traefik-modsecurity-plugin.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PLUGIN_DIR: k8s/base/traefik/plugins/modsecurity
+  # The interpreter Traefik v3.7.6 embeds (its go.mod). Bump with the chart.
+  YAEGI_VERSION: v0.16.1
+
+jobs:
+  go:
+    name: gofmt + vet + test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: k8s/base/traefik/plugins/modsecurity/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l "$PLUGIN_DIR")" || { gofmt -l "$PLUGIN_DIR"; exit 1; }
+      - name: go vet
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: go vet ./...
+      - name: go test (race)
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: go test -race -count=1 ./...
+
+  yaegi:
+    name: test under Yaegi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: k8s/base/traefik/plugins/modsecurity/go.mod
+      - name: yaegi test
+        run: |
+          go install "github.com/traefik/yaegi/cmd/yaegi@${YAEGI_VERSION}"
+          module="$(sed -n 's/^module //p' "$PLUGIN_DIR/go.mod")"
+          gopath="$(mktemp -d)"
+          mkdir -p "$gopath/src/$module"
+          cp "$PLUGIN_DIR"/*.go "$PLUGIN_DIR/go.mod" "$PLUGIN_DIR/.traefik.yml" "$gopath/src/$module/"
+          # YAEGI_TEST skips the tests that need a compiled stand-in for oxy's
+          # buffer; the live job covers that path inside Traefik.
+          cd "$gopath" && YAEGI_TEST=1 GOPATH="$gopath" "$(go env GOPATH)/bin/yaegi" test -v "$module"
+
+  live:
+    name: inside a real Traefik
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: ./scripts/test-traefik-modsecurity-plugin-live.sh

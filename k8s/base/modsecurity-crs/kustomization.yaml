@@ -2,7 +2,7 @@
 # tenant-opt-in WAF backend.
 #
 # Lives in the `traefik` namespace (not its own) so the
-# madebymode/traefik-modsecurity-plugin Yaegi plugin can reference it
+# ModSecurity Yaegi plugin (k8s/base/traefik/plugins/modsecurity) can reference it
 # without cross-namespace ExternalName plumbing. Consumed by the
 # `modsecurity-crs@traefik` Middleware
 # (k8s/base/traefik/middlewares-modsecurity.yaml).
