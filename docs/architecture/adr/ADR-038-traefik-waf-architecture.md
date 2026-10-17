@@ -44,6 +44,7 @@ The remaining choice was between A (wait for upstream) or D (switch to a differe
 - Tenant routes: attached only when `ingress_routes.waf_enabled = 1`. Default flipped from `1` to `0` (migration `0108_waf_default_off.sql`) — tenants opt in deliberately, no surprise CRS false positives on a fresh deploy.
 - Panel routes (admin / client): attached unconditionally — these are platform-sensitive surfaces.
 - `maxBodySize: 5 MiB`, `timeoutMillis: 3000` (raised from initial 1000 after the security review found that the plugin fails-open on timeout — a 1 s budget was tight enough that a slow-respond tenant backend could DoS the WAF check).
+- **Amendment (2026.10.11): the plugin is now the platform's own copy.** v1.6.0 skipped inspection for any request with an `Upgrade: websocket` header and held request bodies in Traefik's heap; upstream had stopped releasing. The copy lives in `k8s/base/traefik/plugins/modsecurity` (README there), is loaded as a local plugin from the `traefik-plugin-modsecurity` ConfigMap, inspects every request, reuses the `waf-body-limit` buffer, and caps bodies itself. Two statements above are superseded: `maxBodySize` was never a field the plugin read (the cap is `waf-body-limit`, plus the plugin's own `maxBodyBytes` now), and v1.6.0 — like the copy — fails **closed** (502) when the sidecar errors or times out, not open.
 
 ### What the schema columns now mean
 

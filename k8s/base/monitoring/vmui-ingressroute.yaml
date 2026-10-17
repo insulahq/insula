@@ -48,6 +48,8 @@ spec:
       middlewares:
         - name: admin-auth-cookie
           namespace: traefik
+        - name: inflight-per-client
+          namespace: traefik
         - name: compress
           namespace: traefik
       services:

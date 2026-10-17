@@ -1,0 +1,33 @@
+Insula ModSecurity-CRS Traefik plugin
+
+This directory is a modified copy of
+github.com/madebymode/traefik-modsecurity-plugin v1.6.0 (itself derived from
+github.com/acouvreur/traefik-modsecurity-plugin), licensed under the Apache
+License, Version 2.0 (see LICENSE in this directory). The rest of the Insula
+repository is licensed separately; this directory stays under Apache-2.0.
+
+Changes made by the Insula project to modsecurity.go and modsecurity_test.go:
+
+  * Every request is inspected. v1.6.0 skipped the WAF for any request with an
+    `Upgrade: websocket` header, whatever its method or body. Hop-by-hop headers
+    are now stripped from the verdict request instead.
+  * The request body is no longer read into memory whole. When Traefik's
+    buffering middleware sits in front, its replayable buffer is reused;
+    otherwise up to memBodyBytes are kept in memory and the rest goes to an
+    unlinked temporary file. A body over maxBodyBytes gets 413.
+  * A raw '#' in the request target is escaped on the verdict request, so the
+    sidecar judges the whole target the backend receives (v1.6.0 cut it off).
+  * Sidecar redirects are returned as the verdict, never followed.
+  * The verdict timeout no longer covers sending the body (bodyTimeoutMillis).
+  * The client address is appended to X-Forwarded-For on the verdict request.
+  * Verdict response headers replace earlier ones instead of being added.
+  * A sidecar 5xx is a failed verdict (502), not a block page.
+  * The jail feature was removed (it could deadlock: RLock then Lock in the
+    same goroutine, and its maps grew without bound); bans belong to CrowdSec.
+  * Optional fail-open back-off (unhealthyWafBackOffPeriodSecs) and status
+    request header (modSecurityStatusRequestHeader), after madebymode PR #19.
+  * Connections to the sidecar are pooled per transport setting across
+    middleware instances; the verdict request carries the client's context.
+  * Transport errors are logged without the request URL.
+  * The tests were rewritten on the standard library only, so they also run
+    under the Yaegi interpreter.

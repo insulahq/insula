@@ -54,6 +54,10 @@ regexes = [
   # One pattern for both families so the v6 sibling (added with R13 dual-stack)
   # does not have to be allowlisted again as a separate literal.
   '''ingress-default-ipv[46]''',
+  # The sample Sec-WebSocket-Key from RFC 6455 §1.3 ("the sample nonce" in
+  # base64), used by the ModSecurity plugin's websocket-handshake tests. A
+  # published protocol example, not a credential.
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
 ]
 paths = [
   '''.*\.example(\.\w+)?$''',           # *.example, *.example.yaml, …

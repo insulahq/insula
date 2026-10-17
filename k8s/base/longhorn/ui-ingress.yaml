@@ -75,6 +75,8 @@ spec:
           namespace: traefik
         - name: longhorn-ui-slash
         - name: longhorn-ui-strip
+        - name: inflight-per-client
+          namespace: traefik
         - name: compress
           namespace: traefik
       services:

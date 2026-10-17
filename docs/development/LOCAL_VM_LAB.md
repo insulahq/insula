@@ -30,17 +30,23 @@ from where production is*.
                <lab-host>  (libvirt/KVM; routes between the lab networks)
      ┌──────────────┼──────────────────────────┬──────────────────────────┐
  lab-svc 10.98.100.0/24      lab-dev 10.98.110.0/24         lab-stg 10.98.120.0/24
-  svc     .10 (always on)     dev-1  .11 (always on)          stg-s1..s3 .11-.13 (on demand)
+  svc     .10 (with clusters) dev-1  .11 (on demand)          stg-s1..s3 .11-.13 (on demand)
   runner  .11 (on demand)                                     stg-w1     .21 (optional)
 ```
 
 | VM | vCPU / RAM / disk | Default state |
 |---|---|---|
-| `lab-svc` | 2 / 2 GB / 30 GB | always on, autostarts with the host |
+| `lab-svc` | 2 / 2 GB / 30 GB | runs while a lab cluster runs; `lab.sh up dev\|stg` starts it |
 | `lab-runner` | 2 / 2 GB / 20 GB | on demand (integration suites, browser checks) |
-| `lab-dev-1` | 6 / 12 GB / 80 GB | always on, autostarts with the host |
+| `lab-dev-1` | 6 / 12 GB / 80 GB | on for DEV work, stopped otherwise |
 | `lab-stg-s1..s3` | 4 / 6 GB / 60 GB each | on for release and multi-node work, stopped otherwise |
 | `lab-stg-w1` | 4 / 6 GB / 40 GB | OS installed; joined and removed on demand |
+
+**Nothing runs while nobody works in the lab.** The host is shared, so when a task ends — or
+pauses for a review or a decision — every lab VM is stopped: `lab.sh down dev|stg`, then
+`lab.sh down svc`. Stopping keeps the disks, the OS and the installed platform; the next
+`lab.sh up` starts a cluster in minutes. No VM starts with the host unless the operator sets
+`LAB_AUTOSTART=1` (DEV and the services VM only; applied on every `lab.sh up`).
 
 Fixed addresses come from DHCP host reservations in each network's definition, keyed on a MAC
 derived from the network and host octet, so a VM always gets the same address back. The third
@@ -200,11 +206,12 @@ creation and rewritten after any platform reinstall on the same VM.
 
 Host: 20 cores, 62 GB RAM, shared with other work. VMs hold their full allocation (guest page
 cache keeps it; free-page reporting only returns truly free pages — measured: DEV's qemu at 12.3 of
-12 GB). Always on: DEV + svc = 14 GB. Staging is 18 GB (3 × 6 GB) plus 6 GB for the worker.
+12 GB). DEV + svc = 14 GB while DEV runs. Staging is 18 GB (3 × 6 GB) plus 6 GB for the worker.
+Idle, the lab holds none of it.
 
 **DEV and staging take turns.** The host holds one of them with the memory margin, not both:
-`lab.sh up stg` stops a running DEV first and records that; `lab.sh down stg` starts DEV again;
-`lab.sh up dev` is refused while staging runs. Every start also refuses when the host's available
+`lab.sh up stg` stops a running DEV first; `lab.sh down stg` leaves DEV stopped (start it with
+`lab.sh up dev` when a task needs it); `lab.sh up dev` is refused while staging runs. Every start also refuses when the host's available
 memory minus the VMs' ceilings would drop below the margin (default 8 GB).
 
 ## Operator prerequisites
@@ -222,7 +229,8 @@ memory minus the VMs' ceilings would drop below the margin (default 8 GB).
 |---|---|
 | `lab.sh up svc` | networks + the services VM (idempotent) |
 | `lab.sh up dev` / `lab.sh up stg` | create the cluster if it does not exist, otherwise start it; `up stg` stops DEV first |
-| `lab.sh down dev` / `lab.sh down stg` | stop (VMs, OS and platform kept); `down stg` starts DEV again |
+| `lab.sh down dev` / `lab.sh down stg` | stop (VMs, OS and platform kept); nothing restarts by itself |
+| `lab.sh down svc` | stop the services VM — last, once no cluster runs (refused while one does) |
 | `lab.sh worker join` / `worker leave` | add or remove `lab-stg-w1` through the platform's flows |
 | `lab.sh smoke dev\|stg [api\|network]` | API smoke + cluster-network smoke against a running cluster |
 | `lab.sh status` | VMs, addresses, cluster health, cache status |

@@ -406,9 +406,10 @@ export function buildMiddlewaresForRoute(
   // model (option-C hybrid) is not viable: vendored Yaegi plugins fail
   // because Coraza imports `unsafe`, and the WASM build path crashes
   // Traefik with a split-stack-overflow during startup. The working
-  // alternative is `github.com/madebymode/traefik-modsecurity-plugin`,
-  // a Yaegi plugin that proxies request bodies to an EXTERNAL
-  // ModSecurity-CRS service for verdict.
+  // alternative is a Yaegi plugin that proxies request bodies to an
+  // EXTERNAL ModSecurity-CRS service for verdict — originally
+  // `github.com/madebymode/traefik-modsecurity-plugin`, now the platform's
+  // own copy of it (k8s/base/traefik/plugins/modsecurity).
   //
   // Trade-off: the external-service architecture doesn't support
   // per-route directives. Every wafEnabled route attaches the SAME
@@ -424,12 +425,13 @@ export function buildMiddlewaresForRoute(
   // The k8s/base/traefik/middlewares-waf.yaml Coraza scaffold is kept
   // in tree as documented dead code — see its header comment.
   if (route.wafEnabled) {
-    // `waf-body-limit` MUST come first. The ModSecurity plugin buffers the
-    // whole request body with an unbounded `io.ReadAll` before it can get a
-    // verdict, and Traefik is a DaemonSet with limits.memory=512Mi fronting the
-    // entire cluster — so without the cap, one oversized POST to ANY WAF-
-    // enabled tenant route OOM-kills ingress for every tenant. Measured: a
-    // single unauthenticated 600 MB POST killed Traefik in ~3s (exitCode 137).
+    // `waf-body-limit` MUST come first. The ModSecurity plugin needs the whole
+    // request body before it can get a verdict; the plugin's own copy reuses
+    // this middleware's buffer rather than copying it. Traefik is a DaemonSet
+    // fronting the entire cluster — without the cap, the madebymode plugin the
+    // platform used to run let one oversized POST to ANY WAF-enabled tenant
+    // route OOM-kill ingress for every tenant. Measured: a single
+    // unauthenticated 600 MB POST killed Traefik in ~3s (exitCode 137).
     //
     // The cap costs no coverage: it equals the sidecar's own
     // `SecRequestBodyLimit 13107200`, which is paired with

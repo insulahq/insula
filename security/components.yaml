@@ -216,16 +216,16 @@ components:
     notes: Yaegi plugin loaded into Traefik. CROWDSEC_PLUGIN_VERSION.
 
   - id: modsecurity-traefik-plugin
-    name: Traefik ModSecurity plugin (forwards to CRS sidecar)
+    name: Traefik ModSecurity plugin (Insula's copy; forwards to CRS sidecar)
     tier: "0"
     kind: plugin
-    pinned: "v1.6.0"
+    pinned: "github.com/insulahq/insula/traefik-plugins/modsecurity"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: madebymode/traefik-modsecurity-plugin, advisories: madebymode/traefik-modsecurity-plugin }
     scan: manual
     owner: platform
-    notes: MODSECURITY_PLUGIN_VERSION. Bridges Traefik → modsecurity-crs.
+    notes: MODSECURITY_PLUGIN_MODULE. Vendored in k8s/base/traefik/plugins/modsecurity (derived from madebymode v1.6.0, Apache-2.0; NOTICE lists the changes). Upstream is watched for fixes worth porting, not for bumps. Bridges Traefik → modsecurity-crs.
 
   - id: backend-platform-api
     name: platform-api (management API — Fastify/Node 22)

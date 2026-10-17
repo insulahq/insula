@@ -5,7 +5,7 @@
 #   The OWASP modsecurity-crs:*-nginx image runs nginx with a single
 #   `location /` that has `modsecurity on` + a `proxy_pass ${BACKEND}`
 #   to forward the request past the WAF check. The Traefik plugin
-#   madebymode/traefik-modsecurity-plugin issues a sub-request to
+#   (k8s/base/traefik/plugins/modsecurity) issues a sub-request to
 #   modsec-crs, modsec evaluates against OWASP CRS rules, and the
 #   resulting status code (200 = allowed, 403 = blocked, etc.) is
 #   what the plugin returns to the original client.

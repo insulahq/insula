@@ -6,8 +6,8 @@
 #   lab.sh up dev            the local DEV cluster: create it, or start it if it exists
 #   lab.sh up stg            the local staging cluster (production mode at LAB_STG_RELEASE_TAG);
 #                            stops a running DEV first — the host holds one of them at a time
-#   lab.sh down dev|stg      stop it (VMs, OS and platform kept); `down stg` restarts DEV
-#   lab.sh down svc          stop the services VM (refused while a lab cluster runs)
+#   lab.sh down dev|stg      stop it (VMs, OS and platform kept); nothing restarts by itself
+#   lab.sh down svc          stop the services VM (refused while a lab cluster runs) — idle = all off
 #   lab.sh worker join|leave staging's worker, through the platform's join / node-removal flows
 #   lab.sh smoke dev|stg [api|network]   post-deploy checks against a running cluster
 #   lab.sh status            VMs, addresses, services, caches, host headroom
@@ -78,13 +78,13 @@ case "${1:-} ${2:-}" in
   "up svc")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_svc_check ;;
   "up dev")
     if _lab_running stg; then
-      echo "lab: staging is running — DEV and staging take turns on this host; lab.sh down stg starts DEV again" >&2
+      echo "lab: staging is running — DEV and staging take turns on this host; lab.sh down stg first" >&2
       exit 1
     fi
     ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_cluster_up dev ;;
   "up stg")   ensure_fast_disk; ensure_ksm; lab_svc_ensure; lab_dev_yield; lab_cluster_up stg ;;
   "down dev") lab_cluster_down dev ;;
-  "down stg") lab_cluster_down stg; lab_dev_resume ;;
+  "down stg") lab_cluster_down stg ;;
   "worker join") lab_worker_join ;;
   "worker leave") lab_worker_leave ;;
   "smoke dev"|"smoke stg") lab_smoke "$2" "${3:-all}" ;;

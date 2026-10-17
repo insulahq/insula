@@ -148,7 +148,7 @@ resources:
   # OWASP ModSecurity-CRS — tenant-opt-in WAF backend. The
   # `modsecurity-crs@traefik` Middleware (above) proxies request bodies
   # to this Deployment's Service for verdict via the
-  # madebymode/traefik-modsecurity-plugin Yaegi plugin. Lives in the
+  # platform's ModSecurity Yaegi plugin (traefik/plugins/modsecurity). Lives in the
   # `traefik` namespace alongside the controller (matching the
   # Middleware's `modSecurityUrl` constant).
   - modsecurity-crs/
