@@ -176,8 +176,23 @@ export const drainImpactSchema = z.object({
   longhornReplicas: z.array(z.object({
     volumeName: z.string(),
     replicaName: z.string(),
-    /** True when this is the LAST healthy replica — refusing to drain. */
+    /** True when this is the LAST healthy Longhorn replica of the volume. */
     isLastReplica: z.boolean(),
+    /**
+     * Set on a last replica that is a Postgres (CNPG) instance's volume.
+     * `coveredBy` names the instances that hold its data off this node: the
+     * primary for a replica, a standby streaming right now for the primary.
+     * Non-empty → the drain does not refuse (it never moves the instance);
+     * empty → it counts as a last-replica risk. Deleting the node is refused
+     * either way while the instance's only copy is here.
+     */
+    postgresInstance: z.object({
+      kind: z.literal('postgres'),
+      cluster: z.string(),
+      instance: z.string(),
+      primary: z.boolean(),
+      coveredBy: z.array(z.string()),
+    }).nullable().default(null),
     /** Owner namespace if the volume is bound to a PVC. */
     namespace: z.string().nullable().default(null),
     /** PVC name if the volume is bound to a PVC. */

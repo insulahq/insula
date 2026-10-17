@@ -68,6 +68,11 @@ interface NodeDrainDeleteModalProps {
  *  - The "Last-replica risk" banner is reserved for PLATFORM volumes
  *    (postgres, longhorn-system, mail) since tenant volumes are
  *    already represented inside their tenant row.
+ *  - A Postgres instance volume whose data other instances hold
+ *    (`postgresInstance.coveredBy`) is not a drain risk: in HA each instance
+ *    has one Longhorn replica on purpose. It gets its own informational
+ *    section instead — and keeps Delete disabled, because removing the node
+ *    takes the instance's only copy with it.
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
   const [forceLastReplica, setForceLastReplica] = useState(false);
@@ -102,9 +107,20 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   // Reserve the "Last-replica risk" banner for PLATFORM volumes —
   // tenant volumes are already represented in their tenant row above
   // (where the re-pin dropdown lives).
+  const isCovered = (r: DrainImpact['longhornReplicas'][number]): boolean =>
+    (r.postgresInstance?.coveredBy.length ?? 0) > 0;
   const lastReplicaVolumes = impact?.longhornReplicas.filter(
-    (r) => r.isLastReplica && r.tenantId === null,
+    (r) => r.isLastReplica && r.tenantId === null && !isCovered(r),
   ) ?? [];
+  // Postgres instances whose data other instances hold — shown, not blocking.
+  const coveredDbInstances = impact?.longhornReplicas.filter(
+    (r) => r.isLastReplica && isCovered(r),
+  ) ?? [];
+  // Any Postgres instance whose only copy is here — the node cannot be deleted
+  // until it has moved (the backend refuses with NODE_DELETE_HOLDS_DATABASE).
+  const dbInstancesHere = [...new Set((impact?.longhornReplicas ?? [])
+    .filter((r) => r.isLastReplica && r.postgresInstance)
+    .map((r) => `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? ''}`))];
 
   // Build target options once, joining the cluster-nodes list with
   // worker-usage so each <option> shows live capacity in the same
@@ -451,6 +467,42 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 </ImpactSection>
               )}
 
+              {/* ─── Database instances (covered — info only) ─── */}
+              {coveredDbInstances.length > 0 && (
+                <ImpactSection
+                  title={`Database instances on this node (${coveredDbInstances.length})`}
+                  tone={coveredDbInstances.some((r) => r.postgresInstance?.primary) ? 'warn' : 'good'}
+                  content="Each Postgres instance keeps its one copy on its own node; the other instances hold the same data, so these do not block the drain. Draining leaves them running here."
+                >
+                  <ul className="mt-2 space-y-1.5 text-xs" data-testid="covered-db-instances">
+                    {coveredDbInstances.map((r) => r.postgresInstance && (
+                      <li key={r.replicaName} className="text-gray-700 dark:text-gray-300">
+                        <span className="font-mono">{r.namespace}/{r.postgresInstance.instance}</span>
+                        {r.postgresInstance.primary ? (
+                          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                            primary
+                          </span>
+                        ) : (
+                          <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                            replica
+                          </span>
+                        )}
+                        <span className="ml-2 text-gray-500 dark:text-gray-400">
+                          {r.postgresInstance.primary
+                            ? `streaming to ${r.postgresInstance.coveredBy.join(', ')}`
+                            : `data also on ${r.postgresInstance.coveredBy.join(', ')} (primary)`}
+                        </span>
+                        <div className="mt-0.5 text-gray-500 dark:text-gray-400">
+                          {r.postgresInstance.primary
+                            ? 'If this node goes down, Postgres fails over to a streaming instance — writes pause briefly.'
+                            : 'If this node goes down, this instance catches up when the node is back.'}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </ImpactSection>
+              )}
+
               {/* ─── System pods (info only) ─── */}
               <details className="rounded-lg border border-gray-200 dark:border-gray-700">
                 <summary className="cursor-pointer px-3 py-2 text-xs text-gray-600 dark:text-gray-400">
@@ -511,7 +563,20 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             </div>
           )}
 
-          {drained && !confirmDelete && (
+          {drained && dbInstancesHere.length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="delete-blocked-database">
+              <div className="flex items-center gap-1 font-semibold">
+                <AlertTriangle size={12} /> Drained — but Delete is disabled while this node holds the only copy of database instance {dbInstancesHere.join(', ')}.
+              </div>
+              <p className="mt-1">
+                Removing the node would leave PostgreSQL with an instance it cannot start anywhere else. Move the
+                instance to another server first (manual: Nodes &amp; cluster → Removing a node), then come back here.
+                Draining for maintenance does not need this — the instance stays and catches up.
+              </p>
+            </div>
+          )}
+
+          {drained && !confirmDelete && dbInstancesHere.length === 0 && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
                 <CheckCircle size={12} /> Node is fully drained — cordoned, no tenant pods, no pinned tenants, no PVC replicas attached. You may now delete it from the cluster.
@@ -582,7 +647,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+                disabled={dbInstancesHere.length > 0}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                 data-testid={`delete-node-${node.name}-button`}
               >
                 <Trash2 size={14} /> Delete Node

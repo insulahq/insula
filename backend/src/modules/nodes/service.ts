@@ -8,6 +8,7 @@ import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
 import { invalidateNodeLabels } from './labels.js';
+import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './postgres-cover.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -651,6 +652,7 @@ export async function buildDrainImpact(
     volumeName: string;
     replicaName: string;
     isLastReplica: boolean;
+    postgresInstance: PostgresInstance | null;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
@@ -803,10 +805,17 @@ export async function buildDrainImpact(
   //    Each entry is enriched with PVC namespace + name and resolved
   //    owner (tenant name or "Platform System") so the UI's last-replica
   //    risk panel can label volumes for the operator.
+  //
+  //    `isLastReplica` stays the Longhorn fact. `postgresInstance` is set on a
+  //    last replica that is a Postgres instance's volume, with the instances
+  //    that hold its data off this node (postgres-cover.ts). The drain refuses
+  //    only on a last replica nothing covers; deleteNode refuses on any
+  //    instance volume whose only copy is here.
   const longhornReplicas: Array<{
     volumeName: string;
     replicaName: string;
     isLastReplica: boolean;
+    postgresInstance: PostgresInstance | null;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
@@ -849,11 +858,15 @@ export async function buildDrainImpact(
 
     // Pre-aggregate healthy replicas per volume so we can flag last-replica risk.
     const healthyByVolume = new Map<string, number>();
+    const healthyNodesByVolume = new Map<string, Set<string>>();
     for (const r of replicaResp.items ?? []) {
       const vol = r.spec?.volumeName;
       if (!vol) continue;
       if (r.status?.currentState === 'running') {
         healthyByVolume.set(vol, (healthyByVolume.get(vol) ?? 0) + 1);
+        const nodes = healthyNodesByVolume.get(vol) ?? new Set<string>();
+        if (r.spec?.nodeID) nodes.add(r.spec.nodeID);
+        healthyNodesByVolume.set(vol, nodes);
       }
     }
     for (const r of replicaResp.items ?? []) {
@@ -872,12 +885,38 @@ export async function buildDrainImpact(
         volumeName: vol,
         replicaName,
         isLastReplica,
+        postgresInstance: null,
         namespace: ns,
         pvcName,
         tenantId: tenant?.id ?? null,
         tenantName: tenant?.name ?? null,
         ownerLabel,
       });
+    }
+
+    // Postgres instances among the last replicas — only read when there is
+    // one. A failed read leaves them all unknown: the drain guard then holds.
+    if (longhornReplicas.some((r) => r.isLastReplica && r.namespace && r.pvcName)) {
+      const volumeByPvc = new Map<string, string>();
+      for (const [volName, m] of volumeMeta) {
+        if (m.namespace && m.pvcName) volumeByPvc.set(`${m.namespace}/${m.pvcName}`, volName);
+      }
+      const healthyReplicaNodes = (ns: string, pvc: string): ReadonlySet<string> => {
+        const volName = volumeByPvc.get(`${ns}/${pvc}`);
+        return (volName ? healthyNodesByVolume.get(volName) : undefined) ?? new Set<string>();
+      };
+      const cnpg = await loadCnpgFacts(k8s, db).catch((err: unknown) => {
+        console.warn('[nodes] CNPG instance lookup failed — last replicas stay blocking:', (err as Error).message);
+        return null;
+      });
+      if (cnpg) {
+        for (const r of longhornReplicas) {
+          if (!r.isLastReplica || !r.namespace || !r.pvcName) continue;
+          r.postgresInstance = postgresInstanceOnNode(
+            { namespace: r.namespace, pvcName: r.pvcName }, name, cnpg, healthyReplicaNodes,
+          );
+        }
+      }
     }
   } catch (err) {
     const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
@@ -1415,8 +1454,13 @@ export async function drainNode(
   }
 
   // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
+  //    A Postgres instance volume another Ready instance covers is not a
+  //    risk: the drain leaves that pod where it is, and the data lives on
+  //    if the node goes down (postgres-cover.ts).
   const impact = await buildDrainImpact(k8s, db, name);
-  const lastReplicaVolumes = impact.longhornReplicas.filter((r) => r.isLastReplica);
+  const lastReplicaVolumes = impact.longhornReplicas.filter(
+    (r) => r.isLastReplica && !(r.postgresInstance && r.postgresInstance.coveredBy.length > 0),
+  );
   if (lastReplicaVolumes.length > 0 && !opts.forceLastReplica) {
     throw new ApiError(
       'NODE_DRAIN_BLOCKED_LAST_REPLICA',
@@ -1635,6 +1679,26 @@ export async function deleteNode(
         `Wait for the drain to complete (or re-run it).`,
         409,
         { remaining: impact.nonSystemPods.slice(0, 20) },
+      );
+    }
+    // A Postgres instance whose only copy is on this node goes with it, and
+    // CNPG cannot start it anywhere else: the pod it re-creates waits forever
+    // for a volume that no longer exists. Worse, when HA then sizes down to
+    // the remaining servers, CNPG removes a HEALTHY replica — it never picks a
+    // not-Ready instance (findDeletableInstance, CNPG v1.30). Covered or not,
+    // the instance has to leave the node before the node leaves the cluster.
+    const instances = impact.longhornReplicas
+      .filter((r) => r.isLastReplica && r.postgresInstance !== null)
+      .map((r) => `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? r.pvcName ?? r.volumeName}`);
+    if (instances.length > 0) {
+      const unique = [...new Set(instances)];
+      throw new ApiError(
+        'NODE_DELETE_HOLDS_DATABASE',
+        `Node '${name}' holds the only copy of database instance ${unique.join(', ')}. Removing the node would ` +
+        `leave PostgreSQL with an instance it cannot start anywhere else. Move the instance to another server ` +
+        `first (Nodes & cluster → Removing a node), then delete the node.`,
+        409,
+        { instances: unique },
       );
     }
   }

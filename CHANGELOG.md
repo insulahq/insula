@@ -12,6 +12,36 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **HA no longer shrinks while a server is only down.** Every 5 minutes the storage-policy
+  advisor re-sized HA to the number of servers that were Ready at that moment. A server that
+  was rebooting, in maintenance or mid Kubernetes upgrade at that tick shrank the database from
+  3 to 2 instances, the panels and API from 3 to 2 replicas and the platform volumes from 3 to 2
+  copies — and CNPG never removes a not-Ready instance, so the instance it deleted (with its
+  volume) was a HEALTHY one on another server, leaving one working instance until the reboot was
+  over. The next tick grew everything again: a fresh instance cloned from the primary, every
+  volume copy rebuilt. In Local mode on two servers the database volume dropped to one copy the
+  same way. HA is now sized to the servers the cluster has, Ready or not, and shrinks only when
+  a server is removed; a server still joining (NotReady, registered within the 30-minute join
+  window) counts once it is Ready. The recommendation and the "X of Y servers Ready" figures
+  still count Ready servers.
+- **Draining a server in HA mode is no longer refused over its database instance.** In HA each
+  PostgreSQL instance keeps one copy on its own node — the other instances hold the same data —
+  so the drain's last-replica check flagged `system-db-N` on every server running one and
+  refused the drain unless "I accept data risk" was ticked, although the drain never moves that
+  pod. A replica now counts as covered while the primary is up on another uncordoned server; the
+  primary counts as covered while it streams to a standby on another uncordoned server (read from
+  `pg_stat_replication` — a Ready pod alone does not prove a caught-up copy). The drain modal
+  lists covered instances under **Database instances on this node** and marks the primary; an
+  instance nothing covers, or one whose facts cannot be read, still blocks as before.
+- **Deleting a server that holds a database instance's only copy is refused**
+  (`NODE_DELETE_HOLDS_DATABASE`, 409; Delete stays disabled in the modal). Removing it left
+  PostgreSQL with an instance it could not start anywhere else, and the scale-down that followed
+  removed a healthy replica instead of the lost one. *Nodes & cluster → Moving a database instance
+  off a server* gives the two commands that move it first. The High availability page also no
+  longer claims synchronous replication: the platform's PostgreSQL replicates asynchronously.
+
 ## [2026.10.11] - 2026-10-17
 
 ### Fixed

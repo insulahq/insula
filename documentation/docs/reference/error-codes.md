@@ -65,6 +65,7 @@ a field the endpoint does not accept.
 | Code | HTTP | Meaning |
 |---|---|---|
 | `NODE_DRAIN_BLOCKED_LAST_NODE` | 409 | Refusing to drain the only node that can host tenants |
+| `NODE_DELETE_HOLDS_DATABASE` | 409 | The node holds the only copy of a PostgreSQL instance — move the instance first ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `DRAIN_PRECHECK_FAILED` | 503 | Drain pre-checks could not complete |
 | `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Draining would take down a sole replica / conflicts with a pinned workload |
 

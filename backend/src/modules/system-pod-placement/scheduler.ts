@@ -2,6 +2,7 @@ import type { Database } from '../../db/index.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { countServers, type ServerCountNode } from '../platform-storage-policy/server-count.js';
 
 /**
  * Periodic reconciler that asserts two cluster-wide invariants:
@@ -92,22 +93,17 @@ async function patchDeployment(
   );
 }
 
-async function readyServerCount(k8s: K8sClients): Promise<number> {
-  const list = await k8s.core.listNode({}) as { items?: ReadonlyArray<{ metadata?: { labels?: Record<string, string> }; status?: { conditions?: ReadonlyArray<{ type?: string; status?: string }> } }> };
-  let n = 0;
-  for (const node of list.items ?? []) {
-    const role = node.metadata?.labels?.[NODE_ROLE_LABEL];
-    if (role !== 'server') continue;
-    const ready = node.status?.conditions?.find((c) => c.type === 'Ready')?.status === 'True';
-    if (ready) n++;
-  }
-  return n;
+// Servers PRESENT, Ready or not — a server that is only down (reboot,
+// maintenance) keeps its share; see platform-storage-policy/server-count.ts.
+async function haServerCount(k8s: K8sClients): Promise<number> {
+  const list = await k8s.core.listNode({}) as { items?: ServerCountNode[] };
+  return countServers(list.items ?? []).present;
 }
 
 async function reconcileSingletonAffinity(k8s: K8sClients): Promise<{ readonly patched: number; readonly errors: readonly string[] }> {
   const errors: string[] = [];
   let patched = 0;
-  const haServers = await readyServerCount(k8s);
+  const haServers = await haServerCount(k8s);
 
   for (const t of SINGLETONS) {
     let dep: RawDeployment | null = null;

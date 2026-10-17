@@ -4,6 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   buildDrainImpact,
   countOtherSchedulableTenantNodes,
+  deleteNode,
   drainNode,
   listNodesEnriched,
 } from './service.js';
@@ -510,5 +511,224 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     await expect(
       drainNode(k8s, db, 'ghost', { forceLastReplica: true, tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_NOT_FOUND', status: 404 });
+  });
+});
+
+// ─── Postgres instances (HA: one Longhorn replica per instance) ──────────
+//
+// The HA tier gives every CNPG instance's volume ONE Longhorn replica — the
+// other instances are the redundancy. The drain must not read that as "the
+// last copy of the data" while an instance that stays up holds it: the
+// primary for a replica, a standby streaming right now for the primary.
+// Deleting the node is another matter: the instance's only copy goes with it.
+describe('Postgres instances on a drained / deleted node', () => {
+  interface PgInstance {
+    name: string;
+    node: string;
+    ready?: boolean;
+    primary?: boolean;
+    /** Node holding the instance volume's one replica (defaults to `node`). */
+    replicaOn?: string;
+  }
+  interface Opts {
+    cnpgListFails?: boolean;
+    cordoned?: string[];
+    /** The node under test is cordoned (deleteNode requires it). */
+    targetCordoned?: boolean;
+  }
+
+  function makeHaK8s(instances: PgInstance[], opts: Opts = {}) {
+    const pvcVol = (n: string) => `pvc-${n}`;
+    const patchNode = vi.fn().mockResolvedValue({});
+    const evict = vi.fn().mockResolvedValue({});
+    const deleteK8sNode = vi.fn().mockResolvedValue({});
+    const cordoned = new Set(opts.cordoned ?? []);
+    const cnpgPods = instances.map((i) => ({
+      metadata: {
+        namespace: 'platform',
+        name: i.name,
+        labels: {
+          'cnpg.io/cluster': 'system-db',
+          'cnpg.io/instanceName': i.name,
+          'cnpg.io/instanceRole': i.primary ? 'primary' : 'replica',
+        },
+      },
+      spec: { nodeName: i.node, volumes: [{ persistentVolumeClaim: { claimName: i.name } }] },
+      status: { phase: 'Running', conditions: [{ type: 'Ready', status: i.ready === false ? 'False' : 'True' }] },
+    }));
+    const k8s = {
+      core: {
+        readNode: vi.fn().mockResolvedValue({ spec: { unschedulable: opts.targetCordoned ?? false } }),
+        listNode: vi.fn().mockResolvedValue({
+          items: ['s1', 's2', 's3'].map((name) => liveNode({ name, unschedulable: cordoned.has(name) })),
+        }),
+        listPodForAllNamespaces: vi.fn(async (a: { labelSelector?: string }) => {
+          if (a.labelSelector === 'cnpg.io/cluster') {
+            if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
+            return { items: cnpgPods };
+          }
+          return { items: [] };
+        }),
+        listPersistentVolumeClaimForAllNamespaces: vi.fn(async () => {
+          if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
+          return {
+            items: instances.map((i) => ({
+              metadata: {
+                namespace: 'platform',
+                name: i.name,
+                labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/instanceName': i.name },
+              },
+            })),
+          };
+        }),
+        patchNode,
+        createNamespacedPodEviction: evict,
+        deleteNode: deleteK8sNode,
+      },
+      apps: {
+        listDeploymentForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listStatefulSetForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
+          if (req.plural === 'replicas') {
+            return {
+              items: instances.map((i) => ({
+                metadata: { name: `r-${i.name}` },
+                spec: { volumeName: pvcVol(i.name), nodeID: i.replicaOn ?? i.node },
+                status: { currentState: 'running' },
+              })),
+            };
+          }
+          if (req.plural === 'volumes') {
+            return {
+              items: instances.map((i) => ({
+                metadata: { name: pvcVol(i.name) },
+                status: { kubernetesStatus: { pvcName: i.name, namespace: 'platform' } },
+              })),
+            };
+          }
+          return { items: [] };
+        }),
+      },
+    } as unknown as K8sClients;
+    return { k8s, patchNode, evict, deleteK8sNode };
+  }
+
+  // listNodes() chains .orderBy(); buildDrainImpact awaits .from() directly;
+  // the primary's pg_stat_replication comes through db.execute.
+  function makeDrainDb(streaming: string[] | 'fail' = []): Database {
+    const rows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+    return {
+      select: () => ({
+        from: () => Object.assign(Promise.resolve([]), { orderBy: () => Promise.resolve(rows) }),
+      }),
+      execute: vi.fn(async () => {
+        if (streaming === 'fail') throw new Error('permission denied for view pg_stat_replication');
+        return { rows: streaming.map((application_name) => ({ application_name })) };
+      }),
+    } as unknown as Database;
+  }
+
+  const haCluster: PgInstance[] = [
+    { name: 'system-db-1', node: 's1', primary: true },
+    { name: 'system-db-2', node: 's2' },
+    { name: 'system-db-3', node: 's3' },
+  ];
+  const instanceOn = async (k8s: K8sClients, db: Database, node: string, pvc: string) =>
+    (await buildDrainImpact(k8s, db, node)).longhornReplicas.find((r) => r.pvcName === pvc);
+
+  it('a replica on the draining node is covered by the primary elsewhere', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect(await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2')).toMatchObject({
+      isLastReplica: true,
+      postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-2', primary: false, coveredBy: ['system-db-1'] },
+    });
+  });
+
+  it('the primary is covered by the standbys it is streaming to — and only those', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect((await instanceOn(k8s, makeDrainDb(['system-db-2', 'system-db-3']), 's1', 'system-db-1'))?.postgresInstance)
+      .toMatchObject({ instance: 'system-db-1', primary: true, coveredBy: ['system-db-2', 'system-db-3'] });
+    // Both standbys Ready, only one streaming: a Ready pod is not a caught-up copy.
+    expect((await instanceOn(k8s, makeDrainDb(['system-db-3']), 's1', 'system-db-1'))?.postgresInstance?.coveredBy)
+      .toEqual(['system-db-3']);
+    expect((await instanceOn(k8s, makeDrainDb([]), 's1', 'system-db-1'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('the primary is not covered when its replication cannot be read', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect((await instanceOn(k8s, makeDrainDb('fail'), 's1', 'system-db-1'))?.postgresInstance)
+      .toMatchObject({ primary: true, coveredBy: [] });
+  });
+
+  it('a replica is not covered when the primary is not Ready', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, ready: false },
+      { name: 'system-db-2', node: 's2' },
+      { name: 'system-db-3', node: 's3' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary sits on a cordoned node — that node is going away too', async () => {
+    const { k8s } = makeHaK8s(haCluster, { cordoned: ['s1'] });
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary runs on the draining node too', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's2', primary: true },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary runs elsewhere but its volume sits on the draining node', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, replicaOn: 's2' },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('fails closed: an unreadable CNPG list leaves the last replica with no instance facts', async () => {
+    const { k8s } = makeHaK8s(haCluster, { cnpgListFails: true });
+    expect(await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))
+      .toMatchObject({ isLastReplica: true, postgresInstance: null });
+  });
+
+  it('drainNode: a covered instance does not block the drain — and its pod is not evicted', async () => {
+    const { k8s, patchNode, evict } = makeHaK8s(haCluster);
+    const result = await drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {} });
+    expect(result).toMatchObject({ cordoned: true, evicted: 0, failed: [] });
+    expect(patchNode).toHaveBeenCalledTimes(1);
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('drainNode: an uncovered instance still blocks without forceLastReplica', async () => {
+    const { k8s, patchNode } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, ready: false },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    await expect(drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {} }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+    expect(patchNode).not.toHaveBeenCalled();
+  });
+
+  it('drainNode: the primary with no streaming standby still blocks', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    await expect(drainNode(k8s, makeDrainDb([]), 's1', { tenantPlacement: {} }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+  });
+
+  it('deleteNode: refuses while the node holds an instance\'s only copy — covered or not', async () => {
+    const { k8s, deleteK8sNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
+    await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({
+      code: 'NODE_DELETE_HOLDS_DATABASE',
+      status: 409,
+      details: { instances: ['platform/system-db-2'] },
+    });
+    expect(deleteK8sNode).not.toHaveBeenCalled();
   });
 });

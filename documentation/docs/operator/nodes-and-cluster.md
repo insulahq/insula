@@ -115,8 +115,17 @@ elsewhere. From the node card click **Drain Node**. A modal computes the impact:
   namespace together. Leaving a tenant on **Stay** blocks the drain.
 - **Non-system pods** — what gets evicted; controllers recreate them elsewhere.
 - **Last-replica risk** — if this node holds the *only* healthy replica of a
-  platform volume (Postgres, mail), the drain is **refused** unless you tick
+  platform volume (mail, for example), the drain is **refused** unless you tick
   **"I accept data risk — force drain even with last replicas here."**
+- **Database instances** — in HA mode each PostgreSQL instance keeps its one
+  copy on its own node; the other instances hold the same data. They are listed
+  for information and do not block the drain, which leaves them running where
+  they are. A replica counts as covered while the primary is up on another
+  server. The **primary** counts as covered while it is streaming to a standby
+  on another server — if its node goes down, PostgreSQL fails over to that
+  standby and writes pause briefly. A server that is itself cordoned never
+  counts as cover. An instance nothing covers appears under *Last-replica
+  risk*.
 
 Click **Apply re-pin & drain**. When the node is fully drained — cordoned, no
 tenant pods, no pinned tenants, no attached replicas — a green banner appears
@@ -152,7 +161,9 @@ detached cleanly instead of being cut away mid-write.
     for a `kubelet … Kubelet needs time to handle node shutdown … delay` entry.
 
 Draining is still the right move before *planned* maintenance — it moves
-workloads off the node instead of just stopping them politely.
+workloads off the node instead of just stopping them politely. Draining only
+moves tenants; platform services stay where they are, and HA keeps its size
+while the node is down (see [High availability → When a server is down](high-availability.md#when-a-server-is-down)).
 
 ## When a node goes offline
 
@@ -299,11 +310,34 @@ kubelet not reporting* instead.
 ## Removing a node
 
 1. **Drain** it (above) and wait for tenants to reschedule.
-2. Click **Delete** on the card → **Confirm Delete**. This runs
+2. If the drained node still holds a **database instance** (HA mode), move it
+   first — see below. **Delete** stays disabled until then.
+3. Click **Delete** on the card → **Confirm Delete**. This runs
    `kubectl delete node` and removes the inventory row. **The host itself keeps
    running** — Insula does not power it off.
-3. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
+4. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
    `k3s-agent-uninstall.sh` (worker), then release the VPS.
+
+### Moving a database instance off a server
+
+In HA mode each PostgreSQL instance keeps its only copy on its own server, so
+deleting that server would take the instance with it: PostgreSQL would be left
+with an instance it cannot start anywhere else (the API refuses the delete with
+`NODE_DELETE_HOLDS_DATABASE`). Drain the server first — that cordons it, so
+nothing new lands there — then, from a [node terminal](#the-node-terminal) on
+another server:
+
+```bash
+kubectl -n platform get pods -l cnpg.io/cluster=system-db -L cnpg.io/instanceRole -o wide
+# If the instance on the server you are removing is the primary, delete its pod
+# first: PostgreSQL fails over to a streaming standby (writes pause briefly).
+# Wait until that instance shows as a replica, then:
+kubectl -n platform delete pvc/<instance> pod/<instance>
+```
+
+The operator replaces the instance on another server with a fresh copy taken
+from the primary. When `kubectl -n platform get cluster system-db` shows every
+instance ready again, reopen the drain modal — **Delete** is available.
 
 Deleting a node also tidies up after it: its storage-system record is removed,
 and if it was named as a mail primary/secondary/tertiary, that reference is

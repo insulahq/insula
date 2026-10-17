@@ -17,7 +17,7 @@ panel offers **Apply HA**, and one action scales everything that matters.
 | Component | Local (default) | HA |
 |---|---|---|
 | Longhorn volumes (metrics, CrowdSec) | 1 replica | 3 replicas, spread across nodes |
-| PostgreSQL (CNPG cluster) | 1 instance | 3 instances, synchronous replication |
+| PostgreSQL (CNPG cluster) | 1 instance | 3 instances, streaming replication (asynchronous) |
 | Stateless Deployments (admin-panel, tenant-panel, platform-api; oauth2-proxy and dex where installed) | 1 replica | 3 replicas, one per node (topology spread) |
 | Background operators (cert-manager, Flux, CNPG operator) | 1 | 2 — a leader and a warm standby |
 | CNPG backup plugin | 1 | 2, both serving |
@@ -117,6 +117,19 @@ shape settled:
 ```bash
 make smoke
 ```
+
+## When a server is down
+
+HA is sized to the servers the cluster **has**, not only the ones that are
+Ready at this moment. While a server is down — rebooting, in maintenance, in
+the middle of a Kubernetes upgrade — everything keeps its HA size: the
+database instance, panel replicas and volume copies that lived on it wait for
+it to come back, and nothing is scaled down only to be rebuilt minutes later.
+
+HA shrinks only when a server **leaves** the cluster: drain it, then **Delete**
+it on its node card ([Nodes & cluster](nodes-and-cluster.md#removing-a-node)).
+A server that is gone for good therefore leaves its replicas waiting until you
+remove it; the offline-node banner tells you which one.
 
 ## Mail HA
 
