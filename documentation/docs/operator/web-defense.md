@@ -272,7 +272,12 @@ those sources and propagates the real client IP through to web defense and logs.
     opt-in `modsecurity-crs` middleware that proxies request bodies to a
     2-replica OWASP CRS Deployment. No working in-process Coraza plugin exists
     for Traefik today, which is why CRS runs as a sidecar Deployment rather than
-    embedded. Sources:
+    embedded. The Traefik plugin that asks the CRS Deployment for a verdict is
+    Insula's own copy, shipped with each release and loaded from the cluster —
+    Traefik does not download it at startup. It inspects every request (the
+    upstream plugin it replaced let some through uninspected), keeps request
+    bodies out of Traefik's memory, and blocks with 502 when the CRS Deployment
+    cannot answer. Sources:
     [ADR-038](https://github.com/insulahq/insula/blob/main/docs/architecture/adr/ADR-038-traefik-waf-architecture.md),
     [WAF specification](https://github.com/insulahq/insula/blob/main/docs/features/WEB_APPLICATION_FIREWALL_SPECIFICATION.md),
     [CrowdSec Console](https://github.com/insulahq/insula/blob/main/docs/operations/CROWDSEC_CONSOLE.md).
