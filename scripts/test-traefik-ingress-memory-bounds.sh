@@ -268,6 +268,20 @@ run "$d" >/dev/null || true
   && ok "a looser cap (250) is replaced by 100, once per entrypoint" || no "args: $(patch_args "$d" | tr '\n' ' ')"
 [[ "$(jq -r '.resources.limits.memory' "$d/patch.json")" == 1Gi ]] && ok "a smaller limit (768Mi) is raised to 1Gi" || no "memory: $(jq -c . "$d/patch.json")"
 
+# The cluster-trusted-proxies reconciler patches trustedIPs onto the LIVE
+# DaemonSet only; the release values still say loopback. The upgrade must carry
+# the live list, or Traefik rolls with its trust cut back (then rolls again).
+d="$WORK/livetrust"; fixture "$d" 512Mi
+LIVE_W="--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32,10.42.0.0/16,10.43.0.0/16"
+LIVE_S="--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.42.0.0/16,10.43.0.0/16"
+jq --arg w "$LIVE_W" --arg s "$LIVE_S" '(.spec.template.spec.containers[] | select(.name == "traefik") | .args) |=
+  map(if startswith("--entryPoints.web.forwardedHeaders") then $w elif startswith("--entryPoints.websecure.forwardedHeaders") then $s else . end)' \
+  "$d/ds.json" > "$d/ds.new" && mv "$d/ds.new" "$d/ds.json"
+run "$d" >/dev/null || true
+[[ "$(patch_args "$d" | sed -n 1p)" == "$LIVE_W" && "$(patch_args "$d" | sed -n 2p)" == "$LIVE_S" ]] \
+  && ok "live trustedIPs (reconciler-owned) are carried into the upgrade, in place" || no "args: $(patch_args "$d" | tr '\n' ' ')"
+[[ "$(patch_args "$d" | grep -c 'forwardedHeaders')" == 2 ]] && ok "no duplicate trustedIPs args" || no "args: $(patch_args "$d" | tr '\n' ' ')"
+
 caps='["--entryPoints.web.http2.maxConcurrentStreams=100","--entryPoints.websecure.http2.maxConcurrentStreams=100"]'
 for q in 1024Mi 1073741824 1.5Gi 1048576Ki; do
   d="$WORK/q-$q"; fixture "$d" "$q" "$caps"

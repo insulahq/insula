@@ -132,6 +132,23 @@ if [ -n "$cur_mem" ] && [ "$(to_mib "$cur_mem")" -ge "$WANT_MEMORY_MIB" ]; then 
 # rebuilt from the release's own (forwardedHeaders.trustedIPs etc. survive).
 # A cap already at or below 100 is kept; anything else becomes 100.
 args="$(jq -c '.additionalArguments // []' <<<"$values")"
+# The forwardedHeaders.trustedIPs args are owned by platform-api's
+# cluster-trusted-proxies reconciler, which JSON-patches them onto the LIVE
+# DaemonSet, outside the release (measured on a lab cluster: live
+# 127.0.0.1/32,<pod CIDR>,<service CIDR>, release values 127.0.0.1/32 only).
+# helm renders args from values, so the release's copy would roll Traefik with
+# its trust list cut back to loopback until the reconciler's next 5-min tick
+# re-patched it — a second roll. Carry the live value instead.
+live_args="$(jq -c .args <<<"$live")"
+for ep in $ENTRYPOINTS; do
+  prefix="--entryPoints.${ep}.forwardedHeaders.trustedIPs="
+  lv="$(jq -r --arg p "$prefix" '[.[] | strings | select(startswith($p))] | last // ""' <<<"$live_args")"
+  [ -n "$lv" ] || continue
+  args="$(jq -c --arg p "$prefix" --arg a "$lv" '
+    if any(.[]; type == "string" and startswith($p))
+    then map(if type == "string" and startswith($p) then $a else . end)
+    else . + [$a] end' <<<"$args")"
+done
 for ep in $ENTRYPOINTS; do
   prefix="--entryPoints.${ep}.http2.maxConcurrentStreams="
   v="$(streams_arg "$args" "$ep")"
