@@ -23,9 +23,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   only released two garbage collections later — minutes on an idle Traefik. The client chooses
   the encoding, so `Accept-Encoding: br` was enough for anyone to take that path on purpose,
   including on the webmail route, which has no login in front of it; one client with 250
-  requests OOM-killed a test Traefik within 5 s. `compress` now uses gzip only (zstd costs
-  ~2.4 MiB a response, gzip ~0.6) and only for an allowlist of text types — no images,
-  archives, attachments or SSE streams. The same burst now peaks at the uncompressed figure.
+  requests OOM-killed a test Traefik within 5 s. `compress` no longer uses Traefik's own
+  brotli and zstd encoders (~2.7 and ~2.4 MiB a response); its gzip path — which answers
+  browsers with a small-window zstd — costs ~1 MiB for a slow text response, and only an
+  allowlist of text types is compressed at all — no images, archives, attachments or SSE
+  streams. The same image burst now peaks at the uncompressed figure, and a client that
+  offers only `br` or `zstd` gets the response uncompressed.
   Traefik also gets a 1Gi memory limit (its Go memory limit follows at 90%) and at most 100
   parallel HTTP/2 streams per connection (was 250). Host-migration
   `0001-traefik-ingress-memory-bounds` applies both to existing clusters and rolls Traefik once,

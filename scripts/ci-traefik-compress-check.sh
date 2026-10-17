@@ -5,8 +5,9 @@
 #   1. encodings is exactly [gzip]. The CLIENT picks the encoding: with br or
 #      zstd anywhere in the list, `Accept-Encoding: br` alone selects it.
 #      Measured on traefik:v3.7.6, a response in flight costs ~2.4 MiB under
-#      zstd and ~2.7 MiB under brotli (Go reserves ~11 MiB per brotli writer)
-#      against ~0.6 MiB under gzip.
+#      Traefik's own zstd and ~2.7 MiB under brotli (Go reserves ~11 MiB per
+#      brotli writer); the gzip path — which answers browsers with gzhttp's
+#      small-window zstd — costs ~1 MiB for a slow text response.
 #   2. includedContentTypes is set (an ALLOWLIST) and lists only text-like
 #      types. Images, archives, PDFs and mail attachments are already
 #      compressed, and text/event-stream would pin a writer for the life of
@@ -58,7 +59,7 @@ while IFS= read -r -d '' f; do
     found=$((found + 1))
     where="${f#"$ROOT"/}: Middleware ${name}"
     if [[ "$enc" != "gzip" ]]; then
-      echo "::error::${where}: compress.encodings must be exactly [gzip], got [${enc}] — a client that sends only 'Accept-Encoding: br' (or zstd) selects the encoder that costs ~4x the memory per response."
+      echo "::error::${where}: compress.encodings must be exactly [gzip], got [${enc}] — a client that sends only 'Accept-Encoding: br' (or zstd) selects an encoder that costs several times the memory per response."
       fail=1
     fi
     if [[ -z "$inc" ]]; then
