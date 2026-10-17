@@ -757,6 +757,33 @@ describe('Postgres instances on a drained / deleted node', () => {
       .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
   });
 
+  it('a Released volume that still names an instance\'s claim is not that instance', async () => {
+    // A CNPG scale-down deletes the claim; with the Retain policy the old
+    // volume stays, Released, still naming `system-db-3`.
+    const { k8s } = makeHaK8s(haCluster);
+    const custom = k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    const base = custom.listNamespacedCustomObject.getMockImplementation()!;
+    custom.listNamespacedCustomObject.mockImplementation(async (req: { plural: string }) => {
+      const res = await base(req) as { items: unknown[] };
+      if (req.plural === 'volumes') {
+        res.items.push({
+          metadata: { name: 'pvc-old-db3' },
+          status: { state: 'detached', kubernetesStatus: { pvcName: 'system-db-3', namespace: 'platform', pvStatus: 'Released' } },
+        });
+      }
+      if (req.plural === 'replicas') {
+        res.items.push({ metadata: { name: 'r-old-db3' }, spec: { volumeName: 'pvc-old-db3', nodeID: 's2', failedAt: '' }, status: { currentState: 'stopped' } });
+      }
+      return res;
+    });
+    const impact = await buildDrainImpact(k8s, makeDrainDb(), 's2');
+    const orphan = impact.longhornReplicas.find((r) => r.volumeName === 'pvc-old-db3');
+    expect(orphan).toMatchObject({ isLastReplica: true, postgresInstance: null });
+    // The live system-db-3 runs on s3 — s2's own instance is the only one deleteNode would name.
+    const live = impact.longhornReplicas.filter((r) => r.postgresInstance).map((r) => r.postgresInstance?.instance);
+    expect(live).toEqual(['system-db-2']);
+  });
+
   it('deleteNode: refuses while the node holds an instance\'s only copy — covered or not', async () => {
     const { k8s, deleteK8sNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
     await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({

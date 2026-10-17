@@ -831,7 +831,7 @@ export async function buildDrainImpact(
     }
     interface LhVolumeMeta {
       metadata?: { name?: string };
-      status?: { state?: string; kubernetesStatus?: { pvcName?: string; namespace?: string } };
+      status?: { state?: string; kubernetesStatus?: { pvcName?: string; namespace?: string; pvStatus?: string } };
     }
     // Fan out replicas + volumes lookup in parallel — both are cheap LISTs
     // against longhorn-system, and we need both to attribute owners.
@@ -846,8 +846,8 @@ export async function buildDrainImpact(
       } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolumeMeta[] }>,
     ]);
 
-    // volume name → { namespace, pvcName, state }
-    const volumeMeta = new Map<string, { namespace: string; pvcName: string; state: string | undefined }>();
+    // volume name → { namespace, pvcName, state, bound }
+    const volumeMeta = new Map<string, { namespace: string; pvcName: string; state: string | undefined; bound: boolean }>();
     for (const v of volumeResp.items ?? []) {
       const volName = v.metadata?.name ?? '';
       if (!volName) continue;
@@ -855,6 +855,9 @@ export async function buildDrainImpact(
         namespace: v.status?.kubernetesStatus?.namespace ?? '',
         pvcName: v.status?.kubernetesStatus?.pvcName ?? '',
         state: v.status?.state,
+        // A Released volume (Retain policy) keeps naming the claim it lost —
+        // e.g. the volume of a CNPG instance that was scaled away.
+        bound: (v.status?.kubernetesStatus?.pvStatus ?? 'Bound') === 'Bound',
       });
     }
 
@@ -903,7 +906,7 @@ export async function buildDrainImpact(
     if (longhornReplicas.some((r) => r.isLastReplica && r.namespace && r.pvcName)) {
       const volumeByPvc = new Map<string, string>();
       for (const [volName, m] of volumeMeta) {
-        if (m.namespace && m.pvcName) volumeByPvc.set(`${m.namespace}/${m.pvcName}`, volName);
+        if (m.namespace && m.pvcName && m.bound) volumeByPvc.set(`${m.namespace}/${m.pvcName}`, volName);
       }
       const healthyReplicaNodes = (ns: string, pvc: string): ReadonlySet<string> => {
         const volName = volumeByPvc.get(`${ns}/${pvc}`);
@@ -916,6 +919,8 @@ export async function buildDrainImpact(
       if (cnpg) {
         for (const r of longhornReplicas) {
           if (!r.isLastReplica || !r.namespace || !r.pvcName) continue;
+          // Only the volume still bound to the claim is the instance's.
+          if (volumeMeta.get(r.volumeName)?.bound === false) continue;
           r.postgresInstance = postgresInstanceOnNode(
             { namespace: r.namespace, pvcName: r.pvcName }, name, cnpg, healthyReplicaNodes,
           );
