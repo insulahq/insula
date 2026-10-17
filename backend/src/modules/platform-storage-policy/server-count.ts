@@ -7,11 +7,12 @@
  *
  * Sizing used to follow `ready`. A server that was merely down — rebooting,
  * in maintenance, mid k3s upgrade — then shrank HA on the next 5-minute
- * advisor tick: Postgres 3 → 2 instances — and CNPG never removes a not-Ready
- * instance, so it deleted a HEALTHY one with its volume (findDeletableInstance,
- * CNPG v1.30) — platform volumes 3 → 2 Longhorn replicas, panels and API
- * 3 → 2. When the server came back everything grew again, which meant cloning
- * a new Postgres instance and rebuilding every replica. A server now keeps its share until it
+ * advisor tick: Postgres 3 → 2 instances, platform volumes 3 → 2 Longhorn
+ * replicas, panels and API 3 → 2. CNPG waits while an instance is down, then
+ * removes the newest Ready replica (findDeletableInstance, CNPG v1.30) — on
+ * lab staging a healthy instance on a server that never went down, with its
+ * volume. The next tick grew everything again: a new Postgres instance cloned
+ * from the primary, every replica rebuilt. A server now keeps its share until it
  * is removed from the cluster (its Node object deleted — the node card's
  * Delete). A server that is gone for good leaves its replicas Pending until
  * then; the offline-node banner says so.

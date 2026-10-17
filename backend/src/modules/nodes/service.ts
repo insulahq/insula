@@ -1689,10 +1689,10 @@ export async function deleteNode(
     }
     // A Postgres instance whose only copy is on this node goes with it, and
     // CNPG cannot start it anywhere else: the pod it re-creates waits forever
-    // for a volume that no longer exists. Worse, when HA then sizes down to
-    // the remaining servers, CNPG removes a HEALTHY replica — it never picks a
-    // not-Ready instance (findDeletableInstance, CNPG v1.30). Covered or not,
-    // the instance has to leave the node before the node leaves the cluster.
+    // for a volume that no longer exists, and CNPG holds every later scale
+    // change (the HA resize to the remaining servers included) until that
+    // instance is active again. Covered or not, the instance has to leave the
+    // node before the node leaves the cluster.
     const instances = impact.longhornReplicas
       .filter((r) => r.isLastReplica && r.postgresInstance !== null)
       .map((r) => `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? r.pvcName ?? r.volumeName}`);

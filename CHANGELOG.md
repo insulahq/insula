@@ -18,11 +18,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   advisor re-sized HA to the number of servers that were Ready at that moment. A server that
   was rebooting, in maintenance or mid Kubernetes upgrade at that tick shrank the database from
   3 to 2 instances, the panels and API from 3 to 2 replicas and the platform volumes from 3 to 2
-  copies — and CNPG never removes a not-Ready instance, so the instance it deleted (with its
-  volume) was a HEALTHY one on another server, leaving one working instance until the reboot was
-  over. The next tick grew everything again: a fresh instance cloned from the primary, every
-  volume copy rebuilt. In Local mode on two servers the database volume dropped to one copy the
-  same way. HA is now sized to the servers the cluster has, Ready or not, and shrinks only when
+  copies. CNPG waits while an instance is down and then removes the newest Ready replica — on lab
+  staging that was `system-db-3`, on a server that had never gone down, deleted with its volume a
+  minute after the rebooted server was back. The next tick grew everything again: a fresh
+  instance cloned from the primary, every volume copy rebuilt. In Local mode on two servers the
+  database volume dropped to one copy the same way. HA is now sized to the servers the cluster has, Ready or not, and shrinks only when
   a server is removed; a server still joining (NotReady, registered within the 30-minute join
   window) counts once it is Ready. The recommendation and the "X of Y servers Ready" figures
   still count Ready servers.
@@ -42,8 +42,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   that have not failed now count as its copies.
 - **Deleting a server that holds a database instance's only copy is refused**
   (`NODE_DELETE_HOLDS_DATABASE`, 409; Delete stays disabled in the modal). Removing it left
-  PostgreSQL with an instance it could not start anywhere else, and the scale-down that followed
-  removed a healthy replica instead of the lost one. *Nodes & cluster → Moving a database instance
+  PostgreSQL with an instance it could not start anywhere else, and CNPG holds every later scale
+  change until that instance is active again — which it never becomes. *Nodes & cluster → Moving a database instance
   off a server* gives the two commands that move it first. The High availability page also no
   longer claims synchronous replication: the platform's PostgreSQL replicates asynchronously.
 
