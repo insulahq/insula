@@ -25,6 +25,12 @@ yq -o=json '{"accessLog": .accessLog, "additionalVolumeMounts": .additionalVolum
                  "initContainers": .deployment.initContainers}}' "$WORK/values.yaml" \
   | jq -S . > "$WORK/boot.json"
 sed -n "/<<'DESIREDJSON'/,/^DESIREDJSON$/p" "$MIG" | sed '1d;$d' | jq -S . > "$WORK/mig.json"
+# This migration owns only the volumes it declares (it merges by name). Later
+# volumes in bootstrap's list belong to later migrations and are checked there —
+# traefik-plugin-modsecurity by scripts/test-traefik-modsecurity-plugin-migration.sh.
+jq -S --slurpfile mig "$WORK/mig.json" \
+  '.deployment.additionalVolumes |= map(select(.name as $n | [$mig[0].deployment.additionalVolumes[].name] | index($n)))' \
+  "$WORK/boot.json" > "$WORK/boot.scoped.json" && mv "$WORK/boot.scoped.json" "$WORK/boot.json"
 
 [[ "$(jq -r '.accessLog.enabled' "$WORK/boot.json")" == "true" ]] \
   && ok "bootstrap sets accessLog.enabled: true (the chart renders nothing without it)" \
