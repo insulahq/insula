@@ -133,9 +133,9 @@ patches:
           - match: "Host(`stalwart16.insula.host`)"
             kind: Rule
             middlewares:
-              - name: inflight-per-client
-                namespace: traefik
               - name: admin-auth-cookie
+                namespace: traefik
+              - name: inflight-per-client
                 namespace: traefik
               - name: compress
                 namespace: traefik

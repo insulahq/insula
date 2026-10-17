@@ -80,9 +80,9 @@ spec:
         # break webmail. See docs/features/BULWARK_WEBMAIL.md.
         - name: stalwart-jmap-cors
           namespace: mail
-        # Per-client concurrency cap. AFTER the CORS headers, not before like
-        # on the other routes: a 429 that lacks ACAO reaches the SPA as a CORS
-        # error, which hides the real status.
+        # Per-client concurrency cap, directly before compress like on every
+        # compressing route — and after the CORS headers, so a 429 still
+        # carries ACAO instead of reaching the SPA as a CORS error.
         - name: inflight-per-client
           namespace: traefik
         - name: compress
@@ -94,9 +94,9 @@ spec:
     - match: "Host(`stalwart.${DOMAIN}`)"
       kind: Rule
       middlewares:
-        - name: inflight-per-client
-          namespace: traefik
         - name: admin-auth-cookie
+          namespace: traefik
+        - name: inflight-per-client
           namespace: traefik
         - name: compress
           namespace: traefik

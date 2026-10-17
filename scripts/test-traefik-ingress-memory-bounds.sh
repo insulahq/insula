@@ -94,12 +94,12 @@ GOOD_C="encodings: [gzip]
 $GOOD_TYPES"
 mw "$WORK/c-none" "$GOOD_C" '- name: compress
   namespace: traefik'
-expect_fail "a route with compress but no cap fails" "$WORK/c-none" "compress without inflight-per-client"
+expect_fail "a route with compress but no cap fails" "$WORK/c-none" "not directly preceded by inflight-per-client"
 mw "$WORK/c-after" "$GOOD_C" '- name: compress
   namespace: traefik
 - name: inflight-per-client
   namespace: traefik'
-expect_fail "the cap AFTER compress fails" "$WORK/c-after" "compress without inflight-per-client"
+expect_fail "the cap AFTER compress fails" "$WORK/c-after" "not directly preceded by inflight-per-client"
 mw "$WORK/c-ns" "$GOOD_C" '- name: inflight-per-client
 - name: compress
   namespace: traefik'
@@ -118,7 +118,14 @@ spec:
         - name: compress
           namespace: traefik
 YAML
-expect_fail "a cap in an EARLIER list does not cover the next list" "$WORK/c-prevlist" "compress without inflight-per-client"
+expect_fail "a cap in an EARLIER list does not cover the next list" "$WORK/c-prevlist" "not directly preceded by inflight-per-client"
+mw "$WORK/c-gap" "$GOOD_C" '- name: inflight-per-client
+  namespace: traefik
+- name: admin-auth-cookie
+  namespace: traefik
+- name: compress
+  namespace: traefik'
+expect_fail "the cap earlier in the list but not directly before compress fails" "$WORK/c-gap" "not directly preceded"
 mkdir -p "$WORK/c-patch"; mw "$WORK/c-patch" "$GOOD_C"
 cat > "$WORK/c-patch/kustomization.yaml" <<'YAML'
 patches:

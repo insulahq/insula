@@ -1021,6 +1021,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             'startup: platform-owned Traefik hosts reconciled from DB apex',
           );
         }
+        // After the batch above, not inside it: those reconcilers rewrite the
+        // same IngressRoutes' routes arrays, and two concurrent MERGE_PATCHes
+        // of one array lose one of the edits.
+        const { reconcileCompressRouteBounds } = await import('./shared/traefik-compress-bounds.js');
+        await reconcileCompressRouteBounds(k8s.custom, app.log);
       } catch (err) {
         app.log.warn(
           { err },

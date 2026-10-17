@@ -34,7 +34,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   compresses.** The stream cap bounds a single connection; a client that opens more
   connections is now bounded too. A new `inflight-per-client` Middleware sits before
   `compress` on webmail, Stalwart's JMAP and admin routes, the VictoriaMetrics and Longhorn
-  UIs and the tunnel anchor; the 101st request gets 429 until one finishes. Clients are told
+  UIs and the tunnel anchor; the 101st request gets 429 until one finishes. Webmail, both
+  Stalwart routes and the anchor are seeded once by Flux and owned by the platform API after
+  that, so the API puts the cap in on startup on clusters that already run them. Clients are told
   apart by connection address (IPv6 by /64), never by a forwarded header. 100 is generous:
   two weeks of production access logs show at most 39 in flight for one client on one of
   these routes, and the burst behind the OOM above peaked at 51. `ci-traefik-compress-check.sh`

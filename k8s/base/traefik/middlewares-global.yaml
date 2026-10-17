@@ -6,7 +6,7 @@
 #     - name: compress
 #       namespace: traefik
 #
-# Route order: inflight-per-client BEFORE compress (see each Middleware below).
+# Route order: inflight-per-client DIRECTLY before compress (see both below).
 #
 # compress — replaces ingress-nginx's gzip directives. gzip ONLY, and only for
 # an allowlist of text types. Both limits exist because this middleware
@@ -67,10 +67,12 @@ spec:
       - image/svg+xml
 ---
 # inflight-per-client — at most 100 requests in flight per client on each
-# route that uses it; the 101st gets 429 until one finishes. It sits before
-# `compress` on every route that compresses (ci-traefik-compress-check.sh), so
-# what one client can hold open is bounded however many connections it opens —
-# the HTTP/2 stream cap (bootstrap.sh) only bounds a single connection.
+# route that uses it; the 101st gets 429 until one finishes. It sits directly
+# before `compress` on every route that compresses, so what one client can hold
+# open is bounded however many connections it opens (the HTTP/2 stream cap in
+# bootstrap.sh only bounds a single connection). Three of those routes are
+# Flux-disowned; the platform API converges them on boot
+# (backend/src/shared/traefik-compress-bounds.ts).
 #
 # * sourceCriterion is REQUIRED, not decoration: without one, Traefik keys
 #   inFlightReq by the Host header, i.e. ONE shared budget of 100 for every

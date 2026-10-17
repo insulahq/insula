@@ -12,7 +12,8 @@
 #      compressed, and text/event-stream would pin a writer for the life of
 #      every open push stream.
 #   3. every middlewares list that contains `compress` puts
-#      `inflight-per-client` (namespace traefik) BEFORE it, and that
+#      `inflight-per-client` (namespace traefik) DIRECTLY before it — the
+#      same place the platform API's boot converger puts it — and that
 #      Middleware caps a client at <= 100 requests in flight, keyed by the
 #      connection's remote address (IPv6 grouped by subnet) — never by Host
 #      header (Traefik's default: one budget shared by every user) or by a
@@ -115,19 +116,22 @@ while IFS= read -r line; do
   esac
 done < <(grep -rlZ --include='*.yaml' --include='*.yml' -E '^[[:space:]]*-[[:space:]]*name:[[:space:]]*compress[[:space:]]*$' "$SCAN" 2>/dev/null \
   | xargs -0 -r awk '
-      FNR == 1 { seen = 0; pend = ""; nsline = 0 }
+      FNR == 1 { prev = ""; pend = ""; nsline = 0 }
       /^[[:space:]]*#/ { next }
-      /^[[:space:]]*middlewares:[[:space:]]*$/ { seen = 0; next }
+      /^[[:space:]]*middlewares:[[:space:]]*$/ { prev = ""; next }
       pend != "" && FNR == nsline {
-        if ($0 ~ /^[[:space:]]*namespace:[[:space:]]*traefik[[:space:]]*$/) seen = 1
+        if ($0 ~ /^[[:space:]]*namespace:[[:space:]]*traefik[[:space:]]*$/) prev = "inflight-ok"
         else print pend ": inflight-per-client must carry namespace: traefik on the next line"
         pend = ""
       }
-      /^[[:space:]]*-[[:space:]]*name:[[:space:]]*inflight-per-client[[:space:]]*$/ { pend = FILENAME ":" FNR; nsline = FNR + 1; next }
+      /^[[:space:]]*-[[:space:]]*name:[[:space:]]*inflight-per-client[[:space:]]*$/ { prev = "inflight"; pend = FILENAME ":" FNR; nsline = FNR + 1; next }
       /^[[:space:]]*-[[:space:]]*name:[[:space:]]*compress[[:space:]]*$/ {
         print "ROUTE"
-        if (!seen) print FILENAME ":" FNR ": compress without inflight-per-client (namespace traefik) before it in the same middlewares list — one client could hold any number of compressed responses open."
-      }')
+        if (prev != "inflight-ok") print FILENAME ":" FNR ": compress is not directly preceded by inflight-per-client (namespace traefik) in its middlewares list — one client could hold any number of compressed responses open."
+        prev = "compress"; next
+      }
+      /^[[:space:]]*-[[:space:]]*name:/ { prev = "other" }
+    ')
 if [[ "$route_lists" -eq 0 ]]; then
   echo "::error::ci-traefik-compress-check: no middlewares list references compress — the route extraction matched nothing." >&2
   fail=1
@@ -137,5 +141,5 @@ if [[ "$found" -eq 0 ]]; then
   echo "::error::ci-traefik-compress-check: found no compress Middleware under ${SCAN#"$ROOT"/} — the extraction matched nothing, so this guard would pass anything." >&2
   exit 1
 fi
-[[ "$fail" -eq 0 ]] && echo "ci-traefik-compress-check: ${found} compress Middleware(s) gzip-only with a text allowlist; ${route_lists} route(s) capped per client first — OK."
+[[ "$fail" -eq 0 ]] && echo "ci-traefik-compress-check: ${found} compress Middleware(s) gzip-only with a text allowlist; ${route_lists} route(s) capped per client directly before compress — OK."
 exit "$fail"
