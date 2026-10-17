@@ -254,6 +254,7 @@ jobs:
       - run: ./scripts/test-standby-restore-pick.sh
       - run: ./scripts/test-host-migration-k3s-token.sh
       - run: ./scripts/test-traefik-access-log-values.sh
+      - run: ./scripts/test-traefik-ingress-memory-bounds.sh
       - run: ./scripts/test-stall-watch.sh
       - run: ./scripts/test-longhorn-reservation.sh
       - run: ./scripts/test-ci-migration-coverage.sh
@@ -1176,6 +1177,8 @@ jobs:
         run: ./scripts/ci-mail-pg-removal-check.sh
       - name: modsec-crs exclusion footgun guard
         run: ./scripts/ci-modsec-exclusion-check.sh
+      - name: Traefik compress stays gzip-only with a text allowlist
+        run: ./scripts/ci-traefik-compress-check.sh
       - name: no legacy backup-class routing keys
         run: ./scripts/ci-no-legacy-backup-classes.sh
       - name: no plaintext secret inlined into cli argv

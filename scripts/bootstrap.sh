@@ -5748,6 +5748,18 @@ deployment:
           echo "wait-for-plugin-registry: registry reachable after $tries retries"
 TRAEFIKVALUES
 
+  # Memory bounds (the DaemonSet was OOM-killed on two nodes of a production
+  # cluster 9 s apart by a webmail page loading dozens of images at once — see
+  # k8s/base/traefik/middlewares-global.yaml for the measurements).
+  #   * limits.memory 1Gi — the chart derives GOMEMLIMIT as 90% of it. At
+  #     512Mi a node had ~300 MiB above its plugin baseline for every response
+  #     in flight; one client's burst used all of it.
+  #   * http2.maxConcurrentStreams 100 on both entrypoints (Traefik default
+  #     250) — the per-connection ceiling nginx (128) and HAProxy (100) use,
+  #     and what browsers need. It bounds ONE connection; a client that opens
+  #     more is bounded by the per-response cost the compress allowlist keeps
+  #     small, not by this.
+  # Existing clusters get both from host-migration 2026.10.11/0001.
   helm_cmd upgrade --install traefik traefik/traefik \
     -f "${traefik_values}" \
     --namespace traefik \
@@ -5778,9 +5790,11 @@ TRAEFIKVALUES
     --set 'volumes[0].type=secret' \
     --set 'additionalArguments[0]=--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32' \
     --set 'additionalArguments[1]=--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32' \
+    --set 'additionalArguments[2]=--entryPoints.web.http2.maxConcurrentStreams=100' \
+    --set 'additionalArguments[3]=--entryPoints.websecure.http2.maxConcurrentStreams=100' \
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
-    --set resources.limits.memory=512Mi \
+    --set resources.limits.memory=1Gi \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=insula.host/ingress-mode' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
     --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \

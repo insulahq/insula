@@ -459,9 +459,11 @@ _install_traefik_local() {
     --set 'volumes[0].type=secret' \
     --set 'additionalArguments[0]=--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32' \
     --set 'additionalArguments[1]=--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32' \
+    --set 'additionalArguments[2]=--entryPoints.web.http2.maxConcurrentStreams=100' \
+    --set 'additionalArguments[3]=--entryPoints.websecure.http2.maxConcurrentStreams=100' \
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
-    --set resources.limits.memory=512Mi)
+    --set resources.limits.memory=1Gi)
 
   # Pipe via stdin so we don't have to copy the file into the container.
   echo "$rendered" | docker exec -i "$K3S_CONTAINER" kubectl apply -f -

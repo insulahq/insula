@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security: Traefik no longer runs out of memory when a page loads many images at once.**
+  On production the Traefik DaemonSet was OOM-killed on two nodes 9 s apart, kernel-confirmed
+  at its 512Mi limit, while one webmail page loaded dozens of inline images over HTTP/2. The
+  shared `compress` Middleware preferred brotli and compressed every response, images included,
+  and every response in flight held its own brotli writer: Go reserves ~11 MiB for each, and a
+  burst of 100 images cost ~270 MiB (measured on traefik:v3.7.6). The writers are pooled and
+  only released two garbage collections later — minutes on an idle Traefik. The client chooses
+  the encoding, so `Accept-Encoding: br` was enough for anyone to take that path on purpose,
+  including on the webmail route, which has no login in front of it; one client with 250
+  requests OOM-killed a test Traefik within 5 s. `compress` now uses gzip only (zstd costs
+  ~2.4 MiB a response, gzip ~0.6) and only for an allowlist of text types — no images,
+  archives, attachments or SSE streams. The same burst now peaks at the uncompressed figure.
+  Traefik also gets a 1Gi memory limit (its Go memory limit follows at 90%) and at most 100
+  parallel HTTP/2 streams per connection (was 250). Host-migration
+  `0001-traefik-ingress-memory-bounds` applies both to existing clusters and rolls Traefik one
+  node at a time; `ci-traefik-compress-check.sh` keeps the Middleware gzip-only with a text
+  allowlist.
+
 ## [2026.10.10] - 2026-10-16
 
 ### Changed

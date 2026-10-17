@@ -9,7 +9,8 @@
 #
 # and it has no size knob: `maxBodySize` is not a field of its Config struct, so
 # a value set on the Middleware is silently dropped by Traefik. Traefik runs as a
-# DaemonSet fronting the whole cluster with limits.memory=512Mi.
+# DaemonSet fronting the whole cluster (limits.memory=512Mi when this was
+# measured; 1Gi since 2026.10.11).
 #
 # Measured on a live cluster: ONE unauthenticated 600 MB POST to
 # /api/v1/auth/login OOM-killed Traefik in ~3 seconds
