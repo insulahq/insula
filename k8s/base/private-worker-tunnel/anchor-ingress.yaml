@@ -101,6 +101,8 @@ spec:
       # catch-all (priority 1) serving the suspended page to unrouted
       # requests, so adding the WAF here cannot affect a tunnel.
       middlewares:
+        - name: inflight-per-client
+          namespace: traefik
         - name: crowdsec
           namespace: traefik
         - name: waf-body-limit

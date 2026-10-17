@@ -29,8 +29,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Traefik also gets a 1Gi memory limit (its Go memory limit follows at 90%) and at most 100
   parallel HTTP/2 streams per connection (was 250). Host-migration
   `0001-traefik-ingress-memory-bounds` applies both to existing clusters and rolls Traefik one
-  node at a time; `ci-traefik-compress-check.sh` keeps the Middleware gzip-only with a text
-  allowlist.
+  node at a time.
+- **Security: one client can hold at most 100 requests in flight on any route that
+  compresses.** The stream cap bounds a single connection; a client that opens more
+  connections is now bounded too. A new `inflight-per-client` Middleware sits before
+  `compress` on webmail, Stalwart's JMAP and admin routes, the VictoriaMetrics and Longhorn
+  UIs and the tunnel anchor; the 101st request gets 429 until one finishes. Clients are told
+  apart by connection address (IPv6 by /64), never by a forwarded header. 100 is generous:
+  two weeks of production access logs show at most 39 in flight for one client on one of
+  these routes, and the burst behind the OOM above peaked at 51. `ci-traefik-compress-check.sh`
+  keeps every compressing route capped, the Middleware gzip-only with a text allowlist, and the
+  cap keyed by client — without an explicit key Traefik counts per Host header, one budget
+  shared by every user.
 
 ## [2026.10.10] - 2026-10-16
 

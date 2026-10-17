@@ -71,6 +71,8 @@ spec:
       kind: Rule
       priority: 100
       middlewares:
+        - name: inflight-per-client
+          namespace: traefik
         - name: admin-auth-cookie
           namespace: traefik
         - name: longhorn-ui-slash

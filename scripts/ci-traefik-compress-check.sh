@@ -11,6 +11,13 @@
 #      types. Images, archives, PDFs and mail attachments are already
 #      compressed, and text/event-stream would pin a writer for the life of
 #      every open push stream.
+#   3. every middlewares list that contains `compress` puts
+#      `inflight-per-client` (namespace traefik) BEFORE it, and that
+#      Middleware caps a client at <= 100 requests in flight, keyed by the
+#      connection's remote address (IPv6 grouped by subnet) — never by Host
+#      header (Traefik's default: one budget shared by every user) or by a
+#      forwarded header a client could choose. Checked as TEXT, so a route
+#      embedded in a kustomize patch string is covered too.
 #
 # On a production cluster the br-first, compress-everything Middleware
 # OOM-killed the Traefik DaemonSet on two nodes 9 s apart while one webmail
@@ -67,9 +74,68 @@ while IFS= read -r -d '' f; do
   fi
 done < <(grep -rlZ --include='*.yaml' --include='*.yml' -E '^[[:space:]]+compress:' "$SCAN" 2>/dev/null || true)
 
+# ── 3a. the concurrency cap itself ─────────────────────────────────────────
+inflight_specs=0
+while IFS= read -r -d '' f; do
+  while IFS='|' read -r name amount has_ip depth n_excl v6 req_host req_hdr; do
+    [[ -n "$name" ]] || continue
+    inflight_specs=$((inflight_specs + 1))
+    where="${f#"$ROOT"/}: Middleware ${name}"
+    if [[ ! "$amount" =~ ^[0-9]+$ ]] || (( amount < 1 || amount > 100 )); then
+      echo "::error::${where}: inFlightReq.amount must be 1-100, got '${amount}'."
+      fail=1
+    fi
+    if [[ "$has_ip" != true || "$depth" != 0 || "$n_excl" != 0 || ! "$v6" =~ ^[0-9]+$ \
+          || "$req_host" == true || -n "$req_hdr" ]]; then
+      echo "::error::${where}: inFlightReq.sourceCriterion must be ipStrategy (no depth, no excludedIPs) with ipv6Subnet, and no requestHost/requestHeaderName — got ipStrategy=${has_ip} depth=${depth} excludedIPs=${n_excl} ipv6Subnet='${v6}' requestHost=${req_host} requestHeaderName='${req_hdr}'. Without an ipStrategy Traefik keys by Host header: one budget for every user."
+      fail=1
+    fi
+  done < <(yq -N '
+      select(.kind == "Middleware" and .metadata.name == "inflight-per-client")
+      | [ .metadata.name,
+          (.spec.inFlightReq.amount // "" | tostring),
+          (.spec.inFlightReq.sourceCriterion.ipStrategy != null | tostring),
+          (.spec.inFlightReq.sourceCriterion.ipStrategy.depth // 0 | tostring),
+          (.spec.inFlightReq.sourceCriterion.ipStrategy.excludedIPs // [] | length | tostring),
+          (.spec.inFlightReq.sourceCriterion.ipStrategy.ipv6Subnet // "" | tostring),
+          (.spec.inFlightReq.sourceCriterion.requestHost // false | tostring),
+          (.spec.inFlightReq.sourceCriterion.requestHeaderName // "" | tostring) ] | join("|")' "$f" 2>/dev/null || true)
+done < <(grep -rlZ --include='*.yaml' --include='*.yml' -E '^[[:space:]]+inFlightReq:' "$SCAN" 2>/dev/null || true)
+if [[ "$inflight_specs" -eq 0 ]]; then
+  echo "::error::ci-traefik-compress-check: no 'inflight-per-client' Middleware (inFlightReq) found — the routes that compress have no per-client concurrency cap."
+  fail=1
+fi
+
+# ── 3b. inflight-per-client before compress, in every middlewares list ────────
+route_lists=0
+while IFS= read -r line; do
+  case "$line" in
+    ROUTE*) route_lists=$((route_lists + 1)) ;;
+    *) echo "::error::${line#"$ROOT"/}"; fail=1 ;;
+  esac
+done < <(grep -rlZ --include='*.yaml' --include='*.yml' -E '^[[:space:]]*-[[:space:]]*name:[[:space:]]*compress[[:space:]]*$' "$SCAN" 2>/dev/null \
+  | xargs -0 -r awk '
+      FNR == 1 { seen = 0; pend = ""; nsline = 0 }
+      /^[[:space:]]*#/ { next }
+      /^[[:space:]]*middlewares:[[:space:]]*$/ { seen = 0; next }
+      pend != "" && FNR == nsline {
+        if ($0 ~ /^[[:space:]]*namespace:[[:space:]]*traefik[[:space:]]*$/) seen = 1
+        else print pend ": inflight-per-client must carry namespace: traefik on the next line"
+        pend = ""
+      }
+      /^[[:space:]]*-[[:space:]]*name:[[:space:]]*inflight-per-client[[:space:]]*$/ { pend = FILENAME ":" FNR; nsline = FNR + 1; next }
+      /^[[:space:]]*-[[:space:]]*name:[[:space:]]*compress[[:space:]]*$/ {
+        print "ROUTE"
+        if (!seen) print FILENAME ":" FNR ": compress without inflight-per-client (namespace traefik) before it in the same middlewares list — one client could hold any number of compressed responses open."
+      }')
+if [[ "$route_lists" -eq 0 ]]; then
+  echo "::error::ci-traefik-compress-check: no middlewares list references compress — the route extraction matched nothing." >&2
+  fail=1
+fi
+
 if [[ "$found" -eq 0 ]]; then
   echo "::error::ci-traefik-compress-check: found no compress Middleware under ${SCAN#"$ROOT"/} — the extraction matched nothing, so this guard would pass anything." >&2
   exit 1
 fi
-[[ "$fail" -eq 0 ]] && echo "ci-traefik-compress-check: ${found} compress Middleware(s) gzip-only with a text allowlist — OK."
+[[ "$fail" -eq 0 ]] && echo "ci-traefik-compress-check: ${found} compress Middleware(s) gzip-only with a text allowlist; ${route_lists} route(s) capped per client first — OK."
 exit "$fail"

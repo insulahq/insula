@@ -26,13 +26,29 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ── A. the compress guard ────────────────────────────────────────────────────
 echo "── A. ci-traefik-compress-check.sh ──"
-mw() { # <dir> <compress-body-yaml> — one Middleware plus an unrelated IngressRoute document
-  mkdir -p "$1"
+GOOD_ROUTE_MW='- name: inflight-per-client
+  namespace: traefik
+- name: compress
+  namespace: traefik'
+GOOD_INFLIGHT='amount: 100
+sourceCriterion:
+  ipStrategy:
+    ipv6Subnet: 64'
+# mw <dir> <compress-body> [route-middlewares] [inflight-body|NONE] — a route
+# document, the compress Middleware and the inflight-per-client Middleware.
+mw() {
+  local dir="$1" body="$2" route="${3:-$GOOD_ROUTE_MW}" inflight="${4:-$GOOD_INFLIGHT}"
+  mkdir -p "$dir"
   {
-    printf 'apiVersion: traefik.io/v1alpha1\nkind: IngressRoute\nmetadata:\n  name: uses-it\nspec:\n  routes:\n    - match: Host(`a.example.test`)\n      middlewares:\n        - name: compress\n'
+    printf 'apiVersion: traefik.io/v1alpha1\nkind: IngressRoute\nmetadata:\n  name: uses-it\nspec:\n  routes:\n    - match: Host(`a.example.test`)\n      middlewares:\n'
+    printf '%s\n' "$route" | sed 's/^/        /'
     printf -- '---\napiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: compress\n  namespace: traefik\nspec:\n  compress:\n'
-    printf '%s\n' "$2" | sed 's/^/    /'
-  } > "$1/mw.yaml"
+    printf '%s\n' "$body" | sed 's/^/    /'
+    if [[ "$inflight" != NONE ]]; then
+      printf -- '---\napiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: inflight-per-client\n  namespace: traefik\nspec:\n  inFlightReq:\n'
+      printf '%s\n' "$inflight" | sed 's/^/    /'
+    fi
+  } > "$dir/mw.yaml"
 }
 guard() { CI_TRAEFIK_COMPRESS_ROOT="$1" "$GUARD" 2>&1; }
 expect_fail() { # <label> <dir> <message-fragment>
@@ -71,7 +87,79 @@ mkdir -p "$WORK/a-empty"; printf 'kind: ConfigMap\nmetadata:\n  name: x\n' > "$W
 expect_fail "a tree with no compress Middleware fails (anti-vacuity)" "$WORK/a-empty" "found no compress Middleware"
 mw "$WORK/a-good" "encodings: [gzip]
 $GOOD_TYPES"
-out="$(guard "$WORK/a-good")" && ok "gzip + text allowlist passes (IngressRoute document ignored)" || no "good fixture failed: $out"
+out="$(guard "$WORK/a-good")" && ok "good fixture (cap first, gzip, text allowlist) passes" || no "good fixture failed: $out"
+
+echo "── A2. per-client concurrency cap ──"
+GOOD_C="encodings: [gzip]
+$GOOD_TYPES"
+mw "$WORK/c-none" "$GOOD_C" '- name: compress
+  namespace: traefik'
+expect_fail "a route with compress but no cap fails" "$WORK/c-none" "compress without inflight-per-client"
+mw "$WORK/c-after" "$GOOD_C" '- name: compress
+  namespace: traefik
+- name: inflight-per-client
+  namespace: traefik'
+expect_fail "the cap AFTER compress fails" "$WORK/c-after" "compress without inflight-per-client"
+mw "$WORK/c-ns" "$GOOD_C" '- name: inflight-per-client
+- name: compress
+  namespace: traefik'
+expect_fail "the cap without namespace traefik fails" "$WORK/c-ns" "must carry namespace: traefik"
+mw "$WORK/c-prevlist" "$GOOD_C"
+cat >> "$WORK/c-prevlist/mw.yaml" <<'YAML'
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: second
+spec:
+  routes:
+    - match: Host(`b.example.test`)
+      middlewares:
+        - name: compress
+          namespace: traefik
+YAML
+expect_fail "a cap in an EARLIER list does not cover the next list" "$WORK/c-prevlist" "compress without inflight-per-client"
+mkdir -p "$WORK/c-patch"; mw "$WORK/c-patch" "$GOOD_C"
+cat > "$WORK/c-patch/kustomization.yaml" <<'YAML'
+patches:
+  - patch: |
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: uses-it
+      spec:
+        routes:
+          - match: "Host(`c.example.test`)"
+            middlewares:
+              - name: admin-auth-cookie
+                namespace: traefik
+              - name: compress
+                namespace: traefik
+YAML
+expect_fail "a route inside a kustomize patch string is checked too" "$WORK/c-patch" "kustomization.yaml"
+mw "$WORK/c-nocrit" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 100'
+expect_fail "no sourceCriterion (Traefik keys by Host: one shared budget) fails" "$WORK/c-nocrit" "ipStrategy=false"
+mw "$WORK/c-host" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 100
+sourceCriterion:
+  requestHost: true'
+expect_fail "sourceCriterion.requestHost fails" "$WORK/c-host" "requestHost=true"
+mw "$WORK/c-depth" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 100
+sourceCriterion:
+  ipStrategy:
+    depth: 1
+    ipv6Subnet: 64'
+expect_fail "ipStrategy.depth (a client-chosen X-Forwarded-For key) fails" "$WORK/c-depth" "depth=1"
+mw "$WORK/c-v6" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 100
+sourceCriterion:
+  ipStrategy: {}'
+expect_fail "no ipv6Subnet (one host rotating /64 addresses) fails" "$WORK/c-v6" "ipv6Subnet=''"
+mw "$WORK/c-amount" "$GOOD_C" "$GOOD_ROUTE_MW" 'amount: 500
+sourceCriterion:
+  ipStrategy:
+    ipv6Subnet: 64'
+expect_fail "amount above 100 fails" "$WORK/c-amount" "amount must be 1-100, got '500'"
+mw "$WORK/c-nomw" "$GOOD_C" "$GOOD_ROUTE_MW" NONE
+expect_fail "routes reference a cap that is defined nowhere: fails" "$WORK/c-nomw" "no 'inflight-per-client' Middleware"
 
 # ── B. bootstrap ↔ migration parity ─────────────────────────────────────────
 echo "── B. bootstrap.sh == 2026.10.11/0001 ──"

@@ -30,6 +30,8 @@ spec:
     - match: "Host(`webmail.${DOMAIN}`)"
       kind: Rule
       middlewares:
+        - name: inflight-per-client
+          namespace: traefik
         - name: compress
           namespace: traefik
       services:
