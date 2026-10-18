@@ -124,6 +124,13 @@ elsewhere. From the node card click **Drain Node**. A modal computes the impact:
   node keeps that node by default. Either way **Delete** unlocks only once the
   copies have left the node.
 - **Non-system pods** — what gets evicted; controllers recreate them elsewhere.
+- **Mail** — the drain never moves mail, but a cordoned node cannot take it in
+  a failover. If this node runs mail, the modal says where mail would fail over
+  to; if it is mail's failover target, it says what is left once it is
+  cordoned — and warns, with a link to the mail placement, when that is
+  nothing (it is the only failover node, often holding the only standby copy).
+  The **Cordon** switch on the node's edit form shows the same notice, and the
+  database instances whose only copy is on the node, when you switch it on.
 - **Last-replica risk** — if this node holds the *only* healthy replica of a
   platform volume (mail, for example), the drain is **refused** unless you tick
   **"I accept data risk — force drain even with last replicas here."**
@@ -150,6 +157,17 @@ and **Delete** unlocks.
 
 To put a node back into service after maintenance, the platform un-cordons it
 when appropriate; you can also `kubectl uncordon <node>` directly.
+
+!!! info "Two replicas, two servers"
+    In HA mode the platform's two-replica components — the WAF and the
+    operators that run a leader and a standby (cert-manager, the database
+    operator, sealed-secrets, the Flux controllers) — keep one replica per
+    server. When a server is down or cordoned and only one other could take a
+    replacement, the replacement **waits** (Pending) instead of joining its
+    twin, and lands back on the server when it returns; the other replica keeps
+    serving meanwhile. Database instances are the exception: one may share a
+    server while another is rebuilt, because an instance must be able to leave
+    a server you are removing.
 
 ### What happens when a node reboots
 
@@ -352,11 +370,11 @@ from the primary (about a minute on a small database). When
 reopen the drain modal — **Delete** is available.
 
 The instance's old volume is kept, *Released*, because the platform's storage
-classes retain released volumes. Until you remove it, the drain modal lists it
-under *Last-replica risk* with its old claim name; it no longer belongs to the
-instance and does not hold back **Delete**. **Cluster → Storage → Orphaned
-volumes** lists it once it has been released for the stale threshold (7 days by
-default), where you can delete it.
+classes retain released volumes. Two days after its release — the instance has
+a newer copy by then — the platform deletes it, with its Longhorn volume. Until
+then the drain modal lists it under *Last-replica risk* with its old claim name;
+it no longer belongs to the instance and does not hold back **Delete**. To
+delete it sooner, use **Cluster → Storage → Orphaned volumes**.
 
 Deleting a node also tidies up after it: its storage-system record is removed,
 and if it was named as a mail primary/secondary/tertiary, that reference is

@@ -33,6 +33,14 @@ back to — already has recent data and recovers in seconds rather than minutes.
     a banner says so — because in that state a lost mail node means mail stays
     down until a person notices and recovers it by hand.
 
+A **cordoned** node is never a failover target: it is Ready, but it takes no new
+pod, so mail could not start there. Automatic failover skips it and goes to the
+next node in the set; a migration to a cordoned node is refused before anything
+changes. The same banner also warns when **every** configured failover node is
+cordoned or down — for example while you drain the only secondary — and the
+drain modal and the node's **Cordon** switch say so before you cordon it. Set
+another node as secondary or tertiary first.
+
 Old copies of the mail store left behind by previous failovers are cleaned up
 automatically after 48 hours. The node currently serving mail is never touched.
 

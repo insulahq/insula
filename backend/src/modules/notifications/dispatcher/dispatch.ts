@@ -117,6 +117,14 @@ export interface EmitEventOptions {
    * address. Only set this where the address list is itself an opt-in.
    */
   readonly externalRecipientsOptedIn?: boolean;
+  /**
+   * Send to `externalRecipients` ONLY: the scope's own users get nothing, on
+   * any channel. The scope still names whose event it is (tenant context,
+   * templates). A cron job whose "inform the tenant's admins" is off still
+   * mails the address it was given — `suppressTenantNotification` would drop
+   * that address too.
+   */
+  readonly externalOnly?: boolean;
   /** Override encryption key (tests). Production reads PLATFORM_ENCRYPTION_KEY. */
   readonly encryptionKey?: string;
   /**
@@ -544,6 +552,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     recipients = [];
     externalRecipients = [];
   }
+  if (opts.externalOnly) recipients = [];
   // Bail out only when there is nobody AT ALL. This used to return on an empty
   // USER list, which skipped the external leg entirely — so a mailbox owner,
   // the one audience that exists precisely because it has no platform account,

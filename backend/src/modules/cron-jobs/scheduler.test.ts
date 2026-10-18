@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runAndRecord, isJobDue, claimStaleBefore, resolveTimeZone } from './scheduler.js';
+import { runAndRecord, isJobDue, claimStaleBefore, resolveTimeZone, flushPendingFailureChecks } from './scheduler.js';
 import type { CronJobRow } from './executor.js';
 import type { Database } from '../../db/index.js';
 
@@ -142,6 +142,62 @@ describe('runAndRecord', () => {
     expect((opts as { dedupeKey: string }).dedupeKey).toMatch(/^scheduled-task-failure:job-1:\d{4}-\d{2}-\d{2}$/);
     // Switched off by default: nobody beyond the tenant's own admins.
     expect((opts as { externalRecipients: readonly string[] }).externalRecipients).toEqual([]);
+  });
+
+  // Production: a server was powered off, its kubelet stopped every
+  // pod, Moodle's cron exited 1 mid-run — and the client was emailed that their
+  // scheduled task had failed.
+  describe('a run the platform interrupted', () => {
+    const transport = (why: string | null) => ({
+      listPods: vi.fn().mockResolvedValue([
+        { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'], nodeName: 's1' },
+      ]),
+      exec: vi.fn().mockResolvedValue({ stdout: 'Cron run completed', stderr: '', exitCode: 1 }),
+      podDisruption: vi.fn().mockResolvedValue(why),
+    });
+
+    it('is not reported to anyone, and its output says what happened', async () => {
+      const t = transport('the server it ran on was shutting down');
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 0 });
+
+      expect(t.podDisruption).toHaveBeenCalledWith({ namespace: 'tenant-acme', pod: 'moodle-site-x', node: 's1' });
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(updates[0].lastRunStatus).toBe('failed');
+      expect(updates[1].lastRunOutput).toBe(
+        'Interrupted by the platform: the server it ran on was shutting down. The command itself did not fail.\nCron run completed',
+      );
+    });
+
+    it('a check still waiting when the API shuts down is run then, not lost', async () => {
+      const t = transport(null);
+      const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 60_000 });
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      await flushPendingFailureChecks();
+      expect(t.podDisruption).toHaveBeenCalledTimes(1);
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+      // Flushed once: a second shutdown hook has nothing left to run.
+      await flushPendingFailureChecks();
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failure the platform did not cause is reported as before', async () => {
+      const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: transport(null), interruptionCheckDelayMs: 0 });
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('"inform the tenant\'s admins" off is passed on: they get nothing on any channel', async () => {
+    const { db } = mockDb([], makeJob({ lastRunStatus: 'failed' }));
+    await runAndRecord(db, makeJob({ notifyTenantEmail: false, notifyOnFailure: true, notifyEmail: 'ops@example.test' }), {});
+    const [, , , opts] = notifyTenantScheduledTaskFailure.mock.calls[0];
+    expect(opts).toMatchObject({ informTenantAdmins: false });
+
+    notifyTenantScheduledTaskFailure.mockClear();
+    await runAndRecord(db, makeJob(), {});
+    expect(notifyTenantScheduledTaskFailure.mock.calls[0][3]).toMatchObject({ informTenantAdmins: true });
   });
 
   it('names the schedule and the clock it is read on, so the email says WHEN it runs', async () => {

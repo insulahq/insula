@@ -14,6 +14,61 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Mail no longer fails over to a cordoned server.** Automatic failover walked the secondary
+  and tertiary nodes skipping only ones that were missing or NotReady. A cordoned server is Ready,
+  so it was picked; the mail stack sat Pending there until the migration gave up ten minutes later
+  and rolled back — with mail down throughout. Seen on production: the only failover node was
+  cordoned for a drain when the mail node was powered off, and mail stayed down for the whole
+  outage. Cordoned nodes are now skipped, a migration to one is refused before the PVC swap (even in
+  recovery mode), and the "Mail cannot fail over" banner also fires when every configured failover
+  node is cordoned or down. The drain modal and the node's **Cordon** switch say what cordoning
+  that node leaves mail (and which database instances keep their only copy there).
+- **The Released-volume reaper deleted a PV seconds after its release, and never deleted its
+  Longhorn volume.** It measured age from the PV's creation, so a two-week-old system-db PV was
+  reaped 30 s after CNPG let it go — defeating the Retain policy that is the safety net — and it read
+  the Longhorn volume name from `spec.volumeName`, a field PVs do not have, so every reap left an
+  orphaned Longhorn volume holding its disk. Age now runs from the release
+  (`status.lastPhaseTransitionTime`), the volume is the CSI handle, and only CNPG instance claims in
+  the `platform` namespace are reaped, and only while a database instance volume is Bound — with
+  none (a Cluster deleted by mistake) every released copy is kept. Tenant and mail volumes stay on
+  the Orphaned volumes page.
+  The daily superseded-PV janitor, the Orphaned volumes "released for N days" age and the
+  retained-volume restore's release time all read `status.lastTransitionTime`, which PVs do not
+  have either: the janitor had never reaped anything, the ages were blank.
+- **Reboot debris: a pod the shutdown stopped that exited cleanly was never reaped**, and debris
+  was aged from the pod's creation rather than from the shutdown. Such a pod ends `Succeeded` with
+  no reason; the reaper now also takes those (never a Job's), and keeps every piece of debris for
+  its 30-minute window counted from when the kubelet stopped it.
+- **HA operators keep one replica per server.** Both replicas of cert-manager (and of the WAF)
+  could land on one server whenever only one could take a pod — seen on production with one server
+  powered off and another cordoned — and nothing moved them back. The leader-elect operators the
+  storage-policy reconciler scales to two (cert-manager, the CNPG operator, sealed-secrets,
+  snapshot-controller, the Flux controllers) now get a hard one-per-node topology spread from the
+  reconciler, and the WAF Deployments carry it in their manifests. A replacement waits for its
+  server instead of doubling up. Database instances keep their preferred anti-affinity: an instance
+  must be able to leave a server that is being removed.
+- **A tenant whose pinned node is down is reported as that, and left alone.** The first seconds of
+  a node shutdown produce "exceeded quota" refusals, so such a tenant was recorded as
+  `quota_rejected`: the alert told the operator to raise its plan limits, and the auto-heal scaled
+  it down and up against a node that was not there, gave up, and left it storage-state FAILED —
+  refusing every later resize, restore, suspend or move — although it came back by itself minutes
+  later. The new cause `node_down` is decided first and never auto-healed; a FAILED left by a failed
+  auto-heal is reset once every workload runs again; a dashboard card lists tenants stuck in a
+  failed storage state.
+- **Workloads-down alerts: one per tenant, in the bell, with an end.** Each workload sent its own
+  push and email (three for a three-workload tenant); now one notification per tenant lists them,
+  and tenants down because their node is down are reported once per node. The alert reaches the
+  in-app bell too (class `incident`; migration `0158` updates the stored channels), and
+  **Tenant workloads running again** / **Your site is running again** close every alerted outage.
+- **Cron: "inform the tenant's admins" switched off now means nothing reaches them.** The job's
+  switch only dropped the tenant's primary address; the admins still got every failure in the panel
+  and by email, so a job set to mail only the operator kept emailing the client. Off now means no
+  notification on any channel (and no dashboard card); the job's own address is still mailed. The
+  switch is a top-level checkbox in both panels. A deployment-type run cut short by the platform —
+  its server shutting down, its pod being replaced — is no longer reported as the tenant's failure;
+  its output says *Interrupted by the platform*. **Upgrade note:** an existing job whose old
+  "Tenant email" box was unticked now informs nobody in the tenant — check any job where that was
+  not the intent.
 - **HA no longer shrinks while a server is only down.** Every 5 minutes the storage-policy
   advisor re-sized HA to the number of servers that were Ready at that moment. A server that
   was rebooting, in maintenance or mid Kubernetes upgrade at that tick shrank the database from

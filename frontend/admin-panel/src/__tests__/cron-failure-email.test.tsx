@@ -104,6 +104,22 @@ describe('CronJobModal failure email — create', () => {
     });
   });
 
+  // Production: a job set to mail only the operator kept emailing
+  // the client — their admins got every failure regardless of the job.
+  it('"inform the tenant\'s admins" is on by default, visible without the email leg, and saved when switched off', async () => {
+    const user = userEvent.setup();
+    render(<CronJobModal open onClose={() => {}} tenantId="tenant-9" />, { wrapper: wrapper() });
+    await fillRequired(user);
+    expect(screen.getByTestId('cron-notify-tenant-email')).toBeChecked();
+    await user.click(screen.getByTestId('cron-notify-tenant-email'));
+    await user.click(screen.getByTestId('cron-notify-toggle'));
+    await user.type(screen.getByTestId('cron-notify-email-input'), 'ops@example.test');
+    expect(screen.queryByTestId('cron-notify-tenant-email-address')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('submit-cron-job-button'));
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([, i]) => (i as { method?: string })?.method === 'POST')).toBe(true));
+    expect(sentBody('POST')).toMatchObject({ notify_tenant_email: false, notify_on_failure: true, notify_email: 'ops@example.test' });
+  });
+
   it('will not submit a switched-on notification with no recipient', async () => {
     const user = userEvent.setup();
     render(<CronJobModal open onClose={() => {}} tenantId="tenant-9" />, { wrapper: wrapper() });

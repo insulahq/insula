@@ -191,6 +191,48 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
     }));
   }
 
+  // Tenants left storage-state FAILED. Every later resize, restore, suspend,
+  // resume, archive and move is refused ("A failed operation is already in
+  // progress") until someone resets it — while the tenant itself may be
+  // running fine, so no workloads-down tile will ever show it. On production
+  // a tenant sat FAILED after an outage and nothing on the
+  // dashboard said so. Same category the quiesce watchdog uses when it marks
+  // an operation failed.
+  const stuck = await db.execute<{
+    total: number; id: string; name: string; op_type: string | null; minutes: number | null;
+  }>(sql`
+    SELECT COUNT(*) OVER ()::int AS total, t.id, t.name, so.op_type::text AS op_type,
+           FLOOR(EXTRACT(EPOCH FROM (now() - so.completed_at)) / 60)::int AS minutes
+      FROM tenants t
+      LEFT JOIN LATERAL (
+        SELECT op_type, completed_at FROM storage_operations
+         WHERE tenant_id = t.id ORDER BY created_at DESC LIMIT 1
+      ) so ON true
+     WHERE t.storage_lifecycle_state = 'failed'
+     ORDER BY t.name ASC
+     LIMIT 5
+  `);
+  const stuckRows = stuck.rows ?? [];
+  if (stuckRows.length > 0) {
+    const first = stuckRows[0];
+    const stuckTotal = Number(first.total ?? stuckRows.length);
+    const what = (r: { op_type: string | null }) => r.op_type === 'autoheal' ? 'auto-heal' : (r.op_type ?? 'storage operation');
+    out.push(alert({
+      categoryId: 'admin.tenant_integrity',
+      severity: 'warning',
+      value: String(stuckTotal),
+      title: stuckTotal === 1 ? 'Tenant storage operation failed' : 'Tenant storage operations failed',
+      subtitle: `${first.name} · ${what(first)} failed` + (stuckTotal > 1 ? ` · ${stuckTotal - 1} more` : ''),
+      href: stuckTotal === 1 ? `/tenants/${first.id}` : '/tenants',
+      detail: stuckRows.map((r) => [
+        r.name,
+        `${what(r)} failed` + (r.minutes !== null ? ` · ${r.minutes} min ago` : ''),
+      ] as [string, string]),
+      note: 'Resize, restore, suspend, resume, archive and moving are refused until this is dealt with. '
+        + 'Open the tenant, read the failed operation on its storage card, then use Reset to idle.',
+    }));
+  }
+
   // Mailboxes at or above quota — admin.mailbox_quota_fleet.
   // Per-mailbox storage, which is the number that actually refuses mail;
   // the COUNT of mailboxes against a plan limit is not an alert and has no
@@ -479,6 +521,9 @@ export async function buildTenantAlerts(
   const cron = await db.execute<{ name: string; total: number }>(sql`
     SELECT name, COUNT(*) OVER ()::int AS total FROM cron_jobs
      WHERE tenant_id = ${tenantId} AND enabled = 1 AND "lastRunStatus" = 'failed'
+       -- A job set NOT to inform the tenant's admins does not raise a tile on
+       -- their dashboard either; the job list still shows its last run.
+       AND notify_tenant_email = true
      LIMIT 5
   `);
   const cronRows = cron.rows ?? [];

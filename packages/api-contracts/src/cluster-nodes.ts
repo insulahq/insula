@@ -219,6 +219,20 @@ export const drainImpactSchema = z.object({
   })),
   /** False when a Longhorn or CNPG read failed — the lists above may be incomplete. */
   storageFactsComplete: z.boolean().default(true),
+  /**
+   * This node's part in mail, or null. A drain never moves mail, but a
+   * cordoned node cannot take it in a failover: `otherFailoverTargets` is
+   * what is left (Ready, uncordoned, not where mail runs) — empty means mail
+   * cannot fail over while this node is cordoned.
+   */
+  mailRole: z.object({
+    role: z.enum(['active', 'secondary', 'tertiary']),
+    activeNode: z.string().nullable(),
+    autoFailoverEnabled: z.boolean(),
+    failoverThresholdSeconds: z.number(),
+    otherFailoverTargets: z.array(z.string()),
+    onlyStandbyCopy: z.boolean(),
+  }).nullable().default(null),
 });
 export type DrainImpact = z.infer<typeof drainImpactSchema>;
 

@@ -47,8 +47,10 @@ const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-g
 const CHECKBOX_CLASS = 'h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500 dark:bg-gray-700';
 
 /**
- * Opt-in email when one of the tenant's scheduled runs fails. Off by default;
- * the tenant's admins see every failure in their panel regardless.
+ * Who hears about a failed scheduled run. The tenant's admins by default (their
+ * panel, and email per their own settings) — switched off, they get nothing on
+ * any channel. Plus an opt-in email, rate-limited, to the tenant email and/or
+ * one more address.
  */
 export default function CronFailureEmailFields({ value, onChange, tenantEmail, maxPerDay }: CronFailureEmailFieldsProps) {
   const missing = failureEmailIncomplete(value);
@@ -65,6 +67,25 @@ export default function CronFailureEmailFields({ value, onChange, tenantEmail, m
         <input
           type="checkbox"
           className={CHECKBOX_CLASS + ' mt-0.5'}
+          checked={value.notifyTenantEmail}
+          onChange={(e) => onChange({ ...value, notifyTenantEmail: e.target.checked })}
+          data-testid="cron-notify-tenant-email"
+        />
+        <span>
+          <span className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
+            Inform the tenant’s admins when a scheduled run fails
+          </span>
+          <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+            In the panel, and by email as each admin&apos;s notification settings say. Off: they are not
+            told at all — no panel notice, no email. The task list still shows the last run.
+          </span>
+        </span>
+      </label>
+
+      <label className="mt-3 flex items-start gap-2">
+        <input
+          type="checkbox"
+          className={CHECKBOX_CLASS + ' mt-0.5'}
           checked={value.notifyOnFailure}
           onChange={(e) => onChange({ ...value, notifyOnFailure: e.target.checked })}
           data-testid="cron-notify-toggle"
@@ -72,33 +93,27 @@ export default function CronFailureEmailFields({ value, onChange, tenantEmail, m
         <span>
           <span className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
             <Mail size={14} className="text-gray-500 dark:text-gray-400" />
-            Email when a scheduled run fails
+            Also email when a scheduled run fails
           </span>
           <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
             At most one email per task per day while it keeps failing
             {maxPerDay ? `, and at most ${maxPerDay} a day across all of the tenant’s tasks` : ''}.
-            Run Now never emails. Tenant admins see every failure in their panel either way.
+            Run Now never emails.
           </span>
         </span>
       </label>
 
       {value.notifyOnFailure && (
         <div className="mt-3 space-y-3 pl-6">
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              className={CHECKBOX_CLASS}
-              checked={value.notifyTenantEmail}
-              onChange={(e) => onChange({ ...value, notifyTenantEmail: e.target.checked })}
-              data-testid="cron-notify-tenant-email"
-            />
-            <span>
-              Tenant email{' '}
-              <span className="font-mono text-xs text-gray-500 dark:text-gray-400" data-testid="cron-notify-tenant-email-address">
+          {value.notifyTenantEmail && (
+            <p className="text-xs text-gray-600 dark:text-gray-400">
+              Also to the tenant email{' '}
+              <span className="font-mono text-gray-500 dark:text-gray-400" data-testid="cron-notify-tenant-email-address">
                 ({tenantLabel})
               </span>
-            </span>
-          </label>
+              , unless an admin with that address was already emailed.
+            </p>
+          )}
           <div>
             <label htmlFor="cron-job-notify-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Additional address
@@ -116,7 +131,7 @@ export default function CronFailureEmailFields({ value, onChange, tenantEmail, m
           </div>
           {missing && (
             <p className="text-xs text-red-600 dark:text-red-400" data-testid="cron-notify-recipient-error">
-              Choose at least one recipient — tick the tenant email or enter an address.
+              Enter an address, or turn on informing the tenant’s admins.
             </p>
           )}
         </div>

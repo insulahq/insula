@@ -184,28 +184,45 @@ describe('PITR Job watchdog — reconcilePitrJobsOnce', () => {
 describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
+  // A PV as the API returns it: the Longhorn volume is the CSI volumeHandle,
+  // the release time is status.lastPhaseTransitionTime. `releasedMin` is how
+  // long ago it became Released; `createdMin` only matters to prove it is NOT
+  // what the age is measured from.
   function makePv(opts: {
     name: string;
     phase?: 'Bound' | 'Released' | 'Available';
-    ageMin?: number;
-    volumeName?: string;
+    releasedMin?: number | null;
+    createdMin?: number;
+    volumeHandle?: string | null;
+    csiDriver?: string;
     storageClass?: string;
     claimRef?: { namespace: string; name: string } | null;
+    asDate?: boolean;
   }) {
-    const created = new Date(Date.now() - (opts.ageMin ?? 120) * 60_000).toISOString();
+    const ago = (min: number) => new Date(Date.now() - min * 60_000);
+    const released = opts.releasedMin === null ? undefined : ago(opts.releasedMin ?? 120);
     return {
-      metadata: { name: opts.name, creationTimestamp: created },
+      metadata: { name: opts.name, creationTimestamp: ago(opts.createdMin ?? 20_000).toISOString() },
       spec: {
-        volumeName: opts.volumeName ?? opts.name,
         storageClassName: opts.storageClass ?? 'longhorn-system-local',
-        ...(opts.claimRef === null ? {} : { claimRef: opts.claimRef ?? { namespace: 'platform', name: 'gone' } }),
+        ...(opts.volumeHandle === null ? {} : {
+          csi: { driver: opts.csiDriver ?? 'driver.longhorn.io', volumeHandle: opts.volumeHandle ?? opts.name },
+        }),
+        ...(opts.claimRef === null ? {} : { claimRef: opts.claimRef ?? { namespace: 'platform', name: 'system-db-4' } }),
       },
-      status: { phase: opts.phase ?? 'Released' },
+      status: {
+        phase: opts.phase ?? 'Released',
+        ...(released ? { lastPhaseTransitionTime: opts.asDate ? released : released.toISOString() } : {}),
+      },
     };
   }
 
+  // The live database's own volume: the reaper only acts while one is Bound.
+  const LIVE_DB = () => makePv({ name: 'pv-live', phase: 'Bound', claimRef: { namespace: 'platform', name: 'system-db-1' } });
+
   function makeReaperK8s(opts: {
     pvs?: ReturnType<typeof makePv>[];
+    noLiveDatabase?: boolean;
     pvcExists?: boolean;
     deletePvFails?: boolean;
     deleteVolFails?: boolean;
@@ -214,7 +231,7 @@ describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', ()
       batch: { listNamespacedJob: vi.fn().mockResolvedValue({ items: [] }), deleteNamespacedJob: vi.fn() },
       core: {
         listNamespacedEvent: vi.fn().mockResolvedValue({ items: [] }),
-        listPersistentVolume: vi.fn().mockResolvedValue({ items: opts.pvs ?? [] }),
+        listPersistentVolume: vi.fn().mockResolvedValue({ items: [...(opts.pvs ?? []), ...(opts.noLiveDatabase ? [] : [LIVE_DB()])] }),
         deletePersistentVolume: vi.fn().mockImplementation(async () => {
           if (opts.deletePvFails) throw new Error('pv delete failed');
           return {};
@@ -240,10 +257,56 @@ describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', ()
     expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
   });
 
-  it('ignores Released PVs younger than threshold', async () => {
-    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-young', ageMin: 30 })] });
+  it('ignores PVs Released for less than the threshold', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-young', releasedMin: 30 })] });
     const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
     expect(r).toHaveLength(0);
+  });
+
+  it('measures age from the release, not the creation: a 2-week-old PV released a minute ago stays (seen on production)', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-just-released', createdMin: 20_841, releasedMin: 1 })] });
+    const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
+    expect(r).toHaveLength(0);
+    expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it('leaves a Released PV with no release time alone — it cannot tell how long it has been Released', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-no-time', releasedMin: null })] });
+    expect(await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 })).toHaveLength(0);
+  });
+
+  it('accepts the release time as a Date, the way the k8s client returns it', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-date', releasedMin: 120, asDate: true })] });
+    expect(await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 })).toHaveLength(1);
+  });
+
+  it('never auto-deletes tenant, mail or non-CNPG volumes — those stay on the orphaned-volumes page', async () => {
+    const k8s = makeReaperK8s({
+      pvs: [
+        makePv({ name: 'pv-tenant', storageClass: 'longhorn-tenant', claimRef: { namespace: 'tenant-example-0a1b2c3d', name: 'tenant-example-0a1b2c3d-storage' } }),
+        makePv({ name: 'pv-mail', storageClass: 'longhorn-mail-local', claimRef: { namespace: 'mail', name: 'mail-stack-data' } }),
+        makePv({ name: 'pv-platform-other', claimRef: { namespace: 'platform', name: 'some-cache' } }),
+        makePv({ name: 'pv-monitoring', claimRef: { namespace: 'monitoring', name: 'vmsingle-storage' } }),
+      ],
+    });
+    expect(await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 })).toHaveLength(0);
+    expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it('keeps every Released copy while no database instance volume is Bound (the Cluster deleted by mistake)', async () => {
+    const k8s = makeReaperK8s({ pvs: [makePv({ name: 'pv-only-copy', releasedMin: 600 })], noLiveDatabase: true });
+    expect(await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 })).toHaveLength(0);
+    expect(k8s.core.deletePersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it('reaps the CNPG claims of a PITR cluster and a WAL volume', async () => {
+    const k8s = makeReaperK8s({
+      pvs: [
+        makePv({ name: 'pv-pitr', claimRef: { namespace: 'platform', name: 'system-db-pitr-1792318559000-1' } }),
+        makePv({ name: 'pv-wal', claimRef: { namespace: 'platform', name: 'system-db-2-wal' } }),
+      ],
+    });
+    expect(await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 })).toHaveLength(2);
   });
 
   it('ignores Released PVs on non-Longhorn storage classes', async () => {
@@ -262,8 +325,8 @@ describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', ()
   it('reaps orphan Released PVs + their Longhorn volumes', async () => {
     const k8s = makeReaperK8s({
       pvs: [
-        makePv({ name: 'pv-orphan-1', ageMin: 120, volumeName: 'pvc-aaa' }),
-        makePv({ name: 'pv-orphan-2', ageMin: 180, volumeName: 'pvc-bbb' }),
+        makePv({ name: 'pv-orphan-1', releasedMin: 120, volumeHandle: 'pvc-aaa' }),
+        makePv({ name: 'pv-orphan-2', releasedMin: 180, volumeHandle: 'pvc-bbb' }),
       ],
     });
     const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
@@ -273,6 +336,9 @@ describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', ()
     expect(r[0].volumeName).toBe('pvc-aaa');
     expect(k8s.core.deletePersistentVolume).toHaveBeenCalledTimes(2);
     expect(k8s.custom!.deleteNamespacedCustomObject).toHaveBeenCalledTimes(2);
+    expect(k8s.custom!.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({
+      group: 'longhorn.io', plural: 'volumes', namespace: 'longhorn-system', name: 'pvc-aaa',
+    }));
   });
 
   it('continues to next PV when delete fails (best-effort)', async () => {
@@ -286,17 +352,16 @@ describe('Released-PV reaper — reapReleasedPvsOnce (Task #103 2026-05-23)', ()
     expect(r[1].pvDeleteOk).toBe(false);
   });
 
-  it('skips PVs without volumeName from the Longhorn delete', async () => {
+  it('deletes no Longhorn volume for a PV that is not a Longhorn CSI volume', async () => {
     const k8s = makeReaperK8s({
-      pvs: [{
-        metadata: { name: 'pv-novol', creationTimestamp: new Date(Date.now() - 7200_000).toISOString() },
-        spec: { storageClassName: 'longhorn-system-local', claimRef: { namespace: 'platform', name: 'gone' } },
-        status: { phase: 'Released' },
-      }],
+      pvs: [
+        makePv({ name: 'pv-novol', volumeHandle: null }),
+        makePv({ name: 'pv-other-csi', csiDriver: 'other.csi.example.test' }),
+      ],
     });
     const r = await reapReleasedPvsOnce({ db: fakeDb, k8s, releasedPvAgeMinutes: 60 });
-    expect(r).toHaveLength(1);
-    expect(r[0].volumeName).toBeNull();
+    expect(r).toHaveLength(2);
+    expect(r.map((x) => x.volumeName)).toEqual([null, null]);
     expect(k8s.custom!.deleteNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });

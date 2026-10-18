@@ -16,7 +16,7 @@ function pv(name: string, opts: {
       capacity: { storage: opts.storage ?? '30Gi' },
       storageClassName: 'longhorn-tenant',
     },
-    status: { phase: opts.phase ?? 'Released', lastTransitionTime: opts.released ?? '2026-06-16T10:00:00Z' },
+    status: { phase: opts.phase ?? 'Released', lastPhaseTransitionTime: opts.released ?? '2026-06-16T10:00:00Z' },
   };
 }
 
@@ -63,6 +63,8 @@ describe('classifyRetainedVolumes', () => {
     expect(out[0].pvName).toBe('pvc-old');
     expect(out[0].longhornVolumeName).toBe('pvc-old');
     expect(out[0].sizeBytes).toBe(30 * 1024 ** 3);
+    // The release time is the PV's lastPhaseTransitionTime — it read a field PVs do not have and was always null.
+    expect(out[0].releasedAt).toBe('2026-06-16T10:00:00.000Z');
     expect(out[0].snapshots).toHaveLength(1);
     expect(out[0].snapshots[0].name).toBe('snapshot-aaa');
     expect(out[0].snapshots[0].sizeBytes).toBe(1048576);

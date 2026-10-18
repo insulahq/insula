@@ -1351,7 +1351,26 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       const reasons: string[] = [];
       if (systemTier === 'ha') {
         if (!autoFailoverEnabled) reasons.push('automatic failover is disabled');
-        if (candidates.length === 0) reasons.push('no secondary or tertiary node is configured');
+        if (candidates.length === 0) {
+          reasons.push('no secondary or tertiary node is configured');
+        } else {
+          // Configured is not enough: a cordoned or NotReady target cannot
+          // take the stack (production — the only target was
+          // cordoned for a drain and nothing said so until mail was down).
+          const { usableFailoverTargets } = await import('./failover-targets.js');
+          const cfg = app.config as Record<string, unknown>;
+          const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+          try {
+            const nodes = await createK8sClients(cfg.KUBECONFIG_PATH as string | undefined).core.listNode();
+            const activeNode = settings?.activeNode ?? settings?.primaryNode ?? null;
+            const { usable, skipped } = usableFailoverTargets(candidates, activeNode, nodes.items ?? []);
+            if (usable.length === 0) {
+              reasons.push(`no failover node can take mail right now: ${skipped.join(', ') || 'only the node mail runs on is configured'}`);
+            }
+          } catch (err) {
+            app.log.warn({ err: (err as Error).message }, 'mail failover-readiness: node list failed; target check skipped');
+          }
+        }
       }
 
       return success({

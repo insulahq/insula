@@ -15,6 +15,7 @@ import type { ClusterNodeResponse, DrainImpact } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import NodeName from '@/components/nodes/NodeName';
+import MailRoleNotice from '@/components/nodes/MailRoleNotice';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 
 /**
@@ -525,6 +526,9 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   </ul>
                 </ImpactSection>
               )}
+
+              {/* ─── Mail: a cordon takes this node out of mail's failover ─── */}
+              <MailRoleNotice mailRole={impact.mailRole} nodeName={node.name} />
 
               {/* ─── System pods (info only) ─── */}
               <details className="rounded-lg border border-gray-200 dark:border-gray-700">

@@ -269,17 +269,25 @@ spec:
             items:
               - key: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
                 path: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
-      affinity:
-        # Spread the 2 replicas across nodes so a single-node failure
-        # doesn't take both WAF instances down.
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: modsec-crs
+      # One replica per server, HARD. The preferred podAntiAffinity this replaces
+      # let both WAF replicas land on one server whenever only one could take a
+      # pod (production: a server powered off while another was
+      # cordoned) — and nothing moved them back. DoNotSchedule counts a down or
+      # cordoned server as a place the pod belongs, so a replacement WAITS for
+      # it instead of doubling up (one replica keeps serving), and lands back
+      # there when it returns. Safe because system-node-affinity pins this to
+      # servers, which it tolerates; a single server is a single domain, so
+      # both replicas still run there. matchLabelKeys counts per revision, so a
+      # rollout never waits on its own old pods.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: modsec-crs
 ---
 apiVersion: v1
 kind: Service

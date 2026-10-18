@@ -388,6 +388,40 @@ describe('emitEvent', () => {
     });
   });
 
+  // A cron job with "inform the tenant's admins" off, mailing only the address
+  // set on it. Production: the admins still got the panel notice and
+  // their own email for every failure.
+  it('externalOnly: the scope\'s users get nothing on any channel, the chosen address still gets the email', async () => {
+    getCategoryMock.mockResolvedValue({ ...baseCategory, id: 'tasks.scheduled_failure', isMandatory: false });
+    resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);
+    getActiveTemplateMock.mockResolvedValue({ ...baseTemplate, categoryId: 'tasks.scheduled_failure' });
+    isAllowedMock.mockResolvedValue(true);
+    const r = await emitEvent(mockDb({ userEmail: 'admin@example.test' }), {
+      categoryId: 'tasks.scheduled_failure',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+      externalRecipients: ['ops@example.test'],
+      externalRecipientsOptedIn: true,
+      externalOnly: true,
+    });
+    expect(r.perChannelStatuses.filter((st) => st.userId !== null)).toEqual([]);
+    expect(r.perChannelStatuses).toEqual([expect.objectContaining({ userId: null, channel: 'email', status: 'queued' })]);
+  });
+
+  it('externalOnly with no address reaches nobody', async () => {
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    const r = await emitEvent(mockDb(), {
+      categoryId: 'tasks.scheduled_failure',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      externalOnly: true,
+    });
+    expect(r.deliveryCount).toBe(0);
+    expect(r.perChannelStatuses).toEqual([]);
+  });
+
   it('suppresses tenant recipients when flagged', async () => {
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1', 'u2']);

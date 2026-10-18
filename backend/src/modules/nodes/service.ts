@@ -11,6 +11,7 @@ import { invalidateNodeLabels } from './labels.js';
 import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './postgres-cover.js';
 import { isUsableCopy } from './replica-copy.js';
 import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
+import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -665,6 +666,8 @@ export async function buildDrainImpact(
   }>;
   /** False when a Longhorn or CNPG read failed — the storage lists may be incomplete. */
   storageFactsComplete: boolean;
+  /** This node's part in mail (runs here / failover target), or null — see mail-role.ts. */
+  mailRole: MailRoleOnNode | null;
 }> {
   // 1) Cordon state
   let alreadyCordoned = false;
@@ -1120,6 +1123,10 @@ export async function buildDrainImpact(
   const pinnedTenants = Array.from(byTenant.values()).sort((a, b) =>
     a.tenantName.localeCompare(b.tenantName));
 
+  // 8) Mail: a cordon keeps the stack running here but takes this node out
+  //    of its failover — the modal says what that leaves.
+  const mailRole = await loadMailRoleOnNode(k8s, db, name);
+
   return {
     nodeName: name,
     alreadyCordoned,
@@ -1128,6 +1135,7 @@ export async function buildDrainImpact(
     pinnedTenants,
     longhornReplicas,
     storageFactsComplete,
+    mailRole,
   };
 }
 

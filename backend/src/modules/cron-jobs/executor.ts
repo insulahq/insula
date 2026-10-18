@@ -36,6 +36,14 @@ export interface CronRunResult {
   readonly responseCode: number | null;
   readonly output: string | null;
   readonly durationMs: number;
+  /** Where a deployment command ran — so a failure can be checked for a platform interruption. */
+  readonly ranIn?: RanIn;
+}
+
+export interface RanIn {
+  readonly namespace: string;
+  readonly pod: string;
+  readonly node: string | null;
 }
 
 export interface PodSummary {
@@ -43,6 +51,7 @@ export interface PodSummary {
   readonly phase: string;
   readonly component: string | null;
   readonly containers: readonly string[];
+  readonly nodeName?: string | null;
 }
 
 export interface ExecResult {
@@ -65,6 +74,36 @@ export interface ClusterTransport {
     command: readonly string[],
     timeoutMs: number,
   ): Promise<ExecResult>;
+  /**
+   * Why the platform stopped the pod a command ran in — or null when it did
+   * not (or that cannot be told). See platformInterruption().
+   */
+  podDisruption?(ranIn: RanIn): Promise<string | null>;
+}
+
+export interface DisruptionPod {
+  readonly metadata?: { readonly deletionTimestamp?: string | Date };
+  readonly status?: {
+    readonly phase?: string;
+    readonly reason?: string;
+    readonly conditions?: ReadonlyArray<{ readonly type?: string; readonly status?: string; readonly reason?: string }>;
+  };
+}
+
+/**
+ * Pure: the platform's own marks on a pod it stopped — or null. A command
+ * killed with its pod is not a failure of the command. On production
+ * a node was powered off, its kubelet stopped every pod, Moodle's cron exited 1
+ * mid-run, and the tenant was emailed that THEIR scheduled task had failed.
+ */
+export function podDisruptionReason(pod: DisruptionPod): string | null {
+  const disruption = (pod.status?.conditions ?? []).find((c) => c.type === 'DisruptionTarget' && c.status === 'True');
+  if (disruption?.reason === 'TerminationByKubelet' || pod.status?.reason === 'Terminated' || pod.status?.reason === 'NodeShutdown') {
+    return 'the server it ran on was shutting down';
+  }
+  if (disruption) return `the platform stopped the pod it ran in (${disruption.reason ?? 'disruption'})`;
+  if (pod.metadata?.deletionTimestamp) return 'the pod it ran in was being replaced';
+  return null;
 }
 
 export interface CronExecutorDeps {
@@ -105,7 +144,7 @@ export function runTimeoutMs(
   return byType * 1000;
 }
 
-function clip(text: string): string | null {
+export function clip(text: string): string | null {
   const trimmed = text.trim();
   if (trimmed === '') return null;
   if (trimmed.length <= MAX_OUTPUT_CHARS) return trimmed;
@@ -156,7 +195,29 @@ function k8sTransport(kubeconfigPath?: string): ClusterTransport {
         phase: p.status?.phase ?? 'Unknown',
         component: p.metadata?.labels?.component ?? null,
         containers: (p.spec?.containers ?? []).map((c) => c.name ?? '').filter(Boolean),
+        nodeName: (p.spec as { nodeName?: string } | undefined)?.nodeName ?? null,
       }));
+    },
+
+    async podDisruption(ranIn) {
+      const { CoreV1Api } = await import('@kubernetes/client-node');
+      const core = loadKubeConfig(kubeconfigPath).makeApiClient(CoreV1Api);
+      try {
+        const why = podDisruptionReason(await core.readNamespacedPod({ name: ranIn.pod, namespace: ranIn.namespace }) as DisruptionPod);
+        if (why) return why;
+      } catch (err) {
+        const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+        // Gone already: it was stopped and removed. Anything else: cannot tell — report as usual.
+        return code === 404 ? 'the pod it ran in was stopped and removed' : null;
+      }
+      if (!ranIn.node) return null;
+      try {
+        const node = await core.readNode({ name: ranIn.node }) as { status?: { conditions?: Array<{ type?: string; status?: string }> } };
+        const ready = (node.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+        return ready ? null : `the server it ran on (${ranIn.node}) went down`;
+      } catch {
+        return null;
+      }
     },
 
     async exec(namespace, pod, container, command, timeoutMs) {
@@ -298,7 +359,7 @@ async function runDeploymentJob(
   db: Database,
   job: CronJobRow,
   deps: CronExecutorDeps,
-): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null }> {
+): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null; ranIn?: RanIn }> {
   if (!job.command || job.command.trim() === '') {
     return { status: 'failed', responseCode: null, output: 'no command configured for this cron job' };
   }
@@ -331,6 +392,7 @@ async function runDeploymentJob(
   if ('error' in chosen) return { status: 'failed', responseCode: null, output: chosen.error };
 
   const container = selectContainer(chosen.pod, target.entryCode);
+  const ranIn: RanIn = { namespace: target.namespace, pod: chosen.pod.name, node: chosen.pod.nodeName ?? null };
 
   try {
     const result = await transport.exec(
@@ -348,13 +410,33 @@ async function runDeploymentJob(
       status: result.exitCode === 0 ? 'success' : 'failed',
       responseCode: result.exitCode,
       output: clip(combined) ?? (result.exitCode === 0 ? 'command completed with no output' : `command exited ${result.exitCode}`),
+      ranIn,
     };
   } catch (err) {
     return {
       status: 'failed',
       responseCode: null,
       output: clip(err instanceof Error ? err.message : String(err)) ?? 'command execution failed',
+      ranIn,
     };
+  }
+}
+
+/**
+ * Was this failed run cut short by the platform rather than by the command?
+ * Null when not, when the transport cannot tell, or when the check fails —
+ * then the failure is reported as usual.
+ */
+export async function platformInterruption(
+  ranIn: RanIn,
+  deps: Pick<CronExecutorDeps, 'kubeconfigPath' | 'transport'> = {},
+): Promise<string | null> {
+  const transport = deps.transport ?? k8sTransport(deps.kubeconfigPath);
+  if (!transport.podDisruption) return null;
+  try {
+    return await transport.podDisruption(ranIn);
+  } catch {
+    return null;
   }
 }
 

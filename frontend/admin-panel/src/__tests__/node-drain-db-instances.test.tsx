@@ -43,6 +43,7 @@ function makeImpact(longhornReplicas: Replica[]): DrainImpact {
     pinnedTenants: [],
     longhornReplicas,
     storageFactsComplete: true,
+    mailRole: null,
   } as DrainImpact;
 }
 

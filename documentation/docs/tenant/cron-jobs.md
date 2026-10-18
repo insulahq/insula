@@ -59,7 +59,7 @@ enabled, and the result of the last run.
       command. Raise it for an application cron that legitimately runs for
       minutes — a Moodle site rebuilding its search index or running a course
       backup, for instance. The most you can set is one hour.
-5. Optionally tick **Email when a scheduled run fails** — see
+5. Optionally change who is told when a run fails — see
    [Email when a task fails](#email-when-a-task-fails) below.
 6. Click **Add**. New tasks start **enabled**.
 
@@ -132,21 +132,33 @@ interrupted.
 
 ## Email when a task fails
 
-Every failed scheduled run already appears in your panel's notifications, and
-your account's administrators also get it by email if their own notification
-settings say so. A task can additionally **email specific addresses** when it
-fails — useful when the person who has to fix it rarely opens the panel. This
-is **off** for every task until you switch it on.
+Each task decides who hears about a failed scheduled run:
+
+- **Inform this account's admins when a scheduled run fails** — on for every
+  task until you switch it off. Your account's administrators get the failure
+  in the panel's notifications, and by email if their own notification settings
+  say so. **Untick it and they are not told at all** — no panel notice, no
+  email, no dashboard card. The task list still shows how its last run went.
+- **Also email when a scheduled run fails** — off until you switch it on. Useful
+  when the person who has to fix it rarely opens the panel:
 
 1. Open the task's form (**Add Cron Job**, or the **pencil** on a saved task).
-2. Tick **Email when a scheduled run fails**.
-3. Choose who gets it — at least one of:
-    - **Tenant email** — your account's primary email address. The form shows
-      which address that is. It is looked up when the email is sent, so if your
-      account's primary email changes, the task follows it.
-    - **Additional address** — any one other address, for example a
-      developer or an operations mailbox.
+2. Tick **Also email when a scheduled run fails**.
+3. It goes to:
+    - your account's **primary email address**, when *Inform this account's
+      admins* is ticked. The form shows which address that is. It is looked up
+      when the email is sent, so if your account's primary email changes, the
+      task follows it;
+    - and the **Additional address**, if you enter one — for example a
+      developer or an operations mailbox. With the admins switched off, this
+      address is the only one told.
 4. Save.
+
+!!! note "A run the platform cut short is not your failure"
+    If a run stops because the platform stopped the application it was running
+    in — its server restarting, or the application being replaced — nobody is
+    told it failed. The run is still recorded, and its output starts with
+    *Interrupted by the platform* and the reason.
 
 The email names the task, your account, the schedule and its timezone, the
 reason it failed (the HTTP status or exit code, and the start of the output),
@@ -165,8 +177,9 @@ when it happened, and a link to this page.
       administrators who already got this failure by email, they get it once,
       not twice.
 
-To stop the emails, untick **Email when a scheduled run fails** and save. The
-addresses you entered are kept, so switching it back on later restores them.
+To stop the emails, untick **Also email when a scheduled run fails** and save.
+The addresses you entered are kept, so switching it back on later restores
+them.
 
 Tasks that email on failure show a small **envelope** next to their name;
 hover it to see who is emailed.

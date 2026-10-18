@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { X, Save, Loader2, AlertCircle, CheckCircle, ShieldAlert } from 'lucide-react';
-import { useUpdateClusterNode } from '@/hooks/use-cluster-nodes';
+import { useDrainImpact, useUpdateClusterNode } from '@/hooks/use-cluster-nodes';
+import MailRoleNotice from '@/components/nodes/MailRoleNotice';
 import type { ClusterNodeResponse, NodeIngressMode } from '@insula/api-contracts';
 
 const INPUT_CLASS =
@@ -56,6 +57,14 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
   const [force, setForce] = useState(false);
 
   const isDemotion = node.role === 'server' && role === 'worker';
+  // Cordoning keeps everything running but stops this node taking any NEW
+  // pod — including mail failing over to it, or a database instance being
+  // rebuilt here. Read what that touches only once the operator switches it on.
+  const cordoning = cordoned && !node.cordoned;
+  const cordonImpact = useDrainImpact(node.name, cordoning).data?.data;
+  const dbInstancesHere = (cordonImpact?.longhornReplicas ?? [])
+    .filter((r) => r.isLastReplica && r.postgresInstance)
+    .map((r) => `${r.namespace}/${r.postgresInstance?.instance}`);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -211,6 +220,20 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
               />
             </button>
           </div>
+          {cordoning && cordonImpact && (
+            <div className="space-y-2" data-testid="cordon-impact">
+              <MailRoleNotice mailRole={cordonImpact.mailRole} nodeName={node.name} />
+              {dbInstancesHere.length > 0 && (
+                <div
+                  className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300"
+                  data-testid="cordon-impact-db"
+                >
+                  Database instance {dbInstancesHere.join(', ')} keeps running here. If it has to be rebuilt
+                  while this node is cordoned, it cannot come back to this node until it is uncordoned.
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-ingress-mode">
