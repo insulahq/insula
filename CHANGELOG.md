@@ -24,6 +24,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   at the Delete step — marked *leftover, not in use* or *not mounted* — and Delete stays disabled
   until "Delete them with the node" is ticked (`NODE_DELETE_HOLDS_LAST_COPY`; API body
   `forceLastReplica`).
+- **The node card's Delete no longer deletes past the dialog.** On a drained node the card offered
+  its own Delete, which called the API directly while the dialog said Delete was disabled (a
+  database instance's only copy on the node). The server refused it, but the button should not have
+  been offered: it now opens the dialog at its Delete step, with every check shown.
 
 ## [2026.10.12] - 2026-10-18
 

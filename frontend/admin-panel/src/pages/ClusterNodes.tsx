@@ -353,14 +353,6 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
   const triads = nodeTriads(node, usage);
   const subsystemBad = isSubsystemUnhealthy(subsystem);
 
-  const handleDelete = () => {
-    if (!confirm(`Delete node ${confirmName} from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
-    setDeleteError(null);
-    deleteNodeMutation.mutate({}, {
-      onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Delete failed'),
-    });
-  };
-
   // Orphans have no live k8s node — drain/edit would hit NODE_NOT_FOUND
   // on the K8s readNode() call. Skip straight to the inventory cleanup,
   // which the backend already handles idempotently (404 from k8s is
@@ -630,15 +622,18 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
                 <AlertTriangle size={14} /> Drain Tenants
               </button>
               {node.drained && (
+                // Opens the same dialog, at its Delete step — with every check it
+                // shows (database instance here, volumes whose only copy is here).
+                // A card button that deleted directly offered a Delete the dialog
+                // was withholding.
                 <button
                   type="button"
-                  onClick={handleDelete}
-                  disabled={deleteNodeMutation.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
-                  data-testid={`delete-node-${node.name}-button`}
-                  title="Remove the drained node from the cluster (kubectl delete node + DB row)"
+                  onClick={() => setDrainOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
+                  data-testid={`delete-node-${node.name}-open-button`}
+                  title="Remove the node from the cluster — opens the dialog with what still has to move first"
                 >
-                  <Trash2 size={14} /> {deleteNodeMutation.isPending ? 'Deleting…' : 'Delete'}
+                  <Trash2 size={14} /> Delete
                 </button>
               )}
             </>
