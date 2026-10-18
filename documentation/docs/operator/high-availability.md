@@ -126,8 +126,8 @@ the middle of a Kubernetes upgrade — everything keeps its HA size: the
 database instance, panel replicas and volume copies that lived on it wait for
 it to come back, and nothing is scaled down only to be rebuilt minutes later.
 
-HA shrinks only when a server **leaves** the cluster: drain it, then **Delete**
-it on its node card ([Nodes & cluster](nodes-and-cluster.md#removing-a-node)).
+HA shrinks only when a server **leaves** the cluster: drain its tenants, then
+**Delete** it on its node card ([Nodes & cluster](nodes-and-cluster.md#removing-a-node)).
 A server that is gone for good therefore leaves its replicas waiting until you
 remove it; the offline-node banner tells you which one.
 

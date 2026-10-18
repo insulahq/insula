@@ -53,9 +53,12 @@ The **Edit** button on a node card opens a modal where you set:
 
 ### Draining and removing a node
 
-Each card has drain/delete actions (via the drain-delete modal). Deleting a
-node removes it from the cluster (kubectl delete + DB row) **without**
-touching the host itself — the machine keeps running.
+Each card has **Drain Tenants** and **Delete** (via the drain-delete modal).
+Draining moves the node's tenants off and keeps new ones away; the platform's
+own services keep running there. Deleting a node then moves those system
+services off and removes it from the cluster (kubectl delete + DB row)
+**without** touching the host itself — the machine keeps running. See
+[Nodes & cluster](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance).
 
 !!! warning "The last node is protected"
     The platform refuses to drain the only schedulable, tenant-capable

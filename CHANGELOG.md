@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **"Drain Node" is now "Drain Tenants": it moves tenants and nothing else, and never cordons a
+  server.** A cordon stops every new pod, system ones included, so a drained server could no
+  longer take mail in a failover, have a database instance rebuilt on it or start a system
+  replica that had to move — seen on production, where a server cordoned by a drain was mail's
+  only failover target when the mail node went down. The drain now keeps new tenants off with
+  **Can host tenant workloads** off (the `insula.host/server-only` `NoSchedule` taint) — a
+  checkbox in the dialog, on by default — which tenant pods do not tolerate and every system
+  workload does; a worker, which runs no system workload, is still cordoned. The node is tagged
+  **Tenants drained** once no tenant pod is left, and turning the setting back on (or an
+  uncordon) clears it. **Delete** now moves the system pods: it cordons the node, evicts every
+  non-DaemonSet pod respecting disruption budgets (`NODE_DELETE_EVICTION_BLOCKED` when one
+  refuses — node left cordoned, nothing deleted), waits for them to go, then deletes it. Delete
+  is refused while mail runs on the node (`NODE_DELETE_RUNS_MAIL`) and before its tenants are
+  drained (`NODE_DELETE_NOT_DRAINED`, replacing `NODE_DELETE_NOT_CORDONED`).
+  **Upgrade note:** host-migration `2026.10.12/0002` lets Longhorn's node components, the CNPG
+  operator and snapshot-controller tolerate the taint — Longhorn's `taint-toleration` setting
+  gains the entry (operator entries kept) and **Longhorn's DaemonSets restart once during the
+  upgrade** (volumes stay attached); the platform's own system Deployments carry it in their
+  manifests, bootstrap on fresh installs. Until a cluster has it, switching a server's tenants
+  off is refused (`NODE_TENANT_TAINT_UNSAFE`) rather than leaving a rebooted server without its
+  storage.
+
 ### Fixed
 
 - **Mail no longer fails over to a cordoned server.** Automatic failover walked the secondary
@@ -21,8 +45,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   cordoned for a drain when the mail node was powered off, and mail stayed down for the whole
   outage. Cordoned nodes are now skipped, a migration to one is refused before the PVC swap (even in
   recovery mode), and the "Mail cannot fail over" banner also fires when every configured failover
-  node is cordoned or down. The drain modal and the node's **Cordon** switch say what cordoning
-  that node leaves mail (and which database instances keep their only copy there).
+  node is cordoned or down. The node's **Cordon** switch says what cordoning that node leaves
+  mail (and which database instances keep their only copy there); the drain dialog says what
+  deleting it does.
 - **The Released-volume reaper deleted a PV seconds after its release, and never deleted its
   Longhorn volume.** It measured age from the PV's creation, so a two-week-old system-db PV was
   reaped 30 s after CNPG let it go — defeating the Retain policy that is the safety net — and it read

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ClusterNodeResponse, DrainImpact } from '@insula/api-contracts';
@@ -11,10 +11,11 @@ import NodeDrainDeleteModal from '../components/NodeDrainDeleteModal';
 // database instance, though the drain never moves that pod.
 
 let impact: DrainImpact;
+const drainMutate = vi.fn(async (_input: unknown) => ({}));
 let clusterNodes: Array<{ name: string; canHostTenantWorkloads: boolean }> = [];
 vi.mock('@/hooks/use-cluster-nodes', () => ({
   useDrainImpact: () => ({ data: { data: impact }, isLoading: false, error: null, refetch: vi.fn() }),
-  useDrainNode: () => ({ mutateAsync: vi.fn(), isPending: false, isSuccess: false, error: null, data: undefined }),
+  useDrainNode: () => ({ mutateAsync: drainMutate, isPending: false, isSuccess: false, error: null, data: undefined }),
   useDeleteNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
   useClusterNodes: () => ({ data: { data: clusterNodes } }),
 }));
@@ -44,6 +45,8 @@ function makeImpact(longhornReplicas: Replica[]): DrainImpact {
     longhornReplicas,
     storageFactsComplete: true,
     mailRole: null,
+    tenantsDrained: false,
+    blocksNewTenants: false,
   } as DrainImpact;
 }
 
@@ -52,7 +55,7 @@ function renderModal() {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <NodeDrainDeleteModal node={{ name: 's2' } as ClusterNodeResponse} onClose={vi.fn()} />
+        <NodeDrainDeleteModal node={{ name: 's2', role: 'server' } as ClusterNodeResponse} onClose={vi.fn()} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -126,21 +129,21 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
         pvcName: 'system-db-2',
         postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-2', primary: false, coveredBy: ['system-db-1'] },
       })]),
-      alreadyCordoned: true,
+      tenantsDrained: true,
     };
     renderModal();
 
     expect(screen.getByTestId('delete-blocked-database').textContent).toContain('platform/system-db-2');
     expect((screen.getByTestId('delete-node-s2-button') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByText(/Node is fully drained/)).toBeNull();
+    expect(screen.queryByText(/Tenants drained — /)).toBeNull();
   });
 
   it('a drained node with no database instance offers Delete as before', () => {
-    impact = { ...makeImpact([]), alreadyCordoned: true };
+    impact = { ...makeImpact([]), tenantsDrained: true };
     renderModal();
 
     expect(screen.queryByTestId('delete-blocked-database')).toBeNull();
-    expect(screen.getByText(/Node is fully drained/)).toBeTruthy();
+    expect(screen.getByText(/Tenants drained — /)).toBeTruthy();
     expect((screen.getByTestId('delete-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -191,3 +194,29 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
     expect(screen.queryByText('tenant-a/tenant-a-storage')).toBeNull();
   });
 });
+
+// The drain moves tenants only. A server stays in service for the platform;
+// the dialog asks whether to keep new tenants off (ticked by default) and
+// sends that choice; Delete is what moves the system services.
+describe('NodeDrainDeleteModal — Drain tenants', () => {
+  it('asks to stop new tenants (ticked), sends it, and says system services are not affected', async () => {
+    impact = makeImpact([]);
+    renderModal();
+    const box = screen.getByTestId('drain-block-new-tenants') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.getByText(/System services are not affected/)).toBeTruthy();
+    expect(screen.queryByText(/cordon the node first/i)).toBeNull();
+    fireEvent.click(box);
+    fireEvent.click(screen.getByTestId('drain-node-s2-button'));
+    await waitFor(() => expect(drainMutate).toHaveBeenCalled());
+    expect(drainMutate.mock.calls.at(-1)?.[0]).toMatchObject({ blockNewTenants: false });
+  });
+
+  it('a node that already keeps tenants off says so instead of asking', () => {
+    impact = { ...makeImpact([]), blocksNewTenants: true };
+    renderModal();
+    expect(screen.queryByTestId('drain-block-new-tenants')).toBeNull();
+    expect(screen.getByTestId('drain-already-blocks-tenants')).toBeTruthy();
+  });
+});
+

@@ -31,7 +31,7 @@ Each node is a card. The header tells you, at a glance:
   stale), red (> 30 min, likely dead).
 - **Committed CPU / Mem / Disk dots + pod count** — how much of each the node
   has committed (green < 75 %, amber ≥ 75 %, red ≥ 90 %).
-- **Cordoned / Drained / Orphaned** tags when relevant, and a **severity
+- **Cordoned / Tenants drained / Orphaned** tags when relevant, and a **severity
   badge** (warning / critical) when node-health detects a problem.
 
 Expand a card for the node's CPU, memory and disk, its pods, taints, operator
@@ -60,7 +60,7 @@ If the live figures cannot be read, the card says so and falls back to the
 node inventory: committed and total stay right, in use and disk do not.
 
 The card actions are **Edit**, **Terminal** (super_admin, Ready nodes only),
-**Drain Node**, and — once drained — **Delete**.
+**Drain Tenants**, and — once its tenants are drained — **Delete**.
 
 !!! tip "The reconciler is the source of truth"
     The page is driven by a backend reconciler that re-reads the cluster every
@@ -106,8 +106,18 @@ and
 
 ## Cordon, drain, and maintenance
 
-Before you reboot, patch, or retire a node, **drain** it so its workloads move
-elsewhere. From the node card click **Drain Node**. A modal computes the impact:
+A server does two jobs: it hosts tenants and it runs the platform (the
+database, mail, the operators, Longhorn). The node actions keep them apart:
+
+| Action | Tenants | System services |
+|---|---|---|
+| **Can host tenant workloads** off | No new tenant lands here | Keep running **and keep starting** here |
+| **Drain Tenants** | Moved to other nodes; no new ones land here | Untouched — the platform keeps using the server |
+| **Cordon** | No new pod lands here | No new pod lands here either — a database rebuild or a mail failover cannot use the node |
+| **Delete** | Must already be gone | Moved off, then the node is removed |
+
+Before you reboot, patch, or retire a node, move its tenants off. From the
+node card click **Drain Tenants**. A modal computes the impact:
 
 - **Pinned tenants** — tenants with a workload or volume on this node. Pick one
   re-pin target per tenant (or **Auto** to clear the pin). The orchestrator
@@ -124,30 +134,46 @@ elsewhere. From the node card click **Drain Node**. A modal computes the impact:
   node keeps that node by default. Either way **Delete** unlocks only once the
   copies have left the node.
 - **Non-system pods** — what gets evicted; controllers recreate them elsewhere.
-- **Mail** — the drain never moves mail, but a cordoned node cannot take it in
-  a failover. If this node runs mail, the modal says where mail would fail over
-  to; if it is mail's failover target, it says what is left once it is
-  cordoned — and warns, with a link to the mail placement, when that is
-  nothing (it is the only failover node, often holding the only standby copy).
-  The **Cordon** switch on the node's edit form shows the same notice, and the
-  database instances whose only copy is on the node, when you switch it on.
+- **Keep new tenants off this node** (on by default) — on a server this turns
+  **Can host tenant workloads** off: a `NoSchedule` taint that tenant pods do
+  not tolerate and every system service does. The server is **not cordoned**,
+  so mail can still fail over to it, a database instance can still be rebuilt
+  on it, and a system replica that has to move can still land there. On a
+  worker, which runs no system services, the drain cordons it. Turn the
+  setting back on (node card → **Edit**) when the node may take tenants again.
+- **Mail** — the drain never moves mail, and a drained server stays a mail
+  failover target. If mail runs on the node, the modal says **Delete** is
+  refused until mail is moved; if the node is a failover target, it says where
+  mail fails over once the node is deleted — and warns, with a link to the mail
+  placement, when that is nowhere. The **Cordon** switch on the node's edit
+  form says what a cordon leaves mail, and which database instances keep their
+  only copy on the node, when you switch it on.
 - **Last-replica risk** — if this node holds the *only* healthy replica of a
   platform volume (mail, for example), the drain is **refused** unless you tick
   **"I accept data risk — force drain even with last replicas here."**
-- **Database instances** — in HA mode each PostgreSQL instance keeps its one
-  copy on its own node; the other instances hold the same data. They are listed
-  for information and do not block the drain, which leaves them running where
-  they are; if the node then goes down, a replica catches up once the node is
-  back **and uncordoned** (its copy lives only there). A replica counts as
-  covered while the primary is up on another server. The **primary** counts as covered while it is streaming to a standby
-  on another server — if its node goes down, PostgreSQL fails over to that
-  standby and writes pause briefly. A server that is itself cordoned never
-  counts as cover. An instance nothing covers appears under *Last-replica
-  risk*.
+- **System pods the drain leaves running** — database instances and the other
+  platform services stay where they are; **Delete** moves them. In HA mode each
+  PostgreSQL instance keeps its one copy on its own node; the other instances
+  hold the same data. A replica counts as covered while the primary is up on
+  another server. The **primary** counts as covered while it is streaming to a
+  standby on another server — if its node goes down, PostgreSQL fails over to
+  that standby and writes pause briefly. A server that is itself cordoned
+  never counts as cover. An instance nothing covers appears under
+  *Last-replica risk*.
 
-Click **Apply re-pin & drain**. When the node is fully drained — cordoned, no
-tenant pods, no pinned tenants, no attached replicas — a green banner appears
-and **Delete** unlocks.
+Click **Drain tenants**. When no tenant pod is left on the node it is tagged
+**Tenants drained** and **Delete** unlocks.
+
+!!! note "Longhorn has to tolerate the taint first"
+    Longhorn's per-node components (CSI plugin, engine image, instance
+    manager) are re-created when a server reboots. On a cluster installed
+    before 2026.10.12 they did not tolerate the taint, so a tainted server
+    would come back without its storage. The 2026.10.12 upgrade adds the
+    toleration (host-migration `0002-system-tolerates-tenant-drain-taint`;
+    Longhorn's node components restart once, volumes stay attached). Until
+    then, turning **Can host tenant workloads** off on a server — directly or
+    through the drain — is refused with `NODE_TENANT_TAINT_UNSAFE` and nothing
+    changes.
 
 !!! danger "You cannot drain your last tenant-capable node"
     If a node is the only schedulable node that can host tenant workloads,
@@ -155,8 +181,9 @@ and **Delete** unlocks.
     draining it would leave every tenant pod Pending with nowhere to go. Add
     capacity first.
 
-To put a node back into service after maintenance, the platform un-cordons it
-when appropriate; you can also `kubectl uncordon <node>` directly.
+To put a node back into service after maintenance, turn **Can host tenant
+workloads** back on (or, for a worker, switch **Cordon** off) on the node's
+edit form. Either clears the **Tenants drained** mark.
 
 !!! info "Two replicas, two servers"
     In HA mode the platform's two-replica components — the WAF and the
@@ -189,9 +216,9 @@ detached cleanly instead of being cut away mid-write.
     To confirm it is armed, run `systemd-inhibit --list` on the host and look
     for a `kubelet … Kubelet needs time to handle node shutdown … delay` entry.
 
-Draining is still the right move before *planned* maintenance — it moves
-workloads off the node instead of just stopping them politely. Draining only
-moves tenants; platform services stay where they are, and HA keeps its size
+Draining tenants is still the right move before *planned* maintenance — it
+moves them off the node instead of just stopping them politely. Platform
+services stay where they are, and HA keeps its size
 while the node is down (see [High availability → When a server is down](high-availability.md#when-a-server-is-down)).
 
 ## When a node goes offline
@@ -338,12 +365,20 @@ kubelet not reporting* instead.
 
 ## Removing a node
 
-1. **Drain** it (above) and wait for tenants to reschedule.
-2. If the drained node still holds a **database instance** (HA mode), move it
-   first — see below. **Delete** stays disabled until then.
-3. Click **Delete** on the card → **Confirm Delete**. This runs
-   `kubectl delete node` and removes the inventory row. **The host itself keeps
-   running** — Insula does not power it off.
+1. **Drain Tenants** (above) and wait for the tenants to reschedule.
+2. If the node still holds a **database instance** (HA mode), move it first —
+   see below. If **mail** runs on it, move mail first
+   (**Email → Operations → Placement**). Delete refuses until then
+   (`NODE_DELETE_HOLDS_DATABASE`, `NODE_DELETE_RUNS_MAIL`), with nothing
+   changed.
+3. Click **Delete** on the card → **Confirm Delete**. Delete now moves the
+   system pods: it **cordons** the node, evicts every platform pod still on it
+   (DaemonSet pods excepted — they go with the node), respecting disruption
+   budgets, waits for them to start elsewhere, then runs `kubectl delete node`
+   and removes the inventory row. An eviction a disruption budget refuses
+   stops the delete with `NODE_DELETE_EVICTION_BLOCKED`: the node stays
+   cordoned and nothing is removed — resolve it and press **Delete** again.
+   **The host itself keeps running** — Insula does not power it off.
 4. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
    `k3s-agent-uninstall.sh` (worker), then release the VPS.
 
@@ -352,9 +387,9 @@ kubelet not reporting* instead.
 In HA mode each PostgreSQL instance keeps its only copy on its own server, so
 deleting that server would take the instance with it: PostgreSQL would be left
 with an instance it cannot start anywhere else (the API refuses the delete with
-`NODE_DELETE_HOLDS_DATABASE`). Drain the server first — that cordons it, so
-nothing new lands there — then, from a [node terminal](#the-node-terminal) on
-another server:
+`NODE_DELETE_HOLDS_DATABASE`). Drain the server's tenants first, then cordon
+it on its edit form so the instance cannot be rebuilt on it again, then, from a
+[node terminal](#the-node-terminal) on another server:
 
 ```bash
 kubectl -n platform get pods -l cnpg.io/cluster=system-db -L cnpg.io/instanceRole -o wide
@@ -367,7 +402,7 @@ kubectl -n platform delete pvc/<instance> pod/<instance>
 The operator replaces the instance on another server with a fresh copy taken
 from the primary (about a minute on a small database). When
 `kubectl -n platform get cluster system-db` shows every instance ready again,
-reopen the drain modal — **Delete** is available.
+reopen the modal — **Delete** is available.
 
 The instance's old volume is kept, *Released*, because the platform's storage
 classes retain released volumes. Two days after its release — the instance has

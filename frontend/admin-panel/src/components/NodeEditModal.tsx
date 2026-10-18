@@ -164,7 +164,8 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
               </label>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 When ON, tenant pods may schedule here. When OFF, a NoSchedule taint
-                blocks tenant pods. Servers default to OFF; workers default to ON.
+                blocks tenant pods; system services tolerate it and keep running and
+                starting here. Servers default to OFF; workers default to ON.
               </p>
             </div>
             <button
@@ -196,9 +197,12 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
                 Cordon (spec.unschedulable)
               </label>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                When ON, the scheduler refuses to place NEW pods on this node;
-                existing pods stay running. Use <strong>Drain Node</strong> on the
-                card to also evict and re-pin existing workloads.
+                When ON, the scheduler refuses to place ANY new pod on this node —
+                system ones included (a database rebuild, a mail failover);
+                existing pods stay running. To keep only tenants off, turn off
+                <strong> Can host tenant workloads</strong> or use
+                <strong> Drain Tenants</strong> on the card, which also moves the
+                tenants already here.
               </p>
             </div>
             <button

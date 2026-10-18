@@ -265,6 +265,13 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: crowdsec
+      # Tolerate the "no tenants here" taint (Can host tenant workloads off,
+      # set by Drain tenants): a system workload must still be able to
+      # start on a server whose tenants were drained.
+      tolerations:
+        - key: insula.host/server-only
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: crowdsec
           # v1.7.8 — latest stable on the v1.7.x line. Includes

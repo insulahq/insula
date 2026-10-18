@@ -218,8 +218,9 @@ before/after snapshot.
     - The Apply HA button only unlocks when the cluster reports ≥3 ready servers
       and the recommended tier is `ha`. The operation runs three independent
       patch loops; partial failures are reported per-resource, not aborted.
-    - Workers don't join etcd; only servers do. To remove a node: drain it,
-      `kubectl delete node`, run the k3s uninstall script, then release the VPS.
+    - Workers don't join etcd; only servers do. To remove a node: **Drain
+      Tenants**, then **Delete** on its card (which moves the system pods off
+      and deletes the node), run the k3s uninstall script, then release the VPS.
     - Changing a node's **role** in the admin panel only changes its platform
       label and taints (where pods get scheduled). It does not turn a k3s
       server into an agent or remove it from etcd — a real server → worker

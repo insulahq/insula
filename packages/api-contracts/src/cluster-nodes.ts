@@ -219,6 +219,10 @@ export const drainImpactSchema = z.object({
   })),
   /** False when a Longhorn or CNPG read failed — the lists above may be incomplete. */
   storageFactsComplete: z.boolean().default(true),
+  /** A drain moved this node's tenants off (or it was cordoned): Delete may run. */
+  tenantsDrained: z.boolean().default(false),
+  /** New tenants cannot land here: "Can host tenant workloads" is off, or the node is cordoned. */
+  blocksNewTenants: z.boolean().default(false),
   /**
    * This node's part in mail, or null. A drain never moves mail, but a
    * cordoned node cannot take it in a failover: `otherFailoverTargets` is
@@ -257,12 +261,23 @@ export const drainNodeRequestSchema = z.object({
   gracePeriodSeconds: z.number().int().min(0).max(600).optional(),
   /** Per-tenant re-pin instructions; missing entries default to "" (auto). */
   tenantPlacement: z.record(z.string(), z.string()).optional().default({}),
+  /**
+   * Stop new tenants landing on the node. A server gets "Can host tenant
+   * workloads" switched off (the insula.host/server-only NoSchedule taint,
+   * which every system workload tolerates); a worker, which runs no system
+   * workload but DaemonSets, is cordoned. Never a cordon on a server: system
+   * pods must keep starting there. Default on.
+   */
+  blockNewTenants: z.boolean().optional().default(true),
 });
 export type DrainNodeRequest = z.infer<typeof drainNodeRequestSchema>;
 
 export const drainNodeResponseSchema = z.object({
   nodeName: z.string(),
+  /** Only ever true for a worker (or a node someone cordoned by hand). */
   cordoned: z.boolean(),
+  /** New tenants can no longer land on the node. */
+  blockedNewTenants: z.boolean().default(false),
   evicted: z.number(),
   failed: z.array(z.object({
     namespace: z.string(),
@@ -293,6 +308,8 @@ export const deleteNodeResponseSchema = z.object({
   nodeName: z.string(),
   deletedFromKubernetes: z.boolean(),
   deletedFromInventory: z.boolean(),
+  /** System pods moved off the node (cordoned, then evicted) before it was removed. */
+  systemPodsEvicted: z.number().int().nonnegative().default(0),
 });
 export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
 

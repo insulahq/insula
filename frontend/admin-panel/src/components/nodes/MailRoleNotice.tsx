@@ -6,8 +6,10 @@ type MailRole = NonNullable<DrainImpact['mailRole']>;
 
 interface MailRoleNoticeProps {
   readonly mailRole: MailRole | null | undefined;
-  /** The node being drained or cordoned. */
+  /** The node being cordoned or deleted. */
   readonly nodeName: string;
+  /** What is about to happen to the node: a cordon (Edit form) or its deletion (drain / delete dialog). */
+  readonly context?: 'cordon' | 'delete';
 }
 
 const list = (names: readonly string[]): string => names.join(', ');
@@ -18,7 +20,7 @@ const list = (names: readonly string[]): string => names.join(', ');
  * mail's only failover target, the mail node then went down, and mail stayed
  * down for the whole outage with nothing on screen having said so.
  */
-export default function MailRoleNotice({ mailRole, nodeName }: MailRoleNoticeProps) {
+export default function MailRoleNotice({ mailRole, nodeName, context = 'cordon' }: MailRoleNoticeProps) {
   if (!mailRole) return null;
   const minutes = Math.max(1, Math.round(mailRole.failoverThresholdSeconds / 60));
   const others = mailRole.otherFailoverTargets;
@@ -29,7 +31,18 @@ export default function MailRoleNotice({ mailRole, nodeName }: MailRoleNoticePro
 
   let title: string;
   let body: string;
-  if (mailRole.role === 'active') {
+  if (context === 'delete') {
+    // Draining tenants leaves mail alone; deleting the node does not.
+    if (mailRole.role === 'active') {
+      title = 'Mail runs on this node';
+      body = 'Draining tenants leaves it running. Delete Node is refused until mail is moved to another node.';
+    } else {
+      title = `Mail failover target (${mailRole.role})`;
+      body = stranded
+        ? `Draining tenants leaves it a failover target. Once ${nodeName} is deleted, mail has no other node to fail over to — set another failover node first.`
+        : `Draining tenants leaves it a failover target. Once ${nodeName} is deleted, mail fails over to ${list(others)} instead.`;
+    }
+  } else if (mailRole.role === 'active') {
     title = 'Mail runs on this node';
     if (!mailRole.autoFailoverEnabled) {
       body = 'Draining leaves it running here. Automatic failover is off: if this node goes down, mail stays down until it is back or you move it.';

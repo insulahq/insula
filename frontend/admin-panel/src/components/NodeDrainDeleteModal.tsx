@@ -53,13 +53,20 @@ interface NodeDrainDeleteModalProps {
 
 /**
  * Two-stage destructive flow for a node:
- *   1. DRAIN  — cordon + evict every non-system pod. Operators re-pin
+ *   1. DRAIN TENANTS — never a cordon on a server: system services keep
+ *               running AND starting here (mail failover, database
+ *               instances, operators). Evicts tenant pods only, and — unless
+ *               unticked — keeps new tenants off with "Can host tenant
+ *               workloads" off (a NoSchedule taint only tenant pods do not
+ *               tolerate; a worker is cordoned). Operators re-pin
  *               affected CLIENTS (not individual workloads or PVCs);
  *               pinning is a tenant-level property and the orchestrator
  *               propagates the chosen target across every Deployment,
  *               StatefulSet, FM sidecar, and Longhorn volume in the
  *               tenant's namespace.
- *   2. DELETE — only enabled after the node is fully drained.
+ *   2. DELETE — only enabled once the tenants are drained. Delete is what
+ *               moves the system services: it cordons, evicts them
+ *               (disruption budgets respected), then removes the node.
  *
  * Design goals:
  *  - One re-pin target per tenant (matches the tenant-detail page,
@@ -77,6 +84,7 @@ interface NodeDrainDeleteModalProps {
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
   const [forceLastReplica, setForceLastReplica] = useState(false);
+  const [blockNewTenants, setBlockNewTenants] = useState(true);
   const impactQuery = useDrainImpact(node.name, true);
   const nodesQuery = useClusterNodes();
   const usageQuery = useWorkerUsageSummary();
@@ -102,7 +110,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   //     keep the node bound to the tenant and a delete would orphan
   //     them).
   const drained = impact !== undefined
-    && impact.alreadyCordoned
+    && impact.tenantsDrained
     && impact.nonSystemPods.length === 0
     && impact.pinnedTenants.length === 0;
   // Reserve the "Last-replica risk" banner for PLATFORM volumes —
@@ -150,7 +158,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   // Block "Apply re-pin & drain" only when the operator has EXPLICITLY
   // set a tenant to "stay" — that's a refusal-to-move signal and
   // letting the drain proceed would evict pods but leave their
-  // nodeSelector pointing at the cordoned node.
+  // nodeSelector pointing at this node.
   const stayPinnedTenants = (impact?.pinnedTenants ?? []).filter(
     (c) => tenantPlacement[c.tenantId] === 'stay',
   );
@@ -169,6 +177,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       await drain.mutateAsync({
         forceLastReplica,
         tenantPlacement: finalTenantPlacement,
+        blockNewTenants,
       });
       // Refetch impact so the modal flips to "drained → ready to delete".
       await impactQuery.refetch();
@@ -234,12 +243,36 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {impact && (
             <>
               <ImpactSection
-                title="Cordon state"
-                tone={impact.alreadyCordoned ? 'good' : 'warn'}
-                content={impact.alreadyCordoned
-                  ? 'Already cordoned (unschedulable=true). Drain will evict remaining pods.'
-                  : 'Not cordoned yet. Drain will cordon the node first, then evict pods.'}
-              />
+                title="Drain tenants"
+                tone="good"
+                content={node.role === 'server'
+                  ? 'Moves this node’s tenants off. The node stays in service for the platform: system services keep running here and can still start here — mail failing over, a database instance rebuilt, an operator replica. Delete Node is what moves them.'
+                  : 'Moves this worker’s tenants off. A worker runs no system services, only DaemonSets, which keep running.'}
+              >
+                {impact.blocksNewTenants ? (
+                  <p className="mt-2 text-xs text-gray-600 dark:text-gray-400" data-testid="drain-already-blocks-tenants">
+                    New tenants are already kept off this node.
+                  </p>
+                ) : (
+                  <label className="mt-2 flex items-start gap-2 text-xs text-gray-800 dark:text-gray-200">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700"
+                      checked={blockNewTenants}
+                      onChange={(e) => setBlockNewTenants(e.target.checked)}
+                      data-testid="drain-block-new-tenants"
+                    />
+                    <span>
+                      <span className="font-medium">Stop new tenants landing on this node</span>
+                      <span className="block text-gray-600 dark:text-gray-400">
+                        {node.role === 'server'
+                          ? 'Switches off “Can host tenant workloads” — a NoSchedule taint that only tenant pods do not tolerate. System services are not affected. Switch it back on in the node’s Edit form.'
+                          : 'Cordons this worker. Uncordon it in the node’s Edit form.'}
+                      </span>
+                    </span>
+                  </label>
+                )}
+              </ImpactSection>
 
               {/* ─── Pinned tenants — one re-pin target per tenant ─── */}
               {impact.pinnedTenants.length > 0 && (
@@ -519,7 +552,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                         <div className="mt-0.5 text-gray-500 dark:text-gray-400">
                           {r.postgresInstance.primary
                             ? 'If this node goes down, Postgres fails over to a streaming instance — writes pause briefly.'
-                            : 'If this node goes down, this instance catches up once the node is back and uncordoned.'}
+                            : 'If this node goes down, this instance catches up once the node is back.'}
                         </div>
                       </li>
                     ))}
@@ -527,13 +560,13 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 </ImpactSection>
               )}
 
-              {/* ─── Mail: a cordon takes this node out of mail's failover ─── */}
-              <MailRoleNotice mailRole={impact.mailRole} nodeName={node.name} />
+              {/* ─── Mail: draining tenants leaves it be; DELETING the node does not ─── */}
+              <MailRoleNotice mailRole={impact.mailRole} nodeName={node.name} context="delete" />
 
               {/* ─── System pods (info only) ─── */}
               <details className="rounded-lg border border-gray-200 dark:border-gray-700">
                 <summary className="cursor-pointer px-3 py-2 text-xs text-gray-600 dark:text-gray-400">
-                  System pods that will NOT be evicted ({impact.systemPods.length})
+                  System pods the drain leaves running — Delete moves them ({impact.systemPods.length})
                 </summary>
                 <ul className="space-y-1 px-3 py-2 text-xs">
                   {impact.systemPods.map((p) => (
@@ -610,7 +643,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <div className="flex items-center gap-1 font-semibold">
                 <AlertTriangle size={12} /> Drain blocked — {stayPinnedTenants.length} tenant(s) still set to &quot;Stay&quot;.
               </div>
-              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned tenant. Leaving a tenant on &quot;Stay&quot; would evict its pods but their nodeSelectors would still point at this cordoned node — replacement pods sit Pending forever.</p>
+              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned tenant. Leaving a tenant on &quot;Stay&quot; would evict its pods but their nodeSelectors would still point at this node — the replacement pods come straight back.</p>
             </div>
           )}
 
@@ -622,7 +655,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <p className="mt-1">
                 Removing the node would leave PostgreSQL with an instance it cannot start anywhere else. Move the
                 instance to another server first (manual: Nodes &amp; cluster → Removing a node), then come back here.
-                Draining for maintenance does not need this — the instance catches up once the node is back and uncordoned.
+                Draining tenants does not touch it — the instance keeps running here.
               </p>
             </div>
           )}
@@ -630,25 +663,25 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {drained && !confirmDelete && dbInstancesHere.length === 0 && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
-                <CheckCircle size={12} /> Node is fully drained — cordoned, no tenant pods, no pinned tenants, no PVC replicas attached. You may now delete it from the cluster.
+                <CheckCircle size={12} /> Tenants drained — no tenant pods, no pinned tenants. System services still run here; Delete Node moves them to other servers, then removes the node.
               </div>
             </div>
           )}
 
-          {/* Post-cordon but not yet fully drained — explain to the
+          {/* Drained but tenants still here — explain to the
               operator exactly which condition is still holding Delete
               back, so they don't have to count rows in the tables. */}
-          {!drained && impact?.alreadyCordoned && (impact.nonSystemPods.length > 0 || impact.pinnedTenants.length > 0) && (
+          {!drained && impact?.tenantsDrained && (impact.nonSystemPods.length > 0 || impact.pinnedTenants.length > 0) && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="drain-incomplete-banner">
               <div className="flex items-center gap-1 font-semibold">
-                <AlertTriangle size={12} /> Drain not yet complete — Delete is disabled.
+                <AlertTriangle size={12} /> Tenant drain not yet complete — Delete is disabled.
               </div>
               <ul className="mt-1 list-disc pl-4 space-y-0.5">
                 {impact.nonSystemPods.length > 0 && (
-                  <li>{impact.nonSystemPods.length} non-system pod(s) still on the node.</li>
+                  <li>{impact.nonSystemPods.length} tenant pod(s) still on the node.</li>
                 )}
                 {impact.pinnedTenants.length > 0 && (
-                  <li>{impact.pinnedTenants.length} tenant(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for their data to finish moving (Longhorn copies it to the new node, then drops the copy here).</li>
+                  <li>{impact.pinnedTenants.length} tenant(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Drain tenants</strong> again, or wait for their data to finish moving (Longhorn copies it to the new node, then drops the copy here).</li>
                 )}
               </ul>
             </div>
@@ -658,7 +691,9 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
               <ShieldAlert size={14} className="mt-0.5 shrink-0" />
               <div>
-                Delete will run <span className="font-mono">kubectl delete node {node.name}</span> and remove the row from the inventory.
+                Delete will cordon the node, move its system services to other servers (disruption budgets respected — if one
+                refuses, Delete stops with the node cordoned and nothing removed), then run{' '}
+                <span className="font-mono">kubectl delete node {node.name}</span> and remove the row from the inventory.
                 The host itself stays running. Click <strong>Confirm Delete</strong> below.
               </div>
             </div>
@@ -691,7 +726,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 data-testid={`drain-node-${node.name}-button`}
               >
                 {drain.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
-                Apply re-pin &amp; drain
+                Drain tenants
               </button>
             )}
             {drained && !confirmDelete && (

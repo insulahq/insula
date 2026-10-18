@@ -30,6 +30,13 @@ spec:
       securityContext:
         runAsNonRoot: false
         fsGroup: 0
+      # Tolerate the "no tenants here" taint (Can host tenant workloads off,
+      # set by Drain tenants): a system workload must still be able to
+      # start on a server whose tenants were drained.
+      tolerations:
+        - key: insula.host/server-only
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: nginx
           image: nginx:1.30-alpine

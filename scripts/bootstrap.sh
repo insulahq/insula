@@ -3614,7 +3614,8 @@ pin_system_components_to_servers() {
       "cert-manager:cert-manager-webhook" \
       "cert-manager:cert-manager-cainjector" \
       "kube-system:sealed-secrets-controller" \
-      "cnpg-system:cnpg-controller-manager"; do
+      "kube-system:snapshot-controller" \
+      "cnpg-system:cnpg-cloudnative-pg"; do
     local ns="${ns_name%%:*}"
     local name="${ns_name#*:}"
     kubectl patch deployment "$name" -n "$ns" \
@@ -6677,6 +6678,7 @@ install_longhorn() {
     --set defaultSettings.removeSnapshotsDuringFilesystemTrim=true \
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
+    --set-string 'defaultSettings.taintToleration=insula.host/server-only=true:NoSchedule' \
     --set longhornUI.replicaCount=1 \
     --set 'longhornManager.resources.requests.cpu=50m' \
     --set 'longhornManager.resources.requests.memory=128Mi' \

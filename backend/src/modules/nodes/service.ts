@@ -12,6 +12,7 @@ import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './
 import { isUsableCopy } from './replica-copy.js';
 import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
 import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
+import { assertTaintSafeForSystem, moveSystemPodsOff } from './system-pods.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -58,6 +59,12 @@ export const SYSTEM_NAMESPACES = Object.freeze([
 export const NODE_ROLE_LABEL = 'insula.host/node-role';
 export const HOST_TENANT_WORKLOADS_LABEL = 'insula.host/host-tenant-workloads';
 export const SERVER_ONLY_TAINT_KEY = 'insula.host/server-only';
+/**
+ * Set by "Drain tenants": this node's tenants were moved off, so Delete may
+ * run. Cleared when tenants are let back (Can host tenant workloads on, or
+ * an uncordon). A drain never cordons a server — see drainNode.
+ */
+export const TENANTS_DRAINED_ANNOTATION = 'insula.host/tenants-drained';
 // M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
 // nodeSelector excludes nodes carrying `ingress-mode=none`.
 export const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
@@ -88,30 +95,22 @@ export async function listNodesEnriched(
   // normal Drain/Delete). Orphan detection requires a live cluster read.
   if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false, existsInKubernetes: true }));
 
-  // Each call is wrapped in a try/catch — ANY of the three methods may
-  // be missing in tests (mock that only stubs a subset) or fail in
-  // production (CRD not installed → custom listNamespacedCustomObject
-  // 404). We tolerate all of them and fall back to empty data; the
-  // tags just won't render but the LIST itself succeeds.
-  type NodesResp = { items?: Array<{ metadata?: { name?: string }; spec?: { unschedulable?: boolean } }> };
+  // Each call is wrapped in a try/catch — either may be missing in tests
+  // (a mock that only stubs a subset) or fail in production. We tolerate
+  // both and fall back to empty data; the tags just won't render but the
+  // LIST itself succeeds.
+  type NodesResp = { items?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> }; spec?: { unschedulable?: boolean } }> };
   type PodsResp = { items?: Array<{ metadata?: { namespace?: string; ownerReferences?: Array<{ kind?: string }> }; spec?: { nodeName?: string }; status?: { phase?: string } }> };
-  type ReplicasResp = { items?: Array<{ spec?: { nodeID?: string }; status?: { currentState?: string } }> };
   const safeCall = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
     try { return await fn(); } catch { return fallback; }
   };
-  const [nodesResp, podsResp, replicasResp] = await Promise.all([
+  const [nodesResp, podsResp] = await Promise.all([
     safeCall<NodesResp>(() => k8s.core.listNode() as Promise<NodesResp>, { items: [] }),
     safeCall<PodsResp>(() => k8s.core.listPodForAllNamespaces({}) as Promise<PodsResp>, { items: [] }),
-    safeCall<ReplicasResp>(
-      () => k8s.custom.listNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'replicas',
-      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<ReplicasResp>,
-      { items: [] },
-    ),
   ]);
 
   const cordonedByName = new Map<string, boolean>();
+  const tenantsDrainedByName = new Map<string, boolean>();
   // Track which DB-known nodes the live cluster confirmed. If the
   // listNode() call itself failed (safeCall fell back to empty items),
   // we treat every DB row as still-in-k8s — otherwise a transient API
@@ -121,6 +120,7 @@ export async function listNodesEnriched(
   for (const n of nodesResp.items ?? []) {
     if (n.metadata?.name) {
       cordonedByName.set(n.metadata.name, n.spec?.unschedulable === true);
+      tenantsDrainedByName.set(n.metadata.name, Boolean(n.metadata.annotations?.[TENANTS_DRAINED_ANNOTATION]));
       observedNodeNames.add(n.metadata.name);
     }
   }
@@ -140,20 +140,12 @@ export async function listNodesEnriched(
     tenantPodsByNode.set(node, (tenantPodsByNode.get(node) ?? 0) + 1);
   }
 
-  // Count running Longhorn replicas per node.
-  const replicasByNode = new Map<string, number>();
-  for (const r of replicasResp.items ?? []) {
-    if (r.status?.currentState !== 'running') continue;
-    const node = r.spec?.nodeID;
-    if (!node) continue;
-    replicasByNode.set(node, (replicasByNode.get(node) ?? 0) + 1);
-  }
-
   return rows.map((r) => {
     const cordoned = cordonedByName.get(r.name) === true;
-    const drained = cordoned
-      && (tenantPodsByNode.get(r.name) ?? 0) === 0
-      && (replicasByNode.get(r.name) ?? 0) === 0;
+    // Drained = its TENANTS are gone. A server keeps its system pods (and
+    // their volumes) until Delete moves them, so replicas no longer count.
+    const drained = (cordoned || tenantsDrainedByName.get(r.name) === true)
+      && (tenantPodsByNode.get(r.name) ?? 0) === 0;
     // Orphan = DB row whose name didn't appear in `listNode()`. We
     // only mark orphans when the cluster list actually returned data;
     // a failed/empty listNode() leaves every row as `true` so a
@@ -368,10 +360,20 @@ export async function updateNode(
     patch.role !== undefined
     || patch.canHostTenantWorkloads !== undefined
     || patch.ingressMode !== undefined;
+  // Letting tenants back (Can host tenant workloads on, or an uncordon) ends
+  // a "Drain tenants": the node is no longer ready to delete.
+  const tenantsLetBack = patch.canHostTenantWorkloads === true || patch.cordoned === false;
+  const annotationPatch = tenantsLetBack ? { annotations: { [TENANTS_DRAINED_ANNOTATION]: null } } : {};
   if (k8sFieldsChanged) {
     const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
     const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
     const shouldTaint = targetRole === 'server' && !targetCanHost;
+    // The taint keeps tenants off and must not keep the platform off: refuse
+    // while a node-bound system component would not come back here after a
+    // reboot (system-pods.ts). Only when it is newly applied.
+    if (shouldTaint && !existingTaints.some((t) => t.key === SERVER_ONLY_TAINT_KEY)) {
+      await assertTaintSafeForSystem(k8s, name);
+    }
     const nextTaints = shouldTaint
       ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
       : withoutOurs;
@@ -387,7 +389,7 @@ export async function updateNode(
     await k8s.core.patchNode({
       name,
       body: {
-        metadata: { labels: nextLabels },
+        metadata: { labels: nextLabels, ...annotationPatch },
         spec: specPatch,
       },
     } as unknown as Parameters<typeof k8s.core.patchNode>[0],
@@ -396,7 +398,7 @@ export async function updateNode(
     // No labels/taints touched but cordon flipped — still need to patch.
     await k8s.core.patchNode({
       name,
-      body: { spec: { unschedulable: patch.cordoned } },
+      body: { metadata: { ...annotationPatch }, spec: { unschedulable: patch.cordoned } },
     } as unknown as Parameters<typeof k8s.core.patchNode>[0],
       STRATEGIC_MERGE_PATCH);
   }
@@ -668,12 +670,23 @@ export async function buildDrainImpact(
   storageFactsComplete: boolean;
   /** This node's part in mail (runs here / failover target), or null — see mail-role.ts. */
   mailRole: MailRoleOnNode | null;
+  /** A drain moved this node's tenants off (or it is cordoned) — Delete may run. */
+  tenantsDrained: boolean;
+  /** New tenants cannot land here: the server-only taint, or a cordon. */
+  blocksNewTenants: boolean;
 }> {
   // 1) Cordon state
   let alreadyCordoned = false;
+  let tenantsDrainedMark = false;
+  let serverOnlyTaint = false;
   try {
-    const node = await k8s.core.readNode({ name }) as { spec?: { unschedulable?: boolean } };
+    const node = await k8s.core.readNode({ name }) as {
+      metadata?: { annotations?: Record<string, string> };
+      spec?: { unschedulable?: boolean; taints?: Array<{ key?: string; effect?: string }> };
+    };
     alreadyCordoned = node.spec?.unschedulable === true;
+    tenantsDrainedMark = Boolean(node.metadata?.annotations?.[TENANTS_DRAINED_ANNOTATION]);
+    serverOnlyTaint = (node.spec?.taints ?? []).some((t) => t.key === SERVER_ONLY_TAINT_KEY && t.effect === 'NoSchedule');
   } catch (err) {
     if ((err as { code?: number }).code === 404) {
       throw new ApiError('NODE_NOT_FOUND', `Node '${name}' not found in Kubernetes`, 404, { node_name: name });
@@ -1136,6 +1149,8 @@ export async function buildDrainImpact(
     longhornReplicas,
     storageFactsComplete,
     mailRole,
+    tenantsDrained: tenantsDrainedMark || alreadyCordoned,
+    blocksNewTenants: serverOnlyTaint || alreadyCordoned,
   };
 }
 
@@ -1477,9 +1492,16 @@ export async function drainNode(
      * Any pinned tenant missing from the map defaults to "" (auto).
      */
     readonly tenantPlacement?: Record<string, string>;
+    /**
+     * Stop new tenants landing here (default true). A server gets "Can host
+     * tenant workloads" off — the server-only NoSchedule taint, which every
+     * system workload tolerates; a worker is cordoned. See step 2.
+     */
+    readonly blockNewTenants?: boolean;
   },
 ): Promise<{
   cordoned: boolean;
+  blockedNewTenants: boolean;
   evicted: number;
   failed: Array<{ namespace: string; name: string; error: string }>;
   rePinnedTenants: number;
@@ -1560,7 +1582,15 @@ export async function drainNode(
     );
   }
 
-  // 1.5) Apply CLIENT-LEVEL re-pin instructions BEFORE cordoning.
+  // Keeping new tenants off a server puts the server-only taint on it. Check
+  // BEFORE anything moves that no node-bound system component would be kept
+  // off with them (system-pods.ts) — a refusal must leave the tenants where
+  // they were, not half re-pinned.
+  const thisNode = dbNodes.find((n) => n.name === name);
+  const willTaint = opts.blockNewTenants !== false && !impact.blocksNewTenants && thisNode?.role === 'server';
+  if (willTaint) await assertTaintSafeForSystem(k8s, name);
+
+  // 1.5) Apply CLIENT-LEVEL re-pin instructions BEFORE the tenant block.
   //
   // Pinning is a tenant-level property — tenants.node_name in
   // the platform DB is the source of truth, and the orchestrator is
@@ -1678,16 +1708,42 @@ export async function drainNode(
     }
   }
 
-  // 2) Cordon (idempotent — patch unschedulable=true).
+  // 2) Drain TENANTS only — never cordon a server.
+  //
+  // A cordon stops every new pod, system ones included. A drained server
+  // stays in service for the platform: mail fails over to it, a database
+  // instance is rebuilt on it, an operator's replacement replica starts on
+  // it. Production: a server cordoned by a drain was mail's only failover
+  // target when the mail node went down, and mail stayed down for the whole
+  // outage. Removing the SYSTEM pods is Delete's job (deleteNode).
+  //
+  // New tenants are kept off with "Can host tenant workloads" off — the
+  // server-only NoSchedule taint, which tenant pods do not tolerate and every
+  // system workload does (manifests, bootstrap, host-migration
+  // 2026.10.12/0002). A worker runs no system workload but DaemonSets, which a
+  // cordon does not stop, so a worker is cordoned.
   let cordoned = impact.alreadyCordoned;
-  if (!cordoned) {
-    await k8s.core.patchNode({
-      name,
-      body: { spec: { unschedulable: true } },
-    } as unknown as Parameters<typeof k8s.core.patchNode>[0],
-      STRATEGIC_MERGE_PATCH);
-    cordoned = true;
+  let blockedNewTenants = impact.blocksNewTenants;
+  if (opts.blockNewTenants !== false && !blockedNewTenants) {
+    if (thisNode?.role === 'server') {
+      await updateNode(db, k8s, name, { canHostTenantWorkloads: false });
+    } else {
+      await k8s.core.patchNode({
+        name,
+        body: { spec: { unschedulable: true } },
+      } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+        STRATEGIC_MERGE_PATCH);
+      cordoned = true;
+    }
+    blockedNewTenants = true;
   }
+  // Mark the node: its tenants are being moved off, so Delete may run once
+  // they are gone (re-running the drain refreshes the mark).
+  await k8s.core.patchNode({
+    name,
+    body: { metadata: { annotations: { [TENANTS_DRAINED_ANNOTATION]: new Date().toISOString() } } },
+  } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+    STRATEGIC_MERGE_PATCH);
 
   // 3) Evict non-system pods.
   //
@@ -1740,7 +1796,7 @@ export async function drainNode(
   }
 
   return {
-    cordoned, evicted, failed, rePinnedTenants, rePinnedWorkloads, rePinnedPvcs,
+    cordoned, blockedNewTenants, evicted, failed, rePinnedTenants, rePinnedWorkloads, rePinnedPvcs,
     relocatingVolumes, pickedTargets, relocationProblems,
   };
 }
@@ -1761,15 +1817,22 @@ export async function deleteNode(
   db: Database,
   k8s: K8sClients,
   name: string,
-): Promise<{ deletedFromKubernetes: boolean; deletedFromInventory: boolean }> {
-  // 1) Pre-check: must be cordoned + no non-system pods.
+  opts: { readonly systemPodsGoneWaitMs?: number } = {},
+): Promise<{ deletedFromKubernetes: boolean; deletedFromInventory: boolean; systemPodsEvicted: number }> {
+  // 1) Pre-check: its tenants were drained (a drain marks the node; a cordon
+  //    from before drains stopped cordoning counts too).
   let nodeExistsInK8s = true;
   try {
-    const node = await k8s.core.readNode({ name }) as { spec?: { unschedulable?: boolean } };
-    if (node.spec?.unschedulable !== true) {
+    const node = await k8s.core.readNode({ name }) as {
+      metadata?: { annotations?: Record<string, string> };
+      spec?: { unschedulable?: boolean };
+    };
+    const tenantsDrained = Boolean(node.metadata?.annotations?.[TENANTS_DRAINED_ANNOTATION])
+      || node.spec?.unschedulable === true;
+    if (!tenantsDrained) {
       throw new ApiError(
-        'NODE_DELETE_NOT_CORDONED',
-        `Node '${name}' is not cordoned. Drain it first.`,
+        'NODE_DELETE_NOT_DRAINED',
+        `Node '${name}' still takes tenants. Drain its tenants first.`,
         409,
         { node_name: name },
       );
@@ -1778,12 +1841,12 @@ export async function deleteNode(
     if ((err as { code?: number }).code === 404) {
       // Already gone from k8s — proceed to inventory cleanup.
       nodeExistsInK8s = false;
-    } else if ((err as ApiError).code === 'NODE_DELETE_NOT_CORDONED') {
-      throw err;
     } else {
       throw err;
     }
   }
+
+  let systemPodsEvicted = 0;
 
   if (nodeExistsInK8s) {
     const impact = await buildDrainImpact(k8s, db, name);
@@ -1845,6 +1908,23 @@ export async function deleteNode(
         { instances: unique },
       );
     }
+    // Mail runs here: its data lives on this node (local-path), and deleting
+    // the node takes mail down until it fails over and restores elsewhere.
+    // Move it first, on purpose, with its own migration.
+    if (impact.mailRole?.role === 'active') {
+      throw new ApiError(
+        'NODE_DELETE_RUNS_MAIL',
+        `Mail runs on '${name}'. Move it to another node first (Email → Operations → Placement), then delete the node.`,
+        409,
+        { node_name: name },
+      );
+    }
+
+    // System pods leave HERE, not at drain: the drain only moved tenants, so
+    // the platform could keep using this server until it is removed. Cordon,
+    // then evict (respecting disruption budgets — a refusal stops the delete
+    // with the node cordoned, nothing removed), then wait for them to go.
+    systemPodsEvicted = await moveSystemPodsOff(k8s, name, opts.systemPodsGoneWaitMs ?? 90_000);
   }
 
   // 2) Delete from k8s (idempotent; 404 = already gone).
@@ -1934,5 +2014,5 @@ export async function deleteNode(
     console.info(`[nodes] cleaned residue after deleting ${name}: ${residue.join('; ')}`);
   }
 
-  return { deletedFromKubernetes, deletedFromInventory: true };
+  return { deletedFromKubernetes, deletedFromInventory: true, systemPodsEvicted };
 }
