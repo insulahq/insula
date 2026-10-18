@@ -120,8 +120,9 @@ elsewhere. From the node card click **Drain Node**. A modal computes the impact:
 - **Database instances** — in HA mode each PostgreSQL instance keeps its one
   copy on its own node; the other instances hold the same data. They are listed
   for information and do not block the drain, which leaves them running where
-  they are. A replica counts as covered while the primary is up on another
-  server. The **primary** counts as covered while it is streaming to a standby
+  they are; if the node then goes down, a replica catches up once the node is
+  back **and uncordoned** (its copy lives only there). A replica counts as
+  covered while the primary is up on another server. The **primary** counts as covered while it is streaming to a standby
   on another server — if its node goes down, PostgreSQL fails over to that
   standby and writes pause briefly. A server that is itself cordoned never
   counts as cover. An instance nothing covers appears under *Last-replica
@@ -336,8 +337,16 @@ kubectl -n platform delete pvc/<instance> pod/<instance>
 ```
 
 The operator replaces the instance on another server with a fresh copy taken
-from the primary. When `kubectl -n platform get cluster system-db` shows every
-instance ready again, reopen the drain modal — **Delete** is available.
+from the primary (about a minute on a small database). When
+`kubectl -n platform get cluster system-db` shows every instance ready again,
+reopen the drain modal — **Delete** is available.
+
+The instance's old volume is kept, *Released*, because the platform's storage
+classes retain released volumes. Until you remove it, the drain modal lists it
+under *Last-replica risk* with its old claim name; it no longer belongs to the
+instance and does not hold back **Delete**. **Cluster → Storage → Orphaned
+volumes** lists it once it has been released for the stale threshold (7 days by
+default), where you can delete it.
 
 Deleting a node also tidies up after it: its storage-system record is removed,
 and if it was named as a mail primary/secondary/tertiary, that reference is

@@ -495,7 +495,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                         <div className="mt-0.5 text-gray-500 dark:text-gray-400">
                           {r.postgresInstance.primary
                             ? 'If this node goes down, Postgres fails over to a streaming instance — writes pause briefly.'
-                            : 'If this node goes down, this instance catches up when the node is back.'}
+                            : 'If this node goes down, this instance catches up once the node is back and uncordoned.'}
                         </div>
                       </li>
                     ))}
@@ -571,7 +571,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <p className="mt-1">
                 Removing the node would leave PostgreSQL with an instance it cannot start anywhere else. Move the
                 instance to another server first (manual: Nodes &amp; cluster → Removing a node), then come back here.
-                Draining for maintenance does not need this — the instance stays and catches up.
+                Draining for maintenance does not need this — the instance catches up once the node is back and uncordoned.
               </p>
             </div>
           )}
