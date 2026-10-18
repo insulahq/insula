@@ -65,6 +65,12 @@ export const SERVER_ONLY_TAINT_KEY = 'insula.host/server-only';
  * an uncordon). A drain never cordons a server — see drainNode.
  */
 export const TENANTS_DRAINED_ANNOTATION = 'insula.host/tenants-drained';
+
+/** This process's own pod (downward-API POD_NAME), or null outside a cluster. */
+function apiPodIdentity(): { namespace: string; name: string } | null {
+  const name = process.env.POD_NAME;
+  return name ? { namespace: process.env.POD_NAMESPACE ?? 'platform', name } : null;
+}
 // M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
 // nodeSelector excludes nodes carrying `ingress-mode=none`.
 export const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
@@ -362,7 +368,9 @@ export async function updateNode(
     || patch.ingressMode !== undefined;
   // Letting tenants back (Can host tenant workloads on, or an uncordon) ends
   // a "Drain tenants": the node is no longer ready to delete.
-  const tenantsLetBack = patch.canHostTenantWorkloads === true || patch.cordoned === false;
+  // Only a real change counts: the edit form re-sends the setting on every save.
+  const tenantsLetBack = (patch.canHostTenantWorkloads === true && !existing.canHostTenantWorkloads)
+    || patch.cordoned === false;
   const annotationPatch = tenantsLetBack ? { annotations: { [TENANTS_DRAINED_ANNOTATION]: null } } : {};
   if (k8sFieldsChanged) {
     const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
@@ -1611,7 +1619,26 @@ export async function drainNode(
   //
   // A tenant that runs nothing gets a concrete node here, with room checked,
   // or the drain is refused before anything changes (stopped-tenant-placement.ts).
-  const avoid = nodesToAvoid(name, liveNodes);
+  //
+  // A node that takes no tenants is no target either. A drain no longer
+  // cordons a server, so a tenant-drained server is told apart only by "Can
+  // host tenant workloads" off (its taint): a tenant sent or kept there would
+  // sit Pending. Explicit targets are checked here, before anything moves.
+  const avoid = new Set([
+    ...nodesToAvoid(name, liveNodes),
+    ...dbNodes.filter((n) => !n.canHostTenantWorkloads).map((n) => n.name),
+  ]);
+  for (const [tenantId, target] of Object.entries(opts.tenantPlacement ?? {})) {
+    if (!target || target === 'stay' || !avoid.has(target)) continue;
+    const tenantName = impact.pinnedTenants.find((c) => c.tenantId === tenantId)?.tenantName ?? tenantId;
+    throw new ApiError(
+      'NODE_REPIN_TARGET_UNAVAILABLE',
+      `${tenantName} cannot move to '${target}': it is being drained, cordoned, not Ready, or does not host ` +
+      `tenants. Pick another node — nothing was changed.`,
+      409,
+      { tenant_id: tenantId, target },
+    );
+  }
   const requested: Record<string, string> = { ...(opts.tenantPlacement ?? {}) };
   for (const c of impact.pinnedTenants) {
     if (!(c.tenantId in requested)) requested[c.tenantId] = defaultPlacement(c, avoid);
@@ -1726,7 +1753,20 @@ export async function drainNode(
   let blockedNewTenants = impact.blocksNewTenants;
   if (opts.blockNewTenants !== false && !blockedNewTenants) {
     if (thisNode?.role === 'server') {
-      await updateNode(db, k8s, name, { canHostTenantWorkloads: false });
+      try {
+        await updateNode(db, k8s, name, { canHostTenantWorkloads: false });
+      } catch (err) {
+        // The re-pins above already happened: say so, rather than leave a
+        // bare error that reads as "nothing was done".
+        const e = err instanceof ApiError ? err : null;
+        throw new ApiError(
+          e?.code ?? 'NODE_DRAIN_BLOCK_FAILED',
+          `${rePinnedTenants} tenant(s) were re-pinned, but new tenants could not be kept off '${name}': ` +
+          `${(err as Error).message} Run the drain again once that is resolved.`,
+          e?.status ?? 500,
+          { ...(e?.details ?? {}), node_name: name, re_pinned_tenants: rePinnedTenants },
+        );
+      }
     } else {
       await k8s.core.patchNode({
         name,
@@ -1817,7 +1857,11 @@ export async function deleteNode(
   db: Database,
   k8s: K8sClients,
   name: string,
-  opts: { readonly systemPodsGoneWaitMs?: number } = {},
+  opts: {
+    readonly systemPodsGoneWaitMs?: number;
+    /** The API pod serving this request (never evicted); defaults to this process's own pod. */
+    readonly self?: { readonly namespace: string; readonly name: string } | null;
+  } = {},
 ): Promise<{ deletedFromKubernetes: boolean; deletedFromInventory: boolean; systemPodsEvicted: number }> {
   // 1) Pre-check: its tenants were drained (a drain marks the node; a cordon
   //    from before drains stopped cordoning counts too).
@@ -1924,7 +1968,10 @@ export async function deleteNode(
     // the platform could keep using this server until it is removed. Cordon,
     // then evict (respecting disruption budgets — a refusal stops the delete
     // with the node cordoned, nothing removed), then wait for them to go.
-    systemPodsEvicted = await moveSystemPodsOff(k8s, name, opts.systemPodsGoneWaitMs ?? 90_000);
+    systemPodsEvicted = await moveSystemPodsOff(
+      k8s, name, opts.systemPodsGoneWaitMs ?? 90_000,
+      opts.self !== undefined ? opts.self : apiPodIdentity(),
+    );
   }
 
   // 2) Delete from k8s (idempotent; 404 = already gone).

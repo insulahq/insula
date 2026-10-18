@@ -374,10 +374,13 @@ kubelet not reporting* instead.
 3. Click **Delete** on the card → **Confirm Delete**. Delete now moves the
    system pods: it **cordons** the node, evicts every platform pod still on it
    (DaemonSet pods excepted — they go with the node), respecting disruption
-   budgets, waits for them to start elsewhere, then runs `kubectl delete node`
-   and removes the inventory row. An eviction a disruption budget refuses
-   stops the delete with `NODE_DELETE_EVICTION_BLOCKED`: the node stays
+   budgets, waits up to 90 seconds for them to leave, then runs
+   `kubectl delete node` and removes the inventory row. An eviction a
+   disruption budget refuses, or a pod still shutting down when the wait runs
+   out, stops the delete with `NODE_DELETE_EVICTION_BLOCKED`: the node stays
    cordoned and nothing is removed — resolve it and press **Delete** again.
+   (The API replica answering the request is the one pod left in place; it
+   goes with the node, and a replacement starts on another server.)
    **The host itself keeps running** — Insula does not power it off.
 4. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
    `k3s-agent-uninstall.sh` (worker), then release the VPS.

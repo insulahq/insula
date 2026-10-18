@@ -6,7 +6,9 @@
 # APPENDED to an operator's existing entries, never replacing them; (2) a
 # Deployment with no tolerations gets the list, one with others gets the entry
 # appended; (3) one already covered (the key, or a blanket Exists) is left
-# alone; (4) a re-run writes nothing; (5) no API → nothing, exit 0.
+# alone; (4) a re-run writes nothing; (5) no API → nothing, exit 0; (6) a
+# refused setting write still patches the DaemonSets, then exits non-zero so
+# the converger retries.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$HERE/platform/host-migrations/2026.10.12/0002-system-tolerates-tenant-drain-taint.sh"
@@ -38,7 +40,8 @@ if [ "$kind" = settings.longhorn.io ]; then
   [ -e "$S/lh-setting" ] || exit 1
   case "$verb" in
     get) cat "$S/lh-setting" ;;
-    patch) printf '%s' "$json" | sed -E 's/^\{"value":"(.*)"\}$/\1/' > "$S/lh-setting"; echo "lh $json" >> "$S/patches" ;;
+    patch) [ -e "$S/lh-refuse" ] && exit 1
+           printf '%s' "$json" | sed -E 's/^\{"value":"(.*)"\}$/\1/' > "$S/lh-setting"; echo "lh $json" >> "$S/patches" ;;
   esac
   exit 0
 fi
@@ -97,6 +100,18 @@ echo "== 4. no API → nothing"
 touch "$WORK/state/api-down"; dep cnpg-system/cnpg-cloudnative-pg ''
 run && ok "exits 0" || no "failed with the API down"
 [ ! -e "$WORK/state/patches" ] && ok "no patch" || no "patched without the API"
+
+echo "== 5. a refused Longhorn setting write does not stop the rest — and is retried"
+rm -rf "$WORK/state"/* ; printf '%s' '' > "$WORK/state/lh-setting"; touch "$WORK/state/lh-refuse"
+dsx longhorn-csi-plugin ''
+dep cnpg-system/cnpg-cloudnative-pg ''
+run && no "exited 0 although a patch failed" || ok "exits non-zero"
+grep -q '^longhorn-system/longhorn-csi-plugin json' "$WORK/state/patches" && ok "DaemonSet still patched" || no "DaemonSet not patched after the refused setting write"
+grep -q '^cnpg-system/cnpg-cloudnative-pg json' "$WORK/state/patches" && ok "Deployment still patched" || no "Deployment not patched"
+grep -q "FAILED to set Longhorn taint-toleration" "$WORK/out" && ok "failure named" || no "failure not named: $(cat "$WORK/out")"
+rm -f "$WORK/state/lh-refuse"
+run && ok "retry exits 0" || no "retry failed: $(cat "$WORK/out")"
+[ "$(cat "$WORK/state/lh-setting")" = 'insula.host/server-only=true:NoSchedule' ] && ok "retry sets the setting" || no "retry setting: $(cat "$WORK/state/lh-setting")"
 
 echo "test-host-migration-tenant-drain-taint: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

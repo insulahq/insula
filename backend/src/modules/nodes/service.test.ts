@@ -7,6 +7,7 @@ import {
   deleteNode,
   drainNode,
   listNodesEnriched,
+  updateNode,
 } from './service.js';
 
 // Schema mock so the dynamic import inside service.ts doesn't blow up.
@@ -762,9 +763,13 @@ describe('Postgres instances on a drained / deleted node', () => {
   // "Drain tenants" never cordons a server: it switches off "Can host tenant
   // workloads" (label + the server-only NoSchedule taint every system workload
   // tolerates). A chainable stub lets the real updateNode run against it.
-  function chainDb(): Database {
+  function chainDb(canHost: Record<string, boolean> = {}): Database {
     const rows = Object.assign(
-      ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true, labels: {}, taints: [], ingressMode: 'all' })),
+      ['s1', 's2', 's3'].map((name) => ({
+        name, role: 'server', canHostTenantWorkloads: canHost[name] ?? true, labels: {},
+        taints: canHost[name] === false ? [{ key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' }] : [],
+        ingressMode: 'all',
+      })),
       { rows: [] as unknown[] },
     );
     const proxy: unknown = new Proxy(() => proxy, {
@@ -778,11 +783,14 @@ describe('Postgres instances on a drained / deleted node', () => {
       ...((k8s as unknown as { apps?: Record<string, unknown> }).apps ?? {}),
       listNamespacedDaemonSet: vi.fn(async () => ({ items: [{ metadata: { name: 'longhorn-csi-plugin' }, spec: { template: { spec: { tolerations } } } }] })),
     };
+    // Longhorn's taint-toleration setting, which its instance managers take.
+    const custom = (k8s as unknown as { custom: Record<string, unknown> }).custom;
+    custom.getNamespacedCustomObject = vi.fn(async () => ({ value: 'insula.host/server-only=true:NoSchedule' }));
   };
 
   it('drainNode on a server: new tenants are kept off by the taint — never a cordon — and the node is marked', async () => {
     const { k8s, patchNode } = makeHaK8s(haCluster);
-    tolerantLonghorn(k8s, [{ key: 'insula.host/server-only', operator: 'Equal', effect: 'NoSchedule' }]);
+    tolerantLonghorn(k8s, [{ key: 'insula.host/server-only', operator: 'Equal', value: 'true', effect: 'NoSchedule' }]);
     const result = await drainNode(k8s, chainDb(), 's2', { tenantPlacement: {} });
     expect(result).toMatchObject({ cordoned: false, blockedNewTenants: true });
     const bodies = patchNode.mock.calls.map((c) => JSON.stringify(c[0]));
@@ -798,6 +806,27 @@ describe('Postgres instances on a drained / deleted node', () => {
       .rejects.toMatchObject({ code: 'NODE_TENANT_TAINT_UNSAFE', status: 409 });
     expect(patchNode).not.toHaveBeenCalled();
     expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('drainNode refuses — before changing anything — a re-pin target that does not host tenants (a tenant-drained server)', async () => {
+    const { k8s, patchNode, evict } = makeHaK8s(haCluster);
+    tolerantLonghorn(k8s, [{ operator: 'Exists' }]);
+    await expect(drainNode(k8s, chainDb({ s3: false }), 's2', { tenantPlacement: { 'tenant-a': 's3' } }))
+      .rejects.toMatchObject({ code: 'NODE_REPIN_TARGET_UNAVAILABLE', status: 409, details: { target: 's3' } });
+    expect(patchNode).not.toHaveBeenCalled();
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('an edit-form save that leaves "Can host tenant workloads" as it was keeps the drained mark; turning it on clears it', async () => {
+    const patchNode = vi.fn(async () => ({}));
+    const k8s = { core: { patchNode, readNode: vi.fn(async () => { throw new Error('skip refresh'); }) } } as unknown as K8sClients;
+    // A server drained with "keep new tenants off" unticked: still hosts tenants. Its notes are edited.
+    await updateNode(chainDb({ s1: true }), k8s, 's1', { canHostTenantWorkloads: true, notes: 'rack 4' });
+    expect(JSON.stringify(patchNode.mock.calls)).not.toContain('tenants-drained');
+    // A tenant-drained server is let back.
+    patchNode.mockClear();
+    await updateNode(chainDb({ s1: false }), k8s, 's1', { canHostTenantWorkloads: true });
+    expect(JSON.stringify(patchNode.mock.calls[0][0])).toContain('"insula.host/tenants-drained":null');
   });
 
   it('drainNode: an uncovered instance still blocks without forceLastReplica', async () => {

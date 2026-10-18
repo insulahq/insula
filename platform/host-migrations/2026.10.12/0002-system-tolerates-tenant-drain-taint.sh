@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # description: Lets Longhorn, the CNPG operator and snapshot-controller run on a server whose tenants were drained; Longhorn restarts its node components once.
-# idempotent: reads Longhorn's taint-toleration setting and each Deployment's tolerations with -o jsonpath and adds the insula.host/server-only toleration only where it is missing; a re-run writes nothing.
+# idempotent: reads Longhorn's taint-toleration setting and each Deployment's tolerations with -o jsonpath and adds the insula.host/server-only toleration only where it is missing; a re-run writes nothing. A failed patch does not stop the others; the script then exits non-zero, so the converger retries it.
 # allow-paths: (none — cluster-only change via kube-API, touches no host file)
 # blocks-on-failure: no    # ADR-056: nothing later depends on this; until it runs, draining a server's tenants could keep these components from starting there.
 # phase: before-services    # ADR-064: tolerations on bootstrap-installed components; needs nothing from the new release.
@@ -32,6 +32,10 @@ MIG="0002-system-tolerates-tenant-drain-taint"
 TAINT_KEY="insula.host/server-only"
 LH_TOLERATION="${TAINT_KEY}=true:NoSchedule"
 kube() { kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml "$@"; }
+# Each patch stands alone — the DaemonSet patches matter most on a live
+# cluster and must not depend on the setting write. Any failure → exit 1 at
+# the end: no marker, so the next converge pass retries.
+failed=0
 
 if ! kube get --raw=/readyz >/dev/null 2>&1; then
   echo "${MIG}: kube-API not reachable from this node — skipping (another node applies it)"
@@ -45,8 +49,11 @@ if kube -n longhorn-system get settings.longhorn.io taint-toleration >/dev/null 
     *";${TAINT_KEY}"[=:]*) echo "${MIG}: Longhorn already tolerates ${TAINT_KEY}" ;;
     *)
       if [ -n "$current" ]; then next="${current};${LH_TOLERATION}"; else next="${LH_TOLERATION}"; fi
-      kube -n longhorn-system patch settings.longhorn.io taint-toleration --type=merge -p "{\"value\":\"${next}\"}" >/dev/null
-      echo "${MIG}: Longhorn taint-toleration set to '${next}'"
+      if kube -n longhorn-system patch settings.longhorn.io taint-toleration --type=merge -p "{\"value\":\"${next}\"}" >/dev/null; then
+        echo "${MIG}: Longhorn taint-toleration set to '${next}'"
+      else
+        echo "${MIG}: FAILED to set Longhorn taint-toleration" >&2; failed=1
+      fi
       ;;
   esac
 
@@ -66,8 +73,11 @@ if kube -n longhorn-system get settings.longhorn.io taint-toleration >/dev/null 
     else
       op='{"op":"add","path":"/spec/template/spec/tolerations","value":['"${tol}"']}'
     fi
-    kube -n longhorn-system patch daemonset "$ds" --type=json -p "[${op}]" >/dev/null
-    echo "${MIG}: longhorn-system/${ds} now tolerates ${TAINT_KEY}"
+    if kube -n longhorn-system patch daemonset "$ds" --type=json -p "[${op}]" >/dev/null; then
+      echo "${MIG}: longhorn-system/${ds} now tolerates ${TAINT_KEY}"
+    else
+      echo "${MIG}: FAILED to patch longhorn-system/${ds}" >&2; failed=1
+    fi
   done
 else
   echo "${MIG}: no Longhorn on this cluster — skipped"
@@ -92,7 +102,14 @@ for t in cnpg-system/cnpg-cloudnative-pg kube-system/snapshot-controller; do
   else
     op='{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"'"${TAINT_KEY}"'","operator":"Exists","effect":"NoSchedule"}]}'
   fi
-  kube -n "$ns" patch deployment "$name" --type=json -p "[${op}]" >/dev/null
-  echo "${MIG}: ${t} now tolerates ${TAINT_KEY}"
+  if kube -n "$ns" patch deployment "$name" --type=json -p "[${op}]" >/dev/null; then
+    echo "${MIG}: ${t} now tolerates ${TAINT_KEY}"
+  else
+    echo "${MIG}: FAILED to patch ${t}" >&2; failed=1
+  fi
 done
+if [ "$failed" -ne 0 ]; then
+  echo "${MIG}: some patches failed — the next converge pass retries" >&2
+  exit 1
+fi
 echo "${MIG}: done"

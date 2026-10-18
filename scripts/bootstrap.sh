@@ -3613,14 +3613,35 @@ pin_system_components_to_servers() {
       "cert-manager:cert-manager" \
       "cert-manager:cert-manager-webhook" \
       "cert-manager:cert-manager-cainjector" \
-      "kube-system:sealed-secrets-controller" \
-      "kube-system:snapshot-controller" \
-      "cnpg-system:cnpg-cloudnative-pg"; do
+      "kube-system:sealed-secrets-controller"; do
     local ns="${ns_name%%:*}"
     local name="${ns_name#*:}"
     kubectl patch deployment "$name" -n "$ns" \
       --type=strategic \
       --patch="$server_patch" 2>/dev/null || true
+  done
+
+  # Leader-elect operators that may run on any node but must keep starting on
+  # a server whose tenants were drained (server-only taint): APPEND the
+  # toleration — a strategic patch would replace their whole list. Same as
+  # host-migration 2026.10.12/0002 on existing clusters.
+  local tols
+  for ns_name in \
+      "kube-system:snapshot-controller" \
+      "cnpg-system:cnpg-cloudnative-pg"; do
+    local ns="${ns_name%%:*}"
+    local name="${ns_name#*:}"
+    kubectl -n "$ns" get deployment "$name" -o name >/dev/null 2>&1 || continue
+    tols=$(kubectl -n "$ns" get deployment "$name" \
+      -o jsonpath='{range .spec.template.spec.tolerations[*]}{.key}{"|"}{.operator}{"\n"}{end}' 2>/dev/null || true)
+    printf '%s\n' "$tols" | grep -qE '^(insula\.host/server-only\||\|Exists$)' && continue
+    if [[ -n "$tols" ]]; then
+      kubectl -n "$ns" patch deployment "$name" --type=json \
+        -p '[{"op":"add","path":"/spec/template/spec/tolerations/-","value":{"key":"insula.host/server-only","operator":"Exists","effect":"NoSchedule"}}]' >/dev/null 2>&1 || true
+    else
+      kubectl -n "$ns" patch deployment "$name" --type=json \
+        -p '[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"insula.host/server-only","operator":"Exists","effect":"NoSchedule"}]}]' >/dev/null 2>&1 || true
+    fi
   done
 
   # Runs on every node (DaemonSets) — needs toleration only so it
