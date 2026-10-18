@@ -62,8 +62,13 @@ describe('the tenant taint must not keep system components off a server', () => 
     await expect(assertTaintSafeForSystem(k8sWithDs([ds('longhorn-csi-plugin', [{ operator: 'Exists' }])]), 's2')).resolves.toBeUndefined();
   });
 
-  it('cannot read the DaemonSets: refuse (fail closed) rather than risk a server\'s storage', async () => {
-    await expect(assertTaintSafeForSystem(k8sWithDs(Object.assign(new Error('timeout'), { code: 500 })), 's2')).rejects.toThrow('timeout');
+  it('cannot read the DaemonSets or the setting: refuse (fail closed), named, rather than risk a server\'s storage', async () => {
+    await expect(assertTaintSafeForSystem(k8sWithDs(Object.assign(new Error('timeout'), { code: 500 })), 's2'))
+      .rejects.toMatchObject({ code: 'NODE_TAINT_PRECHECK_FAILED', status: 503, message: expect.stringContaining('timeout') });
+    // Lab staging: the API's RBAC did not cover the setting — a 403 must not read as "tolerated" nor as a bare 500.
+    const forbidden = Object.assign(new Error('HTTP-Code: 403\nMessage: forbidden'), { code: 403 });
+    await expect(assertTaintSafeForSystem(k8sWithDs([ds('longhorn-csi-plugin', [{ operator: 'Exists' }])], forbidden), 's2'))
+      .rejects.toMatchObject({ code: 'NODE_TAINT_PRECHECK_FAILED', status: 503, message: expect.stringContaining('HTTP-Code: 403)') });
   });
 });
 

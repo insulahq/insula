@@ -88,7 +88,20 @@ export async function taintBlocksSystem(k8s: K8sClients): Promise<string[]> {
 
 /** Refuse — before anything changes — to put the taint on while it would cost a server its storage. */
 export async function assertTaintSafeForSystem(k8s: K8sClients, node: string): Promise<void> {
-  const blocked = await taintBlocksSystem(k8s);
+  let blocked: string[];
+  try {
+    blocked = await taintBlocksSystem(k8s);
+  } catch (err) {
+    // Fail closed, and say so — an unread check is not a passed one.
+    throw new ApiError(
+      'NODE_TAINT_PRECHECK_FAILED',
+      `Cannot stop new tenants on '${node}': reading Longhorn's DaemonSets or its taint-toleration setting failed ` +
+      `(${(err as Error).message.split('\n')[0]}), so it is not known whether storage would still start there. ` +
+      `Nothing was changed.`,
+      503,
+      { node_name: node },
+    );
+  }
   if (blocked.length === 0) return;
   throw new ApiError(
     'NODE_TENANT_TAINT_UNSAFE',

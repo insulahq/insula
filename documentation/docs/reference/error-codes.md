@@ -71,6 +71,7 @@ a field the endpoint does not accept.
 | `NODE_DELETE_RUNS_MAIL` | 409 | Mail runs on the node — move it first (**Email → Operations → Placement**) |
 | `NODE_DELETE_EVICTION_BLOCKED` | 409 | A system pod could not be moved off (its disruption budget refused the eviction, or it was still shutting down when the wait ran out) — the node is left cordoned and nothing was deleted; press **Delete** again ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `NODE_DRAIN_BLOCK_FAILED` | 500 | The drain re-pinned the tenants but could not turn **Can host tenant workloads** off — run the drain again |
+| `NODE_TAINT_PRECHECK_FAILED` | 503 | Reading Longhorn's DaemonSets or its `taint-toleration` setting failed, so turning **Can host tenant workloads** off was refused — nothing was changed |
 | `NODE_TENANT_TAINT_UNSAFE` | 409 | Keeping tenants off a server would also keep Longhorn's node components (its DaemonSets, or the instance managers its `taint-toleration` setting governs) off it — the 2026.10.12 upgrade adds the toleration; nothing was changed |
 | `NODE_DELETE_PRECHECK_FAILED` | 503 | Reading Longhorn or the database instances failed, so the delete could not confirm the node holds no data — nothing was deleted |
 | `NODE_DELETE_HOLDS_TENANT_DATA` | 409 | The node holds the only copy of a tenant volume — re-pin the tenant and let its data move first ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
