@@ -295,6 +295,10 @@ PLATFORM_DOMAIN=""
 STALWART_MASTER_DOMAIN="local.host"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
+# --node-name, and the name resolve_k8s_node_name settles on. Every step uses
+# K8S_NODE_NAME, never $(hostname) — see "Node identity" below.
+NODE_NAME_FLAG=""
+K8S_NODE_NAME=""
 # What this run does, decided ONLY by flags (resolve_bootstrap_mode):
 #   create — no --join-as: this host becomes the FIRST server of a NEW cluster
 #            and installs the platform.
@@ -808,6 +812,10 @@ JOIN FLAGS:
 
 OPTIONS:
   --domain <FQDN>        Base domain (CREATE only, required there)
+  --node-name <name>     This node's Kubernetes name (default: the hostname).
+                         Pinned in k3s's config, so a later hostname change
+                         (a provider's cloud-init at reboot) never renames or
+                         duplicates the node. An existing node keeps its name.
   --host-tenant-workloads <true|false>
                          Whether this node accepts tenant pods.
                          Workers: defaults true (workers exist to run
@@ -1433,6 +1441,7 @@ parse_args() {
     [[ "$1" == --* ]] && PASSED_FLAGS+=("$1")
     case "$1" in
       --join-as)         NODE_ROLE="$2"; shift 2 ;;
+      --node-name)       NODE_NAME_FLAG="$2"; shift 2 ;;
       --host-tenant-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
       --env)             PLATFORM_ENV="$2"; shift 2 ;;
       --release-tag)     RELEASE_TAG="$2"; shift 2 ;;
@@ -3757,7 +3766,7 @@ pin_system_components_to_servers() {
 # most workers don't need this step.
 apply_node_labels_and_taints() {
   local node_name
-  node_name="$(hostname)"
+  node_name="${K8S_NODE_NAME}"
 
   if [[ "$NODE_ROLE" == "worker" ]]; then
     log "Worker node labelling must be applied from the control plane."
@@ -3903,7 +3912,106 @@ tag_longhorn_node_for_system_replicas() {
     log "Worker node — Longhorn 'system' tag is server-only, skipping."
     return 0
   fi
-  apply_longhorn_node_tag "$(hostname)"
+  apply_longhorn_node_tag "${K8S_NODE_NAME}"
+}
+
+# ── Node identity ───────────────────────────────────────────────────────────
+# k3s names its node after the HOSTNAME unless told otherwise, and re-reads it
+# at every start. A hostname reset at boot (a provider's cloud-init) therefore
+# registered a production server as a NEW node beside its own NotReady one —
+# Calico refused it (same addresses), and both node objects carried the same
+# etcd member. The name is decided once (resolve_k8s_node_name) and pinned in a
+# k3s drop-in before k3s first starts (pin_k3s_node_name); every later step
+# uses K8S_NODE_NAME. Existing nodes: host-migration 2026.10.12/0003-pin-k3s-node-name.
+K8S_NODE_NAME_DROPIN=/etc/rancher/k3s/config.yaml.d/10-node-name.yaml
+K8S_NODE_NAME_RE='^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+
+# node-name values already in k3s's config (config.yaml or a drop-in), one per
+# line. A line that mentions node-name in any other form (block scalar, flow
+# style) prints "?unreadable:<line>" — refused by the caller, never guessed at.
+k3s_pinned_node_names() {
+  local line v
+  { cat /etc/rancher/k3s/config.yaml /etc/rancher/k3s/config.yaml.d/*.yaml 2>/dev/null || true; } \
+    | { grep -E 'node-name' || true; } | { grep -vE '^[[:space:]]*#' || true; } \
+    | while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        v="$(printf '%s\n' "$line" | sed -nE "s/^[\"']?node-name[\"']?[[:space:]]*:[[:space:]]*[\"']?([a-z0-9]([-a-z0-9.]*[a-z0-9])?)[\"']?[[:space:]]*(#.*)?\$/\1/p")"
+        if [[ -n "$v" ]]; then echo "$v"; else echo "?unreadable:${line}"; fi
+      done | sort -u
+}
+
+# The name this host's kubelet authenticates as, when k3s has run here before.
+k3s_registered_node_name() {
+  local cert=/var/lib/rancher/k3s/agent/client-kubelet.crt
+  [[ -s "$cert" ]] && command -v openssl >/dev/null 2>&1 || return 0
+  openssl x509 -in "$cert" -noout -subject -nameopt multiline 2>/dev/null \
+    | sed -n 's/^[[:space:]]*commonName[[:space:]]*=[[:space:]]*system:node://p' | head -1 || true
+}
+
+# An existing node keeps its name: a pin first, then the name k3s registered
+# with; only a host k3s never ran on takes --node-name or the hostname.
+resolve_k8s_node_name() {
+  local pinned registered member calico_node candidate
+  pinned="$(k3s_pinned_node_names)"
+  if grep -q '^?unreadable:' <<<"$pinned"; then
+    error "k3s's config sets node-name in a form this script cannot read ($(grep -m1 '^?unreadable:' <<<"$pinned" | cut -d: -f2-)) — write it as 'node-name: <name>'."
+  fi
+  if [[ "$(printf '%s\n' "$pinned" | grep -c . || true)" -gt 1 ]]; then
+    error "k3s's config pins more than one node-name ($(printf '%s ' $pinned)) — fix /etc/rancher/k3s/config.yaml[.d] first."
+  fi
+  registered="$(k3s_registered_node_name)"
+  if [[ -s /var/lib/rancher/k3s/agent/client-kubelet.crt && -z "$registered" ]] && command -v openssl >/dev/null 2>&1; then
+    error "cannot read this host's node name from /var/lib/rancher/k3s/agent/client-kubelet.crt — k3s ran here before, so its name must be kept. Check the file, or pass the name with --node-name only on a host k3s never ran on."
+  fi
+  if [[ -n "$pinned" && -n "$registered" && "$pinned" != "$registered" ]]; then
+    error "k3s's config pins '${pinned}' but this host's kubelet is registered as '${registered}'. Resolve that first (Nodes & cluster → When a node comes back under another name)."
+  fi
+  if [[ -s /var/lib/rancher/k3s/server/db/etcd/name ]]; then
+    member="$(sed -E 's/-[0-9a-f]{8}$//' /var/lib/rancher/k3s/server/db/etcd/name | head -1)"
+    if [[ -n "$registered" && "$member" != "$registered" ]]; then
+      error "this server's kubelet is registered as '${registered}' but its etcd member was created as '${member}' — it came back under a new name. Recover first (Nodes & cluster → When a node comes back under another name)."
+    fi
+  fi
+  # Calico writes its name only once its address-conflict check passed, so a
+  # node that came back under a new name (worker or server) leaves the true name here.
+  if [[ -s /var/lib/calico/nodename && -n "$registered" ]]; then
+    calico_node="$(head -1 /var/lib/calico/nodename | tr -d '[:space:]')"
+    if [[ -n "$calico_node" && "$calico_node" != "$registered" ]]; then
+      error "this host's kubelet is registered as '${registered}' but Calico last ran here as '${calico_node}' — it came back under a new name. Recover first (Nodes & cluster → When a node comes back under another name)."
+    fi
+  fi
+  if [[ -n "$pinned" ]]; then candidate="$pinned"
+  elif [[ -n "$registered" ]]; then candidate="$registered"
+  elif [[ -n "$NODE_NAME_FLAG" ]]; then candidate="$NODE_NAME_FLAG"
+  else candidate="$(uname -n | tr '[:upper:]' '[:lower:]')"
+  fi
+  if [[ -n "$NODE_NAME_FLAG" && "$NODE_NAME_FLAG" != "$candidate" ]]; then
+    error "--node-name ${NODE_NAME_FLAG}: this host is already the Kubernetes node '${candidate}'. Renaming a node is not supported — drop --node-name, or remove the node and reinstall the host."
+  fi
+  if [[ ! "$candidate" =~ $K8S_NODE_NAME_RE ]] || (( ${#candidate} > 253 )); then
+    error "'${candidate}' is not a valid Kubernetes node name (lowercase letters, digits, '-' and '.'). Pass --node-name <name>."
+  fi
+  K8S_NODE_NAME="$candidate"
+}
+
+# Before k3s first starts: write the pin unless one is already set.
+pin_k3s_node_name() {
+  if [[ -n "$(k3s_pinned_node_names)" ]]; then
+    log "Node name: ${K8S_NODE_NAME} (already pinned in k3s's config)"
+    return 0
+  fi
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  cat > "$K8S_NODE_NAME_DROPIN" <<EOF
+# Written by bootstrap.sh (pin_k3s_node_name) and converged on existing nodes
+# by host-migration 2026.10.12/0003-pin-k3s-node-name.
+#
+# This node's Kubernetes name, pinned so k3s never derives it from the
+# hostname: a hostname reset at boot would otherwise register the machine as
+# a new node beside its own. Renaming a node is not supported — do not edit.
+node-name: ${K8S_NODE_NAME}
+EOF
+  chmod 0644 "$K8S_NODE_NAME_DROPIN"
+  log "Node name: ${K8S_NODE_NAME} — pinned in k3s's config; a later hostname change no longer affects the cluster."
 }
 
 install_k3s() {
@@ -6081,10 +6189,10 @@ ensure_hostport_dnat() {
   local local_pod
   local_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n "$ns" get pod \
     -l "$selector" \
-    --field-selector "spec.nodeName=$(hostname)" \
+    --field-selector "spec.nodeName=${K8S_NODE_NAME}" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [[ -z "$local_pod" ]]; then
-    warn "  no local ${human} pod found via field-selector spec.nodeName=$(hostname); check its rollout state"
+    warn "  no local ${human} pod found via field-selector spec.nodeName=${K8S_NODE_NAME}; check its rollout state"
     return 0
   fi
   kctl -n "$ns" delete pod "$local_pod" --grace-period=10 >/dev/null 2>&1 || true
@@ -6102,9 +6210,9 @@ ensure_hostport_dnat() {
   warn "  ${human} hostPort :${port} still not answering $((_w * 2))s after recycling the local pod."
   warn "  This blocks external :${port} on THIS node only (hostPort DNAT); the cluster is otherwise fine."
   warn "  Investigate from this node:"
-  warn "    kubectl -n ${ns} get pod -o wide --field-selector spec.nodeName=$(hostname) -l ${selector}"
+  warn "    kubectl -n ${ns} get pod -o wide --field-selector spec.nodeName=${K8S_NODE_NAME} -l ${selector}"
   warn "    nft list chain ip nat CNI-HOSTPORT-DNAT   # a jump for dport ${port} must be present"
-  warn "  Then recycle again: kubectl -n ${ns} delete pod -l ${selector} --field-selector spec.nodeName=$(hostname)"
+  warn "  Then recycle again: kubectl -n ${ns} delete pod -l ${selector} --field-selector spec.nodeName=${K8S_NODE_NAME}"
 }
 
 # Back-compat wrapper — Traefik's :80. Callers predate the generalisation.
@@ -11266,7 +11374,7 @@ Copy the token from /var/lib/rancher/k3s/server/node-token on a server of the cl
 # wait_for_local_node_ready — servers only (a worker has no kubeconfig).
 wait_for_local_node_ready() {
   local node _w
-  node="$(hostname)"
+  node="${K8S_NODE_NAME}"
   log "Waiting for node ${node} to become Ready (up to 300s)..."
   for _w in $(seq 1 150); do
     if [[ "$(kubectl --kubeconfig="$KUBECONFIG" get node "$node" \
@@ -11285,7 +11393,7 @@ wait_for_local_pod() {
   local ns="$1" selector="$2" _w ready
   for _w in $(seq 1 150); do
     ready="$(kubectl --kubeconfig="$KUBECONFIG" -n "$ns" get pod -l "$selector" \
-      --field-selector "spec.nodeName=$(hostname)" \
+      --field-selector "spec.nodeName=${K8S_NODE_NAME}" \
       -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
     [[ "$ready" == "True" ]] && return 0
     sleep 2
@@ -11551,6 +11659,8 @@ main() {
   if [[ "$BOOTSTRAP_MODE" == "join" ]]; then
     run_join_preflight
   fi
+  # This node's Kubernetes name — decided before anything that uses it.
+  resolve_k8s_node_name
 
   # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
   # compat symlinks) BEFORE any phase writes markers/credentials into them.
@@ -11585,6 +11695,7 @@ main() {
     configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
+    pin_k3s_node_name
   fi
   if [[ "$DRY_RUN" == true ]]; then
     log ""

@@ -104,6 +104,67 @@ and
     an even count. Two servers are strictly a stepping-stone to three; they do
     not tolerate a failure. Three servers tolerate one loss; five tolerate two.
 
+## Node names
+
+Every node's Kubernetes name is **pinned** in k3s's configuration
+(`/etc/rancher/k3s/config.yaml.d/10-node-name.yaml`). Without the pin, k3s takes
+the name from the machine's hostname at every start — and a hostname that
+changes (a provider's cloud-init resetting it at boot, say) registers the
+machine as a **new** node beside its own NotReady one. That happened on a
+production server: the new node had no pod network (Calico refused its
+addresses, which the old node still held), so the server served nothing until
+it was recovered by hand.
+
+With the pin, the hostname is irrelevant to the cluster. New nodes are pinned
+by `insula bootstrap` (choose the name with `--node-name`, or it is the
+hostname at join time); nodes installed before 2026.10.12 are pinned by that
+upgrade's host change `0003-pin-k3s-node-name`, which takes the name the node
+is registered as — never the hostname — and restarts nothing.
+
+A node card shows **name not pinned** while a node is not yet protected (its
+host change has not run), and **name mismatch** if k3s's configuration names a
+different node than the one registered — its next k3s start would register it
+under that name. The host change refuses rather than guesses in that case and
+when a server has already come back under another name; the Host migrations
+card says why.
+
+### When a node comes back under another name
+
+Symptoms: after a reboot, a node stays **NotReady** and a node you never added
+appears with the server's addresses (often the provider's default hostname);
+on it, Calico crash-loops with *"conflicting node detected: IPv6 address
+conflict"*.
+
+!!! danger "Do not delete either node"
+    For a server, both node objects carry the same etcd member, and k3s removes
+    a server's etcd member when its node object is deleted — so deleting
+    **either** removes a live etcd voter. **Delete** refuses this
+    (`NODE_DELETE_SHARED_ETCD_MEMBER`); so must `kubectl`.
+
+Recovery — the old node object comes back to life, with its labels, its
+storage and its data:
+
+1. On the affected host: `systemctl stop k3s` (`k3s-agent` on a worker). On a
+   server, etcd keeps its quorum on the others.
+2. Pin the old name — the old object's name, as Cluster → Nodes shows it:
+   ```bash
+   install -d /etc/rancher/k3s/config.yaml.d
+   printf 'node-name: <old-name>\n' > /etc/rancher/k3s/config.yaml.d/10-node-name.yaml
+   ```
+3. On another server, strip the etcd role from the **duplicate** first — then
+   deleting it cannot touch etcd — and delete it:
+   ```bash
+   kubectl label node <duplicate> node-role.kubernetes.io/etcd-
+   kubectl get node <duplicate> --show-labels | grep -c node-role.kubernetes.io/etcd   # must print 0
+   kubectl delete node <duplicate>
+   kubectl -n kube-system delete secret <duplicate>.node-password.k3s --ignore-not-found
+   ```
+4. On the affected host: `systemctl start k3s` (or `k3s-agent`). The node is
+   Ready again within a minute, under its old name; Calico starts once the
+   duplicate is gone.
+5. In the panel, **Remove orphan** on the duplicate's card — it removes only
+   the platform's row.
+
 ## Cordon, drain, and maintenance
 
 A server does two jobs: it hosts tenants and it runs the platform (the

@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.12-rc.1] - 2026-10-18
-
 ### Changed
 
 - **"Drain Node" is now "Drain Tenants": it moves tenants and nothing else, and never cordons a
@@ -39,6 +37,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   storage.
 
 ### Fixed
+
+- **A hostname change at reboot no longer turns a server into a new node.** k3s named each node
+  after the machine's hostname and re-read it at every start, so a hostname reset at boot (a
+  provider's cloud-init) registered a production server as a NEW node beside its own NotReady
+  one: Calico refused the newcomer ("IPv6 address conflict" — the old node still held its
+  addresses), the server served nothing, and a third of the published addresses of most sites
+  went unanswered until it was recovered by hand. Every node's name is now pinned in k3s's
+  config: `insula bootstrap` pins it (new `--node-name`, default the hostname; an existing node
+  keeps its name, and every bootstrap step uses it instead of `$(hostname)`), and
+  host-migration `2026.10.12/0003` pins it on existing nodes — the name the kubelet is
+  registered as, never the hostname, and nothing restarts. It refuses rather than guesses when
+  a node has already come back under another name (its etcd member or Calico's record still
+  names the old one), or the config names another node or cannot be read. A node
+  card shows **name not pinned** / **name mismatch** while a node is not protected. **Delete**
+  now refuses a node whose etcd member another node object also carries
+  (`NODE_DELETE_SHARED_ETCD_MEMBER`): k3s removes a server's etcd member when its node object is
+  deleted, so deleting either object of such a pair would remove a live etcd voter. Recovery
+  steps: *Nodes & cluster → When a node comes back under another name*.
 
 - **Mail no longer fails over to a cordoned server.** Automatic failover walked the secondary
   and tertiary nodes skipping only ones that were missing or NotReady. A cordoned server is Ready,

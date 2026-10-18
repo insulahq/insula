@@ -90,6 +90,13 @@ The token depends on the role:
   an existing server; the join step then asks for it (hidden input, kept out of
   shell history).
 
+The node's Kubernetes name is the machine's hostname at join time unless you
+pass `--node-name <name>` — add it to the join line to choose the name, rather
+than renaming the host first. Either way the name is **pinned** in k3s's
+config, so a later hostname change (a provider resetting it at reboot) does not
+affect the cluster; an existing node keeps its name. See
+[Nodes & cluster → Node names](../operator/nodes-and-cluster.md#node-names).
+
 `--dual-stack` is added for you when the cluster runs IPv4 + IPv6. If the
 cluster's servers are pinned to a private network (`--cluster-network-cidr`),
 the join step says so in a comment: add the same `--cluster-network-cidr
