@@ -281,9 +281,13 @@ rules:
   # is these two percentages. Without the read the check cannot be made and
   # every move goes ahead unchecked (it says so in the log); the PITR budget
   # preflight had been assuming 100% over-provisioning for the same reason.
+  # taint-toleration: before a server's tenants are switched off (the
+  # server-only taint), the API checks Longhorn's instance managers — which take
+  # their tolerations from this setting — would still start there
+  # (nodes/system-pods.ts). Without the read every such switch is refused.
   - apiGroups: ["longhorn.io"]
     resources: ["settings"]
-    resourceNames: ["storage-over-provisioning-percentage", "storage-minimal-available-percentage"]
+    resourceNames: ["storage-over-provisioning-percentage", "storage-minimal-available-percentage", "taint-toleration"]
     verbs: ["get"]
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]

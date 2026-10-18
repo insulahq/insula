@@ -54,7 +54,7 @@ describe('alert category guard', () => {
       'tenant.resource_saturation_warning', 'tenant.resource_saturation_critical',
       'mailbox.quota_threshold', 'mailbox.quota_exceeded',
       'tenant.bandwidth_warning', 'tenant.bandwidth_exceeded',
-      'tasks.scheduled_failure', 'tenant.domain_verification',
+      'tasks.scheduled_failure', 'tenant.domain_verification', 'admin.tenant_integrity',
     ];
     const missing = referenced.filter((id) => {
       try { assertKnownCategory(id); return false; } catch { return true; }
@@ -137,3 +137,37 @@ describe('domain-verification alert predicate', () => {
     expect(domainQuery).not.toMatch(/<>\s*'active'/);
   });
 });
+
+/**
+ * Production: a tenant sat storage-state FAILED after an outage —
+ * every resize, restore, suspend and move refused — while its workloads ran
+ * fine, so the workloads-down tile had already gone. Nothing said so.
+ */
+describe('stuck storage state tile', () => {
+  const render = (q: unknown): string => JSON.stringify(q);
+
+  it('one tenant FAILED → a tile naming it and the failed operation, linking to the tenant', async () => {
+    const { buildAdminAlerts } = await import('./alerts.js');
+    const db = {
+      execute: async (q: unknown) => (render(q).includes("storage_lifecycle_state = 'failed'")
+        ? { rows: [{ total: 1, id: 't-1', name: 'Example Tenant', op_type: 'autoheal', minutes: 32 }] }
+        : { rows: [] }),
+    } as unknown as Parameters<typeof buildAdminAlerts>[0];
+    const tile = (await buildAdminAlerts(db)).find((a) => a.title.startsWith('Tenant storage operation'));
+    expect(tile).toMatchObject({
+      categoryId: 'admin.tenant_integrity',
+      value: '1',
+      subtitle: 'Example Tenant · auto-heal failed',
+      href: '/tenants/t-1',
+      detail: [['Example Tenant', 'auto-heal failed · 32 min ago']],
+    });
+    expect(tile?.note).toMatch(/Reset to idle/);
+  });
+
+  it('no FAILED tenant → no tile', async () => {
+    const { buildAdminAlerts } = await import('./alerts.js');
+    const db = { execute: async () => ({ rows: [] }) } as unknown as Parameters<typeof buildAdminAlerts>[0];
+    expect((await buildAdminAlerts(db)).find((a) => a.title.startsWith('Tenant storage operation'))).toBeUndefined();
+  });
+});
+

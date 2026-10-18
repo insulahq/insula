@@ -17,6 +17,7 @@ vi.mock('@/hooks/use-cluster-nodes', () => ({
   useNodeUsage: () => mockUsage(),
   useDeleteNode: () => ({ mutate: mockDeleteMutate, isPending: false }),
   useUpdateClusterNode: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
+  useDrainImpact: () => ({ data: undefined }),
 }));
 vi.mock('@/hooks/use-cluster-health', () => ({
   useNodeSubsystemHealth: () => mockSubsystem(),

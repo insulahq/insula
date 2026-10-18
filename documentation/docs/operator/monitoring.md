@@ -326,6 +326,12 @@ cannot fit yet.
 It is bounded: at most three attempts, backing off 10 minutes, 40 minutes, then
 160 minutes.
 
+A tenant pinned to a node that is **down** is not touched at all: its workloads
+come back when the node does, and scaling them down and up against a node that
+is not there only leaves the tenant marked failed. That cause is reported as
+*the node it is pinned to is down*, never as the quota refusals a shutting-down
+node produces in its first seconds.
+
 It is also **gated on the cause**, because the tenant's volume is single-writer:
 re-staging it means briefly taking down the workloads in that namespace that are
 still healthy. That price is worth paying to clear a stuck mount. It buys nothing
@@ -341,12 +347,26 @@ a clear conflict rather than colliding with it on the same volume.
 
 ### When recovery fails
 
-Only then are you alerted — `Tenant workloads down, auto-heal failed`, on every
-out-of-band channel. Alerting before the platform has tried teaches people to
-ignore the alert; alerting without saying whether it tried sends them to look in
-the wrong place. The notification names the workload, the cause in plain language,
-how many recovery attempts were made, the error from the last one, and what to go
-and do about that specific cause.
+Only then are you alerted — `Tenant workloads down`, in the bell, by email and by
+push. Alerting before the platform has tried teaches people to ignore the alert;
+alerting without saying whether it tried sends them to look in the wrong place.
+There is **one notification per tenant**, listing its workloads, the cause in
+plain language, whether recovery ran (and the error from the last attempt), and
+what to go and do about that specific cause. Tenants that are down because the
+node they are pinned to is down are reported **together, once per node** — one
+dead server does not send one alert per tenant.
+
+When the workloads run again you get **`Tenant workloads running again`**,
+grouped the same way, so every alert has its end.
+
+If recovery gave up and left the tenant's storage state **failed**, the platform
+resets it to idle by itself once every workload is running again — a failed
+recovery that the node's return made moot would otherwise refuse every later
+resize, restore, suspend or move. A failure left by an operation *you* started
+(resize, restore, disk check) stays failed for you to read. Any tenant whose
+storage state is failed shows on the dashboard as **Tenant storage operation
+failed**; open the tenant, read the failed operation on its storage card, then
+use **Reset to idle**.
 
 The tenant is told too, in their own panel, in terms they can use: their
 application is not running, automatic restart did not succeed, and operators have
@@ -481,10 +501,11 @@ families:
   notifications, not just as panel banners
   ([mail operations](mail-operations.md)).
 - **Tenant workloads down** — a tenant's applications have been unavailable past
-  the grace window *and* automatic recovery could not bring them back. Sent
-  out-of-band by design: an availability alert must never depend only on the
-  panel it is reporting on, so it does not appear in the in-app bell — the
-  dashboard card is its in-panel surface. See
+  the grace window *and* automatic recovery could not bring them back (or the
+  cause is one recovery cannot fix, such as the tenant's node being down). Sent
+  by email and push — never only through the panel it may be reporting on — and
+  to the in-app bell as well; the dashboard card shows it while it lasts.
+  **Tenant workloads running again** follows when it is over. See
   [Workloads that stop running](#workloads-that-stop-running).
 
 Each source can be enabled, disabled, and routed independently. Email is sent

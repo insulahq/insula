@@ -11,6 +11,7 @@ import * as schema from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { countServers } from './server-count.js';
 
 // Platform StatefulSets whose volumes this policy controls. Add to the
 // list when a new system StatefulSet ships with a PVC.
@@ -82,12 +83,12 @@ const MAX_HA_REPLICAS = 3;
 // two-thirds the storage and rebuild write-amplification of 3.
 const MAX_LOCAL_CNPG_REPLICAS = 2;
 
-export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+export function replicasForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   if (tier === 'local') return 1;
   // HA: replicate to one server up to MAX_HA_REPLICAS. With the cap at 3,
   // a 3-server cluster lands one replica per server; a 4+ server cluster
   // still gets 3 (extra servers contribute capacity, not extra replicas).
-  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+  return Math.max(2, Math.min(serverCount, MAX_HA_REPLICAS));
 }
 
 // Stateless platform Deployments that scale 1↔min(serverCount,3) with the
@@ -129,13 +130,13 @@ export function replicasFor(d: ManagedDeployment, desired: number): number {
 }
 
 // Single-server (local) installs default to 1 replica per stateless
-// service. HA scales to min(readyServerCount, MAX_HA_REPLICAS=3) so a
+// service. HA scales to min(serverCount, MAX_HA_REPLICAS=3) so a
 // 3-server cluster gets 1 pod per server (the "all servers same state"
 // invariant); a 4-5 server cluster still has 3 replicas with the extra
 // servers providing failover headroom for tenant workloads.
-export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   if (tier === 'local') return 1;
-  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+  return Math.max(2, Math.min(serverCount, MAX_HA_REPLICAS));
 }
 
 // Leader-elect operators. These run with a single active leader at a
@@ -199,10 +200,10 @@ const MAX_LEADER_ELECT_REPLICAS = 2;
 
 export function leaderElectReplicasForSystemTier(
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): number {
   if (tier === 'local') return 1;
-  return Math.max(1, Math.min(readyServerCount, MAX_LEADER_ELECT_REPLICAS));
+  return Math.max(1, Math.min(serverCount, MAX_LEADER_ELECT_REPLICAS));
 }
 
 // CNPG clusters. Apply HA flips spec.instances 1↔3 — CNPG streams
@@ -220,12 +221,12 @@ export function leaderElectReplicasForSystemTier(
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'system-db' },
 ];
-// CNPG instance count tracks the same readyServerCount-aware policy
+// CNPG instance count tracks the same serverCount-aware policy
 // so postgres replication fans out across every server in HA mode
 // (matching Longhorn replicas for symmetric tolerance).
-export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   if (tier === 'local') return 1;
-  return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
+  return Math.max(2, Math.min(serverCount, MAX_HA_REPLICAS));
 }
 
 // Valkey (platform-wide Redis-protocol coordinator cache) lives in
@@ -236,14 +237,14 @@ export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', readyServerCoun
 // In `local` mode the StatefulSet shrinks to a single pod (no
 // Sentinel quorum, but a single-pod cluster has no failover need
 // either — the cache is purely in-memory and rebuilds on Pod
-// restart). HA mode scales to readyServerCount (capped) so each
+// restart). HA mode scales to serverCount (capped) so each
 // server hosts one Valkey + Sentinel pair via DoNotSchedule
 // topologySpread.
 const VALKEY_NAMESPACE = 'redis-system';
 const VALKEY_STATEFULSET = 'valkey';
 const VALKEY_CONFIGMAP = 'valkey-config';
 
-export function valkeyReplicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+export function valkeyReplicasForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   // In `local` mode, run a single replica regardless of node count —
   // sentinel quorum requires 3 anyway, so 1 vs 2 makes no difference
   // in failover capability and 1 saves resources.
@@ -251,8 +252,8 @@ export function valkeyReplicasForSystemTier(tier: 'local' | 'ha', readyServerCou
   // HA mode: ≥3 to give Sentinel a quorum (2 of 3) for failover
   // elections. On a 2-server cluster (rare; HA threshold is 3+),
   // fall back to 1 — Sentinel can't quorum on 2 anyway.
-  if (readyServerCount < HA_SERVER_THRESHOLD) return 1;
-  return Math.min(readyServerCount, MAX_HA_REPLICAS);
+  if (serverCount < HA_SERVER_THRESHOLD) return 1;
+  return Math.min(serverCount, MAX_HA_REPLICAS);
 }
 
 // Memory budget per Valkey pod. Scales with cluster size so a
@@ -265,13 +266,13 @@ export function valkeyReplicasForSystemTier(tier: 'local' | 'ha', readyServerCou
 // rolling restart — see patchValkey() for the full path.
 export function valkeyMaxMemoryBytesForSystemTier(
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): number {
   // local mode: 32 MiB — small but sufficient for a single-node lab.
   if (tier === 'local') return 32 * 1024 * 1024;
   // HA mode: 32 MiB / replica baseline + 32 MiB / additional server
   // beyond the threshold. 3 servers → 96 MiB; 4 → 128 MiB; 5 → 160 MiB.
-  const replicas = valkeyReplicasForSystemTier(tier, readyServerCount);
+  const replicas = valkeyReplicasForSystemTier(tier, serverCount);
   return Math.max(32, replicas * 32) * 1024 * 1024;
 }
 
@@ -360,16 +361,26 @@ export async function setPolicy(
 export async function readClusterState(
   k8s: K8sClients,
   db: Database,
-): Promise<{ readyServerCount: number; totalNodeCount: number; recommendedTier: 'local' | 'ha'; volumes: VolumeFact[] }> {
+): Promise<{
+  readyServerCount: number;
+  totalNodeCount: number;
+  sizingServerCount: number;
+  recommendedTier: 'local' | 'ha';
+  volumes: VolumeFact[];
+}> {
   const policy = await getPolicy(db);
-  // desiredReplicas is computed AFTER readyServerCount is known —
-  // HA tier scales to min(readyServerCount, MAX_HA_REPLICAS=3).
+  // desiredReplicas is computed AFTER the server count is known —
+  // HA tier scales to min(sizingServerCount, MAX_HA_REPLICAS=3).
   // Beyond 3 servers, extras contribute failover headroom for tenant
   // workloads instead of additional system replicas.
 
-  // Count Ready server nodes by label
-  // (insula.host/node-role=server) so workers don't
-  // bump the recommendation. A 3-server quorum is the threshold.
+  // Count server nodes by label (insula.host/node-role=server) so
+  // workers don't bump the recommendation. A 3-server quorum is the
+  // threshold.
+  //
+  // Two counts (server-count.ts): the recommendation and the UI read the
+  // READY servers; every replica count is sized to the servers PRESENT, so
+  // a server that is only down (reboot, maintenance) does not shrink HA.
   //
   // `totalNodeCount` is named for the API field but means "total
   // server-tagged nodes" — workers are excluded so the UI banner's
@@ -379,19 +390,12 @@ export async function readClusterState(
   // 4 workers reads as under-resourced when the 3 servers are exactly
   // what the recommendation needs).
   const nodes = await k8s.core.listNode();
-  let readyServerCount = 0;
-  let totalNodeCount = 0;
-  for (const node of nodes.items ?? []) {
-    const labels = node.metadata?.labels ?? {};
-    const isServer = labels['insula.host/node-role'] === 'server'
-      || (node.spec?.taints ?? []).some((t) => t.key === 'node-role.kubernetes.io/control-plane');
-    if (!isServer) continue;
-    totalNodeCount++;
-    const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
-    if (ready?.status === 'True') readyServerCount++;
-  }
+  const servers = countServers(nodes.items ?? []);
+  const readyServerCount = servers.ready;
+  const totalNodeCount = servers.present;
+  const sizingServerCount = servers.present;
   const recommendedTier: 'local' | 'ha' = readyServerCount >= HA_SERVER_THRESHOLD ? 'ha' : 'local';
-  const desiredReplicas = replicasForSystemTier(policy.systemTier, readyServerCount);
+  const desiredReplicas = replicasForSystemTier(policy.systemTier, sizingServerCount);
 
   // M-NS-2: build the set of system-tagged nodes once so each volume's
   // placement check is a constant-time lookup. A k8s node carries
@@ -496,7 +500,7 @@ export async function readClusterState(
   //               disk-failure tolerance comes from CNPG instance failover,
   //               not Longhorn).
   //
-  //   local tier → min(readyServerCount, MAX_LOCAL_CNPG_REPLICAS) replicas for
+  //   local tier → min(sizingServerCount, MAX_LOCAL_CNPG_REPLICAS) replicas for
   //               the SINGLE instance's PVC. In local tier there is exactly
   //               ONE postgres instance, so replicating its one volume is NOT
   //               quadratic. The reason is DURABILITY: that one volume holds
@@ -508,7 +512,7 @@ export async function readClusterState(
   //               No pinning, so drain/relocation still work. On a
   //               single-server install min(1,2)=1 (can't do more).
   const cnpgDesiredReplicas = policy.systemTier === 'local'
-    ? Math.max(1, Math.min(readyServerCount, MAX_LOCAL_CNPG_REPLICAS))
+    ? Math.max(1, Math.min(sizingServerCount, MAX_LOCAL_CNPG_REPLICAS))
     : 1;
   for (const c of CNPG_CLUSTERS) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
@@ -545,7 +549,7 @@ export async function readClusterState(
     }
   }
 
-  return { readyServerCount, totalNodeCount, recommendedTier, volumes };
+  return { readyServerCount, totalNodeCount, sizingServerCount, recommendedTier, volumes };
 }
 
 export type ApplyPatchResult = {
@@ -621,10 +625,10 @@ export async function applyPolicy(
 
   return {
     volumes: await patchLonghornVolumes(k8s, state.volumes),
-    deployments: await patchStatelessDeployments(k8s, tier, state.readyServerCount),
-    leaderElectDeployments: await patchLeaderElectDeployments(k8s, tier, state.readyServerCount),
-    cnpgClusters: await patchCnpgClusters(k8s, tier, state.readyServerCount),
-    valkey: await patchValkey(k8s, tier, state.readyServerCount),
+    deployments: await patchStatelessDeployments(k8s, tier, state.sizingServerCount),
+    leaderElectDeployments: await patchLeaderElectDeployments(k8s, tier, state.sizingServerCount),
+    cnpgClusters: await patchCnpgClusters(k8s, tier, state.sizingServerCount),
+    valkey: await patchValkey(k8s, tier, state.sizingServerCount),
   };
 }
 
@@ -826,9 +830,9 @@ export async function patchDeploymentsToReplicaCount(
 async function patchStatelessDeployments(
   k8s: K8sClients,
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): Promise<DeploymentPatchResult[]> {
-  const desired = deploymentReplicasForSystemTier(tier, readyServerCount);
+  const desired = deploymentReplicasForSystemTier(tier, serverCount);
   // topologySpread lives in .spec.template.spec.topologySpreadConstraints
   // — that IS managed by Flux SSA. We don't patch it imperatively
   // (would get reverted). Operators who want HA topology spread set it
@@ -839,9 +843,9 @@ async function patchStatelessDeployments(
 async function patchLeaderElectDeployments(
   k8s: K8sClients,
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): Promise<DeploymentPatchResult[]> {
-  const desired = leaderElectReplicasForSystemTier(tier, readyServerCount);
+  const desired = leaderElectReplicasForSystemTier(tier, serverCount);
   return patchDeploymentsToReplicaCount(k8s, LEADER_ELECT_DEPLOYMENTS, desired);
 }
 
@@ -872,11 +876,11 @@ async function patchLeaderElectDeployments(
 export async function detectDeploymentReplicaDrift(
   k8s: K8sClients,
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): Promise<boolean> {
   const groups: ReadonlyArray<{ deployments: ReadonlyArray<ManagedDeployment>; desired: number }> = [
-    { deployments: STATELESS_DEPLOYMENTS, desired: deploymentReplicasForSystemTier(tier, readyServerCount) },
-    { deployments: LEADER_ELECT_DEPLOYMENTS, desired: leaderElectReplicasForSystemTier(tier, readyServerCount) },
+    { deployments: STATELESS_DEPLOYMENTS, desired: deploymentReplicasForSystemTier(tier, serverCount) },
+    { deployments: LEADER_ELECT_DEPLOYMENTS, desired: leaderElectReplicasForSystemTier(tier, serverCount) },
   ];
   for (const { deployments, desired } of groups) {
     for (const d of deployments) {
@@ -1013,9 +1017,9 @@ async function precheckCapacityForInstances(
 async function patchCnpgClusters(
   k8s: K8sClients,
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): Promise<CnpgClusterPatchResult[]> {
-  const desired = cnpgInstancesForSystemTier(tier, readyServerCount);
+  const desired = cnpgInstancesForSystemTier(tier, serverCount);
   const results: CnpgClusterPatchResult[] = [];
   for (const c of CNPG_CLUSTERS) {
     let previousInstances = 0;
@@ -1109,10 +1113,10 @@ async function patchCnpgClusters(
 async function patchValkey(
   k8s: K8sClients,
   tier: 'local' | 'ha',
-  readyServerCount: number,
+  serverCount: number,
 ): Promise<ValkeyPatchResult | null> {
-  const idealReplicas = valkeyReplicasForSystemTier(tier, readyServerCount);
-  const desiredMaxMemoryBytes = valkeyMaxMemoryBytesForSystemTier(tier, readyServerCount);
+  const idealReplicas = valkeyReplicasForSystemTier(tier, serverCount);
+  const desiredMaxMemoryBytes = valkeyMaxMemoryBytesForSystemTier(tier, serverCount);
   const desiredMaxMemory = formatValkeyMemoryBytes(desiredMaxMemoryBytes);
 
   let previousReplicas = 0;
@@ -1144,15 +1148,17 @@ async function patchValkey(
   previousReplicas = live?.spec?.replicas ?? 0;
 
   // Transient-flap guard: under HA tier, never shrink Valkey below
-  // the previous count when readyServerCount briefly drops under
-  // HA_SERVER_THRESHOLD. A scheduled OS reboot taking 1-2 servers
-  // NotReady for a few minutes would otherwise scale 3 → 1 and
-  // break Sentinel quorum on the next 5-min advisor tick. Scale-up
+  // the previous count when the server count drops under
+  // HA_SERVER_THRESHOLD. It was written for readyServerCount, where a
+  // scheduled OS reboot taking 1-2 servers NotReady for a few minutes
+  // would otherwise scale 3 → 1 and break Sentinel quorum on the next
+  // 5-min advisor tick; callers now pass the PRESENT server count
+  // (server-count.ts), which a reboot does not change. Scale-up
   // (idealReplicas > previousReplicas) is unaffected — we only
   // suppress shrink-during-flap.
   const isFlapShrink =
     tier === 'ha'
-    && readyServerCount < HA_SERVER_THRESHOLD
+    && serverCount < HA_SERVER_THRESHOLD
     && previousReplicas >= HA_SERVER_THRESHOLD
     && idealReplicas < previousReplicas;
   const desiredReplicas = isFlapShrink ? previousReplicas : idealReplicas;
@@ -1274,5 +1280,5 @@ async function patchValkey(
 
 // Public re-export so the scheduler tick can also call patchValkey
 // directly (without going through applyPolicy's full cluster-state
-// read). Used by the readyServerCount-change watch path.
+// read). Used by the serverCount-change watch path.
 export { patchValkey };

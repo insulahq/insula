@@ -471,10 +471,10 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
               {node.drained && (
                 <span
                   className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-900/40 dark:text-purple-300"
-                  title="Node is fully drained — cordoned + no tenant workloads + no Longhorn replicas. Safe to delete."
+                  title="Tenants drained — no tenant workloads left. System services still run here; Delete Node moves them, then removes the node."
                   data-testid={`node-drained-tag-${node.name}`}
                 >
-                  Drained
+                  Tenants drained
                 </span>
               )}
               {!node.existsInKubernetes && (
@@ -604,9 +604,9 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
                 onClick={() => setDrainOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50"
                 data-testid={`drain-node-${node.name}-open-button`}
-                title="Cordon, drain, and (after drained) delete this node"
+                title="Move this node's tenants off (system services stay); once drained, delete the node"
               >
-                <AlertTriangle size={14} /> Drain Node
+                <AlertTriangle size={14} /> Drain Tenants
               </button>
               {node.drained && (
                 <button

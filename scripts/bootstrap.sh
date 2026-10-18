@@ -3543,6 +3543,45 @@ verify_underlay() {
 # Idempotent: strategic-merge patches against stable structure; re-runs
 # produce no churn. Safe to call on both fresh installs and upgrades.
 # No-op outside server mode.
+# Keep the two replicas of each HA operator on different servers. The
+# storage-policy reconciler scales these to two in HA; with no spread rule both
+# replicas land on one server whenever only one can take a pod, and stay there
+# (seen on production: one server powered off, another cordoned). One replica
+# per server, hard, counted per rollout revision. A down or cordoned server
+# still counts, so a replacement waits for it instead of doubling up; on a
+# single server it is moot. platform-api cannot do this itself — its admission
+# policy keeps it out of these namespaces. Same rule, same list as host-migration
+# 2026.10.12/0001-leader-elect-one-replica-per-server.sh (existing clusters).
+spread_leader_elect_components() {
+  if [[ "$NODE_ROLE" != "server" ]]; then
+    return 0
+  fi
+  export KUBECONFIG
+  local t ns name owner rules selector
+  for t in \
+      cert-manager/cert-manager \
+      cert-manager/cert-manager-cainjector \
+      cert-manager/cert-manager-webhook \
+      flux-system/kustomize-controller \
+      flux-system/helm-controller \
+      flux-system/notification-controller \
+      kube-system/sealed-secrets-controller \
+      kube-system/snapshot-controller \
+      cnpg-system/cnpg-cloudnative-pg; do
+    ns="${t%%/*}"; name="${t#*/}"
+    kubectl -n "$ns" get deployment "$name" -o name >/dev/null 2>&1 || continue
+    owner=$(kubectl -n "$ns" get deployment "$name" -o jsonpath='{.metadata.labels.kustomize\.toolkit\.fluxcd\.io/name}' 2>/dev/null || true)
+    [[ -n "$owner" ]] && continue
+    rules=$(kubectl -n "$ns" get deployment "$name" \
+      -o jsonpath='{range .spec.template.spec.topologySpreadConstraints[*]}{.topologyKey}{"/"}{.whenUnsatisfiable}{"\n"}{end}' 2>/dev/null || true)
+    printf '%s\n' "$rules" | grep -qx 'kubernetes.io/hostname/DoNotSchedule' && continue
+    selector=$(kubectl -n "$ns" get deployment "$name" -o jsonpath='{.spec.selector.matchLabels}' 2>/dev/null || true)
+    [[ "$selector" == '{'*'}' ]] || continue
+    kubectl -n "$ns" patch deployment "$name" --type=strategic -p \
+      "{\"spec\":{\"template\":{\"spec\":{\"topologySpreadConstraints\":[{\"maxSkew\":1,\"topologyKey\":\"kubernetes.io/hostname\",\"whenUnsatisfiable\":\"DoNotSchedule\",\"matchLabelKeys\":[\"pod-template-hash\"],\"labelSelector\":{\"matchLabels\":${selector}}}]}}}}" >/dev/null 2>&1 || true
+  done
+}
+
 pin_system_components_to_servers() {
   if [[ "$NODE_ROLE" != "server" ]]; then
     return 0
@@ -3574,13 +3613,35 @@ pin_system_components_to_servers() {
       "cert-manager:cert-manager" \
       "cert-manager:cert-manager-webhook" \
       "cert-manager:cert-manager-cainjector" \
-      "kube-system:sealed-secrets-controller" \
-      "cnpg-system:cnpg-controller-manager"; do
+      "kube-system:sealed-secrets-controller"; do
     local ns="${ns_name%%:*}"
     local name="${ns_name#*:}"
     kubectl patch deployment "$name" -n "$ns" \
       --type=strategic \
       --patch="$server_patch" 2>/dev/null || true
+  done
+
+  # Leader-elect operators that may run on any node but must keep starting on
+  # a server whose tenants were drained (server-only taint): APPEND the
+  # toleration — a strategic patch would replace their whole list. Same as
+  # host-migration 2026.10.12/0002 on existing clusters.
+  local tols
+  for ns_name in \
+      "kube-system:snapshot-controller" \
+      "cnpg-system:cnpg-cloudnative-pg"; do
+    local ns="${ns_name%%:*}"
+    local name="${ns_name#*:}"
+    kubectl -n "$ns" get deployment "$name" -o name >/dev/null 2>&1 || continue
+    tols=$(kubectl -n "$ns" get deployment "$name" \
+      -o jsonpath='{range .spec.template.spec.tolerations[*]}{.key}{"|"}{.operator}{"\n"}{end}' 2>/dev/null || true)
+    printf '%s\n' "$tols" | grep -qE '^(insula\.host/server-only\||\|Exists$)' && continue
+    if [[ -n "$tols" ]]; then
+      kubectl -n "$ns" patch deployment "$name" --type=json \
+        -p '[{"op":"add","path":"/spec/template/spec/tolerations/-","value":{"key":"insula.host/server-only","operator":"Exists","effect":"NoSchedule"}}]' >/dev/null 2>&1 || true
+    else
+      kubectl -n "$ns" patch deployment "$name" --type=json \
+        -p '[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"insula.host/server-only","operator":"Exists","effect":"NoSchedule"}]}]' >/dev/null 2>&1 || true
+    fi
   done
 
   # Runs on every node (DaemonSets) — needs toleration only so it
@@ -6638,6 +6699,7 @@ install_longhorn() {
     --set defaultSettings.removeSnapshotsDuringFilesystemTrim=true \
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
+    --set-string 'defaultSettings.taintToleration=insula.host/server-only=true:NoSchedule' \
     --set longhornUI.replicaCount=1 \
     --set 'longhornManager.resources.requests.cpu=50m' \
     --set 'longhornManager.resources.requests.memory=128Mi' \
@@ -11369,6 +11431,9 @@ run_create_cluster() {
   # definition above for the split between nodeSelector+toleration
   # (control-plane only) and toleration-only (data plane DaemonSets).
   pin_system_components_to_servers
+  # One replica per server for the HA operators (fresh installs; existing
+  # clusters get it from host-migration 2026.10.12/0001).
+  spread_leader_elect_components
   # Apply the server-only taint AFTER all Helm components have their
   # tolerations patched in by pin_system_components_to_servers — order
   # matters so that ingress-nginx admission webhook, cert-manager

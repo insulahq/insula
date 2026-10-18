@@ -42,6 +42,7 @@ function policyResponse(systemTier: 'local' | 'ha' = 'local') {
     clusterState: {
       readyServerCount: 3,
       totalNodeCount: 4,
+      sizingServerCount: 4,
       recommendedTier: 'ha' as const,
       volumes: [],
     },

@@ -56,18 +56,25 @@ spec:
         app.kubernetes.io/part-of: hosting-platform
         app.kubernetes.io/component: waf
     spec:
-      affinity:
-        # Spread the 2 replicas across nodes — same intent as modsec-crs.
-        # Single-node clusters get one pod scheduled and one Pending;
-        # the Service still works via the running pod.
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: modsec-stub
-                topologyKey: kubernetes.io/hostname
+      # One replica per server, HARD. The preferred podAntiAffinity this replaces
+      # let both WAF replicas land on one server whenever only one could take a
+      # pod (production: a server powered off while another was
+      # cordoned) — and nothing moved them back. DoNotSchedule counts a down or
+      # cordoned server as a place the pod belongs, so a replacement WAITS for
+      # it instead of doubling up (one replica keeps serving), and lands back
+      # there when it returns. Safe because system-node-affinity pins this to
+      # servers, which it tolerates; a single server is a single domain, so
+      # both replicas still run there. matchLabelKeys counts per revision, so a
+      # rollout never waits on its own old pods.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: modsec-stub
       containers:
         - name: stub
           image: traefik/whoami:v1.11.0

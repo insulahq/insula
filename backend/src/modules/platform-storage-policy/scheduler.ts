@@ -38,7 +38,8 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
           // Drift correction: re-apply the current policy to the live
           // cluster every tick. Catches new PVCs (PITR rebuild, fresh
           // CNPG instance), node count changes (HA replica count tracks
-          // readyServerCount dynamically), and config drift from manual
+          // sizingServerCount — servers present, not just Ready ones, so a
+          // reboot never shrinks HA), and config drift from manual
           // kubectl edits. Idempotent — patchLonghornVolumes etc. skip
           // when the live state already matches desired. Without this,
           // the cluster only converges when an operator clicks "Apply
@@ -56,12 +57,12 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
           );
 
           // Also detect Valkey replica drift — the cluster may have grown
-          // a server (state.readyServerCount changed) without any volume
+          // a server (state.sizingServerCount changed) without any volume
           // delta, in which case `volumeDrift` stays false but Valkey
           // should still scale 1→3 or 3→4. patchValkey() inside
           // applyPolicy is idempotent: if neither replicas nor maxmemory
           // changed, both inner branches no-op and the call is cheap.
-          const desiredValkeyReplicas = valkeyReplicasForSystemTier(policy.systemTier, state.readyServerCount);
+          const desiredValkeyReplicas = valkeyReplicasForSystemTier(policy.systemTier, state.sizingServerCount);
           let valkeyDrift = false;
           try {
             const sts = await k8s.apps.readNamespacedStatefulSet({
@@ -90,7 +91,7 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
           // so a flaky read can't trigger an apply storm.
           let deploymentDrift = false;
           try {
-            deploymentDrift = await detectDeploymentReplicaDrift(k8s, policy.systemTier, state.readyServerCount);
+            deploymentDrift = await detectDeploymentReplicaDrift(k8s, policy.systemTier, state.sizingServerCount);
           } catch (err) {
             console.warn('[storage-policy-advisor] deployment drift probe failed:', (err as Error).message);
           }

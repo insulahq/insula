@@ -144,8 +144,10 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       }
 
       // Threshold exceeded — pick failover target. Walk the priority
-      // list (secondary then tertiary) skipping nodes that don't exist
-      // or aren't Ready. Both server-role and worker-role are valid
+      // list (secondary then tertiary) skipping nodes that don't exist,
+      // aren't Ready, or are cordoned (a cordoned node is Ready but takes
+      // no new pod — production failed over to one and mail
+      // stayed down until the 10-minute rollback). Both server-role and worker-role are valid
       // mail placements (see affinity-patch-mail-stack.yaml). Earlier
       // server-role gating was reverted — the mail-stack
       // affinity now spans both roles, so failover to a worker is fine.
@@ -155,10 +157,17 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       const skipped: string[] = [];
       for (const c of candidates) {
         try {
-          const n = await core.readNode({ name: c } as unknown as Parameters<typeof core.readNode>[0]) as { status?: { conditions?: Array<{ type: string; status: string }> } };
+          const n = await core.readNode({ name: c } as unknown as Parameters<typeof core.readNode>[0]) as {
+            spec?: { unschedulable?: boolean };
+            status?: { conditions?: Array<{ type: string; status: string }> };
+          };
           const ready = (n.status?.conditions ?? []).find((x) => x.type === 'Ready');
           if (ready?.status !== 'True') {
             skipped.push(`${c}(NotReady)`);
+            continue;
+          }
+          if (n.spec?.unschedulable === true) {
+            skipped.push(`${c}(cordoned)`);
             continue;
           }
           targetNode = c;
@@ -170,7 +179,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
       }
       if (!targetNode) {
         const detail = skipped.length ? ` (skipped: ${skipped.join(', ')})` : '';
-        log.warn(`No viable secondary/tertiary node for auto-failover${detail}. Set a Ready node in placement.`);
+        log.warn(`No viable secondary/tertiary node for auto-failover${detail}. Set a Ready, uncordoned node in Mail → Placement.`);
         return;
       }
 

@@ -37,6 +37,7 @@ import type { Database } from '../../db/index.js';
 import { releasePitrLock } from './service.js';
 import { finalizeByRef } from '../tasks/service.js';
 import { toSafeText } from '@insula/api-contracts';
+import { k8sTimeMs } from '../../shared/k8s-time.js';
 
 // Tunables — exported for testing.
 export const WATCHDOG_INTERVAL_MS = 60_000;
@@ -80,14 +81,20 @@ interface JobEvent {
   readonly involvedObject?: { readonly kind?: string; readonly name?: string };
 }
 
+// The PV fields the reaper reads. A PV has no `spec.volumeName` (that is the
+// PVC's field) and no `status.lastTransitionTime`: the Longhorn volume is the
+// CSI volumeHandle, and the moment the PV became Released is
+// `status.lastPhaseTransitionTime`. The client hands date-times back as Date.
 interface ReleasedPv {
   readonly metadata?: {
     readonly name?: string;
-    readonly creationTimestamp?: string;
   };
   readonly spec?: {
-    readonly volumeName?: string;
     readonly storageClassName?: string;
+    readonly csi?: {
+      readonly driver?: string;
+      readonly volumeHandle?: string;
+    };
     readonly claimRef?: {
       readonly namespace?: string;
       readonly name?: string;
@@ -96,6 +103,7 @@ interface ReleasedPv {
   };
   readonly status?: {
     readonly phase?: string;
+    readonly lastPhaseTransitionTime?: string | Date;
   };
 }
 
@@ -282,11 +290,19 @@ export async function reconcilePitrJobsOnce(
   return stuck;
 }
 
-// Default reaper threshold: Released PVs must be
-// at least 60 min old before reaping. CNPG-managed PVCs go through a
-// rapid Released→Deleted cycle when the operator triggers a normal
-// scale-down; the 60min window protects those legitimate transients.
+// Default reaper threshold: a PV must have been Released for at least 60 min
+// before reaping. CNPG-managed PVCs go through a rapid Released→Deleted cycle
+// when the operator triggers a normal scale-down; the 60min window protects
+// those legitimate transients. Measured from the moment the PV was RELEASED,
+// never from its creation: on production a 14-day-old system-db PV was reaped
+// 30 s after CNPG let it go.
 export const RELEASED_PV_MIN_AGE_MS = 60 * 60_000;
+
+/** The namespace the platform's own CNPG cluster (system-db, and the PITR clusters cut from it) lives in. */
+const PLATFORM_DB_NAMESPACE = 'platform';
+/** A CNPG instance claim: `<cluster>-<serial>`, or its `-wal` volume. */
+const CNPG_INSTANCE_CLAIM = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?-\d+(-wal)?$/;
+
 
 interface ReapedPvReport {
   readonly name: string;
@@ -313,11 +329,16 @@ interface ReapedPvReport {
  *   1. Lists all PVs (cluster-scoped — same RBAC as the existing PV
  *      list+delete grants for Longhorn).
  *   2. Filters to phase=Released AND storageClass starts with `longhorn`
- *      AND age > releasedPvAgeMinutes.
+ *      AND a CNPG instance claim in the platform namespace AND Released
+ *      for longer than releasedPvAgeMinutes. Tenant and mail volumes are
+ *      never auto-deleted here: their Retain is the operator's safety net,
+ *      and they stay operator-driven on the orphaned-volumes page.
  *   3. For each: try reading the claimRef'd PVC — if NotFound (PVC is
  *      gone), the PV is genuinely orphan. If exists, leave alone (the
  *      PVC might be Pending re-bind).
- *   4. Deletes the PV CR + the corresponding Longhorn volume CR.
+ *   4. Deletes the PV CR + the corresponding Longhorn volume CR (the
+ *      CSI volumeHandle — deleting only the PV leaves the volume holding
+ *      its disk with nothing pointing at it).
  *
  * Best-effort: never throws. The watchdog's tick loop just calls this
  * + carries on if any step fails. Operator can also disable via
@@ -344,19 +365,36 @@ export async function reapReleasedPvsOnce(
   const reaped: ReapedPvReport[] = [];
   const now = Date.now();
 
+  // Only while the platform database is alive. Deleting a released copy is
+  // safe because a live instance holds the same data — a PITR's new cluster,
+  // or the instance CNPG re-created. If no instance volume is Bound at all
+  // (the Cluster deleted by mistake, a restore half-done), every Released one
+  // may be the only copy: keep them for a human.
+  const isInstanceClaim = (ref?: { namespace?: string; name?: string }) =>
+    ref?.namespace === PLATFORM_DB_NAMESPACE && !!ref.name && CNPG_INSTANCE_CLAIM.test(ref.name);
+  const liveDatabase = (pvList.items ?? []).some((pv) => pv.status?.phase === 'Bound' && isInstanceClaim(pv.spec?.claimRef));
+  if (!liveDatabase) {
+    if ((pvList.items ?? []).some((pv) => pv.status?.phase === 'Released' && isInstanceClaim(pv.spec?.claimRef))) {
+      log?.warn?.({}, 'pv-reaper: no database instance volume is Bound — keeping every Released one');
+    }
+    return reaped;
+  }
+
   for (const pv of pvList.items ?? []) {
     const name = pv.metadata?.name;
     if (!name) continue;
     if (pv.status?.phase !== 'Released') continue;
     const sc = pv.spec?.storageClassName ?? '';
     if (!sc.startsWith('longhorn')) continue; // scope to Longhorn-backed only
-    const created = pv.metadata?.creationTimestamp;
-    if (!created) continue;
-    const ageMs = now - new Date(created).getTime();
+    const claimRef = pv.spec?.claimRef;
+    if (claimRef?.namespace !== PLATFORM_DB_NAMESPACE || !claimRef.name || !CNPG_INSTANCE_CLAIM.test(claimRef.name)) continue;
+    // No release time = cannot tell how long it has been Released: leave it.
+    const releasedMs = k8sTimeMs(pv.status?.lastPhaseTransitionTime);
+    if (releasedMs === null) continue;
+    const ageMs = now - releasedMs;
     if (ageMs < minAgeMs) continue;
 
-    const claimRef = pv.spec?.claimRef;
-    const claimRefStr = claimRef ? `${claimRef.namespace}/${claimRef.name}` : null;
+    const claimRefStr = `${claimRef.namespace}/${claimRef.name}`;
 
     // PVC-existence check: if the originally-bound PVC is back (rebind
     // in progress, etc.), leave the PV alone. Only reap when the
@@ -378,8 +416,8 @@ export async function reapReleasedPvsOnce(
       }
     }
 
-    const evidence = `Released PV age=${Math.round(ageMs / 60_000)}min, claimRef=${claimRefStr ?? '(none)'}, sc=${sc}`;
-    const volumeName = pv.spec?.volumeName ?? null;
+    const evidence = `Released for ${Math.round(ageMs / 60_000)}min, claimRef=${claimRefStr}, sc=${sc}`;
+    const volumeName = pv.spec?.csi?.driver === 'driver.longhorn.io' ? (pv.spec.csi.volumeHandle ?? null) : null;
 
     log?.info?.({ name, evidence }, 'pv-reaper: reaping orphan Released PV');
 

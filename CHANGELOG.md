@@ -12,6 +12,146 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **"Drain Node" is now "Drain Tenants": it moves tenants and nothing else, and never cordons a
+  server.** A cordon stops every new pod, system ones included, so a drained server could no
+  longer take mail in a failover, have a database instance rebuilt on it or start a system
+  replica that had to move — seen on production, where a server cordoned by a drain was mail's
+  only failover target when the mail node went down. The drain now keeps new tenants off with
+  **Can host tenant workloads** off (the `insula.host/server-only` `NoSchedule` taint) — a
+  checkbox in the dialog, on by default — which tenant pods do not tolerate and every system
+  workload does; a worker, which runs no system workload, is still cordoned. The node is tagged
+  **Tenants drained** once no tenant pod is left, and turning the setting back on (or an
+  uncordon) clears it. **Delete** now moves the system pods: it cordons the node, evicts every
+  non-DaemonSet pod respecting disruption budgets (`NODE_DELETE_EVICTION_BLOCKED` when one
+  refuses — node left cordoned, nothing deleted), waits for them to go, then deletes it. Delete
+  is refused while mail runs on the node (`NODE_DELETE_RUNS_MAIL`) and before its tenants are
+  drained (`NODE_DELETE_NOT_DRAINED`, replacing `NODE_DELETE_NOT_CORDONED`).
+  **Upgrade note:** host-migration `2026.10.12/0002` lets Longhorn's node components, the CNPG
+  operator and snapshot-controller tolerate the taint — Longhorn's `taint-toleration` setting
+  gains the entry (operator entries kept) and **Longhorn's DaemonSets restart once during the
+  upgrade** (volumes stay attached); the platform's own system Deployments carry it in their
+  manifests, bootstrap on fresh installs. Until a cluster has it, switching a server's tenants
+  off is refused (`NODE_TENANT_TAINT_UNSAFE`) rather than leaving a rebooted server without its
+  storage.
+
+### Fixed
+
+- **Mail no longer fails over to a cordoned server.** Automatic failover walked the secondary
+  and tertiary nodes skipping only ones that were missing or NotReady. A cordoned server is Ready,
+  so it was picked; the mail stack sat Pending there until the migration gave up ten minutes later
+  and rolled back — with mail down throughout. Seen on production: the only failover node was
+  cordoned for a drain when the mail node was powered off, and mail stayed down for the whole
+  outage. Cordoned nodes are now skipped, a migration to one is refused before the PVC swap (even in
+  recovery mode), and the "Mail cannot fail over" banner also fires when every configured failover
+  node is cordoned or down. The node's **Cordon** switch says what cordoning that node leaves
+  mail (and which database instances keep their only copy there); the drain dialog says what
+  deleting it does.
+- **The Released-volume reaper deleted a PV seconds after its release, and never deleted its
+  Longhorn volume.** It measured age from the PV's creation, so a two-week-old system-db PV was
+  reaped 30 s after CNPG let it go — defeating the Retain policy that is the safety net — and it read
+  the Longhorn volume name from `spec.volumeName`, a field PVs do not have, so every reap left an
+  orphaned Longhorn volume holding its disk. Age now runs from the release
+  (`status.lastPhaseTransitionTime`), the volume is the CSI handle, and only CNPG instance claims in
+  the `platform` namespace are reaped, and only while a database instance volume is Bound — with
+  none (a Cluster deleted by mistake) every released copy is kept. Tenant and mail volumes stay on
+  the Orphaned volumes page.
+  The daily superseded-PV janitor, the Orphaned volumes "released for N days" age and the
+  retained-volume restore's release time all read `status.lastTransitionTime`, which PVs do not
+  have either: the janitor had never reaped anything, the ages were blank.
+- **Reboot debris: a pod the shutdown stopped that exited cleanly was never reaped**, and debris
+  was aged from the pod's creation rather than from the shutdown. Such a pod ends `Succeeded` with
+  no reason; the reaper now also takes those (never a Job's), and keeps every piece of debris for
+  its 30-minute window counted from when the kubelet stopped it.
+- **HA operators keep one replica per server.** Both replicas of cert-manager (and of the WAF)
+  could land on one server whenever only one could take a pod — seen on production with one server
+  powered off and another cordoned — and nothing moved them back. The leader-elect operators the
+  storage-policy reconciler scales to two (cert-manager, the CNPG operator, sealed-secrets,
+  snapshot-controller, the Flux controllers) now carry a hard one-per-node topology spread —
+  host-migration `2026.10.12/0001` adds it on existing clusters (each operator restarts once),
+  bootstrap on fresh installs; platform-api's admission policy deliberately keeps it out of those
+  namespaces — and the WAF Deployments carry it in their manifests. A replacement waits for its
+  server instead of doubling up. Database instances keep their preferred anti-affinity: an instance
+  must be able to leave a server that is being removed.
+- **A tenant whose pinned node is down is reported as that, and left alone.** The first seconds of
+  a node shutdown produce "exceeded quota" refusals, so such a tenant was recorded as
+  `quota_rejected`: the alert told the operator to raise its plan limits, and the auto-heal scaled
+  it down and up against a node that was not there, gave up, and left it storage-state FAILED —
+  refusing every later resize, restore, suspend or move — although it came back by itself minutes
+  later. The new cause `node_down` is decided first and never auto-healed — and when the node
+  returns, its tenants get a fresh grace window before any heal, while their volumes re-attach; a
+  FAILED left by a failed auto-heal is reset once every workload runs again; a dashboard card lists tenants stuck in a
+  failed storage state.
+- **Workloads-down alerts: one per tenant, in the bell, with an end.** Each workload sent its own
+  push and email (three for a three-workload tenant); now one notification per tenant lists them,
+  and tenants down because their node is down are reported once per node. The alert reaches the
+  in-app bell too (class `incident`; migration `0158` updates the stored channels), and
+  **Tenant workloads running again** / **Your site is running again** close every alerted outage.
+- **Cron: "inform the tenant's admins" switched off now means nothing reaches them.** The job's
+  switch only dropped the tenant's primary address; the admins still got every failure in the panel
+  and by email, so a job set to mail only the operator kept emailing the client. Off now means no
+  notification on any channel (and no dashboard card); the job's own address is still mailed. The
+  switch is a top-level checkbox in both panels. A deployment-type run cut short by the platform —
+  its server shutting down, its pod being replaced — is no longer reported as the tenant's failure;
+  its output says *Interrupted by the platform*. **Upgrade note:** an existing job whose old
+  "Tenant email" box was unticked now informs nobody in the tenant — check any job where that was
+  not the intent.
+- **HA no longer shrinks while a server is only down.** Every 5 minutes the storage-policy
+  advisor re-sized HA to the number of servers that were Ready at that moment. A server that
+  was rebooting, in maintenance or mid Kubernetes upgrade at that tick shrank the database from
+  3 to 2 instances, the panels and API from 3 to 2 replicas and the platform volumes from 3 to 2
+  copies. CNPG waits while an instance is down and then removes the newest Ready replica — on lab
+  staging that was `system-db-3`, on a server that had never gone down, deleted with its volume a
+  minute after the rebooted server was back. The next tick grew everything again: a fresh
+  instance cloned from the primary, every volume copy rebuilt. In Local mode on two servers the
+  database volume dropped to one copy the same way. HA is now sized to the servers the cluster has, Ready or not, and shrinks only when
+  a server is removed; a server still joining (NotReady, registered within the 30-minute join
+  window) counts once it is Ready. The recommendation and the "X of Y servers Ready" figures
+  still count Ready servers.
+- **Draining a server in HA mode is no longer refused over its database instance.** In HA each
+  PostgreSQL instance keeps one copy on its own node — the other instances hold the same data —
+  so the drain's last-replica check flagged `system-db-N` on every server running one and
+  refused the drain unless "I accept data risk" was ticked, although the drain never moves that
+  pod. A replica now counts as covered while the primary is up on another uncordoned server; the
+  primary counts as covered while it streams to a standby on another uncordoned server (read from
+  `pg_stat_replication` — a Ready pod alone does not prove a caught-up copy). The drain modal
+  lists covered instances under **Database instances on this node** and marks the primary; an
+  instance nothing covers, or one whose facts cannot be read, still blocks as before.
+- **A detached volume no longer reads as a "last replica" on every node.** Longhorn keeps every
+  replica of a detached volume `stopped`, and the drain counted only running replicas as copies —
+  so a retained volume nothing mounts (the CrowdSec store, 3 copies in HA) flagged a last-replica
+  risk on each node holding one and blocked the drain there too. A detached volume's replicas
+  that have not failed now count as its copies.
+- **Draining a node no longer strands a stopped or suspended tenant's data.** Longhorn moves a
+  replica only while its volume is attached, and a tenant that runs nothing attaches nothing: the
+  drain's re-pin changed every label and left the only copy where it was. Seen on production: a
+  suspended tenant pinned to the new node while its one replica stayed on the cordoned one, so
+  the drain never completed — and deleting the node would have deleted the tenant's data. The
+  re-pin now attaches such a volume on the new node (the relocation "Move back" already used) and
+  the placement reconciler releases it once the copy is local; "Auto" picks the tenant-capable
+  node with the most free space for such a tenant (never the drained, a cordoned or a NotReady
+  node), counting what the same drain already sends there, and every target gets Longhorn's own
+  capacity check first — when no node fits, the drain is refused before it changes anything
+  (`NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT`). A tenant already pinned to another node keeps that pin
+  by default, so a second drain run no longer clears what the first picked; a copy that did not
+  start moving is listed after the drain. Deleting a node that still holds a tenant volume's only
+  copy is refused (`NODE_DELETE_HOLDS_TENANT_DATA`), and so is a delete whose storage reads failed
+  (`NODE_DELETE_PRECHECK_FAILED`, 503). A failed leftover replica on the node next to a healthy copy
+  elsewhere no longer counts as the "last replica".
+- **The drain no longer refuses over tenant volumes the operator cannot see.** The last-replica
+  check counted every Local-tier tenant volume on the node, but the modal lists only platform
+  volumes as a risk and offers "force" only for those: on a node holding tenants and no platform
+  last replica, the drain was refused with nothing to tick. A tenant's volume now holds the drain
+  back only when that tenant is set to **Stay**; otherwise the re-pin moves it, and Delete waits
+  for the copy to leave.
+- **Deleting a server that holds a database instance's only copy is refused**
+  (`NODE_DELETE_HOLDS_DATABASE`, 409; Delete stays disabled in the modal). Removing it left
+  PostgreSQL with an instance it could not start anywhere else, and CNPG holds every later scale
+  change until that instance is active again — which it never becomes. *Nodes & cluster → Moving a database instance
+  off a server* gives the two commands that move it first. The High availability page also no
+  longer claims synchronous replication: the platform's PostgreSQL replicates asynchronously.
+
 ## [2026.10.11] - 2026-10-17
 
 ### Fixed

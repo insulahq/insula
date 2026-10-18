@@ -182,7 +182,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
 
     const counts = await repinTenantPlacement(
       k8s, app.db,
-      { tenantId: id, namespace: pinned.namespace, workloads: pinned.workloads, pvcs: pinned.pvcs },
+      { tenantId: id, namespace: pinned.namespace, workloads: pinned.workloads, pvcs: pinned.pvcs, storageTier: pinned.storageTier },
       targetNode,
       releaseFrom,
       makeLonghornHostTagEnsurer(k8s),

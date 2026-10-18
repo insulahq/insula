@@ -34,10 +34,14 @@
  *
  * SAFETY
  * ------
- * Only pods that are (a) in terminal phase `Failed`, (b) stamped by the kubelet
- * with a node-shutdown reason, (c) owned by a controller that has therefore
- * already replaced them, and (d) older than a grace window that keeps them
- * visible for post-reboot diagnosis. A Running pod, a bare (unowned) pod and a
+ * Only pods that are (a) terminal and stamped by the kubelet as stopped by the
+ * node shutdown — `Failed` with a node-shutdown reason, or `Succeeded` with the
+ * kubelet's `DisruptionTarget`/`TerminationByKubelet` condition (a container
+ * that exits 0 on SIGTERM ends the pod Succeeded with no reason at all; one
+ * tigera-operator pod a reboot, seen on production), (b) owned by a
+ * controller that has therefore already replaced them — never a Job, whose
+ * Succeeded pod is its result, (c) stopped longer ago than a grace window that
+ * keeps them visible for post-reboot diagnosis. A Running pod, a bare (unowned) pod and a
  * CNPG instance pod are never selected. This is strictly narrower than the
  * operator-facing "clean stale pod records" action in recovery.ts, which also
  * takes plain Failed/Evicted pods but only in allow-listed namespaces.
@@ -48,6 +52,7 @@
  */
 
 import { NODE_SHUTDOWN_POD_REASONS } from '../../lib/container-termination.js';
+import { k8sTimeMs } from '../../shared/k8s-time.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 /**
@@ -57,18 +62,29 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
  */
 export const DEBRIS_GRACE_MS = 30 * 60 * 1000;
 
+type K8sTime = string | Date;
+
 export interface DebrisPod {
   readonly metadata?: {
     readonly name?: string;
     readonly namespace?: string;
-    readonly creationTimestamp?: string;
-    readonly deletionTimestamp?: string;
-    readonly ownerReferences?: ReadonlyArray<{ readonly controller?: boolean }>;
+    readonly creationTimestamp?: K8sTime;
+    readonly deletionTimestamp?: K8sTime;
+    readonly ownerReferences?: ReadonlyArray<{ readonly controller?: boolean; readonly kind?: string }>;
     readonly labels?: Record<string, string>;
   };
   readonly status?: {
     readonly phase?: string;
     readonly reason?: string;
+    readonly conditions?: ReadonlyArray<{
+      readonly type?: string;
+      readonly status?: string;
+      readonly reason?: string;
+      readonly lastTransitionTime?: K8sTime;
+    }>;
+    readonly containerStatuses?: ReadonlyArray<{
+      readonly state?: { readonly terminated?: { readonly finishedAt?: K8sTime } };
+    }>;
   };
 }
 
@@ -81,6 +97,46 @@ export interface DebrisTarget {
 function isCnpgInstance(pod: DebrisPod): boolean {
   const l = pod.metadata?.labels ?? {};
   return Boolean(l['cnpg.io/instanceName'] ?? l['cnpg.io/cluster']);
+}
+
+/** The kubelet's own mark on a pod it stopped for the node shutdown. */
+function shutdownCondition(pod: DebrisPod) {
+  return (pod.status?.conditions ?? []).find(
+    (c) => c.type === 'DisruptionTarget' && c.status === 'True' && c.reason === 'TerminationByKubelet',
+  );
+}
+
+/** Stopped by the node shutdown: Failed with the kubelet's reason, or Succeeded with its condition. */
+function stoppedByShutdown(pod: DebrisPod): boolean {
+  const phase = pod.status?.phase;
+  if (phase === 'Failed') {
+    // The kubelet's own attribution. Anything else (Evicted, a crashed Job)
+    // is NOT reboot debris and is left to the operator-facing action.
+    const reason = pod.status?.reason;
+    return Boolean(reason && NODE_SHUTDOWN_POD_REASONS.includes(reason));
+  }
+  if (phase === 'Succeeded') {
+    // A Job's Succeeded pod is the Job's result, not debris.
+    const jobOwned = (pod.metadata?.ownerReferences ?? []).some((o) => o.kind === 'Job');
+    return !jobOwned && shutdownCondition(pod) !== undefined;
+  }
+  return false;
+}
+
+/**
+ * When the shutdown stopped it — not when it was created: a pod that ran for
+ * weeks and was stopped a minute ago is fresh debris. The condition's time,
+ * else the last container finish, else creation (a replacement the kubelet
+ * rejected never ran, so it was created at the moment it was stopped).
+ */
+function stoppedAtMs(pod: DebrisPod): number | null {
+  const cond = k8sTimeMs(shutdownCondition(pod)?.lastTransitionTime);
+  if (cond !== null) return cond;
+  const finished = (pod.status?.containerStatuses ?? [])
+    .map((c) => k8sTimeMs(c.state?.terminated?.finishedAt))
+    .filter((t): t is number => t !== null);
+  if (finished.length > 0) return Math.max(...finished);
+  return k8sTimeMs(pod.metadata?.creationTimestamp);
 }
 
 /**
@@ -103,13 +159,8 @@ export function selectShutdownDebris(
     // Already on its way out — let the API server finish.
     if (pod.metadata?.deletionTimestamp) continue;
 
-    // Terminal phase only. Never a Running/Pending/Succeeded pod.
-    if (pod.status?.phase !== 'Failed') continue;
-
-    // The kubelet's own attribution. Anything else (Evicted, a crashed Job)
-    // is NOT reboot debris and is left to the operator-facing action.
-    const reason = pod.status?.reason;
-    if (!reason || !NODE_SHUTDOWN_POD_REASONS.includes(reason)) continue;
+    // Terminal, and stopped by the node shutdown. Never a Running/Pending pod.
+    if (!stoppedByShutdown(pod)) continue;
 
     // Owned by a controller ⇒ a replacement already exists. A bare pod has no
     // replacement and deleting it would destroy the only record of it.
@@ -119,10 +170,8 @@ export function selectShutdownDebris(
     if (isCnpgInstance(pod)) continue;
 
     // Age guard — keep the immediate post-reboot picture intact.
-    const created = pod.metadata?.creationTimestamp
-      ? Date.parse(pod.metadata.creationTimestamp)
-      : NaN;
-    if (!Number.isFinite(created) || nowMs - created < graceMs) continue;
+    const stopped = stoppedAtMs(pod);
+    if (stopped === null || nowMs - stopped < graceMs) continue;
 
     out.push({ namespace, name });
   }

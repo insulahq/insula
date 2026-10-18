@@ -259,6 +259,58 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     const state = await readClusterState(k8s, db);
     expect(state.readyServerCount).toBe(2);
     expect(state.totalNodeCount).toBe(3);
+    expect(state.sizingServerCount).toBe(3);
+  });
+
+  it('HA: a server that is down keeps its share — replicas stay sized to 3, the recommendation sees 2 Ready', async () => {
+    // s3 is rebooting (NotReady). Sizing to Ready servers shrank every HA
+    // replica count to 2 on the next advisor tick and grew it back after the
+    // reboot — a Postgres re-clone and a full replica rebuild per reboot.
+    const db = makeDbReturningPolicy('ha');
+    const k8s = makeK8sMock({
+      nodes: [
+        { name: 's1', role: 'server', ready: true },
+        { name: 's2', role: 'server', ready: true },
+        { name: 's3', role: 'server', ready: false },
+      ],
+      pvcsByNs: {
+        mail: [{ metadata: { name: 'data-stalwart-mail-0' }, spec: { volumeName: 'pvc-stalwart-1' } }],
+      },
+      lhVolumes: { 'pvc-stalwart-1': { numberOfReplicas: 3, robustness: 'degraded', state: 'attached' } },
+      lhReplicas: [
+        { volumeName: 'pvc-stalwart-1', nodeID: 's1' },
+        { volumeName: 'pvc-stalwart-1', nodeID: 's2' },
+      ],
+    });
+
+    const state = await readClusterState(k8s, db);
+    expect(state.readyServerCount).toBe(2);
+    expect(state.sizingServerCount).toBe(3);
+    const stalwart = state.volumes.find((v) => v.pvcName === 'data-stalwart-mail-0');
+    expect(stalwart?.desiredReplicas).toBe(3);
+    expect(stalwart?.currentReplicas).toBe(3);
+  });
+
+  it('local: a second server that is down does not drop the database volume to one replica', async () => {
+    const db = makeDbReturningPolicy('local');
+    const k8s = makeK8sMock({
+      nodes: [
+        { name: 's1', role: 'server', ready: true },
+        { name: 's2', role: 'server', ready: false },
+      ],
+      pvcsByNs: { mail: [] },
+      pvcsByLabel: {
+        'platform|cnpg.io/cluster=system-db': [
+          { metadata: { name: 'system-db-1' }, spec: { volumeName: 'pvc-pg-1' } },
+        ],
+      },
+      lhVolumes: { 'pvc-pg-1': { numberOfReplicas: 2, robustness: 'degraded', state: 'attached' } },
+      lhReplicas: [{ volumeName: 'pvc-pg-1', nodeID: 's1' }],
+    });
+
+    const state = await readClusterState(k8s, db);
+    const pg1 = state.volumes.find((v) => v.pvcName === 'system-db-1');
+    expect(pg1?.desiredReplicas).toBe(2);
   });
 
   it('handles CNPG PVC list failure without throwing (degrades gracefully)', async () => {
@@ -708,5 +760,62 @@ describe('patchDeploymentsToReplicaCount — a Deployment this environment does 
     const [r] = await patchDeploymentsToReplicaCount(k8s, [{ namespace: 'platform', name: 'platform-api' }], 3);
     expect(r?.error).toBe('forbidden');
     expect(r?.notInstalled).toBeUndefined();
+  });
+});
+
+describe('applyPolicy — a server that is down does not shrink HA', () => {
+  it('HA with s3 rebooting: Postgres stays at 3 instances and the panels/API stay at 3 replicas', async () => {
+    const { applyPolicy, LEADER_ELECT_DEPLOYMENTS } = await import('./service.js');
+    const db = makeDbReturningPolicy('ha');
+    const k8s = makeK8sMock({
+      nodes: [
+        { name: 's1', role: 'server', ready: true },
+        { name: 's2', role: 'server', ready: true },
+        { name: 's3', role: 'server', ready: false },
+      ],
+      pvcsByNs: { mail: [] },
+    });
+    const leaderElect = new Set(LEADER_ELECT_DEPLOYMENTS.map((d) => `${d.namespace}/${d.name}`));
+    const scaled: Array<{ name: string; replicas: number }> = [];
+    const patchedClusters: unknown[] = [];
+    Object.assign(k8s.apps as object, {
+      // The live state an HA cluster already sits at: 3 per stateless
+      // Deployment, the leader-elect tier at its cap of 2 (source-controller 1).
+      readNamespacedDeployment: vi.fn(async (a: { namespace: string; name: string }) => ({
+        metadata: { annotations: {} },
+        spec: {
+          replicas: a.name === 'source-controller' ? 1 : leaderElect.has(`${a.namespace}/${a.name}`) ? 2 : 3,
+        },
+      })),
+      replaceNamespacedDeploymentScale: vi.fn(async (a: { name: string; body: { spec: { replicas: number } } }) => {
+        scaled.push({ name: a.name, replicas: a.body.spec.replicas });
+        return {};
+      }),
+      readNamespacedStatefulSet: vi.fn(async () => {
+        throw Object.assign(new Error('not found'), { code: 404 });
+      }),
+    });
+    const custom = k8s.custom as unknown as {
+      getNamespacedCustomObject: ReturnType<typeof vi.fn>;
+      patchNamespacedCustomObject?: ReturnType<typeof vi.fn>;
+    };
+    custom.getNamespacedCustomObject.mockImplementation(async (a: { plural: string }) => {
+      if (a.plural === 'clusters') return { spec: { instances: 3, storage: { size: '10Gi' } } };
+      throw Object.assign(new Error('not found'), { code: 404 });
+    });
+    custom.patchNamespacedCustomObject = vi.fn(async (a: { body: unknown }) => {
+      patchedClusters.push(a.body);
+      return {};
+    });
+
+    const outcome = await applyPolicy(k8s, db);
+
+    expect(outcome.cnpgClusters).toEqual([
+      expect.objectContaining({ name: 'system-db', previousInstances: 3, newInstances: 3, patched: false }),
+    ]);
+    expect(patchedClusters).toEqual([]);
+    expect(scaled).toEqual([]);
+    const api = outcome.deployments.find((d) => d.name === 'platform-api');
+    expect(api).toEqual(expect.objectContaining({ previousReplicas: 3, newReplicas: 3, patched: false }));
   });
 });

@@ -10,7 +10,7 @@
 import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { executeCronJob, describeFailure, runTimeoutMs, type ClusterTransport } from './executor.js';
+import { clip, executeCronJob, describeFailure, platformInterruption, runTimeoutMs, type ClusterTransport, type CronRunResult } from './executor.js';
 import { getNextRunTime } from './cron-expression.js';
 import { resolveFailureEmailRecipients } from './failure-email.js';
 
@@ -25,6 +25,30 @@ export interface CronSchedulerDeps {
   /** Injected in tests. */
   readonly transport?: ClusterTransport;
   readonly pollIntervalMs?: number;
+  /** How long a failed deployment run waits before the interruption check (tests: 0). */
+  readonly interruptionCheckDelayMs?: number;
+}
+
+/**
+ * A node shutting down stops its pods some seconds before the node itself is
+ * marked NotReady (production: the cron failed at 10:10:43, the
+ * node went NotReady at 10:10:52). Look again after this long.
+ */
+export const INTERRUPTION_CHECK_DELAY_MS = 45_000;
+
+/**
+ * Deferred checks still waiting. A timer lives in this process only: on
+ * shutdown (a rolling upgrade, the pod's node going away) they are run at once
+ * instead of being dropped — a genuine failure must not go unreported because
+ * the API restarted inside the 45 s.
+ */
+const pendingFailureChecks = new Map<NodeJS.Timeout, () => Promise<void>>();
+
+export async function flushPendingFailureChecks(): Promise<void> {
+  const pending = [...pendingFailureChecks.entries()];
+  pendingFailureChecks.clear();
+  for (const [timer] of pending) clearTimeout(timer);
+  await Promise.allSettled(pending.map(([, check]) => check()));
 }
 
 const DEFAULT_POLL_MS = 30_000;
@@ -198,10 +222,11 @@ export async function runAndRecord(
     transport: deps.transport,
   });
 
+  const recordedAt = new Date();
   await db
     .update(cronJobs)
     .set({
-      lastRunAt: new Date(),
+      lastRunAt: recordedAt,
       lastRunStatus: result.status,
       lastRunDurationMs: result.durationMs,
       lastRunResponseCode: result.responseCode,
@@ -216,11 +241,60 @@ export async function runAndRecord(
   // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
   // otherwise send 288 notifications before breakfast.
   if (options.notify !== false && result.status === 'failed' && job.tenantId) {
-    await notifyFailure(db, job, describeFailure(result, job.type));
+    // Only worth waiting for when the check can run (the real cluster can; a
+    // test transport without podDisruption cannot).
+    const canCheck = !deps.transport || typeof deps.transport.podDisruption === 'function';
+    if (job.type === 'deployment' && result.ranIn && canCheck) {
+      const delay = deps.interruptionCheckDelayMs ?? INTERRUPTION_CHECK_DELAY_MS;
+      const check = () => notifyUnlessInterrupted(db, job, result, recordedAt, deps);
+      if (delay <= 0) {
+        await check();
+      } else {
+        const timer: NodeJS.Timeout = setTimeout(() => {
+          pendingFailureChecks.delete(timer);
+          void check();
+        }, delay);
+        timer.unref?.();
+        pendingFailureChecks.set(timer, check);
+      }
+    } else {
+      await notifyFailure(db, job, describeFailure(result, job.type));
+    }
   }
 
   const [updated] = await db.select().from(cronJobs).where(eq(cronJobs.id, job.id));
   return updated;
+}
+
+/**
+ * A deployment command that failed because the platform stopped its pod —
+ * the server shutting down, the pod being replaced — is not the tenant's
+ * failure, and they are not told it is. The run stays recorded as failed,
+ * with the reason in front of its output so the panel says what happened.
+ * Never throws.
+ */
+async function notifyUnlessInterrupted(
+  db: Database,
+  job: typeof cronJobs.$inferSelect,
+  result: CronRunResult,
+  recordedAt: Date,
+  deps: CronSchedulerDeps,
+): Promise<void> {
+  try {
+    const why = result.ranIn ? await platformInterruption(result.ranIn, deps) : null;
+    if (!why) {
+      await notifyFailure(db, job, describeFailure(result, job.type));
+      return;
+    }
+    console.warn(`[cron-scheduler] job ${job.id} was interrupted by the platform (${why}) — not reported as a failure`);
+    await db
+      .update(cronJobs)
+      .set({ lastRunOutput: clip(`Interrupted by the platform: ${why}. The command itself did not fail.\n${result.output ?? ''}`) })
+      // Only this run's record: a later run has already said something newer.
+      .where(and(eq(cronJobs.id, job.id), eq(cronJobs.lastRunAt, recordedAt)));
+  } catch (err) {
+    console.warn('[cron-scheduler] interruption check failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 /**
@@ -244,6 +318,9 @@ async function notifyFailure(
     {
       dedupeKey: `scheduled-task-failure:${job.id}:${now.toISOString().slice(0, 10)}`,
       externalRecipients: email.recipients,
+      // "Inform the tenant's admins" off: nothing to them on ANY channel —
+      // not the tenant's address, not their panel, not their own email.
+      informTenantAdmins: job.notifyTenantEmail,
     },
   ).catch((err) => {
     console.warn('[cron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);

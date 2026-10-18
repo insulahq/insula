@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sweepReleasedSystemPvs, type JanitorPv } from './janitor.js';
+import { realJanitorDeps, sweepReleasedSystemPvs, type JanitorPv } from './janitor.js';
+import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const NOW = Date.parse('2026-06-05T12:00:00Z');
 const DAYS = 24 * 60 * 60 * 1000;
@@ -80,5 +82,32 @@ describe('sweepReleasedSystemPvs', () => {
     const r = await sweepReleasedSystemPvs(d, NOW);
     expect(r.deleted).toEqual(['pvc-b']);
     expect(r.failed).toEqual(['pvc-a']);
+  });
+});
+
+describe('realJanitorDeps.listPvs — reads the fields a real PV carries', () => {
+  // The janitor read `status.lastTransitionTime`, which PVs do not have, so
+  // every PV came back with no release time and nothing was ever reaped.
+  it('takes the release time from status.lastPhaseTransitionTime (a Date from the client) and the volume from the CSI handle', async () => {
+    const released = new Date(NOW - 3 * DAYS);
+    const k8s = {
+      core: {
+        listPersistentVolume: async () => ({
+          items: [{
+            metadata: { name: 'pvc-old' },
+            spec: {
+              claimRef: { namespace: 'platform', name: 'system-db-2' },
+              csi: { driver: 'driver.longhorn.io', volumeHandle: 'pvc-old' },
+            },
+            status: { phase: 'Released', lastPhaseTransitionTime: released },
+          }],
+        }),
+      },
+    } as unknown as K8sClients;
+    const [only] = await realJanitorDeps({} as Database, k8s).listPvs();
+    expect(only).toEqual({
+      name: 'pvc-old', phase: 'Released', claimNamespace: 'platform', claimName: 'system-db-2',
+      longhornVolumeName: 'pvc-old', lastTransitionMs: released.getTime(),
+    });
   });
 });

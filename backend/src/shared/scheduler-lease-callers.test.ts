@@ -103,6 +103,7 @@ const READS: Readonly<Record<string, string>> = {
   'modules/mail-admin/stalwart-master-user.ts#readStalwartMasterUser': 'a key of the mail Secret',
   'modules/mailbox-aliases/alias-live.ts#aliasIsLive': 'a predicate over two flags',
   'modules/notifications/list-items.ts#cappedList': 'shortens a list for a message',
+  'modules/platform-storage-policy/server-count.ts#countServers': 'a count over the Node list it is given',
   'modules/stalwart-jmap/client.ts#getJmapSession': 'the mail server\'s session object',
   'modules/stalwart-jmap/client.ts#verifyMasterJmapAuth': 'whether a login is accepted',
   'modules/stalwart-jmap/mailing-lists.ts#listMailingLists': 'the mail server\'s lists',

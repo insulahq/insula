@@ -40,6 +40,7 @@ function harness(opts: {
   releaseMatches?: boolean;
   failUpdatesTransiently?: number;
   selfNode?: string;
+  cordoned?: readonly string[];
 }) {
   const settings = { ...baseSettings, ...opts.settings };
   const executed: string[] = [];
@@ -71,6 +72,7 @@ function harness(opts: {
   const ready = opts.ready ?? {};
   const core = {
     readNode: vi.fn(async ({ name }: { name: string }) => ({
+      spec: { unschedulable: (opts.cordoned ?? []).includes(name) },
       status: { conditions: [{ type: 'Ready', status: ready[name] === false ? 'False' : 'True' }] },
     })),
     listNamespacedPod: vi.fn(async () => ({
@@ -189,5 +191,30 @@ describe('dr-watcher — a replica on a NotReady node stays out of the failover'
     trigger.mockResolvedValue(undefined);
     await runDrWatcherTick(h.deps);
     expect(trigger).toHaveBeenCalledWith('standby', expect.anything());
+  });
+});
+
+// Production: the secondary was cordoned (being drained), still
+// Ready. The failover picked it, the stack sat Pending for 10 minutes, rolled
+// back, and mail stayed down for the whole outage.
+describe('dr-watcher — a cordoned node is not a failover target', () => {
+  const due = { mailDrState: 'degraded', mailLastFailoverAt: new Date(Date.now() - 600_000) };
+
+  it('skips a cordoned secondary and fails over to the tertiary', async () => {
+    const h = harness({
+      settings: { ...due, mailTertiaryNode: 'third' },
+      ready: { source: false, standby: true, third: true },
+      cordoned: ['standby'],
+    });
+    trigger.mockResolvedValue(undefined);
+    await runDrWatcherTick(h.deps);
+    expect(trigger).toHaveBeenCalledWith('third', expect.anything());
+  });
+
+  it('with only a cordoned candidate, does not fail over and says why', async () => {
+    const h = harness({ settings: due, ready: { source: false, standby: true }, cordoned: ['standby'] });
+    await runDrWatcherTick(h.deps);
+    expect(trigger).not.toHaveBeenCalled();
+    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('standby(cordoned)'));
   });
 });

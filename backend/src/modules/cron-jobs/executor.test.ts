@@ -371,3 +371,34 @@ describe('the configured timeout reaches both execution paths', () => {
     );
   });
 });
+
+describe('podDisruptionReason — the platform\'s own marks on a pod it stopped', () => {
+  it('the kubelet stopped it for a node shutdown', async () => {
+    const { podDisruptionReason } = await import('./executor.js');
+    expect(podDisruptionReason({ status: { phase: 'Succeeded', conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'TerminationByKubelet' }] } }))
+      .toBe('the server it ran on was shutting down');
+    expect(podDisruptionReason({ status: { phase: 'Failed', reason: 'Terminated' } })).toBe('the server it ran on was shutting down');
+  });
+
+  it('another disruption, or a pod being replaced', async () => {
+    const { podDisruptionReason } = await import('./executor.js');
+    expect(podDisruptionReason({ status: { conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'EvictionByEvictionAPI' }] } }))
+      .toBe('the platform stopped the pod it ran in (EvictionByEvictionAPI)');
+    expect(podDisruptionReason({ metadata: { deletionTimestamp: '2026-10-18T10:10:43Z' }, status: { phase: 'Running' } }))
+      .toBe('the pod it ran in was being replaced');
+  });
+
+  it('a running pod with no mark is not an interruption — the command failed', async () => {
+    const { podDisruptionReason } = await import('./executor.js');
+    expect(podDisruptionReason({ status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] } })).toBeNull();
+  });
+
+  it('platformInterruption: no transport check → null; a throwing check → null', async () => {
+    const { platformInterruption } = await import('./executor.js');
+    const ranIn = { namespace: 'tenant-a', pod: 'p', node: 's1' };
+    const base = { listPods: async () => [], exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) };
+    expect(await platformInterruption(ranIn, { transport: base })).toBeNull();
+    expect(await platformInterruption(ranIn, { transport: { ...base, podDisruption: async () => { throw new Error('x'); } } })).toBeNull();
+  });
+});
+

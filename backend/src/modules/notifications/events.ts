@@ -44,6 +44,8 @@ async function dispatchSafe(
     readonly resourceId?: string;
     /** See EmitEventOptions.tenantScopedContent. */
     readonly tenantScopedContent?: boolean;
+    /** See EmitEventOptions.externalOnly. */
+    readonly externalOnly?: boolean;
   },
 ): Promise<EmitResult | null> {
   try {
@@ -58,6 +60,7 @@ async function dispatchSafe(
       resourceType: extraOpts?.resourceType,
       resourceId: extraOpts?.resourceId,
       tenantScopedContent: extraOpts?.tenantScopedContent,
+      externalOnly: extraOpts?.externalOnly,
     });
   } catch {
     // Legacy contract: never throw from an event helper.
@@ -677,8 +680,8 @@ async function dispatchReporting(
 }
 
 export interface TenantWorkloadsDownPayload {
-  /** Deployment name, as the tenant would recognise it (e.g. "moodle"). */
-  readonly workload: string;
+  /** The workloads that are down, as the tenant would recognise them (e.g. "moodle"). Rendered as a list. */
+  readonly workloads: readonly string[];
   readonly downSince: string;
   /** Plain-language cause, already translated out of kubelet-speak. */
   readonly reasonLabel: string;
@@ -787,9 +790,12 @@ export async function notifyTenantWorkloadDiskLimit(
 }
 
 export interface AdminTenantWorkloadsDownPayload {
+  /** The tenant — or "Tenants pinned to <node>" when that node being down is the cause. */
   readonly tenantName: string;
+  /** The tenant's namespace; empty for a node outage (several tenants). */
   readonly namespace: string;
-  readonly workload: string;
+  /** One line per workload, or per tenant for a node outage. Rendered as a list. */
+  readonly workloads: readonly string[];
   readonly downSince: string;
   readonly downMinutes: string;
   /** volume_attach | quota_rejected | unschedulable | image | crash | unknown */
@@ -797,7 +803,8 @@ export interface AdminTenantWorkloadsDownPayload {
   readonly reasonLabel: string;
   /** The kubelet / ReplicaSet message, truncated. */
   readonly detail?: string;
-  readonly healAttempts: string;
+  /** "Auto-heal tried 1x and could not bring it back." / "…was not attempted…" */
+  readonly healSummary: string;
   readonly lastHealError?: string;
   readonly recommendedAction: string;
 }
@@ -820,6 +827,42 @@ export async function notifyAdminTenantWorkloadsDown(
   dedupeKey?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   return dispatchReporting(db, 'admin.tenant_workloads_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminTenantWorkloadsRecoveredPayload {
+  /** The tenant — or "Tenants pinned to <node>", the way the outage was reported. */
+  readonly tenantName: string;
+  /** What is running again. Rendered as a list. */
+  readonly workloads: readonly string[];
+  readonly downSince: string;
+  readonly downMinutes: string;
+}
+/**
+ * The half the workloads-down alert never had: it is over. On production
+ * a tenant came back two minutes after "auto-heal failed" and
+ * the operator was told nothing more. Only for episodes that had alerted.
+ */
+export async function notifyAdminTenantWorkloadsRecovered(
+  db: Database,
+  payload: AdminTenantWorkloadsRecoveredPayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'admin.tenant_workloads_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface TenantWorkloadsRecoveredPayload {
+  /** What is running again. Rendered as a list. */
+  readonly workloads: readonly string[];
+  readonly downSince: string;
+}
+/** The tenant's copy of "it is running again", after a "not running" notice. */
+export async function notifyTenantWorkloadsRecovered(
+  db: Database,
+  tenantId: string,
+  payload: TenantWorkloadsRecoveredPayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.workloads_recovered', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
 export interface AdminNodeDownPayload {
@@ -1460,12 +1503,20 @@ export interface ScheduledTaskFailurePayload {
  * TWO audiences, like the mailbox-quota event: the tenant admins by scope (per
  * their own preferences), and the addresses a job opted into by address —
  * see cron-jobs/failure-email.ts, which also bounds how often those are mailed.
+ * A job with "inform the tenant's admins" off (`informTenantAdmins: false`)
+ * reaches only those addresses: the admins get nothing on any channel. They
+ * used to get the panel notice and their own email regardless, so a job set
+ * to mail only the operator kept emailing the client (seen on production).
  */
 export async function notifyTenantScheduledTaskFailure(
   db: Database,
   tenantId: string,
   payload: ScheduledTaskFailurePayload,
-  opts: { readonly dedupeKey?: string; readonly externalRecipients?: readonly string[] } = {},
+  opts: {
+    readonly dedupeKey?: string;
+    readonly externalRecipients?: readonly string[];
+    readonly informTenantAdmins?: boolean;
+  } = {},
 ): Promise<void> {
   await dispatchSafe(
     db,
@@ -1475,7 +1526,12 @@ export async function notifyTenantScheduledTaskFailure(
     tenantId,
     // Each address was chosen on the job for exactly this event, so it is
     // skipped only when its account holder was actually emailed about it.
-    { dedupeKey: opts.dedupeKey, externalRecipients: opts.externalRecipients, externalRecipientsOptedIn: true },
+    {
+      dedupeKey: opts.dedupeKey,
+      externalRecipients: opts.externalRecipients,
+      externalRecipientsOptedIn: true,
+      externalOnly: opts.informTenantAdmins === false,
+    },
   );
 }
 
