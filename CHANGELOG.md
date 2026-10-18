@@ -43,8 +43,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   could land on one server whenever only one could take a pod — seen on production with one server
   powered off and another cordoned — and nothing moved them back. The leader-elect operators the
   storage-policy reconciler scales to two (cert-manager, the CNPG operator, sealed-secrets,
-  snapshot-controller, the Flux controllers) now get a hard one-per-node topology spread from the
-  reconciler, and the WAF Deployments carry it in their manifests. A replacement waits for its
+  snapshot-controller, the Flux controllers) now carry a hard one-per-node topology spread —
+  host-migration `2026.10.12/0001` adds it on existing clusters (each operator restarts once),
+  bootstrap on fresh installs; platform-api's admission policy deliberately keeps it out of those
+  namespaces — and the WAF Deployments carry it in their manifests. A replacement waits for its
   server instead of doubling up. Database instances keep their preferred anti-affinity: an instance
   must be able to leave a server that is being removed.
 - **A tenant whose pinned node is down is reported as that, and left alone.** The first seconds of

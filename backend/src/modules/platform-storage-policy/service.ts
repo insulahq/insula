@@ -12,7 +12,6 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { countServers } from './server-count.js';
-import { ensureHostnameSpread, spreadPatchFor, type SpreadDeploymentView } from './hostname-spread.js';
 
 // Platform StatefulSets whose volumes this policy controls. Add to the
 // list when a new system StatefulSet ships with a PVC.
@@ -847,21 +846,7 @@ async function patchLeaderElectDeployments(
   serverCount: number,
 ): Promise<DeploymentPatchResult[]> {
   const desired = leaderElectReplicasForSystemTier(tier, serverCount);
-  const results = await patchDeploymentsToReplicaCount(k8s, LEADER_ELECT_DEPLOYMENTS, desired);
-  // Two replicas are only a standby when they are on two servers
-  // (hostname-spread.ts). Best-effort per Deployment: a failed patch is
-  // logged and retried on the next tick (drift detection sees it missing).
-  for (const d of LEADER_ELECT_DEPLOYMENTS) {
-    if (replicasFor(d, desired) < 2) continue;
-    try {
-      if (await ensureHostnameSpread(k8s, d.namespace, d.name)) {
-        console.warn(`[storage-policy] ${d.namespace}/${d.name}: added one-replica-per-server spread`);
-      }
-    } catch (err) {
-      console.warn(`[storage-policy] ${d.namespace}/${d.name}: spread patch failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  return results;
+  return patchDeploymentsToReplicaCount(k8s, LEADER_ELECT_DEPLOYMENTS, desired);
 }
 
 /**
@@ -904,9 +889,6 @@ export async function detectDeploymentReplicaDrift(
         const annotations = live.metadata?.annotations ?? {};
         if (annotations[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') continue;
         if ((live.spec?.replicas ?? 0) !== replicasFor(d, desired)) return true;
-        // A leader-elect pair without the one-per-server rule is drift too.
-        if (deployments === LEADER_ELECT_DEPLOYMENTS && replicasFor(d, desired) >= 2
-          && spreadPatchFor(live as SpreadDeploymentView) !== null) return true;
       } catch (err) {
         const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
         if (status !== 404) {

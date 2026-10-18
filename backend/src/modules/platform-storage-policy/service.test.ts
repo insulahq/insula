@@ -663,31 +663,6 @@ describe('detectDeploymentReplicaDrift — scheduler trigger for deployment drif
     expect(await detectDeploymentReplicaDrift(k8s, 'ha', 3)).toBe(false);
   });
 
-  // Production: both cert-manager replicas ended on one server and
-  // stayed there. In HA a leader-elect pair without the one-per-server rule is
-  // drift, so the reconciler adds it (hostname-spread.ts).
-  it('a leader-elect pair in HA without the one-per-server rule is drift; with it, none', async () => {
-    const { detectDeploymentReplicaDrift } = await import('./service.js');
-    const { hostnameSpreadFor } = await import('./hostname-spread.js');
-    const stateless = ['admin-panel', 'tenant-panel', 'platform-api', 'oauth2-proxy', 'dex', 'roundcube'];
-    const mock = (spread: boolean): K8sClients => ({
-      apps: {
-        readNamespacedDeployment: vi.fn(async ({ name }: { name: string }) => ({
-          metadata: { name, annotations: {} },
-          spec: {
-            replicas: stateless.includes(name) ? 3 : name === 'source-controller' ? 1 : 2,
-            selector: { matchLabels: { app: name } },
-            template: { spec: { topologySpreadConstraints: spread ? [hostnameSpreadFor({ app: name })] : [] } },
-          },
-        })),
-      },
-    }) as unknown as K8sClients;
-    expect(await detectDeploymentReplicaDrift(mock(false), 'ha', 3)).toBe(true);
-    expect(await detectDeploymentReplicaDrift(mock(true), 'ha', 3)).toBe(false);
-    // One server: one replica each, nothing to spread.
-    expect(await detectDeploymentReplicaDrift(makeAppsMock({ defaultReplicas: 1 }), 'local', 1)).toBe(false);
-  });
-
   it('a second source-controller in HA is drift — the reconciler takes it back to one', async () => {
     const { detectDeploymentReplicaDrift } = await import('./service.js');
     const overrides: Record<string, { replicas: number }> = {};
