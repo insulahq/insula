@@ -73,9 +73,10 @@ interface NodeDrainDeleteModalProps {
  *    where pinning is also expressed at the tenant level).
  *  - Each row expandable to show the workloads + PVCs that will be
  *    moved together — informational, not editable.
- *  - The "Last-replica risk" banner is reserved for PLATFORM volumes
- *    (postgres, longhorn-system, mail) since tenant volumes are
- *    already represented inside their tenant row.
+ *  - The drain asks nothing about volumes: it moves tenants, and their
+ *    data follows the re-pin. Volumes that keep their only copy here —
+ *    platform volumes, leftovers nothing uses — are listed at the DELETE
+ *    step, where deleting the node would delete them.
  *  - A Postgres instance volume whose data other instances hold
  *    (`postgresInstance.coveredBy`) is not a drain risk: in HA each instance
  *    has one Longhorn replica on purpose. It gets its own informational
@@ -83,7 +84,7 @@ interface NodeDrainDeleteModalProps {
  *    takes the instance's only copy with it.
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
-  const [forceLastReplica, setForceLastReplica] = useState(false);
+  const [deleteLastCopies, setDeleteLastCopies] = useState(false);
   const [blockNewTenants, setBlockNewTenants] = useState(true);
   const impactQuery = useDrainImpact(node.name, true);
   const nodesQuery = useClusterNodes();
@@ -113,16 +114,13 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
     && impact.tenantsDrained
     && impact.nonSystemPods.length === 0
     && impact.pinnedTenants.length === 0;
-  // Reserve the "Last-replica risk" banner for PLATFORM volumes —
-  // tenant volumes are already represented in their tenant row above
-  // (where the re-pin dropdown lives).
   const isCovered = (r: DrainImpact['longhornReplicas'][number]): boolean =>
     (r.postgresInstance?.coveredBy.length ?? 0) > 0;
-  // Same rule as the backend guard: a tenant's live volume is moved by the
-  // re-pin (its row above offers the target; "Stay" disables the drain), so
-  // only what nobody moves is a last-replica risk.
-  const lastReplicaVolumes = impact?.longhornReplicas.filter(
-    (r) => r.isLastReplica && !r.movedByRepin && !isCovered(r),
+  // Same rule as the backend's Delete guard (NODE_DELETE_HOLDS_LAST_COPY):
+  // every volume whose only copy is here, except database instances (their
+  // own guard below). The drain does not care — Delete would delete them.
+  const lastCopies = impact?.longhornReplicas.filter(
+    (r) => r.isLastReplica && !r.postgresInstance,
   ) ?? [];
   // Postgres instances whose data other instances hold — shown, not blocking.
   const coveredDbInstances = impact?.longhornReplicas.filter(
@@ -175,7 +173,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
         if (!(c.tenantId in finalTenantPlacement)) finalTenantPlacement[c.tenantId] = defaultPlacementFor(c);
       }
       await drain.mutateAsync({
-        forceLastReplica,
         tenantPlacement: finalTenantPlacement,
         blockNewTenants,
       });
@@ -192,7 +189,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
 
   const handleDelete = async (): Promise<void> => {
     try {
-      await del.mutateAsync();
+      await del.mutateAsync({ forceLastReplica: deleteLastCopies });
       onClose();
     } catch { /* surfaced below */ }
   };
@@ -473,57 +470,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 )}
               </ImpactSection>
 
-              {/* ─── Platform last-replica risk ─── */}
-              {lastReplicaVolumes.length > 0 && (
-                <ImpactSection
-                  title={`Last-replica risk (${lastReplicaVolumes.length})`}
-                  tone="danger"
-                  content={`${lastReplicaVolumes.length} volume(s) have only this node holding a healthy replica. Drain will be REFUSED unless you tick "force last replica".`}
-                >
-                  <table className="mt-2 w-full text-xs">
-                    <thead className="text-gray-500 dark:text-gray-400">
-                      <tr>
-                        <th className="text-left py-1 pr-2">Owner</th>
-                        <th className="text-left py-1 pr-2">PVC</th>
-                        <th className="text-left py-1">Volume</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lastReplicaVolumes.map((r) => (
-                        <tr key={r.replicaName} className="border-t border-red-200/60 dark:border-red-700/40">
-                          <td className="py-1.5 pr-2">
-                            {r.tenantId ? (
-                              <Link
-                                to={`/tenants/${r.tenantId}`}
-                                className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-                              >
-                                {r.tenantName ?? r.ownerLabel}
-                                <ExternalLink size={10} />
-                              </Link>
-                            ) : (
-                              <span className="text-gray-700 dark:text-gray-300">{r.ownerLabel}</span>
-                            )}
-                          </td>
-                          <td className="py-1.5 pr-2 font-mono text-gray-700 dark:text-gray-300">
-                            {r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : <span className="text-gray-400 italic">unbound</span>}
-                          </td>
-                          <td className="py-1.5 font-mono text-gray-500 dark:text-gray-400">{r.volumeName}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <label className="mt-2 flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={forceLastReplica}
-                      onChange={(e) => setForceLastReplica(e.target.checked)}
-                      data-testid="force-last-replica-checkbox"
-                    />
-                    <span>I accept data risk — force drain even with last replicas here.</span>
-                  </label>
-                </ImpactSection>
-              )}
-
               {/* ─── Database instances (covered — info only) ─── */}
               {coveredDbInstances.length > 0 && (
                 <ImpactSection
@@ -660,6 +606,37 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             </div>
           )}
 
+          {drained && lastCopies.length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="delete-last-copies">
+              <div className="flex items-center gap-1 font-semibold">
+                <AlertTriangle size={12} /> {lastCopies.length} volume(s) keep their only copy on this node — deleting the node deletes them.
+              </div>
+              <ul className="mt-1.5 space-y-0.5">
+                {lastCopies.map((r) => (
+                  <li key={r.replicaName} className="font-mono">
+                    {r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : r.volumeName}
+                    <span className="ml-1 font-sans text-amber-800 dark:text-amber-200">
+                      {!r.inUse ? '— leftover, not in use' : !r.attached ? '— not mounted' : `— ${r.ownerLabel}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5">
+                Draining tenants never touches them. Delete leftovers on{' '}
+                <Link to="/cluster/storage" className="underline">Cluster → Storage</Link> (Orphaned volumes), or confirm:
+              </p>
+              <label className="mt-1.5 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={deleteLastCopies}
+                  onChange={(e) => setDeleteLastCopies(e.target.checked)}
+                  data-testid="delete-last-copies-checkbox"
+                />
+                <span>Delete them with the node.</span>
+              </label>
+            </div>
+          )}
+
           {drained && !confirmDelete && dbInstancesHere.length === 0 && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
@@ -716,7 +693,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 disabled={
                   drain.isPending
                   || !impact
-                  || (lastReplicaVolumes.length > 0 && !forceLastReplica)
                   || anyStayPinned
                 }
                 title={anyStayPinned
@@ -733,7 +709,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}
-                disabled={dbInstancesHere.length > 0}
+                disabled={dbInstancesHere.length > 0 || (lastCopies.length > 0 && !deleteLastCopies)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                 data-testid={`delete-node-${node.name}-button`}
               >

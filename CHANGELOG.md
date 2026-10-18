@@ -12,6 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Drain Tenants" no longer asks about volumes that are not a tenant's.** 2026.10.12 made the
+  drain tenants-only but kept its old last-replica check: on production a tenant drain was refused,
+  unless "force last replica" was ticked, over an unmounted CrowdSec store and over the leftover
+  volume of an old database instance — volumes the drain never touches and that stay, with the
+  node, exactly where they are. The drain now asks nothing about them (and refuses only a tenant
+  set to **Stay**: `NODE_DRAIN_TENANT_STAYS`, as the dialog already did). **Delete** asks instead:
+  volumes other than tenant data or a database instance whose only copy is on the node are listed
+  at the Delete step — marked *leftover, not in use* or *not mounted* — and Delete stays disabled
+  until "Delete them with the node" is ticked (`NODE_DELETE_HOLDS_LAST_COPY`; API body
+  `forceLastReplica`).
+
 ## [2026.10.12] - 2026-10-18
 
 ### Changed

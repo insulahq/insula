@@ -246,14 +246,14 @@ export function translateOperatorError(
       diagnostics: { raw },
     };
   }
-  if (text.includes('NODE_DRAIN_BLOCKED_LAST_REPLICA')) {
+  if (text.includes('NODE_DELETE_HOLDS_LAST_COPY') || text.includes('NODE_DRAIN_BLOCKED_LAST_REPLICA')) {
     return {
       code: OPERATOR_ERROR_CODES.DRAIN_LAST_REPLICA,
-      title: 'Drain blocked — last replica',
-      detail: 'This node holds the last running replica for one or more Longhorn volumes. Draining without override would risk data loss.',
+      title: 'Delete blocked — volumes keep their only copy here',
+      detail: 'Deleting the node would delete volumes whose only copy is on it (platform volumes, or leftovers nothing uses).',
       remediation: [
-        'Wait for Longhorn to rebuild a replica on another node, OR',
-        'Tick "Force last replica" in the drain dialog if you accept the data risk.',
+        'Delete leftovers on Cluster → Storage → Orphaned volumes, OR',
+        'Tick "Delete them with the node" in the Delete dialog if they may go.',
       ],
       retryable: true,
       diagnostics: { raw },

@@ -356,7 +356,7 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
   const handleDelete = () => {
     if (!confirm(`Delete node ${confirmName} from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
     setDeleteError(null);
-    deleteNodeMutation.mutate(undefined, {
+    deleteNodeMutation.mutate({}, {
       onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Delete failed'),
     });
   };
@@ -368,7 +368,7 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
   const handleRemoveOrphan = () => {
     if (!confirm(`Remove orphan node ${confirmName} from the platform inventory? This DB row has no matching Kubernetes node — only the row will be deleted.`)) return;
     setDeleteError(null);
-    deleteNodeMutation.mutate(undefined, {
+    deleteNodeMutation.mutate({}, {
       onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Remove failed'),
     });
   };

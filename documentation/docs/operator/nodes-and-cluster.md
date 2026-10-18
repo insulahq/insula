@@ -209,9 +209,13 @@ node card click **Drain Tenants**. A modal computes the impact:
   placement, when that is nowhere. The **Cordon** switch on the node's edit
   form says what a cordon leaves mail, and which database instances keep their
   only copy on the node, when you switch it on.
-- **Last-replica risk** — if this node holds the *only* healthy replica of a
-  platform volume (mail, for example), the drain is **refused** unless you tick
-  **"I accept data risk — force drain even with last replicas here."**
+- **Every other volume** — the drain asks nothing about volumes that are not a
+  tenant's. Platform volumes (the monitoring store, the CrowdSec store, …) and
+  leftovers nothing uses any more keep their copies where they are, on a node
+  that keeps running. Whether a copy that exists only on this node may go is
+  **Delete**'s question (see [Removing a node](#removing-a-node)).
+- **A tenant set to Stay** — not possible: a drain moves every tenant off the
+  node (`NODE_DRAIN_TENANT_STAYS`). Pick Auto or another node.
 - **System pods the drain leaves running** — database instances and the other
   platform services stay where they are; **Delete** moves them. In HA mode each
   PostgreSQL instance keeps its one copy on its own node; the other instances
@@ -219,8 +223,8 @@ node card click **Drain Tenants**. A modal computes the impact:
   another server. The **primary** counts as covered while it is streaming to a
   standby on another server — if its node goes down, PostgreSQL fails over to
   that standby and writes pause briefly. A server that is itself cordoned
-  never counts as cover. An instance nothing covers appears under
-  *Last-replica risk*.
+  never counts as cover. An instance nothing covers is marked as such; the
+  drain still leaves it alone, and **Delete** refuses until it has moved.
 
 Click **Drain tenants**. When no tenant pod is left on the node it is tagged
 **Tenants drained** and **Delete** unlocks.
@@ -432,7 +436,14 @@ kubelet not reporting* instead.
    (**Email → Operations → Placement**). Delete refuses until then
    (`NODE_DELETE_HOLDS_DATABASE`, `NODE_DELETE_RUNS_MAIL`), with nothing
    changed.
-3. Click **Delete** on the card → **Confirm Delete**. Delete now moves the
+3. If volumes keep their **only copy** on the node — platform volumes, or
+   leftovers nothing uses — the Delete step lists them, marked *leftover, not
+   in use* or *not mounted*: deleting the node deletes them. **Delete Node**
+   stays disabled until you tick **Delete them with the node**
+   (`NODE_DELETE_HOLDS_LAST_COPY` through the API unless the body says
+   `forceLastReplica: true`). To keep one, move it first; to be rid of a
+   leftover sooner, delete it on **Cluster → Storage → Orphaned volumes**.
+4. Click **Delete** on the card → **Confirm Delete**. Delete now moves the
    system pods: it **cordons** the node, evicts every platform pod still on it
    (DaemonSet pods excepted — they go with the node), respecting disruption
    budgets, waits up to 90 seconds for them to leave, then runs
@@ -443,7 +454,7 @@ kubelet not reporting* instead.
    (The API replica answering the request is the one pod left in place; it
    goes with the node, and a replacement starts on another server.)
    **The host itself keeps running** — Insula does not power it off.
-4. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
+5. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
    `k3s-agent-uninstall.sh` (worker), then release the VPS.
 
 ### Moving a database instance off a server
@@ -471,9 +482,9 @@ reopen the modal — **Delete** is available.
 The instance's old volume is kept, *Released*, because the platform's storage
 classes retain released volumes. Two days after its release — the instance has
 a newer copy by then — the platform deletes it, with its Longhorn volume. Until
-then the drain modal lists it under *Last-replica risk* with its old claim name;
-it no longer belongs to the instance and does not hold back **Delete**. To
-delete it sooner, use **Cluster → Storage → Orphaned volumes**.
+then the Delete step lists it as a *leftover, not in use* under its old claim
+name — it no longer belongs to the instance, and the drain never asks about it.
+To delete it sooner, use **Cluster → Storage → Orphaned volumes**.
 
 Deleting a node also tidies up after it: its storage-system record is removed,
 and if it was named as a mail primary/secondary/tertiary, that reference is

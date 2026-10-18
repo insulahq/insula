@@ -12,11 +12,12 @@ import NodeDrainDeleteModal from '../components/NodeDrainDeleteModal';
 
 let impact: DrainImpact;
 const drainMutate = vi.fn(async (_input: unknown) => ({}));
+const deleteMutate = vi.fn(async (_input?: unknown) => ({}));
 let clusterNodes: Array<{ name: string; canHostTenantWorkloads: boolean }> = [];
 vi.mock('@/hooks/use-cluster-nodes', () => ({
   useDrainImpact: () => ({ data: { data: impact }, isLoading: false, error: null, refetch: vi.fn() }),
   useDrainNode: () => ({ mutateAsync: drainMutate, isPending: false, isSuccess: false, error: null, data: undefined }),
-  useDeleteNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+  useDeleteNode: () => ({ mutateAsync: deleteMutate, isPending: false, error: null }),
   useClusterNodes: () => ({ data: { data: clusterNodes } }),
 }));
 vi.mock('@/hooks/use-worker-usage', () => ({ useWorkerUsageSummary: () => ({ data: undefined }) }));
@@ -28,6 +29,8 @@ const replica = (r: Partial<Replica> & { pvcName: string }): Replica => ({
   isLastReplica: true,
   postgresInstance: null,
   movedByRepin: false,
+  inUse: true,
+  attached: true,
   namespace: 'platform',
   tenantId: null,
   tenantName: null,
@@ -95,32 +98,52 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
     expect(within(list).getByText(/fails over to a streaming instance/)).toBeTruthy();
   });
 
-  it('an uncovered platform last replica still blocks until "force last replica" is ticked', () => {
-    impact = makeImpact([
-      replica({ pvcName: 'data-stalwart-mail-0', namespace: 'mail', ownerLabel: 'Platform System (mail)' }),
-      replica({
-        pvcName: 'system-db-2',
-        postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-2', primary: false, coveredBy: ['system-db-1'] },
-      }),
-    ]);
+  // Production, after 2026.10.12: the TENANT drain still refused over an
+  // unmounted CrowdSec store and a leftover database copy. The drain moves
+  // tenants; those volumes stay where they are. Delete asks about them.
+  const productionVolumes = () => [
+    replica({ pvcName: 'crowdsec-data', namespace: 'crowdsec', ownerLabel: 'Platform System (crowdsec)', attached: false }),
+    replica({ pvcName: 'system-db-3', inUse: false, attached: false }),
+  ];
+
+  it('platform volumes whose only copy is here never hold the tenant drain back, nor ask to be forced', () => {
+    impact = makeImpact(productionVolumes());
     renderModal();
 
-    expect(screen.getByText('Last-replica risk (1)')).toBeTruthy();
-    expect(screen.getByText('mail/data-stalwart-mail-0')).toBeTruthy();
-    expect(screen.getByTestId('force-last-replica-checkbox')).toBeTruthy();
-    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/Last-replica risk/)).toBeNull();
+    expect(screen.queryByTestId('force-last-replica-checkbox')).toBeNull();
+    expect(screen.queryByTestId('delete-last-copies')).toBeNull();
+    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('an instance nothing covers is a last-replica risk like any other platform volume', () => {
+  it('nor does a database instance nothing covers — the drain never moves it', () => {
     impact = makeImpact([replica({
       pvcName: 'system-db-1',
       postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-1', primary: true, coveredBy: [] },
     })]);
     renderModal();
 
-    expect(screen.getByText('Last-replica risk (1)')).toBeTruthy();
-    expect(screen.queryByTestId('covered-db-instances')).toBeNull();
-    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/Last-replica risk/)).toBeNull();
+    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Delete lists them as what they are and stays disabled until the operator confirms they may go', async () => {
+    impact = { ...makeImpact(productionVolumes()), tenantsDrained: true };
+    deleteMutate.mockClear();
+    renderModal();
+
+    const panel = screen.getByTestId('delete-last-copies');
+    expect(panel.textContent).toContain('crowdsec/crowdsec-data');
+    expect(panel.textContent).toContain('— not mounted');
+    expect(panel.textContent).toContain('platform/system-db-3');
+    expect(panel.textContent).toContain('— leftover, not in use');
+    const del = screen.getByTestId('delete-node-s2-button') as HTMLButtonElement;
+    expect(del.disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('delete-last-copies-checkbox'));
+    expect(del.disabled).toBe(false);
+    fireEvent.click(del);
+    fireEvent.click(screen.getByTestId('confirm-delete-node-s2-button'));
+    await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith({ forceLastReplica: true }));
   });
 
   it('a drained node that still holds an instance\'s only copy keeps Delete disabled and says why', () => {
@@ -182,16 +205,13 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
     clusterNodes = [];
   });
 
-  it('a tenant\'s live volume is not listed as a last-replica risk — a Released leftover of one is', () => {
+  it('a tenant leftover with its only copy here does not hold the drain back either', () => {
     impact = makeImpact([
-      replica({ pvcName: 'tenant-a-storage', namespace: 'tenant-a', tenantId: 'a', tenantName: 'A', ownerLabel: 'A', movedByRepin: true }),
-      replica({ pvcName: 'tenant-b-storage', namespace: 'tenant-b', tenantId: 'b', tenantName: 'B', ownerLabel: 'B', movedByRepin: false }),
+      replica({ pvcName: 'tenant-b-storage', namespace: 'tenant-b', tenantId: 'b', tenantName: 'B', ownerLabel: 'B', movedByRepin: false, inUse: false }),
     ]);
     renderModal();
 
-    expect(screen.getByText('Last-replica risk (1)')).toBeTruthy();
-    expect(screen.getByText('tenant-b/tenant-b-storage')).toBeTruthy();
-    expect(screen.queryByText('tenant-a/tenant-a-storage')).toBeNull();
+    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

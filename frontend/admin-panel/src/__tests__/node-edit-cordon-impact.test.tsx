@@ -28,7 +28,7 @@ beforeEach(() => {
       otherFailoverTargets: [], onlyStandbyCopy: true,
     },
     longhornReplicas: [{
-      volumeName: 'pvc-3', replicaName: 'r-3', isLastReplica: true, movedByRepin: false,
+      volumeName: 'pvc-3', replicaName: 'r-3', isLastReplica: true, movedByRepin: false, inUse: true, attached: true,
       postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-3', primary: false, coveredBy: ['system-db-2'] },
       namespace: 'platform', pvcName: 'system-db-3', tenantId: null, tenantName: null, ownerLabel: 'Platform System (platform)',
     }],

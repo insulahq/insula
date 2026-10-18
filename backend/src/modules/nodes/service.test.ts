@@ -519,12 +519,12 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     } as unknown as K8sClients;
   }
 
-  it('refuses to drain the only node (single-node cluster) even with forceLastReplica', async () => {
+  it('refuses to drain the only node (single-node cluster)', async () => {
     const db = makeListNodesDb([{ name: 'solo' }]);
     const k8s = makeK8sNodes([{ name: 'solo' }]);
 
     await expect(
-      drainNode(k8s, db, 'solo', { forceLastReplica: true, tenantPlacement: {} }),
+      drainNode(k8s, db, 'solo', { tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
   });
 
@@ -533,7 +533,7 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     const k8s = makeK8sNodes([{ name: 'a' }, { name: 'b', unschedulable: true }]);
 
     await expect(
-      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+      drainNode(k8s, db, 'a', { tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
   });
 
@@ -542,7 +542,7 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     const k8s = makeK8sNodes([{ name: 'a' }, { name: 'cp' }]);
 
     await expect(
-      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+      drainNode(k8s, db, 'a', { tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_NODE', status: 409 });
   });
 
@@ -551,7 +551,7 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     const k8s = makeK8sNodes('throw');
 
     await expect(
-      drainNode(k8s, db, 'a', { forceLastReplica: true, tenantPlacement: {} }),
+      drainNode(k8s, db, 'a', { tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_DRAIN_PRECHECK_FAILED', status: 503 });
   });
 
@@ -560,7 +560,7 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     const k8s = makeK8sNodes([{ name: 'a' }, { name: 'b' }]);
 
     await expect(
-      drainNode(k8s, db, 'ghost', { forceLastReplica: true, tenantPlacement: {} }),
+      drainNode(k8s, db, 'ghost', { tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_NOT_FOUND', status: 404 });
   });
 });
@@ -829,20 +829,73 @@ describe('Postgres instances on a drained / deleted node', () => {
     expect(JSON.stringify(patchNode.mock.calls[0][0])).toContain('"insula.host/tenants-drained":null');
   });
 
-  it('drainNode: an uncovered instance still blocks without forceLastReplica', async () => {
-    const { k8s, patchNode } = makeHaK8s([
+  it('drainNode: an uncovered database instance does not hold a TENANT drain back — the drain never touches it', async () => {
+    const { k8s } = makeHaK8s([
       { name: 'system-db-1', node: 's1', primary: true, ready: false },
       { name: 'system-db-2', node: 's2' },
     ]);
     await expect(drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {}, blockNewTenants: false }))
-      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
-    expect(patchNode).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ evicted: 0 });
   });
 
-  it('drainNode: the primary with no streaming standby still blocks', async () => {
+  it('drainNode: neither does a primary with no streaming standby', async () => {
     const { k8s } = makeHaK8s(haCluster);
     await expect(drainNode(k8s, makeDrainDb([]), 's1', { tenantPlacement: {}, blockNewTenants: false }))
-      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+      .resolves.toMatchObject({ evicted: 0 });
+  });
+
+  // Production, after the 2026.10.12 upgrade: a tenant drain was refused over
+  // an unmounted CrowdSec store (Bound, detached, one copy) and over the
+  // leftover volume of an old database instance (its PV deleted, Longhorn
+  // still naming the claim). Neither is the drain's business; Delete asks.
+  const withPlatformVolumes = (k8s: K8sClients) => {
+    const custom = k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    const base = custom.listNamespacedCustomObject.getMockImplementation()!;
+    custom.listNamespacedCustomObject.mockImplementation(async (req: { plural: string }) => {
+      const res = await base(req) as { items: unknown[] };
+      if (req.plural === 'volumes') {
+        res.items.push(
+          { metadata: { name: 'pvc-crowdsec' }, status: { state: 'detached', kubernetesStatus: { pvcName: 'crowdsec-data', namespace: 'crowdsec', pvStatus: 'Bound' } } },
+          { metadata: { name: 'pvc-old-db3' }, status: { state: 'detached', kubernetesStatus: { pvcName: 'system-db-3', namespace: 'platform', pvStatus: '' } } },
+        );
+      }
+      if (req.plural === 'replicas') {
+        res.items.push(
+          { metadata: { name: 'r-crowdsec' }, spec: { volumeName: 'pvc-crowdsec', nodeID: 's2', failedAt: '' }, status: { currentState: 'stopped' } },
+          { metadata: { name: 'r-old-db3' }, spec: { volumeName: 'pvc-old-db3', nodeID: 's2', failedAt: '' }, status: { currentState: 'stopped' } },
+        );
+      }
+      return res;
+    });
+    return k8s;
+  };
+  const instancesElsewhere: PgInstance[] = [
+    { name: 'system-db-1', node: 's1', primary: true },
+    { name: 'system-db-2', node: 's3' },
+  ];
+
+  it('drainNode: platform volumes whose only copy is here never refuse a tenant drain (production)', async () => {
+    const { k8s } = makeHaK8s(instancesElsewhere);
+    withPlatformVolumes(k8s);
+    const impact = await buildDrainImpact(k8s, makeDrainDb(), 's2');
+    expect(impact.longhornReplicas.filter((r) => r.isLastReplica).map((r) => [r.pvcName, r.inUse, r.attached]))
+      .toEqual([['crowdsec-data', true, false], ['system-db-3', false, false]]);
+    await expect(drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {}, blockNewTenants: false }))
+      .resolves.toMatchObject({ evicted: 0 });
+  });
+
+  it('deleteNode asks instead: refused while they keep their only copy here, named as what they are — unless confirmed', async () => {
+    const { k8s, deleteK8sNode, evict } = makeHaK8s(instancesElsewhere, { targetCordoned: true });
+    withPlatformVolumes(k8s);
+    await expect(deleteNode(makeDrainDb(), k8s, 's2', { self: null })).rejects.toMatchObject({
+      code: 'NODE_DELETE_HOLDS_LAST_COPY', status: 409,
+      details: { volumes: ['crowdsec/crowdsec-data (not mounted)', 'platform/system-db-3 (leftover, not in use)'] },
+    });
+    expect(deleteK8sNode).not.toHaveBeenCalled();
+    expect(evict).not.toHaveBeenCalled();
+    // Confirmed: past this check — on to moving the system pods and the delete.
+    await deleteNode(makeDrainDb(), k8s, 's2', { self: null, forceLastReplica: true, systemPodsGoneWaitMs: 0 }).catch(() => undefined);
+    expect(deleteK8sNode).toHaveBeenCalled();
   });
 
   it('a Released volume that still names an instance\'s claim is not that instance', async () => {
@@ -1081,15 +1134,14 @@ describe('drain of a node holding a stopped tenant\'s only copy', () => {
     expect((k8s.core as unknown as { deleteNode: ReturnType<typeof vi.fn> }).deleteNode).not.toHaveBeenCalled();
   });
 
-  it('a tenant kept here ("stay") with its only copy here still blocks the drain without force', async () => {
-    const { k8s } = makeStoppedTenantK8s();
+  it('a tenant kept here ("stay") is refused — the drain would evict it and its taint keep it off', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
     await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' }, blockNewTenants: false }))
-      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
-    await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' }, forceLastReplica: true, blockNewTenants: false }))
-      .resolves.toMatchObject({ cordoned: false });
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_TENANT_STAYS', status: 409, details: { tenants: ['hat-id'] } });
+    expect(patches).toEqual([]);
   });
 
-  it('a volume in a tenant namespace with no tenant record still blocks — nobody re-pins it', async () => {
+  it('a volume in a tenant namespace with no tenant record: the drain leaves it, Delete asks about it', async () => {
     const { k8s } = makeStoppedTenantK8s();
     const db = makeTenantDb();
     const orphanDb = {
@@ -1101,8 +1153,10 @@ describe('drain of a node holding a stopped tenant\'s only copy', () => {
         },
       }),
     } as unknown as Database;
-    await expect(drainNode(k8s, orphanDb, 's2', { tenantPlacement: {}, blockNewTenants: false }))
-      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+    await expect(drainNode(k8s, orphanDb, 's2', { tenantPlacement: {}, blockNewTenants: false })).resolves.toBeDefined();
+    (k8s.core as unknown as { readNode: ReturnType<typeof vi.fn> }).readNode.mockResolvedValue({ spec: { unschedulable: true } });
+    await expect(deleteNode(orphanDb, k8s, 's2', { self: null }))
+      .rejects.toMatchObject({ code: 'NODE_DELETE_HOLDS_LAST_COPY', status: 409 });
   });
 
   it('deleteNode: refuses while a tenant volume\'s only copy is on the node', async () => {

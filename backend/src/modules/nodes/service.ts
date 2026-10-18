@@ -669,6 +669,10 @@ export async function buildDrainImpact(
     isLastReplica: boolean;
     postgresInstance: PostgresInstance | null;
     movedByRepin: boolean;
+    /** Its PV is Bound to the claim it names; false = a leftover nothing uses. */
+    inUse: boolean;
+    /** Mounted right now; false = nothing mounts it. */
+    attached: boolean;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
@@ -852,6 +856,10 @@ export async function buildDrainImpact(
     isLastReplica: boolean;
     postgresInstance: PostgresInstance | null;
     movedByRepin: boolean;
+    /** Its PV is Bound to the claim it names; false = a leftover nothing uses. */
+    inUse: boolean;
+    /** Mounted right now; false = nothing mounts it. */
+    attached: boolean;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
@@ -934,6 +942,8 @@ export async function buildDrainImpact(
         // A tenant's live volume: the drain's re-pin moves it (unless the
         // tenant is kept here). A Released leftover is nobody's to move.
         movedByRepin: tenant !== undefined && meta?.bound !== false,
+        inUse: meta?.bound !== false,
+        attached: meta?.state === 'attached',
         namespace: ns,
         pvcName,
         tenantId: tenant?.id ?? null,
@@ -1490,14 +1500,14 @@ export async function drainNode(
   db: Database,
   name: string,
   opts: {
-    readonly forceLastReplica?: boolean;
     readonly gracePeriodSeconds?: number;
     /**
      * Per-tenant re-pin instructions. Key = tenantId. Values:
      *   ""        → clear the pin (auto)
      *   "<node>"  → re-pin the entire tenant (workloads + volumes) to <node>
-     *   "stay"    → keep the pin on the draining node (drain refuses
-     *               unless forceLastReplica covers data risk)
+     *   "stay"    → refused (NODE_DRAIN_TENANT_STAYS): a drain moves every
+     *               tenant off; one left pinned here would have its pods
+     *               evicted and then kept off by the drain's taint
      * Any pinned tenant missing from the map defaults to "" (auto).
      */
     readonly tenantPlacement?: Record<string, string>;
@@ -1523,10 +1533,8 @@ export async function drainNode(
   // 0) Refuse draining the LAST schedulable, tenant-capable node.
   // Doing so leaves the cluster unable to host any tenant workload, and
   // on a single-node cluster it bricks everything (cordoning the only
-  // node strands CrowdSec/Valkey/Traefik → ingress 403 cascade). This is
-  // NOT bypassable by forceLastReplica — that flag only covers Longhorn
-  // data risk, not loss of the entire schedulable surface. The drain-e2e
-  // single-node guard asserts this 4xx rejection.
+  // node strands CrowdSec/Valkey/Traefik → ingress 403 cascade). Nothing
+  // bypasses it. The drain-e2e single-node guard asserts this 4xx rejection.
   //
   // We FAIL CLOSED: read the live node list directly (NOT via
   // listNodesEnriched, whose safeCall fallback would silently report
@@ -1560,34 +1568,30 @@ export async function drainNode(
     );
   }
 
-  // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
-  //    Not a risk, and not counted:
-  //    - a Postgres instance volume another instance covers: the drain leaves
-  //      that pod where it is, and the data lives on if the node goes down
-  //      (postgres-cover.ts);
-  //    - a tenant's volume, unless the operator keeps that tenant here
-  //      ("stay"): the re-pin below moves it — a running tenant's data
-  //      follows its restarted pod, a stopped tenant's is relocated (step e
-  //      of repinTenantPlacement) — and Delete stays refused until the copy
-  //      has left. The modal never showed tenant volumes as a last-replica
-  //      risk, so no "force" box was offered for them: with only tenant
-  //      volumes on the node the drain was refused with nothing to tick.
+  // 1) No volume question here. A drain moves TENANTS and nothing else: a
+  //    tenant's data follows its re-pin (a running tenant's with its
+  //    restarted pod, a stopped tenant's relocated — step e of
+  //    repinTenantPlacement), and everything else on the node — platform
+  //    volumes, database instances, leftovers nothing uses — stays exactly
+  //    where it is, on a node that keeps running. Whether a volume's only
+  //    copy may go is a question for Delete, which asks it
+  //    (NODE_DELETE_HOLDS_LAST_COPY). The drain used to refuse over platform
+  //    volumes here, unless forced — on production that held a tenant drain
+  //    back over an unmounted CrowdSec store and a leftover database copy.
+  //
+  //    What it does refuse is a tenant kept here ("stay"): the drain evicts
+  //    every tenant pod and, on a server, taints the node against tenants —
+  //    a tenant pinned here would be evicted and could not come back.
   const impact = await buildDrainImpact(k8s, db, name);
-  const keptHere = new Set(
-    Object.entries(opts.tenantPlacement ?? {}).filter(([, t]) => t === 'stay').map(([id]) => id),
-  );
-  const lastReplicaVolumes = impact.longhornReplicas.filter(
-    (r) => r.isLastReplica
-      && !(r.postgresInstance && r.postgresInstance.coveredBy.length > 0)
-      && !(r.movedByRepin && r.tenantId !== null && !keptHere.has(r.tenantId)),
-  );
-  if (lastReplicaVolumes.length > 0 && !opts.forceLastReplica) {
+  const keptHere = impact.pinnedTenants.filter((c) => opts.tenantPlacement?.[c.tenantId] === 'stay');
+  if (keptHere.length > 0) {
     throw new ApiError(
-      'NODE_DRAIN_BLOCKED_LAST_REPLICA',
-      `Node '${name}' holds the last running replica for ${lastReplicaVolumes.length} volume(s). ` +
-      `Wait for replica rebuild on another node, or pass forceLastReplica=true to override.`,
+      'NODE_DRAIN_TENANT_STAYS',
+      `A drain moves every tenant off '${name}', but ${keptHere.map((c) => c.tenantName).join(', ')} ` +
+      `${keptHere.length === 1 ? 'is' : 'are'} set to stay. Pick Auto or another node for ` +
+      `${keptHere.length === 1 ? 'it' : 'them'} — nothing was changed.`,
       409,
-      { volumes: lastReplicaVolumes.slice(0, 20) },
+      { tenants: keptHere.map((c) => c.tenantId) },
     );
   }
 
@@ -1859,6 +1863,12 @@ export async function deleteNode(
   k8s: K8sClients,
   name: string,
   opts: {
+    /**
+     * Delete it although volumes not covered by another guard keep their
+     * only copy here — platform volumes, leftovers nothing uses. They go with
+     * the node. The operator's explicit word (Delete dialog / API body).
+     */
+    readonly forceLastReplica?: boolean;
     readonly systemPodsGoneWaitMs?: number;
     /** The API pod serving this request (never evicted); defaults to this process's own pod. */
     readonly self?: { readonly namespace: string; readonly name: string } | null;
@@ -1970,6 +1980,28 @@ export async function deleteNode(
         `Mail runs on '${name}'. Move it to another node first (Email → Operations → Placement), then delete the node.`,
         409,
         { node_name: name },
+      );
+    }
+    // Every other volume whose only copy is here goes with the node:
+    // platform volumes (monitoring, the CrowdSec store, …) and leftovers no
+    // claim uses any more. The drain never asks — it only moves tenants — so
+    // this is where the operator decides. Postgres instances have their own
+    // guard above; tenant data is refused above too, and counted here anyway
+    // so the rule is total.
+    const lastCopies = impact.longhornReplicas.filter((r) => r.isLastReplica && r.postgresInstance === null);
+    if (lastCopies.length > 0 && !opts.forceLastReplica) {
+      const label = (r: (typeof lastCopies)[number]): string => {
+        const what = r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : r.volumeName;
+        const note = !r.inUse ? ' (leftover, not in use)' : !r.attached ? ' (not mounted)' : '';
+        return `${what}${note}`;
+      };
+      throw new ApiError(
+        'NODE_DELETE_HOLDS_LAST_COPY',
+        `${lastCopies.length} volume(s) keep their only copy on '${name}': ${lastCopies.slice(0, 5).map(label).join(', ')}` +
+        `${lastCopies.length > 5 ? ', …' : ''}. Deleting the node deletes them. Delete leftovers on Cluster → Storage → ` +
+        `Orphaned volumes, or confirm that they go with the node — nothing was changed.`,
+        409,
+        { volumes: lastCopies.slice(0, 20).map(label) },
       );
     }
 

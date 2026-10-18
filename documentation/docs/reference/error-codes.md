@@ -67,6 +67,8 @@ a field the endpoint does not accept.
 | `NODE_DRAIN_BLOCKED_LAST_NODE` | 409 | Refusing to drain the only node that can host tenants |
 | `NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT` | 409 | A tenant that is not running has its only copy on the node, and no other node can take it — pick a node or free space ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
 | `NODE_REPIN_TARGET_UNAVAILABLE` | 409 | The node picked for a tenant is being drained, cordoned, not Ready, or does not host tenants (**Can host tenant workloads** off) |
+| `NODE_DRAIN_TENANT_STAYS` | 409 | A tenant is set to stay on the node — a drain moves every tenant off it; pick Auto or another node |
+| `NODE_DELETE_HOLDS_LAST_COPY` | 409 | Volumes other than tenant data or a database instance — platform volumes, leftovers nothing uses — keep their only copy on the node; deleting it deletes them. Delete leftovers on Orphaned volumes, or confirm with `forceLastReplica` ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `NODE_DELETE_SHARED_ETCD_MEMBER` | 409 | The node and another node object are the same server registered under two names, and carry the same etcd member — deleting either would remove that live member ([When a node comes back under another name](../operator/nodes-and-cluster.md#when-a-node-comes-back-under-another-name)) |
 | `NODE_DELETE_NOT_DRAINED` | 409 | Delete was pressed on a node whose tenants were not drained — run **Drain Tenants** first |
 | `NODE_DELETE_RUNS_MAIL` | 409 | Mail runs on the node — move it first (**Email → Operations → Placement**) |
@@ -78,7 +80,7 @@ a field the endpoint does not accept.
 | `NODE_DELETE_HOLDS_TENANT_DATA` | 409 | The node holds the only copy of a tenant volume — re-pin the tenant and let its data move first ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
 | `NODE_DELETE_HOLDS_DATABASE` | 409 | The node holds the only copy of a PostgreSQL instance — move the instance first ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `DRAIN_PRECHECK_FAILED` | 503 | Drain pre-checks could not complete |
-| `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Draining would take down a sole replica / conflicts with a pinned workload |
+| `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Deleting the node would delete volumes whose only copy is on it / conflicts with a pinned workload |
 
 ## Bulk actions
 
