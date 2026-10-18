@@ -294,6 +294,40 @@ func TestReadMigrationStatusClipsAHostilePhase(t *testing.T) {
 	}
 }
 
+func TestReadMigrationStatusRelaysNodeNamePin(t *testing.T) {
+	// The node-name pin must reach the API: a typed relay that does not know a
+	// field drops it, and Cluster → Nodes then shows no node as unprotected.
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		body, want string
+	}{
+		{`{"schema":1,"nodeName":{"state":"unpinned","registeredAs":"sv3","pinnedAs":null},"mode":"enforce","ok":true,"items":[]}`,
+			`"nodeName":{"state":"unpinned","registeredAs":"sv3","pinnedAs":null}`},
+		{`{"schema":1,"nodeName":{"state":"pinned","registeredAs":"sv1","pinnedAs":"sv1"},"mode":"enforce","ok":true,"items":[]}`,
+			`"nodeName":{"state":"pinned","registeredAs":"sv1","pinnedAs":"sv1"}`},
+	} {
+		p := filepath.Join(dir, "status.json")
+		if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		st, _ := readMigrationStatus(p)
+		out, _ := json.Marshal(st)
+		if !strings.Contains(string(out), tc.want) {
+			t.Fatalf("want %s in %s", tc.want, out)
+		}
+	}
+	// An older CLI writes none — it stays absent, never a guessed state.
+	p := filepath.Join(dir, "status.json")
+	if err := os.WriteFile(p, []byte(`{"schema":1,"mode":"enforce","ok":true,"items":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := readMigrationStatus(p)
+	out, _ := json.Marshal(st)
+	if strings.Contains(string(out), "nodeName") {
+		t.Fatalf("an absent nodeName must stay absent; got %s", out)
+	}
+}
+
 func TestReadMigrationStatusRelaysTrustAnchor(t *testing.T) {
 	// ADR-064 §6: the upgrade pre-flight refuses to push a release to a node that
 	// cannot verify it. Dropping the field would hide exactly that node.

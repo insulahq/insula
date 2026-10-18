@@ -142,6 +142,11 @@ func readMigrationStatus(path string) (*MigrationStatus, []string) {
 
 	// Now bound what actually travels. Counts above are already final.
 	st.CliVersion = clip(st.CliVersion)
+	if st.NodeName != nil {
+		st.NodeName.State = clip(st.NodeName.State)
+		st.NodeName.RegisteredAs = clip(st.NodeName.RegisteredAs)
+		st.NodeName.PinnedAs = clipPtr(st.NodeName.PinnedAs)
+	}
 	for i := range st.Items {
 		st.Items[i].Error = clipPtr(st.Items[i].Error)
 		st.Items[i].SkipReason = clipPtr(st.Items[i].SkipReason)
