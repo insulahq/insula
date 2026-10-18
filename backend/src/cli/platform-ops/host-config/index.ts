@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createPublicKey } from 'node:crypto';
+import { readNodeNamePin, type NodeNamePin } from './node-name-pin.js';
 import {
   convergeSysctls,
   normalizeSysctl,
@@ -432,6 +433,7 @@ export function buildHostMigrationStatusDoc(
   cliVersion: string | null,
   now: Date = new Date(),
   trustAnchor: boolean | null = null,
+  nodeName: NodeNamePin | null = null,
 ): Record<string, unknown> {
   return {
     schema: 1,
@@ -443,6 +445,10 @@ export function buildHostMigrationStatusDoc(
     // cosign key is present and parses). An upgrade pushed to a node that cannot
     // fails there; the pre-flight says so first.
     trustAnchor,
+    // Whether k3s's config pins this node's Kubernetes name (node-name-pin.ts).
+    // Unpinned, a hostname change at the next k3s start registers the machine as
+    // a new node. null = not a k3s node, or a CLI that predates the field.
+    nodeName,
     collectedAt: now.toISOString(),
     mode: result.mode,
     source: result.source,
@@ -477,7 +483,7 @@ export function trustAnchorUsable(path: string = TRUST_ANCHOR_PATH): boolean {
 function writeHostMigrationStatusFile(result: HostMigrationResult): void {
   try {
     mkdirSync(HOST_MIGRATION_MARKER_ROOT, { recursive: true });
-    const doc = buildHostMigrationStatusDoc(result, cliBuildVersion(), new Date(), trustAnchorUsable());
+    const doc = buildHostMigrationStatusDoc(result, cliBuildVersion(), new Date(), trustAnchorUsable(), readNodeNamePin());
     writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
   } catch {
     /* advisory — a converge must not fail because it could not report */

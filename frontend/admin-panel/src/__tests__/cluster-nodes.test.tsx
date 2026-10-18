@@ -331,6 +331,38 @@ describe('ClusterNodes — the node CLI version (ADR-064)', () => {
 });
 
 
+describe('ClusterNodes — the node-name pin', () => {
+  it('flags a node whose name is not pinned, or pinned to another name — and nothing on a pinned or unreported node', () => {
+    role = 'super_admin';
+    mockNodes.mockReturnValue({
+      data: { data: ['sv1', 'sv2', 'sv3', 'sv4'].map((name) => makeNode({ name })) }, isLoading: false, error: null,
+    });
+    mockSubsystem.mockReturnValue({ data: undefined });
+    hostStatus = [
+      { node: 'sv1', cliVersion: '2026.10.12', cliBehind: false, nodeNamePin: { state: 'pinned', registeredAs: 'sv1', pinnedAs: 'sv1' } },
+      { node: 'sv2', cliVersion: '2026.10.12', cliBehind: false, nodeNamePin: { state: 'unpinned', registeredAs: 'sv2', pinnedAs: null } },
+      { node: 'sv3', cliVersion: '2026.10.12', cliBehind: false, nodeNamePin: { state: 'mismatch', registeredAs: 'sv3', pinnedAs: 'other' } },
+      { node: 'sv4', cliVersion: '2026.10.11', cliBehind: true, nodeNamePin: null },
+    ];
+    renderPage();
+    expect(screen.queryByTestId('node-name-pin-sv1')).toBeNull();
+    expect(screen.getByTestId('node-name-pin-sv2')).toHaveTextContent('name not pinned');
+    expect(screen.getByTestId('node-name-pin-sv2').getAttribute('title')).toMatch(/registers as a new node beside this one/);
+    expect(screen.getByTestId('node-name-pin-sv3')).toHaveTextContent('name mismatch');
+    expect(screen.getByTestId('node-name-pin-sv3').getAttribute('title')).toMatch(/names this node 'other', but it is registered as 'sv3'/);
+    expect(screen.queryByTestId('node-name-pin-sv4')).toBeNull();
+  });
+
+  it('a node-name the host check could not read says so — not an empty name', () => {
+    role = 'super_admin';
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'sv5' })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: undefined });
+    hostStatus = [{ node: 'sv5', cliVersion: '2026.10.12', cliBehind: false, nodeNamePin: { state: 'mismatch', registeredAs: 'sv5', pinnedAs: null } }];
+    renderPage();
+    expect(screen.getByTestId('node-name-pin-sv5').getAttribute('title')).toMatch(/in a form that cannot be read here.*'node-name: sv5'/);
+  });
+});
+
 describe('ClusterNodes — in use, committed, free', () => {
   const triad = (inUse: number | null, committed: number, total: number, unit: string) => ({ inUse, committed, total, unit, kind: 'reserve' as const });
 

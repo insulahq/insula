@@ -252,6 +252,37 @@ const reported = (cliVersion: string | null) => JSON.stringify({
   hostMigrations: { collectedAt: '2026-10-09T10:00:00Z', ok: true, appliedCount: 40, items: [], ...(cliVersion ? { cliVersion } : {}) },
 });
 
+describe('the node-name pin', () => {
+  const withPin = (nodeName: unknown) => JSON.stringify({
+    node: 'n1',
+    hostMigrations: { collectedAt: '2026-10-18T10:00:00Z', ok: true, appliedCount: 3, items: [], nodeName },
+  });
+
+  it('is read from the relayed status', () => {
+    expect(interpretNodeSnapshot('n1', withPin({ state: 'unpinned', registeredAs: 'sv3.example.test', pinnedAs: null })).nodeNamePin)
+      .toEqual({ state: 'unpinned', registeredAs: 'sv3.example.test', pinnedAs: null });
+    expect(interpretNodeSnapshot('n1', withPin({ state: 'mismatch', registeredAs: 'sv1', pinnedAs: 'a, b' })).nodeNamePin)
+      .toMatchObject({ state: 'mismatch', pinnedAs: 'a, b' });
+  });
+
+  it('believes only a well-formed value (node-supplied, displayed)', () => {
+    for (const bad of [
+      { state: 'fine', registeredAs: 'sv1', pinnedAs: null },
+      { state: 'pinned', registeredAs: '<b>sv1</b>', pinnedAs: 'sv1' },
+      { state: 'pinned', registeredAs: 'sv1', pinnedAs: 7 },
+      { state: 'mismatch', registeredAs: 'sv1', pinnedAs: 'ok, <script>' },
+      'pinned',
+    ]) {
+      expect(interpretNodeSnapshot('n1', withPin(bad)).nodeNamePin).toBeNull();
+    }
+  });
+
+  it('is null — never a guess — when a CLI that predates it did not report one', () => {
+    expect(interpretNodeSnapshot('n1', withPin(undefined)).nodeNamePin).toBeNull();
+    expect(interpretNodeSnapshot('n1', withPin(null)).nodeNamePin).toBeNull();
+  });
+});
+
 describe('the node CLI version', () => {
   it('is read from the relayed status', () => {
     expect(interpretNodeSnapshot('n1', reported('2026.10.7-rc.2')).cliVersion).toBe('2026.10.7-rc.2');
