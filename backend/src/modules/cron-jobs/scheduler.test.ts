@@ -182,6 +182,18 @@ describe('runAndRecord', () => {
       expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
     });
 
+    // Lab staging, the same outage: the next run found the deployment marked
+    // failed (its server was down) and told the client their task had failed.
+    it('a run that could not start because the tenant\'s server is down is not reported either', async () => {
+      const t = transport('the server it runs on (s1) is down');
+      const { db, updates } = mockDb([{ ...RUNNING_DEPLOYMENT, status: 'failed', tenantNode: 's1' }], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 0 });
+      expect(t.exec).not.toHaveBeenCalled();
+      expect(t.podDisruption).toHaveBeenCalledWith({ namespace: 'tenant-acme', pod: '', node: 's1' });
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(String(updates[1].lastRunOutput)).toMatch(/^Interrupted by the platform: the server it runs on \(s1\) is down\./);
+    });
+
     it('a failure the platform did not cause is reported as before', async () => {
       const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
       await runAndRecord(db, makeJob(), { transport: transport(null), interruptionCheckDelayMs: 0 });
