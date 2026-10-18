@@ -1002,12 +1002,29 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
   },
   {
     id: 'admin.tenant_workloads_down',
-    cls: 'availability',
+    // `incident`, not `availability`: availability is the platform's OWN
+    // reachability and routes around the panel, so this alert never reached
+    // the operator's bell (production — email and push only, and
+    // the email was queued behind a mail outage). A tenant being down is an
+    // incident the panel is perfectly able to show.
+    cls: 'incident',
     reportsOn: 'compute',
     displayName: 'Tenant workloads down, auto-heal failed',
-    description: "A tenant's workloads have been unavailable past the grace window and the platform's automatic recovery could not bring them back. Nothing else detects this: namespace-integrity audits only MISSING objects, so a tenant whose namespace, PVC, quota and NetworkPolicy all exist can be completely down while every component reports healthy. One production tenant sat like that for 18h38m before this category existed. The notification names the workload, the reason, and how many heal attempts were made.",
+    description: "A tenant's workloads have been unavailable past the grace window and the platform's automatic recovery could not bring them back, or the cause is one a restart cannot fix (such as the node the tenant is pinned to being down). Nothing else detects this: namespace-integrity audits only MISSING objects, so a tenant whose namespace, PVC, quota and NetworkPolicy all exist can be completely down while every component reports healthy. One production tenant sat like that for 18h38m before this category existed. One notification per tenant lists its workloads, the reason and whether auto-heal ran; tenants down because their node is down are reported together, once per node.",
     audience: 'admin',
     defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.tenant_workloads_recovered',
+    cls: 'record',
+    reportsOn: 'compute',
+    displayName: 'Tenant workloads running again',
+    description: 'Workloads that a "Tenant workloads down" alert reported are running again. Sent only for an outage that had alerted, grouped the same way, so every alert gets its end.',
+    audience: 'admin',
+    defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
@@ -1091,6 +1108,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     // off on one source (which is what happened to ntfy on all fifty sources).
     // An operator who wants workload outages to be admin-only turns email and
     // ntfy off for THIS source, in one place, and it stays off.
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tenant.workloads_recovered',
+    cls: 'record',
+    reportsOn: 'compute',
+    displayName: 'Your site is running again',
+    description: 'Applications you were told had stopped running are running again. Sent only after a "Your site is not running" notice.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,
     isMandatory: false,
     gdprBasis: 'contract',

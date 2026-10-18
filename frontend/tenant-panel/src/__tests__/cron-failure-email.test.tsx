@@ -95,13 +95,27 @@ async function openCreateForm(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('cron failure email — create', () => {
-  it('is off by default and hides the recipients until switched on', async () => {
+  // Production: a job set to mail only the operator kept emailing
+  // the client — their admins got every failure regardless of the job.
+  it('switching off "inform the admins" saves it, with no email leg needed', async () => {
+    setup();
+    const user = userEvent.setup();
+    await openCreateForm(user);
+    await user.click(screen.getByTestId('cron-notify-tenant-email'));
+    expect(screen.getByTestId('cron-notify-tenant-email')).not.toBeChecked();
+    expect(screen.queryByTestId('cron-notify-recipient-error')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('submit-cron-job'));
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([, i]) => (i as { method?: string })?.method === 'POST')).toBe(true));
+    expect(sentBody('POST')).toMatchObject({ notify_tenant_email: false, notify_on_failure: false });
+  });
+
+  it('informs the admins by default; the extra email is off and its address hidden until switched on', async () => {
     setup();
     const user = userEvent.setup();
     await openCreateForm(user);
 
+    expect(screen.getByTestId('cron-notify-tenant-email')).toBeChecked();
     expect(screen.getByTestId('cron-notify-toggle')).not.toBeChecked();
-    expect(screen.queryByTestId('cron-notify-tenant-email')).not.toBeInTheDocument();
     expect(screen.queryByTestId('cron-notify-email-input')).not.toBeInTheDocument();
   });
 

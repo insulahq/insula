@@ -21,6 +21,12 @@ export type PlatformStoragePolicy = z.infer<typeof platformStoragePolicySchema>;
 export const clusterStorageStateSchema = z.object({
   readyServerCount: z.number().int().nonnegative(),
   totalNodeCount: z.number().int().nonnegative(),
+  /**
+   * The server count every HA replica count is sized to: servers present in
+   * the cluster, Ready or not. A server that is only down keeps its share
+   * until it is removed, so a reboot does not shrink HA.
+   */
+  sizingServerCount: z.number().int().nonnegative(),
   recommendedTier: platformStorageTierSchema,
   // Per-volume facts so the UI can show what will actually change. One
   // entry per Longhorn Volume backing a platform StatefulSet PVC OR a

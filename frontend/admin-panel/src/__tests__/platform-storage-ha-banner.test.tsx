@@ -28,6 +28,7 @@ function policyResponse(opts: {
     clusterState: {
       readyServerCount: opts.readyServers ?? 3,
       totalNodeCount: opts.totalNodes ?? 4,
+      sizingServerCount: opts.totalNodes ?? 4,
       recommendedTier: opts.recommendedTier,
       volumes: [],
     },

@@ -12,7 +12,9 @@ const FRESH = '2026-09-11T13:50:00Z'; // 10m — inside it
 function pod(o: Partial<{
   name: string; ns: string; phase: string; reason: string;
   created: string; owned: boolean; labels: Record<string, string>;
-  deletionTimestamp: string;
+  deletionTimestamp: string; ownerKind: string;
+  /** the kubelet's DisruptionTarget/TerminationByKubelet condition, at this time */
+  stoppedByKubelet: string; finished: string;
 }> = {}): DebrisPod {
   return {
     metadata: {
@@ -20,7 +22,7 @@ function pod(o: Partial<{
       namespace: o.ns ?? 'tigera-operator',
       creationTimestamp: o.created ?? OLD,
       ...(o.deletionTimestamp ? { deletionTimestamp: o.deletionTimestamp } : {}),
-      ownerReferences: (o.owned ?? true) ? [{ controller: true }] : [],
+      ownerReferences: (o.owned ?? true) ? [{ controller: true, kind: o.ownerKind ?? 'ReplicaSet' }] : [],
       ...(o.labels ? { labels: o.labels } : {}),
     },
     status: {
@@ -28,6 +30,10 @@ function pod(o: Partial<{
       // 'reason' in o — so a test can assert on a pod with NO reason at all;
       // `?? 'NodeShutdown'` would silently substitute the default.
       reason: 'reason' in o ? o.reason : 'NodeShutdown',
+      ...(o.stoppedByKubelet ? {
+        conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'TerminationByKubelet', lastTransitionTime: o.stoppedByKubelet }],
+      } : {}),
+      ...(o.finished ? { containerStatuses: [{ state: { terminated: { finishedAt: o.finished } } }] } : {}),
     },
   };
 }
@@ -113,5 +119,38 @@ describe('selectShutdownDebris', () => {
 
   it('ignores a pod with an unparseable creation timestamp', () => {
     expect(selectShutdownDebris([pod({ created: 'not-a-date' })], NOW)).toEqual([]);
+  });
+
+  // ── a pod the shutdown stopped that exited cleanly (seen on production) ──
+
+  it('reaps a Succeeded pod the kubelet stopped for the shutdown (exit 0, no reason)', () => {
+    const p = pod({ phase: 'Succeeded', reason: undefined, created: '2026-08-01T00:00:00Z', stoppedByKubelet: OLD });
+    expect(selectShutdownDebris([p], NOW)).toHaveLength(1);
+  });
+
+  it("never reaps a Job's Succeeded pod, even one the shutdown stopped — it is the Job's result", () => {
+    const p = pod({ phase: 'Succeeded', reason: undefined, ownerKind: 'Job', stoppedByKubelet: OLD });
+    expect(selectShutdownDebris([p], NOW)).toEqual([]);
+  });
+
+  it('a Succeeded pod without the kubelet condition is not debris', () => {
+    expect(selectShutdownDebris([pod({ phase: 'Succeeded', reason: undefined })], NOW)).toEqual([]);
+  });
+
+  it('ages debris from when the shutdown stopped it, not from creation: a weeks-old pod stopped 10 min ago is kept', () => {
+    const viaCondition = pod({ phase: 'Succeeded', reason: undefined, created: '2026-08-01T00:00:00Z', stoppedByKubelet: FRESH });
+    const viaFinish = pod({ reason: 'Terminated', created: '2026-08-01T00:00:00Z', finished: FRESH });
+    expect(selectShutdownDebris([viaCondition, viaFinish], NOW)).toEqual([]);
+  });
+
+  it('reads the Date objects the k8s client returns', () => {
+    const p = {
+      ...pod({ phase: 'Succeeded', reason: undefined }),
+      status: {
+        phase: 'Succeeded',
+        conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'TerminationByKubelet', lastTransitionTime: new Date(OLD) }],
+      },
+    } as DebrisPod;
+    expect(selectShutdownDebris([p], NOW)).toHaveLength(1);
   });
 });

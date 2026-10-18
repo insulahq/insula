@@ -20,6 +20,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
 import { deleteOrphan } from './service.js';
+import { k8sTimeMs } from '../../shared/k8s-time.js';
 
 const TICK_MS = 24 * 60 * 60 * 1000;      // daily
 const INITIAL_DELAY_MS = 15 * 60 * 1000;  // past startup churn
@@ -35,7 +36,7 @@ export interface JanitorPv {
   readonly claimNamespace: string | null;
   readonly claimName: string | null;
   readonly longhornVolumeName: string | null;
-  /** status.lastTransitionTime as epoch ms, or null when absent. */
+  /** When the PV became Released (status.lastPhaseTransitionTime) as epoch ms, or null when absent. */
   readonly lastTransitionMs: number | null;
 }
 
@@ -92,7 +93,7 @@ export async function sweepReleasedSystemPvs(deps: JanitorDeps, nowMs: number): 
 
 interface PvItem {
   metadata?: { name?: string };
-  status?: { phase?: string; lastTransitionTime?: string };
+  status?: { phase?: string; lastPhaseTransitionTime?: string | Date };
   spec?: {
     claimRef?: { namespace?: string; name?: string };
     csi?: { driver?: string; volumeHandle?: string };
@@ -112,7 +113,7 @@ export function realJanitorDeps(db: Database, k8s: K8sClients): JanitorDeps {
         longhornVolumeName: pv.spec?.csi?.driver === 'driver.longhorn.io'
           ? (pv.spec.csi.volumeHandle ?? pv.metadata?.name ?? null)
           : null,
-        lastTransitionMs: pv.status?.lastTransitionTime ? Date.parse(pv.status.lastTransitionTime) : null,
+        lastTransitionMs: k8sTimeMs(pv.status?.lastPhaseTransitionTime),
       })).filter((pv) => pv.name !== '');
     },
     deleteOrphan: (target) => deleteOrphan(k8s, target),

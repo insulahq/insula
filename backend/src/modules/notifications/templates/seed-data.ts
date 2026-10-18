@@ -2124,12 +2124,14 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.tenant_workloads_down',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: '{{tenantName}} is DOWN — automatic recovery failed',
+    // One per tenant, its workloads as a list — or one per node when the
+    // tenants' pinned node being down is the cause (`tenantName` then reads
+    // "Tenants pinned to <node>"). `healSummary` says whether auto-heal ran.
+    subjectTemplate: '{{tenantName}}: workloads down',
     bodyTemplate: emailMjml(
       'Tenant workloads down',
-      'Workload {{workload}} in {{namespace}} ({{tenantName}}) has had no available replicas since '
-        + '{{downSince}} — {{downMinutes}} minutes. Cause: {{reasonLabel}} [{{reason}}]. '
-        + 'The platform attempted automatic recovery {{healAttempts}} time(s) and could not bring it back.'
+      'Down since {{downSince}} ({{downMinutes}} minutes){{#if namespace}} in namespace {{namespace}}{{/if}}: {{workloads}} '
+        + 'Cause: {{reasonLabel}} [{{reason}}]. {{healSummary}}'
         + '{{#if lastHealError}} Last recovery error: {{lastHealError}}{{/if}}'
         + '{{#if detail}} Cluster reported: {{detail}}{{/if}} '
         + '{{recommendedAction}}',
@@ -2137,13 +2139,18 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'namespace', type: 'string', required: true },
-      { name: 'workload', type: 'string', required: true },
+      { name: 'namespace', type: 'string', required: false },
+      // `workload` and `healAttempts` are no longer sent (`workloads` and
+      // `healSummary` replace them) but stay declared: an operator-edited
+      // template that still uses them keeps validating.
+      { name: 'workload', type: 'string', required: false },
+      { name: 'workloads', type: 'list', required: true },
       { name: 'downSince', type: 'string', required: true },
       { name: 'downMinutes', type: 'string', required: true },
       { name: 'reason', type: 'string', required: true },
       { name: 'reasonLabel', type: 'string', required: true },
-      { name: 'healAttempts', type: 'string', required: true },
+      { name: 'healAttempts', type: 'string', required: false },
+      { name: 'healSummary', type: 'string', required: true },
       { name: 'recommendedAction', type: 'string', required: true },
       { name: 'detail', type: 'string', required: false },
       { name: 'lastHealError', type: 'string', required: false },
@@ -2153,19 +2160,24 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.tenant_workloads_down',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '{{tenantName}} is down — auto-heal failed',
-    bodyTemplate: '{{workload}} has had no available replicas for {{downMinutes}} min ({{reasonLabel}} / {{reason}}). '
-      + 'Auto-heal tried {{healAttempts}}x and failed.{{#if lastHealError}} {{lastHealError}}{{/if}} {{recommendedAction}}',
+    subjectTemplate: '{{tenantName}}: workloads down',
+    bodyTemplate: 'Down for {{downMinutes}} min: {{workloads}} Cause: {{reasonLabel}}. {{healSummary}}'
+      + '{{#if lastHealError}} {{lastHealError}}{{/if}} {{recommendedAction}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'namespace', type: 'string', required: true },
-      { name: 'workload', type: 'string', required: true },
+      { name: 'namespace', type: 'string', required: false },
+      // `workload` and `healAttempts` are no longer sent (`workloads` and
+      // `healSummary` replace them) but stay declared: an operator-edited
+      // template that still uses them keeps validating.
+      { name: 'workload', type: 'string', required: false },
+      { name: 'workloads', type: 'list', required: true },
       { name: 'downSince', type: 'string', required: true },
       { name: 'downMinutes', type: 'string', required: true },
       { name: 'reason', type: 'string', required: true },
       { name: 'reasonLabel', type: 'string', required: true },
-      { name: 'healAttempts', type: 'string', required: true },
+      { name: 'healAttempts', type: 'string', required: false },
+      { name: 'healSummary', type: 'string', required: true },
       { name: 'recommendedAction', type: 'string', required: true },
       { name: 'detail', type: 'string', required: false },
       { name: 'lastHealError', type: 'string', required: false },
@@ -2175,18 +2187,20 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.workloads_down',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Your application {{workload}} is not running',
+    subjectTemplate: 'Not running: {{workloads}}',
     bodyTemplate: emailMjml(
-      'Your application is not running',
-      '{{workload}} has not been running since {{downSince}}. Cause: {{reasonLabel}}. '
-        + 'We could not restart it automatically, so your site or database may be unreachable. '
+      'Your applications are not running',
+      'Not running since {{downSince}}: {{workloads}} Cause: {{reasonLabel}}. '
+        + 'We could not restart them automatically, so your site or database may be unreachable. '
         + 'Our operators have been alerted at the same time as you and are already on it — '
         + 'you do not need to report it.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'workload', type: 'string', required: true },
+      // No longer sent (`workloads` replaces it); declared for edited templates.
+      { name: 'workload', type: 'string', required: false },
+      { name: 'workloads', type: 'list', required: true },
       { name: 'downSince', type: 'string', required: true },
       { name: 'reasonLabel', type: 'string', required: true },
     ],
@@ -2195,15 +2209,77 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.workloads_down',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '{{workload}} is not running',
-    bodyTemplate: '{{workload}} has not been running since {{downSince}} ({{reasonLabel}}). '
+    subjectTemplate: 'Not running: {{workloads}}',
+    bodyTemplate: 'Not running since {{downSince}} ({{reasonLabel}}): {{workloads}} '
       + 'Automatic restart did not succeed. Our operators are alerted and working on it.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
-      { name: 'workload', type: 'string', required: true },
+      // No longer sent (`workloads` replaces it); declared for edited templates.
+      { name: 'workload', type: 'string', required: false },
+      { name: 'workloads', type: 'list', required: true },
       { name: 'downSince', type: 'string', required: true },
       { name: 'reasonLabel', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_workloads_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '{{tenantName}}: workloads running again',
+    bodyTemplate: emailMjml(
+      'Tenant workloads running again',
+      'Running again after {{downMinutes}} minutes (down since {{downSince}}): {{workloads}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'downMinutes', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_workloads_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '{{tenantName}}: workloads running again',
+    bodyTemplate: 'Running again after {{downMinutes}} min: {{workloads}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+      { name: 'downSince', type: 'string', required: true },
+      { name: 'downMinutes', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.workloads_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Running again: {{workloads}}',
+    bodyTemplate: emailMjml(
+      'Your applications are running again',
+      'Running again (not running since {{downSince}}): {{workloads}} You do not need to do anything.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+      { name: 'downSince', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.workloads_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Running again: {{workloads}}',
+    bodyTemplate: 'Running again (not running since {{downSince}}): {{workloads}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'workloads', type: 'list', required: true },
+      { name: 'downSince', type: 'string', required: true },
     ],
   },
   {

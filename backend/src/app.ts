@@ -174,7 +174,7 @@ import { zitiProvidersRoutes } from './modules/ziti-providers/routes.js';
 import { zrokProvidersRoutes } from './modules/zrok-providers/routes.js';
 import { deploymentNetworkAccessRoutes } from './modules/deployment-network-access/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
-import { startCronScheduler } from './modules/cron-jobs/scheduler.js';
+import { flushPendingFailureChecks, startCronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
@@ -1190,7 +1190,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           ((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined)
           ?? process.env.KUBECONFIG,
       });
-      app.addHook('onClose', () => clearInterval(cronTimer));
+      app.addHook('onClose', async () => {
+        clearInterval(cronTimer);
+        // Failed runs still waiting out their interruption check are judged
+        // now rather than lost with this process.
+        await flushPendingFailureChecks();
+      });
 
       // Prometheus exposition (ADR-051 phase 2): HTTP-histogram hook on
       // the main app + a bare node:http server on :9090 serving GET

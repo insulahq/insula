@@ -4,8 +4,10 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   buildDrainImpact,
   countOtherSchedulableTenantNodes,
+  deleteNode,
   drainNode,
   listNodesEnriched,
+  updateNode,
 } from './service.js';
 
 // Schema mock so the dynamic import inside service.ts doesn't blow up.
@@ -295,6 +297,56 @@ describe('buildDrainImpact', () => {
     });
   });
 
+  it('a detached volume\'s stopped copies count — a retained 3-replica volume is not a last replica', async () => {
+    // Longhorn keeps every replica of a detached volume `stopped`. Counting
+    // only running replicas made it read as zero copies, so the retained
+    // CrowdSec store blocked the drain of every server holding one.
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-crowdsec' },
+        status: { state: 'detached', kubernetesStatus: { pvcName: 'crowdsec-data', namespace: 'crowdsec' } },
+      }],
+      longhornReplicas: ['s1', 's2', 's3'].map((n) => ({
+        metadata: { name: `r-crowdsec-${n}` },
+        spec: { volumeName: 'pvc-crowdsec', nodeID: n, failedAt: '' },
+        status: { currentState: 'stopped' },
+      })),
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 's2');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ pvcName: 'crowdsec-data', isLastReplica: false })]);
+  });
+
+  it('a detached volume whose other copies failed is still a last replica here', async () => {
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-crowdsec' },
+        status: { state: 'detached', kubernetesStatus: { pvcName: 'crowdsec-data', namespace: 'crowdsec' } },
+      }],
+      longhornReplicas: ['s1', 's2', 's3'].map((n) => ({
+        metadata: { name: `r-crowdsec-${n}` },
+        spec: { volumeName: 'pvc-crowdsec', nodeID: n, failedAt: n === 's2' ? '' : '2026-10-17T10:00:00Z' },
+        status: { currentState: 'stopped' },
+      })),
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 's2');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ pvcName: 'crowdsec-data', isLastReplica: true })]);
+  });
+
+  it('a failed leftover replica here next to a healthy copy elsewhere is not the last copy', async () => {
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-mon' },
+        status: { state: 'attached', kubernetesStatus: { pvcName: 'vmsingle-storage', namespace: 'monitoring' } },
+      }],
+      longhornReplicas: [
+        { metadata: { name: 'r-here' }, spec: { volumeName: 'pvc-mon', nodeID: 'worker', failedAt: '2026-10-17T10:00:00Z' }, status: { currentState: 'error' } },
+        { metadata: { name: 'r-there' }, spec: { volumeName: 'pvc-mon', nodeID: 'other' }, status: { currentState: 'running' } },
+      ],
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 'worker');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ replicaName: 'r-here', isLastReplica: false })]);
+  });
+
   it('skips system namespaces from pinnedWorkloads enumeration', async () => {
     const k8s = makeK8s({
       deployments: [{
@@ -510,5 +562,526 @@ describe('drainNode — last schedulable tenant-capable node guard (#0)', () => 
     await expect(
       drainNode(k8s, db, 'ghost', { forceLastReplica: true, tenantPlacement: {} }),
     ).rejects.toMatchObject({ code: 'NODE_NOT_FOUND', status: 404 });
+  });
+});
+
+// ─── Postgres instances (HA: one Longhorn replica per instance) ──────────
+//
+// The HA tier gives every CNPG instance's volume ONE Longhorn replica — the
+// other instances are the redundancy. The drain must not read that as "the
+// last copy of the data" while an instance that stays up holds it: the
+// primary for a replica, a standby streaming right now for the primary.
+// Deleting the node is another matter: the instance's only copy goes with it.
+describe('Postgres instances on a drained / deleted node', () => {
+  interface PgInstance {
+    name: string;
+    node: string;
+    ready?: boolean;
+    primary?: boolean;
+    /** Node holding the instance volume's one replica (defaults to `node`). */
+    replicaOn?: string;
+  }
+  interface Opts {
+    cnpgListFails?: boolean;
+    cordoned?: string[];
+    /** The node under test is cordoned (deleteNode requires it). */
+    targetCordoned?: boolean;
+  }
+
+  function makeHaK8s(instances: PgInstance[], opts: Opts = {}) {
+    const pvcVol = (n: string) => `pvc-${n}`;
+    const patchNode = vi.fn().mockResolvedValue({});
+    const evict = vi.fn().mockResolvedValue({});
+    const deleteK8sNode = vi.fn().mockResolvedValue({});
+    const cordoned = new Set(opts.cordoned ?? []);
+    const cnpgPods = instances.map((i) => ({
+      metadata: {
+        namespace: 'platform',
+        name: i.name,
+        labels: {
+          'cnpg.io/cluster': 'system-db',
+          'cnpg.io/instanceName': i.name,
+          'cnpg.io/instanceRole': i.primary ? 'primary' : 'replica',
+        },
+      },
+      spec: { nodeName: i.node, volumes: [{ persistentVolumeClaim: { claimName: i.name } }] },
+      status: { phase: 'Running', conditions: [{ type: 'Ready', status: i.ready === false ? 'False' : 'True' }] },
+    }));
+    const k8s = {
+      core: {
+        readNode: vi.fn().mockResolvedValue({ spec: { unschedulable: opts.targetCordoned ?? false } }),
+        listNode: vi.fn().mockResolvedValue({
+          items: ['s1', 's2', 's3'].map((name) => liveNode({ name, unschedulable: cordoned.has(name) })),
+        }),
+        listPodForAllNamespaces: vi.fn(async (a: { labelSelector?: string }) => {
+          if (a.labelSelector === 'cnpg.io/cluster') {
+            if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
+            return { items: cnpgPods };
+          }
+          return { items: [] };
+        }),
+        listPersistentVolumeClaimForAllNamespaces: vi.fn(async () => {
+          if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
+          return {
+            items: instances.map((i) => ({
+              metadata: {
+                namespace: 'platform',
+                name: i.name,
+                labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/instanceName': i.name },
+              },
+            })),
+          };
+        }),
+        patchNode,
+        createNamespacedPodEviction: evict,
+        deleteNode: deleteK8sNode,
+      },
+      apps: {
+        listDeploymentForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listStatefulSetForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
+          if (req.plural === 'replicas') {
+            return {
+              items: instances.map((i) => ({
+                metadata: { name: `r-${i.name}` },
+                spec: { volumeName: pvcVol(i.name), nodeID: i.replicaOn ?? i.node },
+                status: { currentState: 'running' },
+              })),
+            };
+          }
+          if (req.plural === 'volumes') {
+            return {
+              items: instances.map((i) => ({
+                metadata: { name: pvcVol(i.name) },
+                status: { kubernetesStatus: { pvcName: i.name, namespace: 'platform' } },
+              })),
+            };
+          }
+          return { items: [] };
+        }),
+      },
+    } as unknown as K8sClients;
+    return { k8s, patchNode, evict, deleteK8sNode };
+  }
+
+  // listNodes() chains .orderBy(); buildDrainImpact awaits .from() directly;
+  // the primary's pg_stat_replication comes through db.execute.
+  function makeDrainDb(streaming: string[] | 'fail' = []): Database {
+    const rows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+    return {
+      select: () => ({
+        from: () => Object.assign(Promise.resolve([]), { orderBy: () => Promise.resolve(rows) }),
+      }),
+      execute: vi.fn(async () => {
+        if (streaming === 'fail') throw new Error('permission denied for view pg_stat_replication');
+        return { rows: streaming.map((application_name) => ({ application_name })) };
+      }),
+    } as unknown as Database;
+  }
+
+  const haCluster: PgInstance[] = [
+    { name: 'system-db-1', node: 's1', primary: true },
+    { name: 'system-db-2', node: 's2' },
+    { name: 'system-db-3', node: 's3' },
+  ];
+  const instanceOn = async (k8s: K8sClients, db: Database, node: string, pvc: string) =>
+    (await buildDrainImpact(k8s, db, node)).longhornReplicas.find((r) => r.pvcName === pvc);
+
+  it('a replica on the draining node is covered by the primary elsewhere', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect(await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2')).toMatchObject({
+      isLastReplica: true,
+      postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-2', primary: false, coveredBy: ['system-db-1'] },
+    });
+  });
+
+  it('the primary is covered by the standbys it is streaming to — and only those', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect((await instanceOn(k8s, makeDrainDb(['system-db-2', 'system-db-3']), 's1', 'system-db-1'))?.postgresInstance)
+      .toMatchObject({ instance: 'system-db-1', primary: true, coveredBy: ['system-db-2', 'system-db-3'] });
+    // Both standbys Ready, only one streaming: a Ready pod is not a caught-up copy.
+    expect((await instanceOn(k8s, makeDrainDb(['system-db-3']), 's1', 'system-db-1'))?.postgresInstance?.coveredBy)
+      .toEqual(['system-db-3']);
+    expect((await instanceOn(k8s, makeDrainDb([]), 's1', 'system-db-1'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('the primary is not covered when its replication cannot be read', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    expect((await instanceOn(k8s, makeDrainDb('fail'), 's1', 'system-db-1'))?.postgresInstance)
+      .toMatchObject({ primary: true, coveredBy: [] });
+  });
+
+  it('a replica is not covered when the primary is not Ready', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, ready: false },
+      { name: 'system-db-2', node: 's2' },
+      { name: 'system-db-3', node: 's3' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary sits on a cordoned node — that node is going away too', async () => {
+    const { k8s } = makeHaK8s(haCluster, { cordoned: ['s1'] });
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary runs on the draining node too', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's2', primary: true },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('a replica is not covered when the primary runs elsewhere but its volume sits on the draining node', async () => {
+    const { k8s } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, replicaOn: 's2' },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    expect((await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))?.postgresInstance?.coveredBy).toEqual([]);
+  });
+
+  it('fails closed: an unreadable CNPG list leaves the last replica with no instance facts', async () => {
+    const { k8s } = makeHaK8s(haCluster, { cnpgListFails: true });
+    expect(await instanceOn(k8s, makeDrainDb(), 's2', 'system-db-2'))
+      .toMatchObject({ isLastReplica: true, postgresInstance: null });
+  });
+
+  it('drainNode: a covered instance does not block the drain — and its pod is not evicted', async () => {
+    const { k8s, patchNode, evict } = makeHaK8s(haCluster);
+    const result = await drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    // A drain moves tenants only: no cordon — the one node patch is the mark.
+    expect(result).toMatchObject({ cordoned: false, blockedNewTenants: false, evicted: 0, failed: [] });
+    expect(patchNode).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(patchNode.mock.calls[0][0])).toContain('insula.host/tenants-drained');
+    expect(JSON.stringify(patchNode.mock.calls[0][0])).not.toContain('unschedulable');
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  // "Drain tenants" never cordons a server: it switches off "Can host tenant
+  // workloads" (label + the server-only NoSchedule taint every system workload
+  // tolerates). A chainable stub lets the real updateNode run against it.
+  function chainDb(canHost: Record<string, boolean> = {}): Database {
+    const rows = Object.assign(
+      ['s1', 's2', 's3'].map((name) => ({
+        name, role: 'server', canHostTenantWorkloads: canHost[name] ?? true, labels: {},
+        taints: canHost[name] === false ? [{ key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' }] : [],
+        ingressMode: 'all',
+      })),
+      { rows: [] as unknown[] },
+    );
+    const proxy: unknown = new Proxy(() => proxy, {
+      get: (_t, prop) => (prop === 'then' ? (res: (v: unknown) => void) => res(rows) : () => proxy),
+      apply: () => proxy,
+    });
+    return proxy as Database;
+  }
+  const tolerantLonghorn = (k8s: K8sClients, tolerations: unknown[] | undefined) => {
+    (k8s as unknown as { apps: Record<string, unknown> }).apps = {
+      ...((k8s as unknown as { apps?: Record<string, unknown> }).apps ?? {}),
+      listNamespacedDaemonSet: vi.fn(async () => ({ items: [{ metadata: { name: 'longhorn-csi-plugin' }, spec: { template: { spec: { tolerations } } } }] })),
+    };
+    // Longhorn's taint-toleration setting, which its instance managers take.
+    const custom = (k8s as unknown as { custom: Record<string, unknown> }).custom;
+    custom.getNamespacedCustomObject = vi.fn(async () => ({ value: 'insula.host/server-only=true:NoSchedule' }));
+  };
+
+  it('drainNode on a server: new tenants are kept off by the taint — never a cordon — and the node is marked', async () => {
+    const { k8s, patchNode } = makeHaK8s(haCluster);
+    tolerantLonghorn(k8s, [{ key: 'insula.host/server-only', operator: 'Equal', value: 'true', effect: 'NoSchedule' }]);
+    const result = await drainNode(k8s, chainDb(), 's2', { tenantPlacement: {} });
+    expect(result).toMatchObject({ cordoned: false, blockedNewTenants: true });
+    const bodies = patchNode.mock.calls.map((c) => JSON.stringify(c[0]));
+    expect(bodies.some((b) => b.includes('"insula.host/host-tenant-workloads":"false"') && b.includes('"key":"insula.host/server-only"'))).toBe(true);
+    expect(bodies.some((b) => b.includes('insula.host/tenants-drained'))).toBe(true);
+    expect(bodies.some((b) => b.includes('"unschedulable":true'))).toBe(false);
+  });
+
+  it('drainNode refuses — before changing anything — while Longhorn would not tolerate the taint', async () => {
+    const { k8s, patchNode, evict } = makeHaK8s(haCluster);
+    tolerantLonghorn(k8s, undefined);
+    await expect(drainNode(k8s, chainDb(), 's2', { tenantPlacement: {} }))
+      .rejects.toMatchObject({ code: 'NODE_TENANT_TAINT_UNSAFE', status: 409 });
+    expect(patchNode).not.toHaveBeenCalled();
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('drainNode refuses — before changing anything — a re-pin target that does not host tenants (a tenant-drained server)', async () => {
+    const { k8s, patchNode, evict } = makeHaK8s(haCluster);
+    tolerantLonghorn(k8s, [{ operator: 'Exists' }]);
+    await expect(drainNode(k8s, chainDb({ s3: false }), 's2', { tenantPlacement: { 'tenant-a': 's3' } }))
+      .rejects.toMatchObject({ code: 'NODE_REPIN_TARGET_UNAVAILABLE', status: 409, details: { target: 's3' } });
+    expect(patchNode).not.toHaveBeenCalled();
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('an edit-form save that leaves "Can host tenant workloads" as it was keeps the drained mark; turning it on clears it', async () => {
+    const patchNode = vi.fn(async () => ({}));
+    const k8s = { core: { patchNode, readNode: vi.fn(async () => { throw new Error('skip refresh'); }) } } as unknown as K8sClients;
+    // A server drained with "keep new tenants off" unticked: still hosts tenants. Its notes are edited.
+    await updateNode(chainDb({ s1: true }), k8s, 's1', { canHostTenantWorkloads: true, notes: 'rack 4' });
+    expect(JSON.stringify(patchNode.mock.calls)).not.toContain('tenants-drained');
+    // A tenant-drained server is let back.
+    patchNode.mockClear();
+    await updateNode(chainDb({ s1: false }), k8s, 's1', { canHostTenantWorkloads: true });
+    expect(JSON.stringify(patchNode.mock.calls[0][0])).toContain('"insula.host/tenants-drained":null');
+  });
+
+  it('drainNode: an uncovered instance still blocks without forceLastReplica', async () => {
+    const { k8s, patchNode } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, ready: false },
+      { name: 'system-db-2', node: 's2' },
+    ]);
+    await expect(drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {}, blockNewTenants: false }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+    expect(patchNode).not.toHaveBeenCalled();
+  });
+
+  it('drainNode: the primary with no streaming standby still blocks', async () => {
+    const { k8s } = makeHaK8s(haCluster);
+    await expect(drainNode(k8s, makeDrainDb([]), 's1', { tenantPlacement: {}, blockNewTenants: false }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+  });
+
+  it('a Released volume that still names an instance\'s claim is not that instance', async () => {
+    // A CNPG scale-down deletes the claim; with the Retain policy the old
+    // volume stays, Released, still naming `system-db-3`.
+    const { k8s } = makeHaK8s(haCluster);
+    const custom = k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    const base = custom.listNamespacedCustomObject.getMockImplementation()!;
+    custom.listNamespacedCustomObject.mockImplementation(async (req: { plural: string }) => {
+      const res = await base(req) as { items: unknown[] };
+      if (req.plural === 'volumes') {
+        res.items.push({
+          metadata: { name: 'pvc-old-db3' },
+          status: { state: 'detached', kubernetesStatus: { pvcName: 'system-db-3', namespace: 'platform', pvStatus: 'Released' } },
+        });
+      }
+      if (req.plural === 'replicas') {
+        res.items.push({ metadata: { name: 'r-old-db3' }, spec: { volumeName: 'pvc-old-db3', nodeID: 's2', failedAt: '' }, status: { currentState: 'stopped' } });
+      }
+      return res;
+    });
+    const impact = await buildDrainImpact(k8s, makeDrainDb(), 's2');
+    const orphan = impact.longhornReplicas.find((r) => r.volumeName === 'pvc-old-db3');
+    expect(orphan).toMatchObject({ isLastReplica: true, postgresInstance: null });
+    // The live system-db-3 runs on s3 — s2's own instance is the only one deleteNode would name.
+    const live = impact.longhornReplicas.filter((r) => r.postgresInstance).map((r) => r.postgresInstance?.instance);
+    expect(live).toEqual(['system-db-2']);
+  });
+
+  it('deleteNode: refuses while the node holds an instance\'s only copy — covered or not', async () => {
+    const { k8s, deleteK8sNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
+    await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({
+      code: 'NODE_DELETE_HOLDS_DATABASE',
+      status: 409,
+      details: { instances: ['platform/system-db-2'] },
+    });
+    expect(deleteK8sNode).not.toHaveBeenCalled();
+  });
+});
+
+// ─── A tenant that runs nothing (stopped / suspended) ────────────────────
+//
+// Longhorn moves a replica only while its volume is attached. A re-pin of a
+// tenant with nothing running changed every label and left the only copy on
+// the drained node (production: suspended tenant pinned to sv1, its replica
+// still on the cordoned sv2, the drain never complete).
+describe('drain of a node holding a stopped tenant\'s only copy', () => {
+  const NS = 'tenant-hat-1';
+  const GiB = 1024 ** 3;
+
+  function makeStoppedTenantK8s(opts: { attached?: boolean; cordoned?: string[] } = {}) {
+    const patches: Array<{ plural: string; name: string; body: unknown }> = [];
+    const cordoned = new Set(opts.cordoned ?? []);
+    const lhNode = (name: string, freeGiB: number) => ({
+      metadata: { name },
+      spec: { allowScheduling: true, tags: [], disks: { d1: { allowScheduling: true, storageReserved: 0 } } },
+      status: { diskStatus: { d1: { storageMaximum: (freeGiB + 10) * GiB, storageScheduled: 10 * GiB } } },
+    });
+    const k8s = {
+      core: {
+        readNode: vi.fn().mockResolvedValue({
+          spec: { unschedulable: false }, status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        }),
+        listNode: vi.fn().mockResolvedValue({
+          items: ['s1', 's2', 's3'].map((name) => liveNode({ name, unschedulable: cordoned.has(name) })),
+        }),
+        listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listPersistentVolumeClaimForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+        patchNode: vi.fn().mockResolvedValue({}),
+        createNamespacedPodEviction: vi.fn().mockResolvedValue({}),
+        deleteNode: vi.fn().mockResolvedValue({}),
+      },
+      apps: {
+        listDeploymentForAllNamespaces: vi.fn().mockResolvedValue({
+          items: [{
+            metadata: { name: 'website', namespace: NS },
+            spec: { replicas: 0, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 's2' } } } },
+          }],
+        }),
+        listStatefulSetForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        readNamespacedDeployment: vi.fn().mockResolvedValue({ spec: { template: { spec: {} } } }),
+        patchNamespacedDeployment: vi.fn().mockResolvedValue({}),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
+          if (req.plural === 'replicas') {
+            return { items: [{ metadata: { name: 'r-hat' }, spec: { volumeName: 'pvc-hat', nodeID: 's2', failedAt: '' }, status: { currentState: opts.attached ? 'running' : 'stopped' } }] };
+          }
+          if (req.plural === 'volumes') {
+            return {
+              items: [{
+                metadata: { name: 'pvc-hat' },
+                spec: { size: String(20 * GiB), numberOfReplicas: 1, nodeSelector: ['node-s2'] },
+                status: {
+                  state: opts.attached ? 'attached' : 'detached',
+                  currentNodeID: opts.attached ? 's2' : '',
+                  kubernetesStatus: { namespace: NS, pvcName: `${NS}-storage`, pvStatus: 'Bound' },
+                },
+              }],
+            };
+          }
+          if (req.plural === 'nodes') return { items: [lhNode('s1', 50), lhNode('s2', 200), lhNode('s3', 80)] };
+          return { items: [] };
+        }),
+        getNamespacedCustomObject: vi.fn().mockResolvedValue({ spec: { tags: [] } }),
+        patchNamespacedCustomObject: vi.fn(async (a: { plural: string; name: string; body: unknown }) => {
+          patches.push({ plural: a.plural, name: a.name, body: a.body });
+          return {};
+        }),
+      },
+    } as unknown as K8sClients;
+    return { k8s, patches };
+  }
+
+  function makeTenantDb(pin = 's2'): Database {
+    const nodeRows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+    const tenantRows = [{ id: 'hat-id', name: 'Hat Co', ns: NS, tier: 'local', pin }];
+    return {
+      select: () => ({
+        from: (tbl: object) => {
+          const rows = 'storageTier' in tbl ? tenantRows : nodeRows;
+          return Object.assign(Promise.resolve(rows), { orderBy: () => Promise.resolve(nodeRows) });
+        },
+      }),
+      update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+    } as unknown as Database;
+  }
+
+  const tickets = (patches: Array<{ plural: string; name: string; body: unknown }>) => patches
+    .filter((p) => p.plural === 'volumeattachments')
+    .map((p) => ({
+      volume: p.name,
+      node: (p.body as { spec: { attachmentTickets: Record<string, { nodeID: string }> } }).spec.attachmentTickets['insula-relocate']?.nodeID,
+    }));
+
+  it('impact marks the stopped tenant\'s volume detached, its only copy here', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const impact = await buildDrainImpact(k8s, makeTenantDb(), 's2');
+    expect(impact.pinnedTenants[0]?.pvcs[0]).toMatchObject({ volumeName: 'pvc-hat', detached: true, isLastReplica: true, replicaCount: 1 });
+  });
+
+  it('"Auto" picks the node with the most free space — never this one — and moves the data there', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({ 'hat-id': 's3' });
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's3' }]);
+  });
+
+  it('"Auto" never picks a cordoned node', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s({ cordoned: ['s3'] });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({ 'hat-id': 's1' });
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('an explicit target moves the data to that node', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 's1' }, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('a running tenant on "Auto" is left to the scheduler — its data follows the pod', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s({ attached: true });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(0);
+    expect(tickets(patches)).toEqual([]);
+  });
+
+  it('a re-run keeps the node an earlier run pinned the tenant to — the data still goes there', async () => {
+    // Production: the suspended tenant was already pinned to sv1 with its copy on sv2.
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb('s3'), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's3' }]);
+  });
+
+  it('a copy that could not start moving is reported, not left looking slow', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const custom = k8s.custom as unknown as { patchNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    custom.patchNamespacedCustomObject.mockImplementation(async (a: { plural: string }) => {
+      if (a.plural === 'volumeattachments') throw new Error('admission webhook denied the request');
+      return {};
+    });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.relocatingVolumes).toBe(0);
+    expect(result.relocationProblems).toEqual([expect.objectContaining({
+      tenantId: 'hat-id', volumeName: 'pvc-hat', reason: expect.stringContaining('admission webhook denied'),
+    })]);
+  });
+
+  it('deleteNode fails closed when the storage lists cannot be read', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    (k8s.core as unknown as { readNode: ReturnType<typeof vi.fn> }).readNode.mockResolvedValue({ spec: { unschedulable: true } });
+    const custom = k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    custom.listNamespacedCustomObject.mockRejectedValue(Object.assign(new Error('etcdserver: request timed out'), { code: 500 }));
+    await expect(deleteNode(makeTenantDb(), k8s, 's2'))
+      .rejects.toMatchObject({ code: 'NODE_DELETE_PRECHECK_FAILED', status: 503 });
+    expect((k8s.core as unknown as { deleteNode: ReturnType<typeof vi.fn> }).deleteNode).not.toHaveBeenCalled();
+  });
+
+  it('a tenant kept here ("stay") with its only copy here still blocks the drain without force', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' }, blockNewTenants: false }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+    await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' }, forceLastReplica: true, blockNewTenants: false }))
+      .resolves.toMatchObject({ cordoned: false });
+  });
+
+  it('a volume in a tenant namespace with no tenant record still blocks — nobody re-pins it', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const db = makeTenantDb();
+    const orphanDb = {
+      ...db,
+      select: () => ({
+        from: (tbl: object) => {
+          const nodeRows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+          return Object.assign(Promise.resolve('storageTier' in tbl ? [] : nodeRows), { orderBy: () => Promise.resolve(nodeRows) });
+        },
+      }),
+    } as unknown as Database;
+    await expect(drainNode(k8s, orphanDb, 's2', { tenantPlacement: {}, blockNewTenants: false }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+  });
+
+  it('deleteNode: refuses while a tenant volume\'s only copy is on the node', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    (k8s.core as unknown as { readNode: ReturnType<typeof vi.fn> }).readNode.mockResolvedValue({ spec: { unschedulable: true } });
+    await expect(deleteNode(makeTenantDb(), k8s, 's2')).rejects.toMatchObject({
+      code: 'NODE_DELETE_HOLDS_TENANT_DATA',
+      status: 409,
+      details: { volumes: [`Hat Co (${NS}/${NS}-storage)`] },
+    });
+    expect((k8s.core as unknown as { deleteNode: ReturnType<typeof vi.fn> }).deleteNode).not.toHaveBeenCalled();
   });
 });

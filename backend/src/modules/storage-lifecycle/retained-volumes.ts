@@ -5,6 +5,7 @@ import { tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { RetainedVolume, RetainedSnapshot } from '@insula/api-contracts';
 import { isSnapshotSomebodyTook } from '../../shared/longhorn-snapshot.js';
+import { k8sTimeIso } from '../../shared/k8s-time.js';
 
 /**
  * Retained-volume discovery for the admin "restore from a retained volume"
@@ -38,7 +39,7 @@ interface RawPv {
     readonly capacity?: { readonly storage?: string };
     readonly storageClassName?: string;
   };
-  readonly status?: { readonly phase?: string; readonly lastTransitionTime?: string };
+  readonly status?: { readonly phase?: string; readonly lastPhaseTransitionTime?: string | Date };
 }
 
 interface RawLhVolume {
@@ -183,7 +184,7 @@ export function classifyRetainedVolumes(input: {
       longhornVolumeName,
       sizeBytes: parseQuantityBytes(pv.spec?.capacity?.storage)
         || parseQuantityBytes(lhVol?.spec?.size),
-      releasedAt: pv.status?.lastTransitionTime ?? null,
+      releasedAt: k8sTimeIso(pv.status?.lastPhaseTransitionTime),
       snapshots,
     });
   }

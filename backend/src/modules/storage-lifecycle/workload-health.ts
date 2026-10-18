@@ -54,6 +54,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { alertGroupKey, claimedEpisodesKey, groupAlerts, healSummary, workloadsByTenant, type AlertRow } from './workload-alerts.js';
+import { cappedList } from '../notifications/list-items.js';
 import {
   STORAGE_QUIESCED_ANNOTATION,
   STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
@@ -148,7 +150,29 @@ export interface WorkloadHealthResult {
 }
 
 export type HealReason = 'volume_attach' | 'quota_rejected' | 'unschedulable' | 'image' | 'crash'
-  | 'stranded_at_zero' | 'unknown';
+  | 'stranded_at_zero' | 'node_down' | 'unknown';
+
+/**
+ * The node a tenant is pinned to, when that node is down — or null.
+ *
+ * Decided BEFORE the cluster's messages are read: while a node shuts down the
+ * pods on it still count against the namespace quota, so every replacement is
+ * refused with "exceeded quota" in the first seconds, and that event stays
+ * "recent" for ten minutes. Production: a tenant pinned to a node
+ * that was powered off was recorded as `quota_rejected`; the alert said to
+ * raise its plan limits, and the auto-heal scaled it down and up against a
+ * node that was not there — then left the tenant marked FAILED.
+ *
+ * Only a node known and NotReady counts: one that cannot be read, or no
+ * longer exists, is not evidence of anything here.
+ */
+export function pinnedNodeDown(
+  pin: string | null,
+  readyByNode: ReadonlyMap<string, boolean>,
+): string | null {
+  if (!pin) return null;
+  return readyByNode.get(pin) === false ? pin : null;
+}
 
 /**
  * Translate what the cluster says into a cause the operator can act on, and the
@@ -228,6 +252,7 @@ const REASON_LABELS: Record<HealReason, string> = {
   image: 'the container image could not be pulled',
   crash: 'the container keeps crashing on startup',
   stranded_at_zero: 'a storage operation scaled it down and never brought it back up',
+  node_down: 'the node it is pinned to is down',
   unknown: 'the pod did not become ready',
 };
 
@@ -256,6 +281,7 @@ export function isHealable(reason: HealReason): boolean {
     case 'image':              // needs a corrected image reference
     case 'crash':              // needs a code or limits change
     case 'unschedulable':      // needs capacity, a taint change or an unpin
+    case 'node_down':          // needs the node back; a scale cycle cannot bring it
       return false;
   }
 }
@@ -275,6 +301,9 @@ function recommendedAction(reason: HealReason): string {
         + 'A stale staging directory needs the volume fully detached and re-staged; auto-heal already tried exactly that.';
     case 'unschedulable':
       return 'No node can fit or tolerate the pod — check node capacity, taints and any node pin on the tenant.';
+    case 'node_down':
+      return 'It comes back by itself when that node is back. To run it elsewhere meanwhile, re-pin the tenant '
+        + 'from its Placement card — its data needs a copy on the new node.';
     case 'image':
       return 'Verify the image reference and registry credentials for this workload.';
     case 'crash':
@@ -706,6 +735,153 @@ async function healNamespace(
   }
 }
 
+/** Ready per node name. Empty when the list fails — then no node counts as down. */
+async function nodeReadiness(k8s: K8sClients): Promise<Map<string, boolean>> {
+  try {
+    const list = await k8s.core.listNode();
+    return new Map((list.items ?? []).map((n) => [
+      n.metadata?.name ?? '',
+      (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'),
+    ]));
+  } catch (err) {
+    console.warn(`[workload-health] node list failed, pinned-node check skipped: ${err instanceof Error ? err.message : String(err)}`);
+    return new Map();
+  }
+}
+
+/** See the call site. Never throws: one tenant's error must not stop the sweep. */
+async function resetRecoveredAutohealFailures(
+  db: Database,
+  deployments: readonly DeploymentView[],
+  byNs: ReadonlyMap<string, { id: string; status: string; lifecycle_state: string; active_op_id: string | null }>,
+  downByNs: ReadonlyMap<string, DeploymentView[]>,
+): Promise<void> {
+  for (const ns of new Set(deployments.map((d) => d.namespace))) {
+    const t = byNs.get(ns);
+    if (!t || t.status !== 'active' || t.lifecycle_state !== 'failed' || t.active_op_id !== null) continue;
+    if (downByNs.has(ns)) continue;
+    const mine = deployments.filter((d) => d.namespace === ns);
+    if (mine.some((d) => d.held || (d.desired > 0 && d.available < d.desired))) continue;
+    try {
+      const res = await db.execute(sql`
+        UPDATE tenants
+           SET storage_lifecycle_state = 'idle'
+         WHERE id = ${t.id}
+           AND storage_lifecycle_state = 'failed'
+           AND active_storage_op_id IS NULL
+           AND (SELECT so.op_type::text || ':' || so.state::text
+                  FROM storage_operations so
+                 WHERE so.tenant_id = ${t.id}
+                 ORDER BY so.created_at DESC
+                 LIMIT 1) = 'autoheal:failed'
+      `);
+      if ((res.rowCount ?? 0) > 0) {
+        console.warn(`[workload-health] ${ns}: every workload is up again — storage state FAILED, left by a failed auto-heal, reset to idle`);
+      }
+    } catch (err) {
+      console.warn(`[workload-health] resetting the failed state of ${ns} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/**
+ * Send the down alerts claimed this tick, grouped (workload-alerts.ts). A
+ * group goes out when at least one of its episodes claimed a ladder slot; it
+ * lists every episode of the group that reached the alert stage. Returns how
+ * many admin alerts were sent.
+ */
+async function dispatchDownAlerts(
+  db: Database,
+  alertRows: readonly AlertRow[],
+  claimed: ReadonlyArray<{ row: AlertRow; notifyCount: number; lastNotifiedAt: string | null }>,
+): Promise<number> {
+  if (claimed.length === 0) return 0;
+  const { notifyAdminTenantWorkloadsDown, notifyTenantWorkloadsDown } = await import('../notifications/events.js');
+  let sent = 0;
+  for (const g of groupAlerts(alertRows, labelForReason)) {
+    const mine = claimed.filter((c) => alertGroupKey(c.row) === g.key);
+    if (mine.length === 0) continue;
+    // dedupeKey keyed on the EPISODES this alert announces and their ladder
+    // round (claimedEpisodesKey), never on a wall-clock bucket: a bucket whose
+    // width matches the caller's period deduplicates nothing.
+    const adminSent = await notifyAdminTenantWorkloadsDown(db, {
+      tenantName: g.subject,
+      namespace: g.key.startsWith('node:') ? '' : g.namespace,
+      workloads: cappedList(g.workloads),
+      downSince: g.downSince,
+      downMinutes: String(g.downMinutes),
+      reason: g.reason,
+      // Derived from the PERSISTED reason, never re-parsed from the truncated
+      // `detail` column — see REASON_LABELS.
+      reasonLabel: labelForReason(g.reason),
+      detail: g.detail ?? undefined,
+      healSummary: healSummary(g.attempts),
+      lastHealError: g.lastHealError ?? undefined,
+      recommendedAction: recommendedAction(g.reason),
+    }, `workloads-down:${g.key}:admin:${claimedEpisodesKey(mine)}`);
+
+    // The ADMIN copy is the one that matters: it is the alert whose absence let a
+    // tenant stay down for 18 hours. If it did not go out, GIVE THE LADDER SLOTS
+    // BACK so the next tick retries instead of deferring by the ladder step
+    // (1h → 6h → daily) over a delivery that never happened.
+    if (!adminSent.ok) {
+      for (const c of mine) {
+        await db.execute(sql`
+          UPDATE tenant_workload_health_events
+             SET last_notified_at = ${c.lastNotifiedAt}, notify_count = ${c.notifyCount}
+           WHERE tenant_id = ${c.row.tenantId} AND workload = ${c.row.workload}
+             AND cleared_at IS NULL
+        `);
+      }
+      console.error(
+        `[workload-health] ADMIN alert for ${g.subject} did NOT dispatch `
+        + `(${adminSent.error ?? 'unknown'}) — ladder slots released, retrying next tick`,
+      );
+      continue;
+    }
+    sent += 1;
+  }
+
+  // The tenant's own copy: one per tenant, its workloads as a list.
+  const claimedTenants = new Set(claimed.map((c) => c.row.tenantId));
+  for (const t of workloadsByTenant(alertRows.filter((r) => claimedTenants.has(r.tenantId)))) {
+    const mine = claimed.filter((c) => c.row.tenantId === t.tenantId);
+    const res = await notifyTenantWorkloadsDown(db, t.tenantId, {
+      workloads: cappedList(t.workloads),
+      downSince: t.downSince,
+      reasonLabel: labelForReason(t.reason),
+    }, `workloads-down:tenant:${t.tenantId}:${claimedEpisodesKey(mine)}`);
+    // Informational, and its address may simply be undeliverable; it never
+    // holds the admin ladder back.
+    if (!res.ok) console.warn(`[workload-health] tenant copy for ${t.tenantId} did not dispatch: ${res.error ?? 'unknown'}`);
+  }
+  return sent;
+}
+
+/** "Back up" for episodes that had alerted — same grouping as the alert. Never throws. */
+async function dispatchRecoveries(db: Database, recovered: readonly AlertRow[]): Promise<void> {
+  if (recovered.length === 0) return;
+  try {
+    const { notifyAdminTenantWorkloadsRecovered, notifyTenantWorkloadsRecovered } = await import('../notifications/events.js');
+    for (const g of groupAlerts(recovered)) {
+      await notifyAdminTenantWorkloadsRecovered(db, {
+        tenantName: g.subject,
+        workloads: cappedList(g.workloads),
+        downSince: g.downSince,
+        downMinutes: String(g.downMinutes),
+      }, `workloads-recovered:${g.key}:${g.downSince}`);
+    }
+    for (const t of workloadsByTenant(recovered)) {
+      await notifyTenantWorkloadsRecovered(db, t.tenantId, {
+        workloads: cappedList(t.workloads),
+        downSince: t.downSince,
+      }, `workloads-recovered:tenant:${t.tenantId}:${t.downSince}`);
+    }
+  } catch (err) {
+    console.warn(`[workload-health] recovery notices failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function reconcileTenantWorkloadHealth(
   db: Database,
   k8s: K8sClients,
@@ -730,14 +906,34 @@ export async function reconcileTenantWorkloadHealth(
   // the orchestrator owns the namespace.
   const tenantRows = await db.execute<{
     id: string; name: string; namespace: string; status: string;
-    lifecycle_state: string; active_op_id: string | null;
+    lifecycle_state: string; active_op_id: string | null; pin: string | null;
   }>(sql`
     SELECT id, name, kubernetes_namespace AS namespace, status::text AS status,
            storage_lifecycle_state::text AS lifecycle_state,
-           active_storage_op_id AS active_op_id
+           active_storage_op_id AS active_op_id, node_name AS pin
       FROM tenants
   `);
   const byNs = new Map((tenantRows.rows ?? []).map((t) => [t.namespace, t]));
+  const byId = new Map((tenantRows.rows ?? []).map((t) => [t.id, t]));
+  const readyByNode = await nodeReadiness(k8s);
+
+  // Episodes that had alerted and are over: reported back in the shape the
+  // outage was reported (workload-alerts.ts).
+  const recovered: AlertRow[] = [];
+  const noteRecovered = (
+    tenantId: string, workload: string,
+    rows: ReadonlyArray<{ notify_count: number; reason: string; first_seen_at: string | Date; down_minutes: number }>,
+  ) => {
+    const t = byId.get(tenantId);
+    for (const r of rows) {
+      if (!t || r.notify_count <= 0) continue;
+      recovered.push({
+        tenantId, tenantName: t.name, namespace: t.namespace, workload, reason: r.reason as HealReason,
+        detail: null, downMinutes: r.down_minutes, firstSeenAt: new Date(r.first_seen_at).toISOString(),
+        attempts: 0, lastHealError: null, pin: t.pin,
+      });
+    }
+  };
 
   const downByNs = new Map<string, DeploymentView[]>();
 
@@ -767,12 +963,15 @@ export async function reconcileTenantWorkloadHealth(
       // every LATER tenant in the list goes unprocessed for this tick. One
       // tenant's transient DB error must not blind the sweep to the rest.
       try {
-        const res = await db.execute(sql`
+        const res = await db.execute<{ notify_count: number; reason: string; first_seen_at: string; down_minutes: number }>(sql`
           UPDATE tenant_workload_health_events
              SET cleared_at = now(), available_replicas = ${d.available}
            WHERE tenant_id = ${tenant.id} AND workload = ${d.name} AND cleared_at IS NULL
+          RETURNING notify_count, reason, first_seen_at,
+                    FLOOR(EXTRACT(EPOCH FROM (now() - first_seen_at)) / 60)::int AS down_minutes
         `);
         if ((res.rowCount ?? 0) > 0) episodesCleared += 1;
+        noteRecovered(tenant.id, d.name, res.rows ?? []);
       } catch (err) {
         console.warn(`[workload-health] clearing episode ${d.namespace}/${d.name} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -802,15 +1001,18 @@ export async function reconcileTenantWorkloadHealth(
     }
     const podMsgs = seen.msgs;
 
+    const deadNode = pinnedNodeDown(tenant.pin, readyByNode);
     for (const d of downs) {
       const stranded = d.desired === 0 && d.held;
-      const { reason, detail } = stranded
-        ? {
-            reason: 'stranded_at_zero' as HealReason,
-            detail: 'Deployment is at 0 replicas with the storage-quiesce hold still set — '
-              + 'a storage operation scaled it down and never successfully scaled it back up.',
-          }
-        : classifyUnavailability(d.replicaFailure, podMsgs);
+      const { reason, detail } = deadNode
+        ? { reason: 'node_down' as HealReason, detail: `Pinned to ${deadNode}, which is not Ready.` }
+        : stranded
+          ? {
+              reason: 'stranded_at_zero' as HealReason,
+              detail: 'Deployment is at 0 replicas with the storage-quiesce hold still set — '
+                + 'a storage operation scaled it down and never successfully scaled it back up.',
+            }
+          : classifyUnavailability(d.replicaFailure, podMsgs);
       // Open or refresh. `first_seen_at` is left alone on conflict — it is the
       // hysteresis clock and must measure the OUTAGE, not the last tick.
       // Same isolation as the clear path: one tenant must not abort the sweep.
@@ -840,12 +1042,28 @@ export async function reconcileTenantWorkloadHealth(
                -- leaves every counter and the clock untouched. Three states, one
                -- comparison: open -> keep, recently closed -> keep, long closed
                -- -> reset.
+               --
+               -- The node coming BACK also restarts the clock: while it was
+               -- down the episode aged past the grace window, so the first
+               -- tick after its return (pods still re-attaching their volumes,
+               -- as every rebooted node's do) would scale the tenant down for
+               -- a heal at once. Lab staging: a heal fired two minutes after
+               -- the node returned. A cause that follows node_down gets its
+               -- own grace window and its own heal budget.
                first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at
                                          < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN now() ELSE tenant_workload_health_events.first_seen_at END,
+                                    THEN now()
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN now()
+                                    ELSE tenant_workload_health_events.first_seen_at END,
                heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at
                                          < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN 0 ELSE tenant_workload_health_events.heal_attempts END,
+                                    THEN 0
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN 0
+                                    ELSE tenant_workload_health_events.heal_attempts END,
                notify_count = CASE WHEN tenant_workload_health_events.cleared_at
                                         < now() - ${FLAP_QUIET_SQL}::interval
                                    THEN 0 ELSE tenant_workload_health_events.notify_count END,
@@ -875,17 +1093,27 @@ export async function reconcileTenantWorkloadHealth(
     }
   }
 
+  // A tenant the auto-heal gave up on stays storage-state FAILED — which
+  // refuses every later resize, restore, suspend or move — even after its
+  // workloads came back on their own. Production: the heal waited
+  // out a node outage, gave up seconds before the node returned, and left
+  // the tenant FAILED with nothing on screen saying so. Once every workload is
+  // up and none still carries the quiesce hold, a FAILED whose last operation
+  // is that auto-heal is over. A failed resize/restore/fsck stays FAILED:
+  // those need the operator.
+  await resetRecoveredAutohealFailures(db, deployments, byNs, downByNs);
+
   // ── Act on episodes that have outlived the grace window ──
   const due = await db.execute<{
     tenant_id: string; workload: string; namespace: string; reason: string;
     detail: string | null; heal_attempts: number; last_heal_error: string | null;
     first_seen_at: string; down_minutes: number; notify_count: number;
-    last_notified_at: string | null; tenant_name: string;
+    last_notified_at: string | null; tenant_name: string; pin: string | null;
   }>(sql`
     SELECT e.tenant_id, e.workload, e.namespace, e.reason, e.detail,
            e.heal_attempts, e.last_heal_error, e.first_seen_at,
            FLOOR(EXTRACT(EPOCH FROM (now() - e.first_seen_at)) / 60)::int AS down_minutes,
-           e.notify_count, e.last_notified_at, t.name AS tenant_name
+           e.notify_count, e.last_notified_at, t.name AS tenant_name, t.node_name AS pin
       FROM tenant_workload_health_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
@@ -897,6 +1125,10 @@ export async function reconcileTenantWorkloadHealth(
 
   const healedNamespaces = new Set<string>();
   const failedNamespaces = new Set<string>();
+  // Collected through the loop and dispatched after it, grouped: one alert
+  // per tenant (per node when the node is the cause), never one per workload.
+  const alertRows: AlertRow[] = [];
+  const claimed: Array<{ row: AlertRow; notifyCount: number; lastNotifiedAt: string | null }> = [];
 
   for (const row of due.rows ?? []) {
     if (failedNamespaces.has(row.namespace)) {
@@ -940,12 +1172,15 @@ export async function reconcileTenantWorkloadHealth(
           // Record the attempt as successful only against OBSERVED recovery:
           // unquiesce now verifies availability, so returning without throwing
           // means the replicas are actually up.
-          await db.execute(sql`
+          const closed = await db.execute<{ workload: string; notify_count: number; reason: string; first_seen_at: string; down_minutes: number }>(sql`
             UPDATE tenant_workload_health_events
                SET healed_at = now(), cleared_at = now(), last_heal_error = NULL
              WHERE tenant_id = ${row.tenant_id}
                AND namespace = ${row.namespace} AND cleared_at IS NULL
+            RETURNING workload, notify_count, reason, first_seen_at,
+                      FLOOR(EXTRACT(EPOCH FROM (now() - first_seen_at)) / 60)::int AS down_minutes
           `);
+          for (const c of closed.rows ?? []) noteRecovered(row.tenant_id, c.workload, [c]);
           healedNamespaces.add(row.namespace);
           healed += 1;
           console.warn(`[workload-health] ${row.namespace} recovered by auto-heal`);
@@ -977,6 +1212,14 @@ export async function reconcileTenantWorkloadHealth(
       || notHealable;
     if (!exhausted) continue;
 
+    const alertRow: AlertRow = {
+      tenantId: row.tenant_id, tenantName: row.tenant_name, namespace: row.namespace, workload: row.workload,
+      reason: (row.reason as HealReason) || 'unknown', detail: row.detail, downMinutes: row.down_minutes,
+      firstSeenAt: new Date(row.first_seen_at).toISOString(), attempts,
+      lastHealError: row.last_heal_error, pin: row.pin,
+    };
+    alertRows.push(alertRow);
+
     const ladderIdx = Math.min(row.notify_count, NOTIFY_LADDER_MS.length - 1);
     const dueAgainMs = NOTIFY_LADDER_MS[ladderIdx];
     const notifyClaim = await db.execute(sql`
@@ -988,64 +1231,11 @@ export async function reconcileTenantWorkloadHealth(
               OR last_notified_at < now() - ${`${Math.round(dueAgainMs / 1000)} seconds`}::interval)
     `);
     if ((notifyClaim.rowCount ?? 0) === 0) continue; // another replica sent it, or not due yet
-
-    const effReason = (row.reason as HealReason) || 'unknown';
-    // Derived from the PERSISTED reason, never re-parsed from the truncated
-    // `detail` column — see REASON_LABELS.
-    const label = labelForReason(effReason);
-    const { notifyAdminTenantWorkloadsDown, notifyTenantWorkloadsDown } = await import('../notifications/events.js');
-    const downSince = new Date(row.first_seen_at).toISOString();
-    // dedupeKey keyed on the EPISODE (tenant × workload × first_seen), never on
-    // a wall-clock bucket: a bucket whose width matches the caller's period
-    // deduplicates nothing, which is how saturation alerts once fired hourly
-    // forever.
-    const episodeKey = `workloads-down:${row.tenant_id}:${row.workload}:${downSince}`;
-    const adminSent = await notifyAdminTenantWorkloadsDown(db, {
-      tenantName: row.tenant_name,
-      namespace: row.namespace,
-      workload: row.workload,
-      downSince,
-      downMinutes: String(row.down_minutes),
-      reason: effReason,
-      reasonLabel: label,
-      detail: row.detail ?? undefined,
-      healAttempts: String(attempts),
-      lastHealError: row.last_heal_error ?? undefined,
-      recommendedAction: recommendedAction(effReason),
-    }, `${episodeKey}:admin:${row.notify_count}`);
-    const tenantSent = await notifyTenantWorkloadsDown(db, row.tenant_id, {
-      workload: row.workload,
-      downSince,
-      reasonLabel: label,
-    }, `${episodeKey}:tenant:${row.notify_count}`);
-
-    // The ADMIN copy is the one that matters: it is the alert whose absence let a
-    // tenant stay down for 18 hours. If it did not go out, GIVE THE LADDER SLOT
-    // BACK so the next tick retries instead of deferring by the
-    // ladder step (1h → 6h → daily) over a delivery that never happened.
-    if (!adminSent.ok) {
-      await db.execute(sql`
-        UPDATE tenant_workload_health_events
-           SET last_notified_at = ${row.last_notified_at},
-               notify_count = ${row.notify_count}
-         WHERE tenant_id = ${row.tenant_id} AND workload = ${row.workload}
-           AND cleared_at IS NULL
-      `);
-      console.error(
-        `[workload-health] ADMIN alert for ${row.namespace}/${row.workload} did NOT dispatch `
-        + `(${adminSent.error ?? 'unknown'}) — ladder slot released, retrying next tick`,
-      );
-      continue;
-    }
-    if (!tenantSent.ok) {
-      // The tenant copy is informational and its address may simply be
-      // undeliverable; do not hold the admin ladder back for it.
-      console.warn(
-        `[workload-health] tenant copy for ${row.namespace}/${row.workload} did not dispatch: ${tenantSent.error ?? 'unknown'}`,
-      );
-    }
-    alerted += 1;
+    claimed.push({ row: alertRow, notifyCount: row.notify_count, lastNotifiedAt: row.last_notified_at });
   }
+
+  alerted += await dispatchDownAlerts(db, alertRows, claimed);
+  await dispatchRecoveries(db, recovered);
 
   // GC the audit tail.
   await db.execute(sql`

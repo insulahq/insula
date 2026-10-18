@@ -312,6 +312,10 @@ spec:
       - effect: NoExecute
         key: node-role.kubernetes.io/etcd
         operator: Exists
+      # The "no tenants here" taint (Drain tenants / Can host tenant workloads off).
+      - effect: NoSchedule
+        key: insula.host/server-only
+        operator: Exists
       volumes:
       - hostPath:
           path: /etc/ssl

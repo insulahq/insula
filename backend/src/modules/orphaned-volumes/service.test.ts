@@ -67,7 +67,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-localpath-orphan' },
         spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '1Gi' } },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 10 * 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 10 * 86400_000).toISOString() },
       }],
       namespaces: [],
       longhornVolumes: [],
@@ -92,7 +92,7 @@ describe('detectOrphans', () => {
           capacity: { storage: '10Gi' },
           persistentVolumeReclaimPolicy: 'Retain',
         },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
       }],
       namespaces: ['platform', 'longhorn-system'], // gone-ns missing
       longhornVolumes: [{
@@ -125,7 +125,7 @@ describe('detectOrphans', () => {
           claimRef: { namespace: 'tenant-stale', name: 'data' },
           capacity: { storage: '5Gi' },
         },
-        status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
+        status: { phase: 'Bound', lastPhaseTransitionTime: new Date().toISOString() },
       }],
       namespaces: ['tenant-stale'],
       longhornVolumes: [{ metadata: { name: 'pvc-orphan-tenant' }, status: { kubernetesStatus: { pvName: 'pvc-orphan-tenant' } } }],
@@ -145,7 +145,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-stale' },
         spec: { claimRef: { namespace: 'platform', name: 'old-data' }, capacity: { storage: '1Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['platform'],
       longhornVolumes: [{ metadata: { name: 'pvc-stale' }, status: { kubernetesStatus: { pvName: 'pvc-stale' } } }],
@@ -173,7 +173,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-expanded' },
         spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '256Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-expanded' }, status: { kubernetesStatus: { pvName: 'pvc-expanded' } } }],
@@ -198,7 +198,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-fresh' },
         spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '256Gi' } },
-        status: { phase: 'Released', lastTransitionTime: justNow },
+        status: { phase: 'Released', lastPhaseTransitionTime: justNow },
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-fresh' }, status: { kubernetesStatus: { pvName: 'pvc-fresh' } } }],
@@ -215,7 +215,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-retained' },
         spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-retained' }, status: { kubernetesStatus: { pvName: 'pvc-retained' } } }],
@@ -239,7 +239,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-x' },
         spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-x' }, status: { kubernetesStatus: { pvName: 'pvc-x' } } }],
@@ -255,7 +255,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-sched' },
         spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['tenant-x'],
       longhornVolumes: [{ metadata: { name: 'pvc-sched' }, status: { kubernetesStatus: { pvName: 'pvc-sched' } } }],
@@ -276,7 +276,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-expired' },
         spec: { claimRef: { namespace: 'tenant-y', name: 'tenant-y-storage' }, capacity: { storage: '2Gi' } },
-        status: { phase: 'Released', lastTransitionTime: old },
+        status: { phase: 'Released', lastPhaseTransitionTime: old },
       }],
       namespaces: ['tenant-y'],
       longhornVolumes: [{ metadata: { name: 'pvc-expired' }, status: { kubernetesStatus: { pvName: 'pvc-expired' } } }],
@@ -294,7 +294,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-healthy' },
         spec: { claimRef: { namespace: 'tenant-acme', name: 'data' }, capacity: { storage: '2Gi' } },
-        status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
+        status: { phase: 'Bound', lastPhaseTransitionTime: new Date().toISOString() },
       }],
       namespaces: ['tenant-acme'],
       longhornVolumes: [{ metadata: { name: 'pvc-healthy' }, status: { kubernetesStatus: { pvName: 'pvc-healthy' } } }],
@@ -322,7 +322,7 @@ describe('detectOrphans', () => {
           },
         },
         spec: { claimRef: { namespace: 'gone-tenant' }, capacity: { storage: '5Gi' } },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
       }],
       namespaces: ['platform'], // gone-tenant deleted
       longhornVolumes: [],
@@ -344,7 +344,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-legacy' /* no labels */ },
         spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '1Gi' } },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
       }],
       namespaces: ['platform'],
       longhornVolumes: [],
@@ -387,7 +387,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-acme' },
         spec: { claimRef: { namespace: 'tenant-acme', name: 'data' }, capacity: { storage: '5Gi' } },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 10 * 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 10 * 86400_000).toISOString() },
       }],
       namespaces: ['tenant-acme'],
       longhornVolumes: [{ metadata: { name: 'pvc-acme' }, status: { kubernetesStatus: { pvName: 'pvc-acme' } } }],
@@ -430,7 +430,7 @@ describe('detectOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-existing' },
         spec: { claimRef: { namespace: 'tenant-dup', name: 'data' }, capacity: { storage: '1Gi' } },
-        status: { phase: 'Bound', lastTransitionTime: new Date().toISOString() },
+        status: { phase: 'Bound', lastPhaseTransitionTime: new Date().toISOString() },
       }],
       namespaces: [{ name: 'tenant-dup', createdDaysAgo: 3 }],
       longhornVolumes: [{ metadata: { name: 'pvc-existing' }, status: { kubernetesStatus: { pvName: 'pvc-existing' } } }],
@@ -460,12 +460,12 @@ describe('detectOrphans', () => {
         {
           metadata: { name: 'small' },
           spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '1Gi' } },
-          status: { phase: 'Released', lastTransitionTime: new Date().toISOString() },
+          status: { phase: 'Released', lastPhaseTransitionTime: new Date().toISOString() },
         },
         {
           metadata: { name: 'big' },
           spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '50Gi' } },
-          status: { phase: 'Released', lastTransitionTime: new Date().toISOString() },
+          status: { phase: 'Released', lastPhaseTransitionTime: new Date().toISOString() },
         },
       ],
       namespaces: [],
@@ -518,7 +518,7 @@ describe('purgeAllOrphans', () => {
       pvs: [{
         metadata: { name: 'pvc-stale' },
         spec: { claimRef: { namespace: 'platform', name: 'old' }, capacity: { storage: '4Gi' } },
-        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 30 * 86400_000).toISOString() },
+        status: { phase: 'Released', lastPhaseTransitionTime: new Date(Date.now() - 30 * 86400_000).toISOString() },
       }],
       namespaces: ['platform', { name: 'tenant-orphan-ns' }],
       longhornVolumes: [{ metadata: { name: 'pvc-stale' }, spec: { size: String(4 * 1024 ** 3) }, status: { kubernetesStatus: { pvName: 'pvc-stale' } } }],
@@ -539,12 +539,12 @@ describe('purgeAllOrphans', () => {
         {
           metadata: { name: 'pvc-good' },
           spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '1Gi' } },
-          status: { phase: 'Released', lastTransitionTime: new Date().toISOString() },
+          status: { phase: 'Released', lastPhaseTransitionTime: new Date().toISOString() },
         },
         {
           metadata: { name: 'pvc-bad' },
           spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '2Gi' } },
-          status: { phase: 'Released', lastTransitionTime: new Date().toISOString() },
+          status: { phase: 'Released', lastPhaseTransitionTime: new Date().toISOString() },
         },
       ],
       namespaces: [],

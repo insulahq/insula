@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants } from '../../db/schema.js';
 import { isSnapshotSomebodyTook } from '../../shared/longhorn-snapshot.js';
+import { k8sTimeMs } from '../../shared/k8s-time.js';
 
 /**
  * Reasons a Persistent Volume / Longhorn volume is classified as orphaned.
@@ -105,7 +106,8 @@ interface RawPv {
   };
   readonly status?: {
     readonly phase?: string;
-    readonly lastTransitionTime?: string;
+    /** When the PV entered its current phase. PVs have no `lastTransitionTime`. */
+    readonly lastPhaseTransitionTime?: string | Date;
   };
 }
 
@@ -165,10 +167,9 @@ function parseQuantityBytes(value: string | undefined): number {
   return Math.round(num * (mul[unit] ?? 1));
 }
 
-function ageDaysFromIso(iso: string | undefined): number | null {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return null;
+function ageDaysFromIso(v: string | Date | undefined): number | null {
+  const t = k8sTimeMs(v);
+  if (t === null) return null;
   return Math.max(0, Math.round((Date.now() - t) / 86400_000));
 }
 
@@ -304,7 +305,7 @@ export async function detectOrphans(
     const sizeBytes = parseQuantityBytes(pv.spec?.capacity?.storage)
       || parseQuantityBytes(lhVol?.spec?.size);
     const nodes = lhVolName ? (replicaNodesByVolume.get(lhVolName) ?? []) : [];
-    const ageDays = ageDaysFromIso(pv.status?.lastTransitionTime);
+    const ageDays = ageDaysFromIso(pv.status?.lastPhaseTransitionTime);
 
     let reason: OrphanReason | null = null;
 

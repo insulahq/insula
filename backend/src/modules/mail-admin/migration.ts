@@ -1071,6 +1071,17 @@ async function runMigrationStateMachine(
   // (b) is checked via Endpoint existence — we don't run a Pod on
   // target to TCP-probe the shim (would add ~30s to every migration),
   // but Endpoint count is the operator's leading indicator.
+  // A cordoned target takes no new pod at all: the stack would sit Pending
+  // until waitForReplicaCount gave up, AFTER the PVC swap. On production
+  // the auto-failover picked the cordoned secondary, mail stayed
+  // down 10 more minutes, then rolled back. Refused even in recovery mode —
+  // no acknowledgement makes the pod schedulable.
+  const unschedulable = await targetUnschedulableReason(core, targetNode);
+  if (unschedulable) {
+    await failRun(db, runId, unschedulable, taskId);
+    return;
+  }
+
   try {
     const preflight = await validateTargetRestoreReadiness(core, targetNode, log);
     if (!preflight.ok) {
@@ -3878,6 +3889,24 @@ interface TargetReadinessResult {
   readonly path?: 'fast_path_standby' | 'restic_shim';
   /** Operator-actionable reason on failure. */
   readonly reason: string;
+}
+
+/**
+ * Why the mail pod could not be scheduled on `targetNode` — cordoned — or null.
+ * A node that cannot be read is left to validateTargetRestoreReadiness, which
+ * reports it with its own wording.
+ */
+export async function targetUnschedulableReason(core: CoreV1Api, targetNode: string): Promise<string | null> {
+  try {
+    const node = await core.readNode({ name: targetNode }) as { spec?: { unschedulable?: boolean } };
+    if (node.spec?.unschedulable === true) {
+      return `Target node '${targetNode}' is cordoned, so the mail stack cannot be scheduled there. ` +
+        `Uncordon it, or pick another node (Mail → Placement), then retry. Nothing was changed.`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function validateTargetRestoreReadiness(

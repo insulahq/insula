@@ -168,16 +168,44 @@ export const drainImpactSchema = z.object({
       volumeName: z.string(),
       sizeBytes: z.number().int().nonnegative(),
       replicaCount: z.number().int().nonnegative(),
-      /** True when this node holds the LAST running replica. */
+      /** True when this node holds the volume's last usable copy. */
       isLastReplica: z.boolean(),
+      /**
+       * Nothing has the volume attached (the tenant is stopped or suspended).
+       * Longhorn moves a replica only while its volume is attached, so the
+       * drain attaches it on the tenant's new node to move the data — and
+       * "Auto" picks that node for such a tenant (most free space).
+       */
+      detached: z.boolean().default(false),
       currentNodeSelector: z.array(z.string()).default([]),
     })),
   })).default([]),
   longhornReplicas: z.array(z.object({
     volumeName: z.string(),
     replicaName: z.string(),
-    /** True when this is the LAST healthy replica — refusing to drain. */
+    /** True when this is the LAST healthy Longhorn replica of the volume. */
     isLastReplica: z.boolean(),
+    /**
+     * Set on a last replica that is a Postgres (CNPG) instance's volume.
+     * `coveredBy` names the instances that hold its data off this node: the
+     * primary for a replica, a standby streaming right now for the primary.
+     * Non-empty → the drain does not refuse (it never moves the instance);
+     * empty → it counts as a last-replica risk. Deleting the node is refused
+     * either way while the instance's only copy is here.
+     */
+    postgresInstance: z.object({
+      kind: z.literal('postgres'),
+      cluster: z.string(),
+      instance: z.string(),
+      primary: z.boolean(),
+      coveredBy: z.array(z.string()),
+    }).nullable().default(null),
+    /**
+     * A tenant's live volume: the drain's re-pin moves it, so it is not a
+     * last-replica risk unless that tenant is kept here ("stay"). False for
+     * platform volumes and for Released leftovers nobody re-pins.
+     */
+    movedByRepin: z.boolean().default(false),
     /** Owner namespace if the volume is bound to a PVC. */
     namespace: z.string().nullable().default(null),
     /** PVC name if the volume is bound to a PVC. */
@@ -189,6 +217,26 @@ export const drainImpactSchema = z.object({
     /** Pre-computed display label: tenant name OR "Platform System (<ns>)". */
     ownerLabel: z.string().default('Platform System'),
   })),
+  /** False when a Longhorn or CNPG read failed — the lists above may be incomplete. */
+  storageFactsComplete: z.boolean().default(true),
+  /** A drain moved this node's tenants off (or it was cordoned): Delete may run. */
+  tenantsDrained: z.boolean().default(false),
+  /** New tenants cannot land here: "Can host tenant workloads" is off, or the node is cordoned. */
+  blocksNewTenants: z.boolean().default(false),
+  /**
+   * This node's part in mail, or null. A drain never moves mail, but a
+   * cordoned node cannot take it in a failover: `otherFailoverTargets` is
+   * what is left (Ready, uncordoned, not where mail runs) — empty means mail
+   * cannot fail over while this node is cordoned.
+   */
+  mailRole: z.object({
+    role: z.enum(['active', 'secondary', 'tertiary']),
+    activeNode: z.string().nullable(),
+    autoFailoverEnabled: z.boolean(),
+    failoverThresholdSeconds: z.number(),
+    otherFailoverTargets: z.array(z.string()),
+    onlyStandbyCopy: z.boolean(),
+  }).nullable().default(null),
 });
 export type DrainImpact = z.infer<typeof drainImpactSchema>;
 
@@ -213,12 +261,23 @@ export const drainNodeRequestSchema = z.object({
   gracePeriodSeconds: z.number().int().min(0).max(600).optional(),
   /** Per-tenant re-pin instructions; missing entries default to "" (auto). */
   tenantPlacement: z.record(z.string(), z.string()).optional().default({}),
+  /**
+   * Stop new tenants landing on the node. A server gets "Can host tenant
+   * workloads" switched off (the insula.host/server-only NoSchedule taint,
+   * which every system workload tolerates); a worker, which runs no system
+   * workload but DaemonSets, is cordoned. Never a cordon on a server: system
+   * pods must keep starting there. Default on.
+   */
+  blockNewTenants: z.boolean().optional().default(true),
 });
 export type DrainNodeRequest = z.infer<typeof drainNodeRequestSchema>;
 
 export const drainNodeResponseSchema = z.object({
   nodeName: z.string(),
+  /** Only ever true for a worker (or a node someone cordoned by hand). */
   cordoned: z.boolean(),
+  /** New tenants can no longer land on the node. */
+  blockedNewTenants: z.boolean().default(false),
   evicted: z.number(),
   failed: z.array(z.object({
     namespace: z.string(),
@@ -231,6 +290,17 @@ export const drainNodeResponseSchema = z.object({
   rePinnedWorkloads: z.number().int().nonnegative().default(0),
   /** Total Longhorn volumes whose nodeSelector was updated. */
   rePinnedPvcs: z.number().int().nonnegative().default(0),
+  /** Detached volumes the drain attached on their new node so their data moves there. */
+  relocatingVolumes: z.number().int().nonnegative().default(0),
+  /** "Auto" for a stopped tenant whose data was here: the node picked for it, by tenantId. */
+  pickedTargets: z.record(z.string(), z.string()).default({}),
+  /** A stopped tenant's volume whose copy did not start moving, and why. */
+  relocationProblems: z.array(z.object({
+    tenantId: z.string(),
+    tenantName: z.string(),
+    volumeName: z.string(),
+    reason: z.string(),
+  })).default([]),
 });
 export type DrainNodeResponse = z.infer<typeof drainNodeResponseSchema>;
 
@@ -238,6 +308,8 @@ export const deleteNodeResponseSchema = z.object({
   nodeName: z.string(),
   deletedFromKubernetes: z.boolean(),
   deletedFromInventory: z.boolean(),
+  /** System pods moved off the node (cordoned, then evicted) before it was removed. */
+  systemPodsEvicted: z.number().int().nonnegative().default(0),
 });
 export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
 
