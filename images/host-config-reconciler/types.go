@@ -41,7 +41,12 @@ type MigrationStatus struct {
 	CliVersion string `json:"cliVersion,omitempty"`
 	// Whether the node can verify a release (its pinned cosign key is present
 	// and parses). nil = a CLI that predates the field.
-	TrustAnchor  *bool           `json:"trustAnchor,omitempty"`
+	TrustAnchor *bool `json:"trustAnchor,omitempty"`
+	// Whether k3s's config pins the node's Kubernetes name (platform-ops
+	// host-config/node-name-pin.ts). Unpinned, a hostname change at the next k3s
+	// start registers the machine as a new node beside its own. nil = a CLI
+	// that predates the field, or not a k3s node.
+	NodeName     *NodeNamePin    `json:"nodeName,omitempty"`
 	CollectedAt  string          `json:"collectedAt"`
 	Mode         string          `json:"mode"`
 	Source       string          `json:"source"`
@@ -55,6 +60,14 @@ type MigrationStatus struct {
 	BlockedCount int `json:"blockedCount"`
 	PendingCount int `json:"pendingCount"`
 	SkippedCount int `json:"skippedCount"`
+}
+
+// NodeNamePin is relayed as written; the backend validates it (node-supplied).
+// PinnedAs has no omitempty: null means "no name pinned", and must stay null.
+type NodeNamePin struct {
+	State        string  `json:"state"`
+	RegisteredAs string  `json:"registeredAs"`
+	PinnedAs     *string `json:"pinnedAs"`
 }
 
 // MigrationItem mirrors the runner's per-script result (ADR-045 W10c, ADR-056).
