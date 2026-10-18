@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.12-rc.3] - 2026-10-18
+
 ### Changed
 
 - **"Drain Node" is now "Drain Tenants": it moves tenants and nothing else, and never cordons a
