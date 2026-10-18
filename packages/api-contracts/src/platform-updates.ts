@@ -496,6 +496,18 @@ export const hostMigrationNodeStatusSchema = z.object({
    * and parses). false blocks an upgrade; null = a CLI that predates the field.
    */
   trustAnchor: z.boolean().nullable().optional(),
+  /**
+   * Whether k3s's config pins the node's Kubernetes name. Unpinned, a hostname
+   * change at the next k3s start registers the machine as a NEW node beside its
+   * own (seen on production). `mismatch`: the config names another node, so
+   * the next start renames it. null = not reported (a CLI that predates the
+   * field, or not a k3s node).
+   */
+  nodeNamePin: z.object({
+    state: z.enum(['pinned', 'unpinned', 'mismatch']),
+    registeredAs: z.string(),
+    pinnedAs: z.string().nullable(),
+  }).nullable().optional(),
 });
 export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
 

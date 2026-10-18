@@ -13,6 +13,7 @@ import { isUsableCopy } from './replica-copy.js';
 import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
 import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, moveSystemPodsOff } from './system-pods.js';
+import { assertNoSharedEtcdMember } from './etcd-identity.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -1866,11 +1867,26 @@ export async function deleteNode(
   // 1) Pre-check: its tenants were drained (a drain marks the node; a cordon
   //    from before drains stopped cordoning counts too).
   let nodeExistsInK8s = true;
+  type NodeRead = {
+    metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
+    spec?: { unschedulable?: boolean };
+  };
+  let node: NodeRead | null = null;
   try {
-    const node = await k8s.core.readNode({ name }) as {
-      metadata?: { annotations?: Record<string, string> };
-      spec?: { unschedulable?: boolean };
-    };
+    node = await k8s.core.readNode({ name }) as NodeRead;
+  } catch (err) {
+    // Only the node READ may conclude "already gone" — never a later check.
+    if ((err as { code?: number }).code === 404) {
+      // Already gone from k8s — proceed to inventory cleanup.
+      nodeExistsInK8s = false;
+    } else {
+      throw err;
+    }
+  }
+  if (node) {
+    // First: one server under two names. Deleting either object removes its
+    // live etcd member (etcd-identity.ts) — say that, not "drain it first".
+    await assertNoSharedEtcdMember(k8s, { metadata: { ...node.metadata, name } });
     const tenantsDrained = Boolean(node.metadata?.annotations?.[TENANTS_DRAINED_ANNOTATION])
       || node.spec?.unschedulable === true;
     if (!tenantsDrained) {
@@ -1880,13 +1896,6 @@ export async function deleteNode(
         409,
         { node_name: name },
       );
-    }
-  } catch (err) {
-    if ((err as { code?: number }).code === 404) {
-      // Already gone from k8s — proceed to inventory cleanup.
-      nodeExistsInK8s = false;
-    } else {
-      throw err;
     }
   }
 

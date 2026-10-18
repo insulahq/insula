@@ -881,6 +881,37 @@ describe('Postgres instances on a drained / deleted node', () => {
     });
     expect(deleteK8sNode).not.toHaveBeenCalled();
   });
+
+  it('deleteNode: refuses — first, before any other check or change — a server registered under two names', async () => {
+    // Production: after a reboot reset its hostname, the server came back as a
+    // new node; both objects carry its etcd member, so deleting either removes it.
+    const { k8s, deleteK8sNode, patchNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
+    const member = { 'etcd.k3s.cattle.io/node-name': 's2-0a1b2c3d' };
+    const etcdRole = { 'node-role.kubernetes.io/etcd': 'true' };
+    const core = k8s.core as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    core.readNode.mockResolvedValue({ metadata: { name: 's2', labels: etcdRole, annotations: member }, spec: { unschedulable: true } });
+    core.listNode = vi.fn(async () => ({ items: [
+      { metadata: { name: 's2', labels: etcdRole, annotations: member } },
+      { metadata: { name: 'vps-provider-default-01', labels: etcdRole, annotations: member } },
+    ] }));
+    await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({
+      code: 'NODE_DELETE_SHARED_ETCD_MEMBER', status: 409, details: { same_member_as: ['vps-provider-default-01'] },
+    });
+    expect(deleteK8sNode).not.toHaveBeenCalled();
+    expect(patchNode).not.toHaveBeenCalled();
+  });
+
+  it('deleteNode: a 404-shaped failure of that check is not "node already gone" — it fails closed', async () => {
+    const { k8s, deleteK8sNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
+    const core = k8s.core as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    core.readNode.mockResolvedValue({
+      metadata: { name: 's2', labels: { 'node-role.kubernetes.io/etcd': 'true' }, annotations: { 'etcd.k3s.cattle.io/node-name': 's2-0a1b2c3d' } },
+      spec: { unschedulable: true },
+    });
+    core.listNode = vi.fn(async () => { throw Object.assign(new Error('the server could not find the requested resource'), { code: 404 }); });
+    await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({ code: 404 });
+    expect(deleteK8sNode).not.toHaveBeenCalled();
+  });
 });
 
 // ─── A tenant that runs nothing (stopped / suspended) ────────────────────

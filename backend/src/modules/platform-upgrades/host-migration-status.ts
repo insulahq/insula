@@ -150,6 +150,7 @@ export function interpretNodeSnapshot(
     note,
     cliVersion: null,
     trustAnchor: null,
+    nodeNamePin: null,
     ...extra,
   });
 
@@ -249,7 +250,27 @@ export function interpretNodeSnapshot(
     // Node-supplied: only a well-formed version is believed (and displayed).
     cliVersion: versionOrNull(hm['cliVersion']),
     trustAnchor: typeof hm['trustAnchor'] === 'boolean' ? hm['trustAnchor'] : null,
+    nodeNamePin: nodeNamePinOrNull(hm['nodeName']),
   };
+}
+
+const NODE_NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
+/**
+ * Node-supplied, so believed only when well-formed: a known state and names
+ * that are valid node names (`pinnedAs` may list several, comma-separated, on
+ * a mismatch). Anything else is "not reported".
+ */
+function nodeNamePinOrNull(v: unknown): HostMigrationNodeStatus['nodeNamePin'] {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const state = o['state'];
+  const registeredAs = o['registeredAs'];
+  const pinnedAs = o['pinnedAs'];
+  if (state !== 'pinned' && state !== 'unpinned' && state !== 'mismatch') return null;
+  if (typeof registeredAs !== 'string' || !NODE_NAME_RE.test(registeredAs)) return null;
+  if (pinnedAs !== null && (typeof pinnedAs !== 'string' || pinnedAs.length > 600
+      || !pinnedAs.split(', ').every((n) => NODE_NAME_RE.test(n)))) return null;
+  return { state, registeredAs, pinnedAs: pinnedAs as string | null };
 }
 
 /**

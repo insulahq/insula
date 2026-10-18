@@ -67,6 +67,7 @@ a field the endpoint does not accept.
 | `NODE_DRAIN_BLOCKED_LAST_NODE` | 409 | Refusing to drain the only node that can host tenants |
 | `NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT` | 409 | A tenant that is not running has its only copy on the node, and no other node can take it — pick a node or free space ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
 | `NODE_REPIN_TARGET_UNAVAILABLE` | 409 | The node picked for a tenant is being drained, cordoned, not Ready, or does not host tenants (**Can host tenant workloads** off) |
+| `NODE_DELETE_SHARED_ETCD_MEMBER` | 409 | The node and another node object are the same server registered under two names, and carry the same etcd member — deleting either would remove that live member ([When a node comes back under another name](../operator/nodes-and-cluster.md#when-a-node-comes-back-under-another-name)) |
 | `NODE_DELETE_NOT_DRAINED` | 409 | Delete was pressed on a node whose tenants were not drained — run **Drain Tenants** first |
 | `NODE_DELETE_RUNS_MAIL` | 409 | Mail runs on the node — move it first (**Email → Operations → Placement**) |
 | `NODE_DELETE_EVICTION_BLOCKED` | 409 | A system pod could not be moved off (its disruption budget refused the eviction, or it was still shutting down when the wait ran out) — the node is left cordoned and nothing was deleted; press **Delete** again ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |

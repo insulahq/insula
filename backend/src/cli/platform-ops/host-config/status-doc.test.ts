@@ -25,6 +25,12 @@ describe('buildHostMigrationStatusDoc', () => {
     expect(buildHostMigrationStatusDoc(result, null).cliVersion).toBeNull();
   });
 
+  it('carries whether the node name is pinned — null when not reported, never a guess', () => {
+    const pin = { state: 'unpinned' as const, registeredAs: 'sv3.example.test', pinnedAs: null };
+    expect(buildHostMigrationStatusDoc(result, '2026.10.12', new Date(), true, pin).nodeName).toEqual(pin);
+    expect(buildHostMigrationStatusDoc(result, '2026.10.12').nodeName).toBeNull();
+  });
+
   it('keeps the existing fields the relay and backend read', () => {
     const doc = buildHostMigrationStatusDoc(result, '2026.10.7');
     expect(doc).toMatchObject({ mode: 'enforce', source: 'embedded', ok: true, appliedCount: 1, reason: null });

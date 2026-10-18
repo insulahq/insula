@@ -528,6 +528,27 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
                   )}
                 </span>
               )}
+              {/* Unpinned, k3s takes the node's name from the hostname at its next
+                  start — a hostname reset at boot then registers the machine as a
+                  NEW node beside this one (seen on production). The upgrade's
+                  host change pins it; this shows a node it has not reached. */}
+              {cli?.nodeNamePin && cli.nodeNamePin.state !== 'pinned' && (
+                <span
+                  data-testid={`node-name-pin-${node.name}`}
+                  className={`ml-1 rounded px-1.5 py-0.5 text-[11px] ${
+                    cli.nodeNamePin.state === 'mismatch'
+                      ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                      : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+                  }`}
+                  title={cli.nodeNamePin.state === 'mismatch'
+                    ? (cli.nodeNamePin.pinnedAs === null
+                      ? `k3s's config sets node-name in a form that cannot be read here. The node is registered as '${cli.nodeNamePin.registeredAs}'; write it as 'node-name: ${cli.nodeNamePin.registeredAs}' in /etc/rancher/k3s/config.yaml.d/10-node-name.yaml on the host.`
+                      : `k3s's config names this node '${cli.nodeNamePin.pinnedAs}', but it is registered as '${cli.nodeNamePin.registeredAs}'. Its next k3s start would register it under the configured name — a new node. Check /etc/rancher/k3s/config.yaml and config.yaml.d on the host.`)
+                    : `This node's name is not pinned in k3s's config, so k3s takes it from the hostname at its next start. If the hostname changes (a provider's cloud-init at reboot), the machine registers as a new node beside this one. The upgrade's host change pins it; until then, avoid renaming the host.`}
+                >
+                  {cli.nodeNamePin.state === 'mismatch' ? 'name mismatch' : 'name not pinned'}
+                </span>
+              )}
             </p>
           </div>
         </div>
