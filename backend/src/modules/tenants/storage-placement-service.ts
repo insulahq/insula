@@ -29,69 +29,8 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 const HA_REPLICAS = 2;
 const LOCAL_REPLICAS = 1;
 
-export interface NodeCapacityForPick {
-  readonly name: string;
-  /** bytes free across allowScheduling=true disks on this node */
-  readonly freeBytes: number;
-  /** can this node host tenant workloads? */
-  readonly tenantCapable: boolean;
-}
-
-interface DiskStatus {
-  storageMaximum?: number;
-  storageScheduled?: number;
-}
-interface DiskSpec {
-  storageReserved?: number;
-  allowScheduling?: boolean;
-}
-interface LhNode {
-  metadata?: { name?: string };
-  spec?: { disks?: Record<string, DiskSpec>; allowScheduling?: boolean };
-  status?: { diskStatus?: Record<string, DiskStatus> };
-}
-
-/**
- * Auto-pick a worker node for a Local-tier tenant at provisioning.
- * Strategy: among host-tenant-workloads nodes, pick the one with the
- * MOST free Longhorn-schedulable bytes. Tie-break alphabetically for
- * determinism. Returns null if Longhorn is unavailable or no eligible
- * node exists — caller falls back to leaving nodeName null
- * (scheduler picks freely).
- */
-export async function autoPickWorkerNode(
-  db: Database,
-  k8s: K8sClients,
-): Promise<string | null> {
-  let nodes: NodeCapacityForPick[] = [];
-  try {
-    const lhResp = await k8s.custom.listNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'nodes',
-    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]);
-    const items = ((lhResp as { items?: LhNode[] }).items ?? []);
-    const platformNodes = await db.select().from(clusterNodes);
-    const tenantCapable = new Map(platformNodes.map((n) => [n.name, n.canHostTenantWorkloads]));
-
-    for (const lh of items) {
-      const name = lh.metadata?.name;
-      if (!name) continue;
-      if (lh.spec?.allowScheduling === false) continue;
-      if (tenantCapable.size > 0 && tenantCapable.get(name) !== true) continue;
-      let free = 0;
-      for (const [diskKey, diskSpec] of Object.entries(lh.spec?.disks ?? {})) {
-        if (diskSpec.allowScheduling === false) continue;
-        const stat = lh.status?.diskStatus?.[diskKey] ?? {};
-        free += Math.max(0, (stat.storageMaximum ?? 0) - (stat.storageScheduled ?? 0) - (diskSpec.storageReserved ?? 0));
-      }
-      nodes.push({ name, freeBytes: free, tenantCapable: true });
-    }
-  } catch {
-    return null;
-  }
-  nodes = nodes.sort((a, b) => b.freeBytes - a.freeBytes || a.name.localeCompare(b.name));
-  return nodes[0]?.name ?? null;
-}
+export { autoPickWorkerNode, type NodeCapacityForPick } from './auto-pick-node.js';
+import type { LhNode } from './auto-pick-node.js';
 
 export interface ApplyTierResult {
   readonly tenantId: string;

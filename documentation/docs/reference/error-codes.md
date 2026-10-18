@@ -65,6 +65,10 @@ a field the endpoint does not accept.
 | Code | HTTP | Meaning |
 |---|---|---|
 | `NODE_DRAIN_BLOCKED_LAST_NODE` | 409 | Refusing to drain the only node that can host tenants |
+| `NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT` | 409 | A tenant that is not running has its only copy on the node, and no other node can take it — pick a node or free space ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
+| `NODE_REPIN_TARGET_UNAVAILABLE` | 409 | The node picked for a tenant that is not running is being drained, cordoned or not Ready |
+| `NODE_DELETE_PRECHECK_FAILED` | 503 | Reading Longhorn or the database instances failed, so the delete could not confirm the node holds no data — nothing was deleted |
+| `NODE_DELETE_HOLDS_TENANT_DATA` | 409 | The node holds the only copy of a tenant volume — re-pin the tenant and let its data move first ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
 | `NODE_DELETE_HOLDS_DATABASE` | 409 | The node holds the only copy of a PostgreSQL instance — move the instance first ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `DRAIN_PRECHECK_FAILED` | 503 | Drain pre-checks could not complete |
 | `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Draining would take down a sole replica / conflicts with a pinned workload |

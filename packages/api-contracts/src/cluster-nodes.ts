@@ -168,8 +168,15 @@ export const drainImpactSchema = z.object({
       volumeName: z.string(),
       sizeBytes: z.number().int().nonnegative(),
       replicaCount: z.number().int().nonnegative(),
-      /** True when this node holds the LAST running replica. */
+      /** True when this node holds the volume's last usable copy. */
       isLastReplica: z.boolean(),
+      /**
+       * Nothing has the volume attached (the tenant is stopped or suspended).
+       * Longhorn moves a replica only while its volume is attached, so the
+       * drain attaches it on the tenant's new node to move the data — and
+       * "Auto" picks that node for such a tenant (most free space).
+       */
+      detached: z.boolean().default(false),
       currentNodeSelector: z.array(z.string()).default([]),
     })),
   })).default([]),
@@ -193,6 +200,12 @@ export const drainImpactSchema = z.object({
       primary: z.boolean(),
       coveredBy: z.array(z.string()),
     }).nullable().default(null),
+    /**
+     * A tenant's live volume: the drain's re-pin moves it, so it is not a
+     * last-replica risk unless that tenant is kept here ("stay"). False for
+     * platform volumes and for Released leftovers nobody re-pins.
+     */
+    movedByRepin: z.boolean().default(false),
     /** Owner namespace if the volume is bound to a PVC. */
     namespace: z.string().nullable().default(null),
     /** PVC name if the volume is bound to a PVC. */
@@ -204,6 +217,8 @@ export const drainImpactSchema = z.object({
     /** Pre-computed display label: tenant name OR "Platform System (<ns>)". */
     ownerLabel: z.string().default('Platform System'),
   })),
+  /** False when a Longhorn or CNPG read failed — the lists above may be incomplete. */
+  storageFactsComplete: z.boolean().default(true),
 });
 export type DrainImpact = z.infer<typeof drainImpactSchema>;
 
@@ -246,6 +261,17 @@ export const drainNodeResponseSchema = z.object({
   rePinnedWorkloads: z.number().int().nonnegative().default(0),
   /** Total Longhorn volumes whose nodeSelector was updated. */
   rePinnedPvcs: z.number().int().nonnegative().default(0),
+  /** Detached volumes the drain attached on their new node so their data moves there. */
+  relocatingVolumes: z.number().int().nonnegative().default(0),
+  /** "Auto" for a stopped tenant whose data was here: the node picked for it, by tenantId. */
+  pickedTargets: z.record(z.string(), z.string()).default({}),
+  /** A stopped tenant's volume whose copy did not start moving, and why. */
+  relocationProblems: z.array(z.object({
+    tenantId: z.string(),
+    tenantName: z.string(),
+    volumeName: z.string(),
+    reason: z.string(),
+  })).default([]),
 });
 export type DrainNodeResponse = z.infer<typeof drainNodeResponseSchema>;
 

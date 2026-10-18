@@ -331,6 +331,21 @@ describe('buildDrainImpact', () => {
     expect(impact.longhornReplicas).toEqual([expect.objectContaining({ pvcName: 'crowdsec-data', isLastReplica: true })]);
   });
 
+  it('a failed leftover replica here next to a healthy copy elsewhere is not the last copy', async () => {
+    const k8s = makeK8s({
+      longhornVolumes: [{
+        metadata: { name: 'pvc-mon' },
+        status: { state: 'attached', kubernetesStatus: { pvcName: 'vmsingle-storage', namespace: 'monitoring' } },
+      }],
+      longhornReplicas: [
+        { metadata: { name: 'r-here' }, spec: { volumeName: 'pvc-mon', nodeID: 'worker', failedAt: '2026-10-17T10:00:00Z' }, status: { currentState: 'error' } },
+        { metadata: { name: 'r-there' }, spec: { volumeName: 'pvc-mon', nodeID: 'other' }, status: { currentState: 'running' } },
+      ],
+    });
+    const impact = await buildDrainImpact(k8s, makeMockDb([]), 'worker');
+    expect(impact.longhornReplicas).toEqual([expect.objectContaining({ replicaName: 'r-here', isLastReplica: false })]);
+  });
+
   it('skips system namespaces from pinnedWorkloads enumeration', async () => {
     const k8s = makeK8s({
       deployments: [{
@@ -792,5 +807,208 @@ describe('Postgres instances on a drained / deleted node', () => {
       details: { instances: ['platform/system-db-2'] },
     });
     expect(deleteK8sNode).not.toHaveBeenCalled();
+  });
+});
+
+// ─── A tenant that runs nothing (stopped / suspended) ────────────────────
+//
+// Longhorn moves a replica only while its volume is attached. A re-pin of a
+// tenant with nothing running changed every label and left the only copy on
+// the drained node (production: suspended tenant pinned to sv1, its replica
+// still on the cordoned sv2, the drain never complete).
+describe('drain of a node holding a stopped tenant\'s only copy', () => {
+  const NS = 'tenant-hat-1';
+  const GiB = 1024 ** 3;
+
+  function makeStoppedTenantK8s(opts: { attached?: boolean; cordoned?: string[] } = {}) {
+    const patches: Array<{ plural: string; name: string; body: unknown }> = [];
+    const cordoned = new Set(opts.cordoned ?? []);
+    const lhNode = (name: string, freeGiB: number) => ({
+      metadata: { name },
+      spec: { allowScheduling: true, tags: [], disks: { d1: { allowScheduling: true, storageReserved: 0 } } },
+      status: { diskStatus: { d1: { storageMaximum: (freeGiB + 10) * GiB, storageScheduled: 10 * GiB } } },
+    });
+    const k8s = {
+      core: {
+        readNode: vi.fn().mockResolvedValue({
+          spec: { unschedulable: false }, status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        }),
+        listNode: vi.fn().mockResolvedValue({
+          items: ['s1', 's2', 's3'].map((name) => liveNode({ name, unschedulable: cordoned.has(name) })),
+        }),
+        listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listPersistentVolumeClaimForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+        patchNode: vi.fn().mockResolvedValue({}),
+        createNamespacedPodEviction: vi.fn().mockResolvedValue({}),
+        deleteNode: vi.fn().mockResolvedValue({}),
+      },
+      apps: {
+        listDeploymentForAllNamespaces: vi.fn().mockResolvedValue({
+          items: [{
+            metadata: { name: 'website', namespace: NS },
+            spec: { replicas: 0, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 's2' } } } },
+          }],
+        }),
+        listStatefulSetForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        readNamespacedDeployment: vi.fn().mockResolvedValue({ spec: { template: { spec: {} } } }),
+        patchNamespacedDeployment: vi.fn().mockResolvedValue({}),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
+          if (req.plural === 'replicas') {
+            return { items: [{ metadata: { name: 'r-hat' }, spec: { volumeName: 'pvc-hat', nodeID: 's2', failedAt: '' }, status: { currentState: opts.attached ? 'running' : 'stopped' } }] };
+          }
+          if (req.plural === 'volumes') {
+            return {
+              items: [{
+                metadata: { name: 'pvc-hat' },
+                spec: { size: String(20 * GiB), numberOfReplicas: 1, nodeSelector: ['node-s2'] },
+                status: {
+                  state: opts.attached ? 'attached' : 'detached',
+                  currentNodeID: opts.attached ? 's2' : '',
+                  kubernetesStatus: { namespace: NS, pvcName: `${NS}-storage`, pvStatus: 'Bound' },
+                },
+              }],
+            };
+          }
+          if (req.plural === 'nodes') return { items: [lhNode('s1', 50), lhNode('s2', 200), lhNode('s3', 80)] };
+          return { items: [] };
+        }),
+        getNamespacedCustomObject: vi.fn().mockResolvedValue({ spec: { tags: [] } }),
+        patchNamespacedCustomObject: vi.fn(async (a: { plural: string; name: string; body: unknown }) => {
+          patches.push({ plural: a.plural, name: a.name, body: a.body });
+          return {};
+        }),
+      },
+    } as unknown as K8sClients;
+    return { k8s, patches };
+  }
+
+  function makeTenantDb(pin = 's2'): Database {
+    const nodeRows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+    const tenantRows = [{ id: 'hat-id', name: 'Hat Co', ns: NS, tier: 'local', pin }];
+    return {
+      select: () => ({
+        from: (tbl: object) => {
+          const rows = 'storageTier' in tbl ? tenantRows : nodeRows;
+          return Object.assign(Promise.resolve(rows), { orderBy: () => Promise.resolve(nodeRows) });
+        },
+      }),
+      update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+    } as unknown as Database;
+  }
+
+  const tickets = (patches: Array<{ plural: string; name: string; body: unknown }>) => patches
+    .filter((p) => p.plural === 'volumeattachments')
+    .map((p) => ({
+      volume: p.name,
+      node: (p.body as { spec: { attachmentTickets: Record<string, { nodeID: string }> } }).spec.attachmentTickets['insula-relocate']?.nodeID,
+    }));
+
+  it('impact marks the stopped tenant\'s volume detached, its only copy here', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const impact = await buildDrainImpact(k8s, makeTenantDb(), 's2');
+    expect(impact.pinnedTenants[0]?.pvcs[0]).toMatchObject({ volumeName: 'pvc-hat', detached: true, isLastReplica: true, replicaCount: 1 });
+  });
+
+  it('"Auto" picks the node with the most free space — never this one — and moves the data there', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {} });
+    expect(result.pickedTargets).toEqual({ 'hat-id': 's3' });
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's3' }]);
+  });
+
+  it('"Auto" never picks a cordoned node', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s({ cordoned: ['s3'] });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {} });
+    expect(result.pickedTargets).toEqual({ 'hat-id': 's1' });
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('an explicit target moves the data to that node', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 's1' } });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('a running tenant on "Auto" is left to the scheduler — its data follows the pod', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s({ attached: true });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {} });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(0);
+    expect(tickets(patches)).toEqual([]);
+  });
+
+  it('a re-run keeps the node an earlier run pinned the tenant to — the data still goes there', async () => {
+    // Production: the suspended tenant was already pinned to sv1 with its copy on sv2.
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb('s3'), 's2', { tenantPlacement: {} });
+    expect(result.pickedTargets).toEqual({});
+    expect(result.relocatingVolumes).toBe(1);
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's3' }]);
+  });
+
+  it('a copy that could not start moving is reported, not left looking slow', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const custom = k8s.custom as unknown as { patchNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    custom.patchNamespacedCustomObject.mockImplementation(async (a: { plural: string }) => {
+      if (a.plural === 'volumeattachments') throw new Error('admission webhook denied the request');
+      return {};
+    });
+    const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {} });
+    expect(result.relocatingVolumes).toBe(0);
+    expect(result.relocationProblems).toEqual([expect.objectContaining({
+      tenantId: 'hat-id', volumeName: 'pvc-hat', reason: expect.stringContaining('admission webhook denied'),
+    })]);
+  });
+
+  it('deleteNode fails closed when the storage lists cannot be read', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    (k8s.core as unknown as { readNode: ReturnType<typeof vi.fn> }).readNode.mockResolvedValue({ spec: { unschedulable: true } });
+    const custom = k8s.custom as unknown as { listNamespacedCustomObject: ReturnType<typeof vi.fn> };
+    custom.listNamespacedCustomObject.mockRejectedValue(Object.assign(new Error('etcdserver: request timed out'), { code: 500 }));
+    await expect(deleteNode(makeTenantDb(), k8s, 's2'))
+      .rejects.toMatchObject({ code: 'NODE_DELETE_PRECHECK_FAILED', status: 503 });
+    expect((k8s.core as unknown as { deleteNode: ReturnType<typeof vi.fn> }).deleteNode).not.toHaveBeenCalled();
+  });
+
+  it('a tenant kept here ("stay") with its only copy here still blocks the drain without force', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' } }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+    await expect(drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: { 'hat-id': 'stay' }, forceLastReplica: true }))
+      .resolves.toMatchObject({ cordoned: true });
+  });
+
+  it('a volume in a tenant namespace with no tenant record still blocks — nobody re-pins it', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    const db = makeTenantDb();
+    const orphanDb = {
+      ...db,
+      select: () => ({
+        from: (tbl: object) => {
+          const nodeRows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
+          return Object.assign(Promise.resolve('storageTier' in tbl ? [] : nodeRows), { orderBy: () => Promise.resolve(nodeRows) });
+        },
+      }),
+    } as unknown as Database;
+    await expect(drainNode(k8s, orphanDb, 's2', { tenantPlacement: {} }))
+      .rejects.toMatchObject({ code: 'NODE_DRAIN_BLOCKED_LAST_REPLICA', status: 409 });
+  });
+
+  it('deleteNode: refuses while a tenant volume\'s only copy is on the node', async () => {
+    const { k8s } = makeStoppedTenantK8s();
+    (k8s.core as unknown as { readNode: ReturnType<typeof vi.fn> }).readNode.mockResolvedValue({ spec: { unschedulable: true } });
+    await expect(deleteNode(makeTenantDb(), k8s, 's2')).rejects.toMatchObject({
+      code: 'NODE_DELETE_HOLDS_TENANT_DATA',
+      status: 409,
+      details: { volumes: [`Hat Co (${NS}/${NS}-storage)`] },
+    });
+    expect((k8s.core as unknown as { deleteNode: ReturnType<typeof vi.fn> }).deleteNode).not.toHaveBeenCalled();
   });
 });

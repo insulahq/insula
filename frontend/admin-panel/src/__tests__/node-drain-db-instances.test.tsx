@@ -11,11 +11,12 @@ import NodeDrainDeleteModal from '../components/NodeDrainDeleteModal';
 // database instance, though the drain never moves that pod.
 
 let impact: DrainImpact;
+let clusterNodes: Array<{ name: string; canHostTenantWorkloads: boolean }> = [];
 vi.mock('@/hooks/use-cluster-nodes', () => ({
   useDrainImpact: () => ({ data: { data: impact }, isLoading: false, error: null, refetch: vi.fn() }),
   useDrainNode: () => ({ mutateAsync: vi.fn(), isPending: false, isSuccess: false, error: null, data: undefined }),
   useDeleteNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
-  useClusterNodes: () => ({ data: { data: [] } }),
+  useClusterNodes: () => ({ data: { data: clusterNodes } }),
 }));
 vi.mock('@/hooks/use-worker-usage', () => ({ useWorkerUsageSummary: () => ({ data: undefined }) }));
 
@@ -25,6 +26,7 @@ const replica = (r: Partial<Replica> & { pvcName: string }): Replica => ({
   replicaName: `r-${r.pvcName}`,
   isLastReplica: true,
   postgresInstance: null,
+  movedByRepin: false,
   namespace: 'platform',
   tenantId: null,
   tenantName: null,
@@ -40,6 +42,7 @@ function makeImpact(longhornReplicas: Replica[]): DrainImpact {
     nonSystemPods: [],
     pinnedTenants: [],
     longhornReplicas,
+    storageFactsComplete: true,
   } as DrainImpact;
 }
 
@@ -138,5 +141,52 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
     expect(screen.queryByTestId('delete-blocked-database')).toBeNull();
     expect(screen.getByText(/Node is fully drained/)).toBeTruthy();
     expect((screen.getByTestId('delete-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a tenant that runs nothing, its only copy here, is marked — and Auto says where its data goes', () => {
+    const pvc = (detached: boolean) => ({
+      pvcName: 'data', volumeName: 'pvc-x', sizeBytes: 1, replicaCount: 1, isLastReplica: true, detached, currentNodeSelector: [],
+    });
+    const tenant = (id: string, detached: boolean) => ({
+      tenantId: id, tenantName: id, namespace: `tenant-${id}`, storageTier: 'local' as const, currentNodeName: 's2',
+      workloads: [], pvcs: [pvc(detached)],
+    });
+    impact = { ...makeImpact([]), pinnedTenants: [tenant('hat', true), tenant('web', false)] };
+    renderModal();
+
+    expect(screen.getByTestId('tenant-stopped-hat')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-stopped-web')).toBeNull();
+    const auto = (id: string) => [...(screen.getByTestId(`tenant-placement-${id}`) as HTMLSelectElement).options]
+      .find((o) => o.value === '')?.textContent;
+    expect(auto('hat')).toBe('Auto (node with the most free space)');
+    expect(auto('web')).toBe('Auto (clear pin)');
+    // Tenant volumes are moved by the re-pin — they do not hold the drain back.
+    expect((screen.getByTestId('drain-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a tenant already pinned to another node keeps it by default — a re-run does not clear an earlier pick', () => {
+    clusterNodes = [{ name: 's1', canHostTenantWorkloads: true }, { name: 's3', canHostTenantWorkloads: true }];
+    const pvc = { pvcName: 'data', volumeName: 'pvc-x', sizeBytes: 1, replicaCount: 1, isLastReplica: true, detached: true, currentNodeSelector: [] };
+    const tenant = (id: string, pin: string) => ({
+      tenantId: id, tenantName: id, namespace: `tenant-${id}`, storageTier: 'local' as const, currentNodeName: pin, workloads: [], pvcs: [pvc],
+    });
+    impact = { ...makeImpact([]), pinnedTenants: [tenant('kept', 's3'), tenant('here', 's2')] };
+    renderModal();
+
+    expect((screen.getByTestId('tenant-placement-kept') as HTMLSelectElement).value).toBe('s3');
+    expect((screen.getByTestId('tenant-placement-here') as HTMLSelectElement).value).toBe('');
+    clusterNodes = [];
+  });
+
+  it('a tenant\'s live volume is not listed as a last-replica risk — a Released leftover of one is', () => {
+    impact = makeImpact([
+      replica({ pvcName: 'tenant-a-storage', namespace: 'tenant-a', tenantId: 'a', tenantName: 'A', ownerLabel: 'A', movedByRepin: true }),
+      replica({ pvcName: 'tenant-b-storage', namespace: 'tenant-b', tenantId: 'b', tenantName: 'B', ownerLabel: 'B', movedByRepin: false }),
+    ]);
+    renderModal();
+
+    expect(screen.getByText('Last-replica risk (1)')).toBeTruthy();
+    expect(screen.getByText('tenant-b/tenant-b-storage')).toBeTruthy();
+    expect(screen.queryByText('tenant-a/tenant-a-storage')).toBeNull();
   });
 });

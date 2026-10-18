@@ -10,6 +10,7 @@ import { isSystemNamespace } from '../../lib/namespace-tier.js';
 import { invalidateNodeLabels } from './labels.js';
 import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './postgres-cover.js';
 import { isUsableCopy } from './replica-copy.js';
+import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -646,6 +647,7 @@ export async function buildDrainImpact(
       sizeBytes: number;
       replicaCount: number;
       isLastReplica: boolean;
+      detached: boolean;
       currentNodeSelector: string[];
     }>;
   }>;
@@ -654,12 +656,15 @@ export async function buildDrainImpact(
     replicaName: string;
     isLastReplica: boolean;
     postgresInstance: PostgresInstance | null;
+    movedByRepin: boolean;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
     tenantName: string | null;
     ownerLabel: string;
   }>;
+  /** False when a Longhorn or CNPG read failed — the storage lists may be incomplete. */
+  storageFactsComplete: boolean;
 }> {
   // 1) Cordon state
   let alreadyCordoned = false;
@@ -800,6 +805,10 @@ export async function buildDrainImpact(
     console.warn('[nodes] pinned workload enumeration failed:', (err as Error).message);
   }
 
+  // Storage reads that fail (other than "Longhorn is not installed") leave
+  // the lists below incomplete; deleteNode refuses on that.
+  let storageFactsComplete = true;
+
   // 5) Longhorn replicas — refuse to drain when this is the LAST healthy
   //    replica for any volume. The custom resource list is best-effort:
   //    if the CRD is absent (cluster without Longhorn) we just skip it.
@@ -817,6 +826,7 @@ export async function buildDrainImpact(
     replicaName: string;
     isLastReplica: boolean;
     postgresInstance: PostgresInstance | null;
+    movedByRepin: boolean;
     namespace: string | null;
     pvcName: string | null;
     tenantId: string | null;
@@ -880,7 +890,10 @@ export async function buildDrainImpact(
       if (r.spec?.nodeID !== name) continue;
       const vol = r.spec?.volumeName ?? '';
       const replicaName = r.metadata?.name ?? '';
-      const isLastReplica = (healthyByVolume.get(vol) ?? 0) <= 1;
+      // Last = no usable copy anywhere, or the only one is on this node. A
+      // failed leftover replica here next to a healthy copy elsewhere is not.
+      const usableOn = healthyNodesByVolume.get(vol) ?? new Set<string>();
+      const isLastReplica = usableOn.size === 0 || (usableOn.size === 1 && usableOn.has(name));
       const meta = volumeMeta.get(vol);
       const ns = meta?.namespace || null;
       const pvcName = meta?.pvcName || null;
@@ -893,6 +906,9 @@ export async function buildDrainImpact(
         replicaName,
         isLastReplica,
         postgresInstance: null,
+        // A tenant's live volume: the drain's re-pin moves it (unless the
+        // tenant is kept here). A Released leftover is nobody's to move.
+        movedByRepin: tenant !== undefined && meta?.bound !== false,
         namespace: ns,
         pvcName,
         tenantId: tenant?.id ?? null,
@@ -914,6 +930,7 @@ export async function buildDrainImpact(
       };
       const cnpg = await loadCnpgFacts(k8s, db).catch((err: unknown) => {
         console.warn('[nodes] CNPG instance lookup failed — last replicas stay blocking:', (err as Error).message);
+        storageFactsComplete = false;
         return null;
       });
       if (cnpg) {
@@ -931,6 +948,7 @@ export async function buildDrainImpact(
     const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
     if (status !== 404) {
       console.warn('[nodes] longhorn replicas list failed:', (err as Error).message);
+      storageFactsComplete = false;
     }
   }
 
@@ -943,6 +961,7 @@ export async function buildDrainImpact(
     tenantId: string | null; tenantName: string | null;
     sizeBytes: number; replicaCount: number;
     isLastReplica: boolean;
+    detached: boolean;
     currentNodeSelector: string[];
   }> = [];
   try {
@@ -1015,7 +1034,8 @@ export async function buildDrainImpact(
         tenantName: c.name,
         sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
         replicaCount: healthy.length,
-        isLastReplica: healthy.length <= 1,
+        isLastReplica: healthy.length === 0 || (healthy.length === 1 && healthy[0] === name),
+        detached: v.status?.state === 'detached',
         currentNodeSelector: Array.isArray(v.spec?.nodeSelector) ? [...v.spec.nodeSelector] : [],
       });
     }
@@ -1023,6 +1043,7 @@ export async function buildDrainImpact(
     const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
     if (status !== 404) {
       console.warn('[nodes] tenant PVC enumeration failed:', (err as Error).message);
+      storageFactsComplete = false;
     }
   }
 
@@ -1049,6 +1070,7 @@ export async function buildDrainImpact(
       sizeBytes: number;
       replicaCount: number;
       isLastReplica: boolean;
+      detached: boolean;
       currentNodeSelector: string[];
     }>;
   };
@@ -1091,6 +1113,7 @@ export async function buildDrainImpact(
       sizeBytes: p.sizeBytes,
       replicaCount: p.replicaCount,
       isLastReplica: p.isLastReplica,
+      detached: p.detached,
       currentNodeSelector: p.currentNodeSelector,
     });
   }
@@ -1104,6 +1127,7 @@ export async function buildDrainImpact(
     nonSystemPods,
     pinnedTenants,
     longhornReplicas,
+    storageFactsComplete,
   };
 }
 
@@ -1166,6 +1190,8 @@ export interface RepinTenantTarget {
     pinKind: 'nodeSelector' | 'nodeAffinity';
   }>;
   readonly pvcs: ReadonlyArray<{ volumeName: string }>;
+  /** The tenant's storage tier — an HA volume has no single copy to move. */
+  readonly storageTier?: string | null;
 }
 
 export interface RepinCounts {
@@ -1174,6 +1200,10 @@ export interface RepinCounts {
   tenants: number;
   /** Pods force-deleted because they were stranded on a NotReady node. */
   evictedPods: number;
+  /** Detached volumes attached on the target so their data moves there. */
+  relocating: number;
+  /** What the relocation did, when the re-pin had a target (null for "auto"). */
+  relocation: { started: string[]; skipped: Array<{ volumeName: string; reason: string }>; error: string | null } | null;
 }
 
 /**
@@ -1254,7 +1284,7 @@ export async function repinTenantPlacement(
   releaseFromNode: string,
   ensureHostTag: (target: string) => Promise<string>,
 ): Promise<RepinCounts> {
-  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0, evictedPods: 0 };
+  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0, evictedPods: 0, relocating: 0, relocation: null };
   const ns = tenant.namespace;
 
   // (a) Resolve the Longhorn host-tag for the target. Failure here
@@ -1396,6 +1426,30 @@ export async function repinTenantPlacement(
     console.warn(`[nodes] platform pin DB sync failed for tenant=${tenant.tenantId}:`, (err as Error).message);
   }
   counts.tenants += 1;
+
+  // (e) Move the data of a tenant that runs nothing. Longhorn moves a replica
+  //     only while its volume is attached: for a running tenant the restarted
+  //     pod attaches it on the new node and data locality does the rest, but a
+  //     stopped or suspended tenant attaches nothing — the re-pin changed every
+  //     label and left the only copy where it was (seen on production: a
+  //     suspended tenant pinned to sv1, its one replica still on the drained
+  //     sv2, the drain never complete). Same relocation as "Move back"
+  //     (tenant-placement/relocate.ts): a Longhorn attachment ticket on the
+  //     target, released by the placement reconciler once the copy is local.
+  //     Never throws; "auto" (target '') has no node to move to.
+  if (target !== '') {
+    const { startDataRelocation } = await import('../tenant-placement/relocate.js');
+    const relocation = await startDataRelocation(k8s, ns, target, tenant.storageTier ?? null);
+    counts.relocating = relocation.started.length;
+    counts.relocation = {
+      started: [...relocation.started],
+      skipped: relocation.skipped.map((k) => ({ volumeName: k.volumeName, reason: String(k.reason) })),
+      error: relocation.error,
+    };
+    if (relocation.error) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} data relocation to ${target}: ${relocation.error}`);
+    }
+  }
   return counts;
 }
 
@@ -1423,6 +1477,9 @@ export async function drainNode(
   rePinnedTenants: number;
   rePinnedWorkloads: number;
   rePinnedPvcs: number;
+  relocatingVolumes: number;
+  pickedTargets: Record<string, string>;
+  relocationProblems: Array<{ tenantId: string; tenantName: string; volumeName: string; reason: string }>;
 }> {
   // 0) Refuse draining the LAST schedulable, tenant-capable node.
   // Doing so leaves the cluster unable to host any tenant workload, and
@@ -1465,12 +1522,25 @@ export async function drainNode(
   }
 
   // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
-  //    A Postgres instance volume another Ready instance covers is not a
-  //    risk: the drain leaves that pod where it is, and the data lives on
-  //    if the node goes down (postgres-cover.ts).
+  //    Not a risk, and not counted:
+  //    - a Postgres instance volume another instance covers: the drain leaves
+  //      that pod where it is, and the data lives on if the node goes down
+  //      (postgres-cover.ts);
+  //    - a tenant's volume, unless the operator keeps that tenant here
+  //      ("stay"): the re-pin below moves it — a running tenant's data
+  //      follows its restarted pod, a stopped tenant's is relocated (step e
+  //      of repinTenantPlacement) — and Delete stays refused until the copy
+  //      has left. The modal never showed tenant volumes as a last-replica
+  //      risk, so no "force" box was offered for them: with only tenant
+  //      volumes on the node the drain was refused with nothing to tick.
   const impact = await buildDrainImpact(k8s, db, name);
+  const keptHere = new Set(
+    Object.entries(opts.tenantPlacement ?? {}).filter(([, t]) => t === 'stay').map(([id]) => id),
+  );
   const lastReplicaVolumes = impact.longhornReplicas.filter(
-    (r) => r.isLastReplica && !(r.postgresInstance && r.postgresInstance.coveredBy.length > 0),
+    (r) => r.isLastReplica
+      && !(r.postgresInstance && r.postgresInstance.coveredBy.length > 0)
+      && !(r.movedByRepin && r.tenantId !== null && !keptHere.has(r.tenantId)),
   );
   if (lastReplicaVolumes.length > 0 && !opts.forceLastReplica) {
     throw new ApiError(
@@ -1494,15 +1564,23 @@ export async function drainNode(
   // targets per-workload (which would violate the lifecycle
   // architecture).
   //
-  // Auto-fill: any tenant present in pinnedTenants but not in the
-  // request gets "" (auto = clear pin → scheduler/Longhorn picks).
-  // Without this, an API caller passing an empty map cordons the
-  // node and evicts pods but leaves their nodeSelector pointing at
-  // the cordoned host — pods come back Pending.
-  const tenantPlacement: Record<string, string> = { ...(opts.tenantPlacement ?? {}) };
+  // Default for a tenant the request does not mention: keep its pin when the
+  // pin is a node that stays, else "" (auto = clear pin → scheduler/Longhorn
+  // picks). Without a default, an API caller passing an empty map cordons the
+  // node and evicts pods but leaves their nodeSelector pointing at the
+  // cordoned host — pods come back Pending. Keeping a pin elsewhere means a
+  // re-run keeps the node an earlier run picked for a stopped tenant.
+  //
+  // A tenant that runs nothing gets a concrete node here, with room checked,
+  // or the drain is refused before anything changes (stopped-tenant-placement.ts).
+  const avoid = nodesToAvoid(name, liveNodes);
+  const requested: Record<string, string> = { ...(opts.tenantPlacement ?? {}) };
   for (const c of impact.pinnedTenants) {
-    if (!(c.tenantId in tenantPlacement)) tenantPlacement[c.tenantId] = '';
+    if (!(c.tenantId in requested)) requested[c.tenantId] = defaultPlacement(c, avoid);
   }
+  const { placement: tenantPlacement, picked: pickedTargets } = await placeStoppedTenants(k8s, db, {
+    drainNode: name, liveNodes, tenants: impact.pinnedTenants, placement: requested,
+  });
 
   // Validate target nodes referenced by the operator BEFORE doing any
   // patches — a typo'd node name shouldn't leave the cluster half-
@@ -1539,6 +1617,8 @@ export async function drainNode(
   let rePinnedTenants = 0;
   let rePinnedWorkloads = 0;
   let rePinnedPvcs = 0;
+  let relocatingVolumes = 0;
+  const relocationProblems: Array<{ tenantId: string; tenantName: string; volumeName: string; reason: string }> = [];
 
   // Lookup workloads + PVCs by namespace once — buildDrainImpact
   // already has them grouped by tenant.
@@ -1567,7 +1647,7 @@ export async function drainNode(
     if (!c) continue; // operator targeted a tenant that has no pins on this node — no-op
     const counts = await repinTenantPlacement(
       k8s, db,
-      { tenantId, namespace: c.namespace, workloads: c.workloads, pvcs: c.pvcs },
+      { tenantId, namespace: c.namespace, workloads: c.workloads, pvcs: c.pvcs, storageTier: c.storageTier },
       target,
       name,
       ensureLonghornHostTag,
@@ -1575,6 +1655,19 @@ export async function drainNode(
     rePinnedPvcs += counts.pvcs;
     rePinnedWorkloads += counts.workloads;
     rePinnedTenants += counts.tenants;
+    relocatingVolumes += counts.relocating;
+    // A stopped tenant's volume whose copy did not start moving stays here —
+    // say which and why, rather than leave the drain looking merely slow.
+    if (strandedBytes(c) > 0) {
+      const started = new Set(counts.relocation?.started ?? []);
+      for (const p of c.pvcs.filter((v) => v.detached && v.isLastReplica && !started.has(v.volumeName))) {
+        const skip = counts.relocation?.skipped.find((k) => k.volumeName === p.volumeName);
+        relocationProblems.push({
+          tenantId, tenantName: c.tenantName, volumeName: p.volumeName,
+          reason: skip?.reason ?? counts.relocation?.error ?? (target === '' ? 'no target node' : 'not started'),
+        });
+      }
+    }
   }
 
   // 2) Cordon (idempotent — patch unschedulable=true).
@@ -1638,7 +1731,10 @@ export async function drainNode(
     }
   }
 
-  return { cordoned, evicted, failed, rePinnedTenants, rePinnedWorkloads, rePinnedPvcs };
+  return {
+    cordoned, evicted, failed, rePinnedTenants, rePinnedWorkloads, rePinnedPvcs,
+    relocatingVolumes, pickedTargets, relocationProblems,
+  };
 }
 
 /**
@@ -1683,6 +1779,17 @@ export async function deleteNode(
 
   if (nodeExistsInK8s) {
     const impact = await buildDrainImpact(k8s, db, name);
+    // The checks below read the storage lists; with a read failed, "nothing
+    // listed" is not "nothing here". Deleting a node cannot be undone.
+    if (!impact.storageFactsComplete) {
+      throw new ApiError(
+        'NODE_DELETE_PRECHECK_FAILED',
+        `Cannot confirm that '${name}' holds no data the cluster still needs — reading Longhorn or the database ` +
+        `instances failed. Nothing was deleted; retry once storage answers.`,
+        503,
+        { node_name: name },
+      );
+    }
     if (impact.nonSystemPods.length > 0) {
       throw new ApiError(
         'NODE_DELETE_HAS_PODS',
@@ -1690,6 +1797,24 @@ export async function deleteNode(
         `Wait for the drain to complete (or re-run it).`,
         409,
         { remaining: impact.nonSystemPods.slice(0, 20) },
+      );
+    }
+    // A tenant volume whose only copy is on this node goes with it — a
+    // stopped or suspended tenant's above all: nothing attaches its volume,
+    // so nothing moves the copy unless a re-pin relocates it (and that copy
+    // takes a while). The UI keeps Delete back while a tenant is listed here;
+    // this is the same rule for the API.
+    const tenantCopies = impact.pinnedTenants.flatMap((c) => c.pvcs
+      .filter((p) => p.isLastReplica)
+      .map((p) => `${c.tenantName} (${c.namespace}/${p.pvcName})`));
+    if (tenantCopies.length > 0) {
+      throw new ApiError(
+        'NODE_DELETE_HOLDS_TENANT_DATA',
+        `Node '${name}' holds the only copy of ${tenantCopies.length} tenant volume(s): ${tenantCopies.slice(0, 5).join(', ')}` +
+        `${tenantCopies.length > 5 ? ', …' : ''}. Re-pin those tenants to another node and wait until their data has ` +
+        `moved, then delete the node.`,
+        409,
+        { volumes: tenantCopies.slice(0, 20) },
       );
     }
     // A Postgres instance whose only copy is on this node goes with it, and

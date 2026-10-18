@@ -40,6 +40,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so a retained volume nothing mounts (the CrowdSec store, 3 copies in HA) flagged a last-replica
   risk on each node holding one and blocked the drain there too. A detached volume's replicas
   that have not failed now count as its copies.
+- **Draining a node no longer strands a stopped or suspended tenant's data.** Longhorn moves a
+  replica only while its volume is attached, and a tenant that runs nothing attaches nothing: the
+  drain's re-pin changed every label and left the only copy where it was. Seen on production: a
+  suspended tenant pinned to the new node while its one replica stayed on the cordoned one, so
+  the drain never completed — and deleting the node would have deleted the tenant's data. The
+  re-pin now attaches such a volume on the new node (the relocation "Move back" already used) and
+  the placement reconciler releases it once the copy is local; "Auto" picks the tenant-capable
+  node with the most free space for such a tenant (never the drained, a cordoned or a NotReady
+  node), counting what the same drain already sends there, and every target gets Longhorn's own
+  capacity check first — when no node fits, the drain is refused before it changes anything
+  (`NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT`). A tenant already pinned to another node keeps that pin
+  by default, so a second drain run no longer clears what the first picked; a copy that did not
+  start moving is listed after the drain. Deleting a node that still holds a tenant volume's only
+  copy is refused (`NODE_DELETE_HOLDS_TENANT_DATA`), and so is a delete whose storage reads failed
+  (`NODE_DELETE_PRECHECK_FAILED`, 503). A failed leftover replica on the node next to a healthy copy
+  elsewhere no longer counts as the "last replica".
+- **The drain no longer refuses over tenant volumes the operator cannot see.** The last-replica
+  check counted every Local-tier tenant volume on the node, but the modal lists only platform
+  volumes as a risk and offers "force" only for those: on a node holding tenants and no platform
+  last replica, the drain was refused with nothing to tick. A tenant's volume now holds the drain
+  back only when that tenant is set to **Stay**; otherwise the re-pin moves it, and Delete waits
+  for the copy to leave.
 - **Deleting a server that holds a database instance's only copy is refused**
   (`NODE_DELETE_HOLDS_DATABASE`, 409; Delete stays disabled in the modal). Removing it left
   PostgreSQL with an instance it could not start anywhere else, and CNPG holds every later scale

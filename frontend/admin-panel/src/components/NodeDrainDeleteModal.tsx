@@ -109,8 +109,11 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   // (where the re-pin dropdown lives).
   const isCovered = (r: DrainImpact['longhornReplicas'][number]): boolean =>
     (r.postgresInstance?.coveredBy.length ?? 0) > 0;
+  // Same rule as the backend guard: a tenant's live volume is moved by the
+  // re-pin (its row above offers the target; "Stay" disables the drain), so
+  // only what nobody moves is a last-replica risk.
   const lastReplicaVolumes = impact?.longhornReplicas.filter(
-    (r) => r.isLastReplica && r.tenantId === null && !isCovered(r),
+    (r) => r.isLastReplica && !r.movedByRepin && !isCovered(r),
   ) ?? [];
   // Postgres instances whose data other instances hold — shown, not blocking.
   const coveredDbInstances = impact?.longhornReplicas.filter(
@@ -135,6 +138,14 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       .map((n) => ({ name: n.name, usage: usageByName.get(n.name) }));
   }, [nodesQuery.data, node.name, usageByName]);
 
+  // Default per tenant, as the backend's: keep its pin when that is another
+  // node this tenant could be re-pinned to (a re-run keeps what an earlier
+  // run picked), else Auto.
+  const defaultPlacementFor = (c: DrainImpact['pinnedTenants'][number]): string =>
+    c.currentNodeName && c.currentNodeName !== node.name && targetNodeOptions.some((n) => n.name === c.currentNodeName)
+      ? c.currentNodeName
+      : '';
+
   // Block "Apply re-pin & drain" only when the operator has EXPLICITLY
   // set a tenant to "stay" — that's a refusal-to-move signal and
   // letting the drain proceed would evict pods but leave their
@@ -152,7 +163,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       // server-side default still gets a complete map.
       const finalTenantPlacement = { ...tenantPlacement };
       for (const c of impact?.pinnedTenants ?? []) {
-        if (!(c.tenantId in finalTenantPlacement)) finalTenantPlacement[c.tenantId] = '';
+        if (!(c.tenantId in finalTenantPlacement)) finalTenantPlacement[c.tenantId] = defaultPlacementFor(c);
       }
       await drain.mutateAsync({
         forceLastReplica,
@@ -251,8 +262,11 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                     <tbody>
                       {impact.pinnedTenants.map((c) => {
                         const isExpanded = expandedTenants[c.tenantId] === true;
-                        const value = tenantPlacement[c.tenantId] ?? '';
+                        const value = tenantPlacement[c.tenantId] ?? defaultPlacementFor(c);
                         const hasLastReplica = c.pvcs.some((p) => p.isLastReplica);
+                        // Runs nothing and its only copy is here: nothing will move the
+                        // data unless the drain attaches the volume on a new node.
+                        const stoppedHere = c.pvcs.some((p) => p.detached && p.isLastReplica);
                         const rowBorder = hasLastReplica
                           ? 'border-t border-red-200/60 dark:border-red-700/40'
                           : 'border-t border-amber-200/60 dark:border-amber-700/40';
@@ -279,6 +293,15 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                   {c.tenantName}
                                   <ExternalLink size={10} />
                                 </Link>
+                                {stoppedHere && (
+                                  <span
+                                    className="ml-1.5 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                                    title="Nothing is running, so its data does not follow a pod. The drain attaches its volume on the new node to move the data there."
+                                    data-testid={`tenant-stopped-${c.tenantId}`}
+                                  >
+                                    not running
+                                  </span>
+                                )}
                               </td>
                               <td className="py-1.5 pr-2">
                                 <span className={c.storageTier === 'ha'
@@ -305,7 +328,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                   data-testid={`tenant-placement-${c.tenantId}`}
                                 >
                                   <option value="stay">Stay (refuse to move)</option>
-                                  <option value="">Auto (clear pin)</option>
+                                  <option value="">{stoppedHere ? 'Auto (node with the most free space)' : 'Auto (clear pin)'}</option>
                                   {targetNodeOptions.map((n) => (
                                     <option key={n.name} value={n.name}>
                                       {nodeLabel(n.name)}{formatNodeAvailability(n.usage)}
@@ -543,7 +566,31 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             <p className="text-xs text-gray-600 dark:text-gray-400">
               Re-pinned: {drain.data?.data.rePinnedTenants ?? 0} tenant(s)
               {' '}({drain.data?.data.rePinnedWorkloads ?? 0} workload(s), {drain.data?.data.rePinnedPvcs ?? 0} PVC(s)).
+              {(drain.data?.data.relocatingVolumes ?? 0) > 0 && (
+                <span data-testid="drain-relocating">
+                  {' '}Moving the data of {drain.data?.data.relocatingVolumes} volume(s) of tenants that are not running
+                  {Object.keys(drain.data?.data.pickedTargets ?? {}).length > 0 && (
+                    <>
+                      {' '}(Auto placed {Object.entries(drain.data?.data.pickedTargets ?? {}).map(([id, n]) =>
+                        `${impact?.pinnedTenants.find((c) => c.tenantId === id)?.tenantName ?? id} on ${nodeLabel(n)}`).join(', ')})
+                    </>
+                  )}
+                  {' '}— Delete unlocks once the copies have left this node.
+                </span>
+              )}
             </p>
+          )}
+          {drain.isSuccess && (drain.data?.data.relocationProblems.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="drain-relocation-problems">
+              <div className="flex items-center gap-1 font-semibold">
+                <AlertTriangle size={12} /> The data of a tenant that is not running did not start moving — it is still only on this node:
+              </div>
+              <ul className="mt-1 space-y-0.5 font-mono">
+                {drain.data?.data.relocationProblems.map((p) => (
+                  <li key={p.volumeName}>{p.tenantName} · {p.volumeName} — {p.reason}</li>
+                ))}
+              </ul>
+            </div>
           )}
           {delErr && (
             <ErrorPanel
@@ -597,7 +644,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   <li>{impact.nonSystemPods.length} non-system pod(s) still on the node.</li>
                 )}
                 {impact.pinnedTenants.length > 0 && (
-                  <li>{impact.pinnedTenants.length} tenant(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for Longhorn to finish replica garbage-collection.</li>
+                  <li>{impact.pinnedTenants.length} tenant(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for their data to finish moving (Longhorn copies it to the new node, then drops the copy here).</li>
                 )}
               </ul>
             </div>

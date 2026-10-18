@@ -112,7 +112,17 @@ elsewhere. From the node card click **Drain Node**. A modal computes the impact:
 - **Pinned tenants** — tenants with a workload or volume on this node. Pick one
   re-pin target per tenant (or **Auto** to clear the pin). The orchestrator
   moves every Deployment, StatefulSet, and Longhorn volume in that tenant's
-  namespace together. Leaving a tenant on **Stay** blocks the drain.
+  namespace together. Leaving a tenant on **Stay** blocks the drain; otherwise a
+  tenant's volumes never hold the drain back, because the re-pin moves them.
+  A running tenant's data follows its restarted pod. A tenant marked **not
+  running** (stopped or suspended) has no pod for its data to follow, so the
+  drain attaches its volume on the new node and Longhorn copies the data there;
+  for such a tenant **Auto** picks the tenant-capable node with the most free
+  space (never the drained node, a cordoned one or one that is not Ready), and
+  every target is checked for room first — the drain is refused, with nothing
+  changed, when no node can take the data. A tenant already pinned to another
+  node keeps that node by default. Either way **Delete** unlocks only once the
+  copies have left the node.
 - **Non-system pods** — what gets evicted; controllers recreate them elsewhere.
 - **Last-replica risk** — if this node holds the *only* healthy replica of a
   platform volume (mail, for example), the drain is **refused** unless you tick
