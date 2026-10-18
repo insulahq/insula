@@ -54,8 +54,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `quota_rejected`: the alert told the operator to raise its plan limits, and the auto-heal scaled
   it down and up against a node that was not there, gave up, and left it storage-state FAILED —
   refusing every later resize, restore, suspend or move — although it came back by itself minutes
-  later. The new cause `node_down` is decided first and never auto-healed; a FAILED left by a failed
-  auto-heal is reset once every workload runs again; a dashboard card lists tenants stuck in a
+  later. The new cause `node_down` is decided first and never auto-healed — and when the node
+  returns, its tenants get a fresh grace window before any heal, while their volumes re-attach; a
+  FAILED left by a failed auto-heal is reset once every workload runs again; a dashboard card lists tenants stuck in a
   failed storage state.
 - **Workloads-down alerts: one per tenant, in the bell, with an end.** Each workload sent its own
   push and email (three for a three-workload tenant); now one notification per tenant lists them,

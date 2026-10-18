@@ -1042,12 +1042,28 @@ export async function reconcileTenantWorkloadHealth(
                -- leaves every counter and the clock untouched. Three states, one
                -- comparison: open -> keep, recently closed -> keep, long closed
                -- -> reset.
+               --
+               -- The node coming BACK also restarts the clock: while it was
+               -- down the episode aged past the grace window, so the first
+               -- tick after its return (pods still re-attaching their volumes,
+               -- as every rebooted node's do) would scale the tenant down for
+               -- a heal at once. Lab staging: a heal fired two minutes after
+               -- the node returned. A cause that follows node_down gets its
+               -- own grace window and its own heal budget.
                first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at
                                          < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN now() ELSE tenant_workload_health_events.first_seen_at END,
+                                    THEN now()
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN now()
+                                    ELSE tenant_workload_health_events.first_seen_at END,
                heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at
                                          < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN 0 ELSE tenant_workload_health_events.heal_attempts END,
+                                    THEN 0
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN 0
+                                    ELSE tenant_workload_health_events.heal_attempts END,
                notify_count = CASE WHEN tenant_workload_health_events.cleared_at
                                         < now() - ${FLAP_QUIET_SQL}::interval
                                    THEN 0 ELSE tenant_workload_health_events.notify_count END,

@@ -46,6 +46,7 @@ describe.skipIf(!url)('workload-health — a tenant whose pinned node is powered
   let db: Database;
   let sv1Ready = false;
   let available = 0;
+  let eventMessage = '';
 
   const k8s = {
     apps: {
@@ -70,7 +71,7 @@ describe.skipIf(!url)('workload-health — a tenant whose pinned node is powered
       listNamespacedEvent: async () => ({
         items: [{
           reason: 'FailedCreate', lastTimestamp: new Date().toISOString(),
-          message: `Error creating: pods "website-x" is forbidden: exceeded quota: ${NS}-quota, requested: limits.memory=32Mi`,
+          message: eventMessage || `Error creating: pods "website-x" is forbidden: exceeded quota: ${NS}-quota, requested: limits.memory=32Mi`,
         }],
       }),
     },
@@ -100,6 +101,7 @@ describe.skipIf(!url)('workload-health — a tenant whose pinned node is powered
     sent.calls.length = 0;
     sv1Ready = false;
     available = 0;
+    eventMessage = '';
     await pool.query('TRUNCATE tenant_workload_health_events, tenant_storage_failovers, tenants, storage_operations CASCADE');
     await pool.query(
       `INSERT INTO tenants (id, name, kubernetes_namespace, status, node_name) VALUES ($1, 'Example Tenant', $2, 'active', 's1')`,
@@ -157,6 +159,23 @@ describe.skipIf(!url)('workload-health — a tenant whose pinned node is powered
     });
     expect((await pool.query('SELECT storage_lifecycle_state FROM tenants')).rows[0].storage_lifecycle_state).toBe('idle');
     expect((await pool.query('SELECT count(*)::int AS n FROM tenant_workload_health_events WHERE cleared_at IS NULL')).rows[0].n).toBe(0);
+  });
+
+  // Lab staging: two minutes after the node returned — its pods still
+  // re-attaching their volumes — the episode, aged by the outage, was already
+  // past grace and the tenant was scaled down for a heal.
+  it('the node coming back restarts the clock: no heal while its volumes re-attach', async () => {
+    await reconcileTenantWorkloadHealth(db, k8s);
+    await pool.query(`UPDATE tenant_workload_health_events SET first_seen_at = now() - interval '20 minutes'`);
+    sv1Ready = true;
+    eventMessage = 'AttachVolume.Attach failed for volume "pvc-00000000-1111-2222-3333-444444444444" : volume is not ready for workloads';
+    await reconcileTenantWorkloadHealth(db, k8s);
+    const rows = (await pool.query(
+      `SELECT reason, heal_attempts, now() - first_seen_at < interval '1 minute' AS fresh FROM tenant_workload_health_events ORDER BY workload`,
+    )).rows;
+    // Off node_down (the cluster's own words decide the new cause, from
+    // evidence that may still be cached), no heal claimed, a fresh clock.
+    expect(rows.every((r) => r.reason !== 'node_down' && r.heal_attempts === 0 && r.fresh === true)).toBe(true);
   });
 
   it('a FAILED left by a resize is NOT cleared — that one needs the operator', async () => {
