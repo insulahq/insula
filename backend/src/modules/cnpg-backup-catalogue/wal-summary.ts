@@ -22,6 +22,7 @@ import type { Logger } from 'pino';
 import { loadBackupTargetKey, SHIM_NAMESPACE } from '../backup-rclone-shim/service.js';
 import { deriveShimAccessKey, deriveShimSecretKey } from '../backup-rclone-shim/crypto.js';
 import { SHIM_S3_ENDPOINT_URL } from '../backup-rclone-shim/mail-restic.js';
+import { shimObjectTime } from '../backup-rclone-shim/shim-times.js';
 import { parseDestinationPath, accumulateWalObjects } from './service.js';
 import {
   parseWalSegment,
@@ -109,6 +110,14 @@ export interface WalSummaryOpts {
    * phantom gaps at every log-file roll-over, or real gaps hidden.
    */
   readonly segmentsPerFile?: number;
+  /**
+   * Real upload times of the segments, keyed by object key, read from the
+   * target itself. The shim's LIST reports a placeholder time
+   * (backup-rclone-shim/shim-times.ts), so without this every segment's time
+   * is unknown — never the placeholder, which once set the end of the
+   * restorable window to the year 2000. Null = no times available.
+   */
+  readonly fileTimes?: (bucket: string, walPrefix: string) => Promise<ReadonlyMap<string, string> | null>;
 }
 
 /**
@@ -284,6 +293,9 @@ async function walSummaryWork(
     const walk = async (): Promise<void> => {
     for (const cluster of clusters) {
       const walPrefix = prefix ? `${prefix}/${cluster}/wals/` : `${cluster}/wals/`;
+      const times = opts.fileTimes
+        ? await opts.fileTimes(bucket, walPrefix).catch(() => null)
+        : null;
       let token: string | undefined;
       let pages = 0;
       try {
@@ -297,10 +309,16 @@ async function walSummaryWork(
             IsTruncated?: boolean;
           };
           anyPageRead = true;
-          accumulateWalObjects(res.Contents ?? [], acc);
+          // Times from the target when it answered; otherwise unknown, never
+          // the shim's placeholder.
+          const timed = (res.Contents ?? []).map((obj) => {
+            const real = times?.get(obj.Key ?? '');
+            return { ...obj, LastModified: real ? new Date(real) : shimObjectTime(obj.LastModified) };
+          });
+          accumulateWalObjects(timed, acc);
           // Names as well as sizes: the chain's continuity is what decides
           // which points in time are actually restorable.
-          for (const obj of res.Contents ?? []) {
+          for (const obj of timed) {
             const ref = parseWalSegment(
               obj.Key ?? '',
               segmentsPerFile,

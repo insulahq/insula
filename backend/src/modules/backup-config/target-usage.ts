@@ -367,3 +367,60 @@ export function startTargetUsageScheduler(deps: MeasureDeps): { stop: () => void
     },
   };
 }
+
+// ─── real file times, for readers the shim gives a placeholder ──────────────
+
+const LSJSON_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * Upload times of every file under `<class folder>/<subPath>` on the target the
+ * class is bound to, keyed by path relative to the class folder (what an S3
+ * client of the shim sees as the key in bucket `<class>`).
+ *
+ * The shim reports a placeholder instead of the upload time
+ * (backup-rclone-shim/shim-times.ts); the target itself does not. Null when
+ * the class has no target or the listing failed — the caller then has no
+ * times, never wrong ones. `--use-server-modtime` makes an S3 upstream answer
+ * from the LIST itself instead of a HEAD per object.
+ */
+export async function listTargetFileTimes(
+  db: Database,
+  encryptionKey: string,
+  cls: BackupUsageClass,
+  subPath: string,
+  opts: { readonly run?: RcloneRunner; readonly log?: Pick<Logger, 'warn'> } = {},
+): Promise<Map<string, string> | null> {
+  try {
+    const [assigned] = await db.select({ targetId: backupTargetAssignments.targetId })
+      .from(backupTargetAssignments)
+      .where(eq(backupTargetAssignments.backupClass, cls))
+      .orderBy(backupTargetAssignments.priority)
+      .limit(1);
+    if (!assigned) return null;
+    const [row] = await db.select().from(backupConfigurations).where(eq(backupConfigurations.id, assigned.targetId)).limit(1);
+    if (!row) return null;
+    const { env, root } = remoteFor(rowToTargetConfig(row, encryptionKey));
+    const sub = subPath.replace(/^\/+|\/+$/g, '');
+    const res = await (opts.run ?? runRclone)(
+      ['lsjson', '-R', '--files-only', '--use-server-modtime', at(root, [cls, sub].filter(Boolean).join('/'))],
+      env,
+      LSJSON_TIMEOUT_MS,
+    );
+    if (res.code !== 0) {
+      opts.log?.warn({ cls, subPath, err: lastLine(res.stderr) }, 'target file times: listing failed');
+      return null;
+    }
+    const entries = JSON.parse(res.stdout) as Array<{ Path?: string; ModTime?: string }>;
+    const out = new Map<string, string>();
+    for (const e of entries) {
+      if (!e.Path || !e.ModTime) continue;
+      const t = Date.parse(e.ModTime);
+      if (!Number.isFinite(t)) continue;
+      out.set(sub ? `${sub}/${e.Path}` : e.Path, new Date(t).toISOString());
+    }
+    return out;
+  } catch (err) {
+    opts.log?.warn({ cls, subPath, err: err instanceof Error ? err.message : String(err) }, 'target file times: listing failed');
+    return null;
+  }
+}

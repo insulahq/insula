@@ -60,6 +60,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **Applications** table. The Storage tab's **DATA** pill is solid blue with white text, like
   ACTIVE, and is in the legend.
 
+### Fixed
+
+- **Postgres backup times read through the backup shim were the year 2000.** The shim serves
+  S3 with `--no-modtime` and reports one placeholder time for every object. The WAL summary took
+  it as each segment's upload time. On a chain with a gap, "continuous until" — the ceiling the
+  restore wizard holds a point-in-time restore to — read as the year 2000, so every real target
+  time looked unreachable. Segment times now come from the target itself (`rclone lsjson`
+  against the class's own target); if that listing fails, a time is unknown, never the
+  placeholder. A base backup's "uploaded at" ignores the placeholder too; the panel uses the
+  backup's own end time.
+
 ### Removed
 
 - **The per-target "Retention (days)" and "Schedule (cron)" fields** on Remote Storage Targets,
