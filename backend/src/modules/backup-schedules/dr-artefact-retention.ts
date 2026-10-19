@@ -88,13 +88,33 @@ export async function drArtefactSpecs(db: Database): Promise<readonly DrArtefact
 
 export interface StoredObject {
   readonly key: string;
-  readonly lastModified: Date;
+}
+
+/**
+ * When a copy was made, from its NAME — every artefact's Job stamps it in UTC
+ * (`secrets-20261016T031505Z.tar.age`, `cluster-state-…Z.tar.gz`,
+ * `etcd-snap-via-shim-…-20261016T010001Z-….db`).
+ *
+ * Not the listing's LastModified. The shim serves S3 with `--no-modtime`, and
+ * reports one fixed placeholder time — the start of the year 2000 — for every
+ * object: on the first live run a 5-day limit found every secrets bundle
+ * decades old and kept only the newest. The name is also what the Jobs' own
+ * count prune sorts by.
+ */
+export function stampOf(key: string): Date | null {
+  const base = key.slice(key.lastIndexOf('/') + 1);
+  const m = /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(base);
+  if (!m) return null;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  return Number.isFinite(t) ? new Date(t) : null;
 }
 
 /**
  * The keys to delete: every copy the policy removes, plus its companions.
  * Only direct children of the prefix count — a nested key is not this
  * artefact's (etcd's prefix also has the legacy per-host layout above it).
+ * A copy whose name carries no stamp is left alone: its age is unknown, and
+ * an unknown age must never read as "old".
  */
 export function planArtefactRemoval(
   spec: DrArtefactSpec,
@@ -105,7 +125,10 @@ export function planArtefactRemoval(
   const present = new Set(objects.map((o) => o.key));
   const copies = objects
     .filter((o) => o.key.startsWith(spec.prefix) && !o.key.slice(spec.prefix.length).includes('/') && spec.isCopy(o.key))
-    .map((o) => ({ createdAt: o.lastModified, key: o.key }));
+    .flatMap((o) => {
+      const createdAt = stampOf(o.key);
+      return createdAt ? [{ createdAt, key: o.key }] : [];
+    });
   const keys: string[] = [];
   for (const c of selectForRemoval(copies, policy, now)) {
     keys.push(c.key);
@@ -215,12 +238,12 @@ async function openShimStore(core: k8s.CoreV1Api): Promise<{ store: DrArtefactSt
       let pages = 0;
       do {
         const res = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000 })) as {
-          Contents?: ReadonlyArray<{ Key?: string; LastModified?: Date }>;
+          Contents?: ReadonlyArray<{ Key?: string }>;
           NextContinuationToken?: string;
           IsTruncated?: boolean;
         };
         for (const o of res.Contents ?? []) {
-          if (o.Key && o.LastModified) out.push({ key: o.Key, lastModified: new Date(o.LastModified) });
+          if (o.Key) out.push({ key: o.Key });
         }
         token = res.IsTruncated ? res.NextContinuationToken : undefined;
         pages += 1;
