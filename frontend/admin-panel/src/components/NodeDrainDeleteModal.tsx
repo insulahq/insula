@@ -2,7 +2,7 @@ import { Fragment, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   X, AlertTriangle, Loader2, AlertCircle, CheckCircle, Trash2, ShieldAlert,
-  ExternalLink, Database as DatabaseIcon, ChevronRight, ChevronDown,
+  ExternalLink, Database as DatabaseIcon, ChevronRight, ChevronDown, Info,
 } from 'lucide-react';
 import {
   useDrainImpact,
@@ -73,17 +73,20 @@ interface NodeDrainDeleteModalProps {
  *    where pinning is also expressed at the tenant level).
  *  - Each row expandable to show the workloads + PVCs that will be
  *    moved together — informational, not editable.
- *  - The "Last-replica risk" banner is reserved for PLATFORM volumes
- *    (postgres, longhorn-system, mail) since tenant volumes are
- *    already represented inside their tenant row.
+ *  - The drain asks nothing about volumes: it moves tenants, and their
+ *    data follows the re-pin. Volumes that keep their only copy here —
+ *    platform volumes, leftovers nothing uses — are listed at the DELETE
+ *    step, where deleting the node would delete them.
  *  - A Postgres instance volume whose data other instances hold
  *    (`postgresInstance.coveredBy`) is not a drain risk: in HA each instance
  *    has one Longhorn replica on purpose. It gets its own informational
- *    section instead — and keeps Delete disabled, because removing the node
- *    takes the instance's only copy with it.
+ *    section instead. Delete moves it to another server first (a primary is
+ *    switched over, then the instance re-created from the primary); only an
+ *    instance nothing else holds keeps Delete disabled — there is nothing to
+ *    re-create it from.
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
-  const [forceLastReplica, setForceLastReplica] = useState(false);
+  const [deleteLastCopies, setDeleteLastCopies] = useState(false);
   const [blockNewTenants, setBlockNewTenants] = useState(true);
   const impactQuery = useDrainImpact(node.name, true);
   const nodesQuery = useClusterNodes();
@@ -113,25 +116,22 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
     && impact.tenantsDrained
     && impact.nonSystemPods.length === 0
     && impact.pinnedTenants.length === 0;
-  // Reserve the "Last-replica risk" banner for PLATFORM volumes —
-  // tenant volumes are already represented in their tenant row above
-  // (where the re-pin dropdown lives).
   const isCovered = (r: DrainImpact['longhornReplicas'][number]): boolean =>
     (r.postgresInstance?.coveredBy.length ?? 0) > 0;
-  // Same rule as the backend guard: a tenant's live volume is moved by the
-  // re-pin (its row above offers the target; "Stay" disables the drain), so
-  // only what nobody moves is a last-replica risk.
-  const lastReplicaVolumes = impact?.longhornReplicas.filter(
-    (r) => r.isLastReplica && !r.movedByRepin && !isCovered(r),
+  // Same rule as the backend's Delete guard (NODE_DELETE_HOLDS_LAST_COPY):
+  // every volume whose only copy is here, except database instances (their
+  // own guard below). The drain does not care — Delete would delete them.
+  const lastCopies = impact?.longhornReplicas.filter(
+    (r) => r.isLastReplica && !r.postgresInstance,
   ) ?? [];
   // Postgres instances whose data other instances hold — shown, not blocking.
   const coveredDbInstances = impact?.longhornReplicas.filter(
     (r) => r.isLastReplica && isCovered(r),
   ) ?? [];
-  // Any Postgres instance whose only copy is here — the node cannot be deleted
-  // until it has moved (the backend refuses with NODE_DELETE_HOLDS_DATABASE).
-  const dbInstancesHere = [...new Set((impact?.longhornReplicas ?? [])
-    .filter((r) => r.isLastReplica && r.postgresInstance)
+  // A Postgres instance whose only copy is here and that nothing else holds:
+  // Delete has nothing to re-create it from (NODE_DELETE_HOLDS_DATABASE).
+  const stuckDbInstances = [...new Set((impact?.longhornReplicas ?? [])
+    .filter((r) => r.isLastReplica && r.postgresInstance && !isCovered(r))
     .map((r) => `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? ''}`))];
 
   // Build target options once, joining the cluster-nodes list with
@@ -175,7 +175,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
         if (!(c.tenantId in finalTenantPlacement)) finalTenantPlacement[c.tenantId] = defaultPlacementFor(c);
       }
       await drain.mutateAsync({
-        forceLastReplica,
         tenantPlacement: finalTenantPlacement,
         blockNewTenants,
       });
@@ -192,7 +191,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
 
   const handleDelete = async (): Promise<void> => {
     try {
-      await del.mutateAsync();
+      await del.mutateAsync({ forceLastReplica: deleteLastCopies });
       onClose();
     } catch { /* surfaced below */ }
   };
@@ -473,63 +472,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 )}
               </ImpactSection>
 
-              {/* ─── Platform last-replica risk ─── */}
-              {lastReplicaVolumes.length > 0 && (
-                <ImpactSection
-                  title={`Last-replica risk (${lastReplicaVolumes.length})`}
-                  tone="danger"
-                  content={`${lastReplicaVolumes.length} volume(s) have only this node holding a healthy replica. Drain will be REFUSED unless you tick "force last replica".`}
-                >
-                  <table className="mt-2 w-full text-xs">
-                    <thead className="text-gray-500 dark:text-gray-400">
-                      <tr>
-                        <th className="text-left py-1 pr-2">Owner</th>
-                        <th className="text-left py-1 pr-2">PVC</th>
-                        <th className="text-left py-1">Volume</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lastReplicaVolumes.map((r) => (
-                        <tr key={r.replicaName} className="border-t border-red-200/60 dark:border-red-700/40">
-                          <td className="py-1.5 pr-2">
-                            {r.tenantId ? (
-                              <Link
-                                to={`/tenants/${r.tenantId}`}
-                                className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-                              >
-                                {r.tenantName ?? r.ownerLabel}
-                                <ExternalLink size={10} />
-                              </Link>
-                            ) : (
-                              <span className="text-gray-700 dark:text-gray-300">{r.ownerLabel}</span>
-                            )}
-                          </td>
-                          <td className="py-1.5 pr-2 font-mono text-gray-700 dark:text-gray-300">
-                            {r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : <span className="text-gray-400 italic">unbound</span>}
-                          </td>
-                          <td className="py-1.5 font-mono text-gray-500 dark:text-gray-400">{r.volumeName}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <label className="mt-2 flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={forceLastReplica}
-                      onChange={(e) => setForceLastReplica(e.target.checked)}
-                      data-testid="force-last-replica-checkbox"
-                    />
-                    <span>I accept data risk — force drain even with last replicas here.</span>
-                  </label>
-                </ImpactSection>
-              )}
-
               {/* ─── Database instances (covered — info only) ─── */}
               {coveredDbInstances.length > 0 && (
                 <ImpactSection
                   title={`Database instances on this node (${coveredDbInstances.length})`}
                   tone={coveredDbInstances.some((r) => r.postgresInstance?.primary) ? 'warn' : 'good'}
-                  content="Each Postgres instance keeps its one copy on its own node; the other instances hold the same data, so these do not block the drain. Draining leaves them running here."
+                  content="Each Postgres instance keeps its one copy on its own node; the other instances hold the same data, so these do not block the drain. Draining leaves them running here; Delete moves them to another server first."
                 >
                   <ul className="mt-2 space-y-1.5 text-xs" data-testid="covered-db-instances">
                     {coveredDbInstances.map((r) => r.postgresInstance && (
@@ -647,20 +595,77 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             </div>
           )}
 
-          {drained && dbInstancesHere.length > 0 && (
+          {drained && stuckDbInstances.length > 0 && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="delete-blocked-database">
               <div className="flex items-center gap-1 font-semibold">
-                <AlertTriangle size={12} /> Drained — but Delete is disabled while this node holds the only copy of database instance {dbInstancesHere.join(', ')}.
+                <AlertTriangle size={12} /> Drained — but Delete is disabled: this node holds the only copy of database instance {stuckDbInstances.join(', ')}, and no other instance holds its data.
               </div>
               <p className="mt-1">
-                Removing the node would leave PostgreSQL with an instance it cannot start anywhere else. Move the
-                instance to another server first (manual: Nodes &amp; cluster → Removing a node), then come back here.
+                Delete moves a database instance by re-creating it on another server from one that holds the same
+                data — here there is none. A single-instance database needs high availability turned on first, so
+                another server holds a copy; a primary not streaming to a standby right now needs that standby back.
                 Draining tenants does not touch it — the instance keeps running here.
               </p>
             </div>
           )}
 
-          {drained && !confirmDelete && dbInstancesHere.length === 0 && (
+          {drained && stuckDbInstances.length === 0 && coveredDbInstances.length > 0 && (
+            <div className="rounded-lg border border-blue-300 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-100" data-testid="delete-moves-database">
+              <div className="flex items-center gap-1 font-semibold">
+                <Info size={12} /> Delete moves {coveredDbInstances.length === 1 ? 'this database instance' : 'these database instances'} to another server first:
+              </div>
+              <ul className="mt-1.5 space-y-0.5">
+                {coveredDbInstances.map((r) => r.postgresInstance && (
+                  <li key={r.replicaName}>
+                    <span className="font-mono">{r.namespace}/{r.postgresInstance.instance}</span>
+                    {' — '}
+                    {r.postgresInstance.primary
+                      ? `the primary: switched over to ${r.postgresInstance.coveredBy[0]} first (writes pause briefly), then re-created on another server from it`
+                      : `re-created on another server from the primary (${r.postgresInstance.coveredBy[0]})`}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5">
+                Delete waits until every instance of the database is ready before it starts. Its copy here is deleted
+                once it is a replica — until the new instance is ready the database has one copy fewer — and Delete
+                waits for that (a minute or two on a small database) before it moves anything else and removes the
+                node. The platform may answer slowly while the database switches over.
+              </p>
+            </div>
+          )}
+
+          {drained && lastCopies.length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="delete-last-copies">
+              <div className="flex items-center gap-1 font-semibold">
+                <AlertTriangle size={12} /> {lastCopies.length} volume(s) keep their only copy on this node — deleting the node deletes them.
+              </div>
+              <ul className="mt-1.5 space-y-0.5">
+                {lastCopies.map((r) => (
+                  <li key={r.replicaName} className="font-mono">
+                    {r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : r.volumeName}
+                    <span className="ml-1 font-sans text-amber-800 dark:text-amber-200">
+                      {!r.inUse ? '— leftover, not in use' : !r.attached ? '— not mounted' : `— ${r.ownerLabel}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5">
+                Draining tenants never touches them. Delete leftovers on{' '}
+                <Link to="/cluster/storage" className="underline">Cluster → Storage</Link> (Orphaned volumes), or confirm:
+              </p>
+              <label className="mt-1.5 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={deleteLastCopies}
+                  onChange={(e) => setDeleteLastCopies(e.target.checked)}
+                  data-testid="delete-last-copies-checkbox"
+                />
+                <span>Delete them with the node.</span>
+              </label>
+            </div>
+          )}
+
+          {drained && !confirmDelete && stuckDbInstances.length === 0 && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
                 <CheckCircle size={12} /> Tenants drained — no tenant pods, no pinned tenants. System services still run here; Delete Node moves them to other servers, then removes the node.
@@ -691,7 +696,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
               <ShieldAlert size={14} className="mt-0.5 shrink-0" />
               <div>
-                Delete will cordon the node, move its system services to other servers (disruption budgets respected — if one
+                Delete will cordon the node,{coveredDbInstances.length > 0 ? ' move its database instances to other servers,' : ''}{' '}
+                move its system services to other servers (disruption budgets respected — if one
                 refuses, Delete stops with the node cordoned and nothing removed), then run{' '}
                 <span className="font-mono">kubectl delete node {node.name}</span> and remove the row from the inventory.
                 The host itself stays running. Click <strong>Confirm Delete</strong> below.
@@ -716,7 +722,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 disabled={
                   drain.isPending
                   || !impact
-                  || (lastReplicaVolumes.length > 0 && !forceLastReplica)
                   || anyStayPinned
                 }
                 title={anyStayPinned
@@ -733,7 +738,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}
-                disabled={dbInstancesHere.length > 0}
+                disabled={stuckDbInstances.length > 0 || (lastCopies.length > 0 && !deleteLastCopies)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                 data-testid={`delete-node-${node.name}-button`}
               >
@@ -749,7 +754,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                 data-testid={`confirm-delete-node-${node.name}-button`}
               >
                 {del.isPending ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                Confirm Delete
+                {del.isPending ? (coveredDbInstances.length > 0 ? 'Deleting — database instance moves first…' : 'Deleting…') : 'Confirm Delete'}
               </button>
             )}
           </div>

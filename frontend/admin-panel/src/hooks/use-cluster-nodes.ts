@@ -119,10 +119,13 @@ export function useDrainNode(name: string) {
 export function useDeleteNode(name: string) {
   const qc = useQueryClient();
   return useMutation({
-    // No body — server enforces drained pre-condition.
-    mutationFn: () =>
+    // The server enforces every pre-condition. `forceLastReplica`: the
+    // operator confirmed that volumes keeping their only copy on the node
+    // may go with it.
+    mutationFn: (body: { forceLastReplica?: boolean } = {}) =>
       apiFetch<DeleteResponseEnvelope>(`/api/v1/admin/nodes/${encodeURIComponent(name)}/delete`, {
         method: 'POST',
+        body: JSON.stringify(body),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cluster-nodes'] });

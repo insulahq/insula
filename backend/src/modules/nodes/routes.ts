@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
-import { updateClusterNodeSchema, drainNodeRequestSchema, patchNodeDiskSchema} from '@insula/api-contracts';
+import { updateClusterNodeSchema, drainNodeRequestSchema, deleteNodeRequestSchema, patchNodeDiskSchema} from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listNodes, listNodesEnriched, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
@@ -160,13 +161,13 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/admin/nodes/:name/drain
-  // Cordon the node and evict every non-system pod. Refuses by default
-  // when this node holds the last running Longhorn replica for any
-  // volume — pass forceLastReplica=true to override.
+  // Drain the node's TENANTS: re-pin them, keep new tenants off, evict their
+  // pods. System workloads and every non-tenant volume stay; Delete is what
+  // asks about those.
   app.post('/admin/nodes/:name/drain', {
     schema: {
       tags: ['Nodes'],
-      summary: 'Cordon and drain a cluster node',
+      summary: "Drain a node's tenants",
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
@@ -204,7 +205,6 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         resourceId: name,
         changes: {
           ...result,
-          forceLastReplica: parsed.data.forceLastReplica ?? false,
           gracePeriodSeconds: parsed.data.gracePeriodSeconds ?? 60,
         } as unknown as Record<string, unknown>,
       });
@@ -318,9 +318,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/admin/nodes/:name/delete
-  // Remove the node from Kubernetes and inventory. Pre-checks: must be
-  // cordoned and have zero non-system pods. The host itself is NOT
-  // shut down or modified — operator handles that out-of-band.
+  // Remove the node from Kubernetes and inventory. Pre-checks: its tenants
+  // were drained and nothing that must survive keeps its only copy there
+  // (deleteNode). Moves its database instances and system pods off first —
+  // minutes, not seconds, when a database instance has to be re-created
+  // elsewhere. The host itself is NOT shut down or modified — operator
+  // handles that out-of-band.
   app.post('/admin/nodes/:name/delete', {
     schema: {
       tags: ['Nodes'],
@@ -337,10 +340,15 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     validateNodeName(name);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const result = await deleteNode(app.db, k8s, name);
+    const body = deleteNodeRequestSchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      throw new ApiError('INVALID_FIELD_VALUE', body.error.issues[0]?.message ?? 'invalid body', 400);
+    }
+    const result = await deleteNode(app.db, k8s, name, { forceLastReplica: body.data.forceLastReplica });
     try {
       const { auditLogs } = await import('../../db/schema.js');
-      await app.db.insert(auditLogs).values({
+      // Retried: moving a database primary off the node switched it over.
+      await withDbRetry(() => app.db.insert(auditLogs).values({
         id: crypto.randomUUID(),
         actorId: request.user?.sub ?? 'system',
         actorType: 'user',
@@ -348,7 +356,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         resourceType: 'cluster_node',
         resourceId: name,
         changes: result as unknown as Record<string, unknown>,
-      });
+      }), { attempts: 12 });
     } catch (err) {
       console.warn('[nodes] delete audit insert failed:', (err as Error).message);
     }
