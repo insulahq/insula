@@ -15,7 +15,9 @@
  */
 export const TABBED_PAGES = {
   '/applications': ['catalog', 'installed', 'upgrades', 'repos'],
-  '/tenants/:id': ['domains', 'deployments', 'files', 'email', 'backups', 'snapshots', 'users', 'sftp'],
+  // Websites, users and files are managed in the tenant panel; the admin page
+  // links there instead of keeping a second copy of those screens.
+  '/tenants/:id': ['overview', 'email', 'traffic', 'storage', 'limits', 'activity'],
   // Traffic is the landing view — operator decision: Monitoring opens on what
   // the platform is doing; SLOs and Active Alerts are one click away.
   '/monitoring': [

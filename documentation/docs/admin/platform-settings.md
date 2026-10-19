@@ -280,7 +280,7 @@ not told twice. This holds for an archive you start by hand too, and for the
 other storage operations — see
 [Interrupted storage operations](tenants.md#interrupted-storage-operations).
 An archive that is interrupted three times over is ended as failed, and its
-tenant's page then offers **Reset to idle** on its Storage Operations card.
+tenant's page then offers **Reset to idle** on its **Storage & backups** section.
 
 The sweep works through its tenants one at a time, so the first run after
 switching it on can take a while when many are due. Just before it archives

@@ -78,23 +78,27 @@ describe('summariseIssues', () => {
   });
 });
 
-describe('where the banner sits on the tenant detail page', () => {
-  // It shipped after ResourceLimitsCard — roughly a full screen down on a real
-  // tenant page — so an operator opening the page to find out what is wrong had
-  // to scroll past everything that is fine. Caught by driving DEV in a browser,
+describe('where the issues sit on the tenant detail page', () => {
+  // It once shipped after the resource-limits card — roughly a full screen
+  // down — so an operator opening the page to find out what is wrong had to
+  // scroll past everything that is fine. Caught by driving DEV in a browser,
   // not by a test, because "the banner renders" was true either way.
   //
   // Asserting source order rather than layout keeps this independent of a
-  // running cluster: the requirement is that it precedes the cards.
-  it('renders above the Account Information card', async () => {
+  // running cluster: the open issues come first in the overview's main column,
+  // before any summary card.
+  it('lists them first in the overview, before the account and summary cards', async () => {
     // Vite's ?raw rather than node:fs — this workspace typechecks without
     // node types, and jsdom has no file-scheme import.meta.url.
-    const { default: src } = await import('../pages/TenantDetail.tsx?raw');
+    const { default: src } = await import('../components/tenant-detail/OverviewTab.tsx?raw');
 
-    const banner = src.indexOf('<TenantIssuesBanner');
-    const accountCard = src.indexOf('Account Information');
-    expect(banner).toBeGreaterThan(-1);
-    expect(accountCard).toBeGreaterThan(-1);
-    expect(banner).toBeLessThan(accountCard);
+    const attention = src.indexOf('<AttentionCard items={attention}');
+    const websites = src.indexOf('<WebsitesCard');
+    const account = src.indexOf('<AccountCard');
+    expect(attention).toBeGreaterThan(-1);
+    expect(attention).toBeLessThan(websites);
+    expect(attention).toBeLessThan(account);
+    // …and the tenant's own issues are what it lists first.
+    expect(src.indexOf('...(issues ?? []).map(')).toBeLessThan(src.indexOf("key: 'placement'"));
   });
 });

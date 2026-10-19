@@ -38,6 +38,7 @@ Each plan has these fields:
 | **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
 | **Max Mailboxes** | How many mailboxes the tenant may create. **0** disables email for every tenant on the plan — see below. |
 | **Bandwidth (GB/month)** | Monthly served-traffic allowance (default 100 GB). See [the monthly bandwidth cap](#the-monthly-bandwidth-cap) below. |
+| **Allow Custom Containers** | Lets the tenant run its own container images and create **private workers** (a service it runs outside the platform, reached through its domains). Off by default; a tenant's **Resource Limits** card can override it. Turning it off stops new ones only — existing custom containers and private workers keep running, and the tenant can still manage them. |
 | **Description** | Optional free text. |
 
 !!! warning "Setting Max Mailboxes to 0 switches email off for the whole plan"
@@ -79,7 +80,7 @@ Saved changes appear on the list straight away.
     yours predate the share model they will show no tier, and their ceiling
     is derived from **CPU Limit** until you set one.
 
-    Tenants given an individual override on their **Resource Limits** card are
+    Tenants given an individual override on their **Plan & limits** section are
     not affected: the override wins, and a plan edit does not overwrite it.
 
     The other fields on this page — price, mailbox and sub-user counts,
@@ -88,7 +89,7 @@ Saved changes appear on the list straight away.
 ## The monthly bandwidth cap
 
 Every plan carries a monthly bandwidth allowance, and each tenant can be given
-an individual override on their **Resource Limits** card. The platform meters
+an individual override on their **Plan & limits** section. The platform meters
 each tenant's served traffic hourly and resets the counter on the 1st of the
 month:
 
@@ -157,7 +158,7 @@ Each tenant's subscription lives in the **Subscription** card on the
 
 Changing the plan here is the subscription-level equivalent of changing
 limits; if you only want to bend one limit for one tenant, use the
-[per-tenant overrides](tenants.md) on the Resource Limits card instead.
+[per-tenant overrides](tenants.md) on the tenant's **Plan & limits** section instead.
 
 **Email the tenant about this change** is ticked by default — changing
 someone's plan or renewal date is normally something they should hear about.
@@ -182,7 +183,7 @@ the relevant notification *Source*.
 !!! tip "The 7-day Dashboard signal"
     A subscription nearing expiry surfaces on the
     [Dashboard](index.md) and in the notifications bell, so you don't have
-    to remember to check. Renew by editing the Subscription card's expiry
+    to remember to check. Renew by editing the expiry on the tenant's **Plan & limits → Subscription**
     date.
 
 ## External billing posture

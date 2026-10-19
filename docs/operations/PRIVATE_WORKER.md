@@ -8,6 +8,8 @@ A **single Docker container** the client runs anywhere they have outbound HTTPS,
 
 Not a Kubernetes node. Not a catalog entry. A standalone platform feature, sibling to `sftp-users`, `domains`, `mailboxes`.
 
+**Gated by "Allow Custom Containers".** A private worker runs the tenant's own software behind the platform's ingress, as a custom container does (ADR-036), so it takes the same gate: the platform-wide `customDeploymentsEnabled` switch (403 `CUSTOM_DEPLOYMENTS_DISABLED`), then the subscription's *Allow Custom Containers* — per-tenant override, else the plan (403 `CUSTOM_CONTAINERS_NOT_IN_PLAN`). Only creating a worker is refused — for an administrator acting for the tenant too: existing workers keep running and stay manageable (rename, rotate, revoke, delete). The tenant panel lists **Private Workers** while the gate is open or the tenant still has workers.
+
 ## Use cases
 
 - Expose a home GPU inference endpoint as `gpu.bobs-tenant.com`

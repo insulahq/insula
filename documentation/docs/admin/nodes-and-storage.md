@@ -143,7 +143,7 @@ before relying on it.
 ## Quotas and per-tenant storage
 
 A tenant's storage limit comes from its **plan** and can be **overridden**
-per tenant on the tenant detail page's *Resource Limits* card — including
+per tenant on the tenant detail page's *Plan & limits* section — including
 online grow and (guarded) destructive shrink. That's the right place to
 change one customer's storage; see [Tenants](tenants.md). The Storage page
 here is about *cluster-wide* capacity and health, not per-tenant limits.

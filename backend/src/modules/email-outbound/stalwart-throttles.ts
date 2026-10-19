@@ -25,7 +25,8 @@
  * approximation — Stalwart has no tenant concept to key on).
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import type { SendLimitLiveState } from '@insula/api-contracts';
 import { tenants, hostingPlans, emailDomains, domains } from '../../db/schema.js';
 import { buildEffectiveSendLimits } from './rate-limit.js';
 import {
@@ -35,6 +36,8 @@ import {
   mtaQueueQuotaSet,
   actionReloadSettings,
   type StalwartExpression,
+  type StalwartMtaThrottleRow,
+  type StalwartMtaQueueQuotaRow,
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
 import { runExclusive, RUN_WAIT_MS } from '../../shared/exclusive-run.js';
@@ -215,6 +218,8 @@ export function buildDesiredSendLimitObjects(
  */
 export async function loadDomainSendLimits(
   db: Database,
+  /** One tenant's domains only; every tenant's when omitted. */
+  tenantId?: string,
 ): Promise<DomainSendLimit[]> {
   const rows = await db
     .select({
@@ -233,7 +238,9 @@ export async function loadDomainSendLimits(
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
     .innerJoin(tenants, eq(emailDomains.tenantId, tenants.id))
     .leftJoin(hostingPlans, eq(tenants.planId, hostingPlans.id))
-    .where(eq(emailDomains.enabled, 1));
+    .where(tenantId === undefined
+      ? eq(emailDomains.enabled, 1)
+      : and(eq(emailDomains.enabled, 1), eq(emailDomains.tenantId, tenantId)));
 
   return rows.map((r) => {
     const resolved = buildEffectiveSendLimits({
@@ -508,4 +515,95 @@ async function reconcileSendLimitsOnce(
     'send-limit reconcile: Stalwart throttles/quotas reconciled',
   );
   return { skipped: false, created, updated, destroyed };
+}
+
+type LiveDomain = SendLimitLiveState['domains'][number];
+
+/**
+ * Pure: what the mail server holds for these domains against what the
+ * reconcile would make it hold. Judged by the reconcile's own comparisons, so
+ * "in effect" here means exactly "the next reconcile would change nothing".
+ */
+export function compareSendLimitState(
+  rows: readonly DomainSendLimit[],
+  liveThrottles: readonly StalwartMtaThrottleRow[],
+  liveQuotas: readonly StalwartMtaQueueQuotaRow[],
+): LiveDomain[] {
+  const desired = buildDesiredSendLimitObjects(rows);
+  const throttlesOf = (desc: string) => liveThrottles.filter((t) => t.description === desc);
+  const quotasOf = (desc: string) => liveQuotas.filter((q) => q.description === desc);
+
+  return rows.map((row) => {
+    const domain = row.domain;
+    const base = `${DESCRIPTION_PREFIX}${domain}`;
+    const hourly = throttlesOf(`${base}:hourly`);
+    const daily = throttlesOf(`${base}:daily`);
+    const backlog = quotasOf(`${base}:backlog`);
+    const block = quotasOf(`${base}:block`);
+
+    const ours = (desc: string | null | undefined) => desc != null && desc.startsWith(`${base}:`);
+    const liveDescs = [
+      ...liveThrottles.filter((t) => ours(t.description)).map((t) => t.description),
+      ...liveQuotas.filter((q) => ours(q.description)).map((q) => q.description as string),
+    ];
+    const duplicates = liveDescs.length - new Set(liveDescs).size;
+
+    const wantThrottles = [...desired.throttles.values()].filter((t) => ours(t.description));
+    const wantQuotas = [...desired.quotas.values()].filter((q) => ours(q.description));
+    const wanted = new Set([...wantThrottles, ...wantQuotas].map((o) => o.description));
+    const throttlesMatch = wantThrottles.every((want) => {
+      const live = throttlesOf(want.description);
+      return live.length === 1 && !throttleNeedsUpdate(live[0]!, want);
+    });
+    const quotasMatch = wantQuotas.every((want) => {
+      const live = quotasOf(want.description);
+      return live.length === 1 && !quotaNeedsUpdate(live[0]!, want);
+    });
+    // A domain the builder refused (an unsafe name) wants nothing, so nothing
+    // can be in effect for it.
+    const inEffect = wanted.size > 0 && throttlesMatch && quotasMatch
+      && liveDescs.every((d) => wanted.has(d)) && duplicates === 0;
+
+    const blocked = row.blocked || row.hourly === 0 || row.daily === 0;
+    return {
+      domain,
+      desired: { hourly: row.hourly, daily: row.daily, blocked },
+      live: {
+        hourly: hourly[0]?.enable ? hourly[0].rate.count : null,
+        daily: daily[0]?.enable ? daily[0].rate.count : null,
+        backlog: backlog[0]?.enable ? (backlog[0].messages ?? null) : null,
+        blocked: block.some((q) => q.enable),
+        duplicates,
+      },
+      inEffect,
+    };
+  });
+}
+
+/**
+ * Read one tenant's send limits back from the mail server. Read-only: it
+ * never writes, so it can run on every page view; an unreachable server is a
+ * normal answer (`reachable: false`), not an error.
+ */
+export async function readTenantSendLimitState(
+  db: Database,
+  tenantId: string,
+  opts: {
+    baseUrl?: string;
+    env?: NodeJS.ProcessEnv;
+    now?: Date;
+    /** Told why the mail server could not be read; the answer itself only says it could not. */
+    logger?: Pick<OutboundReconcileLogger, 'warn'>;
+  } = {},
+): Promise<SendLimitLiveState> {
+  const { now, logger, ...client } = opts;
+  const rows = await loadDomainSendLimits(db, tenantId);
+  const checkedAt = (now ?? new Date()).toISOString();
+  try {
+    const [throttles, quotas] = await Promise.all([mtaOutboundThrottleGet(client), mtaQueueQuotaGet(client)]);
+    return { checkedAt, reachable: true, domains: compareSendLimitState(rows, throttles, quotas) };
+  } catch (err) {
+    logger?.warn({ err, tenantId }, 'send-limit live check: could not read the limits from Stalwart');
+    return { checkedAt, reachable: false, domains: compareSendLimitState(rows, [], []).map((d) => ({ ...d, inEffect: false })) };
+  }
 }

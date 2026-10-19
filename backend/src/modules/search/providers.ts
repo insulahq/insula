@@ -187,7 +187,7 @@ const deploymentProvider: SearchProvider = {
       subtitle: ctx.panel === 'admin'
         ? [r.tenantName, r.catalogName].filter(Boolean).join(' · ') || null
         : r.catalogName,
-      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}/deployments` : '/applications',
+      href: ctx.panel === 'admin' ? `/tenants/${r.tenantId}` : '/applications',
       badge: r.status,
     }));
   },

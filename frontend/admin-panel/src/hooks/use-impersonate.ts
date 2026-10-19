@@ -49,13 +49,19 @@ export function useLoginAsTenant() {
     return (fromSettings.trim() || config.TENANT_PANEL_URL).replace(/\/+$/, '');
   };
 
-  const open = async (tenantId: string): Promise<boolean> => {
+  /**
+   * `next` is a path in the TENANT panel (`/email/mailboxes?mailbox=<id>`):
+   * the page the link was about. The tenant panel follows it only when it is a
+   * path inside itself, so a crafted value cannot send the session elsewhere.
+   */
+  const open = async (tenantId: string, next?: string): Promise<boolean> => {
     const tenantPanelUrl = resolvePanelUrl();
     if (!tenantPanelUrl) return false;
     const res = await impersonate.mutateAsync(tenantId);
     const { token, user } = res.data;
     const userJson = encodeURIComponent(JSON.stringify(user));
-    window.open(`${tenantPanelUrl}/login?token=${token}&user=${userJson}`, '_blank');
+    const nextParam = next ? `&next=${encodeURIComponent(next)}` : '';
+    window.open(`${tenantPanelUrl}/login?token=${token}&user=${userJson}${nextParam}`, '_blank');
     return true;
   };
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense, type FormEvent } from 'react';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import { useSearchParams } from 'react-router-dom';
 import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle, Send, CornerUpRight, AtSign } from 'lucide-react';
@@ -63,6 +63,7 @@ import {
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 import { useTabParam } from '@/hooks/use-tab-param';
+import { useOpenFromQuery } from '@/hooks/use-open-from-query';
 import type { TabOf } from '@/routes/tabbed-pages';
 
 // Lazy: a wall of static setup copy that most sessions never open.
@@ -768,6 +769,8 @@ function MailboxesTab({
 
   const mailboxesRaw = res?.data ?? [];
   const { sortedData: mailboxes, sortKey, sortDirection, onSort } = useSortable(mailboxesRaw, 'fullAddress');
+  // `?mailbox=<id>` from an admin link opens that mailbox's editor.
+  useOpenFromQuery('mailbox', res?.data as readonly Mailbox[] | undefined, setEditingMailbox);
   const createMailbox = useCreateMailbox(tenantId, emailDomain.id);
 
   const handleCreate = async (e: FormEvent) => {
@@ -1452,6 +1455,8 @@ function AliasesTab({
 
   const aliases = res?.data ?? [];
   const domainName = emailDomain.domainName;
+  // `?alias=<id>` from an admin link opens that mailing list's editor.
+  useOpenFromQuery('alias', res?.data as readonly EmailAlias[] | undefined, setEditingAlias);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -2268,6 +2273,12 @@ function ImapSyncPanel({
   const [formError, setFormError] = useState<string | null>(null);
   const jobs = jobsRes?.data ?? [];
   const activeCount = jobs.filter(j => j.status === 'pending' || j.status === 'running').length;
+  // `?migration=<id>` from an admin link marks that job; `&action=edit` also
+  // opens its edit form. Never a destructive action from a URL: a Delete link
+  // lands on the job, and the Delete button is still pressed here.
+  const [migrationParams] = useSearchParams();
+  const focusJobId = migrationParams.get('migration');
+  const focusEdit = migrationParams.get('action') === 'edit';
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -2402,6 +2413,8 @@ function ImapSyncPanel({
           resyncPending={resync.isPending}
           onUpdate={(input) => update.mutate({ jobId: j.id, input })}
           updatePending={update.isPending}
+          focused={j.id === focusJobId}
+          openEdit={j.id === focusJobId && focusEdit}
         />
       ))}
     </div>
@@ -2419,8 +2432,14 @@ function ImapSyncJobRow({
   onUpdate,
   updatePending,
   mailboxes,
+  focused = false,
+  openEdit = false,
 }: {
   readonly job: ImapSyncJob;
+  /** Named by a link (`?migration=<id>`): scrolled to and outlined. */
+  readonly focused?: boolean;
+  /** Named with `&action=edit`: the edit form starts open. */
+  readonly openEdit?: boolean;
   /** For retargeting the destination — see the selector in the edit form. */
   readonly mailboxes: readonly { id: string; fullAddress: string }[];
   readonly onCancel: () => void;
@@ -2433,9 +2452,13 @@ function ImapSyncJobRow({
   readonly updatePending: boolean;
 }) {
   const [showLog, setShowLog] = useState(false);
-  const [showEdit, setShowEdit] = useState(false);
   const isActive = job.status === 'pending' || job.status === 'running';
   const isTerminal = job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled';
+  const [showEdit, setShowEdit] = useState(openEdit && isTerminal);
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView?.({ block: 'center' });
+  }, [focused]);
 
   // Round-4 Phase 3: derived progress percent. When the parser has
   // not yet reported a transferred count, we render an indeterminate
@@ -2448,7 +2471,15 @@ function ImapSyncJobRow({
     : 0;
 
   return (
-    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs" data-testid={`imapsync-job-${job.id}`}>
+    <div
+      ref={rowRef}
+      className={clsx(
+        'rounded-md border p-3 text-xs',
+        focused ? 'border-brand-500 ring-2 ring-brand-500/30 dark:border-brand-400' : 'border-gray-200 dark:border-gray-700',
+      )}
+      data-testid={`imapsync-job-${job.id}`}
+      data-focused={focused ? 'true' : undefined}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {/* A migration is a PAIRING. Showing only the source made two jobs

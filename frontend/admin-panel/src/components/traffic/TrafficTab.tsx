@@ -45,7 +45,16 @@ function draggedRange(fromIso: string, toIso: string, stepSeconds: number): Rang
   return { from: new Date(fromIso), to: new Date(to), preset: null };
 }
 
-const SCOPES: ReadonlyArray<{ key: TrafficScope; label: string; subjectLabel: string }> = [
+type ScopeOption = { key: TrafficScope; label: string; subjectLabel: string };
+
+/** The views of ONE tenant (the tenant page's Traffic tab): its own namespace only. */
+const TENANT_SCOPES: ReadonlyArray<ScopeOption> = [
+  { key: 'tenant', label: 'This tenant (in / out)', subjectLabel: 'Tenant' },
+  { key: 'route', label: 'Ingress route', subjectLabel: 'Route' },
+  { key: 'pod', label: 'Pod (internal traffic)', subjectLabel: 'Pod' },
+];
+
+const SCOPES: ReadonlyArray<ScopeOption> = [
   { key: 'cluster', label: 'Cluster', subjectLabel: 'Measurement' },
   { key: 'node', label: 'Node', subjectLabel: 'Node' },
   { key: 'tenant', label: 'Tenant', subjectLabel: 'Tenant' },
@@ -132,12 +141,25 @@ function metricsFor(scope: TrafficScope): ReadonlyArray<{ key: TrafficMetric; la
   return scope === 'pod' ? METRICS.slice(0, 1) : METRICS;
 }
 
-export default function TrafficTab() {
+export default function TrafficTab({ tenant }: {
+  /**
+   * Narrow the whole view to one tenant (the tenant page's Traffic tab): only
+   * that tenant's scopes are offered, and every request goes to the tenant
+   * endpoints, which confine routes and pods to its namespace.
+   */
+  readonly tenant?: { readonly id: string; readonly namespace: string };
+} = {}) {
   // The query string picks the INITIAL view, so another page can link straight
   // to a question (`?scope=tenant&subject=<namespace>&range=7d`); from there
   // the controls own the state. Read once, on mount.
   const { search } = useLocation();
-  const [initial] = useState(() => parseTrafficUrlState(search));
+  const [initial] = useState(() => {
+    const parsed = parseTrafficUrlState(search);
+    if (!tenant) return parsed;
+    const scope: TrafficScope = TENANT_SCOPES.some((x) => x.key === parsed.scope) ? parsed.scope : 'tenant';
+    return { ...parsed, scope, subject: scope === 'route' ? parsed.subject : tenant.namespace };
+  });
+  const scopeOptions = tenant ? TENANT_SCOPES : SCOPES;
   const [range, setRange] = useState<RangeValue>(() => presetRange(initial.range));
   const [scope, setScope] = useState<TrafficScope>(initial.scope);
   const [subject, setSubject] = useState<string | null>(initial.subject);
@@ -176,12 +198,14 @@ export default function TrafficTab() {
     metric: effectiveMetric,
     direction: effectiveDirection,
     backups: effectiveBackups,
+    tenantId: tenant?.id,
   };
   const { data: frame, isLoading, error } = useTrafficSeries(seriesParams);
 
-  const needsSubjectList = scope !== 'cluster';
+  // One tenant's own in/out view is a single subject: there is nothing to pick.
+  const needsSubjectList = scope !== 'cluster' && !(tenant && scope === 'tenant');
   const { data: subjects, isLoading: subjectsLoading } = useTrafficSubjects(
-    { from: range.from, to: range.to, scope: scope === 'pod' ? 'pod' : scope, subject: scope === 'pod' ? (subject ?? undefined) : undefined, metric: effectiveMetric },
+    { from: range.from, to: range.to, scope: scope === 'pod' ? 'pod' : scope, subject: scope === 'pod' ? (subject ?? undefined) : undefined, metric: effectiveMetric, tenantId: tenant?.id },
     // Pods no longer need a tenant first: with none chosen the list is every
     // pod, ranked. Gating it on a tenant is what left the default pod view
     // with an error and no way forward.
@@ -191,7 +215,7 @@ export default function TrafficTab() {
   // Pods live under a tenant, so the tenant picker has to come first.
   const { data: tenantList, isLoading: tenantsLoading } = useTrafficSubjects(
     { from: range.from, to: range.to, scope: 'tenant', metric: 'traffic' },
-    scope === 'pod',
+    scope === 'pod' && !tenant,
   );
 
   // A chosen subject stays listed even when the ranking leaves it out (it
@@ -210,7 +234,7 @@ export default function TrafficTab() {
     [tenantList, scope, subject],
   );
 
-  const scopeMeta = SCOPES.find((s) => s.key === scope) ?? SCOPES[0];
+  const scopeMeta = scopeOptions.find((s) => s.key === scope) ?? scopeOptions[0];
   // A breakdown across subjects offers a combined Total; a cluster view does
   // not — its rows are the wire and subsets of it, which do not add up.
   const breakdown = !singleSubject;
@@ -235,11 +259,12 @@ export default function TrafficTab() {
             id="traffic-scope"
             label="Break down by"
             value={scope}
-            options={SCOPES.map((s) => ({ key: s.key, label: s.label }))}
+            options={scopeOptions.map((s) => ({ key: s.key, label: s.label }))}
             onChange={(k) => {
-              const next = (k as TrafficScope) ?? 'cluster';
+              const next = (k as TrafficScope) ?? (tenant ? 'tenant' : 'cluster');
               setScope(next);
-              setSubject(null);
+              // Pods and the tenant's own view are always this tenant's.
+              setSubject(tenant && next !== 'route' ? tenant.namespace : null);
               setPod(null);
               resetRows();
               // Pod scope cannot answer a request or latency question, so a
@@ -250,7 +275,7 @@ export default function TrafficTab() {
           />
         </div>
 
-        {scope === 'pod' && (
+        {scope === 'pod' && !tenant && (
           <div className="min-w-[220px]">
             <TrafficPicker
               id="traffic-tenant"
