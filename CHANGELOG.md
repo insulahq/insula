@@ -44,10 +44,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   moved by hand with `kubectl`. Delete now does it: it cordons the node, waits until every instance
   of the database is ready, switches a primary over to a standby it is streaming to, deletes the
   instance's volume claims and pod so PostgreSQL's operator re-creates it on another server from
-  the primary, and waits until the database is whole again before removing the node. Only an instance no other instance holds the data of — a single-instance
-  database — still keeps Delete disabled (`NODE_DELETE_HOLDS_DATABASE`). A step that does not
-  finish in time stops the delete with the node cordoned and in the cluster
-  (`NODE_DELETE_DATABASE_MOVE_STALLED`); pressing Delete again continues.
+  the primary, and waits until the database is whole again before removing the node. Only an
+  instance no other instance holds the data of — a single-instance database — still keeps Delete
+  disabled (`NODE_DELETE_HOLDS_DATABASE`). A step that does not finish in time stops the delete
+  with the node cordoned and in the cluster (`NODE_DELETE_DATABASE_MOVE_STALLED`); pressing Delete
+  again continues.
+- **Uninstall k3s on a deleted server's host straight away.** While k3s still runs there, the host
+  registers itself again within seconds as a blank node — schedulable, and listed as a worker that
+  can host tenants. The operator guide's *Removing a node* now says so, and how to clean up if it
+  happened (uninstall, `kubectl delete node`, **Remove orphan**).
 
 ## [2026.10.12] - 2026-10-18
 

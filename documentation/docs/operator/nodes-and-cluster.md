@@ -459,8 +459,12 @@ kubelet not reporting* instead.
    (The API replica answering the request is the one pod left in place; it
    goes with the node, and a replacement starts on another server.)
    **The host itself keeps running** — Insula does not power it off.
-5. On the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh` (server) or
-   `k3s-agent-uninstall.sh` (worker), then release the VPS.
+5. **Straight away**, on the host, uninstall k3s: `/usr/local/bin/k3s-uninstall.sh`
+   (server) or `k3s-agent-uninstall.sh` (worker), then release the VPS. While
+   k3s still runs there, the host registers itself again within seconds — as a
+   blank node, schedulable, listed as a worker that can host tenants. If that
+   happened, uninstall k3s first, then `kubectl delete node <name>` and
+   **Remove orphan** on its card.
 
 ### Moving a database instance off a server
 
