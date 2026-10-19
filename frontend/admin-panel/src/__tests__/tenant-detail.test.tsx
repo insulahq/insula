@@ -227,12 +227,18 @@ describe('TenantDetail — sections', () => {
     expect(await screen.findByTestId('tenant-created-by')).toHaveTextContent('Ada Admin');
   });
 
-  it('lists the websites and applications, linking into the tenant panel to manage them', async () => {
+  it('lists domains and applications in two tables, each linking into the tenant panel', async () => {
     renderTenantDetail();
-    const table = await screen.findByTestId('domains-table');
+    const domains = await screen.findByTestId('domains-card');
+    const table = await within(domains).findByTestId('domains-table');
     expect(within(table).getByText('acme.com').closest('button')).toHaveAttribute('data-tenant-panel-path', '/domains/d1');
-    expect(await screen.findByTestId('application-w1')).toHaveTextContent('web-app');
-    expect(screen.getByTestId('tp-domains')).toHaveAttribute('data-tenant-panel-path', '/domains');
+    expect(within(domains).getByTestId('tp-domains')).toHaveAttribute('data-tenant-panel-path', '/domains');
+    // Applications are their own table, not a block under the domains.
+    expect(within(domains).queryByTestId('applications-list')).toBeNull();
+    const apps = await screen.findByTestId('applications-card');
+    expect(await within(apps).findByTestId('application-w1')).toHaveTextContent('web-app');
+    expect(within(apps).getByTestId('tp-applications')).toHaveAttribute('data-tenant-panel-path', '/applications/installed');
+    expect(screen.queryByTestId('websites-card')).toBeNull();
   });
 
   it('keeps the root switch for a custom container — the one application control that is the operator’s', async () => {
@@ -493,6 +499,12 @@ describe('TenantDetail — Storage & backups', () => {
     expect(screen.getByTestId('placement-node-node-2')).not.toHaveAttribute('data-active');
     expect(screen.getByTestId('placement-misplaced-banner')).toBeInTheDocument();
     expect(screen.getByTestId('tenant-placement-chip')).toHaveTextContent('Running on node-3 · pinned to node-2');
+    // DATA is a solid blue pill with white text, on the node holding the data
+    // only — and in the legend.
+    const dataPill = within(screen.getByTestId('placement-node-node-2')).getByTestId('data-badge');
+    expect(dataPill).toHaveTextContent('DATA');
+    expect(dataPill).toHaveClass('bg-blue-600', 'text-white');
+    expect(within(screen.getByTestId('placement-node-node-3')).queryByTestId('data-badge')).toBeNull();
   });
 
   it('lists snapshots and sends the operator to the tenant panel to take or restore one', async () => {

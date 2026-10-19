@@ -201,7 +201,8 @@ export default function OverviewTab({ tenant, tenantId, planName, issues, placem
       <div className="flex flex-wrap items-start gap-6">
         <div className="flex min-w-0 flex-[999_1_640px] flex-col gap-6">
           <AttentionCard items={attention} onTab={onTab} />
-          <WebsitesCard tenantId={tenantId} />
+          <DomainsCard tenantId={tenantId} />
+          <ApplicationsCard tenantId={tenantId} />
           <RecentActivityCard tenantId={tenantId} />
         </div>
 
@@ -262,20 +263,18 @@ function AttentionCard({ items, onTab }: { readonly items: readonly AttentionIte
   );
 }
 
-function WebsitesCard({ tenantId }: { readonly tenantId: string }) {
+function DomainsCard({ tenantId }: { readonly tenantId: string }) {
   const { data: domainsRes, isLoading } = useDomains(tenantId);
   const domains = domainsRes?.data ?? [];
-  const { data: deploymentsRes } = useDeployments(tenantId);
-  const deployments = deploymentsRes?.data ?? [];
   return (
     <Card
-      title="Websites"
-      actions={<TenantPanelLink tenantId={tenantId} to={tenantPanel.domains()} label="Domains" testId="tp-domains">Manage websites</TenantPanelLink>}
+      title="Domains"
+      actions={<TenantPanelLink tenantId={tenantId} to={tenantPanel.domains()} label="Domains" testId="tp-domains">Manage domains</TenantPanelLink>}
       bodyClassName=""
-      testId="websites-card"
+      testId="domains-card"
     >
       {isLoading ? (
-        <div className="flex items-center gap-2 px-5 py-4 text-sm text-gray-500"><Loader2 size={14} className="animate-spin" /> Loading…</div>
+        <div className="flex items-center gap-2 px-5 py-4 text-sm text-gray-500 dark:text-gray-400"><Loader2 size={14} className="animate-spin" /> Loading…</div>
       ) : domains.length === 0 ? (
         <p className="px-5 py-4 text-sm text-gray-600 dark:text-gray-400">No domains yet.</p>
       ) : (
@@ -304,13 +303,28 @@ function WebsitesCard({ tenantId }: { readonly tenantId: string }) {
           </table>
         </div>
       )}
-      {deployments.length > 0 && (
-        <div className="border-t border-gray-200 dark:border-gray-700">
-          <ApplicationsList tenantId={tenantId} deployments={deployments} />
-        </div>
+    </Card>
+  );
+}
+
+function ApplicationsCard({ tenantId }: { readonly tenantId: string }) {
+  const { data: deploymentsRes, isLoading } = useDeployments(tenantId);
+  const deployments = (deploymentsRes?.data ?? []).filter((d) => d.status !== 'deleted');
+  return (
+    <Card
+      title="Applications"
+      actions={<TenantPanelLink tenantId={tenantId} to={tenantPanel.applications()} label="Applications" testId="tp-applications">Manage applications</TenantPanelLink>}
+      bodyClassName=""
+      testId="applications-card"
+    >
+      {isLoading ? (
+        <div className="flex items-center gap-2 px-5 py-4 text-sm text-gray-500 dark:text-gray-400"><Loader2 size={14} className="animate-spin" /> Loading…</div>
+      ) : deployments.length === 0 ? (
+        <p className="px-5 py-4 text-sm text-gray-600 dark:text-gray-400" data-testid="applications-empty">No applications yet.</p>
+      ) : (
+        <ApplicationsList tenantId={tenantId} deployments={deployments} />
       )}
       <div className="flex flex-wrap gap-x-5 gap-y-1.5 border-t border-gray-200 px-5 py-3 text-[13px] dark:border-gray-700">
-        <TenantPanelLink tenantId={tenantId} to={tenantPanel.applications()} label="Applications">Applications</TenantPanelLink>
         <TenantPanelLink tenantId={tenantId} to={tenantPanel.cronJobs()} label="Cron jobs">Cron jobs</TenantPanelLink>
         <TenantPanelLink tenantId={tenantId} to={tenantPanel.databases()} label="Database manager">Databases</TenantPanelLink>
         <TenantPanelLink tenantId={tenantId} to={tenantPanel.files()} label="Files">Files</TenantPanelLink>
