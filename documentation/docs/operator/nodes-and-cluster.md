@@ -448,11 +448,13 @@ kubelet not reporting* instead.
 4. Click **Delete** on the card → **Confirm Delete**. Delete **cordons** the
    node, moves its database instances (below), then moves the system pods: it
    evicts every platform pod still on it
-   (DaemonSet pods excepted — they go with the node), respecting disruption
-   budgets, waits up to 90 seconds for them to leave, then runs
-   `kubectl delete node` and removes the inventory row. An eviction a
-   disruption budget refuses, or a pod still shutting down when the wait runs
-   out, stops the delete with `NODE_DELETE_EVICTION_BLOCKED`: the node stays
+   (DaemonSet pods and Longhorn's instance manager excepted — they belong to
+   the node and go with it), respecting disruption budgets, waits up to 90
+   seconds for them to leave and for the volumes they used to detach, then
+   runs `kubectl delete node` and removes the inventory row. An eviction a
+   disruption budget refuses, or a pod still shutting down or a volume still
+   attached when the wait runs out, stops the delete with
+   `NODE_DELETE_EVICTION_BLOCKED`: the node stays
    cordoned and nothing is removed — resolve it and press **Delete** again.
    (The API replica answering the request is the one pod left in place; it
    goes with the node, and a replacement starts on another server.)

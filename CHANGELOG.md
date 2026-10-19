@@ -28,6 +28,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   its own Delete, which called the API directly while the dialog said Delete was disabled (a
   database instance's only copy on the node). The server refused it, but the button should not have
   been offered: it now opens the dialog at its Delete step, with every check shown.
+- **Delete Node no longer stops at Longhorn's instance manager.** Since 2026.10.12 Delete evicts
+  the system pods off a server before removing it, and it tried to evict Longhorn's instance
+  manager too — a pod that belongs to its node, which Longhorn protects with a disruption budget
+  while the node holds the last copy of any volume (a leftover volume is enough). Delete stopped
+  there every time (`NODE_DELETE_EVICTION_BLOCKED … instance-manager-…`), the node left cordoned.
+  It now leaves the instance manager to go with the node, as it does DaemonSet pods, and waits for
+  the volumes the evicted pods used to detach before it deletes the node.
 
 ### Changed
 

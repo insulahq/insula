@@ -117,17 +117,29 @@ interface PodLite {
     readonly name?: string;
     readonly namespace?: string;
     readonly annotations?: Record<string, string>;
-    readonly ownerReferences?: ReadonlyArray<{ readonly kind?: string }>;
+    readonly ownerReferences?: ReadonlyArray<{ readonly kind?: string; readonly apiVersion?: string }>;
   };
   readonly status?: { readonly phase?: string };
 }
 
-/** Pure: the pods that have to leave before the node goes — not DaemonSet or static pods, not finished ones. */
+/**
+ * A pod that belongs to its node and goes with it: a DaemonSet's, a static
+ * pod's, or one of Longhorn's instance managers (the engines and replicas of
+ * that node — Longhorn re-creates it on the same node, and keeps a disruption
+ * budget on it while the node holds the last copy of any volume, so evicting
+ * it is both pointless and refused).
+ */
+function belongsToNode(p: PodLite): boolean {
+  return (p.metadata?.ownerReferences ?? []).some((o) => o.kind === 'DaemonSet' || o.kind === 'Node'
+    || (o.kind === 'InstanceManager' && (o.apiVersion ?? '').startsWith('longhorn.io/')));
+}
+
+/** Pure: the pods that have to leave before the node goes — not ones that belong to the node, not finished ones. */
 export function podsToMoveOff(pods: readonly PodLite[]): Array<{ namespace: string; name: string }> {
   return pods
     .filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed')
     .filter((p) => !p.metadata?.annotations?.['kubernetes.io/config.mirror'])
-    .filter((p) => !(p.metadata?.ownerReferences ?? []).some((o) => o.kind === 'DaemonSet' || o.kind === 'Node'))
+    .filter((p) => !belongsToNode(p))
     .map((p) => ({ namespace: p.metadata?.namespace ?? '', name: p.metadata?.name ?? '' }))
     .filter((p) => p.namespace !== '' && p.name !== '');
 }
@@ -141,8 +153,31 @@ export async function cordonNode(k8s: K8sClients, node: string): Promise<void> {
 }
 
 /**
+ * Longhorn volumes still attached on the node — an engine running there.
+ * Empty without Longhorn; `null` when the list cannot be read.
+ */
+async function volumesAttachedOn(k8s: K8sClients, node: string): Promise<string[] | null> {
+  try {
+    const list = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system', plural: 'volumes',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as {
+      items?: Array<{ metadata?: { name?: string }; status?: { currentNodeID?: string; kubernetesStatus?: { namespace?: string; pvcName?: string } } }>;
+    };
+    return (list.items ?? [])
+      .filter((v) => v.status?.currentNodeID === node)
+      .map((v) => {
+        const k = v.status?.kubernetesStatus;
+        return `volume ${k?.namespace && k.pvcName ? `${k.namespace}/${k.pvcName}` : v.metadata?.name ?? '?'} (still attached)`;
+      });
+  } catch (err) {
+    return statusOf(err) === 404 ? [] : null;
+  }
+}
+
+/**
  * Cordon the node, evict what has to leave (disruption budgets respected),
- * then wait up to `waitMs` for it to be gone. Throws 409 — node left
+ * then wait up to `waitMs` for it to be gone — and for the volumes it used to
+ * detach, so no volume is still attached to the node when it is deleted. Throws 409 — node left
  * cordoned, nothing deleted — when an eviction is refused or a pod is still
  * there when the wait runs out (pressing Delete again resumes). Returns how
  * many pods were evicted.
@@ -197,18 +232,23 @@ export async function moveSystemPodsOff(
   }
 
   const deadline = Date.now() + waitMs;
-  let left = await list();
+  const remaining = async (): Promise<string[]> => {
+    const pods = (await list()).map((p) => `${p.namespace}/${p.name}`);
+    if (pods.length > 0) return pods;
+    return (await volumesAttachedOn(k8s, node)) ?? ['Longhorn volumes (could not be read)'];
+  };
+  let left = await remaining();
   while (left.length > 0 && Date.now() < deadline) {
     await sleep(3000);
-    left = await list();
+    left = await remaining();
   }
   if (left.length > 0) {
-    const names = left.map((p) => `${p.namespace}/${p.name}`);
+    const names = left;
     throw new ApiError(
       'NODE_DELETE_EVICTION_BLOCKED',
-      `Node '${node}' is cordoned and its system pods were evicted, but ${names.length} still shut(s) down after ` +
-      `${Math.round(waitMs / 1000)} s: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}. Nothing was ` +
-      `deleted — press Delete again once they are gone.`,
+      `Node '${node}' is cordoned and its system pods were evicted, but after ${Math.round(waitMs / 1000)} s ` +
+      `${names.length} thing(s) still hold on to it: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}. ` +
+      `Nothing was deleted — press Delete again once they are gone.`,
       409,
       { node_name: node, pods: names.slice(0, 20) },
     );
