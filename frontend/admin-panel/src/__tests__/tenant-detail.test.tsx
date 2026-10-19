@@ -215,6 +215,13 @@ describe('TenantDetail — sections', () => {
     expect(within(screen.getByTestId('tenant-header')).queryByText('admin@acme.com')).toBeNull();
   });
 
+  it('names the plan from the plan list when the tenant read does not carry it', async () => {
+    // GET /tenants/:id leaves planName empty — only list rows fill it.
+    setupMockApi({ ...MOCK_CLIENT.data, planName: null, planId: 'plan-002' });
+    renderTenantDetail();
+    await waitFor(() => expect(screen.getByTestId('tenant-plan-link')).toHaveTextContent('Pro plan'));
+  });
+
   it('names the creating user instead of showing an id', async () => {
     renderTenantDetail();
     expect(await screen.findByTestId('tenant-created-by')).toHaveTextContent('Ada Admin');

@@ -97,6 +97,7 @@ export function formatLimit(row: Pick<LimitRow, 'kind' | 'unit' | 'id'>, value: 
   if (row.kind === 'tier') return TIER_LABEL[value] ?? value;
   if (row.kind === 'bool') return value === 'true' ? 'Allowed' : 'Not allowed';
   if (row.id === 'price') return `${row.unit} ${Number.isFinite(Number(value)) ? Number(value).toFixed(2) : value}`;
+  if (row.unit === 'cores' && Number(value) === 1) return `${value} core`;
   return row.unit ? `${value} ${row.unit}` : value;
 }
 

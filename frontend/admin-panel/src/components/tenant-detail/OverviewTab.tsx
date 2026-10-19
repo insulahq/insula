@@ -62,9 +62,10 @@ function pctOf(used: number | null | undefined, of: number | null | undefined): 
   return (used / of) * 100;
 }
 
-export default function OverviewTab({ tenant, tenantId, issues, placement, onTab }: {
+export default function OverviewTab({ tenant, tenantId, planName, issues, placement, onTab }: {
   readonly tenant: Tenant;
   readonly tenantId: string;
+  readonly planName: string | null;
   readonly issues: readonly TenantIssue[] | undefined;
   readonly placement: TenantPlacement | null;
   readonly onTab: (tab: TabKey) => void;
@@ -207,7 +208,7 @@ export default function OverviewTab({ tenant, tenantId, issues, placement, onTab
         <aside className="flex min-w-0 flex-[1_1_340px] flex-col gap-6">
           <PlacementSummaryCard tenant={tenant} tenantId={tenantId} placement={placement} />
           <AccountCard tenant={tenant} />
-          <PlanCard tenant={tenant} tenantId={tenantId} pendingCpu={Boolean(cpuRow?.pendingCpuChange)} />
+          <PlanCard tenant={tenant} tenantId={tenantId} planName={planName} pendingCpu={Boolean(cpuRow?.pendingCpuChange)} />
           <BackupsSummaryCard tenantId={tenantId} lastBundle={lastBundle} lastComplete={lastComplete} />
           <EmailSummaryCard tenantId={tenantId} outboundSuspended={tenant.emailOutboundSuspended === true} />
           <UsersCard tenantId={tenantId} />
@@ -365,8 +366,8 @@ function PlacementSummaryCard({ tenant, tenantId, placement }: { readonly tenant
       <div className="grid grid-cols-2 gap-2.5 p-5">
         <div className="rounded-lg border-2 border-green-500 bg-green-50 px-3 py-2.5 dark:border-green-600 dark:bg-green-900/20">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-green-800 dark:text-green-300"><span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />ACTIVE</div>
-          <div className="mt-1 font-semibold text-gray-900 dark:text-gray-100">{running.length > 0 ? running.map(nodeLabel).join(', ') : '—'}</div>
-          <div className="text-xs text-gray-600 dark:text-gray-400">Where its pods run now</div>
+          <div className="mt-1 font-semibold text-gray-900 dark:text-gray-100">{running.length > 0 ? running.map(nodeLabel).join(', ') : 'Nothing running'}</div>
+          <div className="text-xs text-gray-600 dark:text-gray-400">{running.length > 0 ? 'Where its pods run now' : 'No pod runs and no volume is attached'}</div>
         </div>
         <div className="rounded-lg border-2 border-dashed border-brand-500 px-3 py-2.5 dark:border-brand-400">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300"><Pin size={12} aria-hidden="true" />PINNED</div>
@@ -416,7 +417,7 @@ function AccountCard({ tenant }: { readonly tenant: Tenant }) {
   );
 }
 
-function PlanCard({ tenant, tenantId, pendingCpu }: { readonly tenant: Tenant; readonly tenantId: string; readonly pendingCpu: boolean }) {
+function PlanCard({ tenant, tenantId, planName, pendingCpu }: { readonly tenant: Tenant; readonly tenantId: string; readonly planName: string | null; readonly pendingCpu: boolean }) {
   const overrides = [
     tenant.cpuLimitOverride, tenant.cpuTierOverride, tenant.cpuBurstCoresOverride, tenant.memoryLimitOverride,
     tenant.storageLimitOverride, tenant.bandwidthLimitOverride, tenant.maxSubUsersOverride, tenant.maxMailboxesOverride,
@@ -434,7 +435,7 @@ function PlanCard({ tenant, tenantId, pendingCpu }: { readonly tenant: Tenant; r
         <span className="text-[13px] font-medium text-brand-600 dark:text-brand-400">Plan &amp; limits →</span>
       </div>
       <div className="p-5">
-        <div className="text-base font-semibold text-gray-900 dark:text-gray-100">{tenant.planName ?? 'No plan'}</div>
+        <div className="text-base font-semibold text-gray-900 dark:text-gray-100">{planName ?? (tenant.planId ? 'Plan' : 'No plan')}</div>
         <p className="mt-1 text-[13px] text-gray-700 dark:text-gray-300">
           {overrides === 0 ? 'Every limit follows the plan.' : `${overrides} custom ${overrides === 1 ? 'limit' : 'limits'}.`}
           {pendingCpu && ' CPU settings wait for Re-apply.'}

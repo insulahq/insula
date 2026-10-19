@@ -25,6 +25,7 @@ import { useSetTenantAutomationExempt } from '@/hooks/use-tenant-automation';
 import { useBulkRestartDeployments } from '@/hooks/use-deployments';
 import { useLoginAsTenant } from '@/hooks/use-impersonate';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
+import { usePlans } from '@/hooks/use-plans';
 import { useTenantPlacement } from '@/hooks/use-tenant-placement';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -53,6 +54,9 @@ export default function TenantDetail() {
   const { data: placementData } = useTenantPlacement(id ?? '');
   const placement = placementData?.data.placement ?? null;
   const nodeLabel = useNodeLabel();
+  // The detail read leaves `planName` empty (only list rows carry it), so the
+  // name comes from the plan list when the tenant does not say.
+  const { data: plansRes } = usePlans();
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -191,6 +195,7 @@ export default function TenantDetail() {
   }
 
   const name = tenant.name ?? 'Unknown';
+  const planName = tenant.planName ?? plansRes?.data.find((p) => p.id === tenant.planId)?.name ?? null;
   const issueCount = tenantIssues?.length ?? 0;
   const misplaced = placement?.status === 'misplaced';
   const runningOn = placement ? (placement.workloadNodes.length > 0 ? placement.workloadNodes : placement.attachedNodes) : [];
@@ -241,7 +246,7 @@ export default function TenantDetail() {
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] text-gray-600 dark:text-gray-400">
                 <Link to={`/tenants/${id}/limits`} className="hover:text-brand-600 hover:underline dark:hover:text-brand-400" data-testid="tenant-plan-link">
-                  {tenant.planName ? `${tenant.planName} plan` : 'No plan'}
+                  {planName ? `${planName} plan` : tenant.planId ? 'Plan' : 'No plan'}
                 </Link>
                 {misplaced ? (
                   <Link to={`/tenants/${id}/storage`} data-testid="tenant-placement-chip">
@@ -471,7 +476,7 @@ export default function TenantDetail() {
           chosen pin, a traffic subject — belongs to the tenant it was made on.
           Limits also remount on a plan change, to re-read the plan's values. */}
       <Fragment key={id}>
-        {activeTab === 'overview' && <OverviewTab tenant={tenant} tenantId={id} issues={tenantIssues} placement={placement} onTab={setActiveTab} />}
+        {activeTab === 'overview' && <OverviewTab tenant={tenant} tenantId={id} planName={planName} issues={tenantIssues} placement={placement} onTab={setActiveTab} />}
         {activeTab === 'email' && <TenantEmailTab tenant={tenant} tenantId={id} />}
         {activeTab === 'traffic' && <TenantTrafficTab tenant={tenant} tenantId={id} />}
         {activeTab === 'storage' && <StorageTab tenant={tenant} tenantId={id} />}

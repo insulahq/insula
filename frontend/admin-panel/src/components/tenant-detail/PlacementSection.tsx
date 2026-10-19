@@ -110,7 +110,7 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
           />
         )}
 
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3.5" data-testid="placement-nodes">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3.5" data-testid="placement-nodes">
           {cards.map((n) => {
             const isActive = active.includes(n.name);
             const isPinned = n.name === pinned;
@@ -142,7 +142,8 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
                 <ul className="mt-1.5 space-y-0.5 text-[13px] text-gray-700 dark:text-gray-300">
                   {isActive && <li>{placement?.workloadNodes.includes(n.name) ? 'Its pods run here' : 'Its volume is attached here'}</li>}
                   {holdsData && <li>Holds a replica of its data</li>}
-                  {isPinned && !isActive && <li className="text-amber-700 dark:text-amber-400">Pinned here, but nothing runs here now</li>}
+                  {isPinned && !isActive && active.length > 0 && <li className="text-amber-700 dark:text-amber-400">Pinned here, but it runs elsewhere now</li>}
+                  {isPinned && active.length === 0 && <li>Nothing runs now: no pod, no attached volume</li>}
                   {isActive && !holdsData && dataNodes.length > 0 && <li className="text-amber-700 dark:text-amber-400">Reads its data over the network</li>}
                   {n.cordoned && <li className="text-amber-700 dark:text-amber-400">Cordoned: no new pods are scheduled here</li>}
                   {usage && <li className="text-xs text-gray-500 dark:text-gray-400">{formatAvailability(usage).replace(/^ — /, '')}</li>}
