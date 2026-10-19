@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.13] - 2026-10-19
+
 ### Fixed
 
 - **"Drain Tenants" no longer asks about volumes that are not a tenant's.** 2026.10.12 made the
