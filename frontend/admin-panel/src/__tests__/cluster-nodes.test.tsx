@@ -17,8 +17,10 @@ vi.mock('@/hooks/use-cluster-nodes', () => ({
   useNodeUsage: () => mockUsage(),
   useDeleteNode: () => ({ mutate: mockDeleteMutate, isPending: false }),
   useUpdateClusterNode: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
-  useDrainImpact: () => ({ data: undefined }),
+  useDrainImpact: () => ({ data: undefined, isLoading: true, refetch: vi.fn() }),
+  useDrainNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
 }));
+vi.mock('@/hooks/use-worker-usage', () => ({ useWorkerUsageSummary: () => ({ data: undefined }) }));
 vi.mock('@/hooks/use-cluster-health', () => ({
   useNodeSubsystemHealth: () => mockSubsystem(),
 }));
@@ -251,6 +253,23 @@ describe('ClusterNodes — orphan node removal', () => {
     // NODE_NOT_FOUND on the k8s readNode() pre-check.
     expect(screen.queryByTestId('edit-node-orphan-3-button')).toBeNull();
     expect(screen.queryByTestId('drain-node-orphan-3-open-button')).toBeNull();
+  });
+
+  it('a drained node\'s card Delete opens the dialog — it never deletes directly, past the dialog\'s checks', () => {
+    // Production: the dialog said "Delete is disabled while this node holds the only copy of
+    // database instance platform/system-db-3" while the card's Delete button deleted directly.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockDeleteMutate.mockClear();
+    mockNodes.mockReturnValue({ data: { data: [makeNode({ name: 'sv2', drained: true })] }, isLoading: false, error: null });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+
+    renderPage();
+    fireEvent.click(screen.getByTestId('delete-node-sv2-open-button'));
+
+    expect(screen.getByTestId('drain-node-sv2-modal')).toBeTruthy();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mockDeleteMutate).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 
   it('Remove orphan button calls the delete mutation (confirm dialog auto-accepted)', () => {

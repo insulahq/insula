@@ -32,7 +32,6 @@
 #
 #   Drain execution
 #     6. POST /admin/nodes/W/drain with:
-#         - forceLastReplica=true   (LOCAL tenant blocks otherwise)
 #         - clientPlacement = {} (empty — exercises the server-side
 #           auto-fill that defaults every pinned client to "" / auto)
 #        Asserts response: cordoned=true, evicted ≥ 4,
@@ -257,10 +256,10 @@ print(sum(1 for n in nodes if n.get('name')!=lone and n.get('canHostTenantWorklo
   # POST drain — must be rejected. If the API somehow lets us cordon
   # the only tenant-capable node, the cluster ends up unable to host
   # any tenant workload at all. That's the regression we want to catch.
-  DRAIN_RESP=$(api POST "/admin/nodes/$LONE_NODE/drain" "{\"forceLastReplica\":true,\"tenantPlacement\":{}}")
+  DRAIN_RESP=$(api POST "/admin/nodes/$LONE_NODE/drain" "{\"tenantPlacement\":{}}")
   DRAIN_HTTP=$(curl -sk -o /dev/null -w "%{http_code}" -X POST "$ADMIN_HOST/api/v1/admin/nodes/$LONE_NODE/drain" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d "{\"forceLastReplica\":true,\"tenantPlacement\":{}}")
+    -d "{\"tenantPlacement\":{}}")
   if [[ "$DRAIN_HTTP" =~ ^4 ]]; then
     DRAIN_CODE=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;
 try:
@@ -440,10 +439,10 @@ for c in json.load(sys.stdin)['data']['pinnedTenants']:
 # ─── Drain ───────────────────────────────────────────────────────────
 # Empty clientPlacement on purpose: this exercises the server-side
 # auto-fill — every pinned client gets "" (auto = clear pin) when
-# the request body is empty. With force=true the LOCAL last-replica
-# guard is bypassed.
-log "── POST /admin/nodes/$WORKER_NODE/drain (empty clientPlacement, force) ──"
-DRAIN_RESP=$(api POST "/admin/nodes/$WORKER_NODE/drain" '{"forceLastReplica":true}')
+# the request body is empty. A drain asks nothing about volumes — the
+# tenants' data follows their re-pin.
+log "── POST /admin/nodes/$WORKER_NODE/drain (empty clientPlacement) ──"
+DRAIN_RESP=$(api POST "/admin/nodes/$WORKER_NODE/drain" '{}')
 DRAIN_CORDONED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['cordoned'])" 2>/dev/null)
 DRAIN_EVICTED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['evicted'])" 2>/dev/null)
 DRAIN_REPIN_C=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedTenants'])" 2>/dev/null)

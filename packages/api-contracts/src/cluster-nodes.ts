@@ -206,6 +206,13 @@ export const drainImpactSchema = z.object({
      * platform volumes and for Released leftovers nobody re-pins.
      */
     movedByRepin: z.boolean().default(false),
+    /**
+     * Its PV is Bound to the claim it names. false = a leftover nothing uses:
+     * the PV was Released, or is gone (Longhorn keeps naming the old claim).
+     */
+    inUse: z.boolean().default(true),
+    /** Attached right now (mounted by a pod); false = nothing mounts it. */
+    attached: z.boolean().default(true),
     /** Owner namespace if the volume is bound to a PVC. */
     namespace: z.string().nullable().default(null),
     /** PVC name if the volume is bound to a PVC. */
@@ -249,14 +256,13 @@ export type DrainImpact = z.infer<typeof drainImpactSchema>;
  *   ""        — clear the pin (auto: scheduler picks for workloads,
  *               Longhorn picks for PVCs)
  *   "<node>"  — re-pin the tenant to a specific other node
- *   "stay"    — keep the pin on the draining node (drain refuses
- *               unless `forceLastReplica` is also set)
+ *   "stay"    — refused (NODE_DRAIN_TENANT_STAYS): a drain moves every
+ *               tenant off the node, and a tenant left pinned here would
+ *               have its pods evicted and kept off by the drain's taint
  *
  * Key format: tenantId.
  */
 export const drainNodeRequestSchema = z.object({
-  /** Skip the "last Longhorn replica" guard. Operator accepts data risk. */
-  forceLastReplica: z.boolean().optional(),
   /** Eviction grace period in seconds. Default 60. Cap 600. */
   gracePeriodSeconds: z.number().int().min(0).max(600).optional(),
   /** Per-tenant re-pin instructions; missing entries default to "" (auto). */
@@ -271,6 +277,17 @@ export const drainNodeRequestSchema = z.object({
   blockNewTenants: z.boolean().optional().default(true),
 });
 export type DrainNodeRequest = z.infer<typeof drainNodeRequestSchema>;
+
+/**
+ * Delete Node. A drain only moves tenants, so platform volumes — and
+ * leftovers nothing uses — whose only copy is on the node are asked about
+ * HERE: deleting the node deletes them. Refused (NODE_DELETE_HOLDS_LAST_COPY)
+ * unless `forceLastReplica` says to delete them with it.
+ */
+export const deleteNodeRequestSchema = z.object({
+  forceLastReplica: z.boolean().optional().default(false),
+});
+export type DeleteNodeRequest = z.infer<typeof deleteNodeRequestSchema>;
 
 export const drainNodeResponseSchema = z.object({
   nodeName: z.string(),
@@ -310,6 +327,11 @@ export const deleteNodeResponseSchema = z.object({
   deletedFromInventory: z.boolean(),
   /** System pods moved off the node (cordoned, then evicted) before it was removed. */
   systemPodsEvicted: z.number().int().nonnegative().default(0),
+  /**
+   * Database instances whose only copy was on the node, re-created on other
+   * servers first (`namespace/instance`; a primary was switched over first).
+   */
+  movedDatabaseInstances: z.array(z.string()).default([]),
 });
 export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
 

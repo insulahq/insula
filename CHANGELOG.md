@@ -12,6 +12,48 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Drain Tenants" no longer asks about volumes that are not a tenant's.** 2026.10.12 made the
+  drain tenants-only but kept its old last-replica check: on production a tenant drain was refused,
+  unless "force last replica" was ticked, over an unmounted CrowdSec store and over the leftover
+  volume of an old database instance — volumes the drain never touches and that stay, with the
+  node, exactly where they are. The drain now asks nothing about them (and refuses only a tenant
+  set to **Stay**: `NODE_DRAIN_TENANT_STAYS`, as the dialog already did). **Delete** asks instead:
+  volumes other than tenant data or a database instance whose only copy is on the node are listed
+  at the Delete step — marked *leftover, not in use* or *not mounted* — and Delete stays disabled
+  until "Delete them with the node" is ticked (`NODE_DELETE_HOLDS_LAST_COPY`; API body
+  `forceLastReplica`).
+- **The node card's Delete no longer deletes past the dialog.** On a drained node the card offered
+  its own Delete, which called the API directly while the dialog said Delete was disabled (a
+  database instance's only copy on the node). The server refused it, but the button should not have
+  been offered: it now opens the dialog at its Delete step, with every check shown.
+- **Delete Node no longer stops at Longhorn's instance manager.** Since 2026.10.12 Delete evicts
+  the system pods off a server before removing it, and it tried to evict Longhorn's instance
+  manager too — a pod that belongs to its node, which Longhorn protects with a disruption budget
+  while the node holds the last copy of any volume (a leftover volume is enough). Delete stopped
+  there every time (`NODE_DELETE_EVICTION_BLOCKED … instance-manager-…`), the node left cordoned.
+  It now leaves the instance manager to go with the node, as it does DaemonSet pods, and waits for
+  the volumes the evicted pods used to detach before it deletes the node.
+
+### Changed
+
+- **Delete moves a node's database instances itself.** In HA every PostgreSQL instance keeps its
+  only copy on its own server, so Delete stayed disabled on a server running one ("Delete is
+  disabled while this node holds the only copy of database instance …") until the instance was
+  moved by hand with `kubectl`. Delete now does it: it cordons the node, waits until every instance
+  of the database is ready, switches a primary over to a standby it is streaming to, deletes the
+  instance's volume claims and pod so PostgreSQL's operator re-creates it on another server from
+  the primary, and waits until the database is whole again before removing the node. Only an
+  instance no other instance holds the data of — a single-instance database — still keeps Delete
+  disabled (`NODE_DELETE_HOLDS_DATABASE`). A step that does not finish in time stops the delete
+  with the node cordoned and in the cluster (`NODE_DELETE_DATABASE_MOVE_STALLED`); pressing Delete
+  again continues.
+- **Uninstall k3s on a deleted server's host straight away.** While k3s still runs there, the host
+  registers itself again within seconds as a blank node — schedulable, and listed as a worker that
+  can host tenants. The operator guide's *Removing a node* now says so, and how to clean up if it
+  happened (uninstall, `kubectl delete node`, **Remove orphan**).
+
 ## [2026.10.12] - 2026-10-18
 
 ### Changed
