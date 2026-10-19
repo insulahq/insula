@@ -109,6 +109,10 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/cluster-trusted-proxies/scheduler.ts', job: 'cluster-trusted-proxies' },
   { file: 'modules/crowdsec-db/reconciler.ts', job: 'crowdsec-db-reconciler' },
   { file: 'modules/waf-rule-exclusions/scheduler.ts', job: 'waf-rule-exclusions' },
+  // Deletes DR artefacts past their retention; two replicas would race the deletes.
+  { file: 'modules/backup-schedules/dr-artefact-retention.ts', job: 'dr-artefact-retention' },
+  // Lists every backup target; once per cluster is the whole point of the cadence.
+  { file: 'modules/backup-config/target-usage.ts', job: 'backup-target-usage' },
 ];
 
 /**

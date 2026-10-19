@@ -12,6 +12,59 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **Retention now means one thing for every backup class, and a change applies within minutes.**
+  A copy is removed when it is older than **Retention (days)** or not among the newest **keep
+  last N**, whichever comes first. The newest copy of every class is always kept, and nothing is
+  removed from a read-only target. What this changes on upgrade, before anyone touches a setting:
+  - **Tenant bundles:** the schedule's current days apply to the nightly bundles that already
+    exist. Before, a bundle kept the days in force when it was made, so lowering 30 → 14 left
+    every older bundle on 30. On upgrade the bundles that no longer fit are removed within
+    minutes, and their repositories are pruned straight away. Manual, pre-archive and pre-resize
+    bundles keep their own retention. Raising the days now lets the bundles that have not
+    expired yet live longer.
+  - **Mail snapshots:** the two limits no longer add up. Before, `--keep-daily N --keep-last M`
+    kept a snapshot when *either* wanted it (one a day for N days, plus the last M). Now each
+    limit is its own `restic forget` pass (`--keep-within`, `--keep-last`). With hourly snapshots,
+    *7 days* and *keep last 48* keep **48 hours**. Before upgrading, set keep-last to `days × 24`
+    (168 for 7 days), or leave it empty, to keep the full window.
+  - **etcd snapshots, secrets bundles, cluster-state dumps:** a **days** limit is offered beside
+    the count, and enforced from platform-api through the backup shim. A days-only setting
+    publishes a count the jobs can never reach, so their own count-prune cannot cap it.
+
+### Added
+
+- **Storage by target.** Every backup target is measured every 6 hours, or on demand with
+  **Measure now**, with rclone against the target itself. Each measurement records the bytes per
+  class folder and, for SMB/CIFS and SFTP, total / used / free. S3 reports no free space, and says
+  so. Where the figures show:
+  - the Backups dashboard: one tile per target, with the total for all classes, the free space,
+    and a bar per class;
+  - each target card on the targets page, with **Measure now**;
+  - **Backups → Tenants**: the storage used by all tenant backups.
+  New endpoints: `GET /admin/backup-configs/usage` and
+  `POST /admin/backup-configs/:id/usage/refresh` (202).
+
+### Changed
+
+- **A suspended tenant's backups read "paused", not "failing".** Backups are paused while a
+  tenant is suspended, so its last bundle — often a partial one from the suspension itself — kept
+  the Tenants card amber or red for as long as the suspension lasted. Health rows have a new
+  `paused` state (info severity). The card counts such a tenant as *N paused (suspended)*, and
+  recent activity says *paused — tenant suspended*.
+- **Saving a retention that limits nothing is refused** (400 `RETENTION_UNLIMITED`). Set days,
+  keep-last, or both. Every schedule card now shows both fields, states the rule, and says what
+  it will keep.
+- **Tenant page:** the Overview's Websites card is now a **Domains** table and an
+  **Applications** table. The Storage tab's **DATA** pill is solid blue with white text, like
+  ACTIVE, and is in the legend.
+
+### Removed
+
+- **The per-target "Retention (days)" field** on Remote Storage Targets. It was stored and read
+  by nothing, while each class's schedule card decided the real retention. The column stays.
+
 ## [2026.10.14] - 2026-10-19
 
 ### Changed

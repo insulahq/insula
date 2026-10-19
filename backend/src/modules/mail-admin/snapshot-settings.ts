@@ -19,6 +19,7 @@
  */
 
 import { eq } from 'drizzle-orm';
+import { effectiveRetention } from '../backup-schedules/retention-policy.js';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings, backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -353,10 +354,13 @@ export async function applyMailSnapshotRetention(
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'mail'));
 
-  // No backup_schedules row → use safe legacy defaults (matches
-  // snapshot-upload.sh fallback when ConfigMap is missing).
-  const retentionDays = row?.retentionDays ?? 0;
-  const retentionCount = row?.retentionCount ?? 48;
+  // The shared rule (backup-schedules/retention-policy.ts) resolves what the
+  // row means; 0 tells snapshot-upload.sh "no limit on this dimension". A row
+  // that limits nothing resolves to the legacy keep-last 48 — the same
+  // fallback the script applies when the ConfigMap is missing.
+  const policy = effectiveRetention('mail', row);
+  const retentionDays = policy.days ?? 0;
+  const retentionCount = policy.count ?? 0;
   // also reconcile the CronJob's spec.schedule from
   // backup_schedules.cron_expression. Pre-fix, this column was written
   // by /admin/backups/schedules/mail but never propagated to k8s; only

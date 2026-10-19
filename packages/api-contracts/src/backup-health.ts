@@ -16,7 +16,10 @@ export type BackupCategory = z.infer<typeof backupCategorySchema>;
 export const backupSeveritySchema = z.enum(['critical', 'warning', 'info']);
 export type BackupSeverity = z.infer<typeof backupSeveritySchema>;
 
-export const backupHealthStateSchema = z.enum(['healthy', 'failing', 'never_run']);
+// `paused`: a tenant's backups are paused because the tenant is suspended
+// (tenant-bundles/suspension.ts) — not a failure, whatever its last bundle did:
+// no bundle can run to clear it until the tenant is resumed.
+export const backupHealthStateSchema = z.enum(['healthy', 'failing', 'never_run', 'paused']);
 export type BackupHealthState = z.infer<typeof backupHealthStateSchema>;
 
 export const backupHealthSummarySchema = z.object({

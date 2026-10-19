@@ -2223,6 +2223,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-snapshot-prune: scheduler start failed (non-blocking)');
         }
 
+        // What each backup target holds per class, and its free space —
+        // rclone size/about against the target itself. 6-hour tick, leased;
+        // the targets page can also measure one on demand.
+        try {
+          const { startTargetUsageScheduler } = await import('./modules/backup-config/target-usage.js');
+          const encryptionKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+            ?? process.env.PLATFORM_ENCRYPTION_KEY;
+          if (encryptionKey) {
+            const usageHandle = startTargetUsageScheduler({ db: app.db, encryptionKey, log: app.log });
+            app.addHook('onClose', () => usageHandle.stop());
+          }
+        } catch (err) {
+          app.log.warn({ err }, 'backup-target usage: scheduler start failed (non-blocking)');
+        }
+
+        // Days + keep-last for the DR artefacts (etcd snapshots, secrets
+        // bundles, cluster-state dumps) on the system target. 5-min tick,
+        // leased; the schedule route also runs it right after a save.
+        try {
+          const { startDrArtefactRetentionScheduler } = await import(
+            './modules/backup-schedules/dr-artefact-retention.js'
+          );
+          const drRetentionHandle = startDrArtefactRetentionScheduler(app.db, k8sForImapsync.core, app.log);
+          app.addHook('onClose', () => drRetentionHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'dr-artefact retention: scheduler start failed (non-blocking)');
+        }
+
         // R-X6: postgres ObjectStore + ScheduledBackup reconciler.
         // Materialises the CNPG plugin-barman-cloud wiring whenever
         // the SYSTEM-class shim target binding changes. 5-min tick.

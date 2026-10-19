@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import type { TargetUsageResponse } from '@insula/api-contracts';
 
 interface BackupConfig {
   readonly id: string;
@@ -197,5 +198,28 @@ export function useSpeedtest() {
     // Refresh the backup-configs list so the new last_speedtest_*
     // fields land in the BackupSettings tile.
     onSettled: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
+  });
+}
+
+/**
+ * What each target holds per class and how much room it has left — measured
+ * every 6 hours (backup-config/target-usage.ts). Polls while a measurement runs.
+ */
+export function useBackupTargetUsage() {
+  return useQuery({
+    queryKey: ['backup-configs', 'usage'],
+    queryFn: () => apiFetch<{ data: TargetUsageResponse }>('/api/v1/admin/backup-configs/usage'),
+    staleTime: 30_000,
+    refetchInterval: (q) => (q.state.data?.data?.targets?.some((t) => t.measuringSince) ? 10_000 : false),
+  });
+}
+
+/** Measure one target now (202 — the result lands in useBackupTargetUsage). */
+export function useRefreshTargetUsage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: { started: boolean } }>(`/api/v1/admin/backup-configs/${id}/usage/refresh`, { method: 'POST' }),
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['backup-configs', 'usage'] }); },
   });
 }

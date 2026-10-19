@@ -15,6 +15,7 @@ function badgeStatus(state: BackupHealthSummary['state']): 'healthy' | 'failed' 
     case 'failing':
       return 'failed';
     case 'never_run':
+    case 'paused':
       return 'pending';
   }
 }
@@ -27,6 +28,8 @@ function badgeLabel(state: BackupHealthSummary['state']): string {
       return 'Failing';
     case 'never_run':
       return 'Never run';
+    case 'paused':
+      return 'Paused — tenant suspended';
   }
 }
 

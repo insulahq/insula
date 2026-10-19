@@ -85,9 +85,13 @@ describe('runRetentionSweep', () => {
         target_uri      VARCHAR(1000) NOT NULL DEFAULT '',
         target_kind     VARCHAR(32) NOT NULL DEFAULT 's3',
         initiator       VARCHAR(32) NOT NULL DEFAULT 'admin',
+        system_trigger  VARCHAR(32),
         created_at      TIMESTAMP NOT NULL DEFAULT now(),
         updated_at      TIMESTAMP NOT NULL DEFAULT now()
       );
+      CREATE TABLE restore_jobs (id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL);
+      CREATE TABLE tenants (id VARCHAR(36) PRIMARY KEY, status VARCHAR(32) NOT NULL);
+      CREATE TABLE restore_items (id VARCHAR(64) PRIMARY KEY, restore_job_id VARCHAR(64) NOT NULL, bundle_id VARCHAR(64));
     `);
     // Three bundles: one stuck far past the cutoff (should be marked
     // failed), one fresh, and one 150 min into a capture that is still
@@ -134,9 +138,13 @@ describe('runRetentionSweep', () => {
         target_uri      VARCHAR(1000) NOT NULL DEFAULT '',
         target_kind     VARCHAR(32) NOT NULL DEFAULT 's3',
         initiator       VARCHAR(32) NOT NULL DEFAULT 'admin',
+        system_trigger  VARCHAR(32),
         created_at      TIMESTAMP NOT NULL DEFAULT now(),
         updated_at      TIMESTAMP NOT NULL DEFAULT now()
       );
+      CREATE TABLE restore_jobs (id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL);
+      CREATE TABLE tenants (id VARCHAR(36) PRIMARY KEY, status VARCHAR(32) NOT NULL);
+      CREATE TABLE restore_items (id VARCHAR(64) PRIMARY KEY, restore_job_id VARCHAR(64) NOT NULL, bundle_id VARCHAR(64));
       -- The sweep reads the keep-last-N setting from here. No row = no count
       -- configured, which must mean "no limit", never "keep zero".
       CREATE TABLE backup_schedules (
@@ -157,7 +165,7 @@ describe('runRetentionSweep', () => {
     } as unknown as FastifyInstance;
     const r = await runRetentionSweep(app);
     expect(r).toEqual({
-      overCountMarked: 0, expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0, inFlightReaped: 0,
+      restampedByDays: 0, overCountMarked: 0, expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0, inFlightReaped: 0,
     });
   });
 });

@@ -31,7 +31,10 @@ import {
   useTestBackupConfig,
   useTestBackupDraft,
   useSpeedtest,
+  useBackupTargetUsage,
+  useRefreshTargetUsage,
 } from '@/hooks/use-backup-config';
+import { TargetStorageSummary } from '@/components/backups/TargetStorage';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { Link } from 'react-router-dom';
@@ -43,6 +46,9 @@ type StorageType = 'ssh' | 's3' | 'cifs';
 
 export default function RemoteStorageTargetsPage() {
   const { data: response, isLoading } = useBackupConfigs();
+  const { data: usageResponse } = useBackupTargetUsage();
+  const usageById = new Map((usageResponse?.data.targets ?? []).map((t) => [t.targetId, t]));
+  const refreshUsage = useRefreshTargetUsage();
   // Phase 2 legacy purge: the per-target "Used by classes"
   // pill now reads from the R-X shim assignments (system/tenant/mail)
   // instead of the legacy snapshot-classes summary endpoint. Phase 4
@@ -118,7 +124,6 @@ export default function RemoteStorageTargetsPage() {
     cifs_password: '',
     cifs_domain: '',
     cifs_path: '',
-    retention_days: '30',
     schedule_expression: '0 2 * * *',
   });
 
@@ -129,7 +134,7 @@ export default function RemoteStorageTargetsPage() {
       s3_prefix: '', s3_use_path_style: true,
       cifs_host: '', cifs_port: '445', cifs_share: '', cifs_user: '', cifs_password: '',
       cifs_domain: '', cifs_path: '',
-      retention_days: '30', schedule_expression: '0 2 * * *',
+      schedule_expression: '0 2 * * *',
     });
     setShowForm(false);
     setEditingId(null);
@@ -167,7 +172,6 @@ export default function RemoteStorageTargetsPage() {
       cifs_password: '', // blank; server never returns
       cifs_domain: config.cifsDomain ?? '',
       cifs_path: config.cifsPath ?? '',
-      retention_days: String(config.retentionDays ?? 30),
       schedule_expression: config.scheduleExpression ?? '0 2 * * *',
     });
     setEditingId(config.id);
@@ -186,7 +190,6 @@ export default function RemoteStorageTargetsPage() {
   const buildInput = () => {
     const base = {
       name: form.name,
-      retention_days: Number(form.retention_days),
       schedule_expression: form.schedule_expression,
       enabled: true,
     };
@@ -227,7 +230,6 @@ export default function RemoteStorageTargetsPage() {
   const buildPatchInput = () => {
     const payload: Record<string, unknown> = {
       name: form.name,
-      retention_days: Number(form.retention_days),
       schedule_expression: form.schedule_expression,
     };
     if (storageType === 'ssh') {
@@ -657,11 +659,11 @@ export default function RemoteStorageTargetsPage() {
             </div>
           )}
 
+          {/* No retention here: a target has none of its own. Retention is set
+              per class, on each class's schedule card, and applies on whatever
+              target the class is bound to. The per-target field this replaced
+              was stored and read by nothing. */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="bc-retention" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Retention (days)</label>
-              <input id="bc-retention" type="number" className={INPUT_CLASS + ' mt-1'} value={form.retention_days} onChange={(e) => setForm({ ...form, retention_days: e.target.value })} data-testid="bc-retention" />
-            </div>
             <div>
               <label htmlFor="bc-schedule" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Schedule (cron)</label>
               <input id="bc-schedule" className={INPUT_CLASS + ' mt-1 font-mono'} value={form.schedule_expression} onChange={(e) => setForm({ ...form, schedule_expression: e.target.value })} data-testid="bc-schedule" />
@@ -765,9 +767,15 @@ export default function RemoteStorageTargetsPage() {
                 </div>
               </div>
               <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                <span>Retention: {config.retentionDays}d</span>
                 <span>Schedule: {config.scheduleExpression}</span>
                 {config.lastTestedAt && <span>Last tested: {new Date(config.lastTestedAt).toLocaleString()}</span>}
+              </div>
+              <div className="mt-3">
+                <TargetStorageSummary
+                  row={usageById.get(config.id)}
+                  onMeasure={() => refreshUsage.mutate(config.id)}
+                  measurePending={refreshUsage.isPending && refreshUsage.variables === config.id}
+                />
               </div>
               {/* Snapshot-class "Used by" pill — operator can see at a glance
                   which classes route to this target. Click-through to the

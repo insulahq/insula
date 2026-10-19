@@ -300,13 +300,17 @@ The `stalwart-snapshot` Job (cadence under **Backups → Mail**) backs the mail 
 up with restic to the `mail` backup class target. Two steps happen at different
 rates:
 
-- **Retention (`restic forget`) runs on every snapshot.** The configured keep-daily /
-  keep-last policy is applied each run, so the restore points listed are always the
-  ones the policy says.
+- **Retention (`restic forget`) runs on every snapshot, and the moment it is changed.**
+  The days limit is `--keep-within <days>d` and the count limit is `--keep-last <N>`.
+  Each runs as its own forget pass, so a snapshot goes when **either** removes it,
+  whichever comes first. `--keep-within` counts back from the newest snapshot, so a
+  repository whose snapshots stopped keeps its last ones. Saving a new retention runs
+  the same passes from platform-api straight away (`mail-admin/snapshot-forget.ts`).
 - **Reclaiming space (`restic prune`) runs at most once a day, from platform-api.**
   A prune lists every pack file on the target and rewrites the repository index —
   far more than a snapshot adds — so it no longer runs inside the Job. Space freed by
-  retention can therefore take up to a day to show up in the repository size.
+  retention can take up to a day to show up in the repository size. The exception is a
+  retention change that forgot snapshots: it prunes at once.
 
 The prune skips a read-only (DR-frozen) target. A failure raises a notification and
 is retried within the hour. A prune interrupted by a platform-api restart is

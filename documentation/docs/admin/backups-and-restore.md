@@ -24,9 +24,25 @@ The single most important distinction:
 
 **Backups → Dashboard** answers "is anything on fire?" in one screen: a
 health banner, one stat card per class (System / Tenants / Mail) plus a
-Remote Storage Targets card, and a recent-activity list (failures first,
-then the most recent runs). Each card deep-links into its class. A failing
-or never-run class shows red/amber.
+Remote Storage Targets card, a **Storage by target** section, and a
+recent-activity list (failures first, then the most recent runs). Each card
+deep-links into its class. A failing or never-run class shows red/amber.
+
+**Storage by target** has one tile per backup target. It shows:
+
+- the total the target holds for **all classes**;
+- how much **free space** is left, with a bar of how full the target is;
+- the space each class takes: System, Tenants and Mail.
+
+Every figure is the last measurement of the target itself, with its age.
+Targets are measured every 6 hours; **Measure now** on a tile measures that
+target straight away. A class that moved to another target still shows what
+it left behind on this one.
+
+!!! note "S3 has no free space to report"
+    SMB/CIFS and SFTP servers report how much room they have left. S3 storage
+    has no such figure, so an S3 tile says *Free space: S3 storage does not
+    report free space* instead of showing a number.
 
 The **System** card counts the cluster-level backup jobs (etcd, cluster
 state, secrets) **and the platform database's own backups** — one entry per
@@ -46,6 +62,11 @@ completed bundle. It also shows when the newest tenant bundle succeeded.
 A tenant **opted out of scheduled bundles** that has never been bundled
 does not appear on the card at all — it is not covered, by your choice. Check
 coverage per tenant under **Backups → Tenants**.
+
+A **suspended** tenant counts as **paused**, never as failing. Its backups
+are paused while it is suspended, so its last bundle says nothing about a
+backup that is meant to run. The card adds it as *N paused (suspended)* and
+stays green. Recent activity lists it as *paused — tenant suspended*.
 
 If a DR restore is in progress, a **frozen-targets banner** appears naming
 each target that's been marked read-only — until you mark them read-write
@@ -89,7 +110,10 @@ The cluster-wide **Secrets bundle** lives on the
 **Backups → Tenants** protects customer data, in three areas (the
 **Backups** tab comes first — bundles are the durable artifact):
 
-- **Backups** — **grouped by tenant**. Each tenant is one collapsible row
+- **Backups** — headed by the **storage used by all tenant backups**: the
+  tenant class on every target that holds any, as last measured (see
+  *Storage by target* on the dashboard). Below it the backups are
+  **grouped by tenant**. Each tenant is one collapsible row
   showing its bundle count, how many restore carts it has open, and its
   repository size; open it for that tenant's bundles, a repo-size
   refresh, and its restore carts. Each bundle's **Restore…** opens the
@@ -180,29 +204,23 @@ The cluster-wide **Secrets bundle** lives on the
         rather than silently making the total wrong.
 
     ??? info "How long backups are kept"
-        Two limits, set per subsystem under **Targets, Schedules &
-        Retention**, and a backup is removed as soon as **either** of them
-        is reached:
+        The tenant schedule follows the same retention rule as every other
+        backup class; see [Retention](#retention) below. For tenants:
 
-        - **Retention (days)** — a backup is removed once it is older than
-          this, whatever else is kept.
-        - **Retention (keep last N)** — only the newest N backups per
-          tenant are kept.
+        - **keep last N** counts per tenant, and only **restorable** backups
+          count toward it. A failed run holds no data, so a run of failures
+          cannot quietly reduce how much real coverage you have.
+        - **days** applies to the nightly bundles, including the ones made
+          before you changed it. Manual, pre-archive and pre-resize bundles
+          keep the retention they were given when they were made.
+        - a backup that an open restore refers to is never removed while
+          that restore is still in progress.
 
-        So a tenant backed up nightly with 30 days and keep-last-14 settles
-        at 14; one backed up weekly with the same settings is bounded by
-        the days instead. Leaving keep-last-N empty applies no count limit
-        — it is never read as "keep none".
-
-        Only **restorable** backups count toward N. A failed run holds no
-        data and does not occupy one of the N places, so a run of failures
-        cannot quietly reduce how much real coverage you have. A backup
-        that an open restore refers to is never removed while that restore
-        is still in progress.
-
-        Reducing keep-last-N takes effect on the next retention pass, and
-        it **deletes** the backups it brings you down to. Raising it does
-        not bring anything back.
+        Lowering a limit **deletes** the backups that no longer fit, within
+        minutes. The space they used comes back once the repository is
+        pruned, which also starts straight away. Raising a limit lets
+        bundles that have not expired yet live longer. It does not bring
+        back what was already removed.
 
     ??? info "Restore carts in the group"
         Open a tenant's group to see its restore carts. **Resume**
@@ -327,6 +345,54 @@ separately because they need different actions.
     longer does. A backup that has never run has never worked, and looking
     for what changed will waste your time.
 
+## Retention
+
+Every backup class follows one rule:
+
+- tenant bundles;
+- mail snapshots;
+- etcd snapshots, secrets bundles and cluster-state dumps.
+
+Each schedule card has two limits:
+
+- **Retention (days)** — remove copies older than this.
+- **Retention (keep last N)** — keep at most the newest N copies.
+
+A copy is removed when **either** limit removes it, whichever comes first.
+For example, a nightly backup set to 30 days and keep-last-14 settles at 14
+copies, while a weekly one with the same settings is bounded by the 30 days.
+
+How to set the limits:
+
+- Leave a field empty, or set it to 0, for no limit on that dimension.
+- At least one of the two must be set. A save that would leave neither is
+  refused, because nothing would ever be removed.
+- Below the fields, the card spells out what it will keep.
+
+A change applies **within minutes**, not at the class's next backup run:
+
+- lowering a limit removes what no longer fits;
+- raising one keeps more from then on.
+
+Two safety rules hold for every class:
+
+- the **newest copy is always kept**, so a class whose backups have stopped
+  never loses its last restore point;
+- nothing is removed from a **read-only** (frozen) target.
+
+!!! warning "Mail: the two limits no longer add up"
+    Mail snapshots used to keep a snapshot when **either** limit wanted it:
+    one per day for the days, plus the last N. Now a snapshot goes when
+    either limit removes it, as everywhere else. With hourly snapshots,
+    *7 days* and *keep last 48* now keep **48 hours**. Set keep-last to 168
+    to keep every hourly snapshot for 7 days, or leave it empty to keep
+    everything from the last 7 days.
+
+The platform database's base backups (the Postgres card) keep a recovery
+**window in days** only. A point-in-time restore needs every write-ahead log
+segment back to the oldest base backup, so retention there is a time window,
+not a count.
+
 ## Remote Storage Targets
 
 **Backups → Remote Storage Targets** is where you register the off-cluster
@@ -338,7 +404,14 @@ destinations. Click **Add** and pick a type:
 - **CIFS / SMB** — a Windows/Samba share.
 
 Each target row has **Test** (verify connectivity), **Speedtest**,
-**Edit**, and **Delete**. When you add new credentials you can test the
+**Edit**, and **Delete**. It also shows what the target holds:
+
+- the space used by backups, with a breakdown per class;
+- the free space left, for SMB/CIFS and SFTP;
+- when it was last measured, with **Measure now** to refresh it.
+
+A target has no retention of its own. Retention is set per class on its
+schedule card, and applies on whichever target the class is bound to. When you add new credentials you can test the
 draft before saving. A target does something once you **assign it to a
 class** on the per-class *Targets, Schedules & Retention* tab — there is
 no separate "activate" step (the legacy Activate flow was retired

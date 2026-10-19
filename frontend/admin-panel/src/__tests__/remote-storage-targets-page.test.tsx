@@ -117,7 +117,42 @@ describe("RemoteStorageTargetsPage", () => {
       expect(screen.getByTestId('backup-config-bc-1')).toBeInTheDocument();
     });
     expect(screen.getByText('Nightly SSH')).toBeInTheDocument();
-    expect(screen.getByText('Retention: 30d')).toBeInTheDocument();
+    // A target has no retention of its own — the stored column is read by
+    // nothing, so the card no longer shows it as if it applied.
+    expect(screen.queryByText(/Retention:/)).toBeNull();
+  });
+
+  it('shows what each target holds and its free space, and measures one on demand', async () => {
+    const config = {
+      id: 'bc-1', name: 'Box', storageType: 'cifs', cifsUser: 'u', cifsHost: 'box.example.test', cifsShare: 'backup', cifsPath: null,
+      retentionDays: 30, scheduleExpression: '0 2 * * *', enabled: 1, lastTestedAt: null, lastTestStatus: null,
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const usage = {
+      targets: [{
+        targetId: 'bc-1', name: 'Box', storageType: 'cifs', enabled: true, readOnly: false, boundClasses: ['mail', 'system', 'tenant'],
+        measuringSince: null,
+        usage: {
+          measuredAt: new Date().toISOString(), durationMs: 1000,
+          classes: { system: { bytes: 3 * 1024 ** 3, objects: 1 }, tenant: { bytes: 500 * 1024 ** 3, objects: 1 }, mail: { bytes: 60 * 1024 ** 3, objects: 1 } },
+          usedByBackupsBytes: 563 * 1024 ** 3,
+          capacity: { totalBytes: 1024 ** 4, usedBytes: 600 * 1024 ** 3, freeBytes: 424 * 1024 ** 3 },
+          capacityNote: null, errors: {},
+        },
+      }],
+    };
+    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/backup-configs/usage')) return { data: usage };
+      if (url.endsWith('/usage/refresh') && init?.method === 'POST') return { data: { started: true } };
+      return { data: [config] };
+    });
+    render(<RemoteStorageTargetsPage />, { wrapper: createWrapper() });
+    const summary = await screen.findByTestId('target-usage-summary-bc-1');
+    expect(summary).toHaveTextContent('563.0 GB used by backups');
+    expect(summary).toHaveTextContent('424.0 GB free of 1.0 TB');
+    expect(summary).toHaveTextContent('System 3.0 GB · Tenants 500.0 GB · Mail 60.0 GB');
+    fireEvent.click(screen.getByTestId('target-usage-measure-bc-1'));
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/admin/backup-configs/bc-1/usage/refresh', { method: 'POST' }));
   });
 
   it('shows SSH fields by default in form', async () => {

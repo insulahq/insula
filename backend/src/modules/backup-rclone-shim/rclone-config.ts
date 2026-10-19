@@ -363,6 +363,22 @@ export function upstreamRootPath(t: BackupTargetConfig): string {
 }
 
 /**
+ * Turn a shim-rendered rclone.conf `[section]` block into
+ * `RCLONE_CONFIG_<REMOTE>_<KEY>` env vars so rclone reads the remote's config
+ * from the environment (no secret written to disk). The rendered section is
+ * `[name]\n key = value\n …` (SMB/SFTP passwords already `rclone obscure`d).
+ */
+export function rcloneEnvFromSection(remoteName: string, conf: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  const prefix = `RCLONE_CONFIG_${remoteName.toUpperCase()}_`;
+  for (const line of conf.split('\n')) {
+    const m = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+    if (m) env[`${prefix}${m[1].toUpperCase()}`] = m[2];
+  }
+  return env;
+}
+
+/**
  * Render a single upstream section in rclone.conf format. Includes
  * the credentials in obscured form where the backend requires it
  * (SFTP `pass`, SMB `pass`). S3 credentials are stored in cleartext

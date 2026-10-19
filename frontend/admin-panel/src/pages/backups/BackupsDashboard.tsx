@@ -19,6 +19,7 @@ import {
   LifeBuoy,
   Mail,
   Package,
+  PauseCircle,
   Snowflake,
 } from 'lucide-react';
 import type { BackupHealthSummary } from '@insula/api-contracts';
@@ -26,7 +27,8 @@ import BackupHealthBanner from '@/components/BackupHealthBanner';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useBackupHealth } from '@/hooks/use-backup-health';
-import { useBackupConfigs } from '@/hooks/use-backup-config';
+import { useBackupConfigs, useBackupTargetUsage, useRefreshTargetUsage } from '@/hooks/use-backup-config';
+import { TargetStorageTile } from '@/components/backups/TargetStorage';
 
 interface ClassRow {
   readonly to: string;
@@ -188,6 +190,8 @@ function classifyRows(
   const healthy = mine.filter((s) => s.state === 'healthy').length;
   const neverRunRows = mine.filter((s) => s.state === 'never_run');
   const neverRun = neverRunRows.length;
+  // A suspended tenant's backups are paused: neither healthy nor failing.
+  const paused = mine.filter((s) => s.state === 'paused').length;
   // Red when a problem row is critical. A never-run row only counts when
   // nothing has run for it at all (a tenant the nightly run has missed for
   // two days): a Job group whose first run is still in flight is amber.
@@ -202,10 +206,14 @@ function classifyRows(
   const detail = [
     ...(failing.length > 0 ? [`${healthy} healthy`] : []),
     ...(neverRun > 0 ? [`${neverRun} never run`] : []),
+    ...(paused > 0 ? [`${paused} paused (suspended)`] : []),
     since,
   ].join(' · ');
   const problemTone: Tone = critical ? 'fail' : 'warn';
   if (failing.length > 0) return { tone: problemTone, value: `${failing.length} failing`, detail };
+  // Every tenant suspended: nothing is backed up, and nothing is failing
+  // either — not a green "0 healthy".
+  if (healthy === 0 && neverRun === 0 && paused > 0) return { tone: 'idle', value: `${paused} paused`, detail };
   return { tone: neverRun > 0 ? problemTone : 'ok', value: `${healthy} healthy`, detail };
 }
 
@@ -230,6 +238,48 @@ function recentActivity(rows: ReadonlyArray<BackupHealthSummary>): BackupHealthS
     if (fa !== fb) return fa - fb;
     return lastActivity(b) - lastActivity(a);
   });
+}
+
+/**
+ * One tile per backup target: what it holds (all classes, and each class),
+ * and how much room it has left. Disabled targets that still hold data are
+ * shown too — the data is there whether or not anything writes to it now.
+ */
+function TargetStorageSection() {
+  const { data, isLoading, error } = useBackupTargetUsage();
+  const refresh = useRefreshTargetUsage();
+  const rows = (data?.data.targets ?? []).filter((t) => t.enabled || (t.usage?.usedByBackupsBytes ?? 0) > 0);
+  return (
+    <section aria-label="Storage by target" data-testid="backups-dashboard-storage">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <HardDrive size={16} />
+          Storage by target
+        </h2>
+        <Link to="/backups/targets" className="text-xs font-medium text-brand-600 hover:underline dark:text-brand-400">Targets →</Link>
+      </div>
+      {isLoading ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
+      ) : error ? (
+        <ErrorPanel error={extractOperatorError(error)} severity="warn" compact testId="backups-dashboard-storage-error" />
+      ) : rows.length === 0 ? (
+        <p className="rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-4 text-center text-sm text-gray-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-400">
+          No enabled backup target.
+        </p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {rows.map((r) => (
+            <TargetStorageTile
+              key={r.targetId}
+              row={r}
+              onMeasure={() => refresh.mutate(r.targetId)}
+              measurePending={refresh.isPending && refresh.variables === r.targetId}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export default function BackupsDashboard() {
@@ -294,6 +344,8 @@ export default function BackupsDashboard() {
         />
       </div>
 
+      <TargetStorageSection />
+
       <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -320,10 +372,13 @@ export default function BackupsDashboard() {
               // A never-run row (e.g. a tenant with no bundle yet) is a problem
               // too — never a green check beside "last success never".
               const isNeverRun = s.state === 'never_run';
-              const Icon = isFail || isNeverRun ? AlertCircle : CheckCircle;
-              const iconTone = isFail || isNeverRun
-                ? (s.severity === 'critical' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300')
-                : 'text-emerald-600 dark:text-emerald-300';
+              const isPaused = s.state === 'paused';
+              const Icon = isPaused ? PauseCircle : isFail || isNeverRun ? AlertCircle : CheckCircle;
+              const iconTone = isPaused
+                ? 'text-gray-500 dark:text-gray-400'
+                : isFail || isNeverRun
+                  ? (s.severity === 'critical' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300')
+                  : 'text-emerald-600 dark:text-emerald-300';
               return (
                 <li key={s.groupKey} className="flex items-center justify-between gap-3 py-2 text-sm">
                   <div className="flex min-w-0 items-center gap-2">
@@ -334,7 +389,9 @@ export default function BackupsDashboard() {
                     </span>
                   </div>
                   <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {isFail
+                    {isPaused
+                      ? <>paused — tenant suspended</>
+                      : isFail
                       ? <>failed {timeAgo(s.lastFailedAt)}</>
                       : isNeverRun
                         ? <>never run</>
