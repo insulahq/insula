@@ -395,6 +395,9 @@ export interface ImapSyncJob {
   readonly k8sNamespace: string;
   readonly logTail: string | null;
   readonly errorMessage: string | null;
+  /** Progress, once the sync has counted the source mailbox. */
+  readonly messagesTotal?: number | null;
+  readonly messagesTransferred?: number | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import Email from '../pages/Email';
@@ -1010,5 +1010,63 @@ describe('starting an IMAP migration', () => {
 
     // The form stays open on failure, so the message is where it belongs.
     expect(await screen.findByText(/source host refused the connection/i)).toBeTruthy();
+  });
+});
+
+
+// ─── opened from an admin link ────────────────────────────────────────────
+//
+// The admin tenant page links here ("Login as tenant" lands on `next`) with
+// the item it was about: `?mailbox=`, `?alias=` or `?migration=`. The page
+// opens that item — and never runs a destructive action from a URL: a Delete
+// link lands on the migration, outlined, and Delete is still pressed here.
+describe('opened from an admin link', () => {
+  const MAILBOX = {
+    id: 'mb-1', emailDomainId: 'd1', tenantId: 'tenant-1', fullAddress: 'alice@example.com', displayName: 'Alice',
+    quotaMb: 1024, usedMb: 128, status: 'active', mailboxType: 'mailbox', autoReply: 0, autoReplySubject: null,
+  };
+  const JOB = {
+    id: 'j1', tenantId: 'tenant-1', mailboxId: 'mb-1', mailboxAddress: 'alice@example.com', sourceHost: 'imap.old.test',
+    sourcePort: 993, sourceUsername: 'alice', sourceSsl: true, options: {}, status: 'failed', k8sJobName: null,
+    k8sNamespace: 'tenant-ns', logTail: null, errorMessage: 'Login refused', startedAt: '2026-10-18T16:38:00Z',
+    finishedAt: '2026-10-18T16:40:00Z', createdAt: '2026-10-18T16:38:00Z', updatedAt: '2026-10-18T16:40:00Z',
+    messagesTotal: null, messagesTransferred: null,
+  };
+
+  function renderAt(url: string) {
+    mockedUseEmailDomains.mockReturnValue({ data: { data: [{ id: 'd1', domainName: 'example.com' }] }, isLoading: false } as never);
+    mockedUseMailboxes.mockReturnValue({ data: { data: [MAILBOX] }, isLoading: false } as never);
+    mockedUseImapSyncJobs.mockReturnValue({ data: { data: [JOB] }, isLoading: false } as never);
+    return render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <MemoryRouter initialEntries={[url]}>
+          <Routes><Route path="/email/:tab?" element={<Email />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('opens the mailbox the link names', async () => {
+    renderAt('/email/mailboxes?emailDomain=d1&mailbox=mb-1');
+    expect(await screen.findByTestId('edit-mailbox-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('edit-mailbox-display-name')).toHaveValue('Alice');
+  });
+
+  it('opens nothing for a mailbox the list does not have', () => {
+    renderAt('/email/mailboxes?emailDomain=d1&mailbox=gone');
+    expect(screen.queryByTestId('edit-mailbox-modal')).toBeNull();
+  });
+
+  it('outlines the migration a link names and opens its edit form for an Edit link', () => {
+    renderAt('/email/mailboxes?emailDomain=d1&migration=j1&action=edit');
+    expect(screen.getByTestId('imapsync-job-j1')).toHaveAttribute('data-focused', 'true');
+    expect(screen.getByTestId('imapsync-edit-form-j1')).toBeInTheDocument();
+  });
+
+  it('only outlines it for any other link — nothing is deleted from a URL', () => {
+    renderAt('/email/mailboxes?emailDomain=d1&migration=j1&action=delete');
+    expect(screen.getByTestId('imapsync-job-j1')).toHaveAttribute('data-focused', 'true');
+    expect(screen.queryByTestId('imapsync-edit-form-j1')).toBeNull();
+    expect(screen.getByTestId('imapsync-purge-j1')).toBeInTheDocument();
   });
 });

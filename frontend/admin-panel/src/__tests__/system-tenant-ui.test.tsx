@@ -56,7 +56,7 @@ function renderTenantDetail() {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/tenants/sys-001']}>
         <Routes>
-          <Route path="tenants/:id" element={<TenantDetail />} />
+          <Route path="tenants/:id/:tab?" element={<TenantDetail />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -95,14 +95,16 @@ describe('TenantDetail — SYSTEM tenant gating (ADR-040)', () => {
     expect(screen.queryByTestId('restore-button')).not.toBeInTheDocument();
   });
 
-  it('shows the "(locked)" indicator instead of the status change button on SYSTEM', async () => {
+  it('offers no lifecycle switches on SYSTEM: no notify-tenant and no keep-out toggle', async () => {
+    const user = userEvent.setup();
     setupMockApi(buildTenantPayload({ isSystem: true }));
     renderTenantDetail();
     await waitFor(() => {
       expect(screen.getByTestId('system-tenant-banner')).toBeInTheDocument();
     });
-    expect(screen.queryByTestId('lifecycle-status-edit')).not.toBeInTheDocument();
-    expect(screen.getByText(/\(locked\)/i)).toBeInTheDocument();
+    await user.click(screen.getByTestId('tenant-actions-button'));
+    expect(screen.queryByTestId('notify-tenant-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('automation-exempt-toggle')).not.toBeInTheDocument();
   });
 
   it('does NOT render the SYSTEM banner on a normal tenant', async () => {
@@ -127,7 +129,7 @@ describe('TenantDetail — SYSTEM tenant gating (ADR-040)', () => {
     await user.click(screen.getByTestId('tenant-actions-button'));
 
     expect(screen.getByTestId('suspend-button')).toBeInTheDocument();
+    expect(screen.getByTestId('archive-button')).toBeInTheDocument();
     expect(screen.getByTestId('delete-button')).toBeInTheDocument();
-    expect(screen.getByTestId('lifecycle-status-edit')).toBeInTheDocument();
   });
 });

@@ -129,6 +129,19 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     const result = await getEffectiveRateLimit(app.db, tenantId);
     return success(result);
   });
+
+  // GET /api/v1/admin/tenants/:tenantId/mail/send-limits/live
+  //
+  // The tenant's send limits as the mail server holds them, per mail domain,
+  // beside what the platform wants there — so the admin page can say "on the
+  // mail server" instead of an operator reading Stalwart by hand. Read-only.
+  app.get('/admin/tenants/:tenantId/mail/send-limits/live', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    // 404 for an unknown tenant rather than an empty, plausible-looking list.
+    await getEffectiveRateLimit(app.db, tenantId);
+    const { readTenantSendLimitState } = await import('../email-outbound/stalwart-throttles.js');
+    return success(await readTenantSendLimitState(app.db, tenantId, { logger: request.log }));
+  });
 }
 
 // ─── Client-scoped rate limit ─────────────────────────────────────────────

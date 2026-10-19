@@ -80,7 +80,7 @@ Saved changes appear on the list straight away.
     yours predate the share model they will show no tier, and their ceiling
     is derived from **CPU Limit** until you set one.
 
-    Tenants given an individual override on their **Resource Limits** card are
+    Tenants given an individual override on their **Plan & limits** section are
     not affected: the override wins, and a plan edit does not overwrite it.
 
     The other fields on this page — price, mailbox and sub-user counts,
@@ -89,7 +89,7 @@ Saved changes appear on the list straight away.
 ## The monthly bandwidth cap
 
 Every plan carries a monthly bandwidth allowance, and each tenant can be given
-an individual override on their **Resource Limits** card. The platform meters
+an individual override on their **Plan & limits** section. The platform meters
 each tenant's served traffic hourly and resets the counter on the 1st of the
 month:
 
@@ -158,7 +158,7 @@ Each tenant's subscription lives in the **Subscription** card on the
 
 Changing the plan here is the subscription-level equivalent of changing
 limits; if you only want to bend one limit for one tenant, use the
-[per-tenant overrides](tenants.md) on the Resource Limits card instead.
+[per-tenant overrides](tenants.md) on the tenant's **Plan & limits** section instead.
 
 **Email the tenant about this change** is ticked by default — changing
 someone's plan or renewal date is normally something they should hear about.
@@ -183,7 +183,7 @@ the relevant notification *Source*.
 !!! tip "The 7-day Dashboard signal"
     A subscription nearing expiry surfaces on the
     [Dashboard](index.md) and in the notifications bell, so you don't have
-    to remember to check. Renew by editing the Subscription card's expiry
+    to remember to check. Renew by editing the expiry on the tenant's **Plan & limits → Subscription**
     date.
 
 ## External billing posture

@@ -19,7 +19,7 @@ function Nodes({ names }: { readonly names: readonly string[] }) {
   return names.length > 0 ? <NodeList names={names} /> : <>—</>;
 }
 
-type PendingAction = { readonly kind: 'move-back' | 'make-primary'; readonly node: string } | null;
+export type PendingAction = { readonly kind: 'move-back' | 'make-primary'; readonly node: string } | null;
 
 /**
  * Where the tenant actually is, inside the Placement card: the node(s) it runs
@@ -133,7 +133,7 @@ interface MisplacedBannerProps {
   readonly onCancel: () => void;
 }
 
-function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCancel }: MisplacedBannerProps) {
+export function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCancel }: MisplacedBannerProps) {
   const primary = placement.primaryNode;
   // "Make it the primary" only makes sense when the tenant is on ONE other node.
   const current = placement.actualNodes.length === 1 && placement.actualNodes[0] !== primary
@@ -217,7 +217,7 @@ function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm, onCanc
   );
 }
 
-function FailoverList({ failovers }: { readonly failovers: readonly TenantStorageFailover[] }) {
+export function FailoverList({ failovers }: { readonly failovers: readonly TenantStorageFailover[] }) {
   return (
     <div className="mt-4" data-testid="placement-failovers">
       <h3 className="text-xs font-medium text-gray-700 dark:text-gray-300">Storage failovers</h3>
