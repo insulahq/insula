@@ -124,7 +124,6 @@ export default function RemoteStorageTargetsPage() {
     cifs_password: '',
     cifs_domain: '',
     cifs_path: '',
-    schedule_expression: '0 2 * * *',
   });
 
   const resetForm = () => {
@@ -134,7 +133,6 @@ export default function RemoteStorageTargetsPage() {
       s3_prefix: '', s3_use_path_style: true,
       cifs_host: '', cifs_port: '445', cifs_share: '', cifs_user: '', cifs_password: '',
       cifs_domain: '', cifs_path: '',
-      schedule_expression: '0 2 * * *',
     });
     setShowForm(false);
     setEditingId(null);
@@ -172,7 +170,6 @@ export default function RemoteStorageTargetsPage() {
       cifs_password: '', // blank; server never returns
       cifs_domain: config.cifsDomain ?? '',
       cifs_path: config.cifsPath ?? '',
-      schedule_expression: config.scheduleExpression ?? '0 2 * * *',
     });
     setEditingId(config.id);
     setChangeSecret(false);
@@ -190,7 +187,6 @@ export default function RemoteStorageTargetsPage() {
   const buildInput = () => {
     const base = {
       name: form.name,
-      schedule_expression: form.schedule_expression,
       enabled: true,
     };
     if (storageType === 'ssh') {
@@ -230,7 +226,6 @@ export default function RemoteStorageTargetsPage() {
   const buildPatchInput = () => {
     const payload: Record<string, unknown> = {
       name: form.name,
-      schedule_expression: form.schedule_expression,
     };
     if (storageType === 'ssh') {
       payload.ssh_host = form.ssh_host;
@@ -659,16 +654,10 @@ export default function RemoteStorageTargetsPage() {
             </div>
           )}
 
-          {/* No retention here: a target has none of its own. Retention is set
-              per class, on each class's schedule card, and applies on whatever
-              target the class is bound to. The per-target field this replaced
-              was stored and read by nothing. */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="bc-schedule" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Schedule (cron)</label>
-              <input id="bc-schedule" className={INPUT_CLASS + ' mt-1 font-mono'} value={form.schedule_expression} onChange={(e) => setForm({ ...form, schedule_expression: e.target.value })} data-testid="bc-schedule" />
-            </div>
-          </div>
+          {/* No retention and no schedule here: a target has neither of its
+              own. Both are set per class, on each class's schedule card, and
+              apply on whatever target the class is bound to. The per-target
+              fields these replaced were stored and read by nothing. */}
 
           {createConfig.error && (
             <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{createConfig.error instanceof Error ? createConfig.error.message : 'Failed to create'}</div>
@@ -766,10 +755,11 @@ export default function RemoteStorageTargetsPage() {
                   )}
                 </div>
               </div>
-              <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                <span>Schedule: {config.scheduleExpression}</span>
-                {config.lastTestedAt && <span>Last tested: {new Date(config.lastTestedAt).toLocaleString()}</span>}
-              </div>
+              {config.lastTestedAt && (
+                <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                  Last tested: {new Date(config.lastTestedAt).toLocaleString()}
+                </div>
+              )}
               <div className="mt-3">
                 <TargetStorageSummary
                   row={usageById.get(config.id)}

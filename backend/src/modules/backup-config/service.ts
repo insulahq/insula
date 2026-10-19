@@ -45,8 +45,6 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     cifsUser: row.cifsUser ?? null,
     cifsDomain: row.cifsDomain ?? null,
     cifsPath: row.cifsPath ?? null,
-    retentionDays: row.retentionDays,
-    scheduleExpression: row.scheduleExpression,
     enabled: row.enabled,
     active: row.active,
     lastTestedAt: row.lastTestedAt,
@@ -115,8 +113,6 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       sshKeyEncrypted: input.ssh_key ? encrypt(input.ssh_key, encryptionKey) : null,
       sshPasswordEncrypted: input.ssh_password ? encrypt(input.ssh_password, encryptionKey) : null,
       sshPath: input.ssh_path,
-      retentionDays: input.retention_days ?? 30,
-      scheduleExpression: input.schedule_expression ?? '0 2 * * *',
       enabled: input.enabled !== false ? 1 : 0,
     });
   } else if (input.storage_type === 'cifs') {
@@ -136,8 +132,6 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       cifsPasswordEncrypted: encrypt(input.cifs_password, encryptionKey),
       cifsDomain: input.cifs_domain ?? null,
       cifsPath: input.cifs_path ?? null,
-      retentionDays: input.retention_days ?? 30,
-      scheduleExpression: input.schedule_expression ?? '0 2 * * *',
       enabled: input.enabled !== false ? 1 : 0,
     });
   } else {
@@ -154,8 +148,6 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       // s3_use_path_style: defaults true at schema; pass through
       // explicit operator-supplied values.
       s3UsePathStyle: input.s3_use_path_style ?? true,
-      retentionDays: input.retention_days ?? 30,
-      scheduleExpression: input.schedule_expression ?? '0 2 * * *',
       enabled: input.enabled !== false ? 1 : 0,
     });
   }
@@ -199,8 +191,6 @@ export async function updateBackupConfig(db: Database, id: string, input: Update
   if (input.cifs_password !== undefined) updateValues.cifsPasswordEncrypted = encrypt(input.cifs_password, encryptionKey);
   if (input.cifs_domain !== undefined) updateValues.cifsDomain = input.cifs_domain;
   if (input.cifs_path !== undefined) updateValues.cifsPath = input.cifs_path;
-  if (input.retention_days !== undefined) updateValues.retentionDays = input.retention_days;
-  if (input.schedule_expression !== undefined) updateValues.scheduleExpression = input.schedule_expression;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
 
   if (Object.keys(updateValues).length > 0) {

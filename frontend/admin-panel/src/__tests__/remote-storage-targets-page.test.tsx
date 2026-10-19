@@ -102,8 +102,6 @@ describe("RemoteStorageTargetsPage", () => {
           s3Bucket: null,
           s3Region: null,
           s3Prefix: null,
-          retentionDays: 30,
-          scheduleExpression: '0 2 * * *',
           enabled: 1,
           lastTestedAt: null,
           lastTestStatus: null,
@@ -117,15 +115,16 @@ describe("RemoteStorageTargetsPage", () => {
       expect(screen.getByTestId('backup-config-bc-1')).toBeInTheDocument();
     });
     expect(screen.getByText('Nightly SSH')).toBeInTheDocument();
-    // A target has no retention of its own — the stored column is read by
-    // nothing, so the card no longer shows it as if it applied.
+    // A target has no retention or schedule of its own — both stored columns
+    // were read by nothing, so neither is shown as if it applied.
     expect(screen.queryByText(/Retention:/)).toBeNull();
+    expect(screen.queryByText(/Schedule:/)).toBeNull();
   });
 
   it('shows what each target holds and its free space, and measures one on demand', async () => {
     const config = {
       id: 'bc-1', name: 'Box', storageType: 'cifs', cifsUser: 'u', cifsHost: 'box.example.test', cifsShare: 'backup', cifsPath: null,
-      retentionDays: 30, scheduleExpression: '0 2 * * *', enabled: 1, lastTestedAt: null, lastTestStatus: null,
+      enabled: 1, lastTestedAt: null, lastTestStatus: null,
       createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
     };
     const usage = {
@@ -164,5 +163,8 @@ describe("RemoteStorageTargetsPage", () => {
     fireEvent.click(screen.getByTestId('add-backup-config-button'));
     expect(screen.getByTestId('bc-ssh-host')).toBeInTheDocument();
     expect(screen.getByTestId('bc-ssh-user')).toBeInTheDocument();
+    // No per-target retention or schedule to fill in.
+    expect(screen.queryByTestId('bc-retention')).toBeNull();
+    expect(screen.queryByTestId('bc-schedule')).toBeNull();
   });
 });

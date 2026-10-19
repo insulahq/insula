@@ -1387,8 +1387,8 @@ CREATE TABLE backup_configurations (
   s3_access_key_encrypted VARCHAR(500) DEFAULT NULL,
   s3_secret_key_encrypted VARCHAR(500) DEFAULT NULL,
   s3_prefix VARCHAR(255) DEFAULT NULL,
-  retention_days INT NOT NULL DEFAULT 30,
-  schedule_expression VARCHAR(100) DEFAULT '0 2 * * *',
+  retention_days INT NOT NULL DEFAULT 30,            -- unused: retention is per class (backup_schedules)
+  schedule_expression VARCHAR(100) DEFAULT '0 2 * * *', -- unused: cadence is per class (backup_schedules)
   enabled INT NOT NULL DEFAULT 1,
   last_tested_at TIMESTAMP NULL,
   last_test_status VARCHAR(50) DEFAULT NULL,

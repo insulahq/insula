@@ -412,8 +412,8 @@ Each target row has **Test** (verify connectivity), **Speedtest**,
 - the free space left, for SMB/CIFS and SFTP;
 - when it was last measured, with **Measure now** to refresh it.
 
-A target has no retention of its own. Retention is set per class on its
-schedule card, and applies on whichever target the class is bound to. When you add new credentials you can test the
+A target has no retention or schedule of its own. Both are set per class on
+its schedule card, and apply on whichever target the class is bound to. When you add new credentials you can test the
 draft before saving. A target does something once you **assign it to a
 class** on the per-class *Targets, Schedules & Retention* tab — there is
 no separate "activate" step (the legacy Activate flow was retired

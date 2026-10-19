@@ -25,8 +25,6 @@ interface BackupConfig {
   readonly cifsUser: string | null;
   readonly cifsDomain: string | null;
   readonly cifsPath: string | null;
-  readonly retentionDays: number;
-  readonly scheduleExpression: string | null;
   readonly enabled: number;
   readonly lastTestedAt: string | null;
   readonly lastTestStatus: string | null;

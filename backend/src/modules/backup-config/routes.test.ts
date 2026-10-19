@@ -16,8 +16,6 @@ const mockConfig = {
   s3Bucket: null,
   s3Region: null,
   s3Prefix: null,
-  retentionDays: 30,
-  scheduleExpression: '0 2 * * *',
   enabled: 1,
   lastTestedAt: null,
   lastTestStatus: null,

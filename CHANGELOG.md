@@ -62,8 +62,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Removed
 
-- **The per-target "Retention (days)" field** on Remote Storage Targets. It was stored and read
-  by nothing, while each class's schedule card decided the real retention. The column stays.
+- **The per-target "Retention (days)" and "Schedule (cron)" fields** on Remote Storage Targets,
+  from the page and from the API (`retention_days` / `schedule_expression` on create and update,
+  `retentionDays` / `scheduleExpression` in responses). Both were stored and read by nothing,
+  while each class's schedule card decided the real retention and cadence. The columns stay,
+  for DR import; a client still sending the keys has them ignored.
 
 ## [2026.10.14] - 2026-10-19
 
