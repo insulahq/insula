@@ -391,7 +391,9 @@ Two safety rules hold for every class:
 The platform database's base backups (the Postgres card) keep a recovery
 **window in days** only. A point-in-time restore needs every write-ahead log
 segment back to the oldest base backup, so retention there is a time window,
-not a count.
+not a count. The database's backup plugin applies the window itself, every
+30 minutes, so a change there lands within half an hour rather than within
+minutes.
 
 ## Remote Storage Targets
 
