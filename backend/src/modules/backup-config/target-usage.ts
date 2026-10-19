@@ -46,7 +46,7 @@ import {
   type BackupTargetConfig,
 } from '../backup-rclone-shim/rclone-config.js';
 import { rowToTargetConfig } from '../backup-rclone-shim/service.js';
-import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { SCHEDULER_LEASE_KEY_PREFIX, withSchedulerLease } from '../../shared/scheduler-lease.js';
 
 const KEY_PREFIX = 'backup_target_usage:';
 const MEASURING_PREFIX = 'backup_target_usage_measuring:';
@@ -54,8 +54,15 @@ const REMOTE = 'usage';
 const ABOUT_TIMEOUT_MS = 2 * 60 * 1000;
 /** A large tenant class over SMB lists in minutes; a stuck listing must still end. */
 const SIZE_TIMEOUT_MS = 30 * 60 * 1000;
-/** A measurement older than this is no longer "running" — its process is gone. */
-const MEASURING_STALE_MS = 2 * 60 * 60 * 1000;
+/**
+ * The per-target measuring lease. Short and renewed while the measurement runs
+ * (scheduler-lease renews every third of it), so a replica that dies mid-way
+ * frees the target within minutes instead of leaving it "measuring" for hours.
+ * Its own rclone timeouts bound the run, so it is never given up early.
+ */
+const MEASURE_LEASE_TTL_MS = 10 * 60 * 1000;
+const measureLeaseJob = (targetId: string) => `backup-target-usage:${targetId}`;
+const MEASURE_LEASE_KEY_PREFIX = `${SCHEDULER_LEASE_KEY_PREFIX}backup-target-usage:`;
 
 // ─── rclone ─────────────────────────────────────────────────────────────────
 
@@ -223,7 +230,7 @@ async function readPrefixed(db: Database, prefix: string): Promise<Map<string, s
 
 /** Every configured target with its last measurement and bound classes. */
 export async function listTargetUsage(db: Database, now: Date = new Date()): Promise<TargetUsageRow[]> {
-  const [targets, assignments, stored, measuring] = await Promise.all([
+  const [targets, assignments, stored, measuring, leases] = await Promise.all([
     db.select({
       id: backupConfigurations.id,
       name: backupConfigurations.name,
@@ -234,6 +241,7 @@ export async function listTargetUsage(db: Database, now: Date = new Date()): Pro
     db.select({ cls: backupTargetAssignments.backupClass, targetId: backupTargetAssignments.targetId }).from(backupTargetAssignments),
     readPrefixed(db, KEY_PREFIX),
     readPrefixed(db, MEASURING_PREFIX),
+    readPrefixed(db, MEASURE_LEASE_KEY_PREFIX),
   ]);
   return targets
     .map((t) => {
@@ -244,7 +252,8 @@ export async function listTargetUsage(db: Database, now: Date = new Date()): Pro
         usage = parsed.success ? parsed.data : null;
       }
       const since = measuring.get(t.id) ?? null;
-      const live = since !== null && now.getTime() - Date.parse(since) < MEASURING_STALE_MS;
+      // The marker says when it started; the lease says whether it still runs.
+      const live = since !== null && leaseLive(leases.get(t.id), now);
       return {
         targetId: t.id,
         name: t.name,
@@ -260,6 +269,13 @@ export async function listTargetUsage(db: Database, now: Date = new Date()): Pro
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** A scheduler lease row (`{holder, until}`) whose `until` is still ahead. */
+function leaseLive(raw: string | undefined, now: Date): boolean {
+  if (!raw) return false;
+  const until = (safeJson(raw) as { until?: unknown } | null)?.until;
+  return typeof until === 'string' && Date.parse(until) > now.getTime();
 }
 
 function safeJson(raw: string): unknown {
@@ -286,7 +302,7 @@ export interface MeasureDeps {
  */
 export async function measureAndStore(deps: MeasureDeps, targetId: string): Promise<TargetUsageMeasurement | null> {
   try {
-    const leased = await withSchedulerLease(deps.db, `backup-target-usage:${targetId}`, MEASURING_STALE_MS, async () => {
+    const leased = await withSchedulerLease(deps.db, measureLeaseJob(targetId), MEASURE_LEASE_TTL_MS, async () => {
       const [row] = await deps.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetId)).limit(1);
       if (!row) return null;
       await putSetting(deps.db, `${MEASURING_PREFIX}${targetId}`, new Date().toISOString());
@@ -300,7 +316,7 @@ export async function measureAndStore(deps: MeasureDeps, targetId: string): Prom
       } finally {
         await deleteSetting(deps.db, `${MEASURING_PREFIX}${targetId}`).catch(() => undefined);
       }
-    }, { release: true, startupRetry: false, log: deps.log });
+    }, { release: true, startupRetry: false, maxHoldMs: Number.POSITIVE_INFINITY, log: deps.log });
     return leased.ran ? leased.value : null;
   } catch (err) {
     deps.log.warn({ targetId, err: err instanceof Error ? err.message : String(err) }, 'backup-target usage: measurement failed');
@@ -321,8 +337,7 @@ export async function measureAllTargets(deps: MeasureDeps): Promise<number> {
 
 /** True while a measurement of this target is (still) running somewhere. */
 export async function isMeasuring(db: Database, targetId: string, now: Date = new Date()): Promise<boolean> {
-  const since = (await readPrefixed(db, `${MEASURING_PREFIX}${targetId}`)).get('');
-  return since !== undefined && now.getTime() - Date.parse(since) < MEASURING_STALE_MS;
+  return leaseLive((await readPrefixed(db, `${SCHEDULER_LEASE_KEY_PREFIX}${measureLeaseJob(targetId)}`)).get(''), now);
 }
 
 // ─── scheduler ──────────────────────────────────────────────────────────────
