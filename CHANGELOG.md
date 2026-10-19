@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.14] - 2026-10-19
+
 ### Changed
 
 - **Private workers need "Allow Custom Containers".** A private worker runs a tenant's own
