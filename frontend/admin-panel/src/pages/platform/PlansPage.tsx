@@ -285,7 +285,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         />
         <span>
           <span className="block text-xs font-medium text-gray-700 dark:text-gray-300">Allow Custom Containers</span>
-          <span className="block text-[10px] text-gray-400">Lets tenants on this plan deploy bring-your-own container images (ADR-036). Off by default; can be overridden per tenant.</span>
+          <span className="block text-[10px] text-gray-400">Lets tenants on this plan deploy bring-your-own container images (ADR-036) and create private workers. Off by default; can be overridden per tenant.</span>
         </span>
       </label>
       <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Description</label><input type="text" className={INPUT_CLASS} placeholder="Optional description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>

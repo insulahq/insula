@@ -19,6 +19,8 @@ ships with the source.
 | `SESSION_EXPIRED` | 401 | Re-authenticate |
 | `INSUFFICIENT_PERMISSIONS` | 403 | Your role can't do this |
 | `STEP_UP_UNAVAILABLE` | 409 | Action needs a fresh credential check, but your account has no re-checkable credential (OIDC-only) |
+| `CUSTOM_CONTAINERS_NOT_IN_PLAN` | 403 | The tenant's subscription does not allow custom containers — needed to deploy one or to create a private worker. Enable **Allow Custom Containers** on the plan or on the tenant |
+| `CUSTOM_DEPLOYMENTS_DISABLED` | 403 | Custom containers (and with them new private workers) are switched off platform-wide |
 
 ## Validation
 

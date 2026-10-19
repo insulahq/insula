@@ -13,6 +13,16 @@ export interface TrafficSeriesParams {
   readonly metric: TrafficMetric;
   readonly direction: TrafficDirection;
   readonly backups: TrafficBackupMode;
+  /**
+   * Ask the TENANT endpoints for this tenant instead of the admin ones: the
+   * server then confines every scope to the tenant's namespace, so a route
+   * or pod list can never show another tenant's subjects.
+   */
+  readonly tenantId?: string;
+}
+
+function base(tenantId: string | undefined): string {
+  return tenantId ? `/api/v1/tenants/${encodeURIComponent(tenantId)}/traffic` : '/api/v1/admin/monitoring/traffic';
 }
 
 function toQuery(p: TrafficSeriesParams): string {
@@ -36,8 +46,8 @@ function toQuery(p: TrafficSeriesParams): string {
  */
 export function useTrafficSeries(params: TrafficSeriesParams, enabled = true) {
   return useQuery({
-    queryKey: ['traffic', 'series', toQuery(params)],
-    queryFn: () => apiFetch<{ data: TrafficFrame }>(`/api/v1/admin/monitoring/traffic/series?${toQuery(params)}`)
+    queryKey: ['traffic', 'series', params.tenantId ?? null, toQuery(params)],
+    queryFn: () => apiFetch<{ data: TrafficFrame }>(`${base(params.tenantId)}/series?${toQuery(params)}`)
       .then((r) => r.data),
     enabled,
     staleTime: 60_000,
@@ -47,7 +57,7 @@ export function useTrafficSeries(params: TrafficSeriesParams, enabled = true) {
 
 /** Picker entries, ranked by the metric currently on screen. */
 export function useTrafficSubjects(
-  params: { from: Date; to: Date; scope: TrafficScope; subject?: string; metric: TrafficMetric },
+  params: { from: Date; to: Date; scope: TrafficScope; subject?: string; metric: TrafficMetric; tenantId?: string },
   enabled = true,
 ) {
   const q = new URLSearchParams({
@@ -58,9 +68,9 @@ export function useTrafficSubjects(
   });
   if (params.subject) q.set('subject', params.subject);
   return useQuery({
-    queryKey: ['traffic', 'subjects', q.toString()],
+    queryKey: ['traffic', 'subjects', params.tenantId ?? null, q.toString()],
     queryFn: () => apiFetch<{ data: { subjects: TrafficSubject[] } }>(
-      `/api/v1/admin/monitoring/traffic/subjects?${q.toString()}`,
+      `${base(params.tenantId)}/subjects?${q.toString()}`,
     ).then((r) => r.data.subjects),
     enabled,
     staleTime: 60_000,

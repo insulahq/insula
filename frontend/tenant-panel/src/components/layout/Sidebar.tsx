@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSystemInfo } from '@/hooks/use-system-info';
+import { useTenantContext } from '@/hooks/use-tenant-context';
+import { usePrivateWorkersAccess } from '@/hooks/use-private-workers-access';
 
 /* The runtime-info block (platform version, build branch, serving node) used
    to render here, mirroring the admin sidebar. Removed by operator decision:
@@ -59,6 +61,11 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   // the sidebar never disagree while /system-info is still in flight.
   const { data: systemInfo } = useSystemInfo();
   const platformName = systemInfo?.platformName ?? 'Hosting Platform';
+  // Private workers come with "Allow Custom Containers" — listed while the
+  // subscription allows them, or while the tenant still has some to manage.
+  const { tenantId } = useTenantContext();
+  const privateWorkers = usePrivateWorkersAccess(tenantId ?? undefined);
+  const visibleItems = navItems.filter((item) => item.to !== '/private-workers' || privateWorkers.listed);
 
   return (
     <>
@@ -100,7 +107,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
           role="navigation"
           aria-label="Main"
         >
-          {navItems.map(({ to, icon: Icon, label }) => (
+          {visibleItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}

@@ -42,6 +42,7 @@ import { deriveMailWebhookKey, verifyWebhookSignature } from './hmac.js';
 import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
 import { getTenantMailDomainStats } from './domain-stats.js';
+import { getTenantMailDaily } from './daily.js';
 import { schedulePollSoon } from './dmarc.js';
 import { getMailOverview } from './overview.js';
 import { applyDmarcPolicy } from './dmarc-apply.js';
@@ -230,6 +231,19 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     return success(await getTenantMailUsage(app.db, tenantId));
+  });
+
+  // Sent / held back per UTC day over the last two weeks, for the admin tenant
+  // page's chart. Readable by the same roles as the per-domain figures below.
+  app.get('/tenants/:tenantId/mail/daily', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user'),
+      requireTenantAccess(),
+    ],
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await getTenantMailDaily(app.db, tenantId));
   });
 
   // Per-domain send figures for the tenant's Email → Statistics tab. Readable

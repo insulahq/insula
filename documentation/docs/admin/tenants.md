@@ -63,7 +63,7 @@ what is elsewhere (running on, volume attached on, data on). This happens after
 a storage failover, a node outage, or a pod scheduled onto another node. The
 platform checks every minute; the same fact adds a **Not on its primary node**
 entry to the tenant's issues chip. To resolve it, open the tenant's
-[Placement card](#the-tenant-detail-page).
+[Placement](#placement) on its **Storage & backups** section.
 
 **Expires** is the subscription expiry date, colour-coded so a lapsing account
 is visible without reading dates:
@@ -127,111 +127,110 @@ company Name is used instead.
 
 ## The tenant detail page
 
-Clicking any tenant opens its detail page. The header carries the action
-buttons (below). Underneath are several cards and a tabbed resource view.
+Clicking any tenant opens its detail page. The header names the tenant with
+its status, its open issues, its plan and where it runs, and carries the
+actions (below). Under it are six sections:
 
-**Cards (top to bottom):**
+| Section | What it holds |
+|---|---|
+| **Overview** | Usage at a glance — CPU, memory, storage, bandwidth and mail sent today, each linking to where it is acted on. **Needs attention** lists every open condition with the place it gets fixed: the tenant's issues, a tenant away from its pinned node, a backup that did not complete, CPU settings waiting for Re-apply, send limits the mail server does not hold. Below: websites and applications, recent activity, and short summaries of placement, account, plan, backups, email and users. |
+| **Email** | Outbound sending and its limits (with whether the mail server holds them), sent and held-back mail, a two-week chart, DMARC / TLS-report / abuse summaries, mail domains with their DNS records, mailboxes with aliases and forwarding, mailing lists, and IMAP migrations. |
+| **Traffic** | The same view as [Monitoring → Traffic](../operator/monitoring.md#traffic), narrowed to this tenant: its own in/out traffic, or broken down by ingress route or by pod. Above it, the bandwidth used this cycle against the allowance. |
+| **Storage & backups** | Placement, the tenant's volumes and any storage operation in flight, retained or orphaned volumes, the platform's backup bundles, and the volume snapshots. |
+| **Plan & limits** | The subscription, every limit against what is used, plan comparison. See [Per-tenant overrides](#per-tenant-overrides). |
+| **Activity** | Everything recorded against this tenant, newest first, named in words with the request underneath. |
 
-- **Open issues** — an amber banner, shown only when the tenant has at least
-  one open condition. Each line names the object it concerns (the mailbox
-  address, the tenant), the value that tripped it, and how long it has been
-  true, with a link to the page where it gets fixed. It sits above the other
-  cards so the answer to "what is wrong with this tenant" is the first thing
-  on the page, and it clears itself when the condition does.
-- **Account Information** — the editable lifecycle **Status** control,
-  the **K8s Status** (provisioning) badge, created date, and namespace.
-- **IDs** — client ID, plan ID, region ID (for support / debugging).
-- **Subscription** — assigned plan, status, and expiry date. Click
-  **Edit** to change the plan or set an expiry.
-- **Resource Limits** — the effective CPU / memory / storage / sub-user /
-  mailbox limits and monthly price, each of which you can **override**
-  per tenant (see below). For CPU this is the tenant's **share** and its
-  **burst ceiling**; both default to *inherit from plan*.
-- **Apply new limits** — appears under Resource Limits for a tenant on the
-  share model. Saving a share or ceiling writes it; this delivers it to the
-  tenant's namespace (see below).
-- **Storage Lifecycle** — current storage state and grow/shrink controls.
-- **Placement** — the tenant's primary node and storage tier, and where it
-  actually runs and keeps its data right now (checked every minute). When
-  those differ, a red **Not on its primary node** banner says what is
-  elsewhere and since when, with two ways out:
-    - **Move back to &lt;primary&gt;** moves the tenant to its primary node.
-      A **running** tenant is stopped first: its workloads scale to 0, the
-      platform waits until its volume has detached from the node it ran on,
-      re-pins it and starts it on the primary node — usually about a minute of
-      downtime. This runs as a storage operation: its progress opens right
-      away (and stays in the Task Tracker), other storage operations wait for
-      it, and a failure starts the tenant again — on the old node if it had not
-      been re-pinned yet. Longhorn then copies the data back in the
-      background; the copy takes as long as the volume is large. (Re-pinning a
-      running tenant without stopping it let Longhorn detach the volume under
-      its still-running pods.) The move is refused — *the tenant's volume is in
-      use* — while a backup or restore Job uses the volume or a platform task
-      holds the file manager; try again once it has finished. A tenant with
-      nothing running (no app, file manager idle) has no workload to carry its
-      data, so the platform attaches its volume on the primary node itself
-      until the copy is done; the result line says **Moving the data there
-      now**, and the banner clears once it has.
+### Managed in the tenant panel
 
-      A move to a node that **cannot hold the tenant's volume** is refused
-      before anything is stopped, with the numbers: how large the volume is
-      and how much Longhorn can still schedule on that node. Longhorn reserves
-      a volume's *full* size, not what is in use — a 100 GiB volume holding
-      28 GiB needs 100 GiB of schedulable room — so a node with plenty of free
-      disk can still be too small. Pick a node with more room, or shrink the
-      volume first (**Storage Lifecycle**). Without this check the tenant
-      would start on the new node with its data left behind, and do all of
-      its disk I/O across the network from then on.
-    - When Longhorn cannot copy the data to where the tenant runs, the banner
-      says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
-      node-b: insufficient storage* — and so does the notification. That does
-      not resolve by waiting: move the tenant to a node with room, or shrink
-      its volume.
-    - **Make &lt;current node&gt; the primary node** accepts where it is: the
-      workloads restart once on the same node to pick up the new pin, and no
-      data is copied.
-  Both ask for a second click that says what they will do. Below the banner,
-  **Storage failovers** lists the tenant's recent Longhorn salvages — when a
-  volume lost every replica and was remounted — with where the tenant ran
-  before and after.
+What a tenant manages for itself — domains, applications, cron jobs,
+databases, files, mailboxes, aliases, forwarding, mailing lists, migrations,
+snapshots, users, SFTP users and SSH keys — is **shown** on this page and
+**changed** in the tenant panel. Links marked with an arrow (↗) open the
+tenant panel in a new tab, signed in as the tenant, on that page: a mailbox's
+**Manage** opens its editor, a migration's **Edit** opens its edit form. A
+**Delete** link lands on the item, outlined; the delete itself is pressed
+there — nothing is deleted by opening a link.
 
-A **namespace health banner** appears above Storage Lifecycle only when
-something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).
+What only an operator decides stays on this page: the lifecycle actions,
+plan and limits, suspending outbound mail, placement, storage operations
+and backups, and whether a custom container may run as root (**Root ON /
+OFF** beside the application on the Overview).
 
-**Resource tabs:** Domains, Deployments, Files, Email, Backups, Snapshots,
-Users, SFTP Users. Each shows that tenant's resources with a count. The
-**Files** tab is intentionally a pointer — the file browser lives in the
-tenant panel; use **Login as Tenant** to reach it.
+### Placement
 
-There is no longer an **Applications** tab: it listed the deployments of
-type `application`, which is a filtered view of the **Deployments** tab
-beside it, under a second name for the same objects.
+**Storage & backups → Placement** shows one card per node. **ACTIVE** (a
+solid green card with a dot) is where the tenant's pods run and its volume
+is attached now; **PINNED** (a dashed blue outline with a pin) is its primary
+node — where it should run and keep its data; **DATA** marks a node holding a
+replica. The volume table below uses the same two badges for *Attached to*
+and *Replica nodes*. When active and pinned differ, a **Not on its primary
+node** banner says what is elsewhere and since when, with two ways out:
 
-The **Backups** tab lists that tenant's off-site backup bundles — when each
-ran, whether it completed, how large it is, who started it, and when it
-expires — with a **Restore…** link into the full
-[Backups → Tenants](../operator/tenant-backups.md) page. The count on the tab
-is the tenant's total bundle count.
+- **Move back to &lt;primary&gt;** moves the tenant to its primary node.
+  A **running** tenant is stopped first: its workloads scale to 0, the
+  platform waits until its volume has detached from the node it ran on,
+  re-pins it and starts it on the primary node — usually about a minute of
+  downtime. This runs as a storage operation: its progress opens right
+  away (and stays in the Task Tracker), other storage operations wait for
+  it, and a failure starts the tenant again — on the old node if it had not
+  been re-pinned yet. Longhorn then copies the data back in the
+  background; the copy takes as long as the volume is large. (Re-pinning a
+  running tenant without stopping it let Longhorn detach the volume under
+  its still-running pods.) The move is refused — *the tenant's volume is in
+  use* — while a backup or restore Job uses the volume or a platform task
+  holds the file manager; try again once it has finished. A tenant with
+  nothing running (no app, file manager idle) has no workload to carry its
+  data, so the platform attaches its volume on the primary node itself
+  until the copy is done; the result line says **Moving the data there
+  now**, and the banner clears once it has.
 
-The **Users** tab manages the tenant's team on their behalf — the same
-add / edit / enable / reset / delete actions the tenant sees, attributed
-to your staff account in the audit log. Passwords work the same way here
-as they do for the tenant: **Add User** takes an email, name, and role but
-no password, and **reset password** regenerates rather than letting you
-choose one. Either way the new password is shown once, with a copy button.
-You cannot set a password of your choosing on a tenant's account.
+  A move to a node that **cannot hold the tenant's volume** is refused
+  before anything is stopped, with the numbers: how large the volume is
+  and how much Longhorn can still schedule on that node. Longhorn reserves
+  a volume's *full* size, not what is in use — a 100 GiB volume holding
+  28 GiB needs 100 GiB of schedulable room — so a node with plenty of free
+  disk can still be too small. Pick a node with more room, or shrink the
+  volume first (**Plan & limits**). Without this check the tenant
+  would start on the new node with its data left behind, and do all of
+  its disk I/O across the network from then on.
+- When Longhorn cannot copy the data to where the tenant runs, the banner
+  says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
+  node-b: insufficient storage* — and so does the notification. That does
+  not resolve by waiting: move the tenant to a node with room, or shrink
+  its volume.
+- **Make &lt;current node&gt; the primary node** accepts where it is: the
+  workloads restart once on the same node to pick up the new pin, and no
+  data is copied.
+
+Both ask for a second click that says what they will do. Below the banner,
+**Storage failovers** lists the tenant's recent Longhorn salvages — when a
+volume lost every replica and was remounted — with where the tenant ran
+before and after.
+
+
+Under the cards, **Pinned node** and **Storage tier** change the intent:
+**Save pin** records where the tenant should run (its pods move at their
+next restart); **Save and move pods now** also restarts them so they move.
+
+A **namespace health banner** appears on the Overview and on Plan & limits
+only when something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).
+
+The **Backups** list on Storage & backups shows that tenant's off-site backup
+bundles — when each ran, whether it completed, how large it is, who started
+it, and when it expires — with a **Restore…** link into the full
+[Backups → Tenants](../operator/tenant-backups.md) page.
 
 ### Header actions
 
-**Login as Tenant** sits on its own in the title bar; everything else is
-under the **Actions** menu beside it.
+**Login as tenant** and **Edit** sit in the title bar; everything else is
+under the **Actions** menu between them.
 
 | Action | What it does |
 |--------|--------------|
 | **Login as Tenant** | Opens the tenant panel in a new tab, signed in as that customer (impersonation). Also available as a **Login** button on each row of the Tenants list. Requires the Tenant Panel URL to be set in [Platform → Identity](platform-settings.md), and an active `tenant_admin` user on the tenant to sign in as — if either is missing the panel tells you which. |
 | **Provision / Re-provision** | Builds (or rebuilds) the tenant's cluster resources. Appears as *Provision* when unprovisioned/failed, *Re-provision* when already provisioned (to repair drifted state). |
-| **Refresh All Apps** | Pulls the latest images and restarts every running deployment for the tenant. |
-| **Edit** | Edits the contact fields (name, emails). |
+| **Refresh all apps** | Pulls the latest images and restarts every running deployment for the tenant. |
+| **Edit** | Edits the contact fields (name, emails). A button of its own, beside the menu. |
 | **Notify tenant** | A checkbox above the lifecycle actions — when ticked (default), the customer gets an in-app + email notification about the lifecycle action you're about to take. |
 | **Suspend / Reactivate / Archive / Restore** | The lifecycle transitions, described below. Which one appears depends on the tenant's current status. |
 | **Delete** | Hard delete, shown last and in red. Irreversible. |
@@ -259,9 +258,9 @@ current status:
 | archived | **Restore** | Recreates the volume and restores data from the pre-archive snapshot. (Workloads are redeployed afterwards.) |
 | any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered — see [Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant) — then removed automatically. |
 
-You can drive the same transitions from the **Status** dropdown in the
-Account Information card — it's the keyboard-friendly equivalent of the
-buttons.
+**Archive…** asks how long to keep the pre-archive snapshot (1 to 365 days,
+90 by default) before anything is deleted; the tenant can be restored until
+the snapshot expires.
 
 Archive and Delete can also happen by themselves: a suspended tenant archived
 after a set number of days, an archived one deleted after another, each told
@@ -328,7 +327,7 @@ typically three to five minutes.
 
 An operation interrupted **three times over** is ended as *failed* with its
 workloads started again, and the admins are notified; check the tenant, then
-**Reset to idle** (on the tenant's Storage Operations card) and start the
+**Reset to idle** (on the tenant's **Storage & backups** section) and start the
 operation again.
 
 !!! warning "A failed shrink can leave the tenant stopped on purpose"
@@ -395,8 +394,9 @@ any bulk action.
 ### Applying a changed CPU share or ceiling
 
 Saving a tenant's **CPU tier** or **Burst ceiling** records it; it does not
-reach the cluster. The panel under *Resource Limits* says which state the
-tenant is in and what pressing the button will do:
+reach the cluster. The panel under the *Compute* limits on **Plan & limits**
+says which state the tenant is in and what pressing the button will do, and
+the *In force* column reads **Waiting for Re-apply** until it is:
 
 | It says | Meaning |
 |---|---|
@@ -424,11 +424,25 @@ The same control appears per tenant under
 which is the better place to work through several tenants at once.
 
 
-A tenant inherits CPU, memory, storage, sub-user count, mailbox count,
-and monthly price from its **plan**. When one customer needs something
-different, open the **Resource Limits** card and click edit. Each field
-has a "custom" toggle: leave it off to follow the plan, or turn it on to
-set a tenant-specific value.
+A tenant inherits CPU, memory, storage, bandwidth, mailbox and sub-user
+counts, send limits and monthly price from its **plan**. **Plan & limits**
+shows each limit as one row: what is in use, what the tenant gets (with a
+**Custom** or **Plan** badge), and — where the platform can tell — whether it
+is in force: CPU tier and ceiling against what the namespace applies, send
+limits against what the mail server holds.
+
+When one customer needs something different, click **Edit limits**. Every
+row gets a **Plan · value / Custom** switch; change as many as you need, and
+a bar at the bottom counts the unsaved changes. **Review** lists each change
+with what it will do — *grows online*, *shrinks with downtime*, *below the 4
+mailboxes in use*, *waits for Re-apply* — and **Save** sends only the limits
+that changed. A change the server would refuse (a storage limit below what is
+in use) blocks the save until it is fixed. **Put every limit back on the
+plan** switches them all at once.
+
+**Compare plans for this tenant** at the bottom sets the plans side by side
+against the tenant's current use, flags where a plan would not fit it, and
+moves the tenant with **Switch to …** — custom limits stay as they are.
 
 **Turning email off for one tenant.** Set **Max Mailboxes** to `0`. The tenant
 keeps the mailboxes they already have, but no new one can be created and email
@@ -480,7 +494,7 @@ usually a new volume or application being refused, which surfaces as a
 deployment stuck pending.
 
 The tenant detail page now compares all three numbers. When they
-disagree, a banner appears above **Storage Lifecycle**:
+disagree, a banner appears on the tenant's **Overview** and **Plan & limits**:
 
 | Resource | Subscription | Enforced quota | Provisioned |
 |----------|--------------|----------------|-------------|
@@ -507,7 +521,7 @@ the three columns at a glance.
 
 **Run reconciler** is deliberately not offered here. The reconciler
 recreates *missing* objects; this object exists and is simply the wrong
-size. Resolve it one of two ways, both under **Resource Limits**:
+size. Resolve it one of two ways, both under **Plan & limits → Edit limits**:
 
 - **Raise the limit** — turn on the override for that resource and set it
   to at least what is provisioned. Immediate, and the right choice if the

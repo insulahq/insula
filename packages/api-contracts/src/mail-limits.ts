@@ -90,6 +90,58 @@ export const mailDomainStatsResponseSchema = z.object({
 
 export type MailDomainStatsResponse = z.infer<typeof mailDomainStatsResponseSchema>;
 
+/**
+ * One tenant's outbound mail per UTC calendar day, oldest first, every day of
+ * the window present (a day that sent nothing is a row of zeros, not a gap).
+ */
+export const mailDailyResponseSchema = z.object({
+  days: z.array(z.object({
+    /** UTC calendar day, `YYYY-MM-DD`. */
+    date: z.string(),
+    sent: z.number().int().min(0),
+    recipients: z.number().int().min(0),
+    rateLimited: z.number().int().min(0),
+    quotaRejected: z.number().int().min(0),
+  })),
+});
+
+export type MailDailyResponse = z.infer<typeof mailDailyResponseSchema>;
+
+/**
+ * What the mail server holds for one tenant's send limits, beside what the
+ * platform wants it to hold — per mail domain, because the limits are keyed
+ * by sender domain there.
+ *
+ * `inEffect` is true only when every object the platform wants exists exactly
+ * once with the wanted values and nothing else of ours is left for the domain.
+ * It is what the mail server STORES; the reconcile that wrote it also reloads
+ * the server's settings, and logs an error when that reload fails.
+ */
+export const sendLimitLiveStateSchema = z.object({
+  checkedAt: z.string(),
+  /** False when the mail server could not be asked; every domain then reads not in effect. */
+  reachable: z.boolean(),
+  domains: z.array(z.object({
+    domain: z.string(),
+    desired: z.object({
+      hourly: z.number().int().min(0),
+      daily: z.number().int().min(0),
+      blocked: z.boolean(),
+    }),
+    live: z.object({
+      hourly: z.number().int().min(0).nullable(),
+      daily: z.number().int().min(0).nullable(),
+      backlog: z.number().int().min(0).nullable(),
+      blocked: z.boolean(),
+      /** Extra objects under a description that should exist once. */
+      duplicates: z.number().int().min(0),
+    }),
+    inEffect: z.boolean(),
+  })),
+});
+
+export type SendLimitLiveState = z.infer<typeof sendLimitLiveStateSchema>;
+
 // PR 5 — Monitoring -> Mail tab aggregate.
 export const mailOverviewResponseSchema = z.object({
   totals: z.object({

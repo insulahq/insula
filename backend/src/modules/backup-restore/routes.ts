@@ -253,7 +253,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
           userId: job.initiatorUserId,
           tenantId: job.tenantId,
           label: toSafeText(`Restore cart (${job.tenantId.slice(0, 8)})`),
-          target: { type: 'route', href: `/tenants/${job.tenantId}/backups` },
+          target: { type: 'route', href: `/tenants/${job.tenantId}/storage` },
           details: { cartId },
         });
       } catch (err) {

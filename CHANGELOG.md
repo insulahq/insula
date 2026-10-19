@@ -12,6 +12,53 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Private workers need "Allow Custom Containers".** A private worker runs a tenant's own
+  software behind the platform's ingress, as a custom container does, yet any tenant could create
+  one. Creating one now takes the same gate: the plan's **Allow Custom Containers** (or the
+  tenant's override), and custom containers enabled platform-wide — otherwise 403
+  `CUSTOM_CONTAINERS_NOT_IN_PLAN` / `CUSTOM_DEPLOYMENTS_DISABLED`. Existing workers keep running
+  and can still be rotated, revoked and deleted. The tenant panel lists **Private Workers** only
+  while the gate is open or the tenant still has workers, and says why it cannot create one; the
+  plan and tenant settings say the switch covers private workers too.
+- **The admin tenant page is rebuilt around six sections.** The single long page — eight cards
+  stacked above eight tabs — is now **Overview**, **Email**, **Traffic**, **Storage & backups**,
+  **Plan & limits** and **Activity**, under a header with the status, open issues, plan and
+  where the tenant runs. What the tenant manages itself (domains, applications, cron jobs,
+  databases, files, mailboxes, aliases, forwarding, mailing lists, IMAP migrations, snapshots,
+  users, SFTP, SSH keys) is shown read-only and links ↗ into the tenant panel, signed in as the
+  tenant, on that page or item; the Websites, Users and SFTP tabs and the admin copies of those
+  controls are gone. What only an operator decides stays: lifecycle, plan and limits, outbound
+  suspension, placement, storage operations, backups, and a custom container's **Root ON/OFF**.
+  - **Overview** opens with usage tiles and **Needs attention** — the tenant's issues plus a tenant
+    away from its pinned node, a backup that did not complete, CPU settings waiting for
+    Re-apply, and send limits the mail server does not hold.
+  - **Email** adds mail statistics: sent and held back this hour / today / 7 days, a 14-day
+    chart, DMARC / TLS-report / abuse summaries, DNS records per domain, aliases, forwarding,
+    mailing lists, and whether the mail server holds the tenant's send limits.
+  - **Traffic** is Monitoring → Traffic narrowed to the tenant (its own in/out, by route, by pod),
+    with the bandwidth used against the allowance.
+  - **Storage & backups** shows placement as one card per node, **ACTIVE** (where the pods run)
+    and **PINNED** (the primary node) marked apart in shape and colour, also in the volume table.
+  - **Plan & limits** edits every limit in one mode: a Plan / Custom switch per limit, a review
+    that says what each change does before saving, only the changed limits sent, and a plan
+    comparison against the tenant's current use. The shrink confirmation now re-sends every
+    changed limit — it used to drop the send limits typed in the same form.
+  - **Archive…** asks for the snapshot retention (1–365 days), which only the removed status
+    dropdown used to offer.
+- **"Login as tenant" can land on a page.** The tenant panel follows a `next` path after an
+  impersonation sign-in — only a path inside the panel, never a URL — and its Email page opens
+  the mailbox (`?mailbox=`), mailing list (`?alias=`) or migration (`?migration=`, with
+  `&action=edit` for its edit form) a link names. Nothing destructive runs from a URL.
+
+### Added
+
+- `GET /api/v1/tenants/:tenantId/mail/daily` — the tenant's sent / recipients / rate-limited /
+  queue-refused mail per UTC day over the last 14 days, empty days included.
+- `GET /api/v1/admin/tenants/:tenantId/mail/send-limits/live` — the tenant's send limits as the
+  mail server holds them, per mail domain, beside what the platform wants there (read-only).
+
 ## [2026.10.13] - 2026-10-19
 
 ### Fixed

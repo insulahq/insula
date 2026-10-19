@@ -26,7 +26,7 @@ All five flags are operator-tunable via the admin API
 
 | Flag | Default | Effect when `false` |
 |------|---------|---------------------|
-| `customDeploymentsEnabled` | `true` | Master kill switch. `POST /custom-deployments` returns 403 `CUSTOM_DEPLOYMENTS_DISABLED`. Existing rows keep running. |
+| `customDeploymentsEnabled` | `true` | Master kill switch. `POST /custom-deployments` — and creating a private worker — returns 403 `CUSTOM_DEPLOYMENTS_DISABLED`. Existing rows keep running. |
 | `customDeploymentsAllowCompose` | `true` | Compose mode rejected with 403 `COMPOSE_DEPLOYMENTS_DISABLED`. Simple-form still works. |
 | `customDeploymentsAllowPrivateRegistries` | `true` | PAT submission rejected. Existing pull-credentials stay materialised. |
 | `customDeploymentsImagePullAudit` | `true` | Stops populating `custom_deployment_image_audit`. Existing rows kept. |

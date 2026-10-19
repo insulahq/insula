@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
   Cable,
+  Info,
   Loader2,
   Plus,
   Search,
@@ -17,6 +18,7 @@ import {
   usePrivateWorkers,
   useCreatePrivateWorker,
 } from '@/hooks/use-private-workers';
+import { usePrivateWorkersAccess } from '@/hooks/use-private-workers-access';
 import PrivateWorkerTokenModal from '@/components/private-workers/PrivateWorkerTokenModal';
 import PrivateWorkerDetailDrawer from '@/components/private-workers/PrivateWorkerDetailDrawer';
 import type {
@@ -245,11 +247,11 @@ function CreateModal({ tenantId, onClose, onCreated }: CreateModalProps) {
 const SEARCH_THRESHOLD = 5;
 
 interface EmptyStateProps {
-  readonly canManage: boolean;
+  readonly canCreate: boolean;
   readonly onCreate: () => void;
 }
 
-function EmptyState({ canManage, onCreate }: EmptyStateProps) {
+function EmptyState({ canCreate, onCreate }: EmptyStateProps) {
   return (
     <div
       className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 p-10 text-center"
@@ -290,7 +292,7 @@ function EmptyState({ canManage, onCreate }: EmptyStateProps) {
           </span>
         </li>
       </ul>
-      {canManage && (
+      {canCreate && (
         <div className="mt-6 flex justify-center">
           <button
             type="button"
@@ -310,6 +312,10 @@ export default function PrivateWorkers() {
   const { tenantId } = useTenantContext();
   const canManage = useCanManage();
   const { data, isLoading, error } = usePrivateWorkers(tenantId ?? undefined);
+  // New workers come with "Allow Custom Containers" (the API refuses one
+  // otherwise); existing ones stay manageable here either way.
+  const access = usePrivateWorkersAccess(tenantId ?? undefined);
+  const canCreate = canManage && access.canCreate;
 
   const [createOpen, setCreateOpen] = useState(false);
   const [secret, setSecret] = useState<PrivateWorkerSecretResponse | null>(null);
@@ -367,7 +373,7 @@ export default function PrivateWorkers() {
             Private Workers
           </h1>
         </div>
-        {canManage && workers.length > 0 && (
+        {canCreate && workers.length > 0 && (
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
@@ -388,6 +394,21 @@ export default function PrivateWorkers() {
 
       {!canManage && <ReadOnlyNotice />}
 
+      {access.known && !access.canCreate && (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 text-sm text-blue-800 dark:text-blue-300"
+          data-testid="private-workers-not-in-plan"
+        >
+          <Info size={16} className="mt-0.5 shrink-0" />
+          <span>
+            Private workers are not included in your plan: they come with custom
+            containers. Contact your provider to have them enabled.
+            {workers.length > 0 &&
+              ' The workers you already have keep running — you can still rotate, revoke or delete them.'}
+          </span>
+        </div>
+      )}
+
       {error && !isLoading && (
         <div className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
@@ -400,7 +421,7 @@ export default function PrivateWorkers() {
           <Loader2 className="animate-spin text-brand-500" size={32} />
         </div>
       ) : workers.length === 0 ? (
-        <EmptyState canManage={canManage} onCreate={() => setCreateOpen(true)} />
+        <EmptyState canCreate={canCreate} onCreate={() => setCreateOpen(true)} />
       ) : (
         <>
           {showSearch && (
@@ -510,7 +531,7 @@ export default function PrivateWorkers() {
         </>
       )}
 
-      {createOpen && tenantId && (
+      {createOpen && canCreate && tenantId && (
         <CreateModal
           tenantId={tenantId}
           onClose={() => setCreateOpen(false)}

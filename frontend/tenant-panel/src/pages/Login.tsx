@@ -9,6 +9,7 @@ import ApiUnavailable from '@/components/ApiUnavailable';
 import { API_BASE, ApiError } from '@/lib/api-client';
 import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
 import { proxySsoProvider, markProxySsoAttempt, resetProxySso } from '@/lib/proxy-sso';
+import { safeNextPath } from '@/lib/safe-next-path';
 
 export default function Login() {
   // The login screen sits OUTSIDE <Layout>, so the useDocumentTitle call
@@ -44,7 +45,8 @@ export default function Login() {
         const user = JSON.parse(decodeURIComponent(userJson));
         setTokenAndUser(token, user);
         resetProxySso(sessionStorage);
-        navigate('/', { replace: true });
+        // "Login as tenant" from an admin link names the page it was about.
+        navigate(safeNextPath(searchParams.get('next')), { replace: true });
       } catch { /* ignore */ }
     }
   }, [searchParams, navigate, setTokenAndUser]);

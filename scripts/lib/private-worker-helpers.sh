@@ -61,6 +61,35 @@ api() {
   fi
 }
 
+# pw_gate_then_allow <tenant_id>
+# Private workers come with "Allow Custom Containers". With the tenant's
+# override off, a mint must be refused (CUSTOM_CONTAINERS_NOT_IN_PLAN) and
+# leave no worker behind; the override is then turned on so the harness can
+# mint whatever the test plan says.
+pw_gate_then_allow() {
+  local cid="$1" resp code n
+  api PATCH "/tenants/$cid" '{"allow_custom_containers_override":false}' >/dev/null
+  resp=$(api POST "/tenants/$cid/private-workers" '{"name":"gate-probe"}')
+  code=$(jq -r '.error.code // empty' <<<"$resp" 2>/dev/null)
+  if [[ "$code" == "CUSTOM_CONTAINERS_NOT_IN_PLAN" ]]; then
+    ok "mint refused while Allow Custom Containers is off (CUSTOM_CONTAINERS_NOT_IN_PLAN)"
+  else
+    fail "mint with Allow Custom Containers off was not refused as CUSTOM_CONTAINERS_NOT_IN_PLAN: $(head -c 300 <<<"$resp")"
+    return 1
+  fi
+  n=$(api GET "/tenants/$cid/private-workers" | jq -r '.data.items | length' 2>/dev/null)
+  if [[ "$n" != "0" ]]; then
+    fail "the refused mint left ${n:-?} private worker(s) behind"
+    return 1
+  fi
+  resp=$(api PATCH "/tenants/$cid" '{"allow_custom_containers_override":true}')
+  if [[ "$(jq -r '.data.allowCustomContainersOverride // empty' <<<"$resp" 2>/dev/null)" != "true" ]]; then
+    fail "could not turn Allow Custom Containers on for the tenant: $(head -c 300 <<<"$resp")"
+    return 1
+  fi
+  ok "Allow Custom Containers on for the test tenant"
+}
+
 # ─── SSH / kubectl probe ──────────────────────────────────────────────
 
 # ssh_cp <command...>

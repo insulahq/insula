@@ -24,7 +24,7 @@ the platform provisions the namespace, quota, network policy, and storage.
 ## The tenant lifecycle
 
 A tenant moves through a small set of states. In the admin panel you change
-state from the **status dropdown** on the tenant; the platform runs the right
+state from the tenant's **Actions** menu; the platform runs the right
 work behind the scenes and shows live progress.
 
 | State | Meaning | What happens |

@@ -1,86 +1,48 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import ApplyCpuLimitsPanel from '@/components/ApplyCpuLimitsPanel';
-import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { config } from '@/lib/runtime-config';
-import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, AlertCircle, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, UserCheck, Rocket, ServerCrash, RefreshCw, Copy, Check, ExternalLink } from 'lucide-react';
+import clsx from 'clsx';
+import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditTenantModal from '@/components/EditTenantModal';
-import NamespaceIntegrityBanner from '@/components/NamespaceIntegrityBanner';
-import TenantIssuesBanner from '@/components/tenants/TenantIssuesBanner';
-import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import type { TenantDeletedState } from '@/components/tenants/TenantDeletedBanner';
-import MigrateResultNote from '@/components/tenants/MigrateResultNote';
 import OperationProgressModal from '@/components/OperationProgressModal';
-import RetainedVolumesCard from '@/components/RetainedVolumesCard';
-import OrphanedVolumesAlert from '@/components/OrphanedVolumesAlert';
-import ReleasedSourceVolumeOffer from '@/components/ReleasedSourceVolumeOffer';
 import TransitionProgressModal from '@/components/TransitionProgressModal';
-import TenantUsersTab from '@/components/TenantUsersTab';
-import { useAdminSubUsers } from '@/hooks/use-sub-users';
+import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
+import ErrorPanel from '@/components/ErrorPanel';
+import ArchiveTenantDialog from '@/components/tenant-detail/ArchiveTenantDialog';
+import OverviewTab from '@/components/tenant-detail/OverviewTab';
+import TenantEmailTab from '@/components/tenant-detail/EmailTab';
+import TenantTrafficTab from '@/components/tenant-detail/TrafficTab';
+import StorageTab from '@/components/tenant-detail/StorageTab';
+import LimitsTab from '@/components/tenant-detail/LimitsTab';
+import ActivityTab from '@/components/tenant-detail/ActivityTab';
+import { Chip } from '@/components/tenant-detail/ui';
+import { useTenantIssues } from '@/hooks/use-tenant-issues';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
 import { useSetTenantAutomationExempt } from '@/hooks/use-tenant-automation';
-import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
-import { useTenantBundles } from '@/hooks/use-tenant-bundles';
-// BackupScheduleEditor removed — tenants no longer have
-// per-tenant schedules. The platform-global `backup_schedules.tenant_bundle`
-// runs daily for all eligible tenants. To control which tenants get
-// included, use Settings → Backups → Schedules + the per-plan flag.
-import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment, useSetCustomDeploymentAllowRoot } from '@/hooks/use-deployments';
-import type { Deployment } from '@/hooks/use-deployments';
-import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
+import { useBulkRestartDeployments } from '@/hooks/use-deployments';
 import { useLoginAsTenant } from '@/hooks/use-impersonate';
-import { useSystemInfo } from '@/hooks/use-system-info';
-import { usePlans } from '@/hooks/use-plans';
-import { formatCurrency } from '@/lib/format-currency';
-import { useClusterNodes } from '@/hooks/use-cluster-nodes';
-import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
-import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
-import PlacementStatusPanel from '@/components/tenants/PlacementStatusPanel';
-import { useEmailDomains, useMailboxes, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type ImapSyncJob } from '@/hooks/use-email';
-import type { Domain, PaginatedResponse } from '@/types/api';
-import type { BundleSummary } from '@insula/api-contracts';
-import { useSortable } from '@/hooks/use-sortable';
-import SortableHeader from '@/components/ui/SortableHeader';
-import TimeCell from '@/components/ui/TimeCell';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
-import { useTenantMetrics } from '@/hooks/use-resource-metrics';
-import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
-import TenantSnapshotsPanel from '@/components/TenantSnapshotsPanel';
-import { useTenantSnapshots } from '@/hooks/use-tenant-snapshots';
-import {
-  // useResizeTenant: still wired into ResourceLimitsCard so the
-  // destructive-shrink confirmation can fire POST /storage/resize
-  // when the operator confirms the dialog. Suspend/Resume/Archive/
-  // Restore hooks are intentionally NOT imported here — those
-  // transitions are now driven exclusively by the status dropdown
-  // (PATCH /tenants/:id with status=…), which dispatches into the
-  // same orchestrators on the backend.
-  useResizeTenant,
-  useStorageOperations,
-  useClearFailedState,
-  useCancelStorageOperation,
-  useTenantStoragePlacement,
-  useFsckCheck,
-  useFsckRepair,
-} from '@/hooks/use-storage-lifecycle';
-import { useSftpUsers } from '@/hooks/use-sftp-users';
-import { useTableSearch } from '@/hooks/use-table-search';
-import ErrorPanel from '@/components/ErrorPanel';
+import { usePlans } from '@/hooks/use-plans';
+import { useTenantPlacement } from '@/hooks/use-tenant-placement';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
-import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
-import NodeName from '@/components/nodes/NodeName';
-import NodeList from '@/components/nodes/NodeList';
-import { useNodeLabel } from '@/hooks/use-node-labels';
-import TenantTrafficCard from '@/components/tenants/TenantTrafficCard';
-import { createdByLabel } from '@/lib/created-by-label';
+import type { UpdateTenantInput } from '@insula/api-contracts';
 
 type TabKey = TabOf<'/tenants/:id'>;
 
+const TAB_LABELS: Record<TabKey, string> = {
+  overview: 'Overview',
+  email: 'Email',
+  traffic: 'Traffic',
+  storage: 'Storage & backups',
+  limits: 'Plan & limits',
+  activity: 'Activity',
+};
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -89,67 +51,46 @@ export default function TenantDetail() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useTenant(id);
   const tenant = data?.data;
+  const { data: placementData } = useTenantPlacement(id ?? '');
+  const placement = placementData?.data.placement ?? null;
+  const nodeLabel = useNodeLabel();
+  // The detail read leaves `planName` empty (only list rows carry it), so the
+  // name comes from the plan list when the tenant does not say.
+  const { data: plansRes } = usePlans();
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [activeTab, setActiveTab] = useTabParam('/tenants/:id');
-  // notifications-system Phase 1: per-action toggle that lets the
-  // operator suppress the tenant-facing notification dispatched by the
-  // lifecycle hook registry. Default ON — operator must opt out
-  // explicitly. The flag is forwarded to the backend as
-  // `suppressTenantNotification` on every lifecycle action body
-  // (suspend / archive / restore / delete).
-  //
-  // The contract carries `suppressTenantNotification` and the backend now
-  // READS it — nothing in between did, so this checkbox sent
-  // its value all the way to a hook that checked a field nobody had set, and
-  // the tenant was emailed regardless.
+  // Per-action switch for the tenant-facing notification the lifecycle hooks
+  // send. Default ON — the operator opts out explicitly; it rides along on
+  // every lifecycle action as `suppressTenantNotification`.
   const [notifyTenant, setNotifyTenant] = useState(true);
-
-  const domainsQuery = useDomains(id);
-  const deploymentsQuery = useDeployments(id);
-  const bundlesQuery = useTenantBundles(id);
-  const subscriptionQuery = useSubscription(id);
-  const emailDomainsQuery = useEmailDomains(id);
-  const mailboxesQuery = useMailboxes(id);
-  const subUsersQuery = useAdminSubUsers(id ?? null);
-  const sftpUsersQuery = useSftpUsers({ tenantId: id });
-  // Snapshot count for the tab badge. Shares the query cache (same key)
-  // with TenantSnapshotsPanel, so this adds no extra request.
-  const snapshotsQuery = useTenantSnapshots(id ?? '');
-
   const [provisioningOpen, setProvisioningOpen] = useState(false);
-  // Op id surfaced when a status PATCH triggered a storage-lifecycle
-  // orchestrator (archive, restore-from-archive). Quiesce/unquiesce
-  // for plain suspend/active is synchronous today and won't return
-  // an op id; the StorageLifecycleCard's local progress strip still
-  // shows that path.
+  // Op id surfaced when a status PATCH started a storage-lifecycle
+  // orchestrator (archive, restore-from-archive).
   const [statusOpId, setStatusOpId] = useState<string | null>(null);
-  // Phase B2: open the transition progress modal whenever a lifecycle
-  // operation is triggered. The modal latches onto the most recent
-  // transition row matching `kind` started after `since` so concurrent
-  // transitions don't bleed across.
+  // The transition progress modal latches onto the most recent transition row
+  // matching `kind` started after `since`, so concurrent transitions don't
+  // bleed across.
   const [txModal, setTxModal] = useState<{
     kind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted';
     since: number;
     transitionId?: string | null;
   } | null>(null);
-
-  // A suspend, reactivate, archive or restore the API refused — the tenant is
-  // busy, an operation already owns it, no backup target. Shown under the
-  // header until the next action; these used to end with the "Dispatching…"
-  // dialog left open and nothing to say why.
+  // A suspend, reactivate, archive or restore the API refused — shown under the
+  // header until the next action, instead of a "Dispatching…" dialog left open
+  // with nothing to say why.
   const [lifecycleActionError, setLifecycleActionError] = useState<unknown>(null);
   const lifecycleActionFailed = (err: unknown): void => {
     setTxModal(null);
     setLifecycleActionError(err);
   };
   const setAutomationExempt = useSetTenantAutomationExempt();
-
   const deleteTenant = useDeleteTenant();
-  // Which tenant this page shows NOW. The same page instance is reused when
-  // the route's :id changes, so "still mounted" alone does not mean "still on
-  // the tenant that was deleted".
+  // Which tenant this page shows NOW. The same page instance is reused when the
+  // route's :id changes, so "still mounted" alone does not mean "still on the
+  // tenant that was deleted".
   const shownIdRef = useRef<string | undefined>(id);
   useEffect(() => {
     shownIdRef.current = id;
@@ -157,130 +98,79 @@ export default function TenantDetail() {
   }, [id]);
   const updateTenant = useUpdateTenant(id ?? '');
   const impersonate = useLoginAsTenant();
-  // Read once instead of casting `tenant` at four separate call sites.
-  const provisioningStatus = (tenant as Record<string, unknown> | undefined)?.provisioningStatus as string | undefined;
-  const systemInfo = useSystemInfo();
+  const provisioningStatus = tenant?.provisioningStatus as string | undefined;
   const triggerProvision = useTriggerProvisioning();
   const bulkRestart = useBulkRestartDeployments();
+  const [copied, setCopied] = useState(false);
 
   const handleDelete = async () => {
     if (!id) return;
     const deletingId = id;
     try {
-      // Open the modal optimistically so the operator sees a
-      // "Dispatching deleted transition…" placeholder immediately.
       setTxModal({ kind: 'deleted', since: Date.now() });
-      // notifications-system: when `notifyTenant` is false, the URL
-      // query parameter ?suppressTenantNotification=true tells the
-      // backend lifecycle hook registry to skip the tenant-facing
-      // notification dispatch for this transition. Encoded in the id
-      // arg because `useDeleteTenant` is a shared hook whose
-      // signature can't grow a body field without breaking other
-      // call sites. Backend should accept either query or body until
-      // the hook signature is extended.
+      // `?suppressTenantNotification=true` tells the lifecycle hooks to skip the
+      // tenant-facing notification; the shared delete hook takes only an id.
       const idWithQuery = notifyTenant ? id : `${id}?suppressTenantNotification=true`;
       await deleteTenant.mutateAsync(idWithQuery);
-      // The DELETE answers once the tenant is gone — hooks dispatched,
-      // namespace deleted, row dropped. Staying would refetch a tenant that
-      // no longer exists: the page turns into "Tenant not found" and takes
-      // the progress modal with it. Go back to the list, which says what
-      // happened (and links the per-step record, which outlives the tenant).
-      // Not if the operator already left this tenant while the delete ran.
+      // The DELETE answers once the tenant is gone; staying would refetch a
+      // tenant that no longer exists. Go back to the list, which says what
+      // happened — unless the operator already left this tenant.
       if (shownIdRef.current !== deletingId) return;
       setTxModal(null);
       setDeleteOpen(false);
       const state: TenantDeletedState = { deletedTenant: { name: tenant?.name ?? 'Unknown', id: deletingId } };
       navigate('/tenants/list', { replace: true, state });
     } catch (err) {
-      // Nothing was deleted: drop the "Dispatching…" modal and let the
-      // confirm dialog (which awaits this) show why.
+      // Nothing was deleted: drop the "Dispatching…" modal and let the confirm
+      // dialog (which awaits this) show why.
       setTxModal(null);
       throw err;
     }
   };
 
-  const handleSuspend = async () => {
-    if (!id) return;
+  const runTransition = async (
+    kind: 'active' | 'suspended' | 'archived' | 'restored',
+    input: Record<string, unknown>,
+  ): Promise<void> => {
     setLifecycleActionError(null);
     try {
-      setTxModal({ kind: 'suspended', since: Date.now() });
-      // notifications-system: cast through Record<string, unknown> so
-      // the extra `suppressTenantNotification` field rides along on
-      // the PATCH body until `UpdateTenantInput` in api-contracts is
-      // extended. Backend reads the field on every lifecycle PATCH.
+      setTxModal({ kind, since: Date.now() });
       const res = await updateTenant.mutateAsync(
-        { status: 'suspended', suppressTenantNotification: !notifyTenant },
+        { ...input, suppressTenantNotification: !notifyTenant } as unknown as UpdateTenantInput,
       );
-      const opId = res?.data?.storageArchiveOperationId
-        ?? res?.data?.storageRestoreOperationId
-        ?? null;
+      const opId = res?.data?.storageArchiveOperationId ?? res?.data?.storageRestoreOperationId ?? null;
       if (opId) setStatusOpId(opId);
     } catch (err) {
       lifecycleActionFailed(err);
     }
   };
 
-  const handleArchive = async () => {
-    if (!id) return;
-    const retentionDays = 90;
-    const ok = confirm(
-      `Archive this tenant?\n\n`
-      + `A final pre-archive snapshot will be taken and retained for ${retentionDays} day(s). `
-      + 'All mailboxes, aliases, deployments, and the live PVC will be deleted. '
-      + 'The tenant can be restored from the snapshot any time before retention expires.\n\n'
-      + 'Continue?',
-    );
-    if (!ok) return;
-    setLifecycleActionError(null);
-    try {
-      setTxModal({ kind: 'archived', since: Date.now() });
-      const res = await updateTenant.mutateAsync(
-        {
-          status: 'archived',
-          archive_retention_days: retentionDays,
-          suppressTenantNotification: !notifyTenant,
-        } as unknown as import('@insula/api-contracts').UpdateTenantInput,
-      );
-      const opId = res?.data?.storageArchiveOperationId ?? null;
-      if (opId) setStatusOpId(opId);
-    } catch (err) {
-      lifecycleActionFailed(err);
-    }
+  const handleSuspend = () => runTransition('suspended', { status: 'suspended' });
+  const handleArchive = async (retentionDays: number) => {
+    setArchiveOpen(false);
+    await runTransition('archived', { status: 'archived', archive_retention_days: retentionDays });
   };
-
   const handleReactivate = async () => {
-    if (!id) return;
-    // From archived → active is a destructive restore. Confirm explicitly.
     if (tenant?.status === 'archived') {
       const ok = confirm(
         'Restore this tenant from the pre-archive snapshot?\n\n'
         + 'Workloads were deleted at archive time and will need to be redeployed after restore. '
-        + 'The PVC will be recreated and data restored from the snapshot. '
-        + 'Estimated time: a few minutes per GiB of stored data.\n\n'
-        + 'Continue?',
+        + 'The volume is recreated and its data restored from the snapshot. '
+        + 'Estimated time: a few minutes per GiB of stored data.\n\nContinue?',
       );
       if (!ok) return;
+      await runTransition('restored', { status: 'active' });
+      return;
     }
-    setLifecycleActionError(null);
+    await runTransition('active', { status: 'active' });
+  };
+
+  const provision = async () => {
+    if (!id) return;
     try {
-      // Distinguish unsuspend (transition='active') from
-      // restore-from-archive (transition='restored') so the audit
-      // trail records the right kind. Backend dispatches the right
-      // transition based on prior tenant.status.
-      setTxModal({
-        kind: tenant?.status === 'archived' ? 'restored' : 'active',
-        since: Date.now(),
-      });
-      const res = await updateTenant.mutateAsync(
-        { status: 'active', suppressTenantNotification: !notifyTenant },
-      );
-      const opId = res?.data?.storageRestoreOperationId
-        ?? res?.data?.storageArchiveOperationId
-        ?? null;
-      if (opId) setStatusOpId(opId);
-    } catch (err) {
-      lifecycleActionFailed(err);
-    }
+      await triggerProvision.mutateAsync({ tenantId: id });
+      setProvisioningOpen(true);
+    } catch { /* error shown via mutation state */ }
   };
 
   if (isLoading) {
@@ -291,7 +181,7 @@ export default function TenantDetail() {
     );
   }
 
-  if (error || !tenant) {
+  if (error || !tenant || !id) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <p className="text-lg text-gray-500 dark:text-gray-400">
@@ -305,256 +195,245 @@ export default function TenantDetail() {
   }
 
   const name = tenant.name ?? 'Unknown';
-  const created = tenant.createdAt;
+  const planName = tenant.planName ?? plansRes?.data.find((p) => p.id === tenant.planId)?.name ?? null;
+  const issueCount = tenantIssues?.length ?? 0;
+  const misplaced = placement?.status === 'misplaced';
+  const runningOn = placement ? (placement.workloadNodes.length > 0 ? placement.workloadNodes : placement.attachedNodes) : [];
+  const tabs = Object.keys(TAB_LABELS) as TabKey[];
 
-  const domainCount = domainsQuery.data?.data.length ?? 0;
-  const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
-  // Bundle count comes from the paginated total, not the page length — the
-  // endpoint caps a page at 50 and a long-lived tenant has more than that.
-  const backupCount = bundlesQuery.data?.pagination?.total_count
-    ?? bundlesQuery.data?.data.length
-    ?? 0;
-  const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
-  const subUserCount = subUsersQuery.data?.data.length ?? 0;
-  const sftpUserCount = sftpUsersQuery.data?.data.length ?? 0;
-  const snapshotCount = snapshotsQuery.data?.data?.snapshots?.length ?? 0;
-
-  const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
-    { key: 'domains', label: 'Domains', count: domainCount },
-    { key: 'deployments', label: 'Deployments', count: deploymentCount },
-    { key: 'files', label: 'Files', count: 0 },
-    { key: 'email', label: 'Email', count: emailDomainCount },
-    { key: 'backups', label: 'Backups', count: backupCount },
-    { key: 'snapshots', label: 'Snapshots', count: snapshotCount },
-    { key: 'users', label: 'Users', count: subUserCount },
-    { key: 'sftp', label: 'SFTP Users', count: sftpUserCount },
-  ];
+  const copyNamespace = async () => {
+    if (!tenant.kubernetesNamespace) return;
+    try {
+      await navigator.clipboard.writeText(tenant.kubernetesNamespace);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard refused: nothing to undo */ }
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link
-          to="/tenants"
-          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
-          aria-label="Back to tenants"
-        >
-          <ArrowLeft size={20} />
-        </Link>
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
-          {tenant.lifecycleAutomationExempt === true && (
-            <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400" data-testid="automation-exempt-note">
-              Kept out of{' '}
-              <Link to="/platform/lifecycle-hooks" className="underline hover:no-underline">automatic archive and delete</Link>.
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={async () => {
-              if (!id) return;
-              try {
-                // URL resolution + trailing-slash handling live in the hook so
-                // the tenants list offers the identical action.
-                const opened = await impersonate.open(id);
-                if (!opened) {
-                  alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');
-                }
-              } catch { /* error shown via impersonate.error */ }
-            }}
-            disabled={impersonate.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2 text-sm font-medium text-brand-700 dark:text-brand-300 shadow-sm hover:bg-brand-100 dark:hover:bg-brand-900/20 disabled:opacity-50"
-            data-testid="impersonate-button"
-          >
-            {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
-            <span className="hidden sm:inline">Login as Tenant</span>
-          </button>
-          {/* Everything except "Login as Tenant" lives in here. The header
-              had nine buttons, with Delete sitting beside the primary
-              action — one mis-click apart. */}
-          <ActionsMenu testId="tenant-actions">
-            {provisioningStatus === 'unprovisioned' || provisioningStatus === 'failed' ? (
-              <ActionsMenuItem
-                onClick={async () => {
-                  if (!id) return;
-                  try {
-                    await triggerProvision.mutateAsync({ tenantId: id });
-                    setProvisioningOpen(true);
-                  } catch { /* error shown via mutation state */ }
-                }}
-                disabled={triggerProvision.isPending}
-                icon={<Rocket size={14} />}
-                testId="provision-button"
-              >
-                Provision
-              </ActionsMenuItem>
-            ) : provisioningStatus === 'provisioning' ? (
-              <ActionsMenuItem
-                onClick={() => setProvisioningOpen(true)}
-                icon={<Loader2 size={14} className="animate-spin" />}
-                testId="provision-status-button"
-              >
-                Provisioning…
-              </ActionsMenuItem>
-            ) : provisioningStatus === 'provisioned' ? (
-              <ActionsMenuItem
-                onClick={async () => {
-                  if (!id) return;
-                  try {
-                    await triggerProvision.mutateAsync({ tenantId: id });
-                    setProvisioningOpen(true);
-                  } catch { /* error shown via mutation state */ }
-                }}
-                disabled={triggerProvision.isPending}
-                icon={<RefreshCw size={14} />}
-                title="Re-run provisioning to fix inconsistent K8s state"
-                testId="reprovision-button"
-              >
-                Re-provision
-              </ActionsMenuItem>
-            ) : null}
-
-            <ActionsMenuItem
-              onClick={() => bulkRestart.mutate(undefined)}
-              disabled={bulkRestart.isPending}
-              icon={<RefreshCw size={14} />}
-              title="Pull latest images and restart all running deployments"
-              testId="refresh-all-apps-button"
+      <div className="rounded-xl border border-gray-200 bg-white px-5 pt-4 shadow-sm dark:border-gray-700 dark:bg-gray-800" data-testid="tenant-header">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <Link
+              to="/tenants"
+              className="mt-0.5 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+              aria-label="Back to tenants"
             >
-              Refresh All Apps
-            </ActionsMenuItem>
+              <ArrowLeft size={20} />
+            </Link>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-100">{name}</h1>
+                <StatusBadge status={tenant.status} />
+                {provisioningStatus && provisioningStatus !== 'provisioned' && (
+                  <Chip tone={provisioningStatus === 'failed' ? 'bad' : 'warn'} testId="tenant-provisioning-chip">
+                    {provisioningStatus === 'provisioning' ? 'Provisioning…' : provisioningStatus === 'failed' ? 'Provisioning failed' : 'Not provisioned'}
+                  </Chip>
+                )}
+                {issueCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('overview')}
+                    className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                    data-testid="tenant-issue-count"
+                  >
+                    <Chip tone={tenantIssues?.some((i) => i.severity === 'critical') ? 'bad' : 'warn'}>
+                      {issueCount} {issueCount === 1 ? 'issue' : 'issues'}
+                    </Chip>
+                  </button>
+                )}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] text-gray-600 dark:text-gray-400">
+                <Link to={`/tenants/${id}/limits`} className="hover:text-brand-600 hover:underline dark:hover:text-brand-400" data-testid="tenant-plan-link">
+                  {planName ? `${planName} plan` : tenant.planId ? 'Plan' : 'No plan'}
+                </Link>
+                {misplaced ? (
+                  <Link to={`/tenants/${id}/storage`} data-testid="tenant-placement-chip">
+                    <Chip tone="warn">
+                      Running on {runningOn.map(nodeLabel).join(', ') || 'another node'} · pinned to {placement?.primaryNode ? nodeLabel(placement.primaryNode) : 'none'}
+                    </Chip>
+                  </Link>
+                ) : (runningOn.length > 0 || tenant.nodeName) && (
+                  <Link to={`/tenants/${id}/storage`} className="hover:text-brand-600 hover:underline dark:hover:text-brand-400" data-testid="tenant-placement-chip">
+                    {runningOn.length > 0 ? `On ${runningOn.map(nodeLabel).join(', ')}` : `Pinned to ${nodeLabel(tenant.nodeName!)}`}
+                  </Link>
+                )}
+                {tenant.kubernetesNamespace && (
+                  <span className="inline-flex items-center gap-1 font-mono text-xs">
+                    {tenant.kubernetesNamespace}
+                    <button type="button" onClick={copyNamespace} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200" aria-label="Copy namespace">
+                      {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+                    </button>
+                  </span>
+                )}
+                {tenant.createdAt && <span>Customer since {new Date(tenant.createdAt).toLocaleDateString()}</span>}
+              </div>
+              {tenant.lifecycleAutomationExempt === true && (
+                <p className="mt-1 text-xs text-gray-600 dark:text-gray-400" data-testid="automation-exempt-note">
+                  Kept out of{' '}
+                  <Link to="/platform/lifecycle-hooks" className="underline hover:no-underline">automatic archive and delete</Link>.
+                </p>
+              )}
+            </div>
+          </div>
 
-            <ActionsMenuItem onClick={() => setEditOpen(true)} icon={<Edit size={14} />} testId="edit-button">
-              Edit
-            </ActionsMenuItem>
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setEditOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                data-testid="edit-button"
+              >
+                <Edit size={14} aria-hidden="true" /> Edit
+              </button>
+              <ActionsMenu testId="tenant-actions">
+                {provisioningStatus === 'unprovisioned' || provisioningStatus === 'failed' ? (
+                  <ActionsMenuItem onClick={provision} disabled={triggerProvision.isPending} icon={<Rocket size={14} />} testId="provision-button">
+                    Provision
+                  </ActionsMenuItem>
+                ) : provisioningStatus === 'provisioning' ? (
+                  <ActionsMenuItem onClick={() => setProvisioningOpen(true)} icon={<Loader2 size={14} className="animate-spin" />} testId="provision-status-button">
+                    Provisioning…
+                  </ActionsMenuItem>
+                ) : provisioningStatus === 'provisioned' ? (
+                  <ActionsMenuItem onClick={provision} disabled={triggerProvision.isPending} icon={<RefreshCw size={14} />} title="Re-run provisioning to fix inconsistent K8s state" testId="reprovision-button">
+                    Re-provision
+                  </ActionsMenuItem>
+                ) : null}
 
-            {/* ADR-040: SYSTEM tenant cannot suspend / archive / delete, so
-                the whole lifecycle group is hidden for it. The backend would
-                reject anyway; hiding it keeps the operator off a dead end. */}
-            {!tenant.isSystem && <ActionsMenuSeparator />}
+                <ActionsMenuItem
+                  onClick={() => bulkRestart.mutate(undefined)}
+                  disabled={bulkRestart.isPending}
+                  icon={<RefreshCw size={14} />}
+                  title="Pull latest images and restart all running deployments"
+                  testId="refresh-all-apps-button"
+                >
+                  Refresh all apps
+                </ActionsMenuItem>
 
-            {/* notifications-system Phase 1: suppresses the tenant-facing
-                notification the lifecycle hooks dispatch. It configures the
-                actions below it, so it sits with them — and it must NOT close
-                the menu, hence the stopPropagation. */}
-            {!tenant.isSystem && (
-              <label
-                onClick={(e) => e.stopPropagation()}
-                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
-                title="Send the tenant an in-app + email notification about this lifecycle action"
-                data-testid="notify-tenant-toggle"
-              >
-                <input
-                  type="checkbox"
-                  checked={notifyTenant}
-                  onChange={(e) => setNotifyTenant(e.target.checked)}
-                  className="rounded"
-                  data-testid="notify-tenant-checkbox"
-                />
-                Notify tenant
-              </label>
-            )}
+                {/* ADR-040: the SYSTEM tenant cannot be suspended, archived or deleted. */}
+                {!tenant.isSystem && <ActionsMenuSeparator />}
 
-            {/* Saved at once, like a switch: it is a standing property of the
-                tenant, not a setting of the action clicked next. */}
-            {!tenant.isSystem && (
-              <label
-                onClick={(e) => e.stopPropagation()}
-                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
-                title="Never archive or delete this tenant automatically, however long it stays suspended or archived (Platform → Tenant Lifecycle Hooks)"
-                data-testid="automation-exempt-toggle"
-              >
-                <input
-                  type="checkbox"
-                  checked={tenant.lifecycleAutomationExempt === true}
-                  disabled={setAutomationExempt.isPending}
-                  onChange={(e) => {
-                    setLifecycleActionError(null);
-                    setAutomationExempt.mutate(
-                      { tenantId: tenant.id, exempt: e.target.checked },
-                      { onError: (err) => setLifecycleActionError(err) },
-                    );
-                  }}
-                  className="rounded"
-                  data-testid="automation-exempt-checkbox"
-                />
-                Keep out of automatic archive and delete
-              </label>
-            )}
+                {/* Configures the lifecycle actions below it, so it sits with
+                    them — and must NOT close the menu. */}
+                {!tenant.isSystem && (
+                  <label
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
+                    title="Send the tenant an in-app + email notification about this lifecycle action"
+                    data-testid="notify-tenant-toggle"
+                  >
+                    <input type="checkbox" checked={notifyTenant} onChange={(e) => setNotifyTenant(e.target.checked)} className="rounded" data-testid="notify-tenant-checkbox" />
+                    Notify tenant
+                  </label>
+                )}
 
-            {tenant.status === 'active' && !tenant.isSystem && (
-              <ActionsMenuItem
-                onClick={handleSuspend}
-                disabled={updateTenant.isPending}
-                icon={<Pause size={14} />}
-                title="Scale workloads to 0, swap ingress to suspended page, disable mail/cron — fully reversible via Reactivate."
-                testId="suspend-button"
+                {/* Saved at once, like a switch: a standing property of the tenant. */}
+                {!tenant.isSystem && (
+                  <label
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
+                    title="Never archive or delete this tenant automatically, however long it stays suspended or archived (Platform → Tenant Lifecycle Hooks)"
+                    data-testid="automation-exempt-toggle"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={tenant.lifecycleAutomationExempt === true}
+                      disabled={setAutomationExempt.isPending}
+                      onChange={(e) => {
+                        setLifecycleActionError(null);
+                        setAutomationExempt.mutate(
+                          { tenantId: tenant.id, exempt: e.target.checked },
+                          { onError: (err) => setLifecycleActionError(err) },
+                        );
+                      }}
+                      className="rounded"
+                      data-testid="automation-exempt-checkbox"
+                    />
+                    Keep out of automatic archive and delete
+                  </label>
+                )}
+
+                {tenant.status === 'active' && !tenant.isSystem && (
+                  <ActionsMenuItem onClick={handleSuspend} disabled={updateTenant.isPending} icon={<Pause size={14} />} title="Scale workloads to 0, swap ingress to suspended page, disable mail/cron — fully reversible via Reactivate." testId="suspend-button">
+                    Suspend
+                  </ActionsMenuItem>
+                )}
+                {tenant.status === 'suspended' && !tenant.isSystem && (
+                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron." testId="reactivate-button">
+                    Reactivate
+                  </ActionsMenuItem>
+                )}
+                {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && provisioningStatus === 'provisioned' && (
+                  <ActionsMenuItem onClick={() => setArchiveOpen(true)} disabled={updateTenant.isPending} icon={<ServerCrash size={14} />} title="Take a final snapshot, then delete volume, workloads and mailboxes. Restorable until the snapshot expires." testId="archive-button">
+                    Archive…
+                  </ActionsMenuItem>
+                )}
+                {tenant.status === 'archived' && !tenant.isSystem && (
+                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Recreate the volume and restore its data from the pre-archive snapshot. Workloads need to be redeployed after the restore." testId="restore-button">
+                    Restore
+                  </ActionsMenuItem>
+                )}
+                {!tenant.isSystem && (
+                  <ActionsMenuItem onClick={() => setDeleteOpen(true)} icon={<Trash2 size={14} />} tone="danger" title="Hard delete — removes the tenant, its namespace, DNS zones, backup bundles and volumes. Irreversible." testId="delete-button">
+                    Delete
+                  </ActionsMenuItem>
+                )}
+              </ActionsMenu>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const opened = await impersonate.open(id);
+                    if (!opened) alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');
+                  } catch { /* error shown via impersonate.error */ }
+                }}
+                disabled={impersonate.isPending}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
+                data-testid="impersonate-button"
               >
-                Suspend
-              </ActionsMenuItem>
-            )}
-            {tenant.status === 'suspended' && !tenant.isSystem && (
-              <ActionsMenuItem
-                onClick={handleReactivate}
-                disabled={updateTenant.isPending}
-                icon={<Play size={14} />}
-                title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron."
-                testId="reactivate-button"
-              >
-                Reactivate
-              </ActionsMenuItem>
-            )}
-            {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && provisioningStatus === 'provisioned' && (
-              <ActionsMenuItem
-                onClick={handleArchive}
-                disabled={updateTenant.isPending}
-                icon={<ServerCrash size={14} />}
-                title="Take a final snapshot, then delete PVC/workloads/mailboxes. Tenant row + snapshot retained for the configured retention window. Restorable."
-                testId="archive-button"
-              >
-                Archive
-              </ActionsMenuItem>
-            )}
-            {tenant.status === 'archived' && !tenant.isSystem && (
-              <ActionsMenuItem
-                onClick={handleReactivate}
-                disabled={updateTenant.isPending}
-                icon={<Play size={14} />}
-                title="Recreate PVC + restore data from the pre-archive snapshot. Workloads need to be redeployed after restore completes."
-                testId="restore-button"
-              >
-                Restore
-              </ActionsMenuItem>
-            )}
-            {!tenant.isSystem && (
-              <ActionsMenuItem
-                onClick={() => setDeleteOpen(true)}
-                icon={<Trash2 size={14} />}
-                tone="danger"
-                title="Hard delete — removes the tenant row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
-                testId="delete-button"
-              >
-                Delete
-              </ActionsMenuItem>
-            )}
-          </ActionsMenu>
+                {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
+                <span>Login as tenant</span>
+              </button>
+            </div>
+            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+              <ExternalLink size={12} aria-hidden="true" />
+              opens that page of the tenant panel, signed in as this tenant
+            </span>
+          </div>
         </div>
+
+        <nav className="-mx-2 mt-4 flex gap-1 overflow-x-auto" aria-label="Tenant sections" data-testid="tenant-tabs">
+          {tabs.map((key) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setActiveTab(key)}
+              aria-current={activeTab === key ? 'page' : undefined}
+              data-testid={`tab-${key}`}
+              className={clsx(
+                'whitespace-nowrap border-b-2 px-3 py-3 text-sm font-medium transition-colors',
+                activeTab === key
+                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-200',
+              )}
+            >
+              {TAB_LABELS[key]}
+            </button>
+          ))}
+        </nav>
       </div>
 
       {lifecycleActionError !== null && (
-        <div className="mb-4">
-          <ErrorPanel error={extractOperatorError(lifecycleActionError)} severity="error" testId="tenant-lifecycle-action-error" />
-        </div>
+        <ErrorPanel error={extractOperatorError(lifecycleActionError)} severity="error" testId="tenant-lifecycle-action-error" />
       )}
 
-      {/* Not-provisioned warning. A `pending` tenant is created but not yet
-          provisioned: it cannot deploy workloads, configure domains/ingress,
-          or set up email until provisioned. Provisioning activates it. */}
+      {/* A `pending` tenant is created but not yet provisioned: it cannot deploy
+          workloads, configure domains/ingress, or set up email until it is. */}
       {!tenant.isSystem && tenant.status === 'pending' && (
-        <div
-          className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200"
-          data-testid="not-provisioned-banner"
-        >
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200" data-testid="not-provisioned-banner">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="font-medium">Tenant not provisioned yet</p>
@@ -564,18 +443,11 @@ export default function TenantDetail() {
                 Provisioning activates the tenant automatically.
               </p>
             </div>
-            {((tenant as Record<string, unknown>).provisioningStatus === 'unprovisioned'
-              || (tenant as Record<string, unknown>).provisioningStatus === 'failed') && (
+            {(provisioningStatus === 'unprovisioned' || provisioningStatus === 'failed') && (
               <button
-                onClick={async () => {
-                  if (!id) return;
-                  try {
-                    await triggerProvision.mutateAsync({ tenantId: id });
-                    setProvisioningOpen(true);
-                  } catch { /* error shown via mutation state */ }
-                }}
+                onClick={provision}
                 disabled={triggerProvision.isPending}
-                className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
                 data-testid="banner-provision-now"
               >
                 {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
@@ -586,13 +458,9 @@ export default function TenantDetail() {
         </div>
       )}
 
-      {/* ADR-040: SYSTEM tenant banner. Explains why the destructive
-          action buttons aren't shown and what this tenant is for. */}
+      {/* ADR-040: why the destructive actions are missing and what this tenant is for. */}
       {tenant.isSystem && (
-        <div
-          className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200"
-          data-testid="system-tenant-banner"
-        >
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200" data-testid="system-tenant-banner">
           <p className="font-medium">SYSTEM tenant — platform-managed</p>
           <p className="mt-1 text-amber-800 dark:text-amber-300">
             This tenant owns the platform apex domain and the platform&rsquo;s reserved mailbox space
@@ -603,155 +471,20 @@ export default function TenantDetail() {
         </div>
       )}
 
-      {/* Every open condition for this tenant, with the object, the value and
-          how long it has been true. Derived from the same thresholds the
-          notifications fire from, so the banner and the message cannot
-          disagree — and it clears itself when the condition does.
+      {/* Keyed by tenant: this page instance is reused when the route's :id
+          changes, and a tab's own state — limit drafts, a pending shrink, a
+          chosen pin, a traffic subject — belongs to the tenant it was made on.
+          Limits also remount on a plan change, to re-read the plan's values. */}
+      <Fragment key={id}>
+        {activeTab === 'overview' && <OverviewTab tenant={tenant} tenantId={id} planName={planName} issues={tenantIssues} placement={placement} onTab={setActiveTab} />}
+        {activeTab === 'email' && <TenantEmailTab tenant={tenant} tenantId={id} />}
+        {activeTab === 'traffic' && <TenantTrafficTab tenant={tenant} tenantId={id} />}
+        {activeTab === 'storage' && <StorageTab tenant={tenant} tenantId={id} />}
+        {activeTab === 'limits' && <LimitsTab key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id} />}
+        {activeTab === 'activity' && <ActivityTab tenantId={id} />}
+      </Fragment>
 
-          ABOVE the cards, deliberately: it shipped below Resource Limits,
-          which on a real tenant page is roughly a full screen down. An
-          operator opening the page to find out what is wrong had to scroll
-          past everything that is fine to reach it. */}
-      <TenantIssuesBanner issues={tenantIssues} />
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm lg:col-span-2">
-          <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Account Information</h2>
-          <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
-              <dd className="mt-1">
-                <LifecycleStatusControl
-                  tenant={tenant}
-                  tenantId={id!}
-                  onOpStarted={(opId) => setStatusOpId(opId)}
-                  onTransitionStarted={(kind) => setTxModal({ kind, since: Date.now() })}
-                  notifyTenant={notifyTenant}
-                />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">K8s Status</dt>
-              <dd className="mt-1">
-                <ProvisioningStatusBadge status={((tenant as Record<string, unknown>).provisioningStatus as string) ?? 'unprovisioned'} />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Created</dt>
-              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-                {created ? new Date(created).toLocaleDateString() : '—'}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Namespace</dt>
-              <dd className="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300">
-                {tenant.kubernetesNamespace ?? '—'}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Contact Email</dt>
-              <dd className="mt-1 space-y-0.5 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-contact-email">
-                <ContactEmailLine label="Primary" value={tenant.primaryEmail} />
-                <ContactEmailLine label="Secondary" value={tenant.secondaryEmail} />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Created By</dt>
-              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="tenant-created-by">
-                {createdByLabel(tenant.createdBy, tenant.createdByName)}
-              </dd>
-            </div>
-          </dl>
-        </div>
-
-        {/* Replaced the IDs card (raw tenant/plan/region UUIDs): what the
-            tenant's sites moved this week, linking to Monitoring → Traffic. */}
-        <TenantTrafficCard namespace={tenant.kubernetesNamespace} />
-      </div>
-
-      {/* Subscription and Placement share a row on desktop, stacked on mobile. */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2" data-testid="subscription-placement-row">
-        <SubscriptionCard tenantId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
-        <PlacementCard tenantId={id!} tenant={tenant} />
-      </div>
-
-      {/* Remount on plan change so the limits card re-seeds from the new plan.
-          Its edit state (custom-vs-plan-default toggles and the typed override
-          values) is seeded once in startEditing; without a remount, moving a
-          tenant to a different plan leaves that state describing the old one.
-          Keying on planId is the React-idiomatic "reload this section" and is
-          cheaper and less jarring than reloading the page. */}
-      <ResourceLimitsCard key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id!} />
-
-      <NamespaceIntegrityBanner tenantId={id!} />
-      <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
-
-      <RetainedVolumesCard tenantId={id!} />
-
-      {/* Orphaned volumes still attributable to THIS tenant — a PV released by
-          a resize or a deleted claim, whose claimRef still names this
-          namespace. Shown here as well as in the cluster-wide modal because
-          the person who caused one is usually on this page, and because the
-          volume is charged against the cluster while it sits here. Renders
-          nothing when the tenant has none. */}
-      {tenant.kubernetesNamespace && (
-        <OrphanedVolumesAlert namespace={tenant.kubernetesNamespace} />
-      )}
-
-      {/* Resource tabs */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-        <div className="border-b border-gray-200 dark:border-gray-700" data-testid="resource-tabs">
-          <nav className="-mb-px flex gap-6 px-5" aria-label="Resource tabs">
-            {tabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                data-testid={`tab-${tab.key}`}
-                className={`whitespace-nowrap border-b-2 py-3 text-sm font-medium transition-colors ${
-                  activeTab === tab.key
-                    ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-300'
-                }`}
-              >
-                {tab.label} ({tab.count})
-              </button>
-            ))}
-          </nav>
-        </div>
-
-        <div className="p-5">
-          {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} tenantId={id} />}
-          {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} tenantId={id} />}
-          {activeTab === 'files' && (
-            <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
-              <FolderOpen size={32} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
-              <p>File browser available in the tenant panel.</p>
-              <p className="mt-1 text-xs">Use "Login as Tenant" to access the file manager.</p>
-            </div>
-          )}
-          {activeTab === 'email' && <EmailTab tenantId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
-          {activeTab === 'backups' && (
-            <div className="space-y-4">
-              {id && <TenantBundlesSummary tenantId={id} />}
-              <BackupsTab
-                bundles={bundlesQuery.data?.data}
-                isLoading={bundlesQuery.isLoading}
-                error={bundlesQuery.error as Error | null}
-                tenantId={id}
-              />
-            </div>
-          )}
-          {activeTab === 'snapshots' && id && <TenantSnapshotsPanel tenantId={id} />}
-          {activeTab === 'sftp' && id && <TenantSftpUsersTab tenantId={id} />}
-          {activeTab === 'users' && id && <TenantUsersTab tenantId={id} />}
-        </div>
-      </div>
-
-      <EditTenantModal
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        tenant={tenant}
-      />
+      <EditTenantModal open={editOpen} onClose={() => setEditOpen(false)} tenant={tenant} />
 
       <DeleteConfirmDialog
         open={deleteOpen}
@@ -761,7 +494,16 @@ export default function TenantDetail() {
         isPending={deleteTenant.isPending}
       />
 
-      {txModal && id && (
+      {archiveOpen && (
+        <ArchiveTenantDialog
+          tenantName={name}
+          busy={updateTenant.isPending}
+          onConfirm={handleArchive}
+          onClose={() => setArchiveOpen(false)}
+        />
+      )}
+
+      {txModal && (
         <TransitionProgressModal
           tenantId={id}
           transition={txModal.kind}
@@ -769,2762 +511,17 @@ export default function TenantDetail() {
           transitionId={txModal.transitionId}
           onClose={() => {
             setTxModal(null);
-            // After a delete, navigate away once the operator dismisses
-            // the modal. Other transitions stay on the page.
             if (txModal.kind === 'deleted') navigate('/tenants');
           }}
         />
       )}
 
-      {provisioningOpen && id && (
-        <ProvisioningProgressModal
-          tenantId={id}
-          tenantName={name}
-          onClose={() => setProvisioningOpen(false)}
-        />
+      {provisioningOpen && (
+        <ProvisioningProgressModal tenantId={id} tenantName={name} onClose={() => setProvisioningOpen(false)} />
       )}
 
-      {/* Decommission UI removed (button realignment + ADR-033).
-          The /admin/tenants/:id/decommission endpoint stays for
-          backwards-compat curl callers and now dispatches a
-          'deleted' transition through the lifecycle registry so the
-          orphan-prevention hooks fire (DNS, tenant-bundles, PVs, cluster-
-          scoped refs). detail.preservedTenant=true in the transition
-          row distinguishes decommission from a hard delete. */}
-
-      {/* Shared progress modal for status-driven lifecycle ops
-          (archive, restore-from-archive). Suspend/resume run a
-          synchronous cascade today and don't return an op id. */}
-      <OperationProgressModal
-        operationId={statusOpId}
-        onClose={() => setStatusOpId(null)}
-      />
-    </div>
-  );
-}
-
-/**
- * Editable status dropdown that drives the full tenant lifecycle.
- *
- * Status transitions:
- *   active   ↔ suspended         — synchronous cascade (no op id today)
- *   *        →  archived         — archiveTenant orchestrator
- *                                  (final snapshot then delete workloads/PVC).
- *                                  Inline retention input controls how long
- *                                  the pre-archive snapshot is kept.
- *   archived →  active           — restoreArchivedTenant orchestrator
- *                                  (recreate PVC + restore data from snapshot).
- *
- * The orchestrator paths return an opId via PATCH response; the parent
- * surfaces it in OperationProgressModal so the operator can watch
- * progress live. Suspend/resume flips remain a fire-and-forget cascade.
- */
-/** One labelled line of the Contact Email field; "Not set" when absent. */
-function ContactEmailLine({ label, value }: { readonly label: string; readonly value: string | null | undefined }) {
-  const email = value?.trim();
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-1.5">
-      <span className="text-xs text-gray-500 dark:text-gray-400">{label}:</span>
-      {email
-        ? <span className="break-all">{email}</span>
-        : <span className="italic text-gray-500 dark:text-gray-400">Not set</span>}
-    </div>
-  );
-}
-
-function LifecycleStatusControl({
-  tenant,
-  tenantId,
-  onOpStarted,
-  onTransitionStarted,
-  notifyTenant = true,
-}: {
-  readonly tenant: import('@/types/api').Tenant;
-  readonly tenantId: string;
-  readonly onOpStarted: (opId: string) => void;
-  readonly onTransitionStarted?: (kind: 'active' | 'suspended' | 'archived' | 'restored') => void;
-  /** notifications-system: when false, asks the backend to suppress
-   *  the tenant-facing notification for this status transition. The
-   *  parent TenantDetail owns the operator toggle. */
-  readonly notifyTenant?: boolean;
-}) {
-  const updateTenant = useUpdateTenant(tenantId);
-  const [editing, setEditing] = useState(false);
-  // Selected next status. Stays in local state so the operator can
-  // type a retention value before confirming.
-  const [pending, setPending] = useState<'active' | 'suspended' | 'archived'>(tenant.status as 'active' | 'suspended' | 'archived');
-  const [retentionDays, setRetentionDays] = useState<number>(90);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-
-  const startEdit = () => {
-    setPending(tenant.status as 'active' | 'suspended' | 'archived');
-    setRetentionDays(90);
-    setSubmitError(null);
-    setEditing(true);
-  };
-
-  const cancel = () => {
-    setEditing(false);
-    setSubmitError(null);
-  };
-
-  const apply = async () => {
-    setSubmitError(null);
-
-    // Restoring from archived is destructive (pre-archive snapshot
-    // restore, workloads need redeploy). Confirm explicitly.
-    if (tenant.status === 'archived' && pending === 'active') {
-      const ok = confirm(
-        'Restore this tenant from the pre-archive snapshot?\n\n'
-        + 'Workloads were deleted at archive time and will need to be redeployed after restore. '
-        + 'The PVC will be recreated and data restored from the snapshot. '
-        + 'Estimated time: a few minutes per GiB of stored data.\n\n'
-        + 'Continue?',
-      );
-      if (!ok) return;
-    }
-
-    // Archiving is destructive (mailboxes, aliases, deployments, PVC).
-    // Confirm explicitly.
-    if (pending === 'archived' && tenant.status !== 'archived') {
-      const ok = confirm(
-        `Archive this tenant?\n\n`
-        + `A final pre-archive snapshot will be taken and retained for ${retentionDays} day(s). `
-        + `All mailboxes, aliases, deployments, and the live PVC will be deleted. `
-        + `The tenant can be restored from the snapshot any time before retention expires.\n\n`
-        + 'Continue?',
-      );
-      if (!ok) return;
-    }
-
-    try {
-      const payload: import('@insula/api-contracts').UpdateTenantInput = { status: pending };
-      if (pending === 'archived' && tenant.status !== 'archived') {
-        payload.archive_retention_days = retentionDays;
-      }
-      // Open the transition progress modal BEFORE the mutate completes
-      // so the operator can watch hook_runs in real time. archived→active
-      // is `restored`; everything else maps directly.
-      if (onTransitionStarted) {
-        const kind: 'active' | 'suspended' | 'archived' | 'restored' =
-          pending === 'active' && tenant.status === 'archived' ? 'restored' : pending;
-        onTransitionStarted(kind);
-      }
-      // notifications-system: forward `suppressTenantNotification`
-      // when the operator opted out via the parent toolbar checkbox.
-      // Cast through Record so the extra field can ride along until
-      // UpdateTenantInput is extended in api-contracts.
-      const payloadWithFlag = {
-        ...payload,
-        suppressTenantNotification: !notifyTenant,
-      } as unknown as import('@insula/api-contracts').UpdateTenantInput;
-      const res = await updateTenant.mutateAsync(payloadWithFlag);
-      const opId = res?.data?.storageArchiveOperationId
-        ?? res?.data?.storageRestoreOperationId
-        ?? null;
-      if (opId) onOpStarted(opId);
-      setEditing(false);
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  if (!editing) {
-    return (
-      <div className="flex items-center gap-2">
-        <StatusBadge status={tenant.status} />
-        {/* ADR-040: SYSTEM tenant status is locked at "active". The
-            "Change…" button is hidden because every destination
-            (suspended / archived) is blocked at the backend; offering
-            the control would lead the operator down a dead-end path. */}
-        {!tenant.isSystem && (
-          <button
-            type="button"
-            onClick={startEdit}
-            className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            data-testid="lifecycle-status-edit"
-            title="Change tenant lifecycle status"
-          >
-            Change…
-          </button>
-        )}
-        {tenant.isSystem && (
-          <span
-            className="text-xs text-gray-500 dark:text-gray-400"
-            title="SYSTEM tenant status is locked at active (ADR-040)"
-          >
-            (locked)
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2" data-testid="lifecycle-status-editor">
-      <select
-        value={pending}
-        onChange={(e) => setPending(e.target.value as 'active' | 'suspended' | 'archived')}
-        className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
-        data-testid="lifecycle-status-select"
-      >
-        <option value="active">Active</option>
-        <option value="suspended">Suspended</option>
-        <option value="archived">Archived</option>
-      </select>
-
-      {pending === 'archived' && tenant.status !== 'archived' && (
-        <div className="space-y-1">
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Snapshot retention (days)
-          </label>
-          <input
-            type="number"
-            min={1}
-            max={365}
-            value={retentionDays}
-            onChange={(e) => setRetentionDays(Math.max(1, Math.min(365, Number(e.target.value) || 90)))}
-            className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
-            data-testid="lifecycle-archive-retention-input"
-          />
-          <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            Days to retain the pre-archive snapshot for restore. After this window, restore is no longer possible.
-          </p>
-        </div>
-      )}
-
-      {pending === 'active' && tenant.status === 'archived' && (
-        <p className="text-[11px] text-blue-700 dark:text-blue-300">
-          This restores the tenant from the pre-archive snapshot. Workloads were deleted at archive time and will need to be redeployed after restore.
-        </p>
-      )}
-
-      {submitError && (
-        <p className="text-xs text-red-600 dark:text-red-400" role="alert" data-testid="lifecycle-status-error">{submitError}</p>
-      )}
-
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={apply}
-          disabled={updateTenant.isPending || pending === tenant.status}
-          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="lifecycle-status-apply"
-        >
-          {updateTenant.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-          Apply
-        </button>
-        <button
-          type="button"
-          onClick={cancel}
-          disabled={updateTenant.isPending}
-          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-          data-testid="lifecycle-status-cancel"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-interface TabContentProps<T> {
-  readonly data: PaginatedResponse<T> | undefined;
-  readonly isLoading: boolean;
-  readonly error: Error | null;
-}
-
-function TabLoading() {
-  return (
-    <div className="flex items-center justify-center py-10" data-testid="tab-loading">
-      <Loader2 size={24} className="animate-spin text-gray-400" />
-    </div>
-  );
-}
-
-function TabError({ message }: { readonly message: string }) {
-  return (
-    <p className="py-6 text-center text-sm text-red-500 dark:text-red-400" data-testid="tab-error">
-      {message}
-    </p>
-  );
-}
-
-function TabEmpty({ resource }: { readonly resource: string }) {
-  return (
-    <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="tab-empty">
-      No {resource} found for this tenant.
-    </p>
-  );
-}
-
-function DomainsTab({ data, isLoading, error, tenantId }: TabContentProps<Domain> & { readonly tenantId: string | undefined }) {
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load domains." />;
-  const items = data?.data ?? [];
-  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'domainName');
-  if (items.length === 0) return <TabEmpty resource="domains" />;
-
-  return (
-    <table className="w-full text-left text-sm" data-testid="domains-table">
-      <thead>
-        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <th className="px-3 py-2 text-right font-medium uppercase text-gray-500 dark:text-gray-400">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {sortedItems.map((d) => (
-          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
-            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.dnsMode}</td>
-            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
-            <td className="px-3 py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
-            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-            <td className="px-3 py-2 text-right">
-              {/* Primary mode only — in cname/secondary mode the platform does
-                  not control the zone, so there is nothing to refresh. */}
-              {d.dnsMode === 'primary' && (
-                <RefreshRouteDnsButton tenantId={tenantId} domainId={d.id} />
-              )}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-/**
- * Re-create a primary domain's ingress DNS records from the CURRENT set of
- * ingress-enabled nodes. Apex A/AAAA records are a snapshot taken when the
- * route was created, so adding a node leaves them pointing at the old set.
- */
-function RefreshRouteDnsButton({ tenantId, domainId }: { readonly tenantId: string | undefined; readonly domainId: string }) {
-  const refresh = useRefreshRouteDns(tenantId);
-  const result = refresh.data?.data;
-  return (
-    <span className="inline-flex items-center gap-2">
-      {result && (
-        <span
-          className={result.failures.length > 0
-            ? 'text-xs text-red-600 dark:text-red-400'
-            : 'text-xs text-green-700 dark:text-green-400'}
-          data-testid="refresh-route-dns-result"
-        >
-          {result.failures.length > 0
-            ? `${result.failures.length} failed`
-            : `${result.created} host${result.created === 1 ? '' : 's'} refreshed`}
-        </span>
-      )}
-      <button
-        type="button"
-        onClick={() => refresh.mutate(domainId)}
-        disabled={refresh.isPending}
-        title="Re-create this domain's ingress DNS records from the current ingress-enabled nodes. Use after adding or removing a node."
-        className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-        data-testid="refresh-route-dns-button"
-      >
-        {refresh.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-        Refresh DNS
-      </button>
-    </span>
-  );
-}
-
-// ApplicationsTab removed with its tab: it listed deployments of type
-// `application`, a filtered view of the Deployments tab beside it, under a
-// second name for the same objects.
-
-interface EmailTabProps {
-  readonly emailDomains: readonly { readonly id: string; readonly domainName: string; readonly enabled: number; readonly mailboxCount?: number; readonly createdAt: string }[] | undefined;
-  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string; readonly displayName: string | null; readonly status: string; readonly quotaMb: number; readonly usedMb: number; readonly createdAt: string; readonly aliases?: readonly string[]; readonly forwardingAddresses?: readonly string[] | null }[] | undefined;
-  readonly tenantId?: string;
-  readonly isLoading: boolean;
-  readonly error: Error | null;
-}
-
-function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: EmailTabProps) {
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load email data." />;
-
-  const domains = emailDomains ?? [];
-  const mboxes = mailboxes ?? [];
-  const { sortedData: sortedDomains, sortKey: domainSortKey, sortDirection: domainSortDir, onSort: onDomainSort } = useSortable(domains, 'domainName');
-  const { sortedData: sortedMailboxes, sortKey: mboxSortKey, sortDirection: mboxSortDir, onSort: onMboxSort } = useSortable(mboxes, 'fullAddress');
-
-  if (domains.length === 0) {
-    return (
-      <div className="py-10 text-center" data-testid="email-tab-empty">
-        <p className="text-sm text-gray-500 dark:text-gray-400">Email not enabled for this tenant.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6" data-testid="email-tab">
-      <div>
-        <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Email Domains</h3>
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
-              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
-              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
-              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort}  className="!px-3 !py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {sortedDomains.map((d) => (
-              <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-                <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
-                <td className="px-3 py-2">
-                  <StatusBadge status={d.enabled ? 'active' : 'suspended'} />
-                </td>
-                <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {tenantId && mboxes.length > 0 && (
-        <ImapSyncPanel tenantId={tenantId} mailboxes={mboxes.map(m => ({ id: m.id, fullAddress: m.fullAddress }))} />
-      )}
-
-      {mboxes.length > 0 && (
-        <div>
-          <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Mailboxes</h3>
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
-                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
-                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
-                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort}  className="!px-3 !py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedMailboxes.map((m) => (
-                <tr key={m.id} className="border-b border-gray-50 dark:border-gray-700">
-                  <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">
-                    {m.fullAddress}
-                    {(m.aliases?.length ?? 0) > 0 && (
-                      <div className="text-xs font-normal text-teal-600 dark:text-teal-400" title={(m.aliases ?? []).join(', ')}>
-                        @ {(m.aliases ?? []).join(', ')}
-                      </div>
-                    )}
-                    {(m.forwardingAddresses?.length ?? 0) > 0 && (
-                      <div className="text-xs font-normal text-violet-600 dark:text-violet-400" title={(m.forwardingAddresses ?? []).join(', ')}>
-                        \u2192 {(m.forwardingAddresses ?? []).join(', ')}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
-                  <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{m.usedMb}/{m.quotaMb} MB</td>
-                  <td className="px-3 py-2">
-                    <StatusBadge status={m.status as 'active' | 'pending' | 'suspended'} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── IMAPSync Panel (one-shot mailbox migration) ───────────────────────
-
-function ImapSyncPanel({
-  tenantId,
-  mailboxes,
-}: {
-  readonly tenantId: string;
-  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string }[];
-}) {
-  const { data: jobsRes, isLoading } = useImapSyncJobs(tenantId);
-  const create = useCreateImapSyncJob(tenantId);
-  const cancel = useCancelImapSyncJob(tenantId);
-  const [showForm, setShowForm] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const jobs = jobsRes?.data ?? [];
-
-  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setFormError(null);
-    // Captured NOW, not after the await. React invalidates `currentTarget`
-    // when the synchronous dispatch ends, so reading it later yields null —
-    // which is where "Cannot read properties of null (reading 'reset')" came
-    // from. The migration had already been created successfully at that point.
-    const form = e.currentTarget;
-    const fd = new FormData(form);
-    let created = false;
-    try {
-      await create.mutateAsync({
-        mailbox_id: String(fd.get('mailbox_id') ?? ''),
-        source_host: String(fd.get('source_host') ?? ''),
-        source_port: parseInt(String(fd.get('source_port') ?? '993'), 10),
-        source_username: String(fd.get('source_username') ?? ''),
-        source_password: String(fd.get('source_password') ?? ''),
-        source_ssl: fd.get('source_ssl') === 'on',
-        options: {
-          automap: fd.get('automap') === 'on',
-          dryRun: fd.get('dry_run') === 'on',
-        },
-      });
-      created = true;
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to start sync');
-    }
-    // Outside the try on purpose. Tidying the form up is not part of starting
-    // the migration, and when the reset threw from inside it the catch
-    // recorded an error against a migration that had SUCCEEDED. That error
-    // renders inside the form, which had just closed, so it stayed invisible
-    // until the operator opened the form for the NEXT job — where it read as
-    // a failure of that one. Hence the report "an error is shown, but
-    // everything works fine".
-    if (created) {
-      setShowForm(false);
-      form.reset();
-    }
-  };
-
-  return (
-    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4" data-testid="imapsync-panel">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Mail size={16} className="text-brand-500" />
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">IMAP migration jobs</h3>
-        </div>
-        <button
-          type="button"
-          onClick={() => { setFormError(null); setShowForm(s => !s); }}
-          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-          data-testid="imapsync-toggle-form"
-        >
-          {showForm ? 'Cancel' : 'Migrate from external IMAP…'}
-        </button>
-      </div>
-
-      <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-        Run a one-shot migration from an external IMAP server (Gmail, Outlook, legacy hosting) into one of this tenant&apos;s mailboxes. The destination uses Stalwart master SSO so no per-mailbox password is needed.
-      </p>
-
-      {showForm && (
-        <form onSubmit={onSubmit} className="mb-4 space-y-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs">
-          <div className="grid grid-cols-2 gap-2">
-            <label className="space-y-1">
-              <span className="block text-gray-500 dark:text-gray-400">Destination mailbox</span>
-              <select name="mailbox_id" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1">
-                {mailboxes.map(m => <option key={m.id} value={m.id}>{m.fullAddress}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1">
-              <span className="block text-gray-500 dark:text-gray-400">Source host</span>
-              <input name="source_host" required placeholder="imap.gmail.com" className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
-            </label>
-            <label className="space-y-1">
-              <span className="block text-gray-500 dark:text-gray-400">Source port</span>
-              <input name="source_port" type="number" defaultValue={993} required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
-            </label>
-            <label className="space-y-1">
-              <span className="block text-gray-500 dark:text-gray-400">Source username</span>
-              <input name="source_username" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
-            </label>
-            <label className="col-span-2 space-y-1">
-              <span className="block text-gray-500 dark:text-gray-400">Source password</span>
-              <input name="source_password" type="password" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
-            </label>
-          </div>
-          <div className="flex items-center gap-4 pt-1">
-            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
-              <input type="checkbox" name="source_ssl" defaultChecked /> SSL
-            </label>
-            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
-              <input type="checkbox" name="automap" defaultChecked /> Automap folders
-            </label>
-            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
-              <input type="checkbox" name="dry_run" /> Dry run
-            </label>
-          </div>
-          {formError && <p className="text-red-600 dark:text-red-400">{formError}</p>}
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={create.isPending}
-              className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-              data-testid="imapsync-submit"
-            >
-              {create.isPending && <Loader2 size={12} className="animate-spin" />}
-              Start sync
-            </button>
-          </div>
-        </form>
-      )}
-
-      {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
-
-      {!isLoading && jobs.length === 0 && (
-        <p className="text-xs text-gray-500 dark:text-gray-400 italic">No IMAPSync jobs yet.</p>
-      )}
-
-      {jobs.length > 0 && (
-        <div className="space-y-2">
-          {jobs.map(j => (
-            <ImapSyncJobRow key={j.id} job={j} onCancel={() => cancel.mutate(j.id)} cancelPending={cancel.isPending} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ImapSyncJobRow({ job, onCancel, cancelPending }: { readonly job: ImapSyncJob; readonly onCancel: () => void; readonly cancelPending: boolean }) {
-  const [showLog, setShowLog] = useState(false);
-  const isActive = job.status === 'pending' || job.status === 'running';
-  return (
-    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* Both ends: a migration is a pairing, and the source alone does
-              not say which local mailbox is being written to. */}
-          <code className="font-mono text-gray-900 dark:text-gray-100">
-            {job.sourceUsername}@{job.sourceHost}
-            <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
-            <span className="text-brand-600 dark:text-brand-400">
-              {job.mailboxAddress ?? '(mailbox removed)'}
-            </span>
-          </code>
-          <span className="text-gray-400">→</span>
-          <code className="font-mono text-gray-900 dark:text-gray-100">{job.mailboxId.slice(0, 8)}</code>
-          <ImapSyncStatusBadge status={job.status} />
-        </div>
-        {isActive && (
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={cancelPending}
-            className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-      <div className="mt-1 text-gray-500 dark:text-gray-400">
-        Started {job.startedAt ? new Date(job.startedAt).toLocaleString() : '—'}
-        {job.finishedAt && ` · Finished ${new Date(job.finishedAt).toLocaleString()}`}
-      </div>
-      {job.errorMessage && (
-        <p className="mt-1 text-red-600 dark:text-red-400">{job.errorMessage}</p>
-      )}
-      {job.logTail && (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setShowLog(s => !s)}
-            className="text-brand-600 dark:text-brand-400 hover:underline"
-          >
-            {showLog ? 'Hide log' : 'Show log'}
-          </button>
-          {showLog && (
-            <pre className="mt-1 max-h-48 overflow-auto rounded bg-gray-900 p-2 font-mono text-[11px] text-gray-100">{job.logTail}</pre>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'] }) {
-  const styles = {
-    pending: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
-    running: 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400',
-    succeeded: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
-    failed: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
-    cancelled: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
-  } as const;
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>{status}</span>;
-}
-
-function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<Deployment> & { readonly tenantId: string | undefined }) {
-  const restartDeployment = useRestartDeployment(tenantId);
-  const deleteDeployment = useDeleteDeployment(tenantId);
-  const updateDeployment = useUpdateDeployment(tenantId);
-  const setAllowRoot = useSetCustomDeploymentAllowRoot(tenantId);
-
-  // ADR-036 source filter. Defaults to 'all'; admins can drill into
-  // catalog-only or custom-only to scope bulk action mistakes.
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'catalog' | 'custom'>('all');
-  const rawItems = (data?.data ?? []) as readonly Deployment[];
-  const items = useMemo(
-    () => rawItems.filter((d) => sourceFilter === 'all'
-      ? true
-      : (d.source ?? 'catalog') === sourceFilter),
-    [rawItems, sourceFilter],
-  );
-  const search = useTableSearch(items, ['name', 'type', 'status', 'currentNodeName'] as ReadonlyArray<keyof Deployment>);
-  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(search.filteredData, 'name');
-
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load deployments." />;
-  if (rawItems.length === 0) return <TabEmpty resource="deployments" />;
-
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5 text-xs dark:border-gray-700 dark:bg-gray-800" data-testid="deployments-source-filter">
-          {(['all', 'catalog', 'custom'] as const).map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setSourceFilter(k)}
-              className={
-                sourceFilter === k
-                  ? 'rounded bg-white px-2 py-1 font-medium text-gray-900 shadow-sm dark:bg-gray-900 dark:text-gray-100'
-                  : 'rounded px-2 py-1 text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-              }
-            >
-              {k === 'all' ? 'All' : k === 'catalog' ? 'Catalog' : 'Custom'}
-            </button>
-          ))}
-        </div>
-        <input
-          type="search"
-          value={search.query}
-          onChange={(e) => search.setQuery(e.target.value)}
-          placeholder="Search by name, type, status, node…"
-          className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm"
-          data-testid="deployments-search"
-        />
-      </div>
-      <table className="w-full text-left text-sm" data-testid="deployments-table">
-      <thead>
-        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <th className="px-3 py-2 text-right">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {sortedItems.map((d) => {
-          // Try to parse lastError as the OperatorError envelope (JSON
-          // produced by the status-reconciler since the error-standard
-          // change). One decoder handles every shape: a stored envelope, a
-          // legacy plain string, or the Kubernetes client's raw HTTP body. It
-          // used to short-circuit on "looks like an envelope" and render that
-          // envelope verbatim, which for a quota rejection meant the generic
-          // "Operation failed" and a detail truncated mid-word — strictly
-          // worse than what the decoder makes of the same input.
-          let envelope: import('@insula/api-contracts').OperatorError | null = null;
-          let plainDetail = '';
-          if (d.lastError && d.lastError.trim()) {
-            envelope = describeDeploymentError(d.lastError);
-          }
-          if (!envelope && !plainDetail) plainDetail = (d.statusMessage ?? '').trim();
-          const detailTone = d.status === 'failed'
-            ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
-            : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300';
-          return (
-            <Fragment key={d.id}>
-              <tr className="border-b border-gray-50 dark:border-gray-700">
-                <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">
-                  {d.name}
-                  {d.source === 'custom' && (
-                    <span className="ml-1.5 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300" title="Custom container/compose deployment (ADR-036)">
-                      custom
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
-                <td className="px-3 py-2 font-mono text-gray-700 dark:text-gray-300">{d.currentNodeName ? <NodeName name={d.currentNodeName} /> : <span className="text-gray-400">—</span>}</td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
-                <td className="px-3 py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
-                <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-                <td className="px-3 py-2 text-right">
-                  <div className="inline-flex items-center gap-1.5">
-                    {d.status !== 'deleted' && d.status !== 'stopped' && (
-                      <button
-                        type="button"
-                        onClick={() => updateDeployment.mutate({ deploymentId: d.id, status: 'stopped' })}
-                        disabled={updateDeployment.isPending}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={d.status === 'pending' || d.status === 'deploying'
-                          ? 'Stop a stuck deployment — scales replicas to 0, preserves data and config'
-                          : 'Stop deployment — scales replicas to 0, preserves data and config'}
-                        data-testid={`stop-deployment-${d.id}`}
-                      >
-                        {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
-                        Stop
-                      </button>
-                    )}
-                    {d.status === 'stopped' && (
-                      <button
-                        type="button"
-                        onClick={() => updateDeployment.mutate({ deploymentId: d.id, status: 'running' })}
-                        disabled={updateDeployment.isPending}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-2.5 py-1.5 text-xs font-medium text-green-700 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Start deployment"
-                        data-testid={`start-deployment-${d.id}`}
-                      >
-                        {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                        Start
-                      </button>
-                    )}
-                    {d.status !== 'deleted' && (
-                      <button
-                        type="button"
-                        onClick={() => restartDeployment.mutate(d.id)}
-                        disabled={restartDeployment.isPending}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={d.status === 'running' ? 'Pull latest image and restart' : 'Force restart (recover from stuck state)'}
-                        data-testid={`restart-deployment-${d.id}`}
-                      >
-                        {restartDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                        {d.status === 'running' ? 'Restart' : 'Force Restart'}
-                      </button>
-                    )}
-                    {d.status !== 'deleted' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`Delete deployment "${d.name}"? This will scale all components to 0 and soft-delete the row. Use Restore to bring it back. Prefer Stop if you only want to pause it.`)) {
-                            deleteDeployment.mutate(d.id);
-                          }
-                        }}
-                        disabled={deleteDeployment.isPending}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Soft-delete deployment (use Stop instead to keep it recoverable)"
-                        data-testid={`delete-deployment-${d.id}`}
-                      >
-                        {deleteDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                        Delete
-                      </button>
-                    )}
-                    {d.source === 'custom' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const current = Boolean(d.customSpec?.allowRoot);
-                          const next = !current;
-                          if (next && !window.confirm(`Grant allowRoot on "${d.name}"? The container will run as uid 0. Only do this for trusted images.`)) return;
-                          setAllowRoot.mutate({ deploymentId: d.id, allowRoot: next });
-                        }}
-                        disabled={setAllowRoot.isPending}
-                        className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
-                          d.customSpec?.allowRoot
-                            ? 'border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                            : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
-                        }`}
-                        title={d.customSpec?.allowRoot ? 'allowRoot is ON — click to revoke root access' : 'allowRoot is OFF — click to grant root access (super_admin only)'}
-                        data-testid={`allow-root-${d.id}`}
-                      >
-                        {setAllowRoot.isPending ? <Loader2 size={12} className="animate-spin" /> : null}
-                        {d.customSpec?.allowRoot ? 'Root ON' : 'Root OFF'}
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-              {envelope && (
-                <tr data-testid={`deployment-${d.id}-detail`}>
-                  <td colSpan={9} className="px-3 py-1.5">
-                    <ErrorPanel
-                      error={envelope}
-                      severity={d.status === 'failed' ? 'error' : 'warn'}
-                      compact
-                      onRetry={d.status === 'failed' ? () => restartDeployment.mutate(d.id) : undefined}
-                      retryPending={restartDeployment.isPending}
-                    />
-                  </td>
-                </tr>
-              )}
-              {!envelope && plainDetail && (
-                <tr className={detailTone} data-testid={`deployment-${d.id}-detail`}>
-                  <td colSpan={9} className="px-3 py-1.5 text-xs">
-                    <span className="font-medium">{d.status === 'failed' ? 'Error: ' : 'Status: '}</span>
-                    {plainDetail}
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          );
-        })}
-      </tbody>
-    </table>
-    {search.query && search.filteredData.length === 0 && (
-      <p className="mt-2 text-xs text-gray-500 italic">No deployments match &quot;{search.query}&quot;.</p>
-    )}
-    </div>
-  );
-}
-
-/**
- * Off-site bundle history for this tenant (backup_jobs) with a jump to
- * the cross-tenant Backups page pre-filtered to this tenant, where each
- * bundle row has its own Restore… action. Closes "nowhere shows that
- * multiple backups exist for this tenant" (operator report #3,
- * ) — the legacy table below only knows the retired
- * per-resource `backups` rows.
- */
-function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
-  // Same hook (and therefore the same cached query) the tab body uses, so the
-  // headline count and the table below it can never disagree.
-  const q = useTenantBundles(tenantId);
-  const bundles = Array.isArray(q.data?.data) ? q.data.data : [];
-  return (
-    <div
-      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-800/50"
-      data-testid="tenant-bundles-summary"
-    >
-      <div className="text-gray-700 dark:text-gray-300">
-        <span className="font-medium">{q.isLoading ? '…' : (q.data?.pagination?.total_count ?? bundles.length)}</span>{' '}
-        off-site backup bundle{bundles.length === 1 ? '' : 's'} for this tenant
-        {bundles.length > 0 && (
-          <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
-            (latest <TimeCell iso={bundles[0]?.createdAt} />)
-          </span>
-        )}
-      </div>
-      <Link
-        to={`/backups/tenants/backups?tenant=${tenantId}`}
-        className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-        data-testid="tenant-bundles-manage-link"
-      >
-        View & restore bundles →
-      </Link>
-    </div>
-  );
-}
-
-/**
- * The tenant's SFTP accounts. Read-only here for the same reason the
- * cross-tenant table is: creating one belongs in the flow where the home
- * path and the tenant's storage are both in view.
- */
-function TenantSftpUsersTab({ tenantId }: { readonly tenantId: string }) {
-  const { data, isLoading, error } = useSftpUsers({ tenantId });
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load SFTP users." />;
-  const users = data?.data ?? [];
-  if (users.length === 0) {
-    return (
-      <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="sftp-tab-empty">
-        No SFTP users for this tenant.
-      </p>
-    );
-  }
-  return (
-    <table className="w-full text-left text-sm" data-testid="tenant-sftp-users-table">
-      <thead>
-        <tr className="border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
-          <th className="px-3 py-2">Username</th>
-          <th className="px-3 py-2">Home path</th>
-          <th className="px-3 py-2">Status</th>
-          <th className="px-3 py-2">Last login</th>
-        </tr>
-      </thead>
-      <tbody>
-        {users.map((u) => (
-          <tr key={u.id} className="border-b border-gray-100 last:border-0 dark:border-gray-700/50">
-            <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{u.username}</td>
-            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{u.homePath}</td>
-            <td className="px-3 py-2">
-              <span className={u.enabled
-                ? 'inline-flex rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                : 'inline-flex rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300'}
-              >
-                {u.enabled ? 'enabled' : 'disabled'}
-              </span>
-            </td>
-            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">
-              {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : 'never'}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function BackupsTab({ bundles, isLoading, error, tenantId }: {
-  readonly bundles: readonly BundleSummary[] | undefined;
-  readonly isLoading: boolean;
-  readonly error: Error | null;
-  readonly tenantId: string | undefined;
-}) {
-  // Hook order must not depend on load state (Rules of Hooks) — the
-  // early returns come after every hook call.
-  const items = useMemo(() => (bundles ? [...bundles] : []), [bundles]);
-  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'createdAt', 'desc');
-  if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load backups." />;
-  if (items.length === 0) return <TabEmpty resource="backups" />;
-
-  return (
-    <table className="w-full text-left text-sm" data-testid="backups-table">
-      <thead>
-        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Started by" sortKey="initiator" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort}  className="!px-3 !py-2" />
-          <th className="px-3 py-2" />
-        </tr>
-      </thead>
-      <tbody>
-        {sortedItems.map((b) => (
-          <tr key={b.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100"><TimeCell iso={b.createdAt} /></td>
-            <td className="px-3 py-2"><StatusBadge status={b.status} /></td>
-            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
-            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{b.initiator}</td>
-            {/* mode="until": an expiry is in the FUTURE, and TimeCell's default
-                age mode renders any future instant as "just now" (caught in the
-                browser on DEV). Same rendering the cross-tenant Backups page uses. */}
-            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? <TimeCell iso={b.expiresAt} mode="until" /> : '—'}</td>
-            <td className="px-3 py-2 text-right">
-              <Link
-                to={`/backups/tenants/backups?tenant=${tenantId ?? b.tenantId}&bundle=${b.id}`}
-                className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
-              >
-                Restore…
-              </Link>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function ResourceLimitsCard({
-  tenant,
-  tenantId,
-}: {
-  readonly tenant: import('@/types/api').Tenant;
-  readonly tenantId: string;
-}) {
-  const updateTenant = useUpdateTenant(tenantId);
-  const { data: plansData } = usePlans();
-  const { data: metricsData, isLoading: metricsLoading } = useTenantMetrics(tenantId);
-  const { data: sysInfo } = useSystemInfo();
-  const currency = sysInfo?.currency ?? 'USD';
-  const plans = plansData?.data ?? [];
-  const plan = plans.find((p) => p.id === tenant.planId);
-
-  const [editing, setEditing] = useState(false);
-  const [cpuOverride, setCpuOverride] = useState<string>('');
-  const [memOverride, setMemOverride] = useState<string>('');
-  const [storageOverride, setStorageOverride] = useState<string>('');
-  const [bandwidthOverride, setBandwidthOverride] = useState<string>('');
-  const [subUsersOverride, setSubUsersOverride] = useState<string>('');
-  const [mailboxesOverride, setMailboxesOverride] = useState<string>('');
-  const [mailboxSizeOverride, setMailboxSizeOverride] = useState<string>('');
-  const [priceOverride, setPriceOverride] = useState<string>('');
-  const [cpuCustom, setCpuCustom] = useState(false);
-  const [memCustom, setMemCustom] = useState(false);
-  const [storageCustom, setStorageCustom] = useState(false);
-  const [bandwidthCustom, setBandwidthCustom] = useState(false);
-  const [subUsersCustom, setSubUsersCustom] = useState(false);
-  const [mailboxesCustom, setMailboxesCustom] = useState(false);
-  const [mailboxSizeCustom, setMailboxSizeCustom] = useState(false);
-  const [priceCustom, setPriceCustom] = useState(false);
-  // ADR-036 custom-container per-tenant override (boolean, not numeric).
-  const [allowCcCustom, setAllowCcCustom] = useState(false);
-  const [allowCcOverride, setAllowCcOverride] = useState(false);
-  const [mailHourlyOverride, setMailHourlyOverride] = useState<string>('');
-  const [mailDailyOverride, setMailDailyOverride] = useState<string>('');
-  const [mailHourlyCustom, setMailHourlyCustom] = useState(false);
-  const [mailDailyCustom, setMailDailyCustom] = useState(false);
-  const [confirmOutbound, setConfirmOutbound] = useState(false);
-  // When PATCH /tenants/:id auto-triggers an online-grow, the response
-  // includes storageGrowOperationId. Open the shared progress modal so
-  // the operator can watch growing_pvc → growing_filesystem → idle live.
-  const [growOpId, setGrowOpId] = useState<string | null>(null);
-  // Whether the op the modal is watching REPLACED the volume.
-  //
-  // `growOpId` carries both an online grow and a destructive shrink. Only the
-  // shrink leaves the old volume behind, so only the shrink should be offered
-  // a clean-up at the end — otherwise a harmless grow would point at whatever
-  // unrelated orphan the tenant happened to already have.
-  const [growWasDestructive, setGrowWasDestructive] = useState(false);
-  // Shrink path: PATCH rejects with STORAGE_RESIZE_REQUIRED. We surface
-  // a confirmation dialog with the OperatorError remediation, then call
-  // the explicit destructive resize endpoint when the operator confirms.
-  // shrinkPending captures the target MiB while the dialog is open so
-  // we can fire the resize call on confirm without re-prompting.
-  const [shrinkPending, setShrinkPending] = useState<{
-    targetMib: number;
-    targetGi: number;
-    currentGi: number;
-    remediation: string;
-  } | null>(null);
-
-  const effectiveCpu = tenant.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
-  // ADR-062. '' means inherit — the plan's tier, or the derived default when
-  // the plan does not express one either.
-  const [cpuTierOverride, setCpuTierOverride] = useState<string>('');
-  const [burstCustom, setBurstCustom] = useState(false);
-  const [burstOverride, setBurstOverride] = useState('');
-  const effectiveMem = tenant.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
-  const effectiveStorage = tenant.storageLimitOverride ?? plan?.storageLimit ?? '—';
-  const effectiveBandwidth = tenant.bandwidthLimitOverride ?? plan?.bandwidthGbLimit ?? '—';
-  const effectiveSubUsers = tenant.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
-  const effectiveMailboxes = tenant.maxMailboxesOverride ?? plan?.maxMailboxes ?? '—';
-  const effectiveMailboxSize = tenant.maxMailboxSizeMbOverride ?? plan?.maxMailboxSizeMb ?? '—';
-  const effectivePrice = tenant.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
-  const effectiveMailHourly = tenant.emailSendRateLimit ?? plan?.emailHourlySendLimit ?? '—';
-  const effectiveMailDaily = tenant.emailSendRateLimitDaily ?? plan?.emailDailySendLimit ?? '—';
-  const effectiveAllowCc = tenant.allowCustomContainersOverride ?? plan?.allowCustomContainers ?? false;
-
-  const startEditing = () => {
-    const hasCpu = tenant.cpuLimitOverride != null;
-    const hasMem = tenant.memoryLimitOverride != null;
-    const hasStorage = tenant.storageLimitOverride != null;
-    const hasBandwidth = tenant.bandwidthLimitOverride != null;
-    const hasSubUsers = tenant.maxSubUsersOverride != null;
-    const hasMailboxes = tenant.maxMailboxesOverride != null;
-    const hasMailboxSize = tenant.maxMailboxSizeMbOverride != null;
-    const hasPrice = tenant.monthlyPriceOverride != null;
-    setCpuCustom(hasCpu);
-    setMemCustom(hasMem);
-    setStorageCustom(hasStorage);
-    setBandwidthCustom(hasBandwidth);
-    setSubUsersCustom(hasSubUsers);
-    setMailboxesCustom(hasMailboxes);
-    setMailboxSizeCustom(hasMailboxSize);
-    setPriceCustom(hasPrice);
-    setCpuOverride(hasCpu ? String(tenant.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
-    setCpuTierOverride(tenant.cpuTierOverride ?? '');
-    const hasBurst = tenant.cpuBurstCoresOverride != null;
-    setBurstCustom(hasBurst);
-    setBurstOverride(hasBurst ? String(tenant.cpuBurstCoresOverride) : (plan?.cpuBurstCores ?? ''));
-    setMemOverride(hasMem ? String(tenant.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
-    setStorageOverride(hasStorage ? String(tenant.storageLimitOverride) : (plan?.storageLimit ?? ''));
-    setBandwidthOverride(hasBandwidth ? String(tenant.bandwidthLimitOverride) : String(plan?.bandwidthGbLimit ?? ''));
-    setSubUsersOverride(hasSubUsers ? String(tenant.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
-    setMailboxesOverride(hasMailboxes ? String(tenant.maxMailboxesOverride) : String(plan?.maxMailboxes ?? ''));
-    setMailboxSizeOverride(hasMailboxSize ? String(tenant.maxMailboxSizeMbOverride) : String(plan?.maxMailboxSizeMb ?? ''));
-    setPriceOverride(hasPrice ? String(tenant.monthlyPriceOverride) : (plan?.monthlyPriceUsd ?? ''));
-    const hasMailHourly = tenant.emailSendRateLimit != null;
-    const hasMailDaily = tenant.emailSendRateLimitDaily != null;
-    setMailHourlyCustom(hasMailHourly);
-    setMailDailyCustom(hasMailDaily);
-    setMailHourlyOverride(hasMailHourly ? String(tenant.emailSendRateLimit) : String(plan?.emailHourlySendLimit ?? ''));
-    setMailDailyOverride(hasMailDaily ? String(tenant.emailSendRateLimitDaily) : String(plan?.emailDailySendLimit ?? ''));
-    const hasAllowCc = tenant.allowCustomContainersOverride != null;
-    setAllowCcCustom(hasAllowCc);
-    setAllowCcOverride(hasAllowCc ? Boolean(tenant.allowCustomContainersOverride) : Boolean(plan?.allowCustomContainers));
-    setEditing(true);
-  };
-
-  // An override field toggled to "Custom" but left EMPTY must not become 0.
-  // `Number('')` is 0, and 0 is now a meaningful value for several of these
-  // limits (0 mailboxes = mail off, 0 sends/hour = outbound off), so a blank
-  // box would silently switch a tenant's mail off. Blank means "no override":
-  // send null and let the plan apply.
-  /**
-   * '' (inherit) or one of the three tiers. Anything else is treated as
-   * inherit rather than asserted into the union — a stray value must not
-   * reach the API as a tier the platform does not have.
-   */
-  const asTierOverride = (v: string): 'normal' | 'high' | 'highest' | null =>
-    (v === 'normal' || v === 'high' || v === 'highest') ? v : null;
-
-  const overrideValue = (isCustom: boolean, raw: string): number | null => {
-    if (!isCustom) return null;
-    const trimmed = raw.trim();
-    if (trimmed === '') return null;
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : null;
-  };
-
-  const handleSave = async (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      const result = await updateTenant.mutateAsync({
-        cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
-        cpu_tier_override: asTierOverride(cpuTierOverride),
-        cpu_burst_cores_override: overrideValue(burstCustom, burstOverride),
-        memory_limit_override: overrideValue(memCustom, memOverride),
-        storage_limit_override: overrideValue(storageCustom, storageOverride),
-        bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
-        max_sub_users_override: overrideValue(subUsersCustom, subUsersOverride),
-        max_mailboxes_override: overrideValue(mailboxesCustom, mailboxesOverride),
-        max_mailbox_size_mb_override: overrideValue(mailboxSizeCustom, mailboxSizeOverride),
-        monthly_price_override: overrideValue(priceCustom, priceOverride),
-        email_send_rate_limit: overrideValue(mailHourlyCustom, mailHourlyOverride),
-        email_send_rate_limit_daily: overrideValue(mailDailyCustom, mailDailyOverride),
-        allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
-      });
-      // If the PATCH grew storage online, the backend kicked off a
-      // storage-lifecycle op and surfaces its id here.
-      const opId = (result as { data?: { storageGrowOperationId?: string | null } })?.data?.storageGrowOperationId;
-      if (opId) { setGrowWasDestructive(false); setGrowOpId(opId); }
-      setEditing(false);
-    } catch (err) {
-      // Shrink-path: backend rejects with STORAGE_RESIZE_REQUIRED. We
-      // surface a destructive-resize confirmation; on Confirm we fire
-      // the dedicated /storage/resize endpoint (no PATCH retry, since
-      // the destructive flow is opt-in by design).
-      const apiErr = err as { code?: string; details?: { targetMib?: number; targetGi?: number; currentGi?: number; remediation?: string } };
-      if (apiErr?.code === 'STORAGE_RESIZE_REQUIRED' && apiErr.details?.targetMib != null) {
-        setShrinkPending({
-          targetMib: apiErr.details.targetMib,
-          targetGi: apiErr.details.targetGi ?? Math.round(apiErr.details.targetMib / 102.4) / 10,
-          currentGi: apiErr.details.currentGi ?? Number(tenant.storageLimitOverride ?? 0),
-          remediation: apiErr.details.remediation ?? 'This is a destructive resize: the platform takes a snapshot, drops the PVC, recreates at the smaller size, and restores from the snapshot.',
-        });
-        // Keep the form open so the operator sees the value they typed.
-      }
-      // Other errors render via updateTenant.error below.
-    }
-  };
-
-  const confirmDestructiveShrink = async () => {
-    if (!shrinkPending) return;
-    try {
-      // Re-send the PATCH with confirm_destructive_shrink:true so the
-      // backend dispatches resizeTenant (which routes to the destructive
-      // shrink orchestrator). Same payload as the original save attempt
-      // — values are still in state because the form was kept open.
-      const result = await updateTenant.mutateAsync({
-        cpu_limit_override: overrideValue(cpuCustom, cpuOverride),
-        cpu_tier_override: asTierOverride(cpuTierOverride),
-        cpu_burst_cores_override: overrideValue(burstCustom, burstOverride),
-        memory_limit_override: overrideValue(memCustom, memOverride),
-        storage_limit_override: overrideValue(storageCustom, storageOverride),
-        bandwidth_limit_override: overrideValue(bandwidthCustom, bandwidthOverride),
-        max_sub_users_override: overrideValue(subUsersCustom, subUsersOverride),
-        max_mailboxes_override: overrideValue(mailboxesCustom, mailboxesOverride),
-        max_mailbox_size_mb_override: overrideValue(mailboxSizeCustom, mailboxSizeOverride),
-        monthly_price_override: overrideValue(priceCustom, priceOverride),
-        allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
-        confirm_destructive_shrink: true,
-      });
-      const opId = (result as { data?: { storageShrinkOperationId?: string | null } })?.data?.storageShrinkOperationId;
-      if (opId) { setGrowWasDestructive(true); setGrowOpId(opId); }
-      setShrinkPending(null);
-      setEditing(false);
-    } catch (err) {
-      // Surface inline — the dialog stays open so the operator can read
-      // the failure (e.g. RESIZE_UNSAFE: current usedBytes won't fit in
-      // target with 10% safety buffer).
-      const msg = err instanceof Error ? err.message : String(err);
-      setShrinkPending({ ...shrinkPending, remediation: `${shrinkPending.remediation}\n\nFailed: ${msg}` });
-    }
-  };
-
-  const INPUT_CLS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100';
-
-  // `planDefault` is what a field shows while it is NOT overridden.
-  //
-  // It is rendered directly rather than mirrored into the override state,
-  // because that state goes stale in two ways an operator hits immediately:
-  // type a custom value then toggle back to "Plan default" and the disabled
-  // input still showed what you typed; move the tenant to a different plan and
-  // it still showed the old plan's number. Reading the plan at render time makes
-  // the displayed value track the plan by construction, with nothing to re-sync.
-  const renderField = (
-    label: string,
-    unit: string,
-    effectiveValue: string | number,
-    isCustom: boolean,
-    setCustom: (v: boolean) => void,
-    value: string,
-    setValue: (v: string) => void,
-    isOverridden: boolean,
-    planDefault: string | number | undefined,
-    inputType: string = 'number',
-    step: string = '0.01',
-    // Rendered under the input while editing a CUSTOM value of 0. Spells out
-    // what 0 does — an operator setting a limit to 0 should not have to guess
-    // whether it means "none" or "inherit the plan".
-    zeroHint?: string,
-  ) => (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
-        {editing && (
-          <button
-            type="button"
-            onClick={() => setCustom(!isCustom)}
-            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-            data-testid={`toggle-${label.toLowerCase().replace(/\s/g, '-')}`}
-          >
-            {isCustom ? <ToggleRight size={16} className="text-brand-500" /> : <ToggleLeft size={16} />}
-            {isCustom ? 'Custom' : 'Plan default'}
-          </button>
-        )}
-      </div>
-      {editing ? (
-        <div>
-          <div className="flex items-center gap-2">
-            <input
-              type={inputType}
-              step={step}
-              className={`${INPUT_CLS} ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : ''}`}
-              value={isCustom ? value : (planDefault ?? '')}
-              onChange={(e) => setValue(e.target.value)}
-              disabled={!isCustom}
-              data-testid={`value-${label.toLowerCase().replace(/\s/g, '-')}`}
-            />
-            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{unit}</span>
-          </div>
-          {zeroHint && isCustom && value.trim() === '0' && (
-            <p
-              className="mt-1 text-xs text-amber-600 dark:text-amber-400"
-              data-testid={`zero-hint-${label.toLowerCase().replace(/\s/g, '-')}`}
-            >
-              {zeroHint}
-            </p>
-          )}
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{effectiveValue}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">{unit}</span>
-          {isOverridden && (
-            <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  // Boolean variant of renderField (custom ?? plan-default, but Yes/No).
-  const renderBoolField = (
-    label: string,
-    effectiveValue: boolean,
-    isCustom: boolean,
-    setCustom: (v: boolean) => void,
-    value: boolean,
-    setValue: (v: boolean) => void,
-    isOverridden: boolean,
-    planDefault: boolean,
-  ) => (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
-        {editing && (
-          <button
-            type="button"
-            onClick={() => setCustom(!isCustom)}
-            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-            data-testid={`toggle-${label.toLowerCase().replace(/\s/g, '-')}`}
-          >
-            {isCustom ? <ToggleRight size={16} className="text-brand-500" /> : <ToggleLeft size={16} />}
-            {isCustom ? 'Custom' : 'Plan default'}
-          </button>
-        )}
-      </div>
-      {editing ? (
-        <button
-          type="button"
-          onClick={() => isCustom && setValue(!value)}
-          disabled={!isCustom}
-          className={`inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : 'dark:bg-gray-700 dark:text-gray-100'}`}
-          data-testid={`value-${label.toLowerCase().replace(/\s/g, '-')}`}
-        >
-          {(isCustom ? value : planDefault) ? <ToggleRight size={16} className={isCustom ? 'text-brand-500' : ''} /> : <ToggleLeft size={16} />}
-          {(isCustom ? value : planDefault) ? 'Allowed' : 'Not allowed'}
-        </button>
-      ) : (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{effectiveValue ? 'Allowed' : 'Not allowed'}</span>
-          {isOverridden && (
-            <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="resource-limits-card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Cpu size={18} className="text-gray-600 dark:text-gray-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Resource Limits</h2>
-          {plan && <span className="text-sm text-gray-500 dark:text-gray-400">({plan.name} plan)</span>}
-        </div>
-        {!editing && (
-          <button
-            type="button"
-            onClick={startEditing}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            data-testid="edit-limits-button"
-          >
-            <Edit size={14} />
-            Edit
-          </button>
-        )}
-      </div>
-
-      <form onSubmit={handleSave}>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
-          {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, tenant.cpuLimitOverride != null, plan?.cpuLimit, 'number', '0.25')}
-          {/* ADR-062. Shown for every tenant, not only migrated ones: an
-              operator has to be able to decide what a tenant WILL get before
-              migrating it. A legacy tenant ignores both values — said plainly
-              below, rather than leaving someone to infer it from a control
-              that appears to do nothing.
-
-              ★ Branches on `editing`, like every other field on this card.
-              An unconditional <select> bound to state that is only populated
-              by startEditing() reads as "Inherit" for a tenant that HAS an
-              override until someone clicks Edit — and keeps showing a value
-              the operator just CANCELLED. View mode must render from the
-              props, never from edit state. */}
-          {/* Same shape as every sibling field on this card: the flex
-              label row, INPUT_CLS on the control, and the value-plus-
-              "custom" chip in view mode. It used to carry its own
-              `rounded-md … shadow-sm` select and an `text-xs` label, which
-              sat visibly narrower and squarer than the inputs beside it. */}
-          <div className="sm:col-span-2">
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">CPU tier</label>
-            </div>
-            {editing ? (
-              <select
-                className={INPUT_CLS}
-                value={cpuTierOverride}
-                onChange={(e) => setCpuTierOverride(e.target.value)}
-                data-testid="tenant-cpu-tier"
-              >
-                <option value="">Inherit from plan{plan?.cpuTier ? ` (${plan.cpuTier})` : ''}</option>
-                <option value="normal">Normal — 1x share</option>
-                <option value="high">High — 2x share</option>
-                <option value="highest">Highest — 4x share</option>
-              </select>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-900 dark:text-gray-100 font-medium" data-testid="tenant-cpu-tier-value">
-                  {tenant.cpuTierOverride
-                    ?? (plan?.cpuTier ? `${plan.cpuTier} (from plan)` : 'derived automatically')}
-                </span>
-                {tenant.cpuTierOverride != null && (
-                  <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
-                )}
-              </div>
-            )}
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="tenant-cpu-tier-note">
-              {tenant.cpuSchedulingMode === 'tiered'
-                ? 'Saved here, applied in the cluster by "Re-apply" under Cluster → CPU Scheduling. Applying a changed tier alone replaces no running application; a changed burst ceiling does, one at a time.'
-                : 'Saved, but not in effect: this tenant still uses the legacy CPU limit. It applies once you migrate it under Cluster → CPU Scheduling.'}
-            </p>
-          </div>
-          {/* Gated exactly like the tier — read only in tiered mode — so it
-              carries the same caveat. Without it, an operator could read the
-              tier's warning, see none here, and reasonably conclude this one
-              takes effect. */}
-          {renderField('Burst ceiling', 'cores', tenant.cpuBurstCoresOverride ?? plan?.cpuBurstCores ?? '—', burstCustom, setBurstCustom, burstOverride, setBurstOverride, tenant.cpuBurstCoresOverride != null, plan?.cpuBurstCores ?? undefined, 'number', '0.5')}
-          <p className="-mt-2 text-xs text-gray-500 dark:text-gray-400 sm:col-span-2" data-testid="tenant-burst-note">
-            {tenant.cpuSchedulingMode === 'tiered'
-              ? 'Applied by "Re-apply" under Cluster → CPU Scheduling, not on save. Changing it replaces this tenant\u2019s pods, one at a time.'
-              : 'Not in effect while this tenant uses the legacy CPU limit.'}
-          </p>
-          {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, plan?.memoryLimit, 'number', '0.5')}
-          {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, plan?.storageLimit, 'number', '1')}
-          {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, plan?.bandwidthGbLimit, 'number', '1')}
-          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, plan?.maxSubUsers, 'number', '1', '0 prevents this tenant from creating any sub-user. Existing sub-users keep their access.')}
-          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, plan?.maxMailboxes, 'number', '1', '0 disables email for this tenant: no new mailbox, and email cannot be enabled on a new domain. Existing mailboxes keep working.')}
-          {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, plan?.maxMailboxSizeMb, 'number', '1')}
-          {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, plan?.monthlyPriceUsd, 'number', '0.01')}
-          {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, plan?.emailHourlySendLimit, 'number', '1')}
-          {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, plan?.emailDailySendLimit, 'number', '1')}
-          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false)}
-        </div>
-
-        {/* Saving writes the CPU tier and ceiling; this delivers them to the
-            namespace. Two acts, because a changed ceiling replaces every pod
-            and that must not be a side effect of pressing Save on a form
-            that also edits memory and mailboxes. */}
-        <ApplyCpuLimitsPanel tenantId={tenant.id} schedulingMode={tenant.cpuSchedulingMode} />
-
-        {updateTenant.error && editing && (
-          <p className="mt-3 text-sm text-red-600 dark:text-red-400">
-            {updateTenant.error instanceof Error ? updateTenant.error.message : 'Failed to update limits'}
-          </p>
-        )}
-
-        {editing && (
-          <div className="mt-4 flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => setEditing(false)}
-              className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={updateTenant.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-              data-testid="save-limits-button"
-            >
-              {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-              Save
-            </button>
-          </div>
-        )}
-      </form>
-
-      {/* R6 PR 1: outbound-mail suspension — narrower than tenant
-          suspension (receiving + webmail keep working). Immediate
-          PATCH with confirm; enforced as a Stalwart queue quota of 0. */}
-      <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4 flex items-center justify-between" data-testid="outbound-mail-section">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Outbound Mail</h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            {tenant.emailOutboundSuspended
-              ? 'Suspended — all outbound submissions are rejected. Receiving and webmail keep working.'
-              : 'Active — sending is limited by the rates above.'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {tenant.emailOutboundSuspended && (
-            <span className="inline-flex rounded-full bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs text-red-600 dark:text-red-400">suspended</span>
-          )}
-          {confirmOutbound ? (
-            <>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await updateTenant.mutateAsync({ email_outbound_suspended: !tenant.emailOutboundSuspended });
-                  } finally {
-                    setConfirmOutbound(false);
-                  }
-                }}
-                disabled={updateTenant.isPending}
-                className={tenant.emailOutboundSuspended
-                  ? 'inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50'
-                  : 'inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50'}
-                data-testid="confirm-outbound-toggle"
-              >
-                {updateTenant.isPending && <Loader2 size={12} className="animate-spin" />}
-                {tenant.emailOutboundSuspended ? 'Confirm resume' : 'Confirm suspend'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmOutbound(false)}
-                className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmOutbound(true)}
-              className={tenant.emailOutboundSuspended
-                ? 'rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                : 'rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'}
-              data-testid="toggle-outbound-suspend"
-            >
-              {tenant.emailOutboundSuspended ? 'Resume sending' : 'Suspend sending'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Current Metrics */}
-      <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="current-metrics-section">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Current Usage</h3>
-        {metricsLoading && (
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <Loader2 size={14} className="animate-spin" />
-            Loading metrics...
-          </div>
-        )}
-        {!metricsLoading && (!metricsData?.data?.cpu || !metricsData?.data?.memory || !metricsData?.data?.storage) && (
-          <p className="text-sm text-gray-400 dark:text-gray-500">No metrics available yet.</p>
-        )}
-        {metricsData?.data?.cpu && metricsData?.data?.memory && metricsData?.data?.storage && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <MetricsUsageBlock
-              label="CPU"
-              inUse={metricsData.data.cpu.inUse}
-              reserved={metricsData.data.cpu.reserved}
-              available={metricsData.data.cpu.available}
-              formatValue={formatMetricsCpu}
-              unit="cores"
-            />
-            <MetricsUsageBlock
-              label="Memory"
-              inUse={metricsData.data.memory.inUse}
-              reserved={metricsData.data.memory.reserved}
-              available={metricsData.data.memory.available}
-              formatValue={formatMetricsGi}
-              unit=""
-            />
-            <MetricsUsageBlock
-              label="Storage"
-              inUse={metricsData.data.storage.inUse}
-              reserved={metricsData.data.storage.reserved}
-              available={metricsData.data.storage.available}
-              formatValue={formatMetricsGi}
-              unit=""
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Online-grow progress modal — opens when the PATCH response
-          carries a storageGrowOperationId. Polls the storage-lifecycle
-          op record and shows resizing → restoring → idle live so
-          operators don't have to wonder if the bump took effect. */}
-      <OperationProgressModal
-        operationId={growOpId}
-        title="Storage grow"
-        onClose={() => { setGrowOpId(null); setGrowWasDestructive(false); }}
-        onSuccessSlot={
-          growWasDestructive && tenant.kubernetesNamespace
-            ? <ReleasedSourceVolumeOffer namespace={tenant.kubernetesNamespace} />
-            : undefined
-        }
-      />
-
-      {/* Destructive shrink confirmation. Opens when PATCH rejected
-          the storage_limit_override write with STORAGE_RESIZE_REQUIRED.
-          Confirm fires POST /admin/tenants/:id/storage/resize, which
-          quiesces, snapshots, drops the PVC, recreates at the smaller
-          size, and restores. The shrink op id then opens the existing
-          OperationProgressModal so the operator can watch the dance. */}
-      {shrinkPending && (
-        <div
-          className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
-          data-testid="shrink-confirm-modal"
-          onClick={(e) => { if (e.target === e.currentTarget && !updateTenant.isPending) setShrinkPending(null); }}
-        >
-          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl">
-            <div className="border-b border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/20 px-5 py-3">
-              <h3 className="text-base font-semibold text-red-800 dark:text-red-200 flex items-center gap-2">
-                <AlertCircle size={18} />
-                Destructive storage shrink
-              </h3>
-            </div>
-            <div className="p-5 space-y-3 text-sm text-gray-700 dark:text-gray-300">
-              <p>
-                You are shrinking storage from <strong>{shrinkPending.currentGi} GiB</strong> to <strong>{shrinkPending.targetGi} GiB</strong>.
-              </p>
-              <p className="whitespace-pre-wrap">{shrinkPending.remediation}</p>
-              <p>
-                This is destructive: the platform takes a snapshot, drops the PVC, recreates at the smaller size, and restores from the snapshot.
-                <strong> Estimated downtime: a few minutes per GiB.</strong>
-              </p>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-gray-100 dark:border-gray-700 px-5 py-3">
-              <button
-                type="button"
-                onClick={() => setShrinkPending(null)}
-                disabled={updateTenant.isPending}
-                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-                data-testid="shrink-confirm-cancel"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={confirmDestructiveShrink}
-                disabled={updateTenant.isPending}
-                className="inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                data-testid="shrink-confirm-button"
-              >
-                {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
-                Continue with destructive resize
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Metrics Display Helpers ─────────────────────────────────────────────────
-
-
-function MetricsUsageBlock({
-  label,
-  inUse,
-  reserved,
-  available,
-  formatValue,
-  unit,
-}: {
-  readonly label: string;
-  // Nullable to match the wire shape: a missing reading must render as "no
-  // data", not crash the page the way `null.toFixed()` did on the tenant list.
-  readonly inUse: number | null;
-  readonly reserved: number | null;
-  readonly available: number | null;
-  readonly formatValue: (v: number | null) => string;
-  readonly unit: string;
-}) {
-  const hasReading = Number.isFinite(inUse) && Number.isFinite(available);
-  if (!hasReading) {
-    return (
-      <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-3">
-        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</span>
-        <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">No reading available</p>
-      </div>
-    );
-  }
-  const inUseNum = inUse as number;
-  const availableNum = available as number;
-  const ratio = availableNum > 0 ? inUseNum / availableNum : 0;
-  const pct = Math.min(Math.max(ratio * 100, 0), 100);
-
-  let barColor: string;
-  if (ratio >= 0.8) {
-    barColor = 'bg-red-500 dark:bg-red-400';
-  } else if (ratio >= 0.5) {
-    barColor = 'bg-amber-500 dark:bg-amber-400';
-  } else {
-    barColor = 'bg-green-500 dark:bg-green-400';
-  }
-
-  const suffix = unit ? ` ${unit}` : '';
-
-  return (
-    <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-3">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">{formatValue(inUseNum)}{suffix} / {formatValue(availableNum)}{suffix}</span>
-      </div>
-      <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 mb-2">
-        <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
-      </div>
-      <div className="space-y-0.5 text-xs text-gray-500 dark:text-gray-400">
-        <div className="flex justify-between">
-          <span>In Use</span>
-          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(inUse)}{suffix}</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Reserved</span>
-          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(reserved)}{suffix}</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Available</span>
-          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(available)}{suffix}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SubscriptionCard({
-  tenantId,
-  data,
-  isLoading,
-}: {
-  readonly tenantId: string;
-  readonly data: import('@/types/api').SubscriptionResponse | undefined;
-  readonly isLoading: boolean;
-}) {
-  const updateSub = useUpdateSubscription(tenantId);
-  const { data: plansData } = usePlans();
-  const { data: sysInfo } = useSystemInfo();
-  const currency = sysInfo?.currency ?? 'USD';
-  const plans = plansData?.data ?? [];
-
-  const [editing, setEditing] = useState(false);
-  const [planId, setPlanId] = useState('');
-  const [expiresAt, setExpiresAt] = useState('');
-  // Defaults to notifying: an operator changing someone's plan or renewal date
-  // should normally say so. Reset on every open so a previous silent edit
-  // cannot make the next one silent by accident.
-  const [notifyTenant, setNotifyTenant] = useState(true);
-
-  const startEditing = () => {
-    setPlanId(data?.plan?.id ?? '');
-    setExpiresAt(data?.subscription_expires_at?.slice(0, 10) ?? '');
-    setNotifyTenant(true);
-    setEditing(true);
-  };
-
-  const handleSave = async (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      await updateSub.mutateAsync({
-        plan_id: planId || undefined,
-        subscription_expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
-        notify_tenant: notifyTenant,
-      });
-      setEditing(false);
-    } catch { /* error via updateSub.error */ }
-  };
-
-  if (isLoading) {
-    return (
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
-        <div className="flex items-center gap-2">
-          <Loader2 size={16} className="animate-spin text-gray-400" />
-          <span className="text-sm text-gray-500 dark:text-gray-400">Loading subscription...</span>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="subscription-card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <CreditCard size={18} className="text-gray-600 dark:text-gray-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Subscription</h2>
-        </div>
-        {!editing && (
-          <button
-            type="button"
-            onClick={startEditing}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            data-testid="edit-subscription-button"
-          >
-            <Edit size={14} />
-            Edit
-          </button>
-        )}
-      </div>
-
-      {!editing ? (
-        <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
-            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Plan</dt>
-            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{data?.plan?.name ?? 'No plan'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
-            <dd className="mt-1">
-              <StatusBadge status={(data?.status ?? 'active') as 'active' | 'pending' | 'suspended'} />
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Expires</dt>
-            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-              {data?.subscription_expires_at
-                ? new Date(data.subscription_expires_at).toLocaleDateString()
-                : 'Not set'}
-            </dd>
-          </div>
-        </dl>
-      ) : (
-        <form onSubmit={handleSave} className="space-y-4" data-testid="subscription-edit-form">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="sub-plan" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Plan</label>
-              <select
-                id="sub-plan"
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100"
-                value={planId}
-                onChange={(e) => setPlanId(e.target.value)}
-                data-testid="sub-plan-select"
-              >
-                <option value="">No plan</option>
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} — {formatCurrency(p.monthlyPriceUsd, currency)}/mo</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="sub-expires" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Expires</label>
-              <input
-                id="sub-expires"
-                type="date"
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100"
-                value={expiresAt}
-                onChange={(e) => setExpiresAt(e.target.value)}
-                data-testid="sub-expires-input"
-              />
-            </div>
-          </div>
-          <label className="flex items-start gap-2.5 rounded-lg bg-gray-50 p-3 dark:bg-gray-700/40">
-            <input
-              type="checkbox"
-              checked={notifyTenant}
-              onChange={(e) => setNotifyTenant(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-800"
-              data-testid="sub-notify-tenant"
-            />
-            <span className="text-sm text-gray-700 dark:text-gray-300">
-              Email the tenant about this change
-              <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
-                Untick when the change does not concern them — correcting a
-                mistyped date, or recording a renewal already agreed by phone.
-              </span>
-            </span>
-          </label>
-          {updateSub.error && (
-            <p className="text-sm text-red-600 dark:text-red-400">
-              {updateSub.error instanceof Error ? updateSub.error.message : 'Failed to update subscription'}
-            </p>
-          )}
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => setEditing(false)}
-              className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={updateSub.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-              data-testid="save-subscription-button"
-            >
-              {updateSub.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-              Save
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
-  );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(1)} ${units[i]}`;
-}
-
-const provisioningStatusColors: Record<string, string> = {
-  unprovisioned: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
-  provisioning: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-  provisioned: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-};
-
-function ProvisioningStatusBadge({ status }: { readonly status: string }) {
-  const colors = provisioningStatusColors[status] ?? provisioningStatusColors.unprovisioned;
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors}`}>
-      {status === 'provisioning' && <Loader2 size={10} className="animate-spin" />}
-      {status}
-    </span>
-  );
-}
-
-function DecommissionConfirmDialog({
-  open,
-  onClose,
-  onConfirm,
-  tenantName,
-  namespace,
-  isPending,
-}: {
-  readonly open: boolean;
-  readonly onClose: () => void;
-  readonly onConfirm: () => void;
-  readonly tenantName: string;
-  readonly namespace: string;
-  readonly isPending: boolean;
-}) {
-  const [confirmText, setConfirmText] = useState('');
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      data-testid="decommission-dialog-backdrop"
-    >
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-800" data-testid="decommission-dialog">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
-            <ServerCrash size={20} className="text-red-600 dark:text-red-400" />
-          </div>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Decommission Tenant
-          </h2>
-        </div>
-
-        <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
-          <p>
-            This will permanently delete <strong>all Kubernetes resources</strong> for{' '}
-            <strong className="text-gray-900 dark:text-gray-100">{tenantName}</strong>:
-          </p>
-          <ul className="list-disc pl-5 space-y-1">
-            <li>Namespace <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">{namespace}</code></li>
-            <li>All deployments, services, and ingress rules</li>
-            <li>Persistent volume claims and stored data</li>
-            <li>Resource quotas and network policies</li>
-          </ul>
-          <p className="font-semibold text-red-600 dark:text-red-400">
-            This action cannot be undone. All customer data on the cluster will be permanently lost.
-          </p>
-        </div>
-
-        <div className="mt-4">
-          <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-            Type <strong>DECOMMISSION</strong> to confirm
-          </label>
-          <input
-            type="text"
-            value={confirmText}
-            onChange={(e) => setConfirmText(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-            placeholder="DECOMMISSION"
-            data-testid="decommission-confirm-input"
-          />
-        </div>
-
-        <div className="mt-5 flex justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={confirmText !== 'DECOMMISSION' || isPending}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-            data-testid="decommission-confirm-button"
-          >
-            {isPending ? <Loader2 size={14} className="animate-spin inline mr-1" /> : null}
-            Decommission
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StorageLifecycleCard({ tenantId, tenant, onManageSnapshots }: { readonly tenantId: string; readonly tenant: { status?: string; storageLifecycleState?: string; storageLimitOverride?: string | null }; readonly onManageSnapshots: () => void }) {
-  // Storage Operations card (formerly "Storage Lifecycle"). After the
-  // collapse, lifecycle transitions (suspend / resume / archive /
-  // restore / resize) are driven from the tenant row itself: status
-  // dropdown for suspend/archive/restore, ResourceLimitsCard for grow,
-  // ResourceLimitsCard's destructive-shrink dialog for shrink. The
-  // standalone buttons that lived here were redundant — they all
-  // hit the same orchestrators.
-  //
-  // What stays here:
-  //   • PVC placement table (read-only health surface)
-  //   • Active / recent op progress (live readout while a lifecycle
-  //     transition started elsewhere is running)
-  //   • Manual snapshot button (orthogonal to lifecycle — operator
-  //     wants ad-hoc backups without a status flip)
-  //   • Reset-to-idle (recovery valve when an op left state=failed)
-  const opsQuery = useStorageOperations(tenantId);
-  const clearFailed = useClearFailedState();
-  const cancelOp = useCancelStorageOperation();
-
-  const ops = opsQuery.data?.data ?? [];
-  const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
-  const recentOp = ops[0];
-  const lifecycleState = tenant.storageLifecycleState ?? 'idle';
-
-  const [trackedOpId, setTrackedOpId] = useState<string | null>(null);
-  const [opError, setOpError] = useState<string | null>(null);
-
-  const surfaceError = (err: unknown) => {
-    setOpError(err instanceof Error ? err.message : String(err));
-  };
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Operations</h2>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            PVC placement and live op status. Lifecycle transitions
-            (suspend / archive / restore) are driven by the tenant
-            <span className="font-medium"> Status</span> dropdown above;
-            grow/shrink by the
-            <span className="font-medium"> Resource Limits</span> card.
-          </p>
-        </div>
-        <div className="text-right text-xs">
-          <div className="text-gray-500 dark:text-gray-400">Lifecycle state</div>
-          <div className={`mt-0.5 rounded px-2 py-0.5 font-mono ${lifecycleState === 'idle' ? 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200'}`}>
-            {lifecycleState}
-          </div>
-        </div>
-      </div>
-
-      <PvcPlacementSection tenantId={tenantId} />
-
-      {activeOp && (
-        <div className="mb-3 rounded-md bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
-          <div className="flex items-center justify-between text-amber-900 dark:text-amber-100">
-            <span className="font-medium">{activeOp.opType}: {activeOp.state}</span>
-            <span className="text-xs">{activeOp.progressPct}%</span>
-          </div>
-          {activeOp.progressMessage && <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">{activeOp.progressMessage}</p>}
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900/40">
-            <div className="h-full bg-amber-600 transition-all" style={{ width: `${activeOp.progressPct}%` }} />
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <p className="text-[11px] text-amber-700 dark:text-amber-200">
-              Stuck? Cancel deletes the underlying Job(s) and resets the tenant to idle.
-            </p>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!confirm('Force-cancel this storage operation?\n\n' +
-                  'This will delete the underlying K8s Job(s) and reset the tenant storage state to idle. ' +
-                  'For an fsck-repair currently writing to disk, e2fsck checkpoints between inode passes — ' +
-                  'cancel between passes is safe; cancel mid-write may leave the filesystem partially repaired.\n\n' +
-                  'Continue?')) return;
-                try {
-                  const result = await cancelOp.mutateAsync(tenantId);
-                  setOpError(null);
-                  alert(`Cancelled. Previous state: ${result.previousState}; deleted ${result.deletedJobs} Job(s).`);
-                } catch (err) {
-                  surfaceError(err);
-                }
-              }}
-              disabled={cancelOp.isPending}
-              className="rounded-md border border-amber-400 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-medium text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
-              data-testid="storage-cancel-op"
-            >
-              {cancelOp.isPending ? 'Cancelling…' : 'Cancel operation'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Show the failed-op banner only while the tenant is actually STUCK
-          (lifecycleState='failed'). A failed op that rolled back cleanly
-          leaves the tenant 'idle' and operational — the operator already saw
-          the error when they triggered it, so a persistent, un-dismissable
-          banner just nags. Gating on lifecycleState also makes "Reset to idle"
-          below clear this banner (resetting the state hides it). */}
-      {!activeOp && lifecycleState === 'failed' && recentOp && recentOp.state === 'failed' && (() => {
-        // Try to parse lastError as the structured OperatorError envelope.
-        let envelope: import('@insula/api-contracts').OperatorError | null = null;
-        let plainDetail = '';
-        if (recentOp.lastError && recentOp.lastError.trim()) {
-          try {
-            const parsed = JSON.parse(recentOp.lastError);
-            if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-              envelope = parsed as import('@insula/api-contracts').OperatorError;
-            } else {
-              plainDetail = recentOp.lastError;
-            }
-          } catch {
-            plainDetail = recentOp.lastError;
-          }
-        }
-        const showClearButton = lifecycleState === 'failed';
-        const clearButton = showClearButton ? (
-          <button
-            onClick={() => {
-              if (confirm("Reset this tenant's storage state back to 'idle'? The failed operation's log is kept for debugging.")) {
-                clearFailed.mutate(tenantId);
-              }
-            }}
-            disabled={clearFailed.isPending}
-            className="shrink-0 rounded-md border border-red-300 dark:border-red-700 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
-            data-testid="lifecycle-clear-failed-button"
-          >
-            {clearFailed.isPending ? 'Clearing…' : 'Reset to idle'}
-          </button>
-        ) : null;
-
-        if (envelope) {
-          return (
-            <div className="mb-3">
-              <div className="mb-1 text-xs font-medium text-red-800 dark:text-red-200">
-                Last {recentOp.opType} failed
-              </div>
-              <ErrorPanel
-                error={envelope}
-                severity="error"
-                testId="lifecycle-error-panel"
-              />
-              {clearButton && <div className="mt-2 flex justify-end">{clearButton}</div>}
-            </div>
-          );
-        }
-        return (
-          <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-medium text-red-800 dark:text-red-200">Last {recentOp.opType} failed</div>
-                {plainDetail && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{plainDetail}</p>}
-              </div>
-              {clearButton}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* On-server Longhorn snapshots quick view (full management on the
-          Snapshots tab). Replaces the old off-site tar snapshot button,
-          which routed to a backup target that no longer exists. */}
-      <div className="mt-4 border-t border-gray-100 dark:border-gray-700 pt-4">
-        <TenantSnapshotsPanel tenantId={tenantId} variant="compact" onManageAll={onManageSnapshots} />
-      </div>
-
-      {/* Inline error banner — shown when the snapshot op rejects synchronously. */}
-      {opError && (
-        <div
-          role="alert"
-          className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-800 dark:text-red-200 flex items-start gap-2"
-          data-testid="lifecycle-error-banner"
-        >
-          <span className="flex-1 whitespace-pre-wrap">{opError}</span>
-          <button
-            onClick={() => setOpError(null)}
-            className="shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-300"
-            aria-label="Dismiss"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      {/* Shared progress modal — opens for the manual snapshot started here. */}
-      <OperationProgressModal
-        operationId={trackedOpId}
-        onClose={() => setTrackedOpId(null)}
-      />
-    </div>
-  );
-}
-
-/**
- * Placement card — tenant worker pin + storage tier + "migrate now"
- * action. The pin change (via useUpdateTenant) only records intent;
- * the migrate action flips the pin AND triggers a rollout-restart on
- * every Deployment in the tenant's namespace so pods actually move.
- *
- * Surfaces the ADR-031 distinction between "re-pin for future
- * deploys" (cheap, immediate) and "rebalance running workloads"
- * (intentional, has downtime).
- */
-/**
- * Render "free / total" CPU + RAM + Disk for the worker selector
- * dropdown. Returns an empty string when usage data is unavailable so
- * the option still shows the bare node name. Examples:
- *   " — 3.2/6 CPUs · 6.5/8 GB RAM · 60/80 GB disk available"
- *   ""   (usage not yet loaded)
- */
-function formatAvailability(usage: WorkerUsage | undefined): string {
-  if (!usage) return '';
-  const parts: string[] = [];
-  if (usage.cpuMillicoresAllocatable != null && usage.cpuMillicoresUsed != null) {
-    const total = usage.cpuMillicoresAllocatable / 1000;
-    const free = Math.max(0, (usage.cpuMillicoresAllocatable - usage.cpuMillicoresUsed) / 1000);
-    parts.push(`${free.toFixed(2)}/${total.toFixed(0)} CPUs`);
-  }
-  if (usage.memoryBytesAllocatable != null && usage.memoryBytesUsed != null) {
-    const total = usage.memoryBytesAllocatable / 1024 ** 3;
-    const free = Math.max(0, (usage.memoryBytesAllocatable - usage.memoryBytesUsed) / 1024 ** 3);
-    parts.push(`${free.toFixed(1)}/${total.toFixed(0)} GB RAM`);
-  }
-  if (usage.diskBytesTotal != null && usage.diskBytesFree != null) {
-    const total = usage.diskBytesTotal / 1024 ** 3;
-    const free = usage.diskBytesFree / 1024 ** 3;
-    parts.push(`${free.toFixed(0)}/${total.toFixed(0)} GB disk`);
-  }
-  return parts.length > 0 ? ` — ${parts.join(' · ')} available` : '';
-}
-
-function PlacementCard({ tenantId, tenant }: {
-  readonly tenantId: string;
-  readonly tenant: { nodeName?: string | null; storageTier?: 'local' | 'ha' };
-}) {
-  const update = useUpdateTenant(tenantId);
-  const migrate = useMigrateTenantToWorker(tenantId);
-  const { data: nodesData } = useClusterNodes();
-  const { data: usageData } = useWorkerUsageSummary();
-  const nodes = (nodesData?.data ?? []).filter((n) => n.canHostTenantWorkloads);
-  const usageByName = new Map((usageData?.data ?? []).map((u) => [u.name, u]));
-
-  const [pinTarget, setPinTarget] = useState<string>(tenant.nodeName ?? '');
-  const [tierTarget, setTierTarget] = useState<'local' | 'ha'>(tenant.storageTier ?? 'local');
-
-  const nodeLabel = useNodeLabel();
-  const currentWorker = tenant.nodeName ? nodeLabel(tenant.nodeName) : '(Auto — scheduler picks)';
-  const hasChanges = (pinTarget || null) !== (tenant.nodeName ?? null) || tierTarget !== (tenant.storageTier ?? 'local');
-
-  const saveChanges = async () => {
-    try {
-      await update.mutateAsync({
-        node_name: pinTarget === '' ? null : pinTarget,
-        storage_tier: tierTarget,
-      });
-    } catch {
-      // error surfaced via update.error below
-    }
-  };
-
-  const migrateNow = async () => {
-    if (!pinTarget) return;
-    try {
-      await migrate.mutateAsync(pinTarget);
-    } catch {
-      // error surfaced via migrate.error below
-    }
-  };
-
-  const migrateErr = migrate.error as { message?: string } | null;
-  const updateErr = update.error as { message?: string } | null;
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Placement</h2>
-        <span className="text-xs text-gray-500 dark:text-gray-400">Current worker: <span className="font-mono text-gray-700 dark:text-gray-300">{currentWorker}</span></span>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Worker node (primary data location)
-          </label>
-          <select
-            value={pinTarget}
-            onChange={(e) => setPinTarget(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-            data-testid="placement-worker-select"
-          >
-            <option value="">Auto (recommended — scheduler picks based on capacity)</option>
-            {nodes.map((n) => {
-              const usage = usageByName.get(n.name);
-              return (
-                <option key={n.name} value={n.name}>
-                  {nodeLabel(n.name)}
-                  {formatAvailability(usage)}
-                </option>
-              );
-            })}
-          </select>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Pod and primary Longhorn replica land on the chosen node. Auto picks the node with most free capacity at provisioning.
-          </p>
-        </div>
-
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage tier</label>
-          <select
-            value={tierTarget}
-            onChange={(e) => setTierTarget(e.target.value as 'local' | 'ha')}
-            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-            data-testid="placement-tier-select"
-          >
-            <option value="local">Local — 1 replica · cheaper · restore-from-backup on node loss</option>
-            <option value="ha" disabled={nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha'}>
-              HA — 2 replicas · auto-failover ~30–90s · 2× storage
-              {nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha' && ` (needs ≥3 worker nodes; cluster has ${nodes.length})`}
-            </option>
-          </select>
-          {nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha' && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              HA tier needs ≥3 tenant-capable nodes. Add worker nodes to enable.
-            </p>
-          )}
-          {tierTarget !== (tenant.storageTier ?? 'local') && tenant.nodeName && (
-            <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
-              Tier changes are applied live. Replica rebuild runs in the background.
-            </p>
-          )}
-        </div>
-      </div>
-
-      {(updateErr || migrateErr) && (
-        <p className="mt-3 text-xs text-red-600 dark:text-red-400">
-          {(updateErr ?? migrateErr)?.message}
-        </p>
-      )}
-
-      <div className="mt-5 flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={saveChanges}
-          disabled={!hasChanges || update.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-          data-testid="placement-save-button"
-        >
-          {update.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          Save intent
-        </button>
-        <button
-          type="button"
-          onClick={migrateNow}
-          disabled={!pinTarget || migrate.isPending}
-          title={!pinTarget ? 'Pick a worker first' : 'Applies the pin AND restarts pods so they move now'}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="placement-migrate-button"
-        >
-          {migrate.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
-          Migrate pods now
-        </button>
-      </div>
-
-      {migrate.isSuccess && migrate.data && <MigrateResultNote result={migrate.data.data} />}
-
-      {/* Where the tenant ACTUALLY is, against the pin chosen above. */}
-      <PlacementStatusPanel tenantId={tenantId} />
-    </div>
-  );
-}
-
-/**
- * Storage Lifecycle subsection — shows which cluster node currently
- * holds the tenant's PVC(s). Operators want this at a glance so they
- * can correlate "tenant is on staging1" with platform metrics, drains,
- * and capacity plans.
- *
- * Sortable + searchable — same UX as the Deployments tab and admin
- * Installed Applications table.
- */
-function PvcPlacementSection({ tenantId }: { readonly tenantId: string }) {
-  const { data, isLoading, error } = useTenantStoragePlacement(tenantId);
-  const opsQuery = useStorageOperations(tenantId);
-  const fsckCheck = useFsckCheck();
-  const fsckRepair = useFsckRepair();
-  const [confirmRepair, setConfirmRepair] = useState<{ pvcName: string } | null>(null);
-  const [reportOpId, setReportOpId] = useState<string | null>(null);
-
-  const pvcs = data?.data.pvcs ?? [];
-  const search = useTableSearch(pvcs, ['pvcName', 'volumeName', 'state', 'robustness', 'fsType']);
-  const { sortedData, sortKey, sortDirection, onSort } = useSortable(search.filteredData, 'pvcName');
-
-  // Latest fsck op (any state) — drives the Report modal contents.
-  const fsckOps = (opsQuery.data?.data ?? []).filter((o) => o.opType === 'fsck');
-  const reportOp = reportOpId ? fsckOps.find((o) => o.id === reportOpId) ?? null : null;
-
-  // In-flight fsck for this tenant — disables Check/Repair buttons
-  // while a quiesce-and-fsck cycle is running.
-  const fsckInFlight = fsckOps.find((o) => !o.completedAt && o.state !== 'idle' && o.state !== 'failed');
-
-  if (isLoading) {
-    return (
-      <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400">
-        Loading PVC placement…
-      </div>
-    );
-  }
-  if (error || pvcs.length === 0) {
-    return (
-      <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400">
-        No PVCs found for this tenant (yet).
-      </div>
-    );
-  }
-  return (
-    <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3" data-testid="pvc-placement-section">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">Persistent volumes ({pvcs.length})</h3>
-        <input
-          type="search"
-          value={search.query}
-          onChange={(e) => search.setQuery(e.target.value)}
-          placeholder="Search…"
-          className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs"
-          data-testid="pvc-placement-search"
-        />
-      </div>
-      <table className="w-full text-xs">
-        <thead className="text-left text-gray-500 dark:text-gray-400">
-          <tr>
-            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="FS" sortKey="fsType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-3 !py-2 !text-left" />
-            <th className="px-3 py-2 text-left font-medium">Replicas</th>
-            <th className="px-3 py-2 text-left font-medium">Replica node(s)</th>
-            <th className="px-3 py-2 text-left font-medium">Filesystem</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sortedData.map((p) => {
-            const replicasOk = p.replicasHealthy >= p.replicasExpected;
-            const fsLabel = (p.fsType ?? '—').toLowerCase();
-            return (
-              <tr key={p.volumeName} className="border-t border-gray-100 dark:border-gray-700">
-                <td className="px-3 py-2 font-mono">{p.pvcName}</td>
-                <td className="px-3 py-2 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
-                <td className="px-3 py-2">
-                  <span className={fsLabel === 'xfs'
-                    ? 'rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
-                    : fsLabel === 'ext4' || fsLabel === 'ext3'
-                      ? 'rounded bg-purple-100 px-1 py-0.5 text-[10px] text-purple-800 dark:bg-purple-900/40 dark:text-purple-300'
-                      : 'rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-300'}
-                  >
-                    {fsLabel}
-                  </span>
-                </td>
-                <td className="px-3 py-2">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
-                <td className="px-3 py-2">
-                  {p.usedBytes > 0 ? formatBytes(p.usedBytes) : '0 B'}
-                  {p.allocatedBytes > 0 && (
-                    <span className="ml-1 text-gray-500 dark:text-gray-400">({formatBytes(p.allocatedBytes)})</span>
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  {(() => {
-                    // Longhorn reports state="detached" any time no Pod
-                    // consumes the PVC. For a healthy idle volume that's
-                    // the expected resting state — nothing's wrong, the
-                    // tenant just has zero replicas running. Surface
-                    // that distinct from a problematic detach by
-                    // checking robustness:
-                    //   - state=attached → "attached" (live)
-                    //   - state=detached + healthy/unknown + replicas
-                    //     all available → "idle" (normal, gray)
-                    //   - state=detached + degraded/faulted → "detached"
-                    //     (alarming, kept literal)
-                    //   - everything else (creating, deleting, etc.) →
-                    //     literal Longhorn state
-                    const state = p.state ?? null;
-                    if (state === 'attached') {
-                      return <span className="rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300">attached</span>;
-                    }
-                    if (state === 'detached') {
-                      const isProblem = p.robustness === 'degraded' || p.robustness === 'faulted';
-                      if (isProblem) {
-                        return <span className="rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-800 dark:bg-red-900/40 dark:text-red-300" title="Longhorn state: detached">detached</span>;
-                      }
-                      return <span className="rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-300" title="Longhorn state: detached. No Pod consumes the PVC right now — normal when file-manager and tenant workloads are idle.">idle</span>;
-                    }
-                    return <span className="text-gray-700 dark:text-gray-300">{state ?? '—'}</span>;
-                  })()}
-                </td>
-                <td className="px-3 py-2">
-                  <span className={p.robustness === 'healthy'
-                    ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
-                    : p.robustness === 'degraded' ? 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                    : 'rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-300'}>
-                    {p.robustness ?? '—'}
-                  </span>
-                </td>
-                <td className="px-3 py-2">
-                  <span className={replicasOk
-                    ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
-                    : 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'}
-                  >
-                    {p.replicasHealthy}/{p.replicasExpected}
-                  </span>
-                </td>
-                <td className="px-3 py-2 font-mono">
-                  {p.replicaNodes.length === 0 ? <span className="text-gray-400">—</span> : <NodeList names={p.replicaNodes} />}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      disabled={Boolean(fsckInFlight) || fsckCheck.isPending}
-                      onClick={() => {
-                        fsckCheck.mutate(tenantId, {
-                          onSuccess: (resp) => setReportOpId(resp.data.operationId),
-                        });
-                      }}
-                      className="rounded border border-gray-300 dark:border-gray-600 px-1.5 py-0.5 text-[10px] hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-                      data-testid={`fsck-check-${p.pvcName}`}
-                      title="Run xfs_repair -n / e2fsck -n on this volume (quiesces tenant)"
-                    >
-                      Check
-                    </button>
-                    <button
-                      type="button"
-                      disabled={Boolean(fsckInFlight) || fsckRepair.isPending}
-                      onClick={() => setConfirmRepair({ pvcName: p.pvcName })}
-                      className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-[10px] text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
-                      data-testid={`fsck-repair-${p.pvcName}`}
-                      title="Run fsck in REPAIR mode (writes to disk; quiesces tenant)"
-                    >
-                      Repair
-                    </button>
-                  </div>
-                  {p.engineConditions.length > 0 && (
-                    <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
-                      {p.engineConditions.map((c) => c.type).join(', ')}
-                    </div>
-                  )}
-                  {p.lastBackupAt && (
-                    <div className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400" title={p.lastBackupAt}>
-                      backup: {new Date(p.lastBackupAt).toISOString().slice(0, 10)}
-                    </div>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {search.query && search.filteredData.length === 0 && (
-        <p className="mt-2 text-xs text-gray-500 italic">No PVCs match &quot;{search.query}&quot;.</p>
-      )}
-      <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400 italic">
-        Used = filesystem-level user-file bytes from kubelet stats. Parenthetical = Longhorn block-level allocation including filesystem metadata + sparse blocks (~230 MiB on an empty 10 GiB ext4 volume; ~40 MiB on XFS).
-        Replicas = healthy/desired. Check/Repair quiesce the tenant for the duration of the run.
-      </p>
-
-      {fsckCheck.error instanceof Error && (
-        <div className="mt-2 rounded border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-2 text-xs text-red-800 dark:text-red-300">
-          <strong>Failed to start filesystem check:</strong> {fsckCheck.error.message}
-        </div>
-      )}
-      {fsckRepair.error instanceof Error && (
-        <div className="mt-2 rounded border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-2 text-xs text-red-800 dark:text-red-300">
-          <strong>Failed to start filesystem repair:</strong> {fsckRepair.error.message}
-        </div>
-      )}
-
-      {confirmRepair && (
-        <FsckRepairConfirmModal
-          pvcName={confirmRepair.pvcName}
-          isPending={fsckRepair.isPending}
-          onCancel={() => setConfirmRepair(null)}
-          onConfirm={() => {
-            fsckRepair.mutate(tenantId, {
-              onSuccess: (resp) => {
-                setReportOpId(resp.data.operationId);
-                setConfirmRepair(null);
-              },
-            });
-          }}
-        />
-      )}
-
-      {reportOp && (
-        <FsckReportModal
-          op={reportOp}
-          onClose={() => setReportOpId(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-function FsckRepairConfirmModal({
-  pvcName, isPending, onCancel, onConfirm,
-}: {
-  readonly pvcName: string;
-  readonly isPending: boolean;
-  readonly onCancel: () => void;
-  readonly onConfirm: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-lg bg-white dark:bg-gray-900 p-5 shadow-xl">
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-          Repair filesystem on {pvcName}?
-        </h3>
-        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-          This will:
-        </p>
-        <ul className="mt-1 list-disc pl-5 text-sm text-gray-600 dark:text-gray-300">
-          <li>Scale all tenant workloads to 0 (downtime)</li>
-          <li>Run xfs_repair / e2fsck -y against the raw block device</li>
-          <li>Restore workloads after completion</li>
-        </ul>
-        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-          On a badly damaged filesystem the repair may move corrupted files into <code>lost+found</code>. Take a snapshot first if the data is critical.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={isPending}
-            className="rounded border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={isPending}
-            className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-            data-testid="fsck-repair-confirm"
-          >
-            {isPending ? 'Starting…' : 'Repair filesystem'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FsckReportModal({
-  op, onClose,
-}: {
-  readonly op: { id: string; state: string; progressPct: number; progressMessage: string | null; lastError: string | null; completedAt: string | null };
-  readonly onClose: () => void;
-}) {
-  const inFlight = !op.completedAt && op.state !== 'idle' && op.state !== 'failed';
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-3xl rounded-lg bg-white dark:bg-gray-900 p-5 shadow-xl">
-        <div className="flex items-start justify-between">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            Filesystem check report
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          op {op.id.slice(0, 8)} — state: <span className="font-mono">{op.state}</span>
-          {op.completedAt ? ` (completed ${new Date(op.completedAt).toLocaleString()})` : ''}
-        </div>
-        {inFlight && (
-          <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${op.progressPct}%` }} />
-          </div>
-        )}
-        {op.lastError ? (
-          <div className="mt-3">
-            <div className="text-xs font-semibold text-red-700 dark:text-red-400">Errors found:</div>
-            <pre className="mt-1 max-h-96 overflow-auto rounded bg-gray-50 dark:bg-gray-800 p-2 text-[11px] font-mono whitespace-pre-wrap text-red-800 dark:text-red-300">
-              {op.lastError}
-            </pre>
-          </div>
-        ) : op.progressMessage ? (
-          <div className="mt-3">
-            <div className="text-xs font-semibold text-green-700 dark:text-green-400">Report:</div>
-            <pre className="mt-1 max-h-96 overflow-auto rounded bg-gray-50 dark:bg-gray-800 p-2 text-[11px] font-mono whitespace-pre-wrap text-gray-800 dark:text-gray-200">
-              {op.progressMessage}
-            </pre>
-          </div>
-        ) : (
-          <p className="mt-3 text-xs text-gray-500">Waiting for output…</p>
-        )}
-        <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-          >
-            Close
-          </button>
-        </div>
-      </div>
+      {/* Progress of a status-driven storage op (archive, restore-from-archive). */}
+      <OperationProgressModal operationId={statusOpId} onClose={() => setStatusOpId(null)} />
     </div>
   );
 }
