@@ -146,17 +146,60 @@ describe('NodeDrainDeleteModal — Postgres instances other instances cover', ()
     await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith({ forceLastReplica: true }));
   });
 
-  it('a drained node that still holds an instance\'s only copy keeps Delete disabled and says why', () => {
+  // Production: "Drained — but Delete is disabled while this node holds the
+  // only copy of database instance platform/system-db-3". Delete now moves an
+  // instance other instances cover; only one nothing covers keeps it disabled.
+  it('a drained node holding a covered instance\'s only copy: Delete is enabled and says it moves the instance first', async () => {
     impact = {
       ...makeImpact([replica({
-        pvcName: 'system-db-2',
-        postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-2', primary: false, coveredBy: ['system-db-1'] },
+        pvcName: 'system-db-3',
+        postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-3', primary: false, coveredBy: ['system-db-1'] },
+      })]),
+      tenantsDrained: true,
+    };
+    deleteMutate.mockClear();
+    renderModal();
+
+    expect(screen.queryByTestId('delete-blocked-database')).toBeNull();
+    expect(screen.getByTestId('delete-moves-database').textContent)
+      .toContain('platform/system-db-3 — re-created on another server from the primary (system-db-1)');
+    const del = screen.getByTestId('delete-node-s2-button') as HTMLButtonElement;
+    expect(del.disabled).toBe(false);
+    fireEvent.click(del);
+    expect(screen.getByText(/move its database instances to other servers/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('confirm-delete-node-s2-button'));
+    await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith({ forceLastReplica: false }));
+  });
+
+  it('a covered primary is said to be switched over first', () => {
+    impact = {
+      ...makeImpact([replica({
+        pvcName: 'system-db-1',
+        postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-1', primary: true, coveredBy: ['system-db-2', 'system-db-3'] },
       })]),
       tenantsDrained: true,
     };
     renderModal();
 
-    expect(screen.getByTestId('delete-blocked-database').textContent).toContain('platform/system-db-2');
+    expect(screen.getByTestId('delete-moves-database').textContent)
+      .toContain('the primary: switched over to system-db-2 first (writes pause briefly)');
+    expect((screen.getByTestId('delete-node-s2-button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('an instance nothing else holds keeps Delete disabled and says why — there is nothing to re-create it from', () => {
+    impact = {
+      ...makeImpact([replica({
+        pvcName: 'system-db-1',
+        postgresInstance: { kind: 'postgres', cluster: 'system-db', instance: 'system-db-1', primary: true, coveredBy: [] },
+      })]),
+      tenantsDrained: true,
+    };
+    renderModal();
+
+    const panel = screen.getByTestId('delete-blocked-database');
+    expect(panel.textContent).toContain('platform/system-db-1');
+    expect(panel.textContent).toContain('no other instance holds its data');
+    expect(screen.queryByTestId('delete-moves-database')).toBeNull();
     expect((screen.getByTestId('delete-node-s2-button') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText(/Tenants drained — /)).toBeNull();
   });

@@ -4,6 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clusterNodes, type ClusterNode } from '../../db/schema.js';
 import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isSystemNamespace } from '../../lib/namespace-tier.js';
@@ -12,7 +13,8 @@ import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './
 import { isUsableCopy } from './replica-copy.js';
 import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
 import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
-import { assertTaintSafeForSystem, moveSystemPodsOff } from './system-pods.js';
+import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
+import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
 import { assertNoSharedEtcdMember } from './etcd-identity.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
@@ -1852,8 +1854,13 @@ export async function drainNode(
  * cascade-deletes Endpoints owned by the node and frees its name.
  *
  * Pre-conditions enforced:
- *   - Node must be cordoned (unschedulable=true).
- *   - No non-system pods remaining on the node (drained).
+ *   - Its tenants were drained (the drained mark, or a cordon).
+ *   - No non-system pods remaining on the node.
+ *   - Nothing of a tenant, of mail, or of a database instance nothing else
+ *     holds keeps its only copy here; other single copies only when confirmed.
+ *
+ * Then it cordons the node, moves its database instances to other servers
+ * (postgres-move.ts), evicts the remaining system pods, and deletes it.
  *
  * The actual host (k3s-agent process, OS) is NOT touched. Operator is
  * expected to power down or repurpose the host afterwards.
@@ -1870,10 +1877,18 @@ export async function deleteNode(
      */
     readonly forceLastReplica?: boolean;
     readonly systemPodsGoneWaitMs?: number;
+    /** Waits and clock for moving database instances off (tests). */
+    readonly databaseMove?: Omit<MoveOptions, 'coverOf'>;
     /** The API pod serving this request (never evicted); defaults to this process's own pod. */
     readonly self?: { readonly namespace: string; readonly name: string } | null;
   } = {},
-): Promise<{ deletedFromKubernetes: boolean; deletedFromInventory: boolean; systemPodsEvicted: number }> {
+): Promise<{
+  deletedFromKubernetes: boolean;
+  deletedFromInventory: boolean;
+  systemPodsEvicted: number;
+  /** Database instances re-created on other servers first (`namespace/instance`). */
+  movedDatabaseInstances: string[];
+}> {
   // 1) Pre-check: its tenants were drained (a drain marks the node; a cordon
   //    from before drains stopped cordoning counts too).
   let nodeExistsInK8s = true;
@@ -1910,6 +1925,7 @@ export async function deleteNode(
   }
 
   let systemPodsEvicted = 0;
+  let movedDatabaseInstances: string[] = [];
 
   if (nodeExistsInK8s) {
     const impact = await buildDrainImpact(k8s, db, name);
@@ -1951,26 +1967,36 @@ export async function deleteNode(
         { volumes: tenantCopies.slice(0, 20) },
       );
     }
-    // A Postgres instance whose only copy is on this node goes with it, and
-    // CNPG cannot start it anywhere else: the pod it re-creates waits forever
-    // for a volume that no longer exists, and CNPG holds every later scale
-    // change (the HA resize to the remaining servers included) until that
-    // instance is active again. Covered or not, the instance has to leave the
-    // node before the node leaves the cluster.
-    const instances = impact.longhornReplicas
-      .filter((r) => r.isLastReplica && r.postgresInstance !== null)
-      .map((r) => `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? r.pvcName ?? r.volumeName}`);
-    if (instances.length > 0) {
-      const unique = [...new Set(instances)];
+    // A Postgres instance whose only copy is on this node would go with it,
+    // and CNPG cannot start it anywhere else: the pod it re-creates waits
+    // forever for a volume that no longer exists, and CNPG holds every later
+    // scale change (the HA resize to the remaining servers included) until
+    // that instance is active again. So Delete moves it first (postgres-move.ts)
+    // — which needs another instance holding its data to re-create it from.
+    // One nothing covers (a single-instance database, a primary with no
+    // streaming standby right now) is refused here, before anything changes.
+    const instanceCopies = impact.longhornReplicas.filter((r) => r.isLastReplica && r.postgresInstance !== null);
+    const labelOf = (r: (typeof instanceCopies)[number]): string =>
+      `${r.namespace ?? ''}/${r.postgresInstance?.instance ?? r.pvcName ?? r.volumeName}`;
+    const uncovered = [...new Set(instanceCopies
+      .filter((r) => (r.postgresInstance?.coveredBy.length ?? 0) === 0)
+      .map(labelOf))];
+    if (uncovered.length > 0) {
       throw new ApiError(
         'NODE_DELETE_HOLDS_DATABASE',
-        `Node '${name}' holds the only copy of database instance ${unique.join(', ')}. Removing the node would ` +
-        `leave PostgreSQL with an instance it cannot start anywhere else. Move the instance to another server ` +
-        `first (Nodes & cluster → Removing a node), then delete the node.`,
+        `Node '${name}' holds the only copy of database instance ${uncovered.join(', ')}, and no other instance ` +
+        `holds its data right now (a single-instance database, or a primary not streaming to a standby on another ` +
+        `server) — there is nothing to re-create it from elsewhere. Removing the node would leave PostgreSQL with an ` +
+        `instance it cannot start anywhere else. Nothing was changed.`,
         409,
-        { instances: unique },
+        { instances: uncovered },
       );
     }
+    const instancesToMove = [...new Map(instanceCopies.map((r) => [labelOf(r), {
+      namespace: r.namespace ?? '',
+      cluster: r.postgresInstance?.cluster ?? '',
+      instance: r.postgresInstance?.instance ?? '',
+    }])).values()];
     // Mail runs here: its data lives on this node (local-path), and deleting
     // the node takes mail down until it fails over and restores elsewhere.
     // Move it first, on purpose, with its own migration.
@@ -2005,10 +2031,45 @@ export async function deleteNode(
       );
     }
 
+    // Every check passed — from here on Delete changes things. Cordon first:
+    // a database instance re-created below must not land here again.
+    await cordonNode(k8s, name);
+    if (instancesToMove.length > 0) {
+      movedDatabaseInstances = await movePostgresInstancesOff(k8s, name, instancesToMove, {
+        ...opts.databaseMove,
+        coverOf: async (ref) => {
+          const now = await buildDrainImpact(k8s, db, name);
+          if (!now.storageFactsComplete) return null;
+          const hits = now.longhornReplicas.filter((r) => r.isLastReplica && r.namespace === ref.namespace
+            && r.postgresInstance?.cluster === ref.cluster && r.postgresInstance.instance === ref.instance);
+          const instance = hits[0]?.postgresInstance;
+          return instance ? { instance, volumesHere: hits.map((r) => r.volumeName) } : 'moved';
+        },
+      });
+      // Read once more before anything is evicted: no instance may keep its
+      // only copy here — its pod would be evicted, re-started elsewhere on the
+      // same volume, and the volume would still go with the node. Retried: a
+      // primary may have been switched over moments ago.
+      const after = await withDbRetry(() => buildDrainImpact(k8s, db, name), { attempts: 12 });
+      const left = [...new Set(after.longhornReplicas
+        .filter((r) => r.isLastReplica && r.postgresInstance !== null).map(labelOf))];
+      if (!after.storageFactsComplete || left.length > 0) {
+        const why = left.length > 0
+          ? `database instance ${left.join(', ')} still keeps its only copy here`
+          : 'its storage could not be re-read after its database instances moved';
+        throw new ApiError(
+          'NODE_DELETE_HOLDS_DATABASE',
+          `Node '${name}' is cordoned, but ${why}. Nothing was deleted — press Delete again.`,
+          409,
+          { instances: left },
+        );
+      }
+    }
+
     // System pods leave HERE, not at drain: the drain only moved tenants, so
-    // the platform could keep using this server until it is removed. Cordon,
-    // then evict (respecting disruption budgets — a refusal stops the delete
-    // with the node cordoned, nothing removed), then wait for them to go.
+    // the platform could keep using this server until it is removed. Evict
+    // (respecting disruption budgets — a refusal stops the delete with the
+    // node cordoned, nothing removed), then wait for them to go.
     systemPodsEvicted = await moveSystemPodsOff(
       k8s, name, opts.systemPodsGoneWaitMs ?? 90_000,
       opts.self !== undefined ? opts.self : apiPodIdentity(),
@@ -2034,7 +2095,9 @@ export async function deleteNode(
   //    reconciler already did (it marks `removed_at` when it sees the node go
   //    missing from the API first). The DELETE's RETURNING is the claim, so the
   //    two paths can never both announce one removal (nodes/lifecycle.ts).
-  const deletedRows = await db.delete(clusterNodes)
+  //    Retried across a short database outage: moving the primary off this
+  //    node switched it over moments ago, and the node is already gone.
+  const deletedRows = await withDbRetry(() => db.delete(clusterNodes)
     .where(eq(clusterNodes.name, name))
     .returning({
       name: clusterNodes.name,
@@ -2043,7 +2106,7 @@ export async function deleteNode(
       publicIpv6: clusterNodes.publicIpv6,
       lastSeenAt: clusterNodes.lastSeenAt,
       removedAt: clusterNodes.removedAt,
-    });
+    }));
   const unannounced = deletedRows.filter((r) => r.removedAt === null);
   if (unannounced.length > 0) {
     const { announceDepartures } = await import('./lifecycle-announce.js');
@@ -2102,5 +2165,5 @@ export async function deleteNode(
     console.info(`[nodes] cleaned residue after deleting ${name}: ${residue.join('; ')}`);
   }
 
-  return { deletedFromKubernetes, deletedFromInventory: true, systemPodsEvicted };
+  return { deletedFromKubernetes, deletedFromInventory: true, systemPodsEvicted, movedDatabaseInstances };
 }

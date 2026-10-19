@@ -327,6 +327,11 @@ export const deleteNodeResponseSchema = z.object({
   deletedFromInventory: z.boolean(),
   /** System pods moved off the node (cordoned, then evicted) before it was removed. */
   systemPodsEvicted: z.number().int().nonnegative().default(0),
+  /**
+   * Database instances whose only copy was on the node, re-created on other
+   * servers first (`namespace/instance`; a primary was switched over first).
+   */
+  movedDatabaseInstances: z.array(z.string()).default([]),
 });
 export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
 

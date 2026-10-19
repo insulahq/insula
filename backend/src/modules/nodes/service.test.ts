@@ -593,8 +593,12 @@ describe('Postgres instances on a drained / deleted node', () => {
     const patchNode = vi.fn().mockResolvedValue({});
     const evict = vi.fn().mockResolvedValue({});
     const deleteK8sNode = vi.fn().mockResolvedValue({});
+    const deletePvc = vi.fn().mockResolvedValue({});
+    const switchover = vi.fn(async (req: { body: { status: { targetPrimary: string } } }) => {
+      for (const i of instances) i.primary = i.name === req.body.status.targetPrimary;
+    });
     const cordoned = new Set(opts.cordoned ?? []);
-    const cnpgPods = instances.map((i) => ({
+    const cnpgPods = () => instances.map((i) => ({
       metadata: {
         namespace: 'platform',
         name: i.name,
@@ -616,9 +620,28 @@ describe('Postgres instances on a drained / deleted node', () => {
         listPodForAllNamespaces: vi.fn(async (a: { labelSelector?: string }) => {
           if (a.labelSelector === 'cnpg.io/cluster') {
             if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
-            return { items: cnpgPods };
+            return { items: cnpgPods() };
           }
           return { items: [] };
+        }),
+        // Moving an instance off (deleteNode): CNPG re-creates it on s3, its
+        // one replica with it.
+        listNamespacedPersistentVolumeClaim: vi.fn(async () => ({
+          items: instances.map((i) => ({
+            metadata: { name: i.name, uid: `${i.name}@${i.node}`, labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/instanceName': i.name } },
+            spec: { volumeName: pvcVol(i.name) },
+          })),
+        })),
+        listNamespacedPod: vi.fn(async () => ({ items: cnpgPods() })),
+        deleteNamespacedPersistentVolumeClaim: deletePvc,
+        deleteNamespacedPod: vi.fn(async ({ name }: { name: string }) => {
+          const i = instances.find((x) => x.name === name);
+          if (i) { i.node = 's3'; i.replicaOn = 's3'; }
+        }),
+        readNamespacedPod: vi.fn(async ({ name }: { name: string }) => {
+          const p = cnpgPods().find((x) => x.metadata.name === name);
+          if (!p) throw Object.assign(new Error('not found'), { code: 404 });
+          return p;
         }),
         listPersistentVolumeClaimForAllNamespaces: vi.fn(async () => {
           if (opts.cnpgListFails) throw new Error('etcdserver: request timed out');
@@ -641,6 +664,21 @@ describe('Postgres instances on a drained / deleted node', () => {
         listStatefulSetForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
       },
       custom: {
+        getNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
+          const current = instances.find((i) => i.primary)?.name;
+          const ready = instances.filter((i) => i.ready !== false).length;
+          return req.plural === 'clusters'
+            ? {
+              metadata: { resourceVersion: '1' },
+              spec: { instances: instances.length },
+              status: {
+                currentPrimary: current, targetPrimary: current, readyInstances: ready,
+                phase: ready === instances.length ? 'Cluster in healthy state' : 'Waiting for the instances to become active',
+              },
+            }
+            : {};
+        }),
+        patchNamespacedCustomObjectStatus: switchover,
         listNamespacedCustomObject: vi.fn(async (req: { plural: string }) => {
           if (req.plural === 'replicas') {
             return {
@@ -663,7 +701,7 @@ describe('Postgres instances on a drained / deleted node', () => {
         }),
       },
     } as unknown as K8sClients;
-    return { k8s, patchNode, evict, deleteK8sNode };
+    return { k8s, patchNode, evict, deleteK8sNode, deletePvc, switchover };
   }
 
   // listNodes() chains .orderBy(); buildDrainImpact awaits .from() directly;
@@ -678,6 +716,7 @@ describe('Postgres instances on a drained / deleted node', () => {
         if (streaming === 'fail') throw new Error('permission denied for view pg_stat_replication');
         return { rows: streaming.map((application_name) => ({ application_name })) };
       }),
+      delete: () => ({ where: () => ({ returning: async () => [] }) }),
     } as unknown as Database;
   }
 
@@ -925,14 +964,60 @@ describe('Postgres instances on a drained / deleted node', () => {
     expect(live).toEqual(['system-db-2']);
   });
 
-  it('deleteNode: refuses while the node holds an instance\'s only copy — covered or not', async () => {
-    const { k8s, deleteK8sNode } = makeHaK8s(haCluster, { targetCordoned: true, cordoned: ['s2'] });
-    await expect(deleteNode(makeDrainDb(), k8s, 's2')).rejects.toMatchObject({
+  // Production: Delete was disabled while the node held the only copy of a
+  // database instance, and moving it was a manual kubectl procedure. Delete
+  // now moves a covered instance itself; only one nothing else holds refuses.
+  // A clock that only moves when the move sleeps.
+  const fast = () => {
+    let t = 0;
+    return {
+      databaseMove: { pollMs: 1_000, now: () => t, sleep: async (ms: number) => { t += ms; } },
+      systemPodsGoneWaitMs: 0,
+      self: null,
+    };
+  };
+
+  it('deleteNode refuses — before changing anything — an instance nothing else holds: nothing to re-create it from', async () => {
+    const { k8s, deleteK8sNode, patchNode, deletePvc } = makeHaK8s([
+      { name: 'system-db-1', node: 's1', primary: true, ready: false },
+      { name: 'system-db-2', node: 's2' },
+    ], { targetCordoned: true });
+    await expect(deleteNode(makeDrainDb(), k8s, 's2', fast())).rejects.toMatchObject({
       code: 'NODE_DELETE_HOLDS_DATABASE',
       status: 409,
       details: { instances: ['platform/system-db-2'] },
+      message: expect.stringContaining('nothing to re-create it from elsewhere'),
     });
+    expect(patchNode).not.toHaveBeenCalled();
+    expect(deletePvc).not.toHaveBeenCalled();
     expect(deleteK8sNode).not.toHaveBeenCalled();
+  });
+
+  it('deleteNode moves a covered replica itself: cordon, its storage re-created on another server, then the node goes', async () => {
+    const instances = haCluster.map((i) => ({ ...i }));
+    const { k8s, deleteK8sNode, patchNode, deletePvc, switchover } = makeHaK8s(instances, { targetCordoned: true });
+    const result = await deleteNode(makeDrainDb(), k8s, 's2', fast());
+    expect(result).toMatchObject({ deletedFromKubernetes: true, movedDatabaseInstances: ['platform/system-db-2'] });
+    expect(JSON.stringify(patchNode.mock.calls[0]?.[0])).toContain('"unschedulable":true');
+    expect(deletePvc).toHaveBeenCalledWith({ name: 'system-db-2', namespace: 'platform' });
+    expect(switchover).not.toHaveBeenCalled();
+    // Cordoned before the instance was touched; the node deleted after it moved.
+    expect(patchNode.mock.invocationCallOrder[0]).toBeLessThan(deletePvc.mock.invocationCallOrder[0]!);
+    expect(deletePvc.mock.invocationCallOrder[0]).toBeLessThan(deleteK8sNode.mock.invocationCallOrder[0]!);
+  });
+
+  it('deleteNode switches a covered primary over to the standby it streams to, then moves it', async () => {
+    const instances = haCluster.map((i) => ({ ...i }));
+    const { k8s, deleteK8sNode, deletePvc, switchover } = makeHaK8s(instances, { targetCordoned: true });
+    const result = await deleteNode(makeDrainDb(['system-db-2', 'system-db-3']), k8s, 's1', fast());
+    expect(switchover).toHaveBeenCalledTimes(1);
+    expect(switchover.mock.calls[0]?.[0]).toMatchObject({
+      plural: 'clusters', name: 'system-db', namespace: 'platform', body: { status: { targetPrimary: 'system-db-2' } },
+    });
+    expect(switchover.mock.invocationCallOrder[0]).toBeLessThan(deletePvc.mock.invocationCallOrder[0]!);
+    expect(deletePvc).toHaveBeenCalledWith({ name: 'system-db-1', namespace: 'platform' });
+    expect(result.movedDatabaseInstances).toEqual(['platform/system-db-1']);
+    expect(deleteK8sNode).toHaveBeenCalled();
   });
 
   it('deleteNode: refuses — first, before any other check or change — a server registered under two names', async () => {

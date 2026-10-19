@@ -351,6 +351,13 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # Deleting a node moves the database instances whose only copy is on it
+  # (nodes/postgres-move.ts). A primary is switched over first, the way
+  # `kubectl cnpg promote` asks for it: status.targetPrimary on the status
+  # subresource, which `clusters` alone does not cover.
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters/status"]
+    verbs: ["patch"]
   # Phase 4b: System Backup WAL archive enable/disable creates/patches/
   # deletes ScheduledBackup CRs alongside the Cluster's spec.backup.
   - apiGroups: ["postgresql.cnpg.io"]

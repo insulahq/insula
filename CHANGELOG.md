@@ -29,6 +29,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   database instance's only copy on the node). The server refused it, but the button should not have
   been offered: it now opens the dialog at its Delete step, with every check shown.
 
+### Changed
+
+- **Delete moves a node's database instances itself.** In HA every PostgreSQL instance keeps its
+  only copy on its own server, so Delete stayed disabled on a server running one ("Delete is
+  disabled while this node holds the only copy of database instance …") until the instance was
+  moved by hand with `kubectl`. Delete now does it: it cordons the node, waits until every instance
+  of the database is ready, switches a primary over to a standby it is streaming to, deletes the
+  instance's volume claims and pod so PostgreSQL's operator re-creates it on another server from
+  the primary, and waits until the database is whole again before removing the node. Only an instance no other instance holds the data of — a single-instance
+  database — still keeps Delete disabled (`NODE_DELETE_HOLDS_DATABASE`). A step that does not
+  finish in time stops the delete with the node cordoned and in the cluster
+  (`NODE_DELETE_DATABASE_MOVE_STALLED`); pressing Delete again continues.
+
 ## [2026.10.12] - 2026-10-18
 
 ### Changed

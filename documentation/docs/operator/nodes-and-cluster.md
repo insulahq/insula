@@ -224,7 +224,9 @@ node card click **Drain Tenants**. A modal computes the impact:
   standby on another server — if its node goes down, PostgreSQL fails over to
   that standby and writes pause briefly. A server that is itself cordoned
   never counts as cover. An instance nothing covers is marked as such; the
-  drain still leaves it alone, and **Delete** refuses until it has moved.
+  drain still leaves it alone. **Delete** moves a covered instance to another
+  server itself, and refuses one nothing covers (see
+  [Removing a node](#removing-a-node)).
 
 Click **Drain tenants**. When no tenant pod is left on the node it is tagged
 **Tenants drained** and **Delete** unlocks.
@@ -431,11 +433,11 @@ kubelet not reporting* instead.
 ## Removing a node
 
 1. **Drain Tenants** (above) and wait for the tenants to reschedule.
-2. If the node still holds a **database instance** (HA mode), move it first —
-   see below. If **mail** runs on it, move mail first
-   (**Email → Operations → Placement**). Delete refuses until then
-   (`NODE_DELETE_HOLDS_DATABASE`, `NODE_DELETE_RUNS_MAIL`), with nothing
-   changed.
+2. If **mail** runs on the node, move mail first
+   (**Email → Operations → Placement**) — Delete refuses until then
+   (`NODE_DELETE_RUNS_MAIL`), with nothing changed. A **database instance**
+   whose only copy is on the node (HA mode) is moved by Delete itself — see
+   below.
 3. If volumes keep their **only copy** on the node — platform volumes, or
    leftovers nothing uses — the Delete step lists them, marked *leftover, not
    in use* or *not mounted*: deleting the node deletes them. **Delete Node**
@@ -443,8 +445,9 @@ kubelet not reporting* instead.
    (`NODE_DELETE_HOLDS_LAST_COPY` through the API unless the body says
    `forceLastReplica: true`). To keep one, move it first; to be rid of a
    leftover sooner, delete it on **Cluster → Storage → Orphaned volumes**.
-4. Click **Delete** on the card → **Confirm Delete**. Delete now moves the
-   system pods: it **cordons** the node, evicts every platform pod still on it
+4. Click **Delete** on the card → **Confirm Delete**. Delete **cordons** the
+   node, moves its database instances (below), then moves the system pods: it
+   evicts every platform pod still on it
    (DaemonSet pods excepted — they go with the node), respecting disruption
    budgets, waits up to 90 seconds for them to leave, then runs
    `kubectl delete node` and removes the inventory row. An eviction a
@@ -461,30 +464,47 @@ kubelet not reporting* instead.
 
 In HA mode each PostgreSQL instance keeps its only copy on its own server, so
 deleting that server would take the instance with it: PostgreSQL would be left
-with an instance it cannot start anywhere else (the API refuses the delete with
-`NODE_DELETE_HOLDS_DATABASE`). Drain the server's tenants first, then cordon
-it on its edit form so the instance cannot be rebuilt on it again, then, from a
-[node terminal](#the-node-terminal) on another server:
+with an instance it cannot start anywhere else. **Delete** therefore moves it
+first. The Delete step says which instances it will move; after
+**Confirm Delete** it:
 
-```bash
-kubectl -n platform get pods -l cnpg.io/cluster=system-db -L cnpg.io/instanceRole -o wide
-# If the instance on the server you are removing is the primary, delete its pod
-# first: PostgreSQL fails over to a streaming standby (writes pause briefly).
-# Wait until that instance shows as a replica, then:
-kubectl -n platform delete pvc/<instance> pod/<instance>
-```
+1. cordons the node, so neither the new instance nor its volume can land on it;
+2. waits until the database is **whole** — every instance ready, PostgreSQL's
+   operator reporting it healthy. Re-creating an instance costs the database
+   that copy until the new one is ready; with another instance already down
+   that would leave the primary alone with the data, so Delete does not start;
+3. if the instance is the **primary**, switches PostgreSQL over to a standby it
+   is streaming to on another server (writes pause briefly — the panels may
+   answer slowly for a moment);
+4. once the instance is a replica and the primary holds its data on another
+   server, deletes the instance's volume claims whose copy is on this node, and
+   its pod — PostgreSQL's operator re-creates the instance on another server
+   with a fresh copy taken from the primary;
+5. waits until the database is whole again (about a minute on a small
+   database) before it moves the next one, then goes on with the delete.
 
-The operator replaces the instance on another server with a fresh copy taken
-from the primary (about a minute on a small database). When
-`kubectl -n platform get cluster system-db` shows every instance ready again,
-reopen the modal — **Delete** is available.
+Delete only moves an instance that another instance holds the data of. One
+nothing covers — a single-instance database, or a primary that is not
+streaming to a standby right now — has nothing to be re-created from: the
+Delete step says so, **Delete Node** stays disabled, and the API refuses with
+`NODE_DELETE_HOLDS_DATABASE`, nothing changed. Turn on high availability first
+(so another server holds a copy), or wait until the standby streams again.
+
+If a step does not finish in time — a whole database and the switchover within
+3 minutes, the re-creation within 15 — Delete stops with
+`NODE_DELETE_DATABASE_MOVE_STALLED`, saying which step: the node stays cordoned
+and in the cluster, nothing else is removed. Press **Delete** again to
+continue: an instance already re-created elsewhere is not moved twice, and the
+next one waits until a re-creation still running has finished.
+`kubectl -n platform get cluster system-db` shows the progress.
 
 The instance's old volume is kept, *Released*, because the platform's storage
-classes retain released volumes. Two days after its release — the instance has
-a newer copy by then — the platform deletes it, with its Longhorn volume. Until
-then the Delete step lists it as a *leftover, not in use* under its old claim
-name — it no longer belongs to the instance, and the drain never asks about it.
-To delete it sooner, use **Cluster → Storage → Orphaned volumes**.
+classes retain released volumes. Its only copy is on the node and goes with it;
+two days after its release the platform deletes the volume. If the delete
+stopped before the node was removed, the Delete step lists that volume as a
+*leftover, not in use* under its old claim name — it no longer belongs to the
+instance: tick **Delete them with the node**, or delete it sooner on
+**Cluster → Storage → Orphaned volumes**.
 
 Deleting a node also tidies up after it: its storage-system record is removed,
 and if it was named as a mail primary/secondary/tertiary, that reference is

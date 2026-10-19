@@ -78,7 +78,8 @@ a field the endpoint does not accept.
 | `NODE_TENANT_TAINT_UNSAFE` | 409 | Keeping tenants off a server would also keep Longhorn's node components (its DaemonSets, or the instance managers its `taint-toleration` setting governs) off it — the 2026.10.12 upgrade adds the toleration; nothing was changed |
 | `NODE_DELETE_PRECHECK_FAILED` | 503 | Reading Longhorn or the database instances failed, so the delete could not confirm the node holds no data — nothing was deleted |
 | `NODE_DELETE_HOLDS_TENANT_DATA` | 409 | The node holds the only copy of a tenant volume — re-pin the tenant and let its data move first ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
-| `NODE_DELETE_HOLDS_DATABASE` | 409 | The node holds the only copy of a PostgreSQL instance — move the instance first ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
+| `NODE_DELETE_HOLDS_DATABASE` | 409 | The node holds the only copy of a PostgreSQL instance that no other instance holds the data of (a single-instance database, or a primary not streaming to a standby on another server), so Delete has nothing to re-create it from — nothing was changed ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
+| `NODE_DELETE_DATABASE_MOVE_STALLED` | 409 | Delete was moving a database instance off the node and a step did not finish in time (the switchover, or the instance's re-creation on another server) — the node is cordoned and still in the cluster; press **Delete** again to continue ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `DRAIN_PRECHECK_FAILED` | 503 | Drain pre-checks could not complete |
 | `DRAIN_LAST_REPLICA` / `DRAIN_PIN_CONFLICT` | — | Deleting the node would delete volumes whose only copy is on it / conflicts with a pinned workload |
 

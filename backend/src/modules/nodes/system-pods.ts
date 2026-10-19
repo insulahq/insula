@@ -132,6 +132,14 @@ export function podsToMoveOff(pods: readonly PodLite[]): Array<{ namespace: stri
     .filter((p) => p.namespace !== '' && p.name !== '');
 }
 
+/** Cordon: no new pod lands on the node — nor, in Longhorn, a new replica. Idempotent. */
+export async function cordonNode(k8s: K8sClients, node: string): Promise<void> {
+  await k8s.core.patchNode({
+    name: node,
+    body: { spec: { unschedulable: true } },
+  } as unknown as Parameters<typeof k8s.core.patchNode>[0], STRATEGIC_MERGE_PATCH);
+}
+
 /**
  * Cordon the node, evict what has to leave (disruption budgets respected),
  * then wait up to `waitMs` for it to be gone. Throws 409 — node left
@@ -150,10 +158,7 @@ export async function moveSystemPodsOff(
   self: { readonly namespace: string; readonly name: string } | null,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<number> {
-  await k8s.core.patchNode({
-    name: node,
-    body: { spec: { unschedulable: true } },
-  } as unknown as Parameters<typeof k8s.core.patchNode>[0], STRATEGIC_MERGE_PATCH);
+  await cordonNode(k8s, node);
 
   const isSelf = (p: { namespace: string; name: string }) =>
     self !== null && p.namespace === self.namespace && p.name === self.name;
@@ -185,8 +190,7 @@ export async function moveSystemPodsOff(
     throw new ApiError(
       'NODE_DELETE_EVICTION_BLOCKED',
       `Node '${node}' is cordoned, but ${refused.length} system pod(s) could not be moved off: ${refused.slice(0, 5).join(', ')}` +
-      `${refused.length > 5 ? ', …' : ''}. Nothing was deleted — resolve it (a database primary, for instance, needs a ` +
-      `switchover first) and press Delete again.`,
+      `${refused.length > 5 ? ', …' : ''}. Nothing was deleted — resolve it and press Delete again.`,
       409,
       { node_name: node, pods: refused.slice(0, 20) },
     );

@@ -3,6 +3,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { updateClusterNodeSchema, drainNodeRequestSchema, deleteNodeRequestSchema, patchNodeDiskSchema} from '@insula/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { withDbRetry } from '../../shared/db-retry.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listNodes, listNodesEnriched, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
@@ -317,9 +318,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/admin/nodes/:name/delete
-  // Remove the node from Kubernetes and inventory. Pre-checks: must be
-  // cordoned and have zero non-system pods. The host itself is NOT
-  // shut down or modified — operator handles that out-of-band.
+  // Remove the node from Kubernetes and inventory. Pre-checks: its tenants
+  // were drained and nothing that must survive keeps its only copy there
+  // (deleteNode). Moves its database instances and system pods off first —
+  // minutes, not seconds, when a database instance has to be re-created
+  // elsewhere. The host itself is NOT shut down or modified — operator
+  // handles that out-of-band.
   app.post('/admin/nodes/:name/delete', {
     schema: {
       tags: ['Nodes'],
@@ -343,7 +347,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     const result = await deleteNode(app.db, k8s, name, { forceLastReplica: body.data.forceLastReplica });
     try {
       const { auditLogs } = await import('../../db/schema.js');
-      await app.db.insert(auditLogs).values({
+      // Retried: moving a database primary off the node switched it over.
+      await withDbRetry(() => app.db.insert(auditLogs).values({
         id: crypto.randomUUID(),
         actorId: request.user?.sub ?? 'system',
         actorType: 'user',
@@ -351,7 +356,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         resourceType: 'cluster_node',
         resourceId: name,
         changes: result as unknown as Record<string, unknown>,
-      });
+      }), { attempts: 12 });
     } catch (err) {
       console.warn('[nodes] delete audit insert failed:', (err as Error).message);
     }
