@@ -160,7 +160,14 @@ export async function measureTarget(
   if (target.storageType === 's3') {
     capacityNote = 'S3 storage does not report free space';
   } else {
-    const res = await run(['about', '--json', at(root, '')], env, ABOUT_TIMEOUT_MS);
+    // The backup folder may not exist yet on a fresh target, and `about` on a
+    // missing path fails ("statfs …: file does not exist"). The space belongs
+    // to the share (SMB) or the server (SFTP), so ask there instead.
+    let res = await run(['about', '--json', at(root, '')], env, ABOUT_TIMEOUT_MS);
+    const fallback = target.storageType === 'cifs' ? (target.cifsShare ?? '') : '';
+    if (res.code !== 0 && isMissingDir(res.stderr) && fallback !== root) {
+      res = await run(['about', '--json', at(fallback, '')], env, ABOUT_TIMEOUT_MS);
+    }
     if (res.code === 0) {
       try {
         const parsed = JSON.parse(res.stdout) as { total?: number; used?: number; free?: number };

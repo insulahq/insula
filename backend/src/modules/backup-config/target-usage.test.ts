@@ -89,6 +89,21 @@ describe('measureTarget', () => {
     expect(calls.some((c) => c[0] === 'about')).toBe(false);
   });
 
+  it('a backup folder that does not exist yet asks the share for its space', async () => {
+    // Measured against Samba: `about` on a missing path fails with
+    // "statfs …: file does not exist"; on the share it answers.
+    const { run, calls } = fakeRclone({
+      'size usage:backup/insula/system': { code: 3, stderr: 'ERROR : error listing: directory not found' },
+      'size usage:backup/insula/tenant': { code: 3, stderr: 'ERROR : error listing: directory not found' },
+      'size usage:backup/insula/mail': { code: 3, stderr: 'ERROR : error listing: directory not found' },
+      'about usage:backup/insula': { code: 1, stderr: 'NOTICE: Failed to about: about call failed: statfs insula: file does not exist' },
+      'about usage:backup': { code: 0, stdout: '{"total": 2000, "used": 700, "free": 1300}' },
+    });
+    const u = await measureTarget(CIFS, run);
+    expect(u.capacity).toEqual({ totalBytes: 2000, usedBytes: 700, freeBytes: 1300 });
+    expect(calls.filter((c) => c[0] === 'about').map((c) => c[c.length - 1])).toEqual(['usage:backup/insula', 'usage:backup']);
+  });
+
   it('a server that cannot report space says so instead of failing the measurement', async () => {
     const { run } = fakeRclone({
       'size usage:backup/insula/system': { code: 0, stdout: '{"count":1,"bytes":1}' },
