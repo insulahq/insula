@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Private workers need "Allow Custom Containers".** A private worker runs a tenant's own
+  software behind the platform's ingress, as a custom container does, yet any tenant could create
+  one. Creating one now takes the same gate: the plan's **Allow Custom Containers** (or the
+  tenant's override), and custom containers enabled platform-wide — otherwise 403
+  `CUSTOM_CONTAINERS_NOT_IN_PLAN` / `CUSTOM_DEPLOYMENTS_DISABLED`. Existing workers keep running
+  and can still be rotated, revoked and deleted. The tenant panel lists **Private Workers** only
+  while the gate is open or the tenant still has workers, and says why it cannot create one; the
+  plan and tenant settings say the switch covers private workers too.
+
 ## [2026.10.13] - 2026-10-19
 
 ### Fixed

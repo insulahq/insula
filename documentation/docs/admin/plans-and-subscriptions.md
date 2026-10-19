@@ -38,6 +38,7 @@ Each plan has these fields:
 | **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
 | **Max Mailboxes** | How many mailboxes the tenant may create. **0** disables email for every tenant on the plan — see below. |
 | **Bandwidth (GB/month)** | Monthly served-traffic allowance (default 100 GB). See [the monthly bandwidth cap](#the-monthly-bandwidth-cap) below. |
+| **Allow Custom Containers** | Lets the tenant run its own container images and create **private workers** (a service it runs outside the platform, reached through its domains). Off by default; a tenant's **Resource Limits** card can override it. Turning it off stops new ones only — existing custom containers and private workers keep running, and the tenant can still manage them. |
 | **Description** | Optional free text. |
 
 !!! warning "Setting Max Mailboxes to 0 switches email off for the whole plan"

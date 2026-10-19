@@ -2119,6 +2119,8 @@ function ResourceLimitsCard({
     setValue: (v: boolean) => void,
     isOverridden: boolean,
     planDefault: boolean,
+    // What the switch covers, under the value — it can cover more than its label says.
+    hint?: string,
   ) => (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -2154,6 +2156,7 @@ function ResourceLimitsCard({
           )}
         </div>
       )}
+      {hint && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{hint}</p>}
     </div>
   );
 
@@ -2250,7 +2253,7 @@ function ResourceLimitsCard({
           {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, plan?.monthlyPriceUsd, 'number', '0.01')}
           {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, plan?.emailHourlySendLimit, 'number', '1')}
           {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, plan?.emailDailySendLimit, 'number', '1')}
-          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false)}
+          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false, 'Bring-your-own container images and private workers.')}
         </div>
 
         {/* Saving writes the CPU tier and ceiling; this delivers them to the

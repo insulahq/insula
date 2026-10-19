@@ -21,6 +21,8 @@ import {
   type PrivateWorkerAuditRow,
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { getSettings } from '../system-settings/service.js';
+import { isCustomContainersAllowedByPlan } from '../subscriptions/service.js';
 import type { Database } from '../../db/index.js';
 import type {
   CreatePrivateWorkerInput,
@@ -117,6 +119,33 @@ async function generateUniqueSlug(db: Database, name: string): Promise<string> {
 
 function generateSecret(): string {
   return crypto.randomBytes(SECRET_BYTES).toString('base64url');
+}
+
+/**
+ * A private worker runs the tenant's own software and puts it behind the
+ * platform's ingress — what a custom container does, from outside the
+ * cluster. So it rides on the same gate (ADR-036): the platform-wide
+ * `customDeploymentsEnabled` switch, then the subscription's "Allow Custom
+ * Containers" (per-tenant override ?? plan). Only a NEW worker is refused;
+ * existing ones keep running and stay manageable (rotate, revoke, delete),
+ * as existing custom deployments do.
+ */
+async function assertPrivateWorkersAllowed(db: Database, tenantId: string): Promise<void> {
+  const settings = await getSettings(db);
+  if (!settings.customDeploymentsEnabled) {
+    throw new ApiError(
+      'CUSTOM_DEPLOYMENTS_DISABLED',
+      'Private workers come with custom containers, which are administratively disabled on this platform.',
+      403,
+    );
+  }
+  if (!(await isCustomContainersAllowedByPlan(db, tenantId))) {
+    throw new ApiError(
+      'CUSTOM_CONTAINERS_NOT_IN_PLAN',
+      'Private workers are not enabled for this tenant\'s subscription. An administrator can enable "Allow Custom Containers" on the plan or as a per-tenant override.',
+      403,
+    );
+  }
 }
 
 function hashSecret(secret: string): string {
@@ -382,6 +411,8 @@ export async function createPrivateWorker(
   createdBy: string | null,
   requesterIp?: string | null,
 ): Promise<PrivateWorkerSecretResponse> {
+  await assertPrivateWorkersAllowed(db, tenantId);
+
   // Reject duplicates on (tenant_id, name) — surfaced as a clean 409
   // rather than a unique-constraint violation from drizzle.
   const [byName] = await db

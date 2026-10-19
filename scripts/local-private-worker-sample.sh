@@ -179,6 +179,9 @@ phase1_provision() {
   echo "$ns" > "$STATE_NS"
   ok "slug=$slug namespace=$ns"
 
+  # Private workers come with "Allow Custom Containers".
+  pw_gate_then_allow "$cid" || return 1
+
   local pw_resp wid pw_token
   pw_resp=$(api POST "/tenants/$cid/private-workers" "$(jq -nc \
     '{name:"local-sample-1", description:"local DinD sample"}')")
