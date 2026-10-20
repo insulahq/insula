@@ -1,30 +1,24 @@
 #!/usr/bin/env bash
-# integration-cpu-quota-preservation.sh — a tiered namespace must KEEP its
-# CPU ceiling, and get it back if it ever lost one. (ADR-062)
+# integration-cpu-quota-preservation.sh — a tiered namespace keeps its CPU
+# model through every writer of its quota. (ADR-062)
 #
-# `applyResourceQuota` writes the legacy quota shape — requests.cpu from the
-# plan, no limits.cpu — and five separate paths call it: provisioning, the
-# boot sweep, a plan edit, a tenant limit edit and namespace-integrity
-# repair. Against a migrated namespace each of those silently removed the
-# burst ceiling the migration had installed. It happened on production: a
-# plan edit took the ceiling off the nine tenants migrated before it, and
-# the next API restart would have taken all thirty.
+# `applyResourceQuota` is called by provisioning, the boot sweep, a plan edit,
+# a tenant limit edit and namespace-integrity repair. Against a tiered
+# namespace each of those once rewrote the quota in the old shape. The
+# invariants on a tiered namespace today:
 #
-# No unit test reaches this. The bug lives in the interaction between a
-# database-driven writer and a live Kubernetes object that something ELSE
-# owns half of, so the only honest check is against a real cluster:
+#   - the burst CEILING lives in the namespace's LimitRange (`default.cpu`),
+#     never on the quota — `limits.cpu` on a quota is a container-count cap
+#     wearing the clothes of a CPU limit (ci-no-tenant-cpu-ceiling-quota.sh);
+#   - the quota's `requests.cpu` is the sum of the workloads' tier values,
+#     not a figure from the plan.
 #
-#   1. MIGRATE   a fixture tenant and confirm the ceiling is really there.
+#   1. MIGRATE    — the fixture ends tiered, with a LimitRange ceiling.
 #   2. TENANT EDIT — PATCH a tenant limit (memory: CPU cores are retired).
-#                   Ceiling must survive.
+#                   Ceiling and requests.cpu must survive.
 #   3. PLAN EDIT  — PATCH the plan (the fan-out that caused the outage).
-#                   Ceiling must survive on every tenant on that plan.
-#   4. RESTORE    — strip the ceiling by hand, restart the API, and watch
-#                   the boot sweep put it back. This is the repair path for
-#                   namespaces already damaged before the fix shipped.
-#
-# (There is no REVERT case: revert to the old CPU model is gone with CPU
-# cores — every tenant is on shares.)
+#                   Both must survive on every tenant on that plan.
+#   4. NO QUOTA CEILING — after all of it, the quota carries no limits.cpu.
 #
 # Creates its own fixture tenant and deletes it on exit.
 set -uo pipefail
@@ -64,7 +58,8 @@ trap cleanup EXIT
 
 kc(){ timeout 90 $K "kubectl $*" 2>/dev/null; }
 psql(){ timeout 90 $K "kubectl -n platform exec system-db-1 -c postgres -- psql -U postgres -d platform -At -c \"$1\"" 2>/dev/null; }
-ceiling_of(){ kc "-n $1 get resourcequota $1-quota -o jsonpath='{.spec.hard.limits\.cpu}'"; }
+ceiling_of(){ kc "-n $1 get limitrange $1-cpu -o jsonpath='{.spec.limits[0].default.cpu}'"; }
+quota_ceiling_of(){ kc "-n $1 get resourcequota $1-quota -o jsonpath='{.spec.hard.limits\.cpu}'"; }
 request_of(){ kc "-n $1 get resourcequota $1-quota -o jsonpath='{.spec.hard.requests\.cpu}'"; }
 
 T=$(curl -sk -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json' \
@@ -159,8 +154,8 @@ STATUS=$(python3 -c "import json;print(json.load(open('$J/out'))['data']['status
 [ "$CODE" = "200" ] && [ "$STATUS" = "completed" ] \
   && ok "migration completed" || bad "migration did not complete" "http=$CODE status=$STATUS $(head -c 200 "$J/out")"
 CEIL0=$(ceiling_of "$NS"); REQ0=$(request_of "$NS")
-note "after migration: limits.cpu=${CEIL0:-<none>} requests.cpu=${REQ0:-<none>}"
-[ -n "$CEIL0" ] && ok "the namespace has a burst ceiling" || bad "no limits.cpu after migration — everything below is vacuous" ""
+note "after migration: LimitRange ceiling=${CEIL0:-<none>} quota requests.cpu=${REQ0:-<none>}"
+[ -n "$CEIL0" ] && ok "the namespace has a burst ceiling in its LimitRange" || bad "no LimitRange ceiling after migration — everything below is vacuous" ""
 MODE=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TF';")
 [ "$MODE" = "tiered" ] && ok "tenant is tiered in the database" || bad "tenant is not tiered" "mode=$MODE"
 
@@ -213,41 +208,10 @@ else
     && ok "the plan is unchanged ($NOW)" || bad "the harness altered the plan" "was=$PLAN_CPU now=$NOW"
 fi
 
-# ══ 4. restore a ceiling that was already lost ══════════════════════════════
-echo "════ 4. strip the ceiling by hand, then let the boot sweep repair it"
-if [ -z "$CEIL0" ]; then
-  bad "skipped: no ceiling to strip" ""
-else
-  # `null` in a merge patch DELETES the key — the same end state the ten
-  # damaged production namespaces are in.
-  kc "-n $NS patch resourcequota $NS-quota --type=merge -p '{\"spec\":{\"hard\":{\"limits.cpu\":null}}}'" >/dev/null
-  C=$(ceiling_of "$NS")
-  [ -z "$C" ] && ok "ceiling stripped, reproducing the damaged state" || bad "could not strip the ceiling" "still=$C"
-  if [ -z "$C" ]; then
-    # Delete the pod and let the ReplicaSet recreate it. NOT `rollout
-    # restart` — Flux treats the restart annotation as drift and scales the
-    # new ReplicaSet back to zero.
-    POD=$(kc "-n platform get pod -l app=platform-api -o jsonpath='{.items[0].metadata.name}'")
-    kc "-n platform delete pod $POD --wait=false" >/dev/null
-    note "deleted $POD; waiting for the API to come back"
-    UP=0
-    for _ in $(seq 1 40); do
-      curl -sk -o /dev/null -m 10 "$API/api/v1/health" && { UP=1; break; }
-      sleep 6
-    done
-    [ "$UP" = "1" ] && ok "platform-api is serving again" || bad "the API did not come back" ""
-    # The sweep is fire-and-forget on onReady and walks every tenant.
-    BACK=""
-    for _ in $(seq 1 30); do
-      BACK=$(ceiling_of "$NS"); [ -n "$BACK" ] && break
-      sleep 6
-    done
-    [ -n "$BACK" ] && ok "the boot sweep restored the ceiling ($BACK)" \
-      || bad "the ceiling was NOT restored — damaged namespaces stay damaged" ""
-    [ "$BACK" = "$CEIL0" ] && ok "restored to the resolved value ($BACK)" \
-      || note "restored to $BACK, migration had written $CEIL0"
-  fi
-fi
+# ══ 4. the quota never carries a CPU ceiling ════════════════════════════════
+echo "════ 4. after every writer, the quota carries no limits.cpu"
+QC=$(quota_ceiling_of "$NS")
+[ -z "$QC" ] && ok "no limits.cpu on the quota" || bad "a writer put a CPU ceiling on the quota" "limits.cpu=$QC"
 
 printf '\n════════════════════════════════════\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

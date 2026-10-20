@@ -2290,7 +2290,10 @@ tenant on the old model still needs it while it waits its turn:
 
 **To do, in a later release:** refuse to start the removal migration while
 any tenant is `cpu_scheduling_mode = 'legacy'` (an install that skipped the
-migrator's release must run it first), then delete the code above, drop the
+migrator's release must run it first; the migrator also waits, pass after
+pass, for a tenant whose application is mid-rollout, so an application stuck
+in `deploying`/`pending` keeps its tenant legacy until the operator settles
+it), then delete the code above, drop the
 two columns (expand/contract as R43: the old pods select them by name), drop
 `cpu_scheduling_mode` once it can only be `tiered`, drop
 `deployments.cpu_request_pre_migration` (a baseline nothing restores now that

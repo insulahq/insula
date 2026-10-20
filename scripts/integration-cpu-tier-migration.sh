@@ -42,6 +42,14 @@ ok "authenticated"
 echo "════ 0. reset to a known-clean legacy baseline, then record it"
 hold_cpu_auto_migrate
 make_legacy "$TID" "$NS"
+# make_legacy redeploys each application with its legacy-sized request. The
+# migration re-tiers RUNNING applications only, so wait them out — measuring
+# mid-rollout migrates nothing and reads as a missing baseline.
+for _ in $(seq 1 40); do
+  NR=$(psql "SELECT count(*) FROM deployments WHERE tenant_id='$TID' AND status IN ('deploying','pending','upgrading');")
+  [ "${NR:-1}" = "0" ] && break
+  sleep 6
+done
 for _ in $(seq 1 30); do
   M=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TID';")
   B=$(psql "SELECT count(*) FROM deployments WHERE tenant_id='$TID' AND cpu_request_pre_migration IS NOT NULL;")
@@ -111,7 +119,9 @@ LR=$(kc "-n $NS get limitrange $NS-cpu -o jsonpath='{.spec.limits[0].defaultRequ
 [ -n "$LR" ] && ok "LimitRange exists: $LR" || bad "no LimitRange in $NS"
 QH=$(kc "-n $NS get resourcequota $NS-quota -o jsonpath='{.spec.hard.requests\.cpu}|{.spec.hard.limits\.cpu}'")
 echo "     quota requests.cpu|limits.cpu = $QH"
-echo "$QH" | grep -q '|' && [ -n "${QH#*|}" ] && ok "quota carries a limits.cpu ceiling" || bad "quota has no limits.cpu" "$QH"
+# The ceiling is the LimitRange's; a quota limits.cpu is a container-count
+# cap and must never be there (ci-no-tenant-cpu-ceiling-quota.sh).
+[ -z "${QH#*|}" ] && ok "the quota carries no CPU ceiling" || bad "the quota carries limits.cpu" "$QH"
 
 echo "════ 4. every tenant-default pod now declares a CPU limit"
 MISSING=$(kc "-n $NS get pods -o json" | python3 -c '

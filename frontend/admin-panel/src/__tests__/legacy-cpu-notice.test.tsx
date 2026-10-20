@@ -65,11 +65,11 @@ describe('LegacyCpuNotice', () => {
       reclaimableMillis: 5000,
       tenants: [
         tenant({ tenantId: 'done', schedulingMode: 'tiered', reclaimableMillis: 4900 }),
-        tenant({ tenantId: 'todo', schedulingMode: 'legacy', reclaimableMillis: 100 }),
+        tenant({ tenantId: 'todo', schedulingMode: 'legacy', reclaimableMillis: 400 }),
       ],
     }));
     show();
-    expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent('0.10');
+    expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent('0.40');
     expect(screen.getByTestId('legacy-cpu-notice')).not.toHaveTextContent('5.00');
   });
 
@@ -79,6 +79,8 @@ describe('LegacyCpuNotice', () => {
     ok(preview({ reclaimableMillis: 30, tenants: [tenant({ reclaimableMillis: 30 })] }));
     show();
     expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent('being moved to CPU shares');
+    // …without claiming a saving of "0.03" — too small to name.
+    expect(screen.getByTestId('legacy-cpu-notice')).not.toHaveTextContent('hands back');
   });
 
   it('renders without a usage reading rather than printing 0%', () => {

@@ -27,9 +27,9 @@
  * workloads are scaled to zero, which the health gate counts as healthy.
  */
 import type { Logger } from 'pino';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { platformSettings, tenants } from '../../db/schema.js';
+import { deployments, platformSettings, tenants } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 
@@ -54,6 +54,8 @@ export interface Attempt {
 export interface AutoMigrateDeps {
   readonly listLegacy: () => Promise<readonly LegacyTenant[]>;
   readonly namespaceExists: (namespace: string) => Promise<boolean>;
+  /** An application of this tenant is mid-rollout (deploying, upgrading, pending). */
+  readonly rollingOut: (tenantId: string) => Promise<boolean>;
   /** Flip a tenant with no namespace to tiered — nothing in the cluster to move. */
   readonly markTiered: (tenantId: string) => Promise<void>;
   /** Run the migration to its end (runner.ts), acknowledging any review flags. */
@@ -106,6 +108,15 @@ export async function autoMigrateLegacyTenants(
         await deps.markTiered(t.id);
         markedWithoutNamespace += 1;
         deps.log.info({ tenantId: t.id, tenant: t.name }, 'cpu auto-migrate: no namespace — marked tiered');
+        continue;
+      }
+
+      // The migration re-tiers RUNNING applications only. One mid-rollout
+      // would be passed over and keep its old reservation, with the tenant
+      // marked tiered and nobody to press Re-apply. Its turn comes next pass.
+      if (await deps.rollingOut(t.id)) {
+        waiting += 1;
+        deps.log.info({ tenantId: t.id, tenant: t.name }, 'cpu auto-migrate: an application is mid-rollout — next pass');
         continue;
       }
 
@@ -165,6 +176,14 @@ export function createAutoMigrateDeps(
         // there would leave its pods sized for the old model.
         throw err;
       }
+    },
+    rollingOut: async (tenantId) => {
+      const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(deployments)
+        .where(and(
+          eq(deployments.tenantId, tenantId),
+          inArray(deployments.status, ['deploying', 'upgrading', 'pending']),
+        ));
+      return (row?.n ?? 0) > 0;
     },
     markTiered: async (tenantId) => {
       await db.update(tenants)

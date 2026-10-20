@@ -12,6 +12,8 @@ import { Gauge } from 'lucide-react';
 import { useCpuMigrationPreview } from '@/hooks/use-cpu-migration';
 
 const cores = (millis: number) => (millis / 1000).toFixed(2);
+/** Below a quarter core, the saving is too small to be worth a sentence. */
+const NAMEABLE_SAVING_MILLIS = 250;
 
 export default function LegacyCpuNotice() {
   const { data } = useCpuMigrationPreview();
@@ -57,9 +59,14 @@ export default function LegacyCpuNotice() {
               </>
             ) : null}
             The platform moves them one at a time, with the same checks as a manual
-            migration, and retries a failure a day later. Moving them hands back about{' '}
-            <span className="font-mono">{cores(reclaimable)}</span> cores — the same
-            applications, the same burst headroom, without the reservation.
+            migration, and retries a failure a day later.
+            {reclaimable >= NAMEABLE_SAVING_MILLIS && (
+              <>
+                {' '}Moving them hands back about{' '}
+                <span className="font-mono">{cores(reclaimable)}</span> cores — the same
+                applications, the same burst headroom, without the reservation.
+              </>
+            )}
           </p>
           <Link
             to="/cluster/cpu-scheduling"

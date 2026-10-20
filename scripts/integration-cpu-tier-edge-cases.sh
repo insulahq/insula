@@ -46,7 +46,14 @@ bad(){ FAIL=$((FAIL+1)); printf '  FAIL  %s\n     -> %s\n' "$1" "${2:-}"; }
 note(){ printf '        %s\n' "$1"; }
 J=$(mktemp -d); TENANTS=()
 cleanup() {
-  for t in "${TENANTS[@]:-}"; do
+  # By NAME as well as by the recorded id: make_tenant runs in a $(…)
+  # subshell, so the id it appends to TENANTS never reaches this shell, and
+  # the cleanup deleted nothing — every run left its fixture behind. The
+  # name carries this shell's PID ($$ is the parent's, even in a subshell).
+  local by_name
+  by_name=$(curl -sk "$API/api/v1/tenants?limit=100" -H "Authorization: Bearer $T" \
+    | python3 -c 'import sys,json;print(" ".join(t["id"] for t in json.load(sys.stdin).get("data",[]) if t["name"].startswith("cpufix-") and t["name"].endswith("-'"$$"'")))' 2>/dev/null)
+  for t in "${TENANTS[@]:-}" $by_name; do
     [ -n "$t" ] || continue
     curl -sk -X DELETE "$API/api/v1/tenants/$t" -H "Authorization: Bearer $T" >/dev/null 2>&1
   done
@@ -136,10 +143,15 @@ deploy_app() {  # $1 tenant  $2 name  $3 cpu_request
   # the first run of this harness reported three green checks for tests that
   # never ran.
   local entry resp id
+  # The nginx static entry when there is one: a small image every registry
+  # mirror carries. The first entry in catalog order was a service (MinIO)
+  # whose image a lab mirror did not have, and the fixture sat in
+  # ImagePullBackOff with every case skipped.
   entry=$(curl "${A[@]}" "$API/api/v1/catalog?limit=100" | python3 -c '
 import sys,json
 d=json.load(sys.stdin).get("data",[])
-print(d[0]["id"] if d else "")' 2>/dev/null)
+pick=[e for e in d if (e.get("code") or e.get("name"))=="nginx"] or [e for e in d if e.get("type")=="static"] or d
+print(pick[0]["id"] if pick else "")' 2>/dev/null)
   if [ -z "$entry" ]; then bad "fixture: no catalog entry available" ""; return 1; fi
   resp=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$1/deployments" \
     -d "{\"catalog_entry_id\":\"$entry\",\"name\":\"$2\",\"cpu_request\":\"$3\",\"memory_request\":\"128Mi\"}")

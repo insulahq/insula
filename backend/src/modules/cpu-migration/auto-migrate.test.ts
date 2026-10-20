@@ -15,6 +15,7 @@ function deps(over: Partial<AutoMigrateDeps> & { tenants?: LegacyTenant[]; attem
   const d: AutoMigrateDeps = {
     listLegacy: async () => over.tenants ?? [t('a'), t('b')],
     namespaceExists: async () => true,
+    rollingOut: async () => false,
     markTiered: vi.fn(async () => undefined),
     migrate: vi.fn(async (id: string) => { order.push(id); return { outcome: 'completed' as const, reason: null }; }),
     lastAttempt: async (id) => attempts.get(id) ?? null,
@@ -96,6 +97,14 @@ describe('autoMigrateLegacyTenants', () => {
     expect(order).toEqual(['b']);
     expect(r).toMatchObject({ migrated: 1, failed: 1 });
     expect(attempts.get('broken')).toMatchObject({ outcome: 'failed', reason: 'forbidden' });
+  });
+
+  it('waits for a tenant whose application is mid-rollout — it would be passed over', async () => {
+    const { d, order } = deps({ tenants: [t('busy'), t('b')], rollingOut: async (id) => id === 'busy' });
+    const r = await autoMigrateLegacyTenants(d, { budgetMs: 60_000, maxTenants: 10 });
+    expect(order).toEqual(['b']);
+    expect(r).toMatchObject({ waiting: 1, migrated: 1, failed: 0 });
+    expect(d.recordAttempt).toHaveBeenCalledTimes(1); // only b — busy is not a failure
   });
 
   it('moves at most maxTenants a pass', async () => {
