@@ -237,7 +237,7 @@ print(v if v not in (None,'') else 0)
   fi
   info "bumping tenant memory override → ${need_gi}Gi (compose needs ~320Mi > 256Mi default plan)"
   local st
-  st=$(api_status PATCH "/tenants/$TENANT_ID" "{\"memory_limit_override\":$need_gi,\"cpu_limit_override\":1}")
+  st=$(api_status PATCH "/tenants/$TENANT_ID" "{\"memory_limit_override\":$need_gi}")
   if [[ "$st" =~ ^20 ]]; then
     info "override PATCH → $st; waiting ~15s for the quota-reconciler to push the ResourceQuota"
     sleep 15

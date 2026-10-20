@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { tenants, domains, hostingPlans, dnsServers } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { ceilingCores } from '../cpu-migration/tiers.js';
 
 interface ExportData {
   readonly version: '1.0';
@@ -108,6 +109,10 @@ export async function importData(
           name: plan.name,
           description: plan.description ?? null,
           cpuLimit: plan.cpuLimit ?? '1.00',
+          // The export's own ceiling and tier when it has them; an export from
+          // before plans stated a ceiling gets the one its cores derived.
+          cpuTier: plan.cpuTier ?? null,
+          cpuBurstCores: String(plan.cpuBurstCores ?? ceilingCores(Number(plan.cpuLimit ?? '1.00'))),
           memoryLimit: plan.memoryLimit ?? '1.00',
           storageLimit: plan.storageLimit ?? '10.00',
           monthlyPriceUsd: plan.monthlyPriceUsd ?? '0.00',

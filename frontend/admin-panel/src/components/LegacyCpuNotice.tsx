@@ -1,18 +1,11 @@
 /**
- * A standing notice for a cluster still on the old CPU model (ADR-062 R3).
+ * A standing notice while any tenant is still on the old CPU model (ADR-062).
  *
- * ★ Why a standing notice rather than a one-off release note.
- *
- * The migration is opt-in per tenant and always will be for an existing
- * cluster — nothing moves a tenant without an operator deciding to. The
- * failure mode that leaves is a change that is never applied: an operator
- * reads a release note once, is busy that week, and the cluster keeps
- * reserving CPU nobody uses for another year. So the notice carries the
- * operator's OWN figures, from their own cluster, and a way through to the
- * page that acts on them.
- *
- * It disappears on its own when the last tenant is migrated. Nothing to
- * dismiss, because a dismissal would hide a real and continuing cost.
+ * CPU cores are retired, and the platform moves every such tenant to CPU
+ * shares by itself, one at a time (backend cpu-migration/auto-migrate.ts),
+ * retrying a failure a day later. The notice says that is happening and
+ * links to where it can be followed — or hurried, one tenant at a time. It
+ * disappears on its own when the last tenant is moved.
  */
 import { Link } from 'react-router-dom';
 import { Gauge } from 'lucide-react';
@@ -26,16 +19,12 @@ export default function LegacyCpuNotice() {
   if (!p) return null;
 
   const legacy = p.tenants.filter((t) => t.schedulingMode === 'legacy');
-  // Nothing to say on a fully-migrated cluster, and nothing to say on one
-  // where the saving would be trivial — a notice that appears for 30m of
-  // reclaimable CPU is a notice people learn to skip.
-  if (legacy.length === 0 || p.reclaimableMillis < 250) return null;
+  if (legacy.length === 0) return null;
 
-  // Only what the LEGACY tenants would hand back: quoting the cluster-wide
+  // Only what the LEGACY tenants will hand back: quoting the cluster-wide
   // figure would promise a saving the already-migrated tenants have
   // delivered.
   const reclaimable = legacy.reduce((sum, t) => sum + t.reclaimableMillis, 0);
-  if (reclaimable < 250) return null;
 
   const reservedPct = p.allocatableMillis > 0
     ? Math.round((p.reservedMillis / p.allocatableMillis) * 100)
@@ -57,8 +46,8 @@ export default function LegacyCpuNotice() {
             {/* The VERB agrees too: "1 tenant still reserve" shipped to a
                 real console before anyone read it aloud. */}
             {legacy.length === 1
-              ? '1 tenant still reserves CPU it does not use'
-              : `${legacy.length} tenants still reserve CPU they do not use`}
+              ? '1 tenant is still on the old CPU model — it is being moved to CPU shares'
+              : `${legacy.length} tenants are still on the old CPU model — they are being moved to CPU shares`}
           </div>
           <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
             {reservedPct !== null && usedPct !== null ? (
@@ -67,16 +56,17 @@ export default function LegacyCpuNotice() {
                 reserved and <span className="font-mono">{usedPct}%</span> of it in use.{' '}
               </>
             ) : null}
-            Moving {legacy.length === 1 ? 'that tenant' : 'those tenants'} to the share model
-            hands back about <span className="font-mono">{cores(reclaimable)}</span> cores —
-            the same applications, the same burst headroom, without the reservation.
+            The platform moves them one at a time, with the same checks as a manual
+            migration, and retries a failure a day later. Moving them hands back about{' '}
+            <span className="font-mono">{cores(reclaimable)}</span> cores — the same
+            applications, the same burst headroom, without the reservation.
           </p>
           <Link
             to="/cluster/cpu-scheduling"
             className="mt-2 inline-block text-xs font-medium text-amber-900 underline dark:text-amber-200"
             data-testid="legacy-cpu-notice-link"
           >
-            Review it tenant by tenant →
+            Follow it tenant by tenant →
           </Link>
         </div>
       </div>

@@ -113,6 +113,8 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/backup-schedules/dr-artefact-retention.ts', job: 'dr-artefact-retention' },
   // Lists every backup target; once per cluster is the whole point of the cadence.
   { file: 'modules/backup-config/target-usage.ts', job: 'backup-target-usage' },
+  // Migrates tenants' pods; two replicas would race the same namespace.
+  { file: 'modules/cpu-migration/auto-migrate.ts', job: 'cpu-auto-migrate' },
 ];
 
 /**

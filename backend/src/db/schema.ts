@@ -304,15 +304,18 @@ export const hostingPlans = pgTable('hosting_plans', {
   code: varchar('code', { length: 50 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
-  // LEGACY (ADR-062): despite the name this feeds requests.cpu — a
-  // reservation, not a cap. Read only by legacy mode; NOT reinterpreted as a
-  // ceiling, because that would silently convert "reserve 1 core, burst
-  // freely" into "burst to 1 core" on clusters we cannot inspect.
+  // RETIRED (ADR-062): no longer a plan parameter — not offered, not
+  // accepted by the API. It is the reservation of a tenant still on the old
+  // model, read only until cpu-migration/auto-migrate.ts has moved every such
+  // tenant to shares; the column goes with the legacy model in a later
+  // release. New plans store `cpu_burst_cores / 2` (the inverse of the old
+  // derivation), so a tenant not yet moved is sized consistently.
   cpuLimit: numeric('cpu_limit', { precision: 5, scale: 2 }).notNull(),
-  // ADR-062 tiered mode. null = plan does not express it; falls through to
-  // derivation. Never means unlimited.
+  // ADR-062. null tier = the default share (`high`).
   cpuTier: cpuTierEnum('cpu_tier'),
-  cpuBurstCores: numeric('cpu_burst_cores', { precision: 6, scale: 2 }),
+  // The most one application may burst to. Always stated (migration 0159
+  // wrote down the ceiling every plan without one had derived).
+  cpuBurstCores: numeric('cpu_burst_cores', { precision: 6, scale: 2 }).notNull().default('1'),
   memoryLimit: numeric('memory_limit', { precision: 5, scale: 2 }).notNull(),
   storageLimit: numeric('storage_limit', { precision: 10, scale: 2 }).notNull(),
   // Plan-level MONTHLY data-transfer cap (GB). Metered from Traefik router
@@ -395,6 +398,8 @@ export const tenants = pgTable('tenants', {
   // happens via frps `allowPorts` rendered from active workers' ports.
   privateWorkerSharedSecret: varchar('private_worker_shared_secret', { length: 64 }),
   planId: varchar('plan_id', { length: 36 }).notNull(),
+  // RETIRED with the plan's `cpu_limit` (see hostingPlans): read only for a
+  // tenant still on the old model, not accepted by the API.
   cpuLimitOverride: numeric('cpu_limit_override', { precision: 5, scale: 2 }),
   // ADR-062. Same override shape as every other plan property.
   cpuTierOverride: cpuTierEnum('cpu_tier_override'),

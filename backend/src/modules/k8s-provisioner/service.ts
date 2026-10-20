@@ -402,12 +402,12 @@ export interface ResourceQuotaOptions {
 }
 
 /**
- * Make a brand-new namespace tiered, when that is this cluster's default.
+ * Make a brand-new (or re-provisioned) namespace tiered.
  *
  * Returns the model to hand `applyResourceQuota` plus the database write
  * that marks the tenant tiered — SEPARATELY, because that write must not
- * land until the quota does. Null for a legacy cluster, where every line of
- * this is skipped and provisioning is exactly what it was.
+ * land until the quota does. Null when the namespace cannot be built tiered;
+ * the tenant then stays on the old model until auto-migrate.ts moves it.
  *
  * The LimitRange is what makes the namespace tiered: it stamps the tier on
  * a container that asks for no CPU and the burst ceiling on one that
@@ -1225,15 +1225,12 @@ export async function runProvisionNamespace(
 
     // Step 2: Create ResourceQuota
     //
-    // ★ On a cluster whose default is TIERED (ADR-062 R3 — a fresh install),
-    // the namespace is born tiered: the CPU LimitRange goes in FIRST, so the
-    // quota's ceiling has something to satisfy it, and the tenant row is
-    // marked before its first workload is ever sized. Building it legacy and
-    // migrating later would mean recreating every pod of a tenant that had
-    // no reason to be legacy for a single minute.
-    //
-    // An upgraded cluster records `legacy` at first boot, so this whole
-    // branch is inert there and provisioning is byte-for-byte what it was.
+    // ★ The namespace is born tiered (ADR-062 — every new tenant, on every
+    // cluster): the CPU LimitRange goes in FIRST, so the quota's ceiling has
+    // something to satisfy it, and the tenant row is marked before its first
+    // workload is ever sized. Building it legacy and migrating later would
+    // mean recreating every pod of a tenant that had no reason to be legacy
+    // for a single minute. Re-provisioning (a restore) takes the same path.
     if (!(await guardTenantExists())) return;
     await updateProgress('Create ResourceQuota', 'running');
     const bornTiered = await prepareTieredNamespace(db, k8s, tenantId, namespace);

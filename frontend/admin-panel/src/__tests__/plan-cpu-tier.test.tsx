@@ -60,12 +60,12 @@ describe('PlansPage — CPU tier and burst ceiling (ADR-062)', () => {
   });
 
   /**
-   * ★ A plan that has never expressed a tier must not silently acquire one
-   * the moment someone opens the form and saves an unrelated field. The
-   * control's first option is "derive automatically", and it has to travel as
-   * null — not as the first real tier, and not as a 0 ceiling.
+   * ★ The tier left on its default travels as null — the default share — not
+   * as the first real tier. The ceiling is required (there are no cores to
+   * derive one from), and a new plan starts at one core. No cores field is
+   * offered or sent.
    */
-  it('sends null, not a tier or a zero, when left on "derive automatically"', async () => {
+  it('sends a null tier for the default share, a ceiling, and no cores', async () => {
     mockApiFetch.mockResolvedValue({ data: [plan()] });
     render(<PlansPage />, { wrapper: createWrapper() });
     fireEvent.click(await screen.findByTestId('add-plan-button'));
@@ -75,7 +75,21 @@ describe('PlansPage — CPU tier and burst ceiling (ADR-062)', () => {
     fireEvent.submit(screen.getByTestId('add-plan-form'));
 
     await waitFor(() => expect(lastWrite()).not.toBeNull());
-    expect(lastWrite()).toMatchObject({ cpu_tier: null, cpu_burst_cores: null });
+    expect(lastWrite()).toMatchObject({ cpu_tier: null, cpu_burst_cores: 1 });
+    expect(lastWrite()).not.toHaveProperty('cpu_limit');
+    expect(screen.queryByText(/CPU Limit \(cores\)/)).toBeNull();
+  });
+
+  it('refuses an empty ceiling rather than sending none', async () => {
+    mockApiFetch.mockResolvedValue({ data: [plan()] });
+    render(<PlansPage />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('add-plan-button'));
+    fireEvent.change(screen.getByTestId('plan-code-input'), { target: { value: 'x' } });
+    fireEvent.change(screen.getByTestId('plan-name-input'), { target: { value: 'X' } });
+    fireEvent.change(screen.getByTestId('plan-cpu-burst'), { target: { value: '0' } });
+    fireEvent.submit(screen.getByTestId('add-plan-form'));
+    expect(await screen.findByText(/must be a number of cores/i)).toBeInTheDocument();
+    expect(lastWrite()).toBeNull();
   });
 
   it('sends the tier and ceiling an admin actually chose', async () => {
@@ -105,10 +119,10 @@ describe('PlansPage — CPU tier and burst ceiling (ADR-062)', () => {
 
   /**
    * ★ Number('2 cores') is NaN, and JSON.stringify serialises NaN as null —
-   * so a typo travelled as "inherit" and the admin watched their value
+   * so a typo would travel as nothing and the admin would watch their value
    * disappear with no error at all. It must be refused, not guessed at.
    */
-  it('refuses a non-numeric burst ceiling instead of sending "inherit"', async () => {
+  it('refuses a non-numeric burst ceiling', async () => {
     mockApiFetch.mockResolvedValue({ data: [plan()] });
     render(<PlansPage />, { wrapper: createWrapper() });
     fireEvent.click(await screen.findByTestId('add-plan-button'));

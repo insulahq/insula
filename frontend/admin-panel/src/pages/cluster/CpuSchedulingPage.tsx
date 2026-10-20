@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import type { CpuMigrationBlocker, CpuMigrationTenant, CpuTier } from '@insula/api-contracts';
 import { useCpuMigrationPreview } from '@/hooks/use-cpu-migration';
 import {
-  useApplyCpuMigration, useRevertCpuMigration, useStopCpuMigration,
+  useApplyCpuMigration, useStopCpuMigration,
 } from '@/hooks/use-cpu-migration-actions';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -211,13 +211,12 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
  */
 function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
   const apply = useApplyCpuMigration();
-  const revert = useRevertCpuMigration();
   const stop = useStopCpuMigration();
   const [acknowledged, setAcknowledged] = useState(false);
   // Server-side truth, so the controls are right after a reload or for a
   // second admin — not just in the tab that pressed the button.
   const running = tenant.migrationRunning || apply.isPending;
-  const busy = running || revert.isPending || stop.isPending;
+  const busy = running || stop.isPending;
   const tiered = tenant.schedulingMode === 'tiered';
   const pending = tenant.pendingCpuChange;
   const needsReview = !tenant.migratesCleanly;
@@ -226,22 +225,15 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
   // stopped or failed partway — reading only isError would show a green tick
   // over a migration that gave up at step 4.
   const run = apply.data?.data;
-  const reverted = revert.data?.data;
   const outcome = run
     ? { bad: run.status !== 'completed', text: run.status === 'completed'
         ? (tiered && (run.freedMillis ?? 0) === 0
           ? 'Applied — the namespace now matches its saved tier and ceiling'
           : `Migrated — freed ${(run.freedMillis ?? 0) / 1000} cores`)
         : `${run.status}: ${run.reason ?? run.step ?? 'see the task list'}` }
-    : reverted
-      ? { bad: reverted.status !== 'completed', text: reverted.status === 'completed'
-          ? `Reverted ${reverted.restored} application(s)`
-            + (reverted.uncapped > 0 ? `, released ${reverted.uncapped} from the ceiling` : '')
-            + (reverted.unrestorable > 0 ? ` — ${reverted.unrestorable} could not be restored` : '')
-          : `revert failed: ${reverted.reason ?? 'unknown'}` }
-      : apply.isError || revert.isError
-        ? { bad: true, text: 'The request failed. Check the task list for detail.' }
-        : null;
+    : apply.isError
+      ? { bad: true, text: 'The request failed. Check the task list for detail.' }
+      : null;
 
   return (
     <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
@@ -274,7 +266,9 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
           ceiling wrote a database column and reached nothing: the LimitRange
           kept the old ceiling, the quota kept the old backstop, and every pod
           kept the limit it was admitted with. The only route was
-          revert-then-migrate, which recreates every pod twice. */}
+          revert-then-migrate, which recreates every pod twice. (There is no
+          revert any more: CPU cores are retired, and every tenant is on
+          shares.) */}
       {tiered && (
         <button
           type="button"
@@ -286,17 +280,6 @@ function TenantMigrationActions({ tenant }: { tenant: CpuMigrationTenant }) {
             : 'rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700'}
         >
           {running ? 'Applying…' : pending ? 'Apply pending change' : 'Re-apply settings'}
-        </button>
-      )}
-      {tiered && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => revert.mutate(tenant.tenantId)}
-          data-testid={`cpu-revert-${tenant.tenantId}`}
-          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-        >
-          {revert.isPending ? 'Reverting…' : 'Revert to legacy'}
         </button>
       )}
       {running && (
@@ -358,12 +341,10 @@ export default function CpuSchedulingPage() {
       <div className="flex items-center gap-2">
         <Cpu size={20} className="text-gray-600 dark:text-gray-400" />
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">CPU scheduling</h1>
-        {/* This said "dry run — changes nothing" while the page was report-only.
-            It now carries per-tenant Migrate/Revert buttons, so that label
-            would be the page lying about itself — the figures are still a
-            preview, but the page is no longer inert. */}
-        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-          preview — nothing changes until you migrate a tenant
+        {/* Tenants still on the old model are moved by the platform itself
+            (auto-migrate.ts); a manual Migrate only hurries one. */}
+        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300" data-testid="cpu-auto-migrate-badge">
+          tenants on the old model are moved automatically
         </span>
       </div>
 
@@ -371,8 +352,9 @@ export default function CpuSchedulingPage() {
         Kubernetes places work by what pods <strong>reserve</strong>, not by what they use. When the
         two drift apart, the cluster refuses new work while running almost idle — and the refusal
         usually surfaces as something unrelated: a quota message, or a pod evicted to make room for
-        a routine job. This page shows what re-sizing every tenant to a CPU <em>share</em> would
-        free, and which tenants need a decision first.
+        a routine job. Every tenant is sized by a CPU <em>share</em> and a burst ceiling instead
+        of reserved cores. A tenant still on the old model is moved automatically, one at a time;
+        <strong> Migrate this tenant</strong> moves one now instead of waiting its turn.
       </p>
 
       {error && (

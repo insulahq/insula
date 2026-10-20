@@ -2238,6 +2238,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'backup-target usage: scheduler start failed (non-blocking)');
         }
 
+        // CPU cores are no longer a plan parameter (ADR-062): every tenant
+        // still on the old reservation model is moved to CPU shares, one at a
+        // time, with the same gated pipeline an operator's click runs.
+        try {
+          const { startCpuAutoMigrateScheduler } = await import('./modules/cpu-migration/auto-migrate.js');
+          const cpuAutoHandle = startCpuAutoMigrateScheduler(app.db, k8sForImapsync, app.log);
+          app.addHook('onClose', () => cpuAutoHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'cpu auto-migrate: scheduler start failed (non-blocking)');
+        }
+
         // Days + keep-last for the DR artefacts (etcd snapshots, secrets
         // bundles, cluster-state dumps) on the system target. 5-min tick,
         // leased; the schedule route also runs it right after a save.

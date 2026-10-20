@@ -15,13 +15,16 @@
 # owns half of, so the only honest check is against a real cluster:
 #
 #   1. MIGRATE   a fixture tenant and confirm the ceiling is really there.
-#   2. TENANT EDIT — PATCH the tenant's CPU limit. Ceiling must survive.
+#   2. TENANT EDIT — PATCH a tenant limit (memory: CPU cores are retired).
+#                   Ceiling must survive.
 #   3. PLAN EDIT  — PATCH the plan (the fan-out that caused the outage).
 #                   Ceiling must survive on every tenant on that plan.
 #   4. RESTORE    — strip the ceiling by hand, restart the API, and watch
 #                   the boot sweep put it back. This is the repair path for
 #                   namespaces already damaged before the fix shipped.
-#   5. REVERT     — leaves the namespace legacy, with NO stale ceiling.
+#
+# (There is no REVERT case: revert to the old CPU model is gone with CPU
+# cores — every tenant is on shares.)
 #
 # Creates its own fixture tenant and deletes it on exit.
 set -uo pipefail
@@ -81,10 +84,10 @@ def g(p,*k):
         if p.get(x) is not None: return p[x]
     return None
 p=sorted(d, key=lambda p: float(g(p,"storage_limit","storageLimit") or 1e9))[0]
-print(p["id"], g(p,"cpu_limit","cpuLimit"))' 2>/dev/null)"
+print(p["id"], g(p,"memory_limit","memoryLimit"))' 2>/dev/null)"
 REGION_ID=$(curl "${A[@]}" "$API/api/v1/regions?limit=5" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null)
 [ -n "$PLAN_ID" ] && [ -n "$REGION_ID" ] && [ -n "$PLAN_CPU" ] || { echo "FATAL: no plan/region"; exit 1; }
-note "plan $PLAN_ID cpu_limit=$PLAN_CPU"
+note "plan $PLAN_ID memory_limit=$PLAN_CPU"
 
 # ── fixture ─────────────────────────────────────────────────────────────────
 NAME="cpukeep-$$"
@@ -162,16 +165,18 @@ MODE=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TF';")
 [ "$MODE" = "tiered" ] && ok "tenant is tiered in the database" || bad "tenant is not tiered" "mode=$MODE"
 
 # ══ 2. a tenant limit edit ══════════════════════════════════════════════════
-echo "════ 2. PATCH the tenant's CPU limit — the ceiling must survive"
+echo "════ 2. PATCH a tenant limit — the ceiling must survive"
 if [ -z "$CEIL0" ]; then
   bad "skipped: no ceiling to preserve" ""
 else
-  curl "${A[@]}" -o /dev/null -X PATCH "$API/api/v1/tenants/$TF" -d '{"cpu_limit_override":"0.5"}'
+  # Memory: the edit runs the same quota writer, and CPU cores are no longer
+  # a tenant override.
+  curl "${A[@]}" -o /dev/null -X PATCH "$API/api/v1/tenants/$TF" -d "{\"memory_limit_override\":$PLAN_CPU}"
   sleep 8
   C=$(ceiling_of "$NS"); R=$(request_of "$NS")
   [ "$C" = "$CEIL0" ] && ok "ceiling unchanged after a tenant edit ($C)" \
     || bad "a tenant edit changed the ceiling" "before=$CEIL0 after=${C:-<none>}"
-  # requests.cpu is the migration's tiered figure; the plan's 0.5 must not
+  # requests.cpu is the migration's tiered figure; nothing from the plan may
   # land on top of it. Tightening is the dangerous direction — Kubernetes
   # accepts a quota below `used` and then refuses every pod.
   [ "$R" = "$REQ0" ] && ok "requests.cpu still the tiered value ($R)" \
@@ -183,13 +188,13 @@ echo "════ 3. PATCH the plan — the fan-out over every tenant on it"
 if [ -z "$CEIL0" ]; then
   bad "skipped: no ceiling to preserve" ""
 else
-  # Re-send the value the plan ALREADY has. The cascade fires on cpu_limit
-  # being present in the body, not on it differing, so this exercises the
-  # exact path without changing what any tenant is sold.
+  # Re-send the value the plan ALREADY has. The cascade fires on
+  # memory_limit being present in the body, not on it differing, so this
+  # exercises the exact path without changing what any tenant is sold.
   # /admin/plans/:id — NOT /plans/:id, which is the read route and 404s on
   # PATCH. A guessed path here does nothing and the assertion below then
   # passes against a fan-out that never ran.
-  PCODE=$(curl "${A[@]}" -o "$J/plan" -w '%{http_code}' -X PATCH "$API/api/v1/admin/plans/$PLAN_ID" -d "{\"cpu_limit\":\"$PLAN_CPU\"}")
+  PCODE=$(curl "${A[@]}" -o "$J/plan" -w '%{http_code}' -X PATCH "$API/api/v1/admin/plans/$PLAN_ID" -d "{\"memory_limit\":\"$PLAN_CPU\"}")
   [ "$PCODE" = "200" ] && ok "plan PATCH accepted" || bad "plan PATCH failed" "http=$PCODE $(head -c 200 "$J/plan")"
   sleep 10
   C=$(ceiling_of "$NS")
@@ -203,7 +208,7 @@ else
   else
     bad "THE PRODUCTION BUG: a plan edit removed the ceiling" "before=$CEIL0 after=${C:-<none>}"
   fi
-  NOW=$(psql "SELECT cpu_limit FROM hosting_plans WHERE id='$PLAN_ID';")
+  NOW=$(psql "SELECT memory_limit FROM hosting_plans WHERE id='$PLAN_ID';")
   [ "$(python3 -c "print(float('$NOW')==float('$PLAN_CPU'))" 2>/dev/null)" = "True" ] \
     && ok "the plan is unchanged ($NOW)" || bad "the harness altered the plan" "was=$PLAN_CPU now=$NOW"
 fi
@@ -243,19 +248,6 @@ else
       || note "restored to $BACK, migration had written $CEIL0"
   fi
 fi
-
-# ══ 5. revert ═══════════════════════════════════════════════════════════════
-echo "════ 5. revert — a legacy namespace must not keep a tiered ceiling"
-curl "${A[@]}" -o /dev/null -X POST "$API/api/v1/admin/cpu-migration/tenants/$TF/revert"
-RM=""
-for _ in $(seq 1 40); do
-  RM=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TF';")
-  [ "$RM" = "legacy" ] && break
-  sleep 6
-done
-[ "$RM" = "legacy" ] && ok "tenant reverted to legacy" || bad "revert did not finish" "mode=$RM"
-C=$(ceiling_of "$NS")
-[ -z "$C" ] && ok "the ceiling is gone with the tier" || bad "a legacy namespace kept its ceiling" "limits.cpu=$C"
 
 printf '\n════════════════════════════════════\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

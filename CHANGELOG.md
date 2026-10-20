@@ -33,6 +33,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     the count, and enforced from platform-api through the backup shim. A days-only setting
     publishes a count the jobs can never reach, so their own count-prune cannot cap it.
 
+- **CPU cores are no longer a plan or tenant parameter; every tenant is moved to CPU shares.**
+  A plan's CPU is its tier (the share it gets under contention) and its burst ceiling (the most
+  one application may use). The plan form, the API (`cpu_limit` on plans, `cpu_limit_override`
+  on tenants) and the tenant page's Plan & limits no longer offer cores. What changes on upgrade:
+  - **Plans and tenants that set no ceiling** are given the one they were deriving from their
+    cores (`max(1, cores × 2)`), so no tenant's ceiling moves. Every plan now states a ceiling.
+  - **New tenants are created on shares on every cluster.** An upgraded cluster used to keep
+    creating reserved-cores tenants.
+  - **Every tenant still on the old reserved-cores model is migrated automatically**, one at a
+    time, by the same paced migration as Cluster → CPU Scheduling, including tenants the dry
+    run flags, which used to need an operator's acknowledgement. A failed run is retried a day
+    later; each run is a task in the Task Center.
+  - **Revert to legacy is removed**, from the page and the API
+    (`POST /admin/cpu-migration/tenants/:id/revert` is gone). An interrupted migration is
+    finished by running it again.
+  - **API clients:** a plan create now requires `cpu_burst_cores` and ignores `cpu_limit`; a plan
+    update that sends `cpu_limit` is refused as an unknown key (400). A tenant update that sends
+    `cpu_limit_override` has it ignored. Plan and tenant reads still return `cpuLimit` /
+    `cpuLimitOverride` until the columns are dropped.
+  - The internal old-model code and the `cpu_limit` columns go in a later release, once no
+    install has a tenant on that model.
+
 ### Added
 
 - **Storage by target.** Every backup target is measured every 6 hours, or on demand with
