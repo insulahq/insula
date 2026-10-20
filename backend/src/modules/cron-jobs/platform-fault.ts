@@ -8,8 +8,8 @@
  *     PLATFORM_FAULT_RETRY_DELAY_MS; the API server that went away is usually
  *     out of the Service's endpoints by then. Nothing else is retried: a
  *     connection reset during the exec handshake may have started it.
- *   - The tenant is never told: it is not their failure. The run shows in
- *     their panel, saying why.
+ *   - The tenant is never told: it is not their failure. The run is recorded
+ *     as failed, its output saying why.
  *   - The operator is told — once a day for the whole cluster — unless a node
  *     outage explains it. A server node takes its API server down with it, and
  *     that node was announced already. Anything else (a firewall change, a
@@ -164,7 +164,7 @@ async function decide(
       subsystem: 'Scheduled tasks',
       objectLabel: `${job.name} (${tenant?.name ?? job.tenantId})`,
       detail: `did not run: the platform ${fault}. No node outage explains it. `
-        + 'The tenant was not told; the run shows as not run in their panel.',
+        + 'The tenant was not told; their panel shows the run as failed.',
       severityLabel: 'not run',
       recommendedAction: 'Check that platform-api can reach the Kubernetes API: its log, the kubernetes Service endpoints, the cluster '
         + 'firewall. Other scheduled tasks that fail this way today are not announced again.',

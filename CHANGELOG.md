@@ -128,7 +128,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   ETIMEDOUT <cluster-ip>:443" to the tenant's contacts: the platform's connection to the
   Kubernetes API timed out before the command was sent. A run that fails because the platform
   could not reach its cluster API (a connection refused, reset or timed out) is never reported to
-  the tenant; the run shows as failed, with output saying it was a platform problem. A scheduled
+  the tenant; the run is recorded as failed, its output saying it was a platform problem. A scheduled
   run that failed while connecting — so the command was certainly never sent — is tried once more
   30 seconds later; one whose connection broke during the exec handshake is not, since the command
   may have started. If it still did not run, the operator gets one "Scheduled tasks" platform
