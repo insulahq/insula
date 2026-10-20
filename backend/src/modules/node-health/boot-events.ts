@@ -72,6 +72,12 @@ export interface PrevBootState {
   readonly observedAt: Date | null;
   /** Whether a `shutting-down` notice already went out for the CURRENT boot. */
   readonly rebootAnnounced: boolean;
+  /**
+   * When a detector saw the node leave Ready for the outage in progress
+   * (`node_health_state.down_since`); null when none did — on a single-node
+   * cluster nothing is running to see it.
+   */
+  readonly downSince: Date | null;
 }
 
 export interface ShuttingDownTransition {
@@ -87,9 +93,11 @@ export interface StartupCompleteTransition {
   /** When the node became Ready on the new boot, if the kubelet reported it. */
   readonly bootedAt: Date | null;
   /**
-   * Approximate outage, from the last tick that saw the node to the moment it
-   * came back Ready. "Approximate" is load-bearing: the lower bound is the tick
-   * interval, so this OVERSTATES by up to one tick and the wording must hedge.
+   * Approximate outage, to the moment the node came back Ready: from the moment
+   * it left Ready when a detector saw that, otherwise from the last tick that
+   * saw it up — which OVERSTATES by up to one tick, so the wording hedges.
+   * Never from the last tick that saw it at all: the reconciler keeps seeing a
+   * node while it is down, and a ~21 minute shutdown read as "~1m 59s".
    */
   readonly downtimeMs: number | null;
   /** False when the shutdown was never announced (the single-node case). */
@@ -97,6 +105,21 @@ export interface StartupCompleteTransition {
 }
 
 export type BootTransition = ShuttingDownTransition | StartupCompleteTransition;
+
+/**
+ * When a node that is not Ready left Ready: its Ready condition's own
+ * transition time, set by the kubelet (a graceful shutdown) or by the node
+ * controller (a node that stopped posting). Never later than `now`, and `now`
+ * when there is no usable time.
+ */
+export function wentDownAt(
+  ready: { readonly lastTransitionTime?: string | Date } | undefined,
+  now: Date,
+): Date {
+  const at = ready?.lastTransitionTime ? new Date(ready.lastTransitionTime) : null;
+  if (!at || Number.isNaN(at.getTime()) || at.getTime() > now.getTime()) return now;
+  return at;
+}
 
 /** Render an approximate duration for an operator: "6m 50s", "1h 04m". */
 export function formatDowntime(ms: number): string {
@@ -143,8 +166,9 @@ export function detectBootTransitions(
       // Prefer the kubelet's own Ready transition as the "back up" moment; fall
       // back to now (we have just observed it Ready, so now is an upper bound).
       const backAt = f.readySince ?? now;
-      const downtimeMs = prev.observedAt
-        ? Math.max(0, backAt.getTime() - prev.observedAt.getTime())
+      const downFrom = prev.downSince ?? prev.observedAt;
+      const downtimeMs = downFrom
+        ? Math.max(0, backAt.getTime() - downFrom.getTime())
         : null;
       out.push({
         kind: 'startup-complete',

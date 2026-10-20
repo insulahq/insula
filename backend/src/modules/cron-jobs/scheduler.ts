@@ -240,7 +240,12 @@ export async function runAndRecord(
   //
   // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
   // otherwise send 288 notifications before breakfast.
-  if (options.notify !== false && result.status === 'failed' && job.tenantId) {
+  if (result.platformFault) {
+    // The platform could not reach its own cluster, so the command never
+    // started: not the tenant's failure, and they are not told it is. The run
+    // record says what happened; the detail is for the operator.
+    console.warn(`[cron-scheduler] job ${job.id} did not run — the platform ${result.platformFault}; not reported as a failure`);
+  } else if (options.notify !== false && result.status === 'failed' && job.tenantId) {
     // Only worth waiting for when the check can run (the real cluster can; a
     // test transport without podDisruption cannot).
     const canCheck = !deps.transport || typeof deps.transport.podDisruption === 'function';

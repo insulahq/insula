@@ -85,19 +85,30 @@ describe('nodeDownDedupeKey', () => {
 });
 
 describe('describeAnnouncements', () => {
+  const NOW = new Date('2026-10-01T12:00:30Z');
+  const WENT_DOWN = '2026-10-01T12:00:02Z';
   const withReady = (name: string, ready: { status: string; message?: string }, bootID = 'boot-1') => ({
     metadata: { name },
-    status: { conditions: [{ type: 'Ready', ...ready }], nodeInfo: { bootID } },
+    status: { conditions: [{ type: 'Ready', lastTransitionTime: WENT_DOWN, ...ready }], nodeInfo: { bootID } },
   });
 
   it('words a graceful shutdown as shutting down, keyed on the boot it went down with', () => {
     const items = [withReady('node-2', { status: 'False', message: 'node is shutting down' }, 'boot-7')];
-    expect(describeAnnouncements(items, ['node-2'])).toEqual([{ nodeName: 'node-2', bootId: 'boot-7', shuttingDown: true }]);
+    expect(describeAnnouncements(items, ['node-2'], NOW))
+      .toEqual([{ nodeName: 'node-2', bootId: 'boot-7', shuttingDown: true, downAt: new Date(WENT_DOWN) }]);
   });
 
   it('words anything else as down — a crash never claims a drain', () => {
     const items = [withReady('node-2', { status: 'Unknown', message: 'Kubelet stopped posting node status.' })];
-    expect(describeAnnouncements(items, ['node-2'])).toEqual([{ nodeName: 'node-2', bootId: 'boot-1', shuttingDown: false }]);
+    expect(describeAnnouncements(items, ['node-2'], NOW))
+      .toEqual([{ nodeName: 'node-2', bootId: 'boot-1', shuttingDown: false, downAt: new Date(WENT_DOWN) }]);
+  });
+
+  // The startup notice counts the downtime from here: the moment the node left
+  // Ready, not the moment this watch noticed.
+  it('takes when it went down from the Ready condition', () => {
+    const items = [withReady('node-2', { status: 'Unknown' })];
+    expect(describeAnnouncements(items, ['node-2'], NOW)[0].downAt).toEqual(new Date(WENT_DOWN));
   });
 
   it('describes only the nodes it was asked about', () => {
@@ -105,7 +116,7 @@ describe('describeAnnouncements', () => {
       withReady('node-1', { status: 'True' }),
       withReady('node-2', { status: 'False', message: 'node is shutting down' }),
     ];
-    expect(describeAnnouncements(items, ['node-2']).map((a) => a.nodeName)).toEqual(['node-2']);
+    expect(describeAnnouncements(items, ['node-2'], NOW).map((a) => a.nodeName)).toEqual(['node-2']);
   });
 });
 

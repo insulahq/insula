@@ -459,6 +459,9 @@ complete" notification on it means that alert cannot cry wolf. The reconciler
 never reports a reboot for a node it is seeing for the first time, and never for
 a node whose previous bootID it does not have on record — a fresh install, a
 restored database or a newly joined worker adopts the current value silently.
+A new bootID is taken on only once the node is `Ready`: a k3s node reports it
+while still waiting for its network, and taking it on then would leave the next
+tick no reboot to announce.
 
 ### The single-node limitation — read this before filing a bug
 
@@ -477,9 +480,18 @@ still answers — about a 1-in-10 chance per reboot. **This is expected.**
 approximate downtime, and states explicitly whether a shutdown notice was sent.
 A multi-node cluster gets both notifications reliably.
 
-Downtime is measured from the last tick that saw the node to the moment it came
-back `Ready`, so it **overstates by up to one tick interval**. The notification
-says "approximate" for that reason — do not treat it as an SLA measurement.
+Downtime runs from the moment the node left `Ready` to the moment it came back.
+The moment it left is the Ready condition's own transition time, recorded in
+`node_health_state.down_since` by whichever detector sees the node down first —
+the 30-second down-watch or the reconciler — and cleared once it is `Ready`
+again, so the figure holds however many ticks the outage spans. A graceful
+shutdown is timed from the kubelet's report when a detector sees it during the
+shutdown (the 30-second watch usually does). Otherwise, and for a crash, it is
+timed from the node controller marking the node down, about 40 s after its last
+heartbeat, so it reads that much short. When no detector saw it go down (the single-node case above:
+nothing is running to see it), it runs from the last tick that saw the node
+up, and **overstates by up to one tick interval**. The notification says
+"approximate" for these reasons — do not treat it as an SLA measurement.
 
 ### Reboot debris is reaped automatically
 

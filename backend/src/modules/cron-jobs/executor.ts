@@ -38,6 +38,12 @@ export interface CronRunResult {
   readonly durationMs: number;
   /** Where a deployment command ran — so a failure can be checked for a platform interruption. */
   readonly ranIn?: RanIn;
+  /**
+   * Set when the run failed because the platform could not reach its own
+   * cluster API, so the tenant's command never started. The detail is for the
+   * operator's log; the tenant-visible output says it without addresses.
+   */
+  readonly platformFault?: string;
 }
 
 export interface RanIn {
@@ -106,6 +112,48 @@ export function podDisruptionReason(pod: DisruptionPod): string | null {
   if (disruption) return `the platform stopped the pod it ran in (${disruption.reason ?? 'disruption'})`;
   if (pod.metadata?.deletionTimestamp) return 'the pod it ran in was being replaced';
   return null;
+}
+
+/**
+ * Socket errors that mean no connection was made or kept — Node's own
+ * (`connect ETIMEDOUT`) and undici's (fetch's connect timeout). Never an
+ * answer from the API server: that was reached, and what it said stands.
+ */
+const CLUSTER_UNREACHABLE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+
+/**
+ * The socket error behind `err` when it says the platform could not reach its
+ * cluster API, or null. Walks the wrappers the libraries put around it: fetch's
+ * "fetch failed" (`cause`) and the exec WebSocket's ErrorEvent (`error`).
+ */
+export function clusterUnreachable(err: unknown): { readonly code: string; readonly message: string } | null {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && typeof cur === 'object' && cur !== null; depth++) {
+    const { code, message, cause, error } = cur as { code?: unknown; message?: unknown; cause?: unknown; error?: unknown };
+    if (typeof code === 'string' && CLUSTER_UNREACHABLE_CODES.has(code)) {
+      return { code, message: typeof message === 'string' && message !== '' ? message : code };
+    }
+    cur = cause ?? error;
+  }
+  return null;
+}
+
+/**
+ * A run that never started because the platform could not reach its cluster —
+ * production, a server being shut down: `connect ETIMEDOUT` to the API, and
+ * the tenant was emailed that THEIR task "did not run".
+ */
+function unreachableRun(found: { readonly code: string; readonly message: string }) {
+  return {
+    status: 'failed' as const,
+    responseCode: null,
+    output: `Not run: the platform could not reach its cluster API (${found.code}). `
+      + 'The command was not started — a platform problem, not a failure of this task.',
+    platformFault: `could not reach the cluster API: ${found.message}`,
+  };
 }
 
 export interface CronExecutorDeps {
@@ -268,9 +316,11 @@ function k8sTransport(kubeconfigPath?: string): ClusterTransport {
             clearTimeout(timer);
             // @kubernetes/client-node surfaces WebSocket ErrorEvents that
             // serialise to `{}`; the text only survives on .message.
+            // The event keeps the socket error, whose code says whether the
+            // API was reached at all (clusterUnreachable).
             const msg = (err as { message?: string })?.message
               ?? (typeof err === 'string' ? err : 'exec failed');
-            reject(err instanceof Error ? err : new Error(msg));
+            reject(err instanceof Error ? err : new Error(msg, { cause: err }));
           });
       });
 
@@ -368,7 +418,7 @@ async function runDeploymentJob(
   db: Database,
   job: CronJobRow,
   deps: CronExecutorDeps,
-): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null; ranIn?: RanIn }> {
+): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null; ranIn?: RanIn; platformFault?: string }> {
   if (!job.command || job.command.trim() === '') {
     return { status: 'failed', responseCode: null, output: 'no command configured for this cron job' };
   }
@@ -396,6 +446,8 @@ async function runDeploymentJob(
   try {
     pods = await transport.listPods(target.namespace, `app=${target.deploymentName}`);
   } catch (err) {
+    const unreachable = clusterUnreachable(err);
+    if (unreachable) return unreachableRun(unreachable);
     return {
       status: 'failed',
       responseCode: null,
@@ -428,6 +480,11 @@ async function runDeploymentJob(
       ranIn,
     };
   } catch (err) {
+    // The exec rejects only before its connection opens (client-node's
+    // WebSocketHandler.connect), so a socket error here means the command
+    // was never sent.
+    const unreachable = clusterUnreachable(err);
+    if (unreachable) return unreachableRun(unreachable);
     return {
       status: 'failed',
       responseCode: null,

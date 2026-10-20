@@ -34,6 +34,7 @@ import {
   detectBootTransitions,
   formatDowntime,
   kubeletReportsShutdown,
+  wentDownAt,
   type BootFacts,
   type PrevBootState,
 } from './boot-events.js';
@@ -168,6 +169,8 @@ export async function reconcileNodeHealth(
 
   const facts: NodeFacts[] = [];
   const bootFacts: BootFacts[] = [];
+  // When each node that is not Ready left Ready (wentDownAt).
+  const downAtByNode = new Map<string, Date>();
   for (const n of nodeList.items ?? []) {
     const name = n.metadata?.name;
     if (!name) continue;
@@ -186,6 +189,7 @@ export async function reconcileNodeHealth(
       readySince: readyAt && !Number.isNaN(readyAt.getTime()) ? readyAt : null,
       shuttingDown: kubeletReportsShutdown(readyCond),
     });
+    if (!ready) downAtByNode.set(name, wentDownAt(readyCond, now));
     facts.push({
       name,
       ready,
@@ -225,6 +229,7 @@ export async function reconcileNodeHealth(
       ready: r.ready,
       observedAt: r.observedAt ?? null,
       rebootAnnounced: r.rebootAnnounced,
+      downSince: r.downSince ?? null,
     }]),
   );
   const bootTransitions = detectBootTransitions(bootFacts, prevBoot, now);
@@ -262,10 +267,18 @@ export async function reconcileNodeHealth(
     // recorded as if it had been — startup-complete would then claim it was.
     const bootFact = bootFactByNode.get(entry.name);
     const transition = transitionByNode.get(entry.name);
-    const nextBootId = bootFact?.bootId ?? prev?.bootId ?? null;
-    const bootRolled = Boolean(
-      bootFact?.bootId && prev?.bootId && bootFact.bootId !== prev.bootId,
-    );
+    // A node back on a new boot reports its bootID before it is Ready (a k3s
+    // node waits for its network). Adopting the new one then left the next
+    // tick no reboot to see, and the startup notice never went out. It is
+    // adopted once the node is Ready — the tick startup-complete fires on.
+    const liveBootId = bootFact?.bootId ?? null;
+    const nextBootId = liveBootId && (entry.ready || !prev?.bootId)
+      ? liveBootId
+      : (prev?.bootId ?? liveBootId);
+    const bootRolled = Boolean(prev?.bootId && nextBootId !== prev.bootId);
+    // The outage's start, for the startup notice's downtime: kept from
+    // whichever detector saw it first, cleared once the node is Ready again.
+    const downAt = downAtByNode.get(entry.name) ?? now;
     const shutdownNoticeNow = transition?.kind === 'shutting-down' && !joining;
     const nextRebootAnnounced = bootRolled
       ? false
@@ -292,6 +305,7 @@ export async function reconcileNodeHealth(
         severity: entry.severity,
         lastNotifiedAt: notifiedAt,
         observedAt: now,
+        downSince: entry.ready ? null : (prev?.downSince ?? downAt),
       })
       .onConflictDoUpdate({
         target: nodeHealthState.nodeName,
@@ -313,6 +327,13 @@ export async function reconcileNodeHealth(
           severity: entry.severity,
           lastNotifiedAt: notifiedAt,
           observedAt: now,
+          // The fast down-watch records the moment too (fast-down-watch.ts
+          // recordWentDown), and one already recorded is kept. A node that
+          // went down after this tick listed it reads Ready here: its moment
+          // is later than the tick, and is not this tick's to clear.
+          downSince: entry.ready
+            ? sql`CASE WHEN ${nodeHealthState.downSince} > ${now.toISOString()}::timestamptz THEN ${nodeHealthState.downSince} END`
+            : sql`COALESCE(${nodeHealthState.downSince}, ${downAt.toISOString()}::timestamptz)`,
         },
       });
 

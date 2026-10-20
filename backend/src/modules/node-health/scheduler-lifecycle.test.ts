@@ -247,6 +247,78 @@ describe('reconcileNodeHealth — a node still settling after it is back', () =>
   });
 });
 
+describe('reconcileNodeHealth — the downtime a startup notice reports', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.NODE_JOIN_ALERT_GRACE_MINUTES;
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  const downtimeText = () => (events.notifyAdminNodeStartupComplete.mock.calls[0][1] as { downtimeText: string }).downtimeText;
+
+  // Production: a server shut down for ~21 minutes came back as "~1m 59s" —
+  // measured from the last tick, which had already seen it down.
+  it('counts from the moment the node went down, however many ticks saw it down', async () => {
+    const { node2, db, rows, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    Object.assign(node2, { status: 'False', message: 'node is shutting down', readySince: at(2) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    // The kubelet is gone; the node controller's flip to Unknown moves the
+    // transition time, but the outage started at the shutdown.
+    Object.assign(node2, { status: 'Unknown', message: 'Kubelet stopped posting node status.', readySince: at(3) });
+    for (const minute of [10, 15, 20]) await reconcileNodeHealth(db, k8s, at(minute));
+
+    Object.assign(node2, { status: 'True', message: 'kubelet is posting ready status', bootId: 'b2', readySince: at(23) });
+    await reconcileNodeHealth(db, k8s, at(25));
+    expect(downtimeText()).toBe('~21m 00s');
+    expect(rows.get('node-2')?.downSince).toBeNull();
+  });
+
+  it('counts from the fast down-watch\'s record when the whole outage fell between two ticks', async () => {
+    const { node2, db, rows, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    // What the 30-second watch writes when it announces the node down.
+    rows.set('node-2', { ...rows.get('node-2')!, downSince: at(1) });
+    Object.assign(node2, { bootId: 'b2', readySince: at(4) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    expect(downtimeText()).toBe('~3m 00s');
+  });
+
+  it('starts the next outage\'s count afresh', async () => {
+    const { node2, db, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    Object.assign(node2, { status: 'Unknown', readySince: at(2) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    Object.assign(node2, { status: 'True', readySince: at(8) }); // back on the same boot
+    await reconcileNodeHealth(db, k8s, at(10));
+
+    Object.assign(node2, { status: 'Unknown', readySince: at(31) });
+    await reconcileNodeHealth(db, k8s, at(35));
+    Object.assign(node2, { status: 'True', bootId: 'b2', readySince: at(38) });
+    await reconcileNodeHealth(db, k8s, at(40));
+    expect(downtimeText()).toBe('~7m 00s');
+  });
+
+  // Back on a new boot, a k3s node is NotReady until its network is up. A tick
+  // landing in that window used to adopt the new bootID, so the next one saw
+  // no reboot and the startup notice — with its downtime — never went out.
+  it('still announces a node that reported its new boot before it was Ready', async () => {
+    const { node2, db, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    Object.assign(node2, { status: 'Unknown', message: 'Kubelet stopped posting node status.', readySince: at(2) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    Object.assign(node2, { status: 'False', message: 'container runtime network not ready', bootId: 'b2', readySince: at(9) });
+    await reconcileNodeHealth(db, k8s, at(10));
+    expect(events.notifyAdminNodeStartupComplete).not.toHaveBeenCalled();
+
+    Object.assign(node2, { status: 'True', message: 'kubelet is posting ready status', readySince: at(11) });
+    await reconcileNodeHealth(db, k8s, at(15));
+    expect(events.notifyAdminNodeStartupComplete).toHaveBeenCalledTimes(1);
+    expect(downtimeText()).toBe('~9m 00s');
+    expect(healthNotices()).toEqual([]);
+  });
+});
+
 describe('startupAnnouncementNote', () => {
   it('gives the single-node explanation only on a single-node cluster', () => {
     expect(startupAnnouncementNote(false, 1)).toContain('single-node cluster');

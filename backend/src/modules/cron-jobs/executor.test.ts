@@ -179,6 +179,58 @@ describe('executeCronJob — deployment jobs', () => {
     });
   });
 
+  // Production, a server being shut down: the platform's exec connection to its
+  // own cluster API timed out, and the tenant was emailed that their task "did
+  // not run: connect ETIMEDOUT <cluster-ip>:443".
+  describe('a run the platform could not start because it could not reach its cluster', () => {
+    // The shapes measured from the libraries: the exec WebSocket rejects with a
+    // ws ErrorEvent carrying the socket error on .error (the transport wraps it
+    // as the cause); a REST call through fetch rejects "fetch failed" with the
+    // socket error as its cause.
+    const wsUnreachable = (code: string) => new Error(`connect ${code} 10.0.0.1:443`, {
+      cause: { message: `connect ${code} 10.0.0.1:443`, error: Object.assign(new Error(`connect ${code} 10.0.0.1:443`), { code, syscall: 'connect' }) },
+    });
+    const fetchUnreachable = (code: string) => new TypeError('fetch failed', {
+      cause: Object.assign(new Error(`connect ${code} 10.0.0.1:443`), { code }),
+    });
+
+    it('is marked as the platform\'s fault when the exec connection could not be made', async () => {
+      const t = transport({ exec: vi.fn().mockRejectedValue(wsUnreachable('ETIMEDOUT')) });
+      const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
+
+      expect(result.status).toBe('failed');
+      expect(result.platformFault).toBe('could not reach the cluster API: connect ETIMEDOUT 10.0.0.1:443');
+      // Tenant-visible: what happened, without the platform's internal address.
+      expect(result.output).toBe(
+        'Not run: the platform could not reach its cluster API (ETIMEDOUT). The command was not started — a platform problem, not a failure of this task.',
+      );
+    });
+
+    it('is marked as the platform\'s fault when its pods could not be listed', async () => {
+      for (const code of ['ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT']) {
+        const t = transport({ listPods: vi.fn().mockRejectedValue(fetchUnreachable(code)) });
+        const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
+        expect(result.platformFault).toMatch(/^could not reach the cluster API: /);
+        expect(result.output).toContain(`(${code})`);
+        expect(t.exec).not.toHaveBeenCalled();
+      }
+    });
+
+    it('is not the platform\'s fault when the API answered and refused', async () => {
+      // The API server was reached: whatever it said is reported as before.
+      const t = transport({ exec: vi.fn().mockRejectedValue(new Error('pod deleted mid-exec', { cause: { message: 'Unexpected server response: 404' } })) });
+      const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
+      expect(result.platformFault).toBeUndefined();
+      expect(result.output).toContain('pod deleted mid-exec');
+    });
+
+    it('is not the platform\'s fault when the command exited non-zero', async () => {
+      const t = transport({ exec: vi.fn().mockResolvedValue({ stdout: '', stderr: 'connect ETIMEDOUT db:3306', exitCode: 1 }) });
+      const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
+      expect(result.platformFault).toBeUndefined();
+    });
+  });
+
   it('keeps the tail of a long output, where the error is', async () => {
     const noise = 'x'.repeat(3000);
     const t = transport({

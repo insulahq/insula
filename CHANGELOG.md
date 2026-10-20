@@ -113,6 +113,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   against the class's own target); if that listing fails, a time is unknown, never the
   placeholder. A base backup's "uploaded at" ignores the placeholder too; the panel uses the
   backup's own end time.
+- **A node's startup notice reported a fraction of its downtime.** A server shut down for about 21
+  minutes came back as "~1m 59s": the figure ran from the reconciler's last tick, and the
+  reconciler keeps ticking while a node is down. It now runs from the moment the node left
+  `Ready`, recorded by whichever detector sees it first (migration `0161` adds
+  `node_health_state.down_since`). A node that reported its new boot before it was `Ready` — a
+  k3s node waits for its network — could also lose its startup notice altogether, when a tick
+  landed in that window; the new boot is now taken on once the node is `Ready`.
+- **Tenants were emailed that their cron task failed when the platform could not reach its own
+  cluster.** During a server shutdown a Moodle cron job's run reported "did not run: connect
+  ETIMEDOUT <cluster-ip>:443" to the tenant's contacts: the platform's connection to the
+  Kubernetes API timed out before the command was sent. A run that fails because the platform
+  could not reach its cluster API (a connection refused, reset or timed out) is no longer
+  reported to the tenant. The run still shows as failed, with output saying the command was not
+  started because of a platform problem; the platform's log keeps the error detail.
 
 ### Removed
 

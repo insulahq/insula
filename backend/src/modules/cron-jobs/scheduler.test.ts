@@ -194,6 +194,31 @@ describe('runAndRecord', () => {
       expect(String(updates[1].lastRunOutput)).toMatch(/^Interrupted by the platform: the server it runs on \(s1\) is down\./);
     });
 
+    // Production, a server being shut down: the platform's exec connection to
+    // its own cluster API timed out, and the client was emailed that their
+    // task "did not run: connect ETIMEDOUT".
+    it('a run the platform could not start because it could not reach its cluster is not reported', async () => {
+      const t = {
+        ...transport(null),
+        exec: vi.fn().mockRejectedValue(new Error('connect ETIMEDOUT 10.0.0.1:443', {
+          cause: { error: Object.assign(new Error('connect ETIMEDOUT 10.0.0.1:443'), { code: 'ETIMEDOUT' }) },
+        })),
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 0 });
+
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      // The error itself is the evidence; nothing to look up afterwards.
+      expect(t.podDisruption).not.toHaveBeenCalled();
+      expect(updates).toHaveLength(1);
+      expect(updates[0].lastRunStatus).toBe('failed');
+      expect(String(updates[0].lastRunOutput)).toMatch(/^Not run: the platform could not reach its cluster API \(ETIMEDOUT\)\./);
+      // The operator's log keeps the detail the tenant does not see.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not reach the cluster API: connect ETIMEDOUT 10.0.0.1:443'));
+      warn.mockRestore();
+    });
+
     it('a failure the platform did not cause is reported as before', async () => {
       const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
       await runAndRecord(db, makeJob(), { transport: transport(null), interruptionCheckDelayMs: 0 });

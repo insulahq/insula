@@ -3,6 +3,7 @@ import {
   detectBootTransitions,
   formatDowntime,
   kubeletReportsShutdown,
+  wentDownAt,
   type BootFacts,
   type PrevBootState,
 } from './boot-events.js';
@@ -49,6 +50,7 @@ function prev(o: Partial<PrevBootState> = {}): ReadonlyMap<string, PrevBootState
     ready: o.ready ?? true,
     observedAt: o.observedAt === undefined ? new Date('2026-09-11T12:25:44Z') : o.observedAt,
     rebootAnnounced: o.rebootAnnounced ?? false,
+    downSince: o.downSince ?? null,
   }]]);
 }
 
@@ -161,10 +163,39 @@ describe('detectBootTransitions', () => {
     expect(out[0].downtimeMs).toBe(NOW.getTime() - new Date('2026-09-11T12:25:44Z').getTime());
   });
 
+  // Production: a server shut down for ~21 minutes came back as "~1m 59s" —
+  // measured from the last tick, which had already seen it down.
+  it('measures downtime from the moment the node went down when that was seen', () => {
+    const out = detectBootTransitions([facts()], prev({
+      ready: false,
+      observedAt: new Date('2026-09-11T12:30:00Z'),
+      downSince: new Date('2026-09-11T12:11:34Z'),
+    }), NOW);
+    if (out[0].kind !== 'startup-complete') throw new Error('unreachable');
+    expect(out[0].downtimeMs).toBe(21 * 60_000);
+  });
+
   it('reports null downtime when the node was never observed before', () => {
     const out = detectBootTransitions([facts()], prev({ observedAt: null }), NOW);
     if (out[0].kind !== 'startup-complete') throw new Error('unreachable');
     expect(out[0].downtimeMs).toBeNull();
+  });
+});
+
+describe('wentDownAt', () => {
+  const now = new Date('2026-09-11T12:40:00Z');
+
+  it('is the Ready condition\'s own transition time — the moment it left Ready', () => {
+    expect(wentDownAt({ lastTransitionTime: '2026-09-11T12:11:34Z' }, now)).toEqual(new Date('2026-09-11T12:11:34Z'));
+  });
+
+  it('is now when the kubelet reported no usable time', () => {
+    expect(wentDownAt(undefined, now)).toEqual(now);
+    expect(wentDownAt({ lastTransitionTime: 'not a time' }, now)).toEqual(now);
+  });
+
+  it('is never later than now — a skewed clock cannot make an outage negative', () => {
+    expect(wentDownAt({ lastTransitionTime: '2026-09-11T13:00:00Z' }, now)).toEqual(now);
   });
 });
 

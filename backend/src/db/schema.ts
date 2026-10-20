@@ -4495,6 +4495,9 @@ export const nodeHealthState = pgTable('node_health_state', {
   // notification say whether the operator was warned — a single-node control
   // plane usually cannot announce its own shutdown.
   rebootAnnounced: boolean('reboot_announced').notNull().default(false),
+  // When the node left Ready for the outage in progress; NULL while Ready. The
+  // startup notice's downtime starts here. Migration 0161.
+  downSince: timestamp('down_since', { withTimezone: true }),
 });
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
