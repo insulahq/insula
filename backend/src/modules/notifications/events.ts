@@ -876,16 +876,9 @@ export async function notifyAdminNodeDown(
   await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
-export interface AdminNodeRebootingPayload {
+export interface AdminNodeShuttingDownPayload {
   readonly nodeName: string;
 }
-/**
- * A node has left Ready and is shutting down. Best-effort by nature: on a
- * single-node cluster the API server is drained with the node, so this often
- * cannot be sent at all — `admin.node_startup_complete` is the one that always
- * arrives. dedupeKey is per (node x boot) so a drain lasting several ticks
- * notifies once.
- */
 export interface AdminTenantAutoRepinnedPayload {
   readonly tenantName: string;
   readonly strandedOn: string;
@@ -904,9 +897,19 @@ export async function notifyAdminTenantAutoRepinned(
   await dispatchSafe(db, 'admin.tenant_auto_repinned', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
-export async function notifyAdminNodeRebooting(
+/**
+ * The kubelet reported a graceful shutdown (category id `admin.node_rebooting`
+ * kept: preferences and mutes are stored against it). Not called a reboot: the
+ * platform cannot know whether the server will come back until it does.
+ * Best-effort by nature: on a single-node cluster the API server is drained
+ * with the node, so this often cannot be sent at all —
+ * `admin.node_startup_complete` is the one that always arrives. dedupeKey is
+ * the node's "going down" key (nodeDownDedupeKey), shared with
+ * `admin.node_down`: one outage, one going-down notice.
+ */
+export async function notifyAdminNodeShuttingDown(
   db: Database,
-  payload: AdminNodeRebootingPayload,
+  payload: AdminNodeShuttingDownPayload,
   dedupeKey?: string,
 ): Promise<void> {
   await dispatchSafe(db, 'admin.node_rebooting', { kind: 'admin' }, payload, undefined, { dedupeKey });

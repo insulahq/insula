@@ -13,13 +13,15 @@
  * With `k8s` the evaluator also holds back alerts about a node that is still
  * joining (node-health/join-grace.ts) — the same 30-minute window the node
  * health detectors use, so a bootstrapping node's CPU or a not-yet-scraped
- * kubelet does not page while the operator watches the join.
+ * kubelet does not page while the operator watches the join — and about a
+ * node that is down or just back (node-health/outage-hold.ts), whose own
+ * lifecycle notices already told the operator.
  */
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { lazyJoinGrace } from '../node-health/join-grace.js';
+import { lazyNodeAlertHolds } from '../node-health/outage-hold.js';
 import { evaluateOnce, type EvaluatorLogger } from './evaluator.js';
 
 export const EVALUATOR_TICK_MS = 60_000;
@@ -62,7 +64,7 @@ export function startMonitoringEvaluator(
         if (rows.length > 0) {
           const now = new Date();
           await evaluateOnce(db, log, {}, now, {
-            joinGrace: opts.k8s ? lazyJoinGrace(opts.k8s, now) : undefined,
+            joinGrace: opts.k8s ? lazyNodeAlertHolds(opts.k8s, now) : undefined,
           });
         }
       });

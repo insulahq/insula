@@ -19,7 +19,10 @@
  * any other — the panel shows it firing — but NOT announced. Its row keeps
  * `lastNotifiedAt` NULL, so if it is still firing when the window closes the
  * next tick announces it, and if it clears inside the window nothing is sent
- * (a resolution is only announced for an alert that was).
+ * (a resolution is only announced for an alert that was). A node that is down
+ * or just back from an outage (node-health/outage-hold.ts) is held the same
+ * way — except by rules that report events (`reportsEvents`), which may be
+ * the outage's cause.
  *
  * Who-watches-the-watcher: VM_FAILURE_THRESHOLD consecutive ticks where
  * vmsingle is unreachable raise the synthetic `monitoring-unreachable`
@@ -32,6 +35,7 @@ import { alertState, monitoringRuleOverrides } from '../../db/schema.js';
 import { notifyAdminSloAlertFiring, notifyAdminSloAlertResolved } from '../notifications/events.js';
 import { queryInstant, type VmClientOptions } from './vm-client.js';
 import { describeSuppression, type JoinGraceVerdict } from '../node-health/join-grace.js';
+import { isOutageHold } from '../node-health/outage-hold.js';
 import {
   SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey, formatSloValue,
   sloValueIsInformative,
@@ -79,17 +83,23 @@ interface TransitionInput {
    * preserves the pre-existing behaviour for those.
    */
   readonly subject: { key: string; labels: Record<string, string>; label: string | null };
-  /** Set when the subject's node is still joining — record, do not announce. */
+  /**
+   * Set when the subject's node is held — still joining, down, or just back
+   * from an outage. Record, do not announce.
+   */
   readonly joining?: { readonly node: string; readonly verdict: JoinGraceVerdict } | null;
 }
 
-/** Per-tick source of join grace verdicts, keyed by node name. */
+/**
+ * Per-tick source of per-node alert holds, keyed by node name: the join grace
+ * window plus the outage hold (node-health/outage-hold.ts).
+ */
 export type JoinGraceLoader = () => Promise<ReadonlyMap<string, JoinGraceVerdict>>;
 
 export interface EvaluateOptions {
   /**
    * Consulted only for violated series that carry a `node` label, so a
-   * healthy tick never pays for it. Omitted → no node is treated as joining.
+   * healthy tick never pays for it. Omitted → no node is held.
    */
   readonly joinGrace?: JoinGraceLoader;
 }
@@ -202,7 +212,8 @@ async function applyRuleState(
       .set({ state: 'resolved', since: now, lastValue: value, lastEvaluatedAt: now })
       .where(rowFilter);
     if (!existing.lastNotifiedAt) {
-      // Fired while its node was joining and cleared before anyone was told —
+      // Fired while its node was held (joining, down, just back) and cleared
+      // before anyone was told —
       // a "resolved" for an alert nobody received would only be noise.
       log.info(`monitoring: alert cleared before it was announced — ${rule.id}${subject.label ? ` [${subject.label}]` : ''}`);
       return;
@@ -223,18 +234,23 @@ async function applyRuleState(
 }
 
 /**
- * The join grace verdict for a series, keyed by its `node` label — present on
- * every node-scoped rule (`by (node)`) and on the raw `up` series of the
- * per-node scrape jobs (kubelet, Traefik, Longhorn).
+ * The hold verdict for a series, keyed by its `node` label — present on every
+ * node-scoped rule (`by (node)`) and on the raw `up` series of the per-node
+ * scrape jobs (kubelet, Traefik, Longhorn). That label is what keeps a down
+ * node's scrape targets from announcing the outage a second time.
  */
 async function joiningNodeOf(
+  rule: Pick<SloRule, 'reportsEvents'>,
   labels: Record<string, string>,
   loader: JoinGraceLoader | undefined,
 ): Promise<TransitionInput['joining']> {
   const node = labels.node;
   if (!node || !loader) return null;
   const verdict = (await loader()).get(node);
-  return verdict ? { node, verdict } : null;
+  if (!verdict) return null;
+  // An event rule is never held for an outage — it may be the cause (rules.ts).
+  if (rule.reportsEvents && isOutageHold(verdict)) return null;
+  return { node, verdict };
 }
 
 /** Evaluate every enabled rule once. Exported for tests + the scheduler. */
@@ -299,7 +315,7 @@ export async function evaluateOnce(
           now,
           forSeconds: rule.forSeconds,
           subject: { key, labels: hit.labels, label: describeSubject(rule, hit.labels) },
-          joining: await joiningNodeOf(hit.labels, opts.joinGrace),
+          joining: await joiningNodeOf(rule, hit.labels, opts.joinGrace),
         }, log);
       }
 

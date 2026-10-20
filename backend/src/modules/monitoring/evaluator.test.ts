@@ -432,6 +432,36 @@ describe('monitoring evaluator — nodes that are still joining', () => {
     expect(notifyResolvedSpy.mock.calls.filter((c) => c[1].ruleId === 'node-cpu')).toHaveLength(1);
   });
 
+  // Outage hold (node-health/outage-hold.ts): operator report — a server shut
+  // down on purpose produced "Scrape target down" for its kubelet targets on
+  // top of its own down notice.
+  const outage = (node: string) => vi.fn(async () => new Map([[node, { until: at(10), reason: 'node-down' as const }]]));
+
+  it('holds a down node\'s state alert, and logs it as an outage', async () => {
+    const db = dbStub();
+    const one = vm(CPU, ['node-2']);
+    await evaluateOnce(db as never, logger, one, at(0), { joinGrace: outage('node-2') });
+    await evaluateOnce(db as never, logger, one, at(16), { joinGrace: outage('node-2') });
+    expect(cpuRow(db, 'node-2')?.state).toBe('firing');
+    expect(cpuCalls(notifyFiringSpy)).toHaveLength(0);
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('node-2 is down — SLO alert node-cpu suppressed while it is down'));
+  });
+
+  it('never holds an event rule for an outage — a kernel OOM may be why the node went down', async () => {
+    const db = dbStub();
+    const oom = vm('container_oom_events_total', ['node-2']);
+    await evaluateOnce(db as never, logger, oom, at(0), { joinGrace: outage('node-2') });
+    expect(notifyFiringSpy.mock.calls.filter((c) => c[1].ruleId === 'node-kernel-oom').map((c) => c[1].subjectLabels))
+      .toEqual([{ node: 'node-2' }]);
+  });
+
+  it('still holds an event rule for a JOINING node', async () => {
+    const db = dbStub();
+    const oom = vm('container_oom_events_total', ['new-server']);
+    await evaluateOnce(db as never, logger, oom, at(0), { joinGrace: joining('new-server') });
+    expect(notifyFiringSpy.mock.calls.filter((c) => c[1].ruleId === 'node-kernel-oom')).toHaveLength(0);
+  });
+
   it('never asks for the join grace while nothing names a node', async () => {
     const db = dbStub();
     const load = joining('new-server');

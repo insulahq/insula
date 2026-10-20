@@ -99,9 +99,9 @@ and the *joined* notification below states the time alerts resume.
 
 Two deliberate edges:
 
-* **Reboot notices are events, not states, and are not sent late.** A shutdown
+* **Shutdown notices are events, not states, and are not sent late.** A shutdown
   that began inside the window never produces `admin.node_rebooting` ("is
-  rebooting" twenty minutes after the fact would be false). If the node is
+  shutting down" twenty minutes after the fact would be false). If the node is
   still down when the window closes it is reported by `admin.node_down`; when
   it comes back on a new boot afterwards, `admin.node_startup_complete` fires
   and says no shutdown notice was sent.
@@ -116,6 +116,51 @@ only the notification waits. It is sent on the first evaluator tick after the
 window if the alert is still firing; if it clears inside the window, neither a
 "firing" nor a "resolved" notification is sent. Rules without a `node` label
 (cluster-wide ones, per-pod OOM) are never held.
+
+## Nodes that are down — the outage hold
+
+When a node goes down — shut down on purpose or not — the operator hears it
+from the node's own lifecycle notices (*shutting down* or *down*, then *startup
+complete*, see *Node reboot lifecycle* below).
+Everything that runs on the node fails with it, and each of those used to arrive
+as its own notification for the same root cause: Calico "degraded" during the
+shutdown and "recovered" during the boot, and one "Scrape target down" per
+kubelet / Traefik / Longhorn target on the node.
+
+So alerts **about** a node are held while it is down and for **10 minutes** after
+it is `Ready` again (its pods start and are scraped in that time), on the same
+terms as the join window above — notifications only, the state is recorded and
+shown, and nothing is lost:
+
+| Detector | Held while the node is down or settling |
+|---|---|
+| Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Node subsystem health" |
+| SLO evaluator (60 s) | `admin.slo_alert_*` for any series whose `node` label names the node — `scrape-target-down` for its kubelet/Traefik/Longhorn targets, `node-cpu`, `node-memory`, `longhorn-headroom`, `node-kernel-oom` |
+| `node-health` reconciler (5 min) | `admin.node_event` "Node health" while the node is Ready and settling — a CSI driver not registered yet, a pressure condition still clearing — once the operator's last news about it is "normal". After a reboot the startup notice makes it so; a node back on the **same** boot keeps the normal rules, because its "recovered" is the only back notice it gets. |
+
+* *Down* is the Node's `Ready` condition being anything but `True`; the 10
+  minutes count from that condition's `lastTransitionTime`, which the kubelet
+  stamps — a platform-api restart cannot reset or stretch it.
+* A problem that outlives the hold is announced on the first tick after it, as
+  new. One that cleared inside it sends neither "firing" nor "recovered".
+* A problem already announced **before** the outage keeps the normal rules, so
+  its "recovered" still arrives.
+* The lifecycle notices themselves are never held — they are what the hold
+  relies on. Alerts about the *other* nodes are never held.
+* **Event rules are never held for an outage.** `node-kernel-oom` reports kernel
+  OOM kills inside a 15-minute window; one may be what took the node down, and
+  the window can roll past before the hold ends. State rules (CPU, memory,
+  Longhorn headroom, scrape targets) are only delayed — if real, they are still
+  true when the hold ends.
+* **A flapping node stays held** while it keeps going NotReady and coming back
+  within 10 minutes. Its signal is the going-down notice (once per node, boot
+  and day) and the panel, which shows every held alert as firing.
+* `NODE_JOIN_ALERT_GRACE_MINUTES=0` turns off the join window only; the outage
+  hold is a separate rule.
+
+Suppression is logged: `node-2 is down — SLO alert scrape-target-down suppressed
+while it is down`, `node-2 is back from an outage — Calico / Longhorn CSI alerts
+suppressed until 21:01 UTC`.
 
 ## Node membership notifications
 
@@ -386,13 +431,25 @@ After this feature deploys to staging, validate end-to-end by:
 ## Node reboot lifecycle (2026-09-11)
 
 The 5-minute reconciler tracks each node's kernel **bootID**
-(`status.nodeInfo.bootID`) in `node_health_state.boot_id` and emits two admin
-notifications, both naming the node.
+(`status.nodeInfo.bootID`) in `node_health_state.boot_id`. One outage reads as
+**one going-down notice and one back notice**, each naming the node:
 
 | Category | When | Severity |
 |---|---|---|
-| `admin.node_rebooting` | node leaves `Ready` on the same boot | warning |
+| `admin.node_rebooting` (shown as *Node shutting down*) | the kubelet reports a **graceful shutdown**: `Ready=False` with "node is shutting down" in the message | warning |
+| `admin.node_down` | the node leaves `Ready` **without** that report — a crash, a power cut, a lost network | critical |
 | `admin.node_startup_complete` | bootID **changed** and the node is `Ready` | info |
+
+The going-down notice is worded by what the kubelet said, and sent once: the
+30-second fast down-watch usually sends it (the shutdown report lasts one grace
+period, which a 5-minute tick mostly misses), and both detectors share one
+dedupe key per node, boot and day, so whichever speaks first wins. A shutdown is
+not called a reboot: whether the server comes back is only known when it does.
+On its return, *startup complete* is the back notice — the reconciler's "Node
+health: recovered to normal" for the same minute is not sent. A node back on the
+**same** boot (a lost network, a kubelet restart) still gets "recovered to
+normal", the only back notice it has. Meanwhile, alerts about the node itself
+are held — see [the outage hold](#nodes-that-are-down--the-outage-hold).
 
 ### Why bootID and not the Ready condition
 
@@ -405,8 +462,8 @@ restored database or a newly joined worker adopts the current value silently.
 
 ### The single-node limitation — read this before filing a bug
 
-`admin.node_rebooting` needs an API server that is still running to observe the
-node leaving `Ready`. On a **single-node** cluster the control plane drains with
+The shutting-down notice needs an API server that is still running to observe
+the kubelet's report. On a **single-node** cluster the control plane drains with
 the node:
 
 * the shutdown budget is `shutdownGracePeriodByPodPriority`, 120 s total;

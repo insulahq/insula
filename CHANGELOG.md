@@ -81,6 +81,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Tenant page:** the Overview's Websites card is now a **Domains** table and an
   **Applications** table. The Storage tab's **DATA** pill is solid blue with white text, like
   ACTIVE, and is in the legend.
+- **A node that is down no longer sets off alerts about itself.** A server shut down on purpose
+  produced, beside its own down / shutting-down / startup notices, "Node subsystem health"
+  (Calico degraded during the shutdown, recovered during the boot) and one "Scrape target down"
+  per kubelet target on it — the same root cause, told again. Alerts **about** a node — Calico /
+  Longhorn CSI health, SLO alerts on series labelled with that node, and after a reboot its own
+  "Node health" transitions while it settles (a CSI driver not registered yet) — are now held
+  while it is down and for 10 minutes after it is Ready again, on the same terms as the join
+  window: the state is still recorded and shown, a problem that outlives the hold is announced,
+  one that cleared sends nothing. Alerts about other nodes are unaffected, and a kernel OOM
+  alert is never held — it may be why the node went down.
+- **One outage, one going-down notice, worded by what the kubelet said.** "Rebooting" was sent
+  for a server being shut down — and for a crash, claiming a drain that never ran — and arrived
+  minutes after "down" for the same event. The kubelet's graceful-shutdown report now decides:
+  **Node shutting down** (the category formerly called *Node rebooting*; its id
+  `admin.node_rebooting` is unchanged) when it reported one, **down** otherwise, sent once by
+  whichever detector sees it first. *Startup complete* no longer says "rebooted", and the
+  "Node health: recovered to normal" sent in the same minute is gone; a node back on the same
+  boot (a lost network) still gets it, as its only back notice. Migration `0160` renames the
+  category on existing installs unless an operator renamed it. **If you muted *Node rebooting*,**
+  a graceful shutdown is now announced only through that category (as *Node shutting down*),
+  so muting it hides that outage's going-down notice too — unmute it to hear about shutdowns.
 
 ### Fixed
 

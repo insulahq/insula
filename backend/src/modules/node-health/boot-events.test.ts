@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectBootTransitions,
   formatDowntime,
+  kubeletReportsShutdown,
   type BootFacts,
   type PrevBootState,
 } from './boot-events.js';
@@ -14,8 +15,33 @@ function facts(o: Partial<BootFacts> = {}): BootFacts {
     bootId: o.bootId === undefined ? 'boot-B' : o.bootId,
     ready: o.ready ?? true,
     readySince: o.readySince === undefined ? new Date('2026-09-11T12:32:34Z') : o.readySince,
+    shuttingDown: o.shuttingDown ?? false,
   };
 }
+
+describe('kubeletReportsShutdown', () => {
+  it('reads the kubelet graceful-shutdown report off Ready=False', () => {
+    expect(kubeletReportsShutdown({ status: 'False', message: 'node is shutting down' })).toBe(true);
+  });
+
+  it('finds it inside the aggregated readiness message', () => {
+    // The kubelet joins every readiness error into one message.
+    expect(kubeletReportsShutdown({
+      status: 'False',
+      message: '[container runtime status check may not have completed yet, node is shutting down]',
+    })).toBe(true);
+  });
+
+  it('is false for a crash, a power cut or a lost network — the kubelet just stops posting', () => {
+    expect(kubeletReportsShutdown({ status: 'Unknown', message: 'Kubelet stopped posting node status.' })).toBe(false);
+  });
+
+  it('is false for any other NotReady reason, and for a Ready node', () => {
+    expect(kubeletReportsShutdown({ status: 'False', message: 'container runtime network not ready' })).toBe(false);
+    expect(kubeletReportsShutdown({ status: 'True', message: 'kubelet is posting ready status' })).toBe(false);
+    expect(kubeletReportsShutdown(undefined)).toBe(false);
+  });
+});
 
 function prev(o: Partial<PrevBootState> = {}): ReadonlyMap<string, PrevBootState> {
   return new Map([['node-a', {
@@ -80,38 +106,50 @@ describe('detectBootTransitions', () => {
     expect(detectBootTransitions([facts({ ready: false })], prev(), NOW)).toEqual([]);
   });
 
-  // ── rebooting ──
+  // ── shutting down ──
 
-  it('reports rebooting when a node leaves Ready on the SAME boot', () => {
+  it('reports shutting-down when the kubelet reports a graceful shutdown on the SAME boot', () => {
     const out = detectBootTransitions(
-      [facts({ bootId: 'boot-A', ready: false })],
+      [facts({ bootId: 'boot-A', ready: false, shuttingDown: true })],
       prev({ bootId: 'boot-A', ready: true }),
       NOW,
     );
-    expect(out).toEqual([{ kind: 'rebooting', nodeName: 'node-a' }]);
+    expect(out).toEqual([{ kind: 'shutting-down', nodeName: 'node-a' }]);
+  });
+
+  it('says nothing when a node leaves Ready WITHOUT a shutdown report — that is down, not shutting down', () => {
+    // Operator report: a server being shut down was announced as "rebooting",
+    // and the same notice fired for a crash, claiming a drain that never ran.
+    // The down notice (fast-down-watch.ts) is the one for this case.
+    const out = detectBootTransitions(
+      [facts({ bootId: 'boot-A', ready: false, shuttingDown: false })],
+      prev({ bootId: 'boot-A', ready: true }),
+      NOW,
+    );
+    expect(out).toEqual([]);
   });
 
   it('does not re-announce a shutdown already announced', () => {
     const out = detectBootTransitions(
-      [facts({ bootId: 'boot-A', ready: false })],
+      [facts({ bootId: 'boot-A', ready: false, shuttingDown: true })],
       prev({ bootId: 'boot-A', ready: true, rebootAnnounced: true }),
       NOW,
     );
     expect(out).toEqual([]);
   });
 
-  it('does not report rebooting for a node that was already NotReady', () => {
+  it('does not report shutting-down for a node that was already NotReady', () => {
     const out = detectBootTransitions(
-      [facts({ bootId: 'boot-A', ready: false })],
+      [facts({ bootId: 'boot-A', ready: false, shuttingDown: true })],
       prev({ bootId: 'boot-A', ready: false }),
       NOW,
     );
     expect(out).toEqual([]);
   });
 
-  it('prefers startup-complete over rebooting when a reboot completed between ticks', () => {
+  it('prefers startup-complete over shutting-down when a reboot completed between ticks', () => {
     // The single-node reality: the node went down AND came back inside one tick.
-    // Announcing "is rebooting" now would describe a past state as the present.
+    // Announcing "is shutting down" now would describe a past state as the present.
     const out = detectBootTransitions([facts()], prev({ ready: true }), NOW);
     expect(out.map((t) => t.kind)).toEqual(['startup-complete']);
   });

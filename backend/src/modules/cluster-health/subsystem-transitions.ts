@@ -9,6 +9,10 @@
  * the first observation after its window closes is treated as a first
  * sighting: still degraded then means one alert, healthy means silence. A node
  * already announced as degraded keeps the normal rules.
+ *
+ * The outage hold (node-health/outage-hold.ts) arrives in the same map and
+ * takes the same path: a node that is down has no running Calico or CSI pod
+ * either, and its own down / startup notices already cover it.
  */
 import type { NodeSubsystemReport } from './service.js';
 
@@ -26,7 +30,7 @@ export interface SubsystemTransition {
 export interface SubsystemTickResult {
   readonly transitions: readonly SubsystemTransition[];
   readonly nextState: ReadonlyMap<string, SubsystemState>;
-  /** Nodes skipped because they are inside their join grace window. */
+  /** Nodes skipped because they are held (joining, down, or just back). */
   readonly suppressed: readonly string[];
 }
 

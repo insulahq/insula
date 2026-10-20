@@ -322,3 +322,44 @@ describe('decideHealthNotification — join grace', () => {
     expect(lastAnnouncedSeverity({ severity: 'warning', lastNotifiedAt: t0 })).toBe('warning');
   });
 });
+
+describe('decideHealthNotification — back from an outage', () => {
+  const t0 = new Date('2026-10-01T12:00:00Z');
+  const downAnnounced = { severity: 'critical' as const, lastNotifiedAt: new Date('2026-10-01T11:40:00Z') };
+  const heldCritical = { severity: 'critical' as const, lastNotifiedAt: null };
+  const base = { suppressed: false, now: t0 };
+
+  it('sends no "recovered to normal" on the tick the startup notice says it is back', () => {
+    const d = decideHealthNotification({ ...base, newSeverity: 'normal', prev: downAnnounced, settling: true, startupNoticeNow: true });
+    expect(d.notify).toBe(false);
+  });
+
+  it('holds what is still starting on that tick — a CSI driver not registered yet is critical, and not news', () => {
+    const d = decideHealthNotification({ ...base, newSeverity: 'critical', prev: downAnnounced, settling: true, startupNoticeNow: true });
+    expect(d).toEqual({ notify: false, prevSeverityForCopy: 'normal', lastNotifiedAt: null });
+  });
+
+  it('keeps holding while it settles, and announces it as new if it outlives the window', () => {
+    expect(decideHealthNotification({ ...base, newSeverity: 'critical', prev: heldCritical, settling: true }).notify).toBe(false);
+    const after = decideHealthNotification({ ...base, newSeverity: 'critical', prev: heldCritical, settling: false });
+    expect(after).toEqual({ notify: true, prevSeverityForCopy: 'normal', lastNotifiedAt: t0 });
+  });
+
+  it('sends nothing when what it held cleared inside the window', () => {
+    expect(decideHealthNotification({ ...base, newSeverity: 'normal', prev: heldCritical, settling: true }).notify).toBe(false);
+    expect(decideHealthNotification({ ...base, newSeverity: 'normal', prev: heldCritical, settling: false }).notify).toBe(false);
+  });
+
+  it('holds nothing for a node back on the SAME boot — its "back" notice comes from these rules', () => {
+    // No startup notice speaks for it: the operator's last news is "down".
+    expect(decideHealthNotification({ ...base, newSeverity: 'warning', prev: downAnnounced, settling: true }))
+      .toEqual({ notify: true, prevSeverityForCopy: 'critical', lastNotifiedAt: t0 });
+    expect(decideHealthNotification({ ...base, newSeverity: 'normal', prev: downAnnounced, settling: true }).notify).toBe(true);
+  });
+
+  it('does not re-announce what the operator already has', () => {
+    const told = { severity: 'warning' as const, lastNotifiedAt: new Date('2026-10-01T11:58:00Z') };
+    const d = decideHealthNotification({ ...base, newSeverity: 'warning', prev: told, settling: true });
+    expect(d).toEqual({ notify: false, prevSeverityForCopy: 'warning', lastNotifiedAt: told.lastNotifiedAt });
+  });
+});

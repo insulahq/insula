@@ -7,7 +7,13 @@
  * of the event that caused it.
  */
 import { describe, it, expect } from 'vitest';
-import { newlyDown, notReadyNames, nodeDownDedupeKey, planFastDownTick } from './fast-down-watch.js';
+import {
+  describeAnnouncements,
+  newlyDown,
+  notReadyNames,
+  nodeDownDedupeKey,
+  planFastDownTick,
+} from './fast-down-watch.js';
 
 const node = (name: string, readyStatus: string | undefined) => ({
   metadata: { name },
@@ -58,12 +64,48 @@ describe('newlyDown', () => {
 });
 
 describe('nodeDownDedupeKey', () => {
-  it('matches the 5-min reconciler key exactly, so the two cannot double-notify', () => {
-    // The reconciler builds `node-down:${name}:${YYYY-MM-DD}`. If these ever
-    // diverge the operator gets two notifications for one node going down —
-    // which is precisely the duplication this work removed elsewhere.
-    expect(nodeDownDedupeKey('node-c', new Date('2026-09-11T15:22:46Z')))
-      .toBe('node-down:node-c:2026-09-11');
+  it('is per node, per boot and per day', () => {
+    // The reconciler and this watch both send through this ONE function, for
+    // the down notice and the shutting-down notice alike. If the keys ever
+    // diverged the operator would get two notifications for one node going
+    // down — "down" and then "rebooting", as happened for a planned shutdown.
+    expect(nodeDownDedupeKey('node-c', 'boot-1', new Date('2026-09-11T15:22:46Z')))
+      .toBe('node-down:node-c:boot-1:2026-09-11');
+  });
+
+  it('keeps two shutdowns on the same day apart — each is its own outage', () => {
+    const day = new Date('2026-09-11T15:22:46Z');
+    expect(nodeDownDedupeKey('node-c', 'boot-1', day)).not.toBe(nodeDownDedupeKey('node-c', 'boot-2', day));
+  });
+
+  it('still forms a key when the kubelet reported no bootID', () => {
+    expect(nodeDownDedupeKey('node-c', null, new Date('2026-09-11T15:22:46Z')))
+      .toBe('node-down:node-c:unknown-boot:2026-09-11');
+  });
+});
+
+describe('describeAnnouncements', () => {
+  const withReady = (name: string, ready: { status: string; message?: string }, bootID = 'boot-1') => ({
+    metadata: { name },
+    status: { conditions: [{ type: 'Ready', ...ready }], nodeInfo: { bootID } },
+  });
+
+  it('words a graceful shutdown as shutting down, keyed on the boot it went down with', () => {
+    const items = [withReady('node-2', { status: 'False', message: 'node is shutting down' }, 'boot-7')];
+    expect(describeAnnouncements(items, ['node-2'])).toEqual([{ nodeName: 'node-2', bootId: 'boot-7', shuttingDown: true }]);
+  });
+
+  it('words anything else as down — a crash never claims a drain', () => {
+    const items = [withReady('node-2', { status: 'Unknown', message: 'Kubelet stopped posting node status.' })];
+    expect(describeAnnouncements(items, ['node-2'])).toEqual([{ nodeName: 'node-2', bootId: 'boot-1', shuttingDown: false }]);
+  });
+
+  it('describes only the nodes it was asked about', () => {
+    const items = [
+      withReady('node-1', { status: 'True' }),
+      withReady('node-2', { status: 'False', message: 'node is shutting down' }),
+    ];
+    expect(describeAnnouncements(items, ['node-2']).map((a) => a.nodeName)).toEqual(['node-2']);
   });
 });
 
