@@ -13,6 +13,13 @@ import type { Database } from '../../db/index.js';
 import { clip, executeCronJob, describeFailure, platformInterruption, runTimeoutMs, type ClusterTransport, type CronRunResult } from './executor.js';
 import { getNextRunTime } from './cron-expression.js';
 import { resolveFailureEmailRecipients } from './failure-email.js';
+import {
+  OUTAGE_EVIDENCE_DELAY_MS,
+  PLATFORM_FAULT_RETRY_DELAY_MS,
+  clusterNodeList,
+  explainingOutage,
+  notifyOperatorOfPlatformFault,
+} from './platform-fault.js';
 
 // The scheduling maths lives in cron-expression.ts now. Re-exported because
 // this module has been its public entry point since the beginning.
@@ -27,7 +34,15 @@ export interface CronSchedulerDeps {
   readonly pollIntervalMs?: number;
   /** How long a failed deployment run waits before the interruption check (tests: 0). */
   readonly interruptionCheckDelayMs?: number;
+  /** How long a run the platform could not start waits before its retry (tests: 0). */
+  readonly platformFaultRetryDelayMs?: number;
+  /** How long after the first platform fault the operator notice is decided (tests: 0). */
+  readonly outageEvidenceDelayMs?: number;
+  /** The node outage explaining a platform fault, or null (platform-fault.ts; injected in tests). */
+  readonly explainingOutage?: () => Promise<string | null>;
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
 /**
  * A node shutting down stops its pods some seconds before the node itself is
@@ -43,6 +58,20 @@ export const INTERRUPTION_CHECK_DELAY_MS = 45_000;
  * the API restarted inside the 45 s.
  */
 const pendingFailureChecks = new Map<NodeJS.Timeout, () => Promise<void>>();
+
+/** Run `check` after `delayMs` — or now, when that is not positive — as a pending check. */
+async function deferCheck(delayMs: number, check: () => Promise<void>): Promise<void> {
+  if (delayMs <= 0) {
+    await check();
+    return;
+  }
+  const timer: NodeJS.Timeout = setTimeout(() => {
+    pendingFailureChecks.delete(timer);
+    void check();
+  }, delayMs);
+  timer.unref?.();
+  pendingFailureChecks.set(timer, check);
+}
 
 export async function flushPendingFailureChecks(): Promise<void> {
   const pending = [...pendingFailureChecks.entries()];
@@ -214,13 +243,22 @@ export async function runAndRecord(
   db: Database,
   job: typeof cronJobs.$inferSelect,
   deps: CronSchedulerDeps = {},
-  options: { readonly notify?: boolean } = {},
+  options: { readonly notify?: boolean; readonly retry?: boolean } = {},
 ): Promise<typeof cronJobs.$inferSelect | undefined> {
-  const result = await executeCronJob(db, job, {
+  const run = () => executeCronJob(db, job, {
     kubeconfigPath: deps.kubeconfigPath,
     timeoutMs: deps.timeoutMs,
     transport: deps.transport,
   });
+  let result = await run();
+  const firstResultAt = Date.now();
+  // The platform could not reach its cluster before the command was sent:
+  // running it again cannot run it twice (platform-fault.ts).
+  if (result.platformFault && result.notStarted && options.retry !== false) {
+    console.warn(`[cron-scheduler] job ${job.id} could not start — the platform ${result.platformFault}; trying once more`);
+    await sleep(deps.platformFaultRetryDelayMs ?? PLATFORM_FAULT_RETRY_DELAY_MS);
+    result = await run();
+  }
 
   const recordedAt = new Date();
   await db
@@ -240,28 +278,25 @@ export async function runAndRecord(
   //
   // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
   // otherwise send 288 notifications before breakfast.
-  if (result.platformFault) {
-    // The platform could not reach its own cluster, so the command never
-    // started: not the tenant's failure, and they are not told it is. The run
-    // record says what happened; the detail is for the operator.
-    console.warn(`[cron-scheduler] job ${job.id} did not run — the platform ${result.platformFault}; not reported as a failure`);
+  const fault = result.platformFault;
+  if (fault) {
+    // The platform could not reach its own cluster: not the tenant's failure,
+    // and they are not told it is. The run record says what happened; the
+    // operator hears of it unless a node outage they were told about explains
+    // it — decided once that outage could be visible (OUTAGE_EVIDENCE_DELAY_MS).
+    console.warn(`[cron-scheduler] job ${job.id} did not run — the platform ${fault}; not reported to the tenant`);
+    if (options.notify !== false) {
+      const explain = deps.explainingOutage ?? (() => explainingOutage(db, clusterNodeList(deps.kubeconfigPath)));
+      const wait = firstResultAt + (deps.outageEvidenceDelayMs ?? OUTAGE_EVIDENCE_DELAY_MS) - Date.now();
+      await deferCheck(wait, () => notifyOperatorOfPlatformFault(db, job, fault, explain));
+    }
   } else if (options.notify !== false && result.status === 'failed' && job.tenantId) {
     // Only worth waiting for when the check can run (the real cluster can; a
     // test transport without podDisruption cannot).
     const canCheck = !deps.transport || typeof deps.transport.podDisruption === 'function';
     if (job.type === 'deployment' && result.ranIn && canCheck) {
-      const delay = deps.interruptionCheckDelayMs ?? INTERRUPTION_CHECK_DELAY_MS;
-      const check = () => notifyUnlessInterrupted(db, job, result, recordedAt, deps);
-      if (delay <= 0) {
-        await check();
-      } else {
-        const timer: NodeJS.Timeout = setTimeout(() => {
-          pendingFailureChecks.delete(timer);
-          void check();
-        }, delay);
-        timer.unref?.();
-        pendingFailureChecks.set(timer, check);
-      }
+      await deferCheck(deps.interruptionCheckDelayMs ?? INTERRUPTION_CHECK_DELAY_MS,
+        () => notifyUnlessInterrupted(db, job, result, recordedAt, deps));
     } else {
       await notifyFailure(db, job, describeFailure(result, job.type));
     }

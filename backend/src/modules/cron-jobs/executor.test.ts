@@ -200,6 +200,7 @@ describe('executeCronJob — deployment jobs', () => {
 
       expect(result.status).toBe('failed');
       expect(result.platformFault).toBe('could not reach the cluster API: connect ETIMEDOUT 10.0.0.1:443');
+      expect(result.notStarted).toBe(true);
       // Tenant-visible: what happened, without the platform's internal address.
       expect(result.output).toBe(
         'Not run: the platform could not reach its cluster API (ETIMEDOUT). The command was not started — a platform problem, not a failure of this task.',
@@ -211,9 +212,21 @@ describe('executeCronJob — deployment jobs', () => {
         const t = transport({ listPods: vi.fn().mockRejectedValue(fetchUnreachable(code)) });
         const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
         expect(result.platformFault).toMatch(/^could not reach the cluster API: /);
+        expect(result.notStarted).toBe(true);
         expect(result.output).toContain(`(${code})`);
         expect(t.exec).not.toHaveBeenCalled();
       }
+    });
+
+    it('is the platform\'s fault, but not certainly unstarted, when the connection broke during the handshake', async () => {
+      const reset = new Error('read ECONNRESET', {
+        cause: { error: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' }) },
+      });
+      const t = transport({ exec: vi.fn().mockRejectedValue(reset) });
+      const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });
+      expect(result.platformFault).toBe('lost its connection to the cluster API: read ECONNRESET');
+      expect(result.notStarted).toBe(false);
+      expect(result.output).toMatch(/^Not confirmed: .*whether it started is unknown/);
     });
 
     it('is not the platform\'s fault when the API answered and refused', async () => {

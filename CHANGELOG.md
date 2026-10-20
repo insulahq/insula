@@ -90,7 +90,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   while it is down and for 10 minutes after it is Ready again, on the same terms as the join
   window: the state is still recorded and shown, a problem that outlives the hold is announced,
   one that cleared sends nothing. Alerts about other nodes are unaffected, and a kernel OOM
-  alert is never held — it may be why the node went down.
+  alert is never held — it may be why the node went down. The "mail port exposure" alert holds a
+  mail endpoint on such a node the same way: it reported the node's missing stalwart-haproxy pod
+  and advised re-applying the port-exposure mode. The mail server's own alerts (the Stalwart pod,
+  JMAP, the mail ports) are not held — if it ran there, mail is down.
 - **One outage, one going-down notice, worded by what the kubelet said.** "Rebooting" was sent
   for a server being shut down — and for a crash, claiming a drain that never ran — and arrived
   minutes after "down" for the same event. The kubelet's graceful-shutdown report now decides:
@@ -124,9 +127,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   cluster.** During a server shutdown a Moodle cron job's run reported "did not run: connect
   ETIMEDOUT <cluster-ip>:443" to the tenant's contacts: the platform's connection to the
   Kubernetes API timed out before the command was sent. A run that fails because the platform
-  could not reach its cluster API (a connection refused, reset or timed out) is no longer
-  reported to the tenant. The run still shows as failed, with output saying the command was not
-  started because of a platform problem; the platform's log keeps the error detail.
+  could not reach its cluster API (a connection refused, reset or timed out) is never reported to
+  the tenant; the run shows as failed, with output saying it was a platform problem. A scheduled
+  run that failed while connecting — so the command was certainly never sent — is tried once more
+  30 seconds later; one whose connection broke during the exec handshake is not, since the command
+  may have started. If it still did not run, the operator gets one "Scheduled tasks" platform
+  notice a day, opening Tenants → Cron jobs, decided 90 seconds after the first failure so a
+  crashed node can be seen down — and not sent while a node outage explains it: a node that went
+  down in the last 15 minutes, is back and settling, or is joining. "Run now" is not retried and
+  notifies no one.
 
 ### Removed
 

@@ -88,6 +88,7 @@ window:
 | Memory events (same tick) | `admin.node_memory_event_*`, `admin.tenant_pod_oom`, `admin.system_pod_oom` — the events are still recorded |
 | Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Calico is missing", "Longhorn CSI regressed", … |
 | SLO evaluator (60 s) | `admin.slo_alert_*` for any series whose `node` label names the joining node — `node-cpu`, `node-memory`, `longhorn-headroom`, `node-kernel-oom` and `scrape-target-down` for that node's kubelet/Traefik/Longhorn targets |
+| Mail health watch (15 min) | `admin.mail_health_degraded` "mail port exposure" for a mail endpoint on the joining node — its stalwart-haproxy pod may not be scheduled yet |
 
 **No health alert is lost.** Each detector keeps a suppressed node out of the
 state it compares against next time, so a node that is *still* unhealthy when
@@ -137,6 +138,7 @@ shown, and nothing is lost:
 | Calico / Longhorn CSI watcher (5 min) | `admin.node_event` "Node subsystem health" |
 | SLO evaluator (60 s) | `admin.slo_alert_*` for any series whose `node` label names the node — `scrape-target-down` for its kubelet/Traefik/Longhorn targets, `node-cpu`, `node-memory`, `longhorn-headroom`, `node-kernel-oom` |
 | `node-health` reconciler (5 min) | `admin.node_event` "Node health" while the node is Ready and settling — a CSI driver not registered yet, a pressure condition still clearing — once the operator's last news about it is "normal". After a reboot the startup notice makes it so; a node back on the **same** boot keeps the normal rules, because its "recovered" is the only back notice it gets. |
+| Mail health watch (15 min) | `admin.mail_health_degraded` "mail port exposure" for a mail endpoint on the node: nothing publishes the mail ports on a node that is off (the alert also told the operator to re-apply the port-exposure mode, which is wrong for that). Endpoints on other nodes are still alerted. The mail server itself — the Stalwart pod, JMAP, the mail ports — is **never** held: if it ran on that node, that is mail being down. |
 
 * *Down* is the Node's `Ready` condition being anything but `True`; the 10
   minutes count from that condition's `lastTransitionTime`, which the kubelet

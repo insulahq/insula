@@ -40,10 +40,18 @@ export interface CronRunResult {
   readonly ranIn?: RanIn;
   /**
    * Set when the run failed because the platform could not reach its own
-   * cluster API, so the tenant's command never started. The detail is for the
-   * operator's log; the tenant-visible output says it without addresses.
+   * cluster API — not the tenant's failure. The detail is for the operator's
+   * log; the tenant-visible output says it without addresses.
    */
   readonly platformFault?: string;
+  /**
+   * With platformFault: the command was certainly never sent — the failure
+   * came before the request left (listing pods, or connecting for the exec).
+   * Only then can a retry not run it twice. A connection reset during the
+   * exec handshake is a platform fault too, but the API server may already
+   * have started the command.
+   */
+  readonly notStarted?: boolean;
 }
 
 export interface RanIn {
@@ -124,17 +132,33 @@ const CLUSTER_UNREACHABLE_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
 ]);
 
+/** Codes that only ever come from opening a connection: no request was sent. */
+const CONNECT_ONLY_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
+
+export interface ClusterUnreachable {
+  readonly code: string;
+  readonly message: string;
+  /** The connection was never made (`syscall: 'connect'`, a lookup, a connect timeout). */
+  readonly whileConnecting: boolean;
+}
+
 /**
  * The socket error behind `err` when it says the platform could not reach its
  * cluster API, or null. Walks the wrappers the libraries put around it: fetch's
  * "fetch failed" (`cause`) and the exec WebSocket's ErrorEvent (`error`).
  */
-export function clusterUnreachable(err: unknown): { readonly code: string; readonly message: string } | null {
+export function clusterUnreachable(err: unknown): ClusterUnreachable | null {
   let cur: unknown = err;
   for (let depth = 0; depth < 4 && typeof cur === 'object' && cur !== null; depth++) {
-    const { code, message, cause, error } = cur as { code?: unknown; message?: unknown; cause?: unknown; error?: unknown };
+    const { code, message, syscall, cause, error } = cur as {
+      code?: unknown; message?: unknown; syscall?: unknown; cause?: unknown; error?: unknown;
+    };
     if (typeof code === 'string' && CLUSTER_UNREACHABLE_CODES.has(code)) {
-      return { code, message: typeof message === 'string' && message !== '' ? message : code };
+      return {
+        code,
+        message: typeof message === 'string' && message !== '' ? message : code,
+        whileConnecting: syscall === 'connect' || syscall === 'getaddrinfo' || CONNECT_ONLY_CODES.has(code),
+      };
     }
     cur = cause ?? error;
   }
@@ -142,17 +166,22 @@ export function clusterUnreachable(err: unknown): { readonly code: string; reado
 }
 
 /**
- * A run that never started because the platform could not reach its cluster —
+ * A run the platform could not start because it could not reach its cluster —
  * production, a server being shut down: `connect ETIMEDOUT` to the API, and
- * the tenant was emailed that THEIR task "did not run".
+ * the tenant was emailed that THEIR task "did not run". `notStarted` says the
+ * command was certainly never sent (see CronRunResult).
  */
-function unreachableRun(found: { readonly code: string; readonly message: string }) {
+function unreachableRun(found: ClusterUnreachable, notStarted: boolean) {
   return {
     status: 'failed' as const,
     responseCode: null,
-    output: `Not run: the platform could not reach its cluster API (${found.code}). `
-      + 'The command was not started — a platform problem, not a failure of this task.',
-    platformFault: `could not reach the cluster API: ${found.message}`,
+    output: notStarted
+      ? `Not run: the platform could not reach its cluster API (${found.code}). `
+        + 'The command was not started — a platform problem, not a failure of this task.'
+      : `Not confirmed: the platform lost its connection to its cluster API (${found.code}) while starting the command, `
+        + 'so whether it started is unknown — a platform problem, not a failure of this task.',
+    platformFault: `${notStarted ? 'could not reach' : 'lost its connection to'} the cluster API: ${found.message}`,
+    notStarted,
   };
 }
 
@@ -418,7 +447,7 @@ async function runDeploymentJob(
   db: Database,
   job: CronJobRow,
   deps: CronExecutorDeps,
-): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null; ranIn?: RanIn; platformFault?: string }> {
+): Promise<{ status: 'success' | 'failed'; responseCode: number | null; output: string | null; ranIn?: RanIn; platformFault?: string; notStarted?: boolean }> {
   if (!job.command || job.command.trim() === '') {
     return { status: 'failed', responseCode: null, output: 'no command configured for this cron job' };
   }
@@ -446,8 +475,9 @@ async function runDeploymentJob(
   try {
     pods = await transport.listPods(target.namespace, `app=${target.deploymentName}`);
   } catch (err) {
+    // Listing pods comes before the exec: whatever broke, nothing was sent.
     const unreachable = clusterUnreachable(err);
-    if (unreachable) return unreachableRun(unreachable);
+    if (unreachable) return unreachableRun(unreachable, true);
     return {
       status: 'failed',
       responseCode: null,
@@ -481,10 +511,10 @@ async function runDeploymentJob(
     };
   } catch (err) {
     // The exec rejects only before its connection opens (client-node's
-    // WebSocketHandler.connect), so a socket error here means the command
-    // was never sent.
+    // WebSocketHandler.connect). The command travels in the upgrade request:
+    // it was certainly not sent only if the connection was never made.
     const unreachable = clusterUnreachable(err);
-    if (unreachable) return unreachableRun(unreachable);
+    if (unreachable) return unreachableRun(unreachable, unreachable.whileConnecting);
     return {
       status: 'failed',
       responseCode: null,

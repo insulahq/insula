@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runAndRecord, isJobDue, claimStaleBefore, resolveTimeZone, flushPendingFailureChecks } from './scheduler.js';
+import { resetPlatformFaultNotices } from './platform-fault.js';
 import type { CronJobRow } from './executor.js';
 import type { Database } from '../../db/index.js';
+import { tenants } from '../../db/schema.js';
 
 // The scheduling maths that used to live here now has its own suite in
 // cron-expression.test.ts. The tests that were in this file asserted the old
@@ -11,9 +13,11 @@ import type { Database } from '../../db/index.js';
 // newly created job fire immediately. They were not carried over.
 
 const notifyTenantScheduledTaskFailure = vi.fn().mockResolvedValue(undefined);
+const notifyAdminOperationalEvent = vi.fn().mockResolvedValue(undefined);
 vi.mock('../notifications/events.js', () => ({
   notifyTenantScheduledTaskFailure: (...args: unknown[]) =>
     notifyTenantScheduledTaskFailure(...args),
+  notifyAdminOperationalEvent: (...args: unknown[]) => notifyAdminOperationalEvent(...args),
 }));
 
 // The opt-in email leg has its own suite (failure-email.test.ts); here only the
@@ -63,12 +67,15 @@ function mockDb(deploymentRows: unknown[], refreshedRow: unknown): DbSpy {
 
   // resolveDeployment(): select().from().innerJoin().leftJoin().where()
   // runAndRecord():      select().from().where()
-  const from = vi.fn().mockReturnValue({
-    innerJoin: vi.fn().mockReturnValue({
-      leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deploymentRows) }),
-    }),
-    where: vi.fn().mockResolvedValue([refreshedRow]),
-  });
+  // The operator's notice names the tenant: select({ name }).from(tenants).where()
+  const from = vi.fn().mockImplementation((table: unknown) => (table === tenants
+    ? { where: vi.fn().mockResolvedValue([{ name: 'Acme' }]) }
+    : {
+      innerJoin: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deploymentRows) }),
+      }),
+      where: vi.fn().mockResolvedValue([refreshedRow]),
+    }));
 
   const db = {
     select: vi.fn().mockReturnValue({ from }),
@@ -92,6 +99,7 @@ const RUNNING_DEPLOYMENT = {
 
 beforeEach(() => {
   notifyTenantScheduledTaskFailure.mockClear();
+  notifyAdminOperationalEvent.mockClear();
   resolveFailureEmailRecipients.mockClear();
   resolveFailureEmailRecipients.mockResolvedValue({ recipients: [], skipped: 'disabled' });
 });
@@ -194,35 +202,143 @@ describe('runAndRecord', () => {
       expect(String(updates[1].lastRunOutput)).toMatch(/^Interrupted by the platform: the server it runs on \(s1\) is down\./);
     });
 
-    // Production, a server being shut down: the platform's exec connection to
-    // its own cluster API timed out, and the client was emailed that their
-    // task "did not run: connect ETIMEDOUT".
-    it('a run the platform could not start because it could not reach its cluster is not reported', async () => {
-      const t = {
-        ...transport(null),
-        exec: vi.fn().mockRejectedValue(new Error('connect ETIMEDOUT 10.0.0.1:443', {
-          cause: { error: Object.assign(new Error('connect ETIMEDOUT 10.0.0.1:443'), { code: 'ETIMEDOUT' }) },
-        })),
-      };
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
-      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 0 });
+    it('a failure the platform did not cause is reported as before', async () => {
+      const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: transport(null), interruptionCheckDelayMs: 0 });
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+    });
+  });
 
+  // Production, a server being shut down: the platform's exec connection to
+  // its own cluster API timed out, and the client was emailed that their task
+  // "did not run: connect ETIMEDOUT".
+  describe('a run the platform could not start because it could not reach its cluster', () => {
+    // The shapes the libraries produce: a ws ErrorEvent around Node's socket error.
+    const unreachable = () => new Error('connect ETIMEDOUT 10.0.0.1:443', {
+      cause: { error: Object.assign(new Error('connect ETIMEDOUT 10.0.0.1:443'), { code: 'ETIMEDOUT', syscall: 'connect' }) },
+    });
+    const resetMidHandshake = () => new Error('read ECONNRESET', {
+      cause: { error: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' }) },
+    });
+    const transport = (exec: ReturnType<typeof vi.fn>) => ({
+      listPods: vi.fn().mockResolvedValue([
+        { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'], nodeName: 's1' },
+      ]),
+      exec,
+      podDisruption: vi.fn().mockResolvedValue(null),
+    });
+    const quick = {
+      interruptionCheckDelayMs: 0, platformFaultRetryDelayMs: 0, outageEvidenceDelayMs: 0, explainingOutage: async () => null,
+    };
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      resetPlatformFaultNotices();
+    });
+    afterEach(() => { warn.mockRestore(); });
+
+    it('is tried once more — the command was never sent — and a retry that runs is the run recorded', async () => {
+      const t = transport(vi.fn()
+        .mockRejectedValueOnce(unreachable())
+        .mockResolvedValueOnce({ stdout: 'Cron run completed', stderr: '', exitCode: 0 }));
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'success' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick });
+
+      expect(t.exec).toHaveBeenCalledTimes(2);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ lastRunStatus: 'success', lastRunOutput: 'Cron run completed' });
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(notifyAdminOperationalEvent).not.toHaveBeenCalled();
+    });
+
+    it('is not reported to the tenant when the retry cannot reach it either — the operator is told, once a day', async () => {
+      const t = transport(vi.fn().mockRejectedValue(unreachable()));
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick });
+
+      expect(t.exec).toHaveBeenCalledTimes(2);
       expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
       // The error itself is the evidence; nothing to look up afterwards.
       expect(t.podDisruption).not.toHaveBeenCalled();
       expect(updates).toHaveLength(1);
       expect(updates[0].lastRunStatus).toBe('failed');
       expect(String(updates[0].lastRunOutput)).toMatch(/^Not run: the platform could not reach its cluster API \(ETIMEDOUT\)\./);
-      // The operator's log keeps the detail the tenant does not see.
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not reach the cluster API: connect ETIMEDOUT 10.0.0.1:443'));
-      warn.mockRestore();
+
+      expect(notifyAdminOperationalEvent).toHaveBeenCalledTimes(1);
+      const [, subsystem, payload, dedupeKey, resourceType] = notifyAdminOperationalEvent.mock.calls[0];
+      expect(subsystem).toBe('platform');
+      expect(payload).toMatchObject({ subsystem: 'Scheduled tasks', objectLabel: 'Moodle cron (Acme)', severityLabel: 'not run' });
+      // The operator gets the detail the tenant does not see.
+      expect(String(payload.detail)).toContain('connect ETIMEDOUT 10.0.0.1:443');
+      expect(dedupeKey).toMatch(/^cron-platform-fault:\d{4}-\d{2}-\d{2}$/);
+      expect(resourceType).toBe('cron_platform_fault');
     });
 
-    it('a failure the platform did not cause is reported as before', async () => {
+    // The command travels in the exec's upgrade request: once the connection
+    // was made, the API server may have started it before the reset.
+    it('is NOT retried when the connection broke during the handshake — the command may have started', async () => {
+      const t = transport(vi.fn().mockRejectedValue(resetMidHandshake()));
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick });
+
+      expect(t.exec).toHaveBeenCalledTimes(1);
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(String(updates[0].lastRunOutput)).toMatch(/^Not confirmed: the platform lost its connection to its cluster API \(ECONNRESET\)/);
+      expect(notifyAdminOperationalEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('a run whose pods could not even be listed is retried too — nothing was sent', async () => {
+      const t = {
+        ...transport(vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '', exitCode: 0 })),
+        listPods: vi.fn()
+          .mockRejectedValueOnce(new TypeError('fetch failed', { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) }))
+          .mockResolvedValueOnce([{ name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'] }]),
+      };
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'success' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick });
+      expect(t.listPods).toHaveBeenCalledTimes(2);
+      expect(updates[0]).toMatchObject({ lastRunStatus: 'success' });
+    });
+
+    it('decides the operator notice only once a crashed node could be seen down', async () => {
+      const explain = vi.fn().mockResolvedValue(null);
+      const t = transport(vi.fn().mockRejectedValue(unreachable()));
       const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
-      await runAndRecord(db, makeJob(), { transport: transport(null), interruptionCheckDelayMs: 0 });
-      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+      await runAndRecord(db, makeJob(), { transport: t, ...quick, outageEvidenceDelayMs: 60_000, explainingOutage: explain });
+      expect(explain).not.toHaveBeenCalled();
+      await flushPendingFailureChecks();
+      expect(explain).toHaveBeenCalledTimes(1);
+      expect(notifyAdminOperationalEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('jobs failing the same way on one day send the operator ONE notice between them', async () => {
+      for (const id of ['job-1', 'job-2', 'job-3']) {
+        const t = transport(vi.fn().mockRejectedValue(unreachable()));
+        const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ id, lastRunStatus: 'failed' }));
+        await runAndRecord(db, makeJob({ id }), { transport: t, ...quick });
+      }
+      expect(notifyAdminOperationalEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('tells the operator nothing while a node outage explains it — that outage was announced', async () => {
+      const t = transport(vi.fn().mockRejectedValue(unreachable()));
+      const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick, explainingOutage: async () => 'node-b is down' });
+
+      expect(notifyAdminOperationalEvent).not.toHaveBeenCalled();
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('node-b is down'));
+    });
+
+    it('a manual run is not retried and tells no one — the person who pressed it sees the result', async () => {
+      const t = transport(vi.fn().mockRejectedValue(unreachable()));
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'failed' }));
+      await runAndRecord(db, makeJob(), { transport: t, ...quick }, { notify: false, retry: false });
+
+      expect(t.exec).toHaveBeenCalledTimes(1);
+      expect(String(updates[0].lastRunOutput)).toMatch(/^Not run: /);
+      expect(notifyAdminOperationalEvent).not.toHaveBeenCalled();
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
     });
   });
 
