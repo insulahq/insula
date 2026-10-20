@@ -169,8 +169,8 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
                   <th className="py-1 text-left font-medium">Application</th>
                   <th className="py-1 text-right font-medium">Reserves now</th>
                   <th className="py-1 text-right font-medium">Would reserve</th>
-                  <th className="py-1 text-left font-medium">Tier</th>
-                  <th className="py-1 text-left font-medium">&nbsp;</th>
+                  <th className="py-1 pl-6 text-left font-medium">Tier</th>
+                  <th className="py-1 pl-3 text-left font-medium">&nbsp;</th>
                 </tr>
               </thead>
               <tbody>
@@ -179,8 +179,8 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
                     <td className="py-1 text-gray-800 dark:text-gray-200">{d.name}</td>
                     <td className="py-1 text-right font-mono tabular-nums">{cores(d.currentMillis)}</td>
                     <td className="py-1 text-right font-mono tabular-nums">{cores(d.proposedMillis)}</td>
-                    <td className="py-1 text-gray-600 dark:text-gray-300">{TIER_LABEL[d.proposedTier]}</td>
-                    <td className="py-1">
+                    <td className="py-1 pl-6 text-gray-600 dark:text-gray-300">{TIER_LABEL[d.proposedTier]}</td>
+                    <td className="py-1 pl-3">
                       {d.blocker && (
                         <span className="inline-flex rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
                           needs review
