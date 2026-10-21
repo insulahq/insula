@@ -19,10 +19,14 @@ $config['product_name'] = 'Hosting Platform Webmail';
 //   '*'         — default skin logo (top bar after login)
 //   'login'     — login screen logo
 //   '[favicon]' — browser tab icon
+// No leading slash: Roundcube reads a leading '/' as "inside the current
+// skin folder" (skins/elastic/branding/…, which does not exist). Without
+// it the path is relative to the install root, and 1.7 serves it through
+// static.php, which allows public_html/ — where the wrapper copies the logo.
 $config['skin_logo'] = [
-  '*'         => '/branding/logo.svg',
-  'login'     => '/branding/logo.svg',
-  '[favicon]' => '/branding/logo.svg',
+  '*'         => 'public_html/branding/logo.svg',
+  'login'     => 'public_html/branding/logo.svg',
+  '[favicon]' => 'public_html/branding/logo.svg',
 ];
 
 // Enable the platform_branding plugin. The plugin registers the
