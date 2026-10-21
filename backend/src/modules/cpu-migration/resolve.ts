@@ -12,7 +12,6 @@
  */
 
 import { CPU_TIER_MILLICORES, type CpuTier } from '@insula/api-contracts';
-import { ceilingCores } from './tiers.js';
 
 export type CpuSchedulingMode = 'legacy' | 'tiered';
 
@@ -87,6 +86,9 @@ export const DEFAULT_TIER: CpuTier = 'high';
  */
 export const DEFAULT_LEGACY_CPU_CORES = 2;
 
+/** The ceiling of a tenant with no plan, and the least any ceiling may be. */
+export const MIN_BURST_CORES = 1;
+
 export function resolveTenantCpu(
   plan: PlanCpuGrants | null,
   tenant: TenantCpuOverrides,
@@ -116,20 +118,13 @@ export function resolveTenantCpu(
   const overrideBurst = num(tenant.cpuBurstCoresOverride);
   const planBurst = num(plan?.cpuBurstCores ?? null);
   /**
-   * Derived from the legacy limit only as a LAST resort, so a plan that
-   * predates `cpu_burst_cores` still bounds its tenants instead of resolving
-   * to "no ceiling". A plan that declares a ceiling never reaches this.
-   *
-   * ★ The EFFECTIVE limit — `cpu_limit_override ?? plan.cpu_limit` — which
-   * is the precedence every other path uses, including this function's own
-   * legacy branch ten lines up. It used to read `plan.cpuLimit` alone, so
-   * the same tenant resolved two different ways depending on which branch
-   * asked: a tenant whose `cpu_limit_override` was 1.00 against an
-   * ultimate plan's 2.00 was given a 4-core ceiling derived from the plan,
-   * ignoring the override entirely. Seen on production.
+   * Tenant override, then the plan. Cores play no part: every plan states a
+   * ceiling (migration 0159 wrote down the one each plan without had derived
+   * from its cores), so the old `max(1, cores x 2)` fallback is gone. Only a
+   * tenant with no plan at all reaches the floor — the same 1 core the
+   * derivation gave it.
    */
-  const burstCores = overrideBurst ?? planBurst
-    ?? ceilingCores(num(tenant.cpuLimitOverride) ?? num(plan?.cpuLimit ?? null));
+  const burstCores = overrideBurst ?? planBurst ?? MIN_BURST_CORES;
   const burstSource = overrideBurst != null
     ? 'tenant_override' as const
     : planBurst != null ? 'plan' as const : 'derived' as const;

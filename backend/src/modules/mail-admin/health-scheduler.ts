@@ -38,6 +38,9 @@ import { cappedList } from '../notifications/list-items.js';
 import { MAIL_MONITORING_RESOURCE } from '../notifications/action-path.js';
 import type { Database } from '../../db/index.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { lazyNodeAlertHolds } from '../node-health/outage-hold.js';
+import { describeSuppression, type JoinGraceVerdict } from '../node-health/join-grace.js';
+import { withoutHeldEndpoints } from './exposure-hold.js';
 
 export interface MailHealthSchedulerLog {
   info(...args: unknown[]): void;
@@ -368,9 +371,20 @@ export async function runMailHealthCheckOnce(
     return 0;
   }
 
+  // An endpoint on a node that is down or still settling is that node's
+  // outage, already announced (exposure-hold.ts). Nodes are only listed when
+  // an exposure failure could be held.
+  const holds: ReadonlyMap<string, JoinGraceVerdict> = confirmed.some((f) => f.key === 'exposure')
+    ? await lazyNodeAlertHolds(k8s, new Date(clock()))()
+    : new Map();
+  const { alert, held } = withoutHeldEndpoints(confirmed, holds);
+  for (const [node, verdict] of held) {
+    log.info(`[mail-health] ${describeSuppression(node, verdict, 'mail port exposure alert')}`);
+  }
+
   const bucket = dedupeBucket(clock());
   let fired = 0;
-  for (const { key, component, items } of confirmed) {
+  for (const { key, component, items, endpoints } of alert) {
     const label = COMPONENT_LABELS[key] ?? key;
     try {
       await notifyAdminMailHealthDegraded(
@@ -382,7 +396,9 @@ export async function runMailHealthCheckOnce(
           items: cappedList(items, MAX_LISTED_CHECKS),
           panelUrl: '/monitoring/mail',
         },
-        `mail-health:${key}:${bucket}`,
+        // Per endpoint set as well: one endpoint's alert must not swallow
+        // another's that outlived its node's hold in the same bucket.
+        `mail-health:${key}:${bucket}${endpoints?.length ? `:${endpoints.join(',')}` : ''}`,
       );
       fired += 1;
     } catch (err) {
@@ -391,7 +407,7 @@ export async function runMailHealthCheckOnce(
   }
   if (fired > 0) {
     log.info(
-      { fired, hostname: mailHostname, failing: confirmed.map((f) => ({ component: f.key, checks: f.items })) },
+      { fired, hostname: mailHostname, failing: alert.map((f) => ({ component: f.key, checks: f.items })) },
       'mail-health-scheduler: mail health failures alerted',
     );
   }

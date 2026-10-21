@@ -91,7 +91,7 @@ export const updateBackupScheduleSchema = z.object({
     return true;
   },
   {
-    message: 'retentionDays and retentionCount cannot both be 0 — restic forget needs at least one to keep snapshots',
+    message: 'Set a number of days, a number of copies to keep, or both — with neither, nothing would ever be removed.',
     path: ['retentionCount'],
   },
 );

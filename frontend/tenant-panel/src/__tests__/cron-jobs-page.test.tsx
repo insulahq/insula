@@ -353,3 +353,46 @@ describe('editing a saved cron job', () => {
     expect(patchBody()).toEqual({ enabled: false });
   });
 });
+
+describe('last-run output', () => {
+  const NOT_RUN = 'Not run: the platform could not reach its cluster API (ETIMEDOUT). The command was not started — a platform problem, not a failure of this task.';
+  const jobs = [
+    { ...MOCK_JOBS[0], id: 'cj-f', name: 'nightly', type: 'deployment', lastRunStatus: 'failed', lastRunResponseCode: null, lastRunOutput: NOT_RUN },
+    { ...MOCK_JOBS[0], id: 'cj-r', name: 'busy', type: 'deployment', lastRunStatus: 'running', lastRunOutput: 'done in 2s' },
+    { ...MOCK_JOBS[1], id: 'cj-n', name: 'never', lastRunOutput: null },
+  ];
+
+  function renderPage() {
+    mockApiFetch.mockImplementation((url: string) => Promise.resolve(
+      url.includes('/cron-jobs')
+        ? { data: jobs, pagination: { total_count: jobs.length, cursor: null, has_more: false, page_size: 50 } }
+        : { data: [] },
+    ));
+    render(<CronJobs />, { wrapper: createWrapper() });
+  }
+
+  it('shows the tenant why a run failed when they unfold it', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    expect(screen.queryByText(NOT_RUN)).not.toBeInTheDocument();
+    await user.click(await screen.findByTestId('cron-output-toggle-cj-f'));
+    const output = screen.getByTestId('cron-output-cj-f');
+    expect(output).toHaveTextContent('Output of the last run');
+    expect(output).toHaveTextContent(NOT_RUN);
+    await user.click(screen.getByTestId('cron-output-toggle-cj-f'));
+    expect(screen.queryByTestId('cron-output-cj-f')).not.toBeInTheDocument();
+  });
+
+  it('labels the stored output as the previous run while one is in flight', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('cron-output-toggle-cj-r'));
+    expect(screen.getByTestId('cron-output-cj-r')).toHaveTextContent('Output of the previous run');
+  });
+
+  it('offers no toggle for a job that has never run', async () => {
+    renderPage();
+    expect(await screen.findByText('never')).toBeInTheDocument();
+    expect(screen.queryByTestId('cron-output-toggle-cj-n')).not.toBeInTheDocument();
+  });
+});

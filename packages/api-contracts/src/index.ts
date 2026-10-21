@@ -31,6 +31,7 @@ export * from './dr-recover.js';
 export * from './dr-recover-task.js';
 export * from './migration.js';
 export * from './backup-health.js';
+export * from './backup-target-usage.js';
 export * from './cnpg-backup-health.js';
 export * from './cnpg-backup-catalogue.js';
 export * from './cnpg-backup-now.js';

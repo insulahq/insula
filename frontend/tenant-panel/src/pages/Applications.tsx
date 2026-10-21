@@ -22,6 +22,8 @@ import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import type { CatalogEntry, Deployment } from '@/types/api';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
+import { cpuCeilingCores, cpuCores, formatCpuCeiling } from '@/lib/cpu-ceiling';
+import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resource-availability';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
 
@@ -982,11 +984,14 @@ function UsageIndicator({
   request,
   type,
   enabled,
+  ceilingCores = null,
 }: {
   readonly deploymentId: string;
   readonly request: string;
   readonly type: 'cpu' | 'memory';
   readonly enabled: boolean;
+  /** CPU only: what the app can burst to (lib/cpu-ceiling), shown instead of the request. */
+  readonly ceilingCores?: number | null;
 }) {
   const { tenantId } = useTenantContext();
   const { data } = useDeploymentLiveMetrics(tenantId ?? undefined, enabled ? deploymentId : undefined);
@@ -998,9 +1003,11 @@ function UsageIndicator({
   let used = 0;
   let limit = 0;
   let label = '';
+  let limitLabel = request;
   if (type === 'cpu') {
     used = metrics.cpuUsed ?? 0;
-    limit = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    limit = ceilingCores ?? cpuCores(request);
+    if (ceilingCores != null) limitLabel = formatCpuCeiling(ceilingCores);
     label = `${Math.round(used * 1000)}m`;
   } else {
     used = metrics.memoryUsedMi ?? 0;
@@ -1019,7 +1026,7 @@ function UsageIndicator({
     <div className="min-w-[70px]" data-testid={`usage-${type}-${deploymentId}`}>
       <div className="text-xs text-gray-700 dark:text-gray-300">
         {label}
-        {limit > 0 && <span className="text-gray-400 dark:text-gray-500"> / {request}</span>}
+        {limit > 0 && <span className="text-gray-400 dark:text-gray-500"> / {limitLabel}</span>}
       </div>
       {limit > 0 && (
         <div className="mt-1 h-1 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
@@ -1061,10 +1068,12 @@ function StorageCell({ deploymentId, enabled }: { readonly deploymentId: string;
 }
 
 function DeploymentListView({
-  deployments, getCatalogEntryName, catalogMap, isPending,
+  deployments, getCatalogEntryName, catalogMap, isPending, burstCores,
   onSelect, onToggle, onForceStop, onPreview, onDelete,
 }: {
   readonly deployments: readonly Deployment[];
+  /** The plan's CPU burst ceiling under the tier model, or null. */
+  readonly burstCores: number | null;
   readonly getCatalogEntryName: (catalogEntryId: string | null, source?: string | null) => string;
   readonly catalogMap: ReadonlyMap<string, CatalogEntry>;
   readonly isPending: boolean;
@@ -1130,6 +1139,7 @@ function DeploymentListView({
                     request={deployment.cpuRequest ?? ''}
                     type="cpu"
                     enabled={deployment.status === 'running'}
+                    ceilingCores={cpuCeilingCores(deployment, burstCores)}
                   />
                 </td>
                 <td className="px-5 py-3">
@@ -1222,6 +1232,9 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const restoreDeployment = useRestoreDeployment(tenantId ?? undefined);
   const permanentDeleteDeployment = usePermanentDeleteDeployment(tenantId ?? undefined);
   const restartDeployment = useRestartDeployment(tenantId ?? undefined);
+  // The CPU ceiling every app's usage is shown against (lib/cpu-ceiling).
+  const { data: tenantCpuData } = useTenantCpuModel(tenantId ?? undefined);
+  const burstCores = tenantCpuData?.data?.cpuModel === 'tiered' ? tenantCpuData.data.cpuBurstCores ?? null : null;
   const [softDeleteConfirm, setSoftDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [deleteDataFolder, setDeleteDataFolder] = useState(false);
@@ -1455,6 +1468,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
               getCatalogEntryName={getCatalogEntryName}
               catalogMap={catalogMap}
               isPending={updateDeployment.isPending}
+              burstCores={burstCores}
               onSelect={setSelectedDeploymentId}
               onToggle={handleToggleStatus}
               onForceStop={(id) => updateDeployment.mutate({ deploymentId: id, status: 'stopped' })}
@@ -1589,6 +1603,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       request={deployment.cpuRequest}
                       enabled={deployment.status === 'running'}
                       type="cpu"
+                      ceilingCores={cpuCeilingCores(deployment, burstCores)}
                     />
                     <DeploymentMetricBar
                       label="Memory"
@@ -1937,12 +1952,15 @@ function DeploymentMetricBar({
   request,
   enabled,
   type,
+  ceilingCores = null,
 }: {
   readonly label: string;
   readonly deploymentId: string;
   readonly request: string;
   readonly enabled: boolean;
   readonly type: 'cpu' | 'memory';
+  /** CPU only: what the app can burst to (lib/cpu-ceiling), shown instead of the request. */
+  readonly ceilingCores?: number | null;
 }) {
   const { tenantId } = useTenantContext();
   const { data } = useDeploymentLiveMetrics(
@@ -1956,8 +1974,32 @@ function DeploymentMetricBar({
   let usedNum = 0;
   let usedLabel = '';
 
+  if (type === 'cpu' && ceilingCores != null) {
+    // "<used> / <ceiling>", no request: under tiers the request is a share,
+    // not a size, and reads as the app's room when it is not.
+    usedNum = metrics?.cpuUsed ?? 0;
+    const used = metrics ? `${(usedNum * 1000).toFixed(0)}m` : '—';
+    return (
+      <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5" data-testid={`grid-cpu-${deploymentId}`}>
+        <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100" title={`Bursts to ${formatCpuCeiling(ceilingCores)}`}>
+          {used} <span className="text-gray-400 dark:text-gray-500">/ {formatCpuCeiling(ceilingCores)}</span>
+        </p>
+        {metrics && (() => {
+          const pct = Math.min((usedNum / ceilingCores) * 100, 100);
+          const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+          return (
+            <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+              <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+            </div>
+          );
+        })()}
+      </div>
+    );
+  }
+
   if (type === 'cpu') {
-    requestNum = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    requestNum = cpuCores(request);
     usedNum = metrics?.cpuUsed ?? 0;
     usedLabel = metrics ? `${(usedNum * 1000).toFixed(0)}m` : '';
   } else {

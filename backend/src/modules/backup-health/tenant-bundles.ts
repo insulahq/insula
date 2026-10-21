@@ -60,6 +60,8 @@ export interface TenantBundleLedger {
   readonly lastFailedAt: Date | null;
   readonly lastFailedReason: string | null;
   readonly lastFailedStatus: 'partial' | 'failed' | null;
+  /** The tenant is suspended, so its backups are paused. */
+  readonly suspended: boolean;
 }
 
 export function summariseTenantBundles(
@@ -85,6 +87,11 @@ export function summariseTenantBundles(
 }
 
 function stateOf(l: TenantBundleLedger): BackupHealthSummary['state'] {
+  // Suspended: backups are paused (suspension.ts) — the nightly wave skips the
+  // tenant and run-now is refused. Its last bundle, good or bad, says nothing
+  // about a backup that is not supposed to run, and nothing can run to clear a
+  // failure until the tenant is resumed.
+  if (l.suspended) return 'paused';
   const failedStart = l.lastFailedStartedAt?.getTime() ?? null;
   const successStart = l.lastSuccessStartedAt?.getTime() ?? null;
   if (failedStart === null && successStart === null) return 'never_run';
@@ -97,6 +104,7 @@ function severityOf(
   state: BackupHealthSummary['state'],
   now: Date,
 ): BackupHealthSummary['severity'] {
+  if (state === 'paused') return 'info';
   if (state === 'failing' && l.lastFailedStatus === 'failed') return 'critical';
   // Unprotected since the last completed bundle — or, never backed up, since
   // the tenant was created (a tenant made an hour ago has missed nothing yet).
@@ -118,6 +126,7 @@ type LedgerRow = {
   readonly bad_at: Date | string | null;
   readonly bad_reason: string | null;
   readonly bad_status: string | null;
+  readonly tenant_status: string;
 };
 
 const toDate = (v: Date | string | null): Date | null => (v == null ? null : new Date(v));
@@ -150,7 +159,8 @@ export async function loadTenantBundleHealth(
            t.created_at AS tenant_created_at, runs.runs,
            good.created_at AS ok_started, good.ended_at AS ok_at,
            bad.created_at AS bad_started, bad.ended_at AS bad_at,
-           bad.last_error AS bad_reason, bad.status::text AS bad_status
+           bad.last_error AS bad_reason, bad.status::text AS bad_status,
+           t.status::text AS tenant_status
       FROM tenants t
       LEFT JOIN runs ON runs.tenant_id = t.id
       LEFT JOIN newest good ON good.tenant_id = t.id AND good.ok
@@ -176,6 +186,7 @@ export async function loadTenantBundleHealth(
       lastFailedAt: toDate(r.bad_at),
       lastFailedReason: r.bad_reason,
       lastFailedStatus: r.bad_status === 'failed' || r.bad_status === 'partial' ? r.bad_status : null,
+      suspended: r.tenant_status === 'suspended',
     }));
   return summariseTenantBundles(ledgers, now);
 }

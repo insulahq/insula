@@ -30,9 +30,8 @@ Each plan has these fields:
 | **Code** | A short stable identifier (e.g. `starter`). Set once at creation; can't be changed later. |
 | **Name** | The human label shown in dropdowns (e.g. *Starter*). |
 | **Price (/mo)** | Monthly price in your platform currency. |
-| **CPU Limit (cores)** | The old CPU reservation. Read only for tenants still on the pre-share model; ignored for everyone else. See below. |
 | **CPU tier** | The *share* of the machine this plan sells — **Normal**, **High** or **Highest** (1× / 2× / 4×). Every application a tenant on this plan runs takes this share when applications compete for CPU; when the machine is quiet they all burst freely regardless. |
-| **Burst ceiling (cores)** | The most any one of the tenant's containers may actually use. Reaching it throttles the container — it is never killed for it. Leave blank to derive it from **CPU Limit** as `max(1, limit × 2)`. |
+| **Burst ceiling (cores)** | The most any one of the tenant's containers may actually use. Reaching it throttles the container — it is never killed for it. Required. |
 | **Memory Limit (GB)** | Max memory. |
 | **Storage Limit (GB)** | Max persistent storage. |
 | **Max Sub-Users** | How many additional logins the tenant may create. **0** means none. |
@@ -76,9 +75,10 @@ Saved changes appear on the list straight away.
 !!! tip "The shipped plans"
     New installs ship Starter / Premium / Ultimate selling **Normal**,
     **High** and **Highest** with ceilings of **1**, **2** and **4** cores.
-    An existing platform's plans are never rewritten by an upgrade — if
-    yours predate the share model they will show no tier, and their ceiling
-    is derived from **CPU Limit** until you set one.
+    A plan's CPU is its tier and its ceiling — there is no CPU cores field.
+    A plan from before that, which set no ceiling, was given the one it had
+    been deriving from its cores (`max(1, cores × 2)`), so no tenant's
+    ceiling moved.
 
     Tenants given an individual override on their **Plan & limits** section are
     not affected: the override wins, and a plan edit does not overwrite it.

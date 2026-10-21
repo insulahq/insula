@@ -22,6 +22,10 @@ vi.mock('@/hooks/use-hosting-overview', () => ({
 vi.mock('@/hooks/use-tenant-context', () => ({
   useTenantContext: () => ({ tenantId: 't1' }),
 }));
+const { subscriptionFn } = vi.hoisted(() => ({ subscriptionFn: vi.fn() }));
+vi.mock('@/hooks/use-subscription', () => ({
+  useSubscription: () => subscriptionFn(),
+}));
 
 const ok = <T,>(data: T) => ({ state: 'ok' as const, reason: null, observedAt: null, data });
 
@@ -60,6 +64,7 @@ const show = () => render(
 );
 
 beforeEach(() => {
+  subscriptionFn.mockReturnValue({ data: undefined });
   summaryFn.mockReturnValue({ data: { data: summary() }, isLoading: false });
   liveFn.mockReturnValue({ data: { data: live() }, isLoading: false });
 });
@@ -227,5 +232,22 @@ describe('Hosting overview — chrome', () => {
     fireEvent.click(btn);
     expect(summaryRefetch).toHaveBeenCalledTimes(1);
     expect(liveRefetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Hosting overview — renewal date', () => {
+  it('shows when the plan renews, under the plan name', () => {
+    subscriptionFn.mockReturnValue({ data: { data: { subscription_expires_at: '2026-11-30T12:00:00Z' } } });
+    show();
+    const renewal = screen.getByTestId('dashboard-renewal');
+    expect(renewal).toHaveTextContent(/^Next renewal date: /);
+    expect(renewal).toHaveTextContent('2026');
+    expect(renewal.previousElementSibling).toHaveTextContent('Ultimate plan');
+  });
+
+  it('shows none for a plan that never expires', () => {
+    subscriptionFn.mockReturnValue({ data: { data: { subscription_expires_at: null } } });
+    show();
+    expect(screen.queryByTestId('dashboard-renewal')).not.toBeInTheDocument();
   });
 });

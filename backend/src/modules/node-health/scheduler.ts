@@ -27,19 +27,23 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
 import {
   notifyAdminNodeDown,
-  notifyAdminNodeRebooting,
+  notifyAdminNodeShuttingDown,
   notifyAdminNodeStartupComplete,
 } from '../notifications/events.js';
 import {
   detectBootTransitions,
   formatDowntime,
+  kubeletReportsShutdown,
+  wentDownAt,
   type BootFacts,
   type PrevBootState,
 } from './boot-events.js';
+import { nodeDownDedupeKey } from './fast-down-watch.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readOomWitnesses } from './oom-witness.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
 import { describeSuppression, loadJoinGrace } from './join-grace.js';
+import { outageHoldIndex } from './outage-hold.js';
 import { reapShutdownDebris } from './shutdown-debris.js';
 import {
   buildEntry,
@@ -67,6 +71,8 @@ interface RawNode {
       readonly status?: string;
       /** Ready's transition time is, in practice, the moment the node booted. */
       readonly lastTransitionTime?: string;
+      /** Ready's message carries the kubelet's graceful-shutdown report. */
+      readonly message?: string;
     }>;
     /** Kernel bootID — changes on every boot. See boot-events.ts. */
     readonly nodeInfo?: { readonly bootID?: string };
@@ -163,6 +169,8 @@ export async function reconcileNodeHealth(
 
   const facts: NodeFacts[] = [];
   const bootFacts: BootFacts[] = [];
+  // When each node that is not Ready left Ready (wentDownAt).
+  const downAtByNode = new Map<string, Date>();
   for (const n of nodeList.items ?? []) {
     const name = n.metadata?.name;
     if (!name) continue;
@@ -179,7 +187,9 @@ export async function reconcileNodeHealth(
       bootId: n.status?.nodeInfo?.bootID ?? null,
       ready,
       readySince: readyAt && !Number.isNaN(readyAt.getTime()) ? readyAt : null,
+      shuttingDown: kubeletReportsShutdown(readyCond),
     });
+    if (!ready) downAtByNode.set(name, wentDownAt(readyCond, now));
     facts.push({
       name,
       ready,
@@ -199,6 +209,10 @@ export async function reconcileNodeHealth(
   // Nodes still inside their join grace window: their state is persisted and
   // shown as usual, but nothing about them is NOTIFIED (join-grace.ts).
   const grace = await loadJoinGrace(k8s, nodeList.items ?? [], now);
+  // Nodes back from an outage and still settling (outage-hold.ts) hold their
+  // WARNING transitions only — see decideHealthNotification. Not the down,
+  // shutting-down or startup notices: those are the outage's own story.
+  const outage = outageHoldIndex(nodeList.items ?? [], now);
 
   // ── 5. Diff against persisted state, persist + notify ──────────
   const prevRows = await db.select().from(nodeHealthState);
@@ -215,6 +229,7 @@ export async function reconcileNodeHealth(
       ready: r.ready,
       observedAt: r.observedAt ?? null,
       rebootAnnounced: r.rebootAnnounced,
+      downSince: r.downSince ?? null,
     }]),
   );
   const bootTransitions = detectBootTransitions(bootFacts, prevBoot, now);
@@ -227,16 +242,24 @@ export async function reconcileNodeHealth(
   for (const entry of entries) {
     const prev = prevByName.get(entry.name);
     const joining = grace.get(entry.name);
+    const settle = outage.get(entry.name);
     const decision = decideHealthNotification({
       newSeverity: entry.severity,
       prev: prev
         ? { severity: prev.severity as NodeHealthSeverity, lastNotifiedAt: prev.lastNotifiedAt ?? null }
         : undefined,
       suppressed: joining !== undefined,
+      // Back from a reboot: the startup notice below is its recovery
+      // announcement, and while it settles its pods' start-up is not news.
+      settling: settle?.reason === 'back-recently',
+      startupNoticeNow: transitionByNode.get(entry.name)?.kind === 'startup-complete' && !joining,
       now,
     });
     const willNotify = decision.notify;
     const notifiedAt = decision.lastNotifiedAt;
+    if (settle?.reason === 'back-recently' && !joining && entry.severity !== 'normal' && !willNotify && notifiedAt === null) {
+      console.log(`[node-health-monitor] ${describeSuppression(entry.name, settle, `${entry.severity} health alert`)}`);
+    }
 
     // A new boot resets the "already announced" flag; announcing a shutdown
     // sets it. Anything else carries the previous value forward. A shutdown
@@ -244,13 +267,22 @@ export async function reconcileNodeHealth(
     // recorded as if it had been — startup-complete would then claim it was.
     const bootFact = bootFactByNode.get(entry.name);
     const transition = transitionByNode.get(entry.name);
-    const nextBootId = bootFact?.bootId ?? prev?.bootId ?? null;
-    const bootRolled = Boolean(
-      bootFact?.bootId && prev?.bootId && bootFact.bootId !== prev.bootId,
-    );
+    // A node back on a new boot reports its bootID before it is Ready (a k3s
+    // node waits for its network). Adopting the new one then left the next
+    // tick no reboot to see, and the startup notice never went out. It is
+    // adopted once the node is Ready — the tick startup-complete fires on.
+    const liveBootId = bootFact?.bootId ?? null;
+    const nextBootId = liveBootId && (entry.ready || !prev?.bootId)
+      ? liveBootId
+      : (prev?.bootId ?? liveBootId);
+    const bootRolled = Boolean(prev?.bootId && nextBootId !== prev.bootId);
+    // The outage's start, for the startup notice's downtime: kept from
+    // whichever detector saw it first, cleared once the node is Ready again.
+    const downAt = downAtByNode.get(entry.name) ?? now;
+    const shutdownNoticeNow = transition?.kind === 'shutting-down' && !joining;
     const nextRebootAnnounced = bootRolled
       ? false
-      : transition?.kind === 'rebooting' && !joining ? true : (prev?.rebootAnnounced ?? false);
+      : shutdownNoticeNow ? true : (prev?.rebootAnnounced ?? false);
 
     if (joining && (entry.severity !== 'normal' || transition)) {
       console.log(`[node-health-monitor] ${describeSuppression(
@@ -273,13 +305,19 @@ export async function reconcileNodeHealth(
         severity: entry.severity,
         lastNotifiedAt: notifiedAt,
         observedAt: now,
+        downSince: entry.ready ? null : (prev?.downSince ?? downAt),
       })
       .onConflictDoUpdate({
         target: nodeHealthState.nodeName,
         set: {
           ready: entry.ready,
           bootId: nextBootId,
-          rebootAnnounced: nextRebootAnnounced,
+          // The fast down-watch sets reboot_announced when IT announces a
+          // shutdown (fast-down-watch.ts markShutdownAnnounced), possibly after
+          // this tick read the row. Keep a true it wrote for this same boot.
+          rebootAnnounced: bootRolled
+            ? false
+            : sql`${nodeHealthState.rebootAnnounced} OR ${nextRebootAnnounced}`,
           pressures: [...entry.pressures],
           csiDriversPresent: entry.csiDriversPresent,
           csiDriversExpected: entry.csiDriversExpected,
@@ -289,16 +327,28 @@ export async function reconcileNodeHealth(
           severity: entry.severity,
           lastNotifiedAt: notifiedAt,
           observedAt: now,
+          // The fast down-watch records the moment too (fast-down-watch.ts
+          // recordWentDown), and one already recorded is kept. A node that
+          // went down after this tick listed it reads Ready here: its moment
+          // is later than the tick, and is not this tick's to clear.
+          downSince: entry.ready
+            ? sql`CASE WHEN ${nodeHealthState.downSince} > ${now.toISOString()}::timestamptz THEN ${nodeHealthState.downSince} END`
+            : sql`COALESCE(${nodeHealthState.downSince}, ${downAt.toISOString()}::timestamptz)`,
         },
       });
 
     if (willNotify) {
-      await fanoutNotification(db, adminUserIds, entry, decision.prevSeverityForCopy);
+      await fanoutNotification(db, adminUserIds, entry, decision.prevSeverityForCopy, {
+        // Exactly what the fast down-watch reads (the Node's own bootID, no
+        // fallback), or the two would announce one outage twice.
+        goingDownKey: nodeDownDedupeKey(entry.name, bootFact?.bootId ?? null, now),
+        shutdownNoticeNow,
+      });
       notified.push(entry.name);
     }
   }
 
-  // ── 5b. Dispatch the reboot lifecycle notifications ────────────
+  // ── 5b. Dispatch the shutdown / startup lifecycle notifications ──
   // After persistence: a dispatch failure must not cause the transition to be
   // re-detected (and re-sent) on the next tick. dispatchSafe never throws, but
   // the ordering is the guarantee, not its implementation.
@@ -306,17 +356,17 @@ export async function reconcileNodeHealth(
     // A joining node restarts k3s and sometimes the whole host while it
     // bootstraps; neither is a reboot anyone needs telling about.
     if (grace.has(t.nodeName)) continue;
-    if (t.kind === 'rebooting') {
-      const boot = bootFactByNode.get(t.nodeName)?.bootId ?? 'unknown';
-      await notifyAdminNodeRebooting(db, { nodeName: t.nodeName }, `node-reboot:${t.nodeName}:${boot}`);
+    if (t.kind === 'shutting-down') {
+      // The going-down key: the fast down-watch usually announced this
+      // shutdown already, and then this send is a no-op.
+      const boot = bootFactByNode.get(t.nodeName)?.bootId ?? null;
+      await notifyAdminNodeShuttingDown(db, { nodeName: t.nodeName }, nodeDownDedupeKey(t.nodeName, boot, now));
     } else {
       await notifyAdminNodeStartupComplete(db, {
         nodeName: t.nodeName,
         downtimeText: t.downtimeMs === null ? 'unknown' : `~${formatDowntime(t.downtimeMs)}`,
         bootedAtText: t.bootedAt ? ` at ${t.bootedAt.toISOString().replace('T', ' ').slice(0, 16)} UTC` : '',
-        announcementNote: t.rebootWasAnnounced
-          ? 'The shutdown was announced beforehand.'
-          : 'No shutdown notice was sent — on a single-node cluster the control plane goes down with the node, so the reboot can only be reported once it is back.',
+        announcementNote: startupAnnouncementNote(t.rebootWasAnnounced, entries.length),
       }, `node-startup:${t.nodeName}:${t.bootId}`);
     }
   }
@@ -377,11 +427,30 @@ async function getAdminUserIds(db: Database): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
+/**
+ * The startup notice's closing sentence. The single-node explanation only
+ * where it is true: on a multi-node cluster an unannounced shutdown means the
+ * kubelet never reported one (a crash, a power cut) — that node was announced
+ * as down instead.
+ */
+export function startupAnnouncementNote(shutdownWasAnnounced: boolean, nodeCount: number): string {
+  if (shutdownWasAnnounced) return 'The shutdown was announced beforehand.';
+  return nodeCount <= 1
+    ? 'No shutdown notice was sent — on a single-node cluster the control plane goes down with the node, so the restart can only be reported once it is back.'
+    : 'No shutdown notice was sent — the node did not report a graceful shutdown before it went down.';
+}
+
 async function fanoutNotification(
   db: Database,
   adminUserIds: ReadonlyArray<string>,
   entry: NodeHealthEntry,
   prevSeverity: NodeHealthSeverity,
+  goingDown: {
+    /** nodeDownDedupeKey — shared with the fast down-watch and the shutdown notice. */
+    readonly goingDownKey: string;
+    /** This tick announces a graceful shutdown instead; "down" would repeat it. */
+    readonly shutdownNoticeNow: boolean;
+  },
 ): Promise<void> {
   const title = titleFor(entry, prevSeverity);
   const conditions = conditionsFor(entry);
@@ -420,14 +489,13 @@ async function fanoutNotification(
   }
 
   // Phase 6A: route critical node-down transitions through the
-  // categorised dispatcher. dedupeKey scoped to (node × day) so a
-  // node that flaps doesn't spam the admin inbox — the dispatcher
-  // suppresses identical-key emits within 30 days, so the operator
-  // sees one notification per node-down day even with 5-min reconciler
-  // ticks. We only fire for ready=false transitions (not warnings).
-  if (coveredByNodeDown) {
-    const dedupeKey = `node-down:${entry.name}:${new Date().toISOString().slice(0, 10)}`;
-    await notifyAdminNodeDown(db, { nodeName: entry.name }, dedupeKey);
+  // categorised dispatcher. The going-down key is scoped to (node × boot ×
+  // day) and shared with the fast down-watch and the shutdown notice, so one
+  // outage is announced once — as "shutting down" when the kubelet said so,
+  // as "down" otherwise — whichever detector sees it first. We only fire for
+  // ready=false transitions (not warnings).
+  if (coveredByNodeDown && !goingDown.shutdownNoticeNow) {
+    await notifyAdminNodeDown(db, { nodeName: entry.name }, goingDown.goingDownKey);
   }
 }
 

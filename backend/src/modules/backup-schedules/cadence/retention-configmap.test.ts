@@ -22,6 +22,7 @@ import {
   applyRetentionConfigMap,
 } from './retention-configmap.js';
 import type { Database } from '../../../db/index.js';
+import { effectiveRetention, JOB_UNLIMITED_COUNT } from '../retention-policy.js';
 
 const SECRETS = retentionTargetFor('secrets_bundle')!;
 
@@ -76,6 +77,20 @@ describe('desiredRetentionCount', () => {
 
   it('refuses a non-integer', async () => {
     expect(await desiredRetentionCount(dbWith(2.5), SECRETS)).toBe(SECRETS.defaultCount);
+  });
+
+  it('a days-only policy publishes a count the job can never reach — not its default, not zero', async () => {
+    // The days limit is enforced from platform-api; the job's own count prune
+    // must not cap it with the compiled default.
+    const db = {
+      select: () => ({ from: () => ({ where: async () => [{ retentionDays: 14, retentionCount: null }] }) }),
+    } as unknown as Database;
+    expect(await desiredRetentionCount(db, SECRETS)).toBe(JOB_UNLIMITED_COUNT);
+  });
+
+  it('the job default is the shared rule\'s fallback for a row that limits nothing', () => {
+    expect(effectiveRetention('secrets_bundle', undefined).count).toBe(retentionTargetFor('secrets_bundle')!.defaultCount);
+    expect(effectiveRetention('cluster_state', undefined).count).toBe(retentionTargetFor('cluster_state')!.defaultCount);
   });
 });
 

@@ -21,10 +21,11 @@
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../../db/index.js';
 import { backupSchedules } from '../../../db/schema.js';
+import { effectiveRetention, jobCount } from '../retention-policy.js';
 
 export interface RetentionConfigMapTarget {
   /** `backup_schedules.subsystem`. */
-  readonly subsystem: string;
+  readonly subsystem: 'secrets_bundle' | 'cluster_state';
   readonly namespace: string;
   readonly configMapName: string;
   /**
@@ -58,22 +59,23 @@ export function retentionTargetFor(subsystem: string): RetentionConfigMapTarget 
 /**
  * The count to publish for one subsystem.
  *
- * NULL means "never configured", which is the job's own default — NOT zero.
- * Anything below 1 is refused for the same reason: the scripts guard
- * themselves, but a writer that can emit a destructive number and relies on
- * the reader to ignore it is one script edit away from being destructive.
+ * Resolved by the shared rule (retention-policy.ts). A row that limits nothing
+ * is the job's own default; a days-only row publishes a count the job can
+ * never reach, because the days limit is enforced from platform-api
+ * (dr-artefact-retention.ts) and the job must not cap it with its default.
+ * Never zero or negative: the scripts guard themselves, but a writer that can
+ * emit a destructive number and relies on the reader to ignore it is one
+ * script edit away from being destructive.
  */
 export async function desiredRetentionCount(
   db: Database,
   target: RetentionConfigMapTarget,
 ): Promise<number> {
   const [row] = await db
-    .select({ retentionCount: backupSchedules.retentionCount })
+    .select({ retentionDays: backupSchedules.retentionDays, retentionCount: backupSchedules.retentionCount })
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, target.subsystem));
-  const n = row?.retentionCount;
-  if (n === null || n === undefined || !Number.isInteger(n) || n < 1) return target.defaultCount;
-  return n;
+  return jobCount(effectiveRetention(target.subsystem, row));
 }
 
 interface CoreLike {

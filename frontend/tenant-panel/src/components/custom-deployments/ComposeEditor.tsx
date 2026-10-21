@@ -191,7 +191,7 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   };
   if (!jsonSchema) { void loadSchema(); }
 
-  const validateMutation = useValidateCustomDeployment(tenantId);
+  const validateMutation = useValidateCustomDeployment(tenantId, existingDeployment?.id);
   const createMutation = useCreateCustomDeployment(tenantId);
   const deleteMutation = useDeleteCustomDeployment(tenantId);
 
@@ -220,9 +220,9 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
       // returned "Invalid string: must match pattern /^[a-z0-9]…/" against a
       // field the tenant had not filled in yet and had no reason to. The
       // comment here used to claim we validated without a name; now we do.
-      // Validate is also a dry run that never uses the credential, so the
-      // token stays off the wire for it.
-      const { pull_credential: _omitted, name: typedName, ...rest } = buildInput();
+      // The credential IS sent: without it a private image can only answer
+      // "access denied" (see SimpleContainerWizard).
+      const { name: typedName, ...rest } = buildInput();
       const body = {
         ...rest,
         ...(typedName ? { name: typedName } : {}),

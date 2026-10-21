@@ -2268,3 +2268,34 @@ Kubernetes (k3s) upgrades join the same flow; P0 ships first in v2026.10.7-rc.2.
 Every phase is proven as an in-place upgrade on the local lab staging from production's release,
 driven in a browser, with a worker joined.
 
+
+## R45 — Delete the old CPU reservation model and the `cpu_limit` columns
+
+CPU cores stopped being a plan or tenant parameter (ADR-062, final step): the
+plan form, the API and the tenant page no longer offer them, new tenants are
+born on CPU shares everywhere, migration `0159_cpu_cores_retired.sql` wrote
+down the ceiling every plan without one derived from its cores, and
+`cpu-migration/auto-migrate.ts` moves every tenant still on the old model to
+shares, one at a time. Revert to legacy is gone.
+
+What stays until every install has run that migrator to the end, because a
+tenant on the old model still needs it while it waits its turn:
+
+- the legacy branch of `resolveTenantCpu` and the legacy quota shape in
+  `applyResourceQuota` / `resolveCpuHard`;
+- `hosting_plans.cpu_limit` (NOT NULL; new plans store `burst / 2`) and
+  `tenants.cpu_limit_override`, still returned by plan and tenant reads;
+- the legacy branches in the deployments resource editor, the namespace
+  integrity repair and the metrics display limits.
+
+**To do, in a later release:** refuse to start the removal migration while
+any tenant is `cpu_scheduling_mode = 'legacy'` (an install that skipped the
+migrator's release must run it first; the migrator also waits, pass after
+pass, for a tenant whose application is mid-rollout, so an application stuck
+in `deploying`/`pending` keeps its tenant legacy until the operator settles
+it), then delete the code above, drop the
+two columns (expand/contract as R43: the old pods select them by name), drop
+`cpu_scheduling_mode` once it can only be `tiered`, drop
+`deployments.cpu_request_pre_migration` (a baseline nothing restores now that
+revert is gone), and retire `platform_settings.cpu_scheduling_default` and the
+`cpu_auto_migrate_attempt:*` keys.

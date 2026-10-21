@@ -15,7 +15,7 @@ import type { Tenant } from '@/types/api';
 import type { Plan } from '@/hooks/use-plans';
 
 export type LimitId =
-  | 'cpu' | 'tier' | 'burst' | 'memory' | 'storage' | 'bandwidth'
+  | 'tier' | 'burst' | 'memory' | 'storage' | 'bandwidth'
   | 'mailboxes' | 'mailboxSize' | 'sendsHour' | 'sendsDay' | 'subUsers' | 'customContainers' | 'price';
 
 export type LimitGroup = 'Compute' | 'Storage and traffic' | 'Email' | 'Users and features' | 'Billing';
@@ -76,7 +76,7 @@ const num = (v: unknown): string | null => {
 
 export function buildLimitRows(tenant: Tenant, plan: Plan | undefined, currency: string): LimitRow[] {
   return [
-    { id: 'cpu', group: 'Compute', label: 'CPU', kind: 'number', unit: 'cores', step: '0.25', field: 'cpu_limit_override', override: num(tenant.cpuLimitOverride), planValue: num(plan?.cpuLimit) },
+    // CPU is the share and the ceiling; there is no cores row (ADR-062).
     { id: 'tier', group: 'Compute', label: 'CPU tier', kind: 'tier', unit: '', step: '', field: 'cpu_tier_override', override: str(tenant.cpuTierOverride), planValue: str(plan?.cpuTier) },
     { id: 'burst', group: 'Compute', label: 'Burst ceiling', kind: 'number', unit: 'cores', step: '0.5', field: 'cpu_burst_cores_override', override: num(tenant.cpuBurstCoresOverride), planValue: num(plan?.cpuBurstCores) },
     { id: 'memory', group: 'Compute', label: 'Memory', kind: 'number', unit: 'GB', step: '0.5', field: 'memory_limit_override', override: num(tenant.memoryLimitOverride), planValue: num(plan?.memoryLimit) },

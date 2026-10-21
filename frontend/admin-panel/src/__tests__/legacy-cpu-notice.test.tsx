@@ -54,7 +54,7 @@ describe('LegacyCpuNotice', () => {
   });
 
   /**
-   * ★ Counts only what the LEGACY tenants would hand back.
+   * ★ Counts only what the LEGACY tenants will hand back.
    *
    * The cluster-wide `reclaimableMillis` includes tenants that have already
    * migrated and already delivered their saving, so quoting it would
@@ -65,19 +65,22 @@ describe('LegacyCpuNotice', () => {
       reclaimableMillis: 5000,
       tenants: [
         tenant({ tenantId: 'done', schedulingMode: 'tiered', reclaimableMillis: 4900 }),
-        tenant({ tenantId: 'todo', schedulingMode: 'legacy', reclaimableMillis: 100 }),
+        tenant({ tenantId: 'todo', schedulingMode: 'legacy', reclaimableMillis: 400 }),
       ],
     }));
     show();
-    // 100m is below the threshold, so nothing is claimed at all.
-    expect(screen.queryByTestId('legacy-cpu-notice')).toBeNull();
+    expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent('0.40');
+    expect(screen.getByTestId('legacy-cpu-notice')).not.toHaveTextContent('5.00');
   });
 
-  it('stays quiet when the saving would be trivial', () => {
-    // A banner that appears for a tenth of a core is one people learn to skip.
+  it('shows while any tenant is still on the old model, however small the saving', () => {
+    // The tenant is being moved automatically — the operator should see that,
+    // whatever it hands back.
     ok(preview({ reclaimableMillis: 30, tenants: [tenant({ reclaimableMillis: 30 })] }));
     show();
-    expect(screen.queryByTestId('legacy-cpu-notice')).toBeNull();
+    expect(screen.getByTestId('legacy-cpu-notice')).toHaveTextContent('being moved to CPU shares');
+    // …without claiming a saving of "0.03" — too small to name.
+    expect(screen.getByTestId('legacy-cpu-notice')).not.toHaveTextContent('hands back');
   });
 
   it('renders without a usage reading rather than printing 0%', () => {
@@ -96,8 +99,8 @@ describe('LegacyCpuNotice', () => {
 
   // Read it aloud. "1 tenant still reserve CPU" shipped to a live console.
   it.each([
-    [1, /1 tenant still reserves CPU it does not use/],
-    [2, /2 tenants still reserve CPU they do not use/],
+    [1, /1 tenant is still on the old CPU model — it is being moved/],
+    [2, /2 tenants are still on the old CPU model — they are being moved/],
   ])('agrees in number for %i legacy tenant(s)', (n, re) => {
     ok(preview({
       tenants: Array.from({ length: n }, (_, i) => tenant({ tenantId: `t${i}` })),

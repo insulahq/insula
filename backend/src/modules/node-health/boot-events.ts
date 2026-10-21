@@ -15,10 +15,18 @@
  * reliably on every topology, including a single-node cluster, because by the
  * time we observe it the API server is back up.
  *
- * `rebooting` keys on the node leaving Ready. That is only observable by an API
- * server that is still running, so:
+ * `shutting-down` keys on the KUBELET saying so: during a graceful node
+ * shutdown it holds Ready=False with "node is shutting down" in the message,
+ * for the length of its shutdown grace period. It used to key on the node
+ * leaving Ready at all, and announced "rebooting" for a server that was being
+ * shut down — and for a crash, where nothing was draining anything. Leaving
+ * Ready without that message is a node DOWN (fast-down-watch.ts), not a
+ * shutdown, and a shutdown is not known to be a reboot until it is back.
+ * The notice is only observable by an API server that is still running, so:
  *
- *   multi-node  — fires live, from a surviving node.
+ *   multi-node  — fires live, from a surviving node. Mostly from the 30-second
+ *                 down-watch: the message lasts one grace period, which a
+ *                 5-minute reconciler tick usually misses.
  *   SINGLE-node — usually CANNOT fire. The control plane is on the node that is
  *                 going down. With `shutdownGracePeriodByPodPriority` the API
  *                 pod (priority 10000) is drained ~70s into a 120s budget, so a
@@ -40,6 +48,20 @@ export interface BootFacts {
   readonly ready: boolean;
   /** `lastTransitionTime` of the Ready condition — the boot moment, in practice. */
   readonly readySince: Date | null;
+  /** The kubelet reports a graceful shutdown in progress (kubeletReportsShutdown). */
+  readonly shuttingDown: boolean;
+}
+
+/**
+ * The kubelet's own graceful-shutdown signal: Ready=False whose message carries
+ * "node is shutting down" (kubelet nodeshutdown manager, fed into the Ready
+ * condition with the other readiness errors). A crash, a power cut or a lost
+ * network shows Ready=Unknown "Kubelet stopped posting node status" instead.
+ */
+export function kubeletReportsShutdown(
+  ready: { readonly status?: string; readonly message?: string } | undefined,
+): boolean {
+  return ready?.status === 'False' && /node is shutting down/i.test(ready.message ?? '');
 }
 
 /** What we remember about a node between ticks. */
@@ -48,12 +70,18 @@ export interface PrevBootState {
   readonly ready: boolean;
   /** When the reconciler last successfully observed this node. */
   readonly observedAt: Date | null;
-  /** Whether a `rebooting` notice already went out for the CURRENT boot. */
+  /** Whether a `shutting-down` notice already went out for the CURRENT boot. */
   readonly rebootAnnounced: boolean;
+  /**
+   * When a detector saw the node leave Ready for the outage in progress
+   * (`node_health_state.down_since`); null when none did — on a single-node
+   * cluster nothing is running to see it.
+   */
+  readonly downSince: Date | null;
 }
 
-export interface RebootingTransition {
-  readonly kind: 'rebooting';
+export interface ShuttingDownTransition {
+  readonly kind: 'shutting-down';
   readonly nodeName: string;
 }
 
@@ -65,16 +93,33 @@ export interface StartupCompleteTransition {
   /** When the node became Ready on the new boot, if the kubelet reported it. */
   readonly bootedAt: Date | null;
   /**
-   * Approximate outage, from the last tick that saw the node to the moment it
-   * came back Ready. "Approximate" is load-bearing: the lower bound is the tick
-   * interval, so this OVERSTATES by up to one tick and the wording must hedge.
+   * Approximate outage, to the moment the node came back Ready: from the moment
+   * it left Ready when a detector saw that, otherwise from the last tick that
+   * saw it up — which OVERSTATES by up to one tick, so the wording hedges.
+   * Never from the last tick that saw it at all: the reconciler keeps seeing a
+   * node while it is down, and a ~21 minute shutdown read as "~1m 59s".
    */
   readonly downtimeMs: number | null;
   /** False when the shutdown was never announced (the single-node case). */
   readonly rebootWasAnnounced: boolean;
 }
 
-export type BootTransition = RebootingTransition | StartupCompleteTransition;
+export type BootTransition = ShuttingDownTransition | StartupCompleteTransition;
+
+/**
+ * When a node that is not Ready left Ready: its Ready condition's own
+ * transition time, set by the kubelet (a graceful shutdown) or by the node
+ * controller (a node that stopped posting). Never later than `now`, and `now`
+ * when there is no usable time.
+ */
+export function wentDownAt(
+  ready: { readonly lastTransitionTime?: string | Date } | undefined,
+  now: Date,
+): Date {
+  const at = ready?.lastTransitionTime ? new Date(ready.lastTransitionTime) : null;
+  if (!at || Number.isNaN(at.getTime()) || at.getTime() > now.getTime()) return now;
+  return at;
+}
 
 /** Render an approximate duration for an operator: "6m 50s", "1h 04m". */
 export function formatDowntime(ms: number): string {
@@ -92,8 +137,8 @@ export function formatDowntime(ms: number): string {
  *
  * Pure — unit tested directly. Returns at most one transition per node per
  * tick; a node that rebooted between two ticks yields `startup-complete` only,
- * because the `rebooting` moment is already in the past and announcing it now
- * would be a lie about the present.
+ * because the `shutting-down` moment is already in the past and announcing it
+ * now would be a lie about the present.
  */
 export function detectBootTransitions(
   facts: ReadonlyArray<BootFacts>,
@@ -121,8 +166,9 @@ export function detectBootTransitions(
       // Prefer the kubelet's own Ready transition as the "back up" moment; fall
       // back to now (we have just observed it Ready, so now is an upper bound).
       const backAt = f.readySince ?? now;
-      const downtimeMs = prev.observedAt
-        ? Math.max(0, backAt.getTime() - prev.observedAt.getTime())
+      const downFrom = prev.downSince ?? prev.observedAt;
+      const downtimeMs = downFrom
+        ? Math.max(0, backAt.getTime() - downFrom.getTime())
         : null;
       out.push({
         kind: 'startup-complete',
@@ -135,13 +181,15 @@ export function detectBootTransitions(
       continue;
     }
 
-    // ── Going down ────────────────────────────────────────────────
-    // Ready -> NotReady on the SAME boot. Gating on an unchanged bootID keeps
-    // this from firing for a node that already rebooted and is still coming up:
-    // that case is the startup path above, not a new shutdown.
+    // ── Shutting down ─────────────────────────────────────────────
+    // The kubelet reports a graceful shutdown on the SAME boot. Gating on an
+    // unchanged bootID keeps this from firing for a node that already rebooted
+    // and is still coming up: that case is the startup path above. A node that
+    // just left Ready without that report is down, not shutting down — the
+    // down notice covers it.
     const sameBoot = f.bootId === null || prev.bootId === null || f.bootId === prev.bootId;
-    if (sameBoot && prev.ready && !f.ready && !prev.rebootAnnounced) {
-      out.push({ kind: 'rebooting', nodeName: f.nodeName });
+    if (sameBoot && prev.ready && f.shuttingDown && !prev.rebootAnnounced) {
+      out.push({ kind: 'shutting-down', nodeName: f.nodeName });
     }
   }
 

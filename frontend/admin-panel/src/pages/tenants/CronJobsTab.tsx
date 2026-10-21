@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Loader2, Play, Pause, Trash2, Globe, Terminal, Pencil, Mail } from 'lucide-react';
 import clsx from 'clsx';
@@ -15,6 +15,10 @@ import { useBulkRun } from '@/hooks/use-bulk-run';
 import { runCronJobBulkItem, useInvalidateCronJobQueries, type CronJobBulkAction } from '@/hooks/use-bulk-cron-jobs';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { CronOutputRow, CronOutputToggle } from '@/components/CronRunOutput';
+
+/** The table's column count, for the output row that spans it. */
+const TABLE_COLUMNS = 10;
 
 function TypeBadge({ type }: { readonly type: 'webcron' | 'deployment' }) {
   if (type === 'webcron') {
@@ -47,7 +51,15 @@ export default function CronJobsTab() {
   /** Row being edited. The modal is keyed on this so switching rows remounts it. */
   const [editingJob, setEditingJob] = useState<(typeof cronJobs)[number] | null>(null);
   const [confirmAction, setConfirmAction] = useState<CronJobBulkAction | null>(null);
+  /** Jobs whose last-run output is unfolded under their row. */
+  const [outputOpen, setOutputOpen] = useState<ReadonlySet<string>>(new Set());
   const pagination = useCursorPagination({ defaultLimit: 20 });
+
+  const toggleOutput = (id: string) => setOutputOpen((open) => {
+    const next = new Set(open);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   useEffect(() => {
     pagination.resetPagination();
@@ -168,9 +180,11 @@ export default function CronJobsTab() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {sortedCronJobs.map((job) => (
+                  {sortedCronJobs.map((job) => {
+                    const showOutput = Boolean(job.lastRunOutput) && outputOpen.has(job.id);
+                    return (
+                    <Fragment key={job.id}>
                     <tr
-                      key={job.id}
                       className={`transition-colors cursor-pointer ${
                         selection.isSelected(job.id)
                           ? 'bg-brand-50 dark:bg-brand-900/20'
@@ -266,6 +280,9 @@ export default function CronJobsTab() {
                                 </span>
                               )}
                             </div>
+                            {job.lastRunOutput ? (
+                              <CronOutputToggle jobId={job.id} open={showOutput} onToggle={() => toggleOutput(job.id)} />
+                            ) : null}
                           </div>
                         ) : (
                           <span className="text-sm text-gray-400">—</span>
@@ -287,7 +304,17 @@ export default function CronJobsTab() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    {showOutput && (
+                      <CronOutputRow
+                        jobId={job.id}
+                        output={job.lastRunOutput ?? ''}
+                        running={job.lastRunStatus === 'running'}
+                        colSpan={TABLE_COLUMNS}
+                      />
+                    )}
+                    </Fragment>
+                    );
+                  })}
                   {cronJobs.length === 0 && (
                     <tr>
                       <td colSpan={10} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">

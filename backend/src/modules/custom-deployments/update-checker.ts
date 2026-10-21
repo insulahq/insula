@@ -19,9 +19,12 @@
 // `reason`. The UI surfaces this in a tooltip.
 //
 // PAT support: when the deployment has a stored credential, we use
-// it for basic-auth against the realm. Decryption happens at call
-// time; the cleartext lives only for the duration of one HTTP
-// roundtrip.
+// it for basic-auth against the realm — or against the registry itself
+// when it challenges with `Basic` rather than a token realm. Decryption
+// happens at call time; the cleartext lives only for the duration of one
+// HTTP roundtrip. A result read with a credential is never cached: the
+// cache is keyed by image alone, so it would hand a private repository's
+// tags to any tenant who names the same image.
 
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
@@ -186,7 +189,8 @@ async function checkSemverUpdate(
   currentSemver: SemverVersion,
   options: CheckUpdateOptions,
 ): Promise<UpdateCheckResult> {
-  if (!options.force) {
+  const shared = !options.authCreds;
+  if (!options.force && shared) {
     const cached = await readCache(options.db, ref, currentTag);
     if (cached && Date.now() - cached.checkedAt.getTime() < CACHE_TTL_MS) {
       return cached;
@@ -204,7 +208,7 @@ async function checkSemverUpdate(
   // Only cache definitive results. `unknown` results stay un-cached
   // so transient registry hiccups don't pin a stale `unknown` for
   // 60 minutes — the next call retries.
-  if (probe.status !== 'unknown') {
+  if (probe.status !== 'unknown' && shared) {
     await writeCache(options.db, ref, currentTag, probe);
   }
   return probe;
@@ -230,7 +234,10 @@ async function checkDigestUpdate(
   // and MUST stay live: caching the comparison would keep saying "update
   // available" for up to 60 min after the tenant re-pulls.
   let registryDigest: string | null = null;
-  if (!options.force) {
+  // Not for a credentialed check: see the header — a private tag's digest is
+  // not something another tenant naming the same image may read.
+  const shared = !options.authCreds;
+  if (!options.force && shared) {
     const cached = await readCache(options.db, ref, currentTag);
     if (cached && cached.latest && Date.now() - cached.checkedAt.getTime() < CACHE_TTL_MS) {
       registryDigest = cached.latest;
@@ -249,9 +256,11 @@ async function checkDigestUpdate(
     // Cache the resolved digest (definitive). Severity stored is advisory —
     // checkDigestUpdate always recomputes the status against the live running
     // digest, so a redeploy is reflected immediately on the next check.
-    await writeCache(options.db, ref, currentTag, {
-      status: 'digest', current: currentTag, latest: registryDigest, reason: null, checkedAt: new Date(),
-    });
+    if (shared) {
+      await writeCache(options.db, ref, currentTag, {
+        status: 'digest', current: currentTag, latest: registryDigest, reason: null, checkedAt: new Date(),
+      });
+    }
   }
 
   if (!running) {
@@ -281,6 +290,11 @@ async function probeRegistry(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const indexHost = ref.registryHost === 'docker.io' ? DOCKER_HUB_INDEX_HOST : ref.registryHost;
   const url = `https://${indexHost}/v2/${ref.repository}/tags/list`;
+  // SSRF: the host is the tenant's. The manifest probe (image-digest.ts) has
+  // refused internal addresses since it was written; this one did not.
+  if (isRealmUrlBlocked(url)) {
+    return unknownResult(currentTag, 'registry host is not a public address');
+  }
 
   // First request — no auth. Most public registries return 401 with
   // a WWW-Authenticate header pointing at the auth realm.
@@ -292,14 +306,14 @@ async function probeRegistry(
     if (!wwwAuth) {
       return unknownResult(currentTag, 'registry 401 with no auth realm');
     }
-    const token = await fetchBearerToken(fetchImpl, wwwAuth, opts.authCreds);
-    if (!token) {
+    const authorization = await answerChallenge(fetchImpl, wwwAuth, opts.authCreds);
+    if (!authorization) {
       return unknownResult(currentTag, 'auth realm did not return a token');
     }
     response = await timedFetch(
       fetchImpl,
       url,
-      { headers: { authorization: `Bearer ${token}` } },
+      { headers: { authorization } },
       REQUEST_TIMEOUT_MS,
     );
   }
@@ -337,6 +351,29 @@ async function probeRegistry(
 }
 
 // ─── Bearer-token dance ─────────────────────────────────────────────────────
+
+/**
+ * The Authorization header that answers a registry's 401, or null.
+ *
+ * `Bearer realm=…` is the token exchange below. `Basic` is a registry that
+ * wants the credential itself on every request — a plain `registry:2` with
+ * htpasswd, some Nexus and Artifactory setups. Answering only Bearer
+ * challenges reported those images as denied even with a correct token. The
+ * caller has already checked the registry's own URL against internal
+ * addresses, and scopes the credential to that registry.
+ */
+export async function answerChallenge(
+  fetchImpl: typeof fetch,
+  wwwAuth: string,
+  authCreds: { username: string; password: string } | undefined,
+): Promise<string | null> {
+  if (/^\s*basic\b/i.test(wwwAuth)) {
+    if (!authCreds) return null;
+    return `Basic ${Buffer.from(`${authCreds.username}:${authCreds.password}`, 'utf8').toString('base64')}`;
+  }
+  const token = await fetchBearerToken(fetchImpl, wwwAuth, authCreds);
+  return token ? `Bearer ${token}` : null;
+}
 
 /**
  * Parse `WWW-Authenticate: Bearer realm="…",service="…",scope="…"`

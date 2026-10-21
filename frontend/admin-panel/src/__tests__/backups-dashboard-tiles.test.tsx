@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import type { BackupHealthSummary } from '@insula/api-contracts';
+import type { BackupHealthSummary, TargetUsageRow } from '@insula/api-contracts';
 
 let rows: BackupHealthSummary[] | undefined = [];
 let healthError: Error | null = null;
@@ -18,7 +18,12 @@ const refetch = vi.fn();
 vi.mock('@/hooks/use-backup-health', () => ({
   useBackupHealth: () => ({ data: rows, error: healthError, refetch, isFetching: false }),
 }));
-vi.mock('@/hooks/use-backup-config', () => ({ useBackupConfigs: () => ({ data: { data: [] } }) }));
+let usageTargets: TargetUsageRow[] = [];
+vi.mock('@/hooks/use-backup-config', () => ({
+  useBackupConfigs: () => ({ data: { data: [] } }),
+  useBackupTargetUsage: () => ({ data: { data: { targets: usageTargets } }, isLoading: false, error: null }),
+  useRefreshTargetUsage: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
+}));
 
 const BackupsDashboard = (await import('@/pages/backups/BackupsDashboard')).default;
 
@@ -56,7 +61,7 @@ function renderPage() {
 
 const card = (label: string) => screen.getByTestId(`backups-dashboard-stat-${label}`);
 
-beforeEach(() => { rows = []; healthError = null; refetch.mockClear(); });
+beforeEach(() => { rows = []; healthError = null; usageTargets = []; refetch.mockClear(); });
 
 describe('Backups dashboard — Tenants card', () => {
   it('counts healthy tenants and when the newest bundle succeeded', () => {
@@ -65,6 +70,28 @@ describe('Backups dashboard — Tenants card', () => {
     expect(card('tenants')).toHaveTextContent('2 healthy');
     expect(card('tenants')).toHaveTextContent('last success 3h ago');
     expect(card('tenants').className).toContain('border-emerald-200');
+  });
+
+  it('a suspended tenant is paused, not failing: the card stays green and says so', () => {
+    rows = [
+      tenant(1, { state: 'paused', severity: 'info', lastSuccessAt: hoursAgo(300), lastFailedAt: hoursAgo(200), lastFailedReason: 'authenticate refused' }),
+      tenant(2, { lastSuccessAt: hoursAgo(4) }),
+    ];
+    renderPage();
+    expect(card('tenants')).toHaveTextContent('1 healthy');
+    expect(card('tenants')).toHaveTextContent('1 paused (suspended)');
+    expect(card('tenants')).not.toHaveTextContent('failing');
+    expect(card('tenants').className).toContain('border-emerald-200');
+    const recent = within(screen.getByTestId('backups-dashboard-recent'));
+    expect(recent.getByText('Tenant 1').closest('li')).toHaveTextContent('paused — tenant suspended');
+  });
+
+  it('every tenant suspended: "N paused", not a green "0 healthy"', () => {
+    rows = [tenant(1, { state: 'paused', severity: 'info' }), tenant(2, { state: 'paused', severity: 'info' })];
+    renderPage();
+    expect(card('tenants')).toHaveTextContent('2 paused');
+    expect(card('tenants')).not.toHaveTextContent('healthy');
+    expect(card('tenants').className).not.toContain('border-emerald-200');
   });
 
   it('a failing tenant turns the card amber and keeps the healthy count in view', () => {
@@ -193,5 +220,53 @@ describe('Backups dashboard — before the roll-up arrives', () => {
     }
     within(panel).getByRole('button', { name: /retry/i }).click();
     expect(refetch).toHaveBeenCalled();
+  });
+});
+
+describe('Backups dashboard — storage by target', () => {
+  const GiB = 1024 ** 3;
+  const target = (over: Partial<TargetUsageRow> & { id: string }): TargetUsageRow => ({
+    targetId: over.id, name: over.name ?? over.id, storageType: over.storageType ?? 'cifs', enabled: over.enabled ?? true,
+    readOnly: false, boundClasses: over.boundClasses ?? ['system', 'tenant', 'mail'], measuringSince: over.measuringSince ?? null,
+    usage: over.usage === undefined ? {
+      measuredAt: hoursAgo(2), durationMs: 1,
+      classes: { system: { bytes: 3 * GiB, objects: 1 }, tenant: { bytes: 500 * GiB, objects: 1 }, mail: { bytes: 60 * GiB, objects: 1 } },
+      usedByBackupsBytes: 563 * GiB,
+      capacity: { totalBytes: 1024 * GiB, usedBytes: 600 * GiB, freeBytes: 424 * GiB },
+      capacityNote: null, errors: {},
+    } : over.usage,
+  });
+
+  it('a tile per target: total used by all classes, free space, and each class', () => {
+    usageTargets = [target({ id: 't1', name: 'StorageBox' })];
+    renderPage();
+    const tile = within(screen.getByTestId('target-usage-tile-t1'));
+    expect(tile.getByTestId('target-usage-total-t1')).toHaveTextContent('563.0 GB');
+    expect(tile.getByTestId('target-usage-free-t1')).toHaveTextContent('424.0 GB free of 1.0 TB');
+    expect(tile.getByTestId('target-usage-class-t1-system')).toHaveTextContent('3.0 GB');
+    expect(tile.getByTestId('target-usage-class-t1-tenant')).toHaveTextContent('500.0 GB');
+    expect(tile.getByTestId('target-usage-class-t1-mail')).toHaveTextContent('60.0 GB');
+    expect(tile.getByText('Measured 2 h ago')).toBeInTheDocument();
+  });
+
+  it('an S3 target says it reports no free space rather than showing a number', () => {
+    const t = target({ id: 's3', storageType: 's3' });
+    usageTargets = [{ ...t, usage: { ...t.usage!, capacity: null, capacityNote: 'S3 storage does not report free space' } }];
+    renderPage();
+    expect(screen.getByTestId('target-usage-free-s3')).toHaveTextContent('Free space: S3 storage does not report free space');
+  });
+
+  it('a class that could not be listed says so, not 0', () => {
+    const t = target({ id: 't1' });
+    usageTargets = [{ ...t, usage: { ...t.usage!, classes: { ...t.usage!.classes, tenant: null }, errors: { tenant: 'connection reset' } } }];
+    renderPage();
+    expect(screen.getByTestId('target-usage-class-t1-tenant')).toHaveTextContent('not listed');
+  });
+
+  it('a target never measured says so; a disabled one holding nothing is left out', () => {
+    usageTargets = [target({ id: 'new', usage: null }), target({ id: 'off', enabled: false, usage: null })];
+    renderPage();
+    expect(screen.getByTestId('target-usage-tile-new')).toHaveTextContent('Not measured yet');
+    expect(screen.queryByTestId('target-usage-tile-off')).toBeNull();
   });
 });

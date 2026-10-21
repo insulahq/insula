@@ -1106,10 +1106,8 @@ export async function updateTenant(
       ? new Date(input.subscription_expires_at)
       : null;
   }
-  if (input.cpu_limit_override !== undefined) updateValues.cpuLimitOverride = input.cpu_limit_override === null ? null : String(input.cpu_limit_override);
-  // ADR-062 tier overrides. Read only by a tenant in tiered mode — setting
-  // them on a legacy tenant changes nothing about its scheduling, which is
-  // what lets an operator prepare a plan without re-tiering anyone.
+  // ADR-062 tier overrides. There is no cores override any more — CPU is the
+  // share and the ceiling.
   if (input.cpu_tier_override !== undefined) updateValues.cpuTierOverride = input.cpu_tier_override;
   if (input.cpu_burst_cores_override !== undefined) {
     updateValues.cpuBurstCoresOverride = input.cpu_burst_cores_override === null
@@ -1202,7 +1200,6 @@ export async function updateTenant(
   // path; the full reprovision task below is async and idempotent).
   const planOrLimitsChanged = (
     (input.plan_id !== undefined && input.plan_id !== existing.planId)
-    || input.cpu_limit_override !== undefined
     || input.memory_limit_override !== undefined
     || input.storage_limit_override !== undefined
   );

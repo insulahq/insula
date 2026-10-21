@@ -27,6 +27,14 @@
  *   - Caller holds the `stop()` handle for graceful shutdown
  *
  * The reconcilers themselves are idempotent — no-op on convergence.
+ *
+ * Each tick also converges CrowdSec + the WAF onto the webmail and Stalwart
+ * routes (shared/traefik-mail-waf.ts) — AFTER the ingress reconcile in the
+ * same tick, never beside it: both rewrite the webmail route's middleware
+ * array, and of two concurrent MERGE_PATCHes one is lost. That does not cover
+ * the other writers (the Stalwart host reconcile at boot, another replica's
+ * tick), which patch without a resourceVersion; whatever they drop, like a
+ * route that drifts (a Flux re-seed, a hand edit), comes back the next tick.
  */
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
@@ -36,6 +44,7 @@ import {
   reconcileEngineDeployments,
   reconcileStalwartCorsOrigin,
 } from './reconciler.js';
+import { reconcileMailEdgeGuards } from '../../shared/traefik-mail-waf.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -46,6 +55,8 @@ export interface WebmailRouterReconcilerHandle {
 export interface WebmailRouterClients {
   readonly custom: k8s.CustomObjectsApi;
   readonly apps: k8s.AppsV1Api;
+  /** Reads the WAF's exclusion ConfigMaps for the mail edge guards. */
+  readonly core: k8s.CoreV1Api;
 }
 
 export function startWebmailRouterReconciler(
@@ -82,6 +93,15 @@ export function startWebmailRouterReconciler(
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },
         'webmail-router-scheduler: reconcileStalwartCorsOrigin threw',
+      );
+    }
+    if (cancelled) return;
+    try {
+      await reconcileMailEdgeGuards(clients, log);
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'webmail-router-scheduler: reconcileMailEdgeGuards threw',
       );
     }
   };

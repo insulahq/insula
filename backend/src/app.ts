@@ -1941,7 +1941,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
           const webmailRouterHandle = startWebmailRouterReconciler(
             app.db,
-            { custom: k8sForImapsync.custom, apps: k8sForImapsync.apps },
+            { custom: k8sForImapsync.custom, apps: k8sForImapsync.apps, core: k8sForImapsync.core },
             app.log,
           );
           app.addHook('onClose', () => webmailRouterHandle.stop());
@@ -2221,6 +2221,45 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.addHook('onClose', () => mailPruneHandle.stop());
         } catch (err) {
           app.log.warn({ err }, 'mail-snapshot-prune: scheduler start failed (non-blocking)');
+        }
+
+        // What each backup target holds per class, and its free space —
+        // rclone size/about against the target itself. 6-hour tick, leased;
+        // the targets page can also measure one on demand.
+        try {
+          const { startTargetUsageScheduler } = await import('./modules/backup-config/target-usage.js');
+          const encryptionKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+            ?? process.env.PLATFORM_ENCRYPTION_KEY;
+          if (encryptionKey) {
+            const usageHandle = startTargetUsageScheduler({ db: app.db, encryptionKey, log: app.log });
+            app.addHook('onClose', () => usageHandle.stop());
+          }
+        } catch (err) {
+          app.log.warn({ err }, 'backup-target usage: scheduler start failed (non-blocking)');
+        }
+
+        // CPU cores are no longer a plan parameter (ADR-062): every tenant
+        // still on the old reservation model is moved to CPU shares, one at a
+        // time, with the same gated pipeline an operator's click runs.
+        try {
+          const { startCpuAutoMigrateScheduler } = await import('./modules/cpu-migration/auto-migrate.js');
+          const cpuAutoHandle = startCpuAutoMigrateScheduler(app.db, k8sForImapsync, app.log);
+          app.addHook('onClose', () => cpuAutoHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'cpu auto-migrate: scheduler start failed (non-blocking)');
+        }
+
+        // Days + keep-last for the DR artefacts (etcd snapshots, secrets
+        // bundles, cluster-state dumps) on the system target. 5-min tick,
+        // leased; the schedule route also runs it right after a save.
+        try {
+          const { startDrArtefactRetentionScheduler } = await import(
+            './modules/backup-schedules/dr-artefact-retention.js'
+          );
+          const drRetentionHandle = startDrArtefactRetentionScheduler(app.db, k8sForImapsync.core, app.log);
+          app.addHook('onClose', () => drRetentionHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'dr-artefact retention: scheduler start failed (non-blocking)');
         }
 
         // R-X6: postgres ObjectStore + ScheduledBackup reconciler.

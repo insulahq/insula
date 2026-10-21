@@ -105,14 +105,10 @@ export const updateTenantSchema = z.object({
   status: tenantStatusEnum.optional(),
   plan_id: uuidField.optional(),
   subscription_expires_at: z.string().datetime().nullable().optional(),
-  cpu_limit_override: z.number().min(0.1).max(64).nullable().optional(),
   /**
    * ADR-062. Same override shape as every other plan property: null means
-   * inherit the plan, which in turn may fall through to a derived default.
-   *
-   * These are read ONLY by a tenant in tiered mode. Setting them on a tenant
-   * still in legacy changes nothing about how it is scheduled — deliberately,
-   * so preparing a plan cannot re-tier anyone by accident.
+   * inherit the plan. There is no cores override — `cpu_limit_override` was
+   * retired with the plan's cores; a tenant's CPU is its share and ceiling.
    */
   cpu_tier_override: cpuTierSchema.nullable().optional(),
   cpu_burst_cores_override: z.number().min(0.1).max(256).nullable().optional(),

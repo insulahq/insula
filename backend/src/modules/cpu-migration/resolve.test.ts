@@ -98,16 +98,14 @@ describe('resolveTenantCpu — tiered mode', () => {
     expect(r.source.burst).toBe('plan');
   });
 
-  // A plan migrated before cpu_burst_cores was populated must still bound its
-  // tenants — "no ceiling" is the one answer that must never fall out of a gap.
-  it('derives a generous ceiling when the plan has none', () => {
-    const r = resolveTenantCpu(plan({ cpuLimit: '1.00' }), tiered());
-    expect(r.burstCores).toBe(2);
+  // Cores no longer feed the ceiling: every plan states one (migration 0159
+  // wrote down what each plan without had derived), so a plan row without one
+  // cannot occur — and if a gap ever reaches here it takes the 1-core floor,
+  // never a figure computed from the retired cores.
+  it('never derives a ceiling from cores — a plan without one gets the floor', () => {
+    const r = resolveTenantCpu(plan({ cpuLimit: '4.00' }), tiered());
+    expect(r.burstCores).toBe(1);
     expect(r.source.burst).toBe('derived');
-  });
-
-  it('never derives a ceiling below one core, even for the smallest plan', () => {
-    expect(resolveTenantCpu(plan({ cpuLimit: '0.10' }), tiered()).burstCores).toBe(1);
   });
 
   it('still bounds a tenant whose plan cannot be resolved at all', () => {
@@ -117,10 +115,10 @@ describe('resolveTenantCpu — tiered mode', () => {
   });
 
   // Postgres numerics arrive as strings; a malformed one must not read as 0,
-  // which would be "reserve nothing" / "no burst".
+  // which would be "no burst".
   it('treats an unparseable numeric as absent, not as zero', () => {
     const r = resolveTenantCpu(plan({ cpuBurstCores: 'not-a-number', cpuLimit: '2' }), tiered());
-    expect(r.burstCores).toBe(4);
+    expect(r.burstCores).toBe(1);
     expect(r.source.burst).toBe('derived');
   });
 });
@@ -141,56 +139,26 @@ describe('tieredQuotaRequestMillis', () => {
   });
 });
 
-describe('the DERIVED ceiling uses the effective limit', () => {
-  /**
-   * ★ `cpu_limit_override ?? plan.cpu_limit`, the precedence every other
-   * path uses — including this function's own legacy branch.
-   *
-   * It read `plan.cpuLimit` alone, so one tenant resolved two different
-   * ways depending on which branch asked. Seen on production: a tenant
-   * whose `cpu_limit_override` was 1.00 against an ultimate plan's 2.00
-   * was given a 4-core ceiling derived from the plan, ignoring the
-   * override entirely.
-   */
-  const plan = { cpuLimit: '2.00', cpuTier: null, cpuBurstCores: null };
+describe('a cores override no longer moves a tiered tenant', () => {
+  const plan = { cpuLimit: '2.00', cpuTier: null, cpuBurstCores: '3.00' };
   const tiered = (o = {}) => ({
     cpuSchedulingMode: 'tiered' as const,
     cpuLimitOverride: null, cpuTierOverride: null, cpuBurstCoresOverride: null, ...o,
   });
 
-  it('honours a LOWER cpu_limit_override', () => {
-    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '1.00' })).burstCores).toBe(2);
+  it('the plan ceiling applies whatever a stored cores override says', () => {
+    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '0.10' })).burstCores).toBe(3);
+    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '8.00' })).burstCores).toBe(3);
   });
 
-  it('honours a HIGHER cpu_limit_override', () => {
-    expect(resolveTenantCpu(plan, tiered({ cpuLimitOverride: '4.00' })).burstCores).toBe(8);
+  it('the tenant\'s own ceiling still wins', () => {
+    expect(resolveTenantCpu(plan, tiered({ cpuBurstCoresOverride: '6' })).burstCores).toBe(6);
   });
 
-  it('falls back to the plan when there is no override', () => {
-    expect(resolveTenantCpu(plan, tiered()).burstCores).toBe(4);
-  });
-
-  it('agrees with the legacy branch about which limit applies', () => {
-    // The same tenant, asked both ways: legacy reports 1 core of
-    // reservation, tiered derives its ceiling from that same 1 core.
-    const t = { cpuLimitOverride: '1.00', cpuTierOverride: null, cpuBurstCoresOverride: null };
-    const legacy = resolveTenantCpu(plan, { ...t, cpuSchedulingMode: 'legacy' });
-    const tier = resolveTenantCpu(plan, { ...t, cpuSchedulingMode: 'tiered' });
+  it('a tenant still on the old model keeps its stored reservation until it is moved', () => {
+    const legacy = resolveTenantCpu(plan, {
+      cpuSchedulingMode: 'legacy', cpuLimitOverride: '1.00', cpuTierOverride: null, cpuBurstCoresOverride: null,
+    });
     expect(legacy.requestMillis).toBe(1000);
-    expect(tier.burstCores).toBe(2); // max(1, 1.00 x 2)
-  });
-
-  it('is never reached when the PLAN declares a ceiling', () => {
-    // Which is now the seeded default, so the derivation is a safety net
-    // for plans that predate the column rather than the normal answer.
-    expect(resolveTenantCpu(
-      { ...plan, cpuBurstCores: '3.00' }, tiered({ cpuLimitOverride: '0.10' }),
-    ).burstCores).toBe(3);
-  });
-
-  it('is never reached when the TENANT declares one', () => {
-    expect(resolveTenantCpu(
-      { ...plan, cpuBurstCores: '3.00' }, tiered({ cpuBurstCoresOverride: '6' }),
-    ).burstCores).toBe(6);
   });
 });

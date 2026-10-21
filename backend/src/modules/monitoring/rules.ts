@@ -62,6 +62,16 @@ export interface SloRule {
    * Printing "Current value: 1" for those says nothing and reads like data.
    */
   readonly unit?: 'ratio' | 'seconds' | 'count' | 'presence';
+  /**
+   * The rule reports discrete EVENTS (a kernel OOM kill) inside a lookback
+   * window, not a lasting state. Never held for a node outage
+   * (node-health/outage-hold.ts): an event can be what took the node down,
+   * and its window can roll past before the hold ends, so holding it would
+   * lose it. A state rule held through an outage is only delayed — if it is
+   * real, it is still true when the hold ends. The join window still holds
+   * both.
+   */
+  readonly reportsEvents?: boolean;
 }
 
 /**
@@ -179,6 +189,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0,
     forSeconds: 0,
+    // A kernel OOM can be what took the node down: never held for its outage.
+    reportsEvents: true,
   },
   {
     id: 'system-container-oom',

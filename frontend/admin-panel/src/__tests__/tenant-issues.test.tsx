@@ -93,10 +93,11 @@ describe('where the issues sit on the tenant detail page', () => {
     const { default: src } = await import('../components/tenant-detail/OverviewTab.tsx?raw');
 
     const attention = src.indexOf('<AttentionCard items={attention}');
-    const websites = src.indexOf('<WebsitesCard');
+    const domains = src.indexOf('<DomainsCard');
     const account = src.indexOf('<AccountCard');
     expect(attention).toBeGreaterThan(-1);
-    expect(attention).toBeLessThan(websites);
+    expect(domains).toBeGreaterThan(-1);
+    expect(attention).toBeLessThan(domains);
     expect(attention).toBeLessThan(account);
     // …and the tenant's own issues are what it lists first.
     expect(src.indexOf('...(issues ?? []).map(')).toBeLessThan(src.indexOf("key: 'placement'"));

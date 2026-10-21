@@ -312,12 +312,9 @@ PARALLEL=(
   # (~8-12 min: deployment provisioning + LE cert issuance), comparable to
   # monitoring-slo above; self-cleans via trap. Staging-validated 17/17.
   "mtls:integration-mtls-e2e.sh"
-  # ADR-037 asymmetric QoS: asserts the tenant ResourceQuota shape (requests.cpu
-  # + limits.memory, NO limits.cpu), multi-component allocation, per-container
-  # Burstable-CPU/Guaranteed-memory, and that an over-allocation is rejected at
-  # pod-admission by the quota (not a sync 4xx). Disposable tenant, trap cleanup.
-  # Uses SSH kubectl (SSH_HOST from integration.env). Staging-validated 10/10. ~2 min.
-  "burstable-qos:integration-burstable-qos.sh"
+  # (ADR-037's burstable-qos suite is retired: it asserted the old CPU model —
+  # a cores budget and NO limits.cpu — which no tenant has now that CPU cores
+  # are gone and every tenant is on shares. The CPU-tier suites cover it.)
   # Resource-monitoring / monthly-bandwidth E2E: plan bandwidth setting
   # + override, node-cpu SLO rules, bandwidth/saturation notification categories,
   # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)

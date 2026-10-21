@@ -42,7 +42,7 @@ export interface BackupHealthSummary {
   readonly category: BackupCategory;
   readonly severity: BackupSeverity;
   readonly tenantId: string | null;
-  readonly state: 'healthy' | 'failing' | 'never_run';
+  readonly state: 'healthy' | 'failing' | 'never_run' | 'paused';
   readonly lastSuccessAt: Date | null;
   readonly lastFailedAt: Date | null;
   readonly lastFailedReason: string | null;
@@ -195,11 +195,13 @@ const STATE_ORDER: Record<BackupHealthSummary['state'], number> = {
   failing: 0,
   never_run: 1,
   healthy: 2,
+  // Paused (a suspended tenant) is neither a problem nor protection: last.
+  paused: 3,
 };
 
 /**
  * The roll-up's display order: failing first, then never run, then healthy,
- * each by name. Exported so rows from other sources (the tenant bundle ledger,
+ * then paused, each by name. Exported so rows from other sources (the tenant bundle ledger,
  * tenant-bundles.ts) merge into the same order as the Job rows.
  */
 export function sortSummaries(

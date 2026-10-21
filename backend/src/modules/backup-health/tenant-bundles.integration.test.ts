@@ -133,7 +133,10 @@ describe.skipIf(!dbAvailable)('backup-health tenant bundle rows (integration)', 
 
     const rows = await byTenant();
     expect(rows.get(optedOut)?.state).toBe('healthy');
-    expect(rows.get(suspended)?.state).toBe('failing');
+    // Suspended: backups are paused, so its last failure is history, not a
+    // failing backup — nothing can run to clear it until it is resumed.
+    expect(rows.get(suspended)?.state).toBe('paused');
+    expect(rows.get(suspended)?.severity).toBe('info');
   });
 
   it('archived tenants are gone and are left out, bundles or not', async () => {

@@ -5,15 +5,14 @@
  * Kept apart from routes.ts so the HTTP layer stays about HTTP.
  */
 
-import { eq, sql, and, inArray } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { tenants, hostingPlans, tasks } from '../../db/schema.js';
+import { tenants, hostingPlans } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { runTenantCpuMigration, type MigrationEffects, type MigrationOutcome } from './apply.js';
-import { buildRevertPlan, runTenantCpuRevert, type RevertOutcome } from './revert.js';
-import { resolveTenantCpu, DEFAULT_LEGACY_CPU_CORES } from './resolve.js';
-import { tenantUsageBlocker, ceilingCores } from './tiers.js';
+import { resolveTenantCpu } from './resolve.js';
+import { tenantUsageBlocker } from './tiers.js';
 import { describeDeployment, type DeploymentFactsRow } from './describe.js';
 import type { CpuTier } from '@insula/api-contracts';
 import type { DeploymentToRetier } from './plan.js';
@@ -30,7 +29,6 @@ interface TenantCtx {
   readonly namespace: string;
   readonly tier: ReturnType<typeof resolveTenantCpu>['tier'];
   readonly burstCores: number;
-  readonly legacyCores: number;
   readonly mode: 'legacy' | 'tiered';
 }
 
@@ -56,20 +54,10 @@ async function loadTenant(db: Database, tenantId: string): Promise<TenantCtx> {
       cpuBurstCoresOverride: t.cpuBurstCoresOverride,
     },
   );
-  const legacy = resolveTenantCpu(
-    plan ? { cpuLimit: plan.cpuLimit, cpuTier: null, cpuBurstCores: null } : null,
-    {
-      cpuSchedulingMode: 'legacy',
-      cpuLimitOverride: t.cpuLimitOverride,
-      cpuTierOverride: null,
-      cpuBurstCoresOverride: null,
-    },
-  );
   return {
     namespace: t.kubernetesNamespace,
     tier: target.tier,
     burstCores: target.burstCores ?? 1,
-    legacyCores: (legacy.requestMillis ?? DEFAULT_LEGACY_CPU_CORES * 1000) / 1000,
     mode: t.cpuSchedulingMode,
   };
 }
@@ -355,75 +343,6 @@ export async function startTenantCpuMigration(
     error: outcome.status === 'failed' ? outcome.reason : null,
   });
   return { taskId, outcome };
-}
-
-/**
- * Evidence that a migration ran, whether or not it finished. Used so a
- * half-applied tenant can still be reverted.
- */
-async function migrationArtifacts(
-  db: Database, k8s: K8sClients, tenantId: string, namespace: string,
-): Promise<{ any: boolean; baselines: number; limitRange: boolean }> {
-  const [row] = await db.execute<{ n: string }>(sql`
-    SELECT count(*)::text AS n FROM deployments
-     WHERE tenant_id = ${tenantId} AND cpu_request_pre_migration IS NOT NULL
-  `).then((r) => r.rows ?? []);
-  const baselines = Number(row?.n ?? 0);
-  // A cluster read that fails must not be reported as "no artifacts" — that
-  // would resurrect the lock-out this exists to remove.
-  const limitRange = await fx.limitRangeExists(k8s, namespace).catch(() => true);
-  return { any: baselines > 0 || limitRange, baselines, limitRange };
-}
-
-export async function revertTenantCpuMigration(
-  db: Database, k8s: K8sClients, tenantId: string,
-): Promise<RevertOutcome> {
-  const ctx = await loadTenant(db, tenantId);
-  /**
-   * ★ Refuse only when there is genuinely nothing to undo.
-   *
-   * `mark_tiered` is the LAST step, so a crash — a killed pod, an eviction,
-   * an OOM, anything that is not a caught error — leaves the tenant `legacy`
-   * with a LimitRange installed, pods re-tiered, and baselines stored.
-   * Gating revert on the mode alone made that state unrecoverable: apply was
-   * blocked by the still-"running" task and revert by NOT_TIERED, and the
-   * only thing that freed it was the orphan reaper, 24 HOURS later.
-   *
-   * So the question is not "does the flag say tiered" but "is there any
-   * evidence of a migration to undo".
-   */
-  const artifacts = await migrationArtifacts(db, k8s, tenantId, ctx.namespace);
-  if (ctx.mode === 'legacy' && !artifacts.any) {
-    throw new ApiError(
-      'NOT_TIERED',
-      'This tenant is not on tiered CPU scheduling, so there is nothing to revert',
-      409,
-      { tenant_id: tenantId },
-    );
-  }
-  const rows = await fx.listMigratableDeployments(db, tenantId);
-  const plan = buildRevertPlan(rows.map((d) => ({
-    id: d.id,
-    name: d.name,
-    currentCpuRequest: d.cpuRequest,
-    cpuRequestPreMigration: d.cpuRequestPreMigration,
-  })));
-
-  return runTenantCpuRevert({
-    restore: async (deploymentId, to) => {
-      await deploymentService.updateDeploymentResources(db, tenantId, deploymentId, { cpu_request: to }, k8s);
-      // Only after the restore lands: clearing first would lose the target if
-      // the update throws.
-      await fx.clearPriorRequest(db, deploymentId);
-    },
-    removeQuotaLimits: () => fx.removeQuotaLimits(k8s, ctx.namespace, ctx.legacyCores),
-    removeLimitRange: () => fx.removeLimitRange(k8s, ctx.namespace),
-    rollPodsStillCapped: () => fx.rollPodsStillCapped(
-      k8s, ctx.namespace, fx.QUOTA_SCOPE_PRIORITY_CLASS,
-    ),
-    markLegacy: () => fx.setSchedulingMode(db, tenantId, 'legacy'),
-    report: async () => {},
-  }, plan);
 }
 
 export async function stopTenantCpuMigration(db: Database, tenantId: string, userId: string): Promise<void> {

@@ -51,6 +51,7 @@ import {
   deriveShimSecretKey,
 } from '../backup-rclone-shim/crypto.js';
 import { SHIM_S3_ENDPOINT_URL } from '../backup-rclone-shim/mail-restic.js';
+import { shimObjectTime } from '../backup-rclone-shim/shim-times.js';
 
 export type CatalogueSource = 'object-store' | 'unavailable';
 
@@ -281,7 +282,8 @@ export function accumulateWalObjects(
   for (const obj of objects) {
     out.segmentCount += 1;
     out.totalBytes += obj.Size ?? 0;
-    const t = obj.LastModified ? obj.LastModified.getTime() : null;
+    // The shim reports a placeholder, not the upload time (shim-times.ts).
+    const t = shimObjectTime(obj.LastModified)?.getTime() ?? null;
     if (t !== null) {
       if (out.oldest === null || t < out.oldest) out.oldest = t;
       if (out.newest === null || t > out.newest) out.newest = t;
@@ -481,7 +483,9 @@ export async function listBackupsFromObjectStore(
         const headP = s3.send(new HeadObjectCommand({ Bucket: bucket, Key: dataKey }))
           .then((h) => ({
             dataSizeBytes: h.ContentLength ?? null,
-            uploadedAt: h.LastModified ? h.LastModified.toISOString() : null,
+            // Placeholder through the shim → unknown; backup.info's end_time is
+            // the time that counts, and the panel prefers it.
+            uploadedAt: shimObjectTime(h.LastModified)?.toISOString() ?? null,
           }))
           .catch(() => ({ dataSizeBytes: null, uploadedAt: null }));
         const [info, headRes] = await Promise.all([infoP, headP]);

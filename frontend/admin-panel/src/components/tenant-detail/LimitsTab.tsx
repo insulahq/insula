@@ -67,7 +67,9 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
   const m = metricsRes?.data;
   const mailboxes = mailboxesRes?.data ?? [];
   const usage: Partial<Record<LimitId, Usage>> = {};
-  if (m?.cpu?.inUse != null) usage.cpu = { value: m.cpu.inUse, text: `${m.cpu.inUse.toFixed(2)} cores now` };
+  // No CPU usage beside the limits: the only CPU limit left is the burst
+  // ceiling, which is per application, and tenant-wide use is not comparable
+  // with it. The Overview tile shows CPU use.
   if (m?.memory?.inUse != null) usage.memory = { value: m.memory.inUse, text: `${m.memory.inUse.toFixed(2)} GB now` };
   if (m?.storage?.inUse != null) usage.storage = { value: Math.round(m.storage.inUse * 10) / 10, text: `${m.storage.inUse.toFixed(1)} GB used` };
   if (bwRes?.data) usage.bandwidth = { value: Math.round(bwRes.data.usedGb * 10) / 10, text: `${bwRes.data.usedGb.toFixed(1)} GB this cycle` };
@@ -497,7 +499,7 @@ function PlanCompare({ tenant, tenantId, plans, current, usage, currency }: {
   if (shown.length === 0) return null;
   const rows: ReadonlyArray<{ readonly label: string; readonly id?: LimitId; readonly override: unknown; readonly value: (p: Plan) => string; readonly num?: (p: Plan) => number }> = [
     { label: 'Price', override: tenant.monthlyPriceOverride, value: (p) => formatCurrency(Number(p.monthlyPriceUsd), currency) },
-    { label: 'CPU', override: tenant.cpuLimitOverride, value: (p) => `${p.cpuLimit} cores` },
+    { label: 'CPU', override: tenant.cpuTierOverride ?? tenant.cpuBurstCoresOverride, value: (p) => `${p.cpuTier ?? 'high'} share, bursts to ${Number(p.cpuBurstCores)} cores` },
     { label: 'Memory', override: tenant.memoryLimitOverride, value: (p) => `${p.memoryLimit} GB` },
     { label: 'Storage', id: 'storage', override: tenant.storageLimitOverride, value: (p) => `${p.storageLimit} GB`, num: (p) => Number(p.storageLimit) },
     { label: 'Bandwidth', id: 'bandwidth', override: tenant.bandwidthLimitOverride, value: (p) => `${p.bandwidthGbLimit} GB / month`, num: (p) => p.bandwidthGbLimit },

@@ -71,6 +71,13 @@ ALLOW_LIST=(
   # Dashboard Backups & DR card: reads backup_schedules.subsystem =
   # 'tenant_bundle' for the tenant class's cadence. A subsystem name.
   "backend/src/modules/dashboard/backup-classes.ts"
+  # The shared retention rule and its apply-now dispatcher key on
+  # backup_schedules.subsystem ('tenant_bundle'). Subsystem names.
+  "backend/src/modules/backup-schedules/retention-policy.ts"
+  "backend/src/modules/backup-schedules/apply-retention-now.ts"
+  # Renders a ScheduleCard per subsystem (a .tsx test — the *.test.ts skip
+  # below does not cover it).
+  "frontend/admin-panel/src/__tests__/system-retention-fields.test.tsx"
   "packages/api-contracts/src/backup-schedules.ts"
   # Frontend: `tenant_bundle` is a valid subsystem prop on the
   # schedule UI components. They never write it back to

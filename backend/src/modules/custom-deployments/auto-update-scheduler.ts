@@ -32,8 +32,7 @@ import { deployments, tenants } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { parseImageReference } from './image-reference.js';
 import { resolveTagDigest, digestChanged, extractDigest } from './image-digest.js';
-import { getRunningDigest, pullAndRedeploy, setAutoUpdate } from './service.js';
-import { loadDecryptedToken } from './pat-store.js';
+import { getRunningDigest, pullAndRedeploy, setAutoUpdate, storedCredentialForImage } from './service.js';
 import { notifyTenantCustomDeploymentRolledBack } from '../notifications/events.js';
 import type { CustomDeploymentSpec } from './schema.js';
 
@@ -103,7 +102,8 @@ async function processOne(
   const parsed = parseImageReference(service.image);
   if (!parsed || !parsed.tag || extractDigest(service.image)) return false;
 
-  const authCreds = await loadAuthCreds(deps, row.id);
+  // Only for the registry the credential belongs to — see storedCredentialForImage.
+  const authCreds = await storedCredentialForImage(deps.db, row.id, service.image, deps.encryptionKey);
   const { digest, reason } = await resolve(parsed, parsed.tag, { authCreds });
   if (!digest) {
     log.warn({ deploymentId: row.id, reason }, 'auto-update: could not resolve registry digest — skipping');
@@ -211,20 +211,6 @@ async function rollBack(
     }, `custom-deployment-rollback:${row.id}:${(deps.now ?? (() => new Date()))().toISOString().slice(0, 10)}`);
   } catch (err) {
     log.warn({ err, deploymentId: row.id }, 'auto-update: rollback notification failed');
-  }
-}
-
-async function loadAuthCreds(
-  deps: AutoUpdateDeps,
-  deploymentId: string,
-): Promise<{ username: string; password: string } | undefined> {
-  if (!deps.encryptionKey) return undefined;
-  try {
-    const decrypted = await loadDecryptedToken(deps.db, deploymentId, deps.encryptionKey);
-    if (!decrypted) return undefined;
-    return { username: decrypted.username, password: decrypted.token };
-  } catch {
-    return undefined;
   }
 }
 
