@@ -6,19 +6,14 @@ export const createPlanSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(500).optional(),
   /**
-   * LEGACY (ADR-062). Despite the name this feeds `requests.cpu` — a
-   * reservation that neither caps nor guarantees. Read only by tenants still
-   * in legacy mode, and kept unchanged so upgrading a plan cannot move a
-   * tenant that has not been migrated.
-   */
-  cpu_limit: z.string().min(1).max(20),
-  /**
-   * ADR-062 tiered mode: the share a workload gets under contention, and the
-   * ceiling one may burst to. Optional — a plan that says nothing falls
-   * through to the derived defaults, which is what every existing plan does.
+   * CPU is a SHARE and a CEILING (ADR-062): the tier decides what a workload
+   * gets when the machine is contended (omitted = the default, `high`), and
+   * the burst ceiling is the most one application may use. There is no cores
+   * parameter — `cpu_limit` was retired, and an update that sends it is
+   * refused as an unknown key.
    */
   cpu_tier: cpuTierSchema.nullable().optional(),
-  cpu_burst_cores: z.number().min(0.1).max(256).nullable().optional(),
+  cpu_burst_cores: z.number().min(0.1).max(256),
   memory_limit: z.string().min(1).max(20),
   storage_limit: z.string().min(1).max(20),
   /** Monthly data-transfer cap in GB (default 100 when omitted). */

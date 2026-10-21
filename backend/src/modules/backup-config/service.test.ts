@@ -148,8 +148,6 @@ describe('createBackupConfig', () => {
       ssh_user: 'backupuser',
       ssh_key: 'private-key-data',
       ssh_path: '/backups',
-      retention_days: 30,
-      schedule_expression: '0 2 * * *',
       enabled: true,
     }, ENCRYPTION_KEY);
 
@@ -177,8 +175,6 @@ describe('createBackupConfig', () => {
       s3_access_key: 'AKIAIOSFODNN7EXAMPLE',
       s3_secret_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
       s3_prefix: 'prod/',
-      retention_days: 60,
-      schedule_expression: '0 3 * * *',
       enabled: true,
     }, ENCRYPTION_KEY);
 
@@ -245,13 +241,27 @@ describe('updateBackupConfig', () => {
     const { db, mocks } = createMockDb([SSH_ROW]);
     await updateBackupConfig(db, 'cfg-1', {
       name: 'Updated Name',
-      retention_days: 60,
+      ssh_port: 2222,
     }, ENCRYPTION_KEY);
 
     const setValues = mocks.updateSet.mock.calls[0][0];
     expect(setValues.name).toBe('Updated Name');
-    expect(setValues.retentionDays).toBe(60);
+    expect(setValues.sshPort).toBe(2222);
     expect(setValues.sshKeyEncrypted).toBeUndefined();
+  });
+
+  it('a target has no retention or schedule of its own: the API neither takes nor writes them', async () => {
+    // Both columns were stored and read by nothing; each class's schedule
+    // card decides retention and cadence. Zod strips the old keys.
+    const { updateBackupConfigSchema } = await import('@insula/api-contracts');
+    const parsed = updateBackupConfigSchema.parse({ name: 'n', retention_days: 7, schedule_expression: '0 1 * * *' });
+    expect(parsed).not.toHaveProperty('retention_days');
+    expect(parsed).not.toHaveProperty('schedule_expression');
+    const { db, mocks } = createMockDb([SSH_ROW]);
+    await updateBackupConfig(db, 'cfg-1', parsed, ENCRYPTION_KEY);
+    const setValues = mocks.updateSet.mock.calls[0][0];
+    expect(setValues).not.toHaveProperty('retentionDays');
+    expect(setValues).not.toHaveProperty('scheduleExpression');
   });
 
   // DR safety: a compromised admin must NOT be able to silently swap
@@ -352,8 +362,6 @@ describe('testDraft', () => {
       s3_region: 'us-east-1',
       s3_access_key: 'A'.repeat(20),
       s3_secret_key: 'S'.repeat(40),
-      retention_days: 30,
-      schedule_expression: '0 2 * * *',
       enabled: true,
     });
     expect(result.ok).toBe(true);
@@ -373,8 +381,6 @@ describe('testDraft', () => {
       // test succeeded without credentials.
       s3_access_key: '',
       s3_secret_key: '',
-      retention_days: 30,
-      schedule_expression: '0 2 * * *',
       enabled: true,
     });
     expect(result.ok).toBe(false);
@@ -390,8 +396,6 @@ describe('testDraft', () => {
       ssh_user: 'backup',
       ssh_key: 'key',
       ssh_path: '/backups',
-      retention_days: 30,
-      schedule_expression: '0 2 * * *',
       enabled: true,
     });
     expect(result.ok).toBe(false);

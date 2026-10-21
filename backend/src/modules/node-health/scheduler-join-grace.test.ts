@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const events = vi.hoisted(() => ({
   notifyAdminNodeDown: vi.fn().mockResolvedValue(undefined),
-  notifyAdminNodeRebooting: vi.fn().mockResolvedValue(undefined),
+  notifyAdminNodeShuttingDown: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeStartupComplete: vi.fn().mockResolvedValue(undefined),
   notifyAdminOperationalEvent: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeMemoryEvents: vi.fn().mockResolvedValue(undefined),
@@ -131,13 +131,13 @@ describe('reconcileNodeHealth — join grace window', () => {
     fresh.bootId = 'b2';
     await reconcileNodeHealth(db, k8s, at(11));
     await reconcileNodeHealth(db, k8s, at(31));
-    expect(events.notifyAdminNodeRebooting).not.toHaveBeenCalled();
+    expect(events.notifyAdminNodeShuttingDown).not.toHaveBeenCalled();
     expect(events.notifyAdminNodeStartupComplete).not.toHaveBeenCalled();
     expect(events.notifyAdminNodeDown).not.toHaveBeenCalled();
   });
 
   it('reports a node that went down while joining and is STILL down after the window — as down, then as back', async () => {
-    // The "rebooting" notice for a shutdown that began inside the window is not
+    // The "shutting down" notice for a shutdown that began inside the window is not
     // sent late (it would claim a shutdown is happening 20 minutes after it
     // did). The node is reported by admin.node_down when the window closes, and
     // its return by admin.node_startup_complete, which says no notice was sent.
@@ -161,7 +161,7 @@ describe('reconcileNodeHealth — join grace window', () => {
       nodeName: 'worker-new',
       announcementNote: expect.stringContaining('No shutdown notice was sent'),
     });
-    expect(events.notifyAdminNodeRebooting).not.toHaveBeenCalled();
+    expect(events.notifyAdminNodeShuttingDown).not.toHaveBeenCalled();
   });
 
   it('still alerts immediately for an established node', async () => {

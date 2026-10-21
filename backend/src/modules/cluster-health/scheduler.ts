@@ -3,13 +3,16 @@ import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectNodeSubsystemHealth } from './service.js';
 import { computeSubsystemTransitions, type SubsystemState } from './subsystem-transitions.js';
-import { describeSuppression, loadJoinGrace, type RawGraceNode } from '../node-health/join-grace.js';
+import { describeSuppression } from '../node-health/join-grace.js';
+import { loadNodeAlertHolds, type RawOutageNode } from '../node-health/outage-hold.js';
 
 // Issue 3 fix: detect worker nodes whose Calico or Longhorn CSI is
 // degraded and surface the regression via the notifications table.
 // In-memory state tracks the previous tick so we only fire once per
 // state change instead of every minute. Nodes inside their join grace
-// window are skipped (see subsystem-transitions.ts).
+// window, and nodes that are down or just back from an outage (whose
+// Calico and CSI pods are down WITH them), are skipped
+// (see subsystem-transitions.ts).
 
 const SUBSYSTEM_INTERVAL_MS = 5 * 60 * 1000; // 5 min — fast enough to catch a join failure
 const INITIAL_DELAY_MS = 60_000;
@@ -34,16 +37,16 @@ export function startNodeHealthReconciler(db: Database, k8s: K8sClients): { stop
   };
 
   const subsystemPass = async (): Promise<void> => {
-    // One Node list feeds both the subsystem report and the join grace window.
+    // One Node list feeds both the subsystem report and the per-node holds.
     const nodes = await k8s.core.listNode();
     const reports = await collectNodeSubsystemHealth(k8s, nodes);
     const now = new Date();
-    const joining = await loadJoinGrace(k8s, (nodes.items ?? []) as readonly RawGraceNode[], now);
-    const result = computeSubsystemTransitions(reports, lastState, joining);
+    const held = await loadNodeAlertHolds(k8s, (nodes.items ?? []) as readonly RawOutageNode[], now);
+    const result = computeSubsystemTransitions(reports, lastState, held);
     lastState = result.nextState;
 
     for (const name of result.suppressed) {
-      const verdict = joining.get(name);
+      const verdict = held.get(name);
       if (verdict) console.log(`[node-health] ${describeSuppression(name, verdict, 'Calico / Longhorn CSI alerts')}`);
     }
 

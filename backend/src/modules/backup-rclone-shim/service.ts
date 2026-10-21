@@ -372,7 +372,7 @@ export async function loadShimAssignments(
  * Throws if the row has an unknown storage_type (caller treats this
  * as a fatal misconfiguration — the renderer can't handle it).
  */
-function rowToTargetConfig(
+export function rowToTargetConfig(
   row: typeof backupConfigurations.$inferSelect,
   encryptionKey: string,
 ): BackupTargetConfig {

@@ -12,7 +12,7 @@
  * "Save and move pods now" also restarts the pods so they move.
  */
 import { useState } from 'react';
-import { Loader2, Pin, Rocket, Save } from 'lucide-react';
+import { Database, Loader2, Pin, Rocket, Save } from 'lucide-react';
 import clsx from 'clsx';
 import type { Tenant } from '@/types/api';
 import MigrateResultNote from '@/components/tenants/MigrateResultNote';
@@ -87,6 +87,7 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
         <span className="flex flex-wrap gap-3.5 text-xs text-gray-600 dark:text-gray-400">
           <span className="inline-flex items-center gap-1.5"><ActiveBadge />where its pods run now</span>
           <span className="inline-flex items-center gap-1.5"><PinnedBadge />where it should run and keep its data</span>
+          <span className="inline-flex items-center gap-1.5"><DataBadge />holds a copy of its data</span>
         </span>
       )}
       testId="placement-section"
@@ -135,7 +136,7 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
                 <div className="flex flex-wrap gap-1.5">
                   {isActive && <ActiveBadge />}
                   {isPinned && <PinnedBadge />}
-                  {holdsData && <Chip>DATA</Chip>}
+                  {holdsData && <DataBadge />}
                   {!isActive && !isPinned && !holdsData && <Chip>Not used</Chip>}
                 </div>
                 <div className="mt-1.5 text-base font-bold text-gray-900 dark:text-gray-100">{nodeLabel(n.name)}</div>
@@ -223,6 +224,14 @@ function ActiveBadge() {
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-green-700 px-2 py-0.5 text-[11px] font-semibold text-white dark:bg-green-600">
       <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />ACTIVE
+    </span>
+  );
+}
+
+function DataBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white dark:bg-blue-500" data-testid="data-badge">
+      <Database size={10} aria-hidden="true" />DATA
     </span>
   );
 }

@@ -1,13 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { CpuMigrationRun, CpuRevertResult } from '@insula/api-contracts';
+import type { CpuMigrationRun } from '@insula/api-contracts';
 
 interface Envelope<T> { readonly data: T }
 
 const base = (tenantId: string) => `/api/v1/admin/cpu-migration/tenants/${tenantId}`;
 
 /**
- * Apply, revert and stop — all PER TENANT (ADR-062 R2).
+ * Apply and stop — both PER TENANT (ADR-062 R2). There is no revert: CPU
+ * cores are retired and every tenant is moved to shares.
  *
  * There is deliberately no "migrate all" mutation to pair with these. The
  * migration recreates pods; doing that fleet-wide from one click is the flag
@@ -31,15 +32,6 @@ export function useApplyCpuMigration() {
     // The run changes reservations, so the dry run it was launched from is
     // stale the moment it finishes — including for the OTHER tenants, whose
     // headroom just improved.
-    onSettled: () => { void qc.invalidateQueries({ queryKey: ['cpu-migration-preview'] }); },
-  });
-}
-
-export function useRevertCpuMigration() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (tenantId: string) =>
-      apiFetch<Envelope<CpuRevertResult>>(`${base(tenantId)}/revert`, { method: 'POST' }),
     onSettled: () => { void qc.invalidateQueries({ queryKey: ['cpu-migration-preview'] }); },
   });
 }

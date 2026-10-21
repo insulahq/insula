@@ -21,10 +21,10 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq, and, lt, inArray } from 'drizzle-orm';
+import { eq, and, lte, inArray, notInArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { heldPastExpiry } from './bundle-hold.js';
-import { backupJobs, backupConfigurations, backupSchedules } from '../../db/schema.js';
+import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
@@ -36,6 +36,7 @@ import { toSafeText } from '@insula/api-contracts';
 import { reapStaleInFlight } from './cluster-concurrency.js';
 import { bundleNotificationLabel } from './notification-label.js';
 import { BUNDLE_MAX_RUNNING_MS } from './components/capture-timeouts.js';
+import { loadRetention } from '../backup-schedules/retention-policy.js';
 
 // A bundle still 'running' past the longest a healthy one can take is a stuck
 // row left behind by a platform-api OOMKill or pod eviction — the orchestrator
@@ -51,13 +52,94 @@ const STUCK_RUNNING_HOURS = Number.parseFloat(
   process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS ?? String(BUNDLE_MAX_RUNNING_MS / (60 * 60 * 1000)),
 );
 
+const EXPIRY_BATCH = 50;
+/** 20 × 50 = 1000 bundles a tick at most, and never past the budget. */
+const EXPIRY_MAX_BATCHES = 20;
+/** Well inside the 5-minute tick and its lease. */
+const EXPIRY_TICK_BUDGET_MS = 3 * 60 * 1000;
+
 export interface RetentionSweepResult {
+  /** Nightly bundles whose expiry moved to the schedule's current days. */
+  readonly restampedByDays: number;
   /** Bundles brought forward by keep-last-N before the expiry pass ran. */
   readonly overCountMarked: number;
   readonly inFlightReaped: number;
   readonly expiredDeleted: number;
   readonly expiredFailed: number;
   readonly stuckMarkedFailed: number;
+}
+
+/**
+ * Move every nightly bundle's expiry to the schedule's CURRENT days.
+ *
+ * A bundle is stamped `created + days` when it is made. Without this pass the
+ * stamp was final: production lowered the days from 30 to 14 and every bundle
+ * made before the change still expired at 30 — 432 of them, on every tenant —
+ * while the setting read 14. Applying the current number here means lowering
+ * it removes the bundles that no longer fit on this tick, and raising it keeps
+ * the ones that have not expired yet for longer.
+ *
+ * Only `system`/`scheduled` bundles follow the schedule. A manual, pre-archive
+ * or pre-resize bundle was given its own retention when it was made (the
+ * archive dialog asks for one) and keeps it.
+ *
+ * Leaves a suspended tenant's bundles alone until it is resumed, as
+ * keep-last-N does.
+ *
+ * Never touches a bundle already past `expires_at`: it is either about to be
+ * reclaimed by the pass below or HELD (bundle-hold.ts), and raising the days
+ * must not pull a bundle back from reclamation that keep-last-N already gave
+ * up. Bringing an expiry forward skips a bundle an open restore still uses,
+ * exactly as keep-last-N does.
+ */
+async function restampScheduledBundles(app: FastifyInstance, days: number | null, now: Date): Promise<number> {
+  const scheduledAndUnexpired = sql`
+         backup_jobs.initiator = 'system'
+     AND backup_jobs.system_trigger = 'scheduled'
+     AND backup_jobs.status IN ('completed','partial')
+     AND (backup_jobs.expires_at IS NULL OR backup_jobs.expires_at > ${now})
+     -- Backups pause while a tenant is suspended (suspension.ts), and so does
+     -- this, as keep-last-N does: its bundles are held anyway, and a list of
+     -- held bundles all dated in the past only confuses. The next tick after
+     -- the tenant is resumed applies the days to them.
+     AND backup_jobs.tenant_id NOT IN (SELECT id FROM tenants WHERE status = 'suspended')`;
+  // An integer, so the interval text is never anything but '<n> days'.
+  const window = `${Math.trunc(days ?? 0)} days`;
+  // No age limit: lift the expiry — that never takes anything away.
+  const res = days === null
+    ? await app.db.execute(sql`
+        UPDATE backup_jobs
+           SET expires_at = NULL, retention_days = 0
+         WHERE ${scheduledAndUnexpired}
+           AND backup_jobs.expires_at IS NOT NULL
+         RETURNING id
+      `)
+    : await app.db.execute(sql`
+        UPDATE backup_jobs
+           SET expires_at = backup_jobs.created_at + ${window}::interval,
+               retention_days = ${days}
+         WHERE ${scheduledAndUnexpired}
+           AND (backup_jobs.expires_at IS NULL OR backup_jobs.expires_at <> backup_jobs.created_at + ${window}::interval)
+           AND (
+             -- Pushing an expiry out never takes anything away; bringing it
+             -- in waits for an open restore that uses the bundle.
+             backup_jobs.expires_at < backup_jobs.created_at + ${window}::interval
+             OR id NOT IN (
+               -- NOT IN over a NULL would exclude every row: filter them.
+               SELECT ri.bundle_id
+                 FROM restore_items ri
+                 JOIN restore_jobs rj ON rj.id = ri.restore_job_id
+                WHERE ri.bundle_id IS NOT NULL
+                  AND rj.status NOT IN ('done','failed')
+             )
+           )
+         RETURNING id
+      `);
+  const n = ((res as unknown as { rows?: unknown[] }).rows ?? []).length;
+  if (n > 0) {
+    app.log.info({ days, restamped: n }, 'tenant-backup retention: nightly bundles moved to the current retention days');
+  }
+  return n;
 }
 
 /**
@@ -88,13 +170,10 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
   // push one out any later than days already would.
   const now = new Date();
   let overCountMarked = 0;
-  const [schedule] = await app.db
-    .select({ retentionCount: backupSchedules.retentionCount })
-    .from(backupSchedules)
-    .where(eq(backupSchedules.subsystem, 'tenant_bundle'))
-    .limit(1);
-  const keepLast = schedule?.retentionCount ?? null;
-  if (keepLast !== null && keepLast > 0) {
+  const policy = await loadRetention(app.db, 'tenant_bundle');
+  const restampedByDays = await restampScheduledBundles(app, policy.days, now);
+  const keepLast = policy.count;
+  if (keepLast !== null) {
     // Ranked over `completed`/`partial` only. A failed bundle holds no
     // restorable data, so counting it toward N would silently reduce the
     // tenant's real coverage — 14 kept, three of them empty. `running` rows
@@ -147,74 +226,90 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
   // ── 1. Expired bundles ────────────────────────────────────────────
   // Lock candidate IDs first, then process outside any single
   // transaction so a slow remote delete doesn't hold a lock.
-  // Cap at 50 per tick — a backlog catches up over multiple ticks
-  // without overwhelming the target. Shares `now` with pass 0 so a bundle
-  // marked there is picked up in this same tick.
+  // Batches of 50, one after another, until the backlog is empty or the
+  // tick's time budget is spent; the next tick carries on. Deletes stay
+  // sequential, so the target sees one at a time however large the backlog.
+  // (A flat 50 per tick turned "lower the retention" into half an hour of
+  // bundles still listed.) A bundle tried once this tick is not retried in it.
+  // Shares `now` with pass 0 so a bundle marked there is picked up in this
+  // same tick.
   //
   // A bundle HELD past expires_at (suspended tenant; a live tenant's newest
   // restore point) is skipped — bundle-hold.ts is the one definition, shared
   // with the restic reconciler so the two never disagree about what is kept.
-  const expiredCandidates = await app.db
-    .select({ id: backupJobs.id, targetConfigId: backupJobs.targetConfigId })
-    .from(backupJobs)
-    .where(
-      and(
-        lt(backupJobs.expiresAt, now),
-        sql`${backupJobs.status} IN ('completed','partial','failed')`,
-        sql`NOT ${heldPastExpiry('backup_jobs')}`,
-      ),
-    )
-    .limit(50);
+  const tried: string[] = [];
+  const expiryStarted = Date.now();
+  for (let batch = 0; batch < EXPIRY_MAX_BATCHES; batch++) {
+    const expiredCandidates = await app.db
+      .select({ id: backupJobs.id, targetConfigId: backupJobs.targetConfigId })
+      .from(backupJobs)
+      .where(
+        and(
+          lte(backupJobs.expiresAt, now),
+          sql`${backupJobs.status} IN ('completed','partial','failed')`,
+          sql`NOT ${heldPastExpiry('backup_jobs')}`,
+          tried.length > 0 ? notInArray(backupJobs.id, tried) : undefined,
+        ),
+      )
+      .limit(EXPIRY_BATCH);
+    if (expiredCandidates.length === 0) break;
+    tried.push(...expiredCandidates.map((c) => c.id));
 
-  // DR safety: pre-fetch the set of frozen targets ONCE rather than
-  // calling requireWritableTarget inside the per-bundle loop. A 50-row
-  // batch hitting 5 targets used to issue 50 SELECTs; now it issues 1.
-  const distinctTargetIds = Array.from(new Set(
-    expiredCandidates.map((c) => c.targetConfigId).filter((t): t is string => Boolean(t)),
-  ));
-  const frozenTargets = new Map<string, string>(); // id -> name
-  if (distinctTargetIds.length > 0) {
-    const rows = await app.db
-      .select({ id: backupConfigurations.id, name: backupConfigurations.name })
-      .from(backupConfigurations)
-      .where(and(
-        eq(backupConfigurations.readOnly, true),
-        inArray(backupConfigurations.id, distinctTargetIds),
-      ));
-    for (const r of rows) frozenTargets.set(r.id, r.name);
-  }
+    // DR safety: pre-fetch the set of frozen targets ONCE rather than
+    // calling requireWritableTarget inside the per-bundle loop. A 50-row
+    // batch hitting 5 targets used to issue 50 SELECTs; now it issues 1.
+    const distinctTargetIds = Array.from(new Set(
+      expiredCandidates.map((c) => c.targetConfigId).filter((t): t is string => Boolean(t)),
+    ));
+    const frozenTargets = new Map<string, string>(); // id -> name
+    if (distinctTargetIds.length > 0) {
+      const rows = await app.db
+        .select({ id: backupConfigurations.id, name: backupConfigurations.name })
+        .from(backupConfigurations)
+        .where(and(
+          eq(backupConfigurations.readOnly, true),
+          inArray(backupConfigurations.id, distinctTargetIds),
+        ));
+      for (const r of rows) frozenTargets.set(r.id, r.name);
+    }
 
-  for (const { id, targetConfigId } of expiredCandidates) {
-    if (!targetConfigId) {
-      // Pre-D-redesign row with no target_config_id; can't reach
-      // the remote bundle. Mark expired in DB anyway so the row
-      // doesn't stay decorative forever.
-      await app.db.update(backupJobs).set({ status: 'expired' }).where(eq(backupJobs.id, id));
-      expiredDeleted++;
-      continue;
-    }
-    // DR safety: skip frozen targets — the bundle row stays in its
-    // current status so the next sweep re-evaluates after operator
-    // unfreezes. Logged once at info so the skip is visible.
-    const frozenName = frozenTargets.get(targetConfigId);
-    if (frozenName !== undefined) {
-      app.log.info({ bundleId: id, targetConfigId, targetName: frozenName }, 'tenant-backup retention: skipping delete on frozen target');
-      expiredFailed++;
-      continue;
-    }
-    try {
-      const store = await resolveStoreForTarget(app, targetConfigId);
-      const handle = await store.open(id);
-      if (handle) {
-        await store.delete(handle);
+    let outOfTime = false;
+    for (const { id, targetConfigId } of expiredCandidates) {
+      // Checked per bundle, not per batch: 50 deletes on a slow SMB or SFTP
+      // target can outlast the tick, and the next tick must find the rest.
+      if (Date.now() - expiryStarted > EXPIRY_TICK_BUDGET_MS) { outOfTime = true; break; }
+      if (!targetConfigId) {
+        // Pre-D-redesign row with no target_config_id; can't reach
+        // the remote bundle. Mark expired in DB anyway so the row
+        // doesn't stay decorative forever.
+        await app.db.update(backupJobs).set({ status: 'expired' }).where(eq(backupJobs.id, id));
+        expiredDeleted++;
+        continue;
       }
-      // (handle === null) → already gone on remote; still mark expired.
-      await app.db.update(backupJobs).set({ status: 'expired' }).where(eq(backupJobs.id, id));
-      expiredDeleted++;
-    } catch (err) {
-      app.log.error({ err, bundleId: id, targetConfigId }, 'tenant-backup retention: failed to delete expired bundle on remote — leaving status untouched for next-tick retry');
-      expiredFailed++;
+      // DR safety: skip frozen targets — the bundle row stays in its
+      // current status so the next sweep re-evaluates after operator
+      // unfreezes. Logged once at info so the skip is visible.
+      const frozenName = frozenTargets.get(targetConfigId);
+      if (frozenName !== undefined) {
+        app.log.info({ bundleId: id, targetConfigId, targetName: frozenName }, 'tenant-backup retention: skipping delete on frozen target');
+        expiredFailed++;
+        continue;
+      }
+      try {
+        const store = await resolveStoreForTarget(app, targetConfigId);
+        const handle = await store.open(id);
+        if (handle) {
+          await store.delete(handle);
+        }
+        // (handle === null) → already gone on remote; still mark expired.
+        await app.db.update(backupJobs).set({ status: 'expired' }).where(eq(backupJobs.id, id));
+        expiredDeleted++;
+      } catch (err) {
+        app.log.error({ err, bundleId: id, targetConfigId }, 'tenant-backup retention: failed to delete expired bundle on remote — leaving status untouched for next-tick retry');
+        expiredFailed++;
+      }
     }
+    if (outOfTime || expiredCandidates.length < EXPIRY_BATCH || Date.now() - expiryStarted > EXPIRY_TICK_BUDGET_MS) break;
   }
 
   // ── 2. Stuck `running` bundles older than STUCK_RUNNING_HOURS ─────
@@ -293,7 +388,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     app.log.warn({ err }, 'tenant-backup retention: in-flight reap failed (non-fatal)');
   }
 
-  return { overCountMarked, expiredDeleted, expiredFailed, stuckMarkedFailed, inFlightReaped };
+  return { restampedByDays, overCountMarked, expiredDeleted, expiredFailed, stuckMarkedFailed, inFlightReaped };
 }
 
 /**
@@ -302,18 +397,35 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
  * retention SLO. Returns the timer handle so callers can cancel
  * during graceful shutdown.
  */
-export function startRetentionScheduler(app: FastifyInstance, intervalMs = 5 * 60 * 1000): NodeJS.Timeout {
+const RETENTION_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * One leased sweep — the tick, and the accelerator the schedule route calls
+ * right after the operator saves a new retention. Null when another replica
+ * holds the lease; its next tick (at most 5 minutes) applies the change.
+ *
+ * One replica sweeps: the expiry pass reads its candidates, deletes them on
+ * the remote, then marks them — two replicas deleted the same bundle and the
+ * loser logged a remote-delete failure for an object already gone.
+ */
+export async function runRetentionSweepLeased(
+  app: FastifyInstance,
+  intervalMs = RETENTION_INTERVAL_MS,
+): Promise<RetentionSweepResult | null> {
+  const leased = await withSchedulerLease(app.db, 'bundle-retention', intervalMs * 1.5, () => runRetentionSweep(app), { log: app.log });
+  if (!leased.ran) return null;
+  const r = leased.value;
+  if (r.restampedByDays > 0 || r.overCountMarked > 0 || r.expiredDeleted > 0 || r.stuckMarkedFailed > 0
+    || r.expiredFailed > 0 || r.inFlightReaped > 0) {
+    app.log.info({ ...r }, 'tenant-backup retention: sweep complete');
+  }
+  return r;
+}
+
+export function startRetentionScheduler(app: FastifyInstance, intervalMs = RETENTION_INTERVAL_MS): NodeJS.Timeout {
   const tick = async () => {
     try {
-      // One replica sweeps: the expiry pass reads its candidates, deletes them
-      // on the remote, then marks them — two replicas deleted the same bundle
-      // and the loser logged a remote-delete failure for an object already gone.
-      const leased = await withSchedulerLease(app.db, 'bundle-retention', intervalMs * 1.5, () => runRetentionSweep(app), { log: app.log });
-      if (!leased.ran) return;
-      const r = leased.value;
-      if (r.expiredDeleted > 0 || r.stuckMarkedFailed > 0 || r.expiredFailed > 0 || r.inFlightReaped > 0) {
-        app.log.info({ ...r }, 'tenant-backup retention: sweep complete');
-      }
+      await runRetentionSweepLeased(app, intervalMs);
     } catch (err) {
       app.log.error({ err }, 'tenant-backup retention: sweep tick failed');
     }

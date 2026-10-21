@@ -1,29 +1,26 @@
 /**
- * Which retention field each schedule offers.
+ * Every schedule with settable retention offers BOTH limits, under one rule:
+ * a copy is removed when it is older than the days or not among the newest N —
+ * whichever comes first (backup-schedules/retention-policy.ts).
  *
- * The three DR artefacts keep a fixed NUMBER OF COPIES — the newest 24 etcd
- * snapshots, 30 secrets bundles, 14 cluster state dumps. Until now those
- * numbers were literals in the job scripts and the cards showed no retention
- * at all. They are settable now, so the count field appears.
+ * The DR artefacts used to offer the count only, because their jobs pruned by
+ * count and nothing pruned by days. platform-api now enforces both for them
+ * (dr-artefact-retention.ts), so the days field has something behind it.
  *
- * The days field must NOT: there is no time window behind it for these jobs,
- * and a control with nothing behind it is the exact failure this area has had
- * twice (the mail snapshot's retention, then the tenant bundles' keep-last-N).
- *
- * It is conditionally rendered rather than CSS-hidden on purpose — a hidden
- * input still holds a draft and still goes out on save, which is how an
- * operator ends up having changed something they were never shown.
+ * A schedule with no settable retention renders neither field — absent from
+ * the DOM, not CSS-hidden: a hidden input still holds a draft and goes out on
+ * save, which is how an operator changes something they were never shown.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 
-const apiFetch = vi.fn(async (url: string) => {
+const apiFetch = vi.fn(async (url: string, _init?: RequestInit) => {
   const sub = url.split('/backups/schedules/')[1] ?? 'x';
   return { data: { subsystem: sub, enabled: true, cronExpression: '0 * * * *', retentionDays: null, retentionCount: 24, gateSatisfied: true } };
 });
-vi.mock('@/lib/api-client', () => ({ apiFetch: (...a: unknown[]) => apiFetch(...(a as [string])) }));
+vi.mock('@/lib/api-client', () => ({ apiFetch: (...a: unknown[]) => apiFetch(...(a as [string, RequestInit?])) }));
 
 const ScheduleCard = (await import('@/components/backups/ScheduleCard')).default;
 
@@ -40,23 +37,47 @@ function renderCard(props: CardProps) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('retention fields per schedule', () => {
-  it('a copies-based schedule offers the count and NOT the days', async () => {
-    renderCard({ subsystem: 'etcd_snapshot', title: 'etcd', description: 'd', hideRetentionDays: true });
-    await waitFor(() => expect(screen.getByTestId('schedule-retention-count-etcd_snapshot')).toBeInTheDocument());
-    expect(screen.queryByTestId('schedule-retention-days-etcd_snapshot')).toBeNull();
+  it.each(['etcd_snapshot', 'secrets_bundle', 'cluster_state', 'mail', 'tenant_bundle'] as const)(
+    '%s offers both the days and the count, and states the rule',
+    async (subsystem) => {
+      renderCard({ subsystem, title: 't', description: 'd' });
+      await waitFor(() => expect(screen.getByTestId(`schedule-retention-count-${subsystem}`)).toBeInTheDocument());
+      expect(screen.getByTestId(`schedule-retention-days-${subsystem}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`schedule-retention-rule-${subsystem}`)).toHaveTextContent('whichever comes first');
+    },
+  );
+
+  it('says what the saved values keep, and what a draft would keep', async () => {
+    renderCard({ subsystem: 'secrets_bundle', title: 's', description: 'd' });
+    const summary = await screen.findByTestId('schedule-retention-summary-secrets_bundle');
+    expect(summary).toHaveTextContent('Keeps at most the newest 24');
+    fireEvent.change(screen.getByTestId('schedule-retention-days-secrets_bundle'), { target: { value: '14' } });
+    expect(screen.getByTestId('schedule-retention-summary-secrets_bundle'))
+      .toHaveTextContent('After saving, keeps copies from the last 14 days, and at most the newest 24');
   });
 
-  it('the days input is absent from the DOM, not merely invisible', async () => {
-    // A hidden-but-present input still submits its draft on save.
-    const { container } = renderCard({ subsystem: 'secrets_bundle', title: 's', description: 'd', hideRetentionDays: true });
-    await waitFor(() => expect(screen.getByTestId('schedule-retention-count-secrets_bundle')).toBeInTheDocument());
-    expect(container.querySelector('#retdays-secrets_bundle')).toBeNull();
+  it('refuses a change that leaves no limit at all', async () => {
+    renderCard({ subsystem: 'cluster_state', title: 'c', description: 'd' });
+    const count = await screen.findByTestId('schedule-retention-count-cluster_state');
+    fireEvent.change(count, { target: { value: '' } });
+    expect(screen.getByTestId('schedule-combined-error-cluster_state')).toHaveTextContent('with neither, nothing would ever be removed');
+    expect(screen.getByTestId('schedule-save-cluster_state')).toBeDisabled();
+    // Zero is "no limit" too.
+    fireEvent.change(count, { target: { value: '0' } });
+    expect(screen.getByTestId('schedule-save-cluster_state')).toBeDisabled();
+    // One limit is enough.
+    fireEvent.change(screen.getByTestId('schedule-retention-days-cluster_state'), { target: { value: '30' } });
+    expect(screen.queryByTestId('schedule-combined-error-cluster_state')).toBeNull();
+    expect(screen.getByTestId('schedule-save-cluster_state')).toBeEnabled();
   });
 
-  it('a window-based schedule still offers both', async () => {
-    renderCard({ subsystem: 'mail', title: 'mail', description: 'd' });
-    await waitFor(() => expect(screen.getByTestId('schedule-retention-days-mail')).toBeInTheDocument());
-    expect(screen.getByTestId('schedule-retention-count-mail')).toBeInTheDocument();
+  it('sends only the retention field that changed', async () => {
+    renderCard({ subsystem: 'etcd_snapshot', title: 'e', description: 'd' });
+    fireEvent.change(await screen.findByTestId('schedule-retention-days-etcd_snapshot'), { target: { value: '7' } });
+    fireEvent.click(screen.getByTestId('schedule-save-etcd_snapshot'));
+    await waitFor(() => expect(apiFetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true));
+    const patch = apiFetch.mock.calls.find(([, init]) => init?.method === 'PATCH')!;
+    expect(JSON.parse(String(patch[1]!.body))).toEqual({ retentionDays: 7 });
   });
 
   it('a schedule with no settable retention offers neither', async () => {
@@ -64,5 +85,6 @@ describe('retention fields per schedule', () => {
     await waitFor(() => expect(screen.getByTestId('schedule-card-longhorn_recurring')).toBeInTheDocument());
     expect(screen.queryByTestId('schedule-retention-count-longhorn_recurring')).toBeNull();
     expect(screen.queryByTestId('schedule-retention-days-longhorn_recurring')).toBeNull();
+    expect(screen.queryByTestId('schedule-retention-rule-longhorn_recurring')).toBeNull();
   });
 });

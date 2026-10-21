@@ -75,7 +75,6 @@ test.describe('backup UX', () => {
             s3_endpoint: 'http://minio.dev-minio.svc.cluster.local:9000',
             s3_bucket: 'system-backups', s3_prefix: `wal-e2e-${stamp}`, s3_region: 'us-east-1',
             s3_access_key: 'minio-dev-access-key', s3_secret_key: 'minio-dev-secret-key',
-            retention_days: 7,
           },
         })).json()) as { data?: { id?: string } };
         cfgId = created.data?.id ?? null;
@@ -147,7 +146,6 @@ test.describe('backup UX', () => {
           s3_endpoint: 'http://minio.dev-minio.svc.cluster.local:9000',
           s3_bucket: 'snapshots', s3_prefix: cfgName, s3_region: 'us-east-1',
           s3_access_key: 'minio-dev-access-key', s3_secret_key: 'minio-dev-secret-key',
-          retention_days: 7,
         },
       })).json()) as { data?: { id?: string } };
       cfgId = created.data?.id ?? null;

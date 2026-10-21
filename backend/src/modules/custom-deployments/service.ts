@@ -118,6 +118,8 @@ export async function validateSimpleSpec(
   db: Database,
   input: CreateCustomDeploymentSimpleInput,
   ctx: CallerCtx,
+  /** The deployment's stored credential, when an edit is validated (routes.ts). */
+  storedCredential?: ProbeCredential,
 ): Promise<{ ok: boolean; issues: readonly CustomDeploymentIssue[]; spec: CustomDeploymentSpec }> {
   const spec = buildSpecFromSimple(input);
   const settings = await getSettings(db);
@@ -127,7 +129,9 @@ export async function validateSimpleSpec(
     singleServiceOnly: true,
     deploymentName: input.name,
   });
-  const issues = [...result.issues, ...await checkSpecImagesReachable(spec)];
+  // With the credential, as create probes: validated anonymously, a private
+  // image could only ever answer "access denied", whatever token was set.
+  const issues = [...result.issues, ...await checkSpecImagesReachable(spec, probeCredentialOf(input) ?? storedCredential)];
   return { ok: !issues.some((i) => i.severity === 'error'), issues, spec };
 }
 
@@ -136,11 +140,12 @@ export async function validateSimpleSpec(
  * registry so a typo / nonexistent tag fails at validate/create time instead of
  * silently sitting in ImagePullBackOff. Creds-less (public probe): a public typo
  * is a hard error (404), a private image only warns (401) — never a false block.
+ * With a credential, a 401 is the credential's fault and is an error.
  * Best-effort: a registry outage degrades to a warning, never throws.
  */
 async function checkSpecImagesReachable(
   spec: CustomDeploymentSpec,
-  cred?: { registryHost: string; username: string; password: string },
+  cred?: ProbeCredential,
 ): Promise<CustomDeploymentIssue[]> {
   const issues: CustomDeploymentIssue[] = [];
   for (const [name, svc] of Object.entries(spec.services)) {
@@ -181,6 +186,60 @@ export function imageIsOnRegistry(image: string, registryHost: string): boolean 
   const b = registryHost.trim().toLowerCase();
   if (DOCKER_HUB_ALIASES.has(a) && DOCKER_HUB_ALIASES.has(b)) return true;
   return a === b;
+}
+
+export interface ProbeCredential {
+  readonly registryHost: string;
+  readonly username: string;
+  readonly password: string;
+}
+
+/** The credential typed into a create/validate request, in probe form. */
+export function probeCredentialOf(
+  input: { readonly pull_credential?: { registry_host: string; username: string; token: string } } | undefined,
+): ProbeCredential | undefined {
+  const cred = input?.pull_credential;
+  return cred ? { registryHost: cred.registry_host, username: cred.username, password: cred.token } : undefined;
+}
+
+/**
+ * A deployment's stored pull credential, decrypted, for a registry probe —
+ * or undefined when it has none, the key is unset, or it cannot be decrypted
+ * (the probe then runs anonymously and reports what it could not see).
+ *
+ * Looked up by deployment, not by `customSpec.pullCredentialId`: the panel
+ * stores the token against the deployment and never sets that field, so
+ * gating on it ran every update check of a private image anonymously.
+ */
+export async function storedProbeCredential(
+  db: Database,
+  deploymentId: string,
+  encryptionKey: string | undefined,
+): Promise<ProbeCredential | undefined> {
+  if (!encryptionKey) return undefined;
+  try {
+    const stored = await loadDecryptedToken(db, deploymentId, encryptionKey);
+    return stored ? { registryHost: stored.registryHost, username: stored.username, password: stored.token } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The stored credential for probing ONE image: undefined when it belongs to
+ * another registry. Not a nicety — the probe answers whatever auth realm the
+ * image's registry names, so a ghcr.io token used for a Docker Hub image
+ * would be handed to Docker Hub.
+ */
+export async function storedCredentialForImage(
+  db: Database,
+  deploymentId: string,
+  image: string,
+  encryptionKey: string | undefined,
+): Promise<{ username: string; password: string } | undefined> {
+  const stored = await storedProbeCredential(db, deploymentId, encryptionKey);
+  if (!stored || !imageIsOnRegistry(image, stored.registryHost)) return undefined;
+  return { username: stored.username, password: stored.password };
 }
 
 /**
@@ -241,14 +300,7 @@ export async function createSimpleDeployment(
   // probe of a private image can only ever return 401 (a warning), so a WRONG
   // token would sail through create and surface as ImagePullBackOff. With the
   // credential the 404-vs-401 distinction is meaningful again.
-  const probeCreds = input.pull_credential
-    ? {
-        registryHost: input.pull_credential.registry_host,
-        username: input.pull_credential.username,
-        password: input.pull_credential.token,
-      }
-    : undefined;
-  const imageIssues = await checkSpecImagesReachable(spec, probeCreds);
+  const imageIssues = await checkSpecImagesReachable(spec, probeCredentialOf(input));
   if (imageIssues.some((i) => i.severity === 'error')) {
     throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
@@ -316,6 +368,8 @@ export async function validateComposeSpec(
   db: Database,
   input: { composeYaml: string; envFiles?: Record<string, string>; name?: string },
   ctx: CallerCtx,
+  /** The typed credential, else the deployment's stored one (routes.ts). */
+  credential?: ProbeCredential,
 ): Promise<{ ok: boolean; issues: readonly CustomDeploymentIssue[]; spec: CustomDeploymentSpec | null }> {
   const settings = await getSettings(db);
   // Same gate as createComposeDeployment — operators disabling
@@ -344,7 +398,7 @@ export async function validateComposeSpec(
   // Merge parser + validator + image-reachability issues for the editor's pane.
   const allIssues = withResolvedLines(
     input.composeYaml,
-    [...parsed.issues, ...semantic.issues, ...await checkSpecImagesReachable(parsed.spec)],
+    [...parsed.issues, ...semantic.issues, ...await checkSpecImagesReachable(parsed.spec, credential)],
   );
   return { ok: !allIssues.some((i) => i.severity === 'error'), issues: allIssues, spec: parsed.spec };
 }
@@ -414,16 +468,7 @@ export async function createComposeDeployment(
   // instead of deploying the stack and waiting for ImagePullBackOff.
   // Same as the simple path: probe with the PAT when one was supplied so a
   // wrong token is a create-time error, not a later ImagePullBackOff.
-  const imageIssues = await checkSpecImagesReachable(
-    parsed.spec,
-    input.pull_credential
-      ? {
-          registryHost: input.pull_credential.registry_host,
-          username: input.pull_credential.username,
-          password: input.pull_credential.token,
-        }
-      : undefined,
-  );
+  const imageIssues = await checkSpecImagesReachable(parsed.spec, probeCredentialOf(input));
   if (imageIssues.some((i) => i.severity === 'error')) {
     throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }

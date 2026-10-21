@@ -33,6 +33,7 @@ function ledger(overrides: Partial<TenantBundleLedger> = {}): TenantBundleLedger
     lastFailedAt: null,
     lastFailedReason: null,
     lastFailedStatus: null,
+    suspended: false,
     ...overrides,
   };
 }
@@ -73,6 +74,27 @@ describe('summariseTenantBundles', () => {
     expect(row.lastSuccessAt).toEqual(at('2026-10-03T02:05:00Z'));
     expect(row.lastFailedAt).toEqual(at('2026-10-04T02:03:00Z'));
     expect(row.lastFailedReason).toBe('mailboxes: restic exited 1');
+  });
+
+  it('a suspended tenant is PAUSED, not failing — whatever its last bundle did', () => {
+    // Backups are paused while a tenant is suspended; nothing can run to clear
+    // the last failure. Production showed one such tenant as failing for as
+    // long as it stayed suspended.
+    const [row] = summarise([ledger({
+      suspended: true,
+      waveCovered: false,
+      runs: 3,
+      lastSuccessStartedAt: at('2026-10-01T02:00:00Z'),
+      lastSuccessAt: at('2026-10-01T02:05:00Z'),
+      lastFailedStartedAt: at('2026-10-02T02:00:00Z'),
+      lastFailedAt: at('2026-10-02T02:03:00Z'),
+      lastFailedReason: 'mailboxes: authenticate refused',
+      lastFailedStatus: 'failed',
+    })]);
+    expect(row.state).toBe('paused');
+    expect(row.severity).toBe('info');
+    // The history is still there to read.
+    expect(row.lastFailedReason).toBe('mailboxes: authenticate refused');
   });
 
   it('a newer completed bundle heals an older failure', () => {
@@ -128,13 +150,14 @@ describe('summariseTenantBundles', () => {
     expect(row.lastFailedReason).toHaveLength(500);
   });
 
-  it('sorts with the Job rows: failing first, then never run, then healthy by name', () => {
+  it('sorts with the Job rows: failing first, then never run, then healthy, then paused, by name', () => {
     const rows = sortSummaries(summarise([
       ledger({ tenantId: T1, tenantName: 'Zeta', runs: 1, lastSuccessStartedAt: at('2026-10-04T02:00:00Z'), lastSuccessAt: at('2026-10-04T02:01:00Z') }),
       ledger({ tenantId: T2, tenantName: 'Alpha' }),
       ledger({ tenantId: '33333333-3333-4333-8333-333333333333', tenantName: 'Mid', runs: 1, lastFailedStartedAt: at('2026-10-04T02:00:00Z'), lastFailedAt: at('2026-10-04T02:01:00Z') }),
+      ledger({ tenantId: '44444444-4444-4444-8444-444444444444', tenantName: 'Held', suspended: true, runs: 1, lastFailedStartedAt: at('2026-10-04T02:00:00Z'), lastFailedAt: at('2026-10-04T02:01:00Z') }),
     ]));
-    expect(rows.map((r) => `${r.displayName}:${r.state}`)).toEqual(['Mid:failing', 'Alpha:never_run', 'Zeta:healthy']);
+    expect(rows.map((r) => `${r.displayName}:${r.state}`)).toEqual(['Mid:failing', 'Alpha:never_run', 'Zeta:healthy', 'Held:paused']);
   });
 });
 

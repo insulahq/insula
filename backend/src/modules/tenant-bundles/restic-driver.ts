@@ -2231,6 +2231,91 @@ export interface RunResticPruneArgs {
 const MAX_REPACK_SIZE_RE = /^[0-9]{1,6}[KMGT]$/;
 const RETRY_LOCK_RE = /^[0-9]{1,4}[smh]$/;
 
+export interface RunResticForgetByPolicyArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  readonly repoUri: string;
+  /** Remove snapshots older than this many days (`--keep-within <n>d`). Null = no age limit. */
+  readonly keepWithinDays: number | null;
+  /** Keep at most the newest N (`--keep-last <n>`). Null = no count limit. */
+  readonly keepLast: number | null;
+  /** Restrict the forget to snapshots carrying this tag. */
+  readonly tag: string;
+  /** restic `--retry-lock`, e.g. '5m' — the repo's own Job may hold the lock. */
+  readonly retryLock?: string;
+  readonly semaphore?: ResticConcurrencySemaphore;
+  readonly timeoutMs?: number;
+  readonly log?: { warn: (msg: string) => void };
+}
+
+const FORGET_TAG_RE = /^[A-Za-z0-9._=-]{1,128}$/;
+
+/**
+ * Apply a days / keep-last policy with `restic forget` — ONE PASS PER LIMIT,
+ * so a snapshot is removed when EITHER limit removes it (whichever comes
+ * first). A single `forget --keep-within D --keep-last N` keeps a snapshot
+ * when either rule wants it: the opposite. The mail snapshot Job runs the same
+ * passes with the same flags (snapshot-upload.sh); keep them in step.
+ *
+ * `--keep-within` counts back from the NEWEST snapshot, so a repo whose
+ * snapshots stopped keeps its last restore point. Reclaims no space — prune.
+ */
+export async function runResticForgetByPolicy(args: RunResticForgetByPolicyArgs): Promise<void> {
+  const passes: string[][] = [];
+  if (args.keepWithinDays !== null) {
+    if (!Number.isInteger(args.keepWithinDays) || args.keepWithinDays < 1) {
+      throw new Error(`runResticForgetByPolicy: invalid keepWithinDays '${args.keepWithinDays}'`);
+    }
+    passes.push(['--keep-within', `${args.keepWithinDays}d`]);
+  }
+  if (args.keepLast !== null) {
+    if (!Number.isInteger(args.keepLast) || args.keepLast < 1) {
+      throw new Error(`runResticForgetByPolicy: invalid keepLast '${args.keepLast}'`);
+    }
+    passes.push(['--keep-last', String(args.keepLast)]);
+  }
+  // No limit at all would forget nothing, and restic refuses a policy-less
+  // forget anyway; saying so beats a confusing restic error.
+  if (passes.length === 0) throw new Error('runResticForgetByPolicy: no limit given');
+  if (!FORGET_TAG_RE.test(args.tag)) throw new Error(`runResticForgetByPolicy: invalid tag '${args.tag}'`);
+  if (args.retryLock !== undefined && !RETRY_LOCK_RE.test(args.retryLock)) {
+    throw new Error(`runResticForgetByPolicy: invalid retryLock '${args.retryLock}'`);
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = { ...buildResticEnv(args.target), RESTIC_PASSWORD: args.passwordHex };
+    const base: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      base.push(...prepared.args);
+    }
+    base.push('--repo', args.repoUri, ...performanceOpts(args.target));
+    for (const pass of passes) {
+      const cliArgs = [...base, 'forget', ...pass, '--tag', args.tag];
+      if (args.retryLock) cliArgs.push('--retry-lock', args.retryLock);
+      await withStaleLockRetry(
+        {
+          label: 'restic forget',
+          unlock: { target: args.target, repoUri: args.repoUri, passwordHex: args.passwordHex },
+          log: args.log,
+        },
+        () => runBoundedRestic({
+          label: 'restic forget',
+          cliArgs,
+          env,
+          timeoutMs: args.timeoutMs ?? DEFAULT_FORGET_TIMEOUT_MS,
+        }),
+      );
+    }
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
 /**
  * `restic prune` — the step that actually frees space. Expensive: walks the
  * index and repacks partially-used pack files.

@@ -14,6 +14,8 @@ import type { ZodError } from 'zod';
 import { z } from 'zod';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LonghornTenants } from './target-secret-shape.js';
+import { eq } from 'drizzle-orm';
+import { backupConfigurations } from '../../db/schema.js';
 
 // Turn a Zod issue list into a single human-readable message that's safe
 // to surface to an operator via the admin panel. We preserve the field
@@ -56,6 +58,31 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/admin/backup-configs
   app.get('/admin/backup-configs', async () => {
     return success(await service.listBackupConfigs(app.db));
+  });
+
+  // GET /api/v1/admin/backup-configs/usage — per target: bytes per class,
+  // the target's free space where it reports one, and the last measurement.
+  app.get('/admin/backup-configs/usage', async () => {
+    const { listTargetUsage } = await import('./target-usage.js');
+    return success({ targets: await listTargetUsage(app.db) });
+  });
+
+  // POST /api/v1/admin/backup-configs/:id/usage/refresh — measure one target
+  // now. Listing a large class takes minutes, so it runs in the background:
+  // 202, and GET …/usage shows `measuringSince` until it lands.
+  app.post('/admin/backup-configs/:id/usage/refresh', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { measureAndStore, isMeasuring } = await import('./target-usage.js');
+    const [row] = await app.db.select({ id: backupConfigurations.id }).from(backupConfigurations)
+      .where(eq(backupConfigurations.id, id)).limit(1);
+    if (!row) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
+    if (await isMeasuring(app.db, id)) {
+      throw new ApiError('USAGE_MEASURING', 'This target is being measured already — the result appears when it finishes.', 409);
+    }
+    // measureAndStore never rejects; the catch is for a defect in it, which a
+    // background promise must never turn into an unhandled rejection.
+    void measureAndStore({ db: app.db, encryptionKey, log: app.log }, id).catch(() => undefined);
+    reply.status(202).send(success({ started: true }));
   });
 
   // POST /api/v1/admin/backup-configs

@@ -21,7 +21,7 @@ describe('createTenantSchema', () => {
    * The per-tenant limit overrides live on updateTenantSchema, not here. Zod
    * strips undeclared keys by default, so a create carrying one used to
    * return 201 with the field discarded and the tenant on its PLAN's limits.
-   * integration-burstable-qos.sh announced "Starter plan + 2-CPU override"
+   * integration-burstable-qos.sh (since retired) announced "Starter plan + 2-CPU override"
    * and produced a 0.25-core tenant for as long as it existed.
    *
    * Refusing is the kinder failure: every caller making that mistake learns

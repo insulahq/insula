@@ -44,8 +44,6 @@ const sshConfigSchema = z.object({
   ssh_key: z.string().min(1).max(16384).optional(),
   ssh_password: z.string().min(1).max(512).optional(),
   ssh_path: z.string().min(1).max(500),
-  retention_days: z.number().int().min(1).max(365).default(30),
-  schedule_expression: z.string().default('0 2 * * *'),
   enabled: z.boolean().default(true),
 }).refine(
   (v) => Boolean(v.ssh_key || v.ssh_password),
@@ -69,8 +67,6 @@ const s3ConfigSchema = z.object({
   // SeaweedFS, and most S3-compatible providers. Set to false ONLY for
   // AWS S3 with virtual-hosted addressing (newer AWS regions/buckets).
   s3_use_path_style: z.boolean().default(true),
-  retention_days: z.number().int().min(1).max(365).default(30),
-  schedule_expression: z.string().default('0 2 * * *'),
   enabled: z.boolean().default(true),
 });
 
@@ -87,8 +83,6 @@ const cifsConfigSchema = z.object({
   cifs_password: z.string().min(1).max(512),
   cifs_domain: z.string().max(255).optional(),
   cifs_path: z.string().max(500).optional(),
-  retention_days: z.number().int().min(1).max(365).default(30),
-  schedule_expression: z.string().default('0 2 * * *'),
   enabled: z.boolean().default(true),
 });
 
@@ -123,8 +117,6 @@ export const updateBackupConfigSchema = z.object({
   cifs_password: z.string().optional(),
   cifs_domain: z.string().optional(),
   cifs_path: z.string().optional(),
-  retention_days: z.number().int().min(1).max(365).optional(),
-  schedule_expression: z.string().optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -153,8 +145,6 @@ export const backupConfigResponseSchema = z.object({
   cifsUser: z.string().nullable(),
   cifsDomain: z.string().nullable(),
   cifsPath: z.string().nullable(),
-  retentionDays: z.number(),
-  scheduleExpression: z.string().nullable(),
   enabled: z.number(),
   // Exactly one config per cluster may be active — the Longhorn reconciler
   // syncs this row to the BackupTarget CR + credentials Secret.

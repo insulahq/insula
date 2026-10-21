@@ -126,14 +126,6 @@ export async function readLimitRangeCeilingMillis(
   }
 }
 
-export async function removeLimitRange(k8s: K8sClients, namespace: string): Promise<void> {
-  try {
-    await k8s.core.deleteNamespacedLimitRange({ name: limitRangeName(namespace), namespace } as never);
-  } catch (err) {
-    if (!is404(err)) throw err;
-  }
-}
-
 /** Every pod in the namespace, with the two facts the readiness gate needs. */
 export async function readPodCpuLimits(
   k8s: K8sClients, namespace: string,
@@ -352,32 +344,6 @@ export async function widenQuotaHeadroom(
   );
 }
 
-/** Take the ceiling back off, leaving the legacy requests.cpu untouched. */
-export async function removeQuotaLimits(
-  k8s: K8sClients, namespace: string, legacyCpuCores: number,
-): Promise<void> {
-  const name = quotaName(namespace);
-  // The same freeze applies in reverse. A revert RESTORES larger requests, so
-  // `used` climbs as it runs; writing the legacy figure blindly can land
-  // below it and leave the tenant unable to create a pod — during the
-  // operation whose whole purpose is to put things back.
-  const live = await k8s.core.readNamespacedResourceQuota({ name, namespace } as never) as {
-    status?: { used?: Record<string, string> };
-  };
-  const usedMillis = quantityToMillis(live.status?.used?.['requests.cpu']);
-  const legacyMillis = Math.round(legacyCpuCores * 1000);
-  const restored = Math.max(legacyMillis, usedMillis);
-  await k8s.core.patchNamespacedResourceQuota(
-    {
-      name, namespace,
-      // null DELETES a key under RFC 7396 — the only way to drop limits.cpu
-      // without rewriting the whole object, whose scopeSelector is immutable.
-      body: { spec: { hard: { 'limits.cpu': null, 'requests.cpu': `${restored}m` } } },
-    } as never,
-    MERGE_PATCH,
-  );
-}
-
 /**
  * Re-admit a deployment's pods WITHOUT changing what they ask for.
  *
@@ -419,95 +385,6 @@ export async function recreatePods(
   );
 }
 
-/**
- * Release every workload still carrying a ceiling the PLATFORM gave it.
- *
- * ★ Ground truth, not bookkeeping. An earlier version rolled only
- * deployments carrying our tier annotation — but a straggler pod is DELETED
- * rather than annotated, so its replacement kept a hard CPU cap for life
- * after a revert that reported success and counted zero. Observed on DEV
- * exactly that way.
- *
- * The reliable test needs no marker: if a Deployment's pod TEMPLATE declares
- * no CPU limit but its running pods have one, that limit was injected by the
- * LimitRange at admission and is ours to remove. If the template declares
- * one, the tenant chose it and it is not ours to touch.
- *
- * Must run AFTER the LimitRange is gone, or the replacements are admitted
- * with the very ceiling being removed.
- */
-export async function rollPodsStillCapped(
-  k8s: K8sClients, namespace: string, priorityClass: string,
-): Promise<number> {
-  const pods = await readPodCpuLimits(k8s, namespace);
-  const anyCapped = pods.some(
-    (p) => p.priorityClassName === priorityClass && p.containersWithoutCpuLimit.length === 0,
-  );
-  if (!anyCapped) return 0;
-
-  const list = await k8s.apps.listNamespacedDeployment({ namespace }) as {
-    items?: ReadonlyArray<{
-      metadata?: { name?: string };
-      spec?: { template?: {
-        metadata?: { annotations?: Record<string, string> };
-        spec?: { containers?: ReadonlyArray<{ resources?: { limits?: Record<string, string> } }> };
-      } };
-    }>;
-  };
-
-  let rolled = 0;
-  for (const d of list.items ?? []) {
-    const name = d.metadata?.name;
-    if (!name) continue;
-    const tpl = d.spec?.template;
-    const templateDeclaresLimit = (tpl?.spec?.containers ?? [])
-      .some((c) => Boolean(c.resources?.limits?.cpu));
-    if (templateDeclaresLimit) continue; // the tenant's own ceiling
-
-    const live = await k8s.core.listNamespacedPod({
-      namespace, labelSelector: `app=${name}`,
-    }) as { items?: ReadonlyArray<{
-      metadata?: { name?: string; deletionTimestamp?: string };
-      status?: { phase?: string };
-      spec?: { priorityClassName?: string; containers?: ReadonlyArray<{ resources?: { limits?: Record<string, string> } }> };
-    }> };
-    const capped = (live.items ?? []).filter((p) => {
-      if (p.metadata?.deletionTimestamp) return false;
-      if (p.status?.phase === 'Succeeded' || p.status?.phase === 'Failed') return false;
-      if ((p.spec?.priorityClassName ?? null) !== priorityClass) return false;
-      return (p.spec?.containers ?? []).some((c) => Boolean(c.resources?.limits?.cpu));
-    });
-    if (capped.length === 0) continue;
-
-    const annotated = 'insula.host/cpu-tier' in (tpl?.metadata?.annotations ?? {});
-    if (annotated) {
-      // Clearing the marker changes the template, so Kubernetes ROLLS it —
-      // the replacement is up before the old pod goes, no downtime.
-      await k8s.apps.patchNamespacedDeployment(
-        {
-          name, namespace,
-          body: { spec: { template: { metadata: { annotations: { 'insula.host/cpu-tier': null } } } } },
-        } as never,
-        STRATEGIC_MERGE_PATCH,
-      );
-    } else {
-      // Nothing to change in the template, so there is nothing to roll:
-      // replace the pods directly. The ceiling is already gone from the
-      // namespace, so what comes back has none.
-      for (const p of capped) {
-        if (!p.metadata?.name) continue;
-        try {
-          await k8s.core.deleteNamespacedPod({ name: p.metadata.name, namespace });
-        } catch (err) {
-          if (!is404(err)) throw err;
-        }
-      }
-    }
-    rolled += 1;
-  }
-  return rolled;
-}
-
 /** Delete named pods; their controller recreates them under the LimitRange. */
 export async function deletePods(
   k8s: K8sClients, namespace: string, podNames: readonly string[],
@@ -542,12 +419,6 @@ export async function storePriorRequest(
       // the revert would have nothing to restore.
       isNull(deployments.cpuRequestPreMigration),
     ));
-}
-
-export async function clearPriorRequest(db: Database, deploymentId: string): Promise<void> {
-  await db.update(deployments)
-    .set({ cpuRequestPreMigration: null })
-    .where(eq(deployments.id, deploymentId));
 }
 
 export async function setSchedulingMode(

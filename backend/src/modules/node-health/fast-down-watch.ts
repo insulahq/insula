@@ -16,21 +16,31 @@
  * So this watch does the cheapest possible thing on a short interval and
  * leaves the model to the reconciler:
  *
- *   - it does NOT write `node_health_state` (severity is the reconciler's job,
- *     and a readiness-only view would compute the wrong severity)
- *   - it only announces a Ready → NotReady transition it observed itself
- *   - it shares the reconciler's dedupeKey, so whichever fires first wins and
- *     the other is suppressed — no duplicate notification
+ *   - it does NOT compute severity in `node_health_state` (the reconciler's
+ *     job; a readiness-only view would get it wrong). What it writes there is
+ *     for the startup notice: `down_since` when it announces a node, so the
+ *     downtime counts from the moment it left Ready, and `reboot_announced`
+ *     after announcing a shutdown, so it can say the shutdown was announced.
+ *   - it only announces a Ready → NotReady transition it observed itself, and
+ *     announces it ONCE, worded by what the kubelet said: "shutting down" when
+ *     it reported a graceful shutdown (boot-events.ts kubeletReportsShutdown),
+ *     "down" otherwise. It used to be "down" here and then "rebooting" from the
+ *     reconciler for the same shutdown, four minutes later.
+ *   - both notices share the reconciler's dedupeKey (nodeDownDedupeKey), so
+ *     whichever detector fires first wins and the other is suppressed
  *   - it never announces a node inside its join grace window (join-grace.ts).
  *     A bootstrapping node is NotReady by definition; it was announced as
  *     "down" on its very first sighting. The node is kept OUT of the
  *     remembered NotReady set while it joins, so if it is still NotReady when
  *     the window closes it reads as newly down and is announced then.
  */
+import { and, eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
+import { nodeHealthState } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { safeTick } from '../../shared/safe-tick.js';
-import { notifyAdminNodeDown } from '../notifications/events.js';
+import { notifyAdminNodeDown, notifyAdminNodeShuttingDown } from '../notifications/events.js';
+import { kubeletReportsShutdown, wentDownAt } from './boot-events.js';
 import {
   describeSuppression,
   joinGraceIndex,
@@ -48,14 +58,50 @@ const INITIAL_DELAY_MS = 60_000;
 interface RawNode extends RawGraceNode {
   metadata?: { name?: string; creationTimestamp?: Date | string };
   status?: {
-    conditions?: Array<{ type?: string; status?: string }>;
+    conditions?: Array<{ type?: string; status?: string; message?: string; lastTransitionTime?: string | Date }>;
     addresses?: Array<{ type?: string; address?: string }>;
+    nodeInfo?: { bootID?: string };
   };
 }
 
-/** The dedupe key the 5-min reconciler uses. Identical on purpose. */
-export function nodeDownDedupeKey(nodeName: string, now: Date): string {
-  return `node-down:${nodeName}:${now.toISOString().slice(0, 10)}`;
+/**
+ * The "going down" key — shared by the down and shutting-down notices and by
+ * both detectors, so one outage is announced once whichever speaks first. Per
+ * boot as well as per day: a node shut down twice in a day is two outages,
+ * while one that flaps on the same boot stays one notice a day. The bootID is
+ * the one the node went down with — a node does not report a new one until it
+ * is back.
+ */
+export function nodeDownDedupeKey(nodeName: string, bootId: string | null, now: Date): string {
+  return `node-down:${nodeName}:${bootId ?? 'unknown-boot'}:${now.toISOString().slice(0, 10)}`;
+}
+
+/** What the watch needs to word one announcement. */
+export interface DownAnnouncement {
+  readonly nodeName: string;
+  readonly bootId: string | null;
+  readonly shuttingDown: boolean;
+  /** When it left Ready (boot-events.ts wentDownAt). */
+  readonly downAt: Date;
+}
+
+/** The facts for each node to announce, read off the same Node list. */
+export function describeAnnouncements(
+  items: ReadonlyArray<RawNode>,
+  names: ReadonlyArray<string>,
+  now: Date,
+): DownAnnouncement[] {
+  const byName = new Map(items.map((n) => [n.metadata?.name, n]));
+  return names.map((nodeName) => {
+    const node = byName.get(nodeName);
+    const ready = (node?.status?.conditions ?? []).find((c) => c.type === 'Ready');
+    return {
+      nodeName,
+      bootId: node?.status?.nodeInfo?.bootID || null,
+      shuttingDown: kubeletReportsShutdown(ready),
+      downAt: wentDownAt(ready, now),
+    };
+  });
 }
 
 /**
@@ -136,6 +182,33 @@ async function joinGraceForTick(
   return joinGraceIndex(items, await listPendingPeerWindows(k8s), now, graceMs);
 }
 
+/**
+ * Record that the shutdown of the node's CURRENT boot was announced, so the
+ * startup notice says so and the reconciler does not word it again. Only the
+ * row for that same boot: a node the reconciler has not recorded yet (or with
+ * no bootID) is left alone — its startup notice then says no shutdown notice
+ * was recorded, which errs toward the cautious wording.
+ */
+export async function markShutdownAnnounced(db: Database, nodeName: string, bootId: string | null): Promise<void> {
+  if (!bootId) return;
+  await db.update(nodeHealthState)
+    .set({ rebootAnnounced: true })
+    .where(and(eq(nodeHealthState.nodeName, nodeName), eq(nodeHealthState.bootId, bootId)));
+}
+
+/**
+ * Record when the node left Ready, so its startup notice counts the downtime
+ * from there rather than from the reconciler's last 5-minute tick — an outage
+ * shorter than a tick is often never seen by the reconciler at all. Written on
+ * a transition this watch saw itself, so it is the start of the outage in
+ * progress. A node the reconciler has not recorded yet has no row to update.
+ */
+export async function recordWentDown(db: Database, nodeName: string, downAt: Date): Promise<void> {
+  await db.update(nodeHealthState)
+    .set({ downSince: downAt })
+    .where(eq(nodeHealthState.nodeName, nodeName));
+}
+
 export interface FastDownWatchDeps {
   readonly db: Database;
   readonly k8s: K8sClients;
@@ -168,10 +241,21 @@ export function startFastNodeDownWatch(deps: FastDownWatchDeps): { stop: () => v
     }
     loggedSuppressed = new Set(plan.suppressed);
 
-    for (const nodeName of plan.announce) {
-      log.warn(`[node-down-watch] ${nodeName} went NotReady`);
-      await notifyAdminNodeDown(deps.db, { nodeName }, nodeDownDedupeKey(nodeName, new Date()))
-        .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
+    for (const a of describeAnnouncements(items, plan.announce, now)) {
+      await recordWentDown(deps.db, a.nodeName, a.downAt)
+        .catch((err) => log.warn('[node-down-watch] could not record when it went down:', (err as Error).message));
+      const key = nodeDownDedupeKey(a.nodeName, a.bootId, new Date());
+      if (a.shuttingDown) {
+        log.warn(`[node-down-watch] ${a.nodeName} is shutting down (kubelet reported a graceful shutdown)`);
+        await notifyAdminNodeShuttingDown(deps.db, { nodeName: a.nodeName }, key)
+          .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
+        await markShutdownAnnounced(deps.db, a.nodeName, a.bootId)
+          .catch((err) => log.warn('[node-down-watch] could not record the shutdown notice:', (err as Error).message));
+      } else {
+        log.warn(`[node-down-watch] ${a.nodeName} went NotReady`);
+        await notifyAdminNodeDown(deps.db, { nodeName: a.nodeName }, key)
+          .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
+      }
     }
   };
 

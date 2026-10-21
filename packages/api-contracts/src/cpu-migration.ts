@@ -85,11 +85,11 @@ export const cpuMigrationTenantSchema = z.object({
    * Tenant-wide burst ceiling the tenant would get, in cores.
    *
    * Resolved the same way the runner resolves it — tenant override, then
-   * plan, then derived from `cpu_limit`. An earlier revision derived it from
-   * `cpu_limit` ALONE, so any operator who set a plan or tenant burst saw
-   * one number in the dry run and got another when they applied it. That is
-   * the preview-versus-apply split describe.ts exists to prevent, on the
-   * other axis.
+   * the plan's ceiling. An earlier revision derived it from `cpu_limit`
+   * ALONE, so any operator who set a plan or tenant burst saw one number in
+   * the dry run and got another when they applied it. That is the
+   * preview-versus-apply split describe.ts exists to prevent, on the other
+   * axis.
    */
   proposedCeilingCores: z.number(),
   /** The tier the tenant's undeclared containers would take. */
@@ -190,22 +190,3 @@ export const cpuMigrationRunSchema = z.object({
 });
 export type CpuMigrationRun = z.infer<typeof cpuMigrationRunSchema>;
 
-export const cpuRevertResultSchema = z.object({
-  tenantId: z.string(),
-  status: z.enum(['completed', 'failed']),
-  restored: z.number(),
-  /**
-   * Migrated deployments whose stored baseline could not be honoured. Named
-   * rather than silently skipped — an operator must not discover later that
-   * one came back with a number nobody chose.
-   */
-  unrestorable: z.number(),
-  /**
-   * Pods rolled only to shed a CPU ceiling. A LimitRange default is baked in
-   * at admission, so removing the range does not release a running pod —
-   * these had no stored baseline and no restore would have touched them.
-   */
-  uncapped: z.number(),
-  reason: z.string().nullable(),
-});
-export type CpuRevertResult = z.infer<typeof cpuRevertResultSchema>;

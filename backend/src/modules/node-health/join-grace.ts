@@ -41,7 +41,12 @@ export const DEFAULT_NODE_JOIN_GRACE_MINUTES = 30;
 export const MAX_NODE_JOIN_GRACE_MINUTES = 24 * 60;
 export const NODE_JOIN_GRACE_ENV = 'NODE_JOIN_ALERT_GRACE_MINUTES';
 
-export type JoinGraceReason = 'new-node' | 'pending-peer';
+/**
+ * Why a node's alerts are held. The first two are this window; the last two
+ * are the outage hold (outage-hold.ts), which shares the verdict shape so every
+ * detector that reports ON a node takes one map.
+ */
+export type JoinGraceReason = 'new-node' | 'pending-peer' | 'node-down' | 'back-recently';
 
 export interface JoinGraceVerdict {
   /** Alerts for this node resume at this instant. */
@@ -227,36 +232,6 @@ export async function loadJoinGrace(
   return joinGraceIndex(rawNodes, peers, now, graceMs);
 }
 
-/**
- * A per-tick, load-on-first-use verdict map for callers that usually do not
- * need one — the SLO evaluator only asks while a node-scoped rule is
- * violated, so a healthy cluster costs no API calls. The Node list and the
- * ClusterPendingPeer list are fetched at most once per loader.
- *
- * Never rejects: a failed Node list yields an empty map, i.e. no node is
- * treated as joining and its alerts go out — the safe direction for a monitor.
- */
-export function lazyJoinGrace(
-  k8s: Pick<K8sClients, 'core' | 'custom'>,
-  now: Date,
-  graceMs: number = nodeJoinGraceMs(),
-): () => Promise<ReadonlyMap<string, JoinGraceVerdict>> {
-  let loaded: Promise<ReadonlyMap<string, JoinGraceVerdict>> | null = null;
-  return () => {
-    loaded ??= (async () => {
-      if (graceMs <= 0) return new Map<string, JoinGraceVerdict>();
-      try {
-        const list = (await k8s.core.listNode({})) as { items?: readonly RawGraceNode[] };
-        return await loadJoinGrace(k8s, list.items ?? [], now, graceMs);
-      } catch (err) {
-        console.warn('[node-join-grace] Node list failed — alerting as usual:', (err as Error).message);
-        return new Map<string, JoinGraceVerdict>();
-      }
-    })();
-    return loaded;
-  };
-}
-
 /** "14:32 UTC" — what the operator compares against a wall clock. */
 export function formatGraceUntil(until: Date): string {
   return `${until.toISOString().slice(11, 16)} UTC`;
@@ -264,6 +239,14 @@ export function formatGraceUntil(until: Date): string {
 
 /** One log line, shared by every detector so the wording is grep-able. */
 export function describeSuppression(nodeName: string, verdict: JoinGraceVerdict, what: string): string {
-  const why = verdict.reason === 'new-node' ? 'joined recently' : 'ClusterPendingPeer still open';
-  return `${nodeName} is joining (${why}) — ${what} suppressed until ${formatGraceUntil(verdict.until)}`;
+  switch (verdict.reason) {
+    case 'node-down':
+      return `${nodeName} is down — ${what} suppressed while it is down`;
+    case 'back-recently':
+      return `${nodeName} is back from an outage — ${what} suppressed until ${formatGraceUntil(verdict.until)}`;
+    default: {
+      const why = verdict.reason === 'new-node' ? 'joined recently' : 'ClusterPendingPeer still open';
+      return `${nodeName} is joining (${why}) — ${what} suppressed until ${formatGraceUntil(verdict.until)}`;
+    }
+  }
 }

@@ -77,9 +77,11 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   // ── Reads ──
   'node-subsystem-health modules/cluster-health/service.ts#collectNodeSubsystemHealth <- modules/cluster-health/routes.ts': 'a read: the page shows the current state',
   'node-subsystem-health modules/node-health/join-grace.ts#describeSuppression <- modules/monitoring/evaluator.ts': 'a read: words for a suppression',
+  'node-subsystem-health modules/node-health/join-grace.ts#describeSuppression <- modules/mail-admin/health-scheduler.ts': 'a read: words for a suppression',
+  'monitoring-evaluator modules/node-health/outage-hold.ts#lazyNodeAlertHolds <- modules/mail-admin/health-scheduler.ts':
+    'a read: lists the Nodes (and pending peers) to decide which alerts wait; it sends and stores nothing',
   'node-subsystem-health modules/node-health/join-grace.ts#describeSuppression <- modules/node-health/fast-down-watch.ts': 'a read: words for a suppression',
   'node-subsystem-health modules/node-health/join-grace.ts#describeSuppression <- modules/node-health/scheduler.ts': 'a read: words for a suppression',
-  'node-subsystem-health modules/node-health/join-grace.ts#loadJoinGrace <- modules/node-health/scheduler.ts': 'a read: the join-grace settings',
   'storage-audit modules/storage-lifecycle/service.ts#storageAuditReport <- modules/storage-lifecycle/routes.ts': 'a read: the report is computed and returned',
   'storage-capacity-watch modules/platform-storage-policy/capacity-reconciler.ts#readClusterCapacity <- modules/platform-storage-policy/routes.ts': 'a read: capacity for the page',
   'storage-policy-advisor modules/platform-storage-policy/service.ts#getPolicy <- modules/platform-storage-policy/routes.ts': 'a read: the saved policy',

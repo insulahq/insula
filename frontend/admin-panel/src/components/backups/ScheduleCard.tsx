@@ -42,6 +42,19 @@ function validateRetentionCount(s: string): string | null {
   return null;
 }
 
+function positiveInt(s: string): number | null {
+  const n = Number(s);
+  return s !== '' && Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Mirrors describeRetention() in backup-schedules/retention-policy.ts. */
+function describeLimits(days: number | null, count: number | null): string {
+  const age = days !== null ? `copies from the last ${days} day${days === 1 ? '' : 's'}` : null;
+  const newest = count !== null ? `at most the newest ${count}` : null;
+  if (age && newest) return `${age}, and at most the newest ${count}`;
+  return age ?? newest ?? '';
+}
+
 interface Props {
   readonly subsystem: 'mail' | 'tenant_bundle' | 'system_pitr' | 'longhorn_recurring'
     | 'etcd_snapshot' | 'secrets_bundle' | 'cluster_state';
@@ -62,20 +75,12 @@ interface Props {
    */
   /** No operator-settable retention at all — hides both fields. */
   readonly hideRetention?: boolean;
-  /**
-   * Hide the DAYS field but keep the count.
-   *
-   * For artefacts whose job keeps a fixed number of copies rather than a time
-   * window. Offering a days field there would be a control with nothing behind
-   * it — the failure this whole area has had twice now.
-   */
-  readonly hideRetentionDays?: boolean;
   readonly title: string;
   readonly description: string;
 }
 
 export default function ScheduleCard({
-  subsystem, title, description, readOnly, readOnlyReason, hideRetention, hideRetentionDays,
+  subsystem, title, description, readOnly, readOnlyReason, hideRetention,
 }: Props) {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
@@ -127,11 +132,14 @@ export default function ScheduleCard({
   const retentionDaysError = validateRetentionDays(retentionDaysDraft);
   const retentionCountError = validateRetentionCount(retentionCountDraft);
 
-  // Cross-field: both retention fields zero would make restic forget
-  // refuse — the backend enforces this too, but show it before PATCH.
-  const bothZero = retentionDaysDraft === '0' && retentionCountDraft === '0';
-  const combinedError = bothZero
-    ? 'retentionDays and retentionCount cannot both be 0 — restic forget needs at least one'
+  // Cross-field: a retention change must leave at least one limit — with
+  // neither, nothing would ever be removed. The API refuses it too
+  // (RETENTION_UNLIMITED); say so before the save.
+  const retentionDirty = retentionDaysDirty || retentionCountDirty;
+  const daysLimit = positiveInt(retentionDaysDraft);
+  const countLimit = positiveInt(retentionCountDraft);
+  const combinedError = !hideRetention && retentionDirty && daysLimit === null && countLimit === null
+    ? 'Set a number of days, a number of copies to keep, or both — with neither, nothing would ever be removed.'
     : null;
 
   const hasError = !!(cronError || retentionDaysError || retentionCountError || combinedError);
@@ -250,7 +258,6 @@ export default function ScheduleCard({
         </div>
       {!hideRetention && (
         <>
-        {!hideRetentionDays && (
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retdays-${subsystem}`}>Retention (days)</label>
           <input
@@ -275,7 +282,6 @@ export default function ScheduleCard({
             </p>
           )}
         </div>
-        )}
         <div>
           <label className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" htmlFor={`retcount-${subsystem}`}>Retention (keep last N)</label>
           <input
@@ -303,6 +309,22 @@ export default function ScheduleCard({
         </>
       )}
       </div>
+
+      {!hideRetention && (
+        <p className="flex items-start gap-1.5 text-xs text-gray-600 dark:text-gray-400" data-testid={`schedule-retention-rule-${subsystem}`}>
+          <Info size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            A copy is removed when it is older than the days or not among the newest N — whichever comes first. Leave a
+            field empty for no limit on it. A change applies within minutes: lowering removes what no longer fits,
+            raising keeps more from then on. The newest copy is always kept.
+            {(daysLimit !== null || countLimit !== null) && (
+              <span className="mt-0.5 block font-medium text-gray-700 dark:text-gray-300" data-testid={`schedule-retention-summary-${subsystem}`}>
+                {retentionDirty ? 'After saving, keeps' : 'Keeps'} {describeLimits(daysLimit, countLimit)}.
+              </span>
+            )}
+          </span>
+        </p>
+      )}
 
       {combinedError && (
         <div className="rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" data-testid={`schedule-combined-error-${subsystem}`}>

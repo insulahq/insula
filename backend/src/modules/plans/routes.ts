@@ -18,6 +18,15 @@ import { createPlanSchema, updatePlanSchema } from '@insula/api-contracts';
  */
 const PLANS_CACHE_KEY = 'GET:/api/v1/plans';
 
+/**
+ * The old-model reservation a NEW plan stores for a tenant not yet moved to
+ * shares: the inverse of the retired `max(1, cores x 2)` ceiling derivation.
+ * Never offered, never shown; it goes with the legacy model.
+ */
+function legacyReservationFor(burstCores: number): string {
+  return Math.max(0.1, Math.round((burstCores / 2) * 100) / 100).toFixed(2);
+}
+
 export async function planRoutes(app: FastifyInstance) {
   // GET /api/v1/plans — public, no auth
   //
@@ -73,13 +82,14 @@ export async function planRoutes(app: FastifyInstance) {
       code: parsed.data.code,
       name: parsed.data.name,
       description: (body.description as string) ?? null,
-      cpuLimit: parsed.data.cpu_limit,
-      // ADR-062. Omitted -> NULL, which falls through to the derived
-      // default; a plan is not required to express a tier.
+      // Not a plan parameter any more (ADR-062). The column is the
+      // reservation of a tenant still on the old model, and stays NOT NULL
+      // until that model goes; the inverse of the old ceiling derivation
+      // keeps such a tenant sized consistently with the ceiling.
+      cpuLimit: legacyReservationFor(parsed.data.cpu_burst_cores),
+      // Omitted tier -> NULL, the default share.
       ...(parsed.data.cpu_tier !== undefined ? { cpuTier: parsed.data.cpu_tier } : {}),
-      ...(parsed.data.cpu_burst_cores !== undefined
-        ? { cpuBurstCores: parsed.data.cpu_burst_cores === null ? null : String(parsed.data.cpu_burst_cores) }
-        : {}),
+      cpuBurstCores: String(parsed.data.cpu_burst_cores),
       memoryLimit: parsed.data.memory_limit,
       storageLimit: parsed.data.storage_limit,
       monthlyPriceUsd: parsed.data.monthly_price_usd,
@@ -138,16 +148,11 @@ export async function planRoutes(app: FastifyInstance) {
     const updateValues: Record<string, unknown> = {};
     if (parsed.data.name !== undefined) updateValues.name = parsed.data.name;
     if (body.description !== undefined) updateValues.description = body.description;
-    if (parsed.data.cpu_limit !== undefined) updateValues.cpuLimit = parsed.data.cpu_limit;
     // ADR-062. `numeric` columns take a string; passing a JS number writes
     // something the driver stringifies differently from every other numeric
     // on this table.
     if (parsed.data.cpu_tier !== undefined) updateValues.cpuTier = parsed.data.cpu_tier;
-    if (parsed.data.cpu_burst_cores !== undefined) {
-      updateValues.cpuBurstCores = parsed.data.cpu_burst_cores === null
-        ? null
-        : String(parsed.data.cpu_burst_cores);
-    }
+    if (parsed.data.cpu_burst_cores !== undefined) updateValues.cpuBurstCores = String(parsed.data.cpu_burst_cores);
     if (parsed.data.memory_limit !== undefined) updateValues.memoryLimit = parsed.data.memory_limit;
     if (parsed.data.storage_limit !== undefined) updateValues.storageLimit = parsed.data.storage_limit;
     if (parsed.data.bandwidth_gb_limit !== undefined) updateValues.bandwidthGbLimit = parsed.data.bandwidth_gb_limit;
@@ -169,7 +174,9 @@ export async function planRoutes(app: FastifyInstance) {
 
     // Cascade K8s ResourceQuota to all provisioned tenants on this plan
     // (only those without per-tenant overrides — overrides take precedence)
-    if (parsed.data.cpu_limit !== undefined || parsed.data.memory_limit !== undefined || parsed.data.storage_limit !== undefined) {
+    // Memory and storage only: CPU is the share and ceiling, which are
+    // delivered by CPU Scheduling's Re-apply (a changed ceiling replaces pods).
+    if (parsed.data.memory_limit !== undefined || parsed.data.storage_limit !== undefined) {
       try {
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const { applyResourceQuota } = await import('../k8s-provisioner/service.js');

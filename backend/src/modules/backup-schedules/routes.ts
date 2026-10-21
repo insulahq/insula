@@ -7,6 +7,8 @@ import {
   updateBackupScheduleSchema,
   backupScheduleSubsystemEnum,
 } from '@insula/api-contracts';
+import { limitsNothing, RETENTION_SUBSYSTEMS, type RetentionSubsystem } from './retention-policy.js';
+import { applyRetentionNow } from './apply-retention-now.js';
 import * as service from './service.js';
 
 function actorIdOf(req: FastifyRequest): string | null {
@@ -93,6 +95,24 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
         );
       }
     }
+    // A retention change must leave at least one limit. "Neither" used to
+    // mean a different thing per class (keep everything, keep 48, keep the
+    // job's default); the shared rule refuses it rather than guess.
+    const touchesRetention = parsed.data.retentionDays !== undefined || parsed.data.retentionCount !== undefined;
+    if (touchesRetention && isRetentionSubsystem(subsystem)) {
+      const current = await service.getSchedule(app.db, subsystem);
+      const merged = {
+        retentionDays: parsed.data.retentionDays !== undefined ? parsed.data.retentionDays : current?.retentionDays ?? null,
+        retentionCount: parsed.data.retentionCount !== undefined ? parsed.data.retentionCount : current?.retentionCount ?? null,
+      };
+      if (limitsNothing(merged)) {
+        throw new ApiError(
+          'RETENTION_UNLIMITED',
+          'Set a number of days, a number of copies to keep, or both — with neither, nothing would ever be removed.',
+          400,
+        );
+      }
+    }
     const row = await service.updateSchedule(app.db, subsystem, parsed.data, actorIdOf(request));
 
     // for mail subsystem, propagate retention to the actual
@@ -146,6 +166,14 @@ export async function backupSchedulesRoutes(app: FastifyInstance): Promise<void>
       }
     }
 
+    // Apply the new limits now rather than at the class's next run. Background:
+    // removing a backlog from a slow target takes minutes.
+    if (touchesRetention) applyRetentionNow(app, subsystem);
+
     return success(row);
   });
+}
+
+function isRetentionSubsystem(subsystem: string): subsystem is RetentionSubsystem {
+  return (RETENTION_SUBSYSTEMS as readonly string[]).includes(subsystem);
 }

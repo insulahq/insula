@@ -69,10 +69,10 @@ entitlement.
     have one, and they do not choose a CPU figure per application: every
     application they run takes the share their plan sells.
 
-Clusters installed before this model keep the older per-plan **CPU Limit**
-until an operator migrates each tenant. New installs use shares from the
-start. The operator-facing side is in
-[CPU & capacity](../operator/cpu-and-capacity.md).
+Every tenant is on shares. CPU cores are not a plan or tenant setting, and a
+tenant still on the older reserved-cores model, on a platform installed
+before shares existed, is moved to shares automatically. The operator-facing
+side is in [CPU & capacity](../operator/cpu-and-capacity.md).
 
 ## Plans, quotas, and overrides
 

@@ -261,8 +261,9 @@ export async function runCronJobNow(
   // never been executed.
   //
   // Notifications stay off here: the operator pressing the button is looking at
-  // the result already, and a test run should not page the tenant.
-  const updated = await runAndRecord(db, job, deps, { notify: false });
+  // the result already, and a test run should not page the tenant. Nor is a
+  // run the platform could not start retried: they can press it again.
+  const updated = await runAndRecord(db, job, deps, { notify: false, retry: false });
   return updated ?? getCronJobById(db, tenantId, cronJobId);
 }
 

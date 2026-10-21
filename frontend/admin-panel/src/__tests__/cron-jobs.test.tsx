@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CronJobsTab from '../pages/tenants/CronJobsTab';
 import CronJobModal from '../components/CronJobModal';
@@ -204,5 +204,54 @@ describe('CronJobModal in edit mode', () => {
       expect(JSON.parse((post![1] as { body: string }).body)).toMatchObject({ type: 'webcron', name: 'new-one' });
     });
     expect(patchCall()).toBeUndefined();
+  });
+});
+
+describe('CronJobsTab — last-run output', () => {
+  const failed = {
+    id: 'cj-out', tenantId: 't1', name: 'nightly', type: 'deployment', schedule: '0 3 * * *',
+    command: 'php artisan schedule:run', url: null, httpMethod: null, deploymentId: 'd1',
+    timeoutSeconds: null, timezone: null, enabled: 1, lastRunAt: '2026-01-10T03:00:00Z',
+    lastRunStatus: 'failed', lastRunDurationMs: 130000, lastRunResponseCode: null,
+    lastRunOutput: 'Not run: the platform could not reach its cluster API (ETIMEDOUT).',
+    notifyOnFailure: false, notifyTenantEmail: true, notifyEmail: null,
+    createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-10T03:00:00Z', tenantName: 'Acme',
+  };
+  const never = { ...failed, id: 'cj-new', name: 'fresh', lastRunAt: null, lastRunStatus: null, lastRunOutput: null };
+
+  function renderTab(jobs: readonly unknown[]) {
+    mockApiFetch.mockImplementation(((url: string) => Promise.resolve(
+      url.includes('cron-jobs')
+        ? { data: jobs, pagination: { total_count: jobs.length, cursor: null, has_more: false, page_size: 20 } }
+        : { data: [] },
+    )) as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/tenants/cron-jobs']}>
+          <Routes>
+            <Route path="/tenants/cron-jobs" element={<CronJobsTab />} />
+            <Route path="/tenants/:id" element={<div data-testid="tenant-page" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('unfolds why a run failed — the reason is not in the badge or the exit code', async () => {
+    const user = userEvent.setup();
+    renderTab([failed]);
+    await user.click(await screen.findByTestId('cron-output-toggle-cj-out'));
+    expect(screen.getByTestId('cron-output-cj-out')).toHaveTextContent('Not run: the platform could not reach its cluster API (ETIMEDOUT).');
+    // The row opens the tenant; the toggle must not.
+    expect(screen.queryByTestId('tenant-page')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('cron-output-toggle-cj-out'));
+    expect(screen.queryByTestId('cron-output-cj-out')).not.toBeInTheDocument();
+  });
+
+  it('offers nothing to unfold for a job that has no output', async () => {
+    renderTab([never]);
+    expect(await screen.findByText('fresh')).toBeInTheDocument();
+    expect(screen.queryByTestId('cron-output-toggle-cj-new')).not.toBeInTheDocument();
   });
 });

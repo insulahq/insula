@@ -89,13 +89,13 @@ export async function probeExposure(
     : haproxyExposure(e.node, set.ports, haproxyPods, haproxyError)));
   const bad = nodes.filter((n) => n.error !== null);
   if (bad.length === 0) return { status: 'ok', healthy: true, nodes, error: null };
-  return {
-    status: 'fail',
-    healthy: false,
-    nodes,
-    error: `${bad.length}/${nodes.length} mail endpoint(s) not publishing every mail port: ` +
-      bad.map((n) => `${n.node}: ${n.error}`).join('; '),
-  };
+  return { status: 'fail', healthy: false, nodes, error: describeExposureFailure(bad, nodes.length) };
+}
+
+/** The component's error line for the failing endpoints out of `total`. */
+export function describeExposureFailure(bad: ReadonlyArray<MailHealthExposureNode>, total: number): string {
+  return `${bad.length}/${total} mail endpoint(s) not publishing every mail port: ` +
+    bad.map((n) => `${n.node}: ${n.error}`).join('; ');
 }
 
 interface PublisherPod {

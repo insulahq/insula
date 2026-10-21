@@ -22,9 +22,10 @@
 #      unacknowledged apply server-side, not merely warn in the UI.
 #
 #   D. CRASH RECOVERY. mark_tiered is the last step, so a killed process
-#      leaves mode=legacy with artifacts in place. Revert must still be
-#      reachable, rather than refusing NOT_TIERED until the orphan reaper
-#      runs 24h later.
+#      leaves mode=legacy with artifacts in place and a stale `running`
+#      task. A new apply must finish the job — the way forward now that
+#      there is no revert, and what the automatic migrator does after a
+#      crash.
 #
 # It CREATES its own fixture tenants and deletes them on exit. Fixtures left
 # lying around on a shared cluster rot: another agent deletes them, a later
@@ -33,6 +34,7 @@
 set -uo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/cpu-legacy-fixture.sh"
 load_integration_env
 require_env ADMIN_HOST ADMIN_EMAIL ADMIN_PASSWORD SSH_HOST
 
@@ -44,7 +46,14 @@ bad(){ FAIL=$((FAIL+1)); printf '  FAIL  %s\n     -> %s\n' "$1" "${2:-}"; }
 note(){ printf '        %s\n' "$1"; }
 J=$(mktemp -d); TENANTS=()
 cleanup() {
-  for t in "${TENANTS[@]:-}"; do
+  # By NAME as well as by the recorded id: make_tenant runs in a $(…)
+  # subshell, so the id it appends to TENANTS never reaches this shell, and
+  # the cleanup deleted nothing — every run left its fixture behind. The
+  # name carries this shell's PID ($$ is the parent's, even in a subshell).
+  local by_name
+  by_name=$(curl -sk "$API/api/v1/tenants?limit=100" -H "Authorization: Bearer $T" \
+    | python3 -c 'import sys,json;print(" ".join(t["id"] for t in json.load(sys.stdin).get("data",[]) if t["name"].startswith("cpufix-") and t["name"].endswith("-'"$$"'")))' 2>/dev/null)
+  for t in "${TENANTS[@]:-}" $by_name; do
     [ -n "$t" ] || continue
     curl -sk -X DELETE "$API/api/v1/tenants/$t" -H "Authorization: Bearer $T" >/dev/null 2>&1
   done
@@ -72,6 +81,7 @@ cleanup() {
     printf "  WARN  fixture cleanup incomplete: %s namespace(s), %s tenant(s) remain\n" \
       "${left_ns:-?}" "${left_tenant:-?}"
   fi
+  release_cpu_auto_migrate
   rm -rf "$J"
 }
 trap cleanup EXIT
@@ -104,14 +114,9 @@ REGION_ID=$(curl "${A[@]}" "$API/api/v1/regions?limit=5" | python3 -c 'import sy
 make_tenant() {  # $1 = short label -> echoes tenant id
   local name="cpufix-$1-$$"
   local id resp
-  # ★ No cpu_limit_override / memory_limit_override here, deliberately.
-  # createTenantSchema does not declare them, so Zod strips them and the
-  # create returns 200 having ignored them — the fixture then gets the PLAN's
-  # limits while the harness believes it asked for more, and its deployment
-  # is refused by a quota it did not expect. (That silent-drop is a
-  # pre-existing API wart, not something this suite should paper over;
-  # scripts/integration-burstable-qos.sh sends the same fields.) The fixture
-  # therefore sizes itself to fit the plan it will actually get.
+  # ★ No limit overrides on the create, deliberately: createTenantSchema
+  # does not declare them (they live on the update), and the fixture sizes
+  # itself to fit the plan it actually gets.
   resp=$(curl "${A[@]}" -X POST "$API/api/v1/tenants" -d "{\"name\":\"$name\",\"primary_email\":\"$name@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   id=$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("id",""))' 2>/dev/null)
   # Report WHY. "tenant create failed" with no body sent me looking at the
@@ -138,10 +143,15 @@ deploy_app() {  # $1 tenant  $2 name  $3 cpu_request
   # the first run of this harness reported three green checks for tests that
   # never ran.
   local entry resp id
+  # The nginx static entry when there is one: a small image every registry
+  # mirror carries. The first entry in catalog order was a service (MinIO)
+  # whose image a lab mirror did not have, and the fixture sat in
+  # ImagePullBackOff with every case skipped.
   entry=$(curl "${A[@]}" "$API/api/v1/catalog?limit=100" | python3 -c '
 import sys,json
 d=json.load(sys.stdin).get("data",[])
-print(d[0]["id"] if d else "")' 2>/dev/null)
+pick=[e for e in d if (e.get("code") or e.get("name"))=="nginx"] or [e for e in d if e.get("type")=="static"] or d
+print(pick[0]["id"] if pick else "")' 2>/dev/null)
   if [ -z "$entry" ]; then bad "fixture: no catalog entry available" ""; return 1; fi
   resp=$(curl "${A[@]}" -X POST "$API/api/v1/tenants/$1/deployments" \
     -d "{\"catalog_entry_id\":\"$entry\",\"name\":\"$2\",\"cpu_request\":\"$3\",\"memory_request\":\"128Mi\"}")
@@ -195,7 +205,7 @@ apply_migration() { # $1 tenant  $2 ack -> writes body to $J/out, echoes status
 #
 # The node this runs against sits at ~90% of its memory requests before the
 # harness starts. Three separate fixtures did not fit, and the failures that
-# produced said nothing about the code under test. One tenant, reverted
+# produced said nothing about the code under test. One tenant, reset to legacy
 # between cases, covers the same ground.
 echo "════ fixture: one tenant, reused across every case"
 TF=$(make_tenant one) || TF=""
@@ -218,12 +228,13 @@ else
 fi
 
 reset_tenant() {  # back to clean legacy, so each case starts from the same place
-  curl "${A[@]}" -o /dev/null -X POST "$API/api/v1/admin/cpu-migration/tenants/$TF/revert" 2>/dev/null
+  # There is no revert any more; the fixture rebuilds the legacy shape.
+  make_legacy "$TF" "$NSF" || return 1
   for _ in $(seq 1 40); do
     local m b st
     m=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TF';")
     b=$(psql "SELECT count(*) FROM deployments WHERE tenant_id='$TF' AND cpu_request_pre_migration IS NOT NULL;")
-    # ★ Also wait for the deployment to be `running` again. A revert
+    # ★ Also wait for the deployment to be `running` again. The fixture
     # redeploys, so the row sits at `deploying` for a while — and the dry
     # run only lists RUNNING deployments, so a case that reads the preview
     # immediately after a reset sees a tenant with no applications and
@@ -236,6 +247,12 @@ reset_tenant() {  # back to clean legacy, so each case starts from the same plac
   note "reset gave up with mode=$m baselines=$b deployment=$st"
   return 1
 }
+
+# The fixture is born on CPU shares, like every new tenant. Keep the platform's
+# own migrator off it, then rebuild the legacy shape the cases start from.
+hold_cpu_auto_migrate
+reset_tenant && ok "fixture rebuilt as a legacy tenant" \
+  || { bad "could not rebuild the fixture as legacy — no case below can run" ""; exit 1; }
 
 # ══ A. zero-slack quota ═════════════════════════════════════════════════════
 echo "════ A. a quota with NO slack — the grace-period rejection"
@@ -317,17 +334,21 @@ CODE=$(apply_migration "$TF" true)
   || bad "the acknowledged retry was refused with $CODE" "$(head -c 220 "$J/out")"
 
 # ══ D. crash recovery ═══════════════════════════════════════════════════════
-echo "════ D. a half-migrated tenant can still be reverted"
+echo "════ D. a half-migrated tenant is finished by the next apply"
 # The flag is written LAST, so clearing it reproduces exactly what a killed
-# process leaves behind: artifacts in place, mode still legacy.
+# process leaves behind: artifacts in place, mode still legacy, and a task
+# still marked running that nobody is driving.
 psql "UPDATE tenants SET cpu_scheduling_mode='legacy' WHERE id='$TF';" >/dev/null
 psql "UPDATE tasks SET status='running', updated_at=NOW() - INTERVAL '30 minutes' WHERE kind='cpu_migration' AND ref_id='$TF';" >/dev/null
 CODE=$(curl "${A[@]}" -o "$J/rev" -w '%{http_code}' -X POST "$API/api/v1/admin/cpu-migration/tenants/$TF/revert")
-[ "$CODE" = "200" ] && ok "revert reachable on a half-migrated tenant (was NOT_TIERED for 24h)" \
-  || bad "revert refused a half-migrated tenant with $CODE" "$(head -c 250 "$J/rev")"
+[ "$CODE" = "404" ] && ok "there is no revert to fall back to (404)" \
+  || bad "the retired revert route answered $CODE" "$(head -c 200 "$J/rev")"
 CODE=$(apply_migration "$TF" true)
 [ "$CODE" = "200" ] && ok "a stale running task does not block a new apply" \
   || bad "apply blocked by a dead task with $CODE" "$(head -c 250 "$J/out")"
+MODE=$(psql "SELECT cpu_scheduling_mode FROM tenants WHERE id='$TF';")
+[ "$MODE" = "tiered" ] && ok "the half-migrated tenant ends on CPU shares" \
+  || bad "the re-run did not finish the migration" "mode=$MODE"
 
 printf '\n════════════════════════════════════\n  PASS: %s   FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

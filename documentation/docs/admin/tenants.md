@@ -133,7 +133,7 @@ actions (below). Under it are six sections:
 
 | Section | What it holds |
 |---|---|
-| **Overview** | Usage at a glance — CPU, memory, storage, bandwidth and mail sent today, each linking to where it is acted on. **Needs attention** lists every open condition with the place it gets fixed: the tenant's issues, a tenant away from its pinned node, a backup that did not complete, CPU settings waiting for Re-apply, send limits the mail server does not hold. Below: websites and applications, recent activity, and short summaries of placement, account, plan, backups, email and users. |
+| **Overview** | Usage at a glance — CPU, memory, storage, bandwidth and mail sent today, each linking to where it is acted on. **Needs attention** lists every open condition with the place it gets fixed: the tenant's issues, a tenant away from its pinned node, a backup that did not complete, CPU settings waiting for Re-apply, send limits the mail server does not hold. Below: a **Domains** table and an **Applications** table, each linking into the tenant panel, then recent activity and short summaries of placement, account, plan, backups, email and users. |
 | **Email** | Outbound sending and its limits (with whether the mail server holds them), sent and held-back mail, a two-week chart, DMARC / TLS-report / abuse summaries, mail domains with their DNS records, mailboxes with aliases and forwarding, mailing lists, and IMAP migrations. |
 | **Traffic** | The same view as [Monitoring → Traffic](../operator/monitoring.md#traffic), narrowed to this tenant: its own in/out traffic, or broken down by ingress route or by pod. Above it, the bandwidth used this cycle against the allowance. |
 | **Storage & backups** | Placement, the tenant's volumes and any storage operation in flight, retained or orphaned volumes, the platform's backup bundles, and the volume snapshots. |
@@ -161,8 +161,8 @@ OFF** beside the application on the Overview).
 **Storage & backups → Placement** shows one card per node. **ACTIVE** (a
 solid green card with a dot) is where the tenant's pods run and its volume
 is attached now; **PINNED** (a dashed blue outline with a pin) is its primary
-node — where it should run and keep its data; **DATA** marks a node holding a
-replica. The volume table below uses the same two badges for *Attached to*
+node — where it should run and keep its data; **DATA** (a solid blue pill)
+marks a node holding a replica. The volume table below uses the same two badges for *Attached to*
 and *Replica nodes*. When active and pinned differ, a **Not on its primary
 node** banner says what is elsewhere and since when, with two ways out:
 

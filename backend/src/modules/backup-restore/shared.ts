@@ -31,6 +31,7 @@ import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import { RcloneBackupStore } from '../tenant-bundles/rclone-backup-store.js';
 import {
+  rcloneEnvFromSection,
   renderUpstreamSection,
   upstreamRootPath,
   type BackupTargetConfig,
@@ -225,22 +226,6 @@ export async function resolveDirectStoreForBundle(
     });
   }
   throw new ApiError('NOT_IMPLEMENTED', `Store kind '${cfg.storageType}' not supported`, 501);
-}
-
-/**
- * Turn a shim-rendered rclone.conf `[section]` block into
- * `RCLONE_CONFIG_<REMOTE>_<KEY>` env vars so rclone reads the remote's config
- * from the environment (no secret written to disk). The rendered section is
- * `[name]\n key = value\n …` (SMB/SFTP passwords already `rclone obscure`d).
- */
-function rcloneEnvFromSection(remoteName: string, conf: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  const prefix = `RCLONE_CONFIG_${remoteName.toUpperCase()}_`;
-  for (const line of conf.split('\n')) {
-    const m = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.*)$/);
-    if (m) env[`${prefix}${m[1].toUpperCase()}`] = m[2];
-  }
-  return env;
 }
 
 export async function readConfigDump(app: FastifyInstance, bundleId: string): Promise<{ tables: Record<string, unknown[]> }> {

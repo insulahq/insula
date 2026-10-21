@@ -185,9 +185,11 @@ export function desiredJobTemplateMetadata(live: CronJobView): {
  * The operator's "keep last N" for etcd snapshots, as the env value the upload
  * script reads.
  *
- * NULL in `backup_schedules` means "never configured", which is the shipped
- * default of 24 rather than "keep nothing". Values below 1 are refused the
- * same way: the script guards itself too, but a reconciler that can write a
+ * Resolved by the shared rule (backup-schedules/retention-policy.ts): a row
+ * that limits nothing keeps the shipped default of 24; a days-only row
+ * publishes a count the script can never reach, because the days limit is
+ * enforced from platform-api (dr-artefact-retention.ts). Never zero or
+ * negative: the script guards itself too, but a reconciler that can write a
  * destructive number and rely on the script to ignore it is one script edit
  * away from being destructive.
  */
@@ -195,15 +197,12 @@ export const ETCD_DEFAULT_RETENTION_COUNT = 24;
 
 export async function desiredEtcdRetentionCount(db: Database): Promise<string> {
   const { backupSchedules } = await import('../../db/schema.js');
+  const { effectiveRetention, jobCount } = await import('../backup-schedules/retention-policy.js');
   const [row] = await db
-    .select({ retentionCount: backupSchedules.retentionCount })
+    .select({ retentionDays: backupSchedules.retentionDays, retentionCount: backupSchedules.retentionCount })
     .from(backupSchedules)
     .where(eq(backupSchedules.subsystem, 'etcd_snapshot'));
-  const n = row?.retentionCount;
-  if (n === null || n === undefined || !Number.isInteger(n) || n < 1) {
-    return String(ETCD_DEFAULT_RETENTION_COUNT);
-  }
-  return String(n);
+  return String(jobCount(effectiveRetention('etcd_snapshot', row)));
 }
 
 /**

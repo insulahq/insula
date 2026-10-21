@@ -2677,12 +2677,12 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         categoryId: 'admin.node_rebooting',
         channel: 'email',
         locale: 'en',
-        subjectTemplate: '[NODE] {{nodeName}} is rebooting',
+        subjectTemplate: '[NODE] {{nodeName}} is shutting down',
         bodyTemplate: emailMjml(
-          'Node {{nodeName}} is rebooting',
-          'Cluster node {{nodeName}} has left Ready and is shutting down. Workloads on it are '
-          + 'being drained. You will get a "startup complete" notification when it is back, '
-          + 'with the downtime.',
+          'Node {{nodeName}} is shutting down',
+          'Cluster node {{nodeName}} reported a graceful shutdown and has left Ready. Workloads '
+          + 'on it are being drained. You will get a "startup complete" notification when it is '
+          + 'back, with the downtime.',
         ),
         bodyFormat: 'mjml',
         variablesSchema: rebootVars,
@@ -2691,8 +2691,8 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         categoryId: 'admin.node_rebooting',
         channel: 'in_app',
         locale: 'en',
-        subjectTemplate: '[NODE] {{nodeName}} is rebooting',
-        bodyTemplate: 'Cluster node {{nodeName}} has left Ready and is shutting down. Workloads are being drained.',
+        subjectTemplate: '[NODE] {{nodeName}} is shutting down',
+        bodyTemplate: 'Cluster node {{nodeName}} reported a graceful shutdown and has left Ready. Workloads are being drained.',
         bodyFormat: 'plaintext',
         variablesSchema: rebootVars,
       },
@@ -2703,7 +2703,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         subjectTemplate: '[NODE] {{nodeName}} startup complete ({{downtimeText}} down)',
         bodyTemplate: emailMjml(
           'Node {{nodeName}} is back',
-          'Cluster node {{nodeName}} rebooted and is Ready again{{bootedAtText}}. Approximate '
+          'Cluster node {{nodeName}} has started again and is Ready{{bootedAtText}}. Approximate '
           + 'downtime: {{downtimeText}}. {{announcementNote}}',
         ),
         bodyFormat: 'mjml',
@@ -2714,7 +2714,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         channel: 'in_app',
         locale: 'en',
         subjectTemplate: '[NODE] {{nodeName}} startup complete',
-        bodyTemplate: '{{nodeName}} rebooted and is Ready again{{bootedAtText}}. Approximate downtime: {{downtimeText}}. {{announcementNote}}',
+        bodyTemplate: '{{nodeName}} has started again and is Ready{{bootedAtText}}. Approximate downtime: {{downtimeText}}. {{announcementNote}}',
         bodyFormat: 'plaintext',
         variablesSchema: startupVars,
       },

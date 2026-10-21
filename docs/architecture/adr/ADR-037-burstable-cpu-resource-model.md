@@ -1,6 +1,6 @@
 # ADR-037 — Asymmetric QoS Resource Model (Burstable CPU, Guaranteed Memory)
 
-**Status:** Accepted · 2026-05-12
+**Status:** Superseded by ADR-062 (CPU shares and burst ceilings). CPU cores are no longer a plan parameter and every tenant is on shares; the CPU half of this ADR describes the retired model. The memory half (Guaranteed memory) still holds. Accepted · 2026-05-12
 **Supersedes / related:** ADR-025 (Workload Catalog), ADR-026 (Application Catalog), ADR-033 (Tenant Lifecycle Hooks), ADR-036 (Custom Deployments)
 
 ## Context
@@ -84,7 +84,7 @@ Future work: a `plan.cpuMode = 'burstable' | 'reserved'` column for a paid tier 
 - `GET /deployments/:id/resource-breakdown` endpoint returning `{ total, components: [{ name, cpu, memory, weight }], warnings }`.
 - UI: live breakdown table under the CPU/memory slider; relabel "CPU" → "CPU baseline (burstable)" and "Memory" → "Memory (guaranteed)".
 - `INSUFFICIENT_RESOURCE_BUDGET` error UX: render per-component minimums + quick-fix button.
-- Real-k3s integration test `scripts/integration-burstable-qos.sh` proving burst-and-cap on a real cluster.
+- Real-k3s integration test `scripts/integration-burstable-qos.sh` proving burst-and-cap on a real cluster (retired with the CPU model).
 
 ### Phase 5 (deferred)
 

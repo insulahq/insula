@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { useSubscription } from '@/hooks/use-subscription';
+import { formatRenewalDate } from '@/lib/format-renewal-date';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { formatCurrency } from '@/lib/format-currency';
 
@@ -20,13 +21,7 @@ export default function Settings() {
   // Round-4 Phase C: real subscription data rendered here. The
   // backend GET endpoint now accepts tenant_admin + tenant_user
   // (scoped to the authenticated tenant's own id).
-  const expiresAt = sub?.subscription_expires_at
-    ? new Date(sub.subscription_expires_at).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    })
-    : null;
+  const expiresAt = formatRenewalDate(sub?.subscription_expires_at);
 
   const statusStyles: Record<string, string> = {
     active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',

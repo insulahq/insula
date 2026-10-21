@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { Fragment, useRef, useState, type FormEvent } from 'react';
 import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Square, Zap, Globe, Terminal, Pencil, Mail } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
@@ -16,6 +16,10 @@ import { useSystemInfo } from '@/hooks/use-system-info';
 import TimezoneSelect from '@/components/TimezoneSelect';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { CronOutputRow, CronOutputToggle } from '@/components/CronRunOutput';
+
+/** The table's column count, for the output row that spans it. */
+const TABLE_COLUMNS = 7;
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -118,7 +122,15 @@ export default function CronJobs() {
   const [form, setForm] = useState<CronFormState>(INITIAL_FORM);
   /** Job being edited, or null when the form is creating a new one. */
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** Jobs whose last-run output is unfolded under their row. */
+  const [outputOpen, setOutputOpen] = useState<ReadonlySet<string>>(new Set());
   const formRef = useRef<HTMLFormElement | null>(null);
+
+  const toggleOutput = (id: string) => setOutputOpen((open) => {
+    const next = new Set(open);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const editingJob = editingId ? jobsRaw.find((j) => j.id === editingId) ?? null : null;
   const pending = createJob.isPending || updateJob.isPending;
@@ -487,8 +499,11 @@ export default function CronJobs() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                {jobs.map((job) => {
+                  const showOutput = Boolean(job.lastRunOutput) && outputOpen.has(job.id);
+                  return (
+                  <Fragment key={job.id}>
+                  <tr className={clsx(!showOutput && 'border-b border-gray-100 dark:border-gray-700 last:border-0')}>
                     <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">
                       {job.name}
                       {job.notifyOnFailure && (
@@ -536,6 +551,9 @@ export default function CronJobs() {
                                 </span>
                               )}
                             </div>
+                            {job.lastRunOutput ? (
+                              <CronOutputToggle jobId={job.id} open={showOutput} onToggle={() => toggleOutput(job.id)} />
+                            ) : null}
                           </>
                         ) : (
                           <span className="text-gray-400">Never</span>
@@ -597,7 +615,17 @@ export default function CronJobs() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  {showOutput && (
+                    <CronOutputRow
+                      jobId={job.id}
+                      output={job.lastRunOutput ?? ''}
+                      running={job.lastRunStatus === 'running'}
+                      colSpan={TABLE_COLUMNS}
+                    />
+                  )}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

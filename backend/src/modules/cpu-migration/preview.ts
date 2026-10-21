@@ -19,8 +19,8 @@ import { catalogRepositories } from '../../db/schema.js';
 import { DEFAULT_CATALOG_URL } from '../catalog/service.js';
 import { describeDeployment } from './describe.js';
 import { readCpuReservation, cpuToMillis } from '../dashboard/cpu-reservation.js';
-import { tierMillis, ceilingCores, blockerFor, tenantUsageBlocker, reclaimFor } from './tiers.js';
-import { resolveTenantCpu, DEFAULT_TIER } from './resolve.js';
+import { tenantUsageBlocker, reclaimFor } from './tiers.js';
+import { resolveTenantCpu, DEFAULT_TIER, MIN_BURST_CORES } from './resolve.js';
 import { CPU_TIER_MILLICORES, type CpuTier } from '@insula/api-contracts';
 
 interface DeploymentRow extends Record<string, unknown> {
@@ -284,7 +284,7 @@ export async function buildCpuMigrationPreview(
         cpuBurstCoresOverride: t.cpu_burst_cores_override,
       },
     );
-    const ceiling = resolved.burstCores ?? ceilingCores(null);
+    const ceiling = resolved.burstCores ?? MIN_BURST_CORES;
     const tier = resolved.tier ?? DEFAULT_TIER;
     const applied = t.kubernetes_namespace
       ? appliedByNamespace.get(t.kubernetes_namespace) ?? null

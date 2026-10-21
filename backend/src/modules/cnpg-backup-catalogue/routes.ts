@@ -7,6 +7,10 @@ import { listBackupsFromObjectStore } from './service.js';
 import { getWalSummary } from './wal-summary.js';
 import { readSegmentsPerFile } from '../system-backup/archiver-stats.js';
 import { isPlatformDbCluster } from '../system-backup/archiver-stats.js';
+import { listTargetFileTimes } from '../backup-config/target-usage.js';
+import { BACKUP_USAGE_CLASSES, type BackupUsageClass } from '@insula/api-contracts';
+
+const isBackupUsageClass = (s: string): s is BackupUsageClass => (BACKUP_USAGE_CLASSES as readonly string[]).includes(s);
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 function validateName(s: string, kind: string): void {
@@ -111,9 +115,18 @@ export async function cnpgBackupCatalogueRoutes(app: FastifyInstance): Promise<v
       : undefined;
     // Returns immediately: the walk runs in the background and the response
     // carries `state` so the panel can poll rather than hold a request open.
+    // Segment times come from the target itself: the shim reports a
+    // placeholder (backup-rclone-shim/shim-times.ts). The bucket is the class.
+    const encryptionKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+      ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    const fileTimes = encryptionKey
+      ? (bucket: string, walPrefix: string) => (isBackupUsageClass(bucket)
+        ? listTargetFileTimes(app.db, encryptionKey, bucket, walPrefix, { log: request.log })
+        : Promise.resolve(null))
+      : undefined;
     const result = getWalSummary(
       k8s.core, k8s.custom, p.namespace, p.objectStoreName,
-      { log: request.log, clusterName: q.cluster, segmentsPerFile },
+      { log: request.log, clusterName: q.cluster, segmentsPerFile, fileTimes },
     );
     return success(result);
   });

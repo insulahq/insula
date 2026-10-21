@@ -38,6 +38,7 @@ import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js
 import { notifyAdminBackupFailed } from '../notifications/events.js';
 import type { FastifyInstance } from 'fastify';
 import { cappedList } from '../notifications/list-items.js';
+import { effectiveRetention } from '../backup-schedules/retention-policy.js';
 
 const TICK_INTERVAL_MS = 5 * 60 * 1000;
 /**
@@ -157,9 +158,14 @@ export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new 
     errors = eligible.length;
     firstError = 'runOneScheduledBundle not exported';
   } else {
+    // The days the bundle is stamped with are the days the retention sweep
+    // re-applies every tick (retention.ts), resolved by the same function — so
+    // a new bundle is never stamped with a number the sweep then rewrites.
+    // 0 = no age limit (orchestrator stamps no expiry).
+    const stampDays = effectiveRetention('tenant_bundle', schedule).days ?? 0;
     for (const t of eligible) {
       try {
-        await runOneScheduledBundle(app, t.id, schedule.retentionDays ?? 30);
+        await runOneScheduledBundle(app, t.id, stampDays);
         ran += 1;
       } catch (err) {
         errors += 1;

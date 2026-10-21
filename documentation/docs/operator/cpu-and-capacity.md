@@ -89,8 +89,8 @@ the tenant is never left half-way through a single change.
       **deleted** so its replacement inherits the ceiling. Whatever owns it
       recreates it, but a single-replica workload is briefly unavailable.
 
-    Migrate one tenant at a time and watch it, which is what the per-tenant
-    button is for.
+    The automatic migration moves one tenant at a time for the same reason.
+
 
 !!! tip "Stopping part-way is safe"
     A stopped or failed migration leaves the tenant on the **old** model with
@@ -99,16 +99,12 @@ the tenant is never left half-way through a single change.
     replaced — so a tenant that stops half-way is better off than before it
     started, not worse.
 
-### Reverting
+### There is no revert
 
-A migrated tenant shows **Revert to legacy** instead. The revert restores each
-application's **exact** prior CPU request, recorded before anything was
-changed — not a recalculated equivalent. It removes the burst ceiling first
-(so a restore cannot be refused by a limit the migration itself installed) and
-the LimitRange last.
-
-If a baseline cannot be honoured for some application, the revert says so and
-counts it, rather than putting back a number nobody chose.
+CPU cores are no longer a plan or tenant setting, so there is no reserved-cores
+model to go back to. A migration that stops or fails part-way is finished by
+running it again, by hand or by the automatic migration below. A task left
+`running` by a process that died is taken over after 15 minutes.
 
 ### What the dry run decides for you, and what it does not
 
@@ -192,22 +188,29 @@ they are never told they may burst further than they can.
     re-apply, for the same reason: lowering a ceiling under a tenant whose
     peak already exceeds it migrates them straight into throttling.
 
-## New clusters start on the share model
+## Every tenant is on the share model
 
-A cluster installed from this release onwards creates its tenants on the
-share model from the start — there is nothing to migrate, and the pages
-above will simply show every tenant as tiered.
+New tenants are created on shares, on every cluster.
 
-**An existing cluster is never switched.** The choice is made once, at the
-first tenant creation after upgrading, and recorded: a platform that
-already has tenants stays on the old model and nothing moves until you
-migrate it, tenant by tenant.
+**A tenant still on the old model is moved automatically.** CPU cores are not a
+plan parameter any more, so nothing is left to size a reservation from. The
+platform runs the same migration the **Migrate this tenant** button runs:
 
-While any tenant is still on the old model, the operator console carries a
-standing note with that cluster's own reserved-versus-used figures, how
-many cores migrating the rest would hand back, and a link to this page. It
-disappears by itself once the last tenant is migrated; there is nothing to
-dismiss, because the cost it names is real for as long as it is there.
+- one tenant at a time, oldest first, in the background;
+- with the same pacing and health gate as a manual migration;
+- **including tenants the dry run flags**, which a manual migration asks you
+  to acknowledge.
+
+Each run is a task in the Task Center. A tenant whose namespace no longer
+exists (archived, or never provisioned) is just marked as on shares;
+provisioning builds any namespace it gets later on shares. A failed or stopped
+run is tried again a day later. **Migrate this tenant** moves one now instead
+of waiting its turn.
+
+While any tenant is still on the old model, the operator console shows a
+standing notice saying it is being moved, with how many cores that hands back
+and a link to this page. It disappears by itself once the last tenant is
+moved.
 
 ## Quotas and the headroom advisory
 

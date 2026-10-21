@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   probes: 0,
   notified: [] as Array<{ payload: Record<string, unknown>; dedupeKey: string | undefined }>,
   notices: [] as Array<{ subsystem: string; payload: Record<string, unknown>; dedupeKey: string | undefined; resourceType?: string }>,
+  holds: new Map<string, { until: Date; reason: string }>(),
 }));
 
 vi.mock('../k8s-provisioner/k8s-client.js', () => ({ createK8sClients: () => ({}) }));
@@ -33,6 +34,7 @@ vi.mock('./health.js', () => ({
     return next;
   },
 }));
+vi.mock('../node-health/outage-hold.js', () => ({ lazyNodeAlertHolds: () => async () => state.holds }));
 vi.mock('../notifications/events.js', () => ({
   notifyAdminMailHealthDegraded: async (_db: unknown, payload: Record<string, unknown>, dedupeKey?: string) => {
     state.notified.push({ payload, dedupeKey });
@@ -203,5 +205,82 @@ describe('mail health pass: lookups that get no answer', () => {
     await pass([healthy]);
     for (let i = 1; i < UNANSWERED_NOTICE_AFTER_PASSES; i += 1) { state.probes = 0; await pass([unanswered]); }
     expect(state.notices).toEqual([]);
+  });
+});
+
+// Production, a server shut down on purpose: "[MAIL] mail port exposure check
+// failing … <node>: no stalwart-haproxy pod runs here — … re-apply the
+// port-exposure mode", minutes after that server was announced as down.
+describe('mail health pass: an endpoint on a node that is down', () => {
+  beforeEach(() => { state.probes = 0; state.notified = []; state.notices = []; state.holds = new Map(); resetUnansweredStreak(); });
+
+  const endpoint = (node: string, error: string | null) => ({ node, exposure: 'haproxy', ready: error === null, ports: [], error });
+  const exposure = (...nodes: ReturnType<typeof endpoint>[]) => {
+    const bad = nodes.filter((n) => n.error !== null);
+    return {
+      healthy: false,
+      components: {
+        pod: { healthy: true },
+        exposure: {
+          status: 'fail',
+          healthy: false,
+          nodes,
+          error: `${bad.length}/${nodes.length} mail endpoint(s) not publishing every mail port: ${bad.map((n) => `${n.node}: ${n.error}`).join('; ')}`,
+        },
+      },
+    };
+  };
+  const down = (node: string) => state.holds.set(node, { until: new Date('2026-10-13T11:29:13Z'), reason: 'node-down' });
+
+  it('is not alerted while the node is down — the node\'s own notice told the operator', async () => {
+    down('node-b');
+    const failing = exposure(endpoint('node-a', null), endpoint('node-b', 'no stalwart-haproxy pod runs here'));
+    const { fired, log } = await pass([failing, failing]);
+    expect(fired).toBe(0);
+    expect(state.notified).toEqual([]);
+    expect(text(log.info.mock.calls)).toContain('node-b is down — mail port exposure alert suppressed while it is down');
+  });
+
+  it('still alerts the endpoints that are not on a held node, and names only those', async () => {
+    down('node-b');
+    const failing = exposure(
+      endpoint('node-a', 'the stalwart-haproxy pod here is not Ready'),
+      endpoint('node-b', 'no stalwart-haproxy pod runs here'),
+      endpoint('node-c', null),
+    );
+    const { fired } = await pass([failing, failing]);
+    expect(fired).toBe(1);
+    expect(state.notified[0]!.payload).toMatchObject({
+      component: 'mail port exposure',
+      detail: ' 1/3 mail endpoint(s) not publishing every mail port: node-a: the stalwart-haproxy pod here is not Ready',
+    });
+    // Keyed by the endpoints it names: node-b, still failing once its hold
+    // ends, is news in this same 12-hour bucket — not a duplicate of this.
+    expect(state.notified[0]!.dedupeKey).toBe('mail-health:exposure:2026-10-13:am:node-a');
+    state.holds = new Map();
+    state.probes = 0;
+    await pass([failing, failing]);
+    expect(state.notified[1]!.dedupeKey).toBe('mail-health:exposure:2026-10-13:am:node-a,node-b');
+  });
+
+  it('alerts as before when no node is held', async () => {
+    const failing = exposure(endpoint('node-a', null), endpoint('node-b', 'no stalwart-haproxy pod runs here'));
+    const { fired } = await pass([failing, failing]);
+    expect(fired).toBe(1);
+    expect(String(state.notified[0]!.payload.detail)).toContain('node-b: no stalwart-haproxy pod runs here');
+  });
+
+  it('does not hold the mail server itself — a Stalwart pod down with its node is mail being down', async () => {
+    down('node-b');
+    const failing = {
+      healthy: false,
+      components: {
+        pod: { healthy: false, error: 'no Running pod' },
+        exposure: exposure(endpoint('node-b', 'no Stalwart pod is running here (see the pod probe)')).components.exposure,
+      },
+    };
+    const { fired } = await pass([failing, failing]);
+    expect(fired).toBe(1);
+    expect(state.notified.map((n) => n.payload.component)).toEqual(['Stalwart pod']);
   });
 });

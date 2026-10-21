@@ -71,10 +71,16 @@ export function useCustomDeployment(tenantId: string | undefined, id: string | u
  */
 const RAW_JSON_HEADERS = { 'Content-Type': 'application/octet-stream' } as const;
 
-export function useValidateCustomDeployment(tenantId: string | undefined) {
+/**
+ * `deploymentId` when an edit is validated: the server probes the image with
+ * that deployment's stored pull credential, which the edit form does not ask
+ * for again. On create the credential travels in the body, as create's does.
+ */
+export function useValidateCustomDeployment(tenantId: string | undefined, deploymentId?: string) {
+  const query = deploymentId ? `?deployment_id=${encodeURIComponent(deploymentId)}` : '';
   return useMutation({
     mutationFn: (input: CreateCustomDeploymentInput) =>
-      apiFetch<{ data: ValidateCustomDeploymentResult }>(`${BASE(tenantId!)}/validate`, {
+      apiFetch<{ data: ValidateCustomDeploymentResult }>(`${BASE(tenantId!)}/validate${query}`, {
         method: 'POST',
         headers: RAW_JSON_HEADERS,
         body: JSON.stringify(input),

@@ -127,16 +127,10 @@ console.log('  Seeded regions');
 // priority at all. Inert until a tenant is migrated off `legacy`, which is
 // deliberate: installing a release must not move anybody.
 //
-// `cpu_burst_cores` is DECLARED, not left to derive.
-//
-// Absent, the ceiling falls back to max(1, cpu_limit x 2) — which gives the
-// same 1 / 2 / 4 ladder, but keeps a TIERED tenant depending on `cpu_limit`,
-// the column the tier model exists to retire (ADR-062 says it is "unused by
-// tiered mode, read only by legacy mode"). While the fallback is what
-// actually answers, that statement is not true. Declaring the ceiling makes
-// it true: `cpu_limit` is then consulted for legacy tenants only, and the
-// derivation survives purely as a safety net for a plan that predates the
-// column.
+// `cpu_burst_cores` is DECLARED — every plan must state a ceiling (migration
+// 0159). CPU cores are retired as a plan parameter; `cpu_limit` is still a
+// NOT NULL column until the old model's code goes (ROADMAP R45), read only for
+// a tenant not yet moved to shares.
 //
 // Storage units are GB; memory units are GB (0.25 == 256 MiB).
 // Plan ladder ascends Starter < Premium < Ultimate; code and display name

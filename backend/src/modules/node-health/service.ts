@@ -278,15 +278,37 @@ export function lastAnnouncedSeverity(prev: PrevHealthNotifyState | undefined): 
  * is unhealthy (e.g. an established node that a fresh ClusterPendingPeer now
  * matches while it is re-bootstrapped), suppressing would erase that knowledge
  * and swallow its "recovered" — so the normal rules apply.
+ *
+ *   startupNoticeNow — a startup-complete notice for this node goes out this
+ *                 tick. THAT is the announcement that it is back, so from here
+ *                 the node is judged as if the operator was last told
+ *                 "normal": its "recovered to normal" in the same minute would
+ *                 only repeat it.
+ *   settling    — the node is Ready again and inside its settle window
+ *                 (outage-hold.ts). Anything wrong with it now — a CSI driver
+ *                 not registered yet, a pressure condition still clearing — is
+ *                 usually its pods still starting: the same root cause. Held
+ *                 and recorded as unannounced, like the join window, as long
+ *                 as the operator's last news about the node is "normal"
+ *                 (which, after a reboot, the startup notice made it). Not when
+ *                 they heard "down" and no startup notice speaks (the node came
+ *                 back on the same boot): the normal rules give them the only
+ *                 "back" they get. Whatever outlives the window is announced
+ *                 as new.
  */
 export function decideHealthNotification(input: {
   readonly newSeverity: NodeHealthSeverity;
   readonly prev: PrevHealthNotifyState | undefined;
   readonly suppressed: boolean;
+  readonly settling?: boolean;
+  readonly startupNoticeNow?: boolean;
   readonly now: Date;
 }): HealthNotifyDecision {
-  const prevSeverityForCopy = lastAnnouncedSeverity(input.prev);
+  const prevSeverityForCopy: NodeHealthSeverity = input.startupNoticeNow ? 'normal' : lastAnnouncedSeverity(input.prev);
   if (input.suppressed && prevSeverityForCopy === 'normal') {
+    return { notify: false, prevSeverityForCopy, lastNotifiedAt: null };
+  }
+  if (input.settling && input.newSeverity !== 'normal' && prevSeverityForCopy === 'normal') {
     return { notify: false, prevSeverityForCopy, lastNotifiedAt: null };
   }
   const prevLastNotifiedAt = input.prev?.lastNotifiedAt ?? null;

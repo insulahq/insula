@@ -12,6 +12,191 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **Retention now means one thing for every backup class, and a change applies within minutes.**
+  A copy is removed when it is older than **Retention (days)** or not among the newest **keep
+  last N**, whichever comes first. The newest copy of every class is always kept, and nothing is
+  removed from a read-only target. What this changes on upgrade, before anyone touches a setting:
+  - **Tenant bundles:** the schedule's current days apply to the nightly bundles that already
+    exist. Before, a bundle kept the days in force when it was made, so lowering 30 → 14 left
+    every older bundle on 30. On upgrade the bundles that no longer fit are removed within
+    minutes, and their repositories are pruned straight away. Manual, pre-archive and pre-resize
+    bundles keep their own retention. Raising the days now lets the bundles that have not
+    expired yet live longer.
+  - **Mail snapshots:** the two limits no longer add up. Before, `--keep-daily N --keep-last M`
+    kept a snapshot when *either* wanted it (one a day for N days, plus the last M). Now each
+    limit is its own `restic forget` pass (`--keep-within`, `--keep-last`). With hourly snapshots,
+    *7 days* and *keep last 48* keep **48 hours**. Before upgrading, set keep-last to `days × 24`
+    (168 for 7 days), or leave it empty, to keep the full window.
+  - **etcd snapshots, secrets bundles, cluster-state dumps:** a **days** limit is offered beside
+    the count, and enforced from platform-api through the backup shim. A days-only setting
+    publishes a count the jobs can never reach, so their own count-prune cannot cap it.
+
+- **CPU cores are no longer a plan or tenant parameter; every tenant is moved to CPU shares.**
+  A plan's CPU is its tier (the share it gets under contention) and its burst ceiling (the most
+  one application may use). The plan form, the API (`cpu_limit` on plans, `cpu_limit_override`
+  on tenants) and the tenant page's Plan & limits no longer offer cores. What changes on upgrade:
+  - **Plans and tenants that set no ceiling** are given the one they were deriving from their
+    cores (`max(1, cores × 2)`), so no tenant's ceiling moves. Every plan now states a ceiling.
+  - **New tenants are created on shares on every cluster.** An upgraded cluster used to keep
+    creating reserved-cores tenants.
+  - **Every tenant still on the old reserved-cores model is migrated automatically**, one at a
+    time, by the same paced migration as Cluster → CPU Scheduling, including tenants the dry
+    run flags, which used to need an operator's acknowledgement. A failed run is retried a day
+    later; each run is a task in the Task Center.
+  - **Revert to legacy is removed**, from the page and the API
+    (`POST /admin/cpu-migration/tenants/:id/revert` is gone). An interrupted migration is
+    finished by running it again.
+  - **API clients:** a plan create now requires `cpu_burst_cores` and ignores `cpu_limit`; a plan
+    update that sends `cpu_limit` is refused as an unknown key (400). A tenant update that sends
+    `cpu_limit_override` has it ignored. Plan and tenant reads still return `cpuLimit` /
+    `cpuLimitOverride` until the columns are dropped.
+  - The internal old-model code and the `cpu_limit` columns go in a later release, once no
+    install has a tenant on that model.
+
+### Added
+
+- **Storage by target.** Every backup target is measured every 6 hours, or on demand with
+  **Measure now**, with rclone against the target itself. Each measurement records the bytes per
+  class folder and, for SMB/CIFS and SFTP, total / used / free. S3 reports no free space, and says
+  so. Where the figures show:
+  - the Backups dashboard: one tile per target, with the total for all classes, the free space,
+    and a bar per class;
+  - each target card on the targets page, with **Measure now**;
+  - **Backups → Tenants**: the storage used by all tenant backups.
+  New endpoints: `GET /admin/backup-configs/usage` and
+  `POST /admin/backup-configs/:id/usage/refresh` (202).
+- **A cron task's last output, in both panels.** Under the last run's status, **Output** unfolds
+  what the run printed: the command's output, a webcron's response body, or why it did not run.
+  A failed run used to show a red badge and an exit code, with the reason only in the API.
+- **The tenant dashboard shows when the plan renews**, under the plan name ("Next renewal date"),
+  from the subscription's expiry date. A plan that never expires shows none.
+- **A custom application's details show its updates.** The Applications page opens every app in
+  the same details window, and for a custom app it offered no updates: the upgrade card asks
+  the catalog, which has no versions of a custom image. A custom app now gets the Custom
+  Containers tab's controls there: the update check, **Update** (re-pull the current tag),
+  **Auto-update** (single container) and, for a newer tag, the tag upgrade.
+
+### Changed
+
+- **Webmail and the Stalwart host are behind CrowdSec and the WAF**, like every other platform
+  UI. Neither had either, so an address CrowdSec had banned reached the webmail and Stalwart
+  admin logins, and no request to them was inspected. Every route now runs CrowdSec first and the
+  WAF (`waf-body-limit`, then `modsecurity-crs`), with two exceptions. JMAP's blob upload,
+  blob download and event stream (`/jmap/upload`, `/jmap/download`, `/jmap/eventsource`) keep
+  CrowdSec but not the WAF: an attachment (up to 100 MB) is over the WAF's 12.5 MiB body cap, and
+  the cap holds a whole response before sending it, so webmail's live updates would never arrive.
+  And what a mailbox owner writes is excluded from inspection,
+  because ordinary mail reads as injection and the same bytes arrive over SMTP with no WAF: the
+  body of the JMAP API call (`POST /jmap/`, exclusion `9000118`), and Roundcube's message, subject
+  and signature on the posts that send, save a draft or save a signature (`9000119`). Both
+  IngressRoutes are Flux-disowned, so running clusters get the chain from platform-api, every
+  webmail-router tick (5 minutes). The JMAP route and webmail get the WAF only once the WAF pods
+  run the exclusion for their host; a renamed webmail host keeps CrowdSec without the WAF rather
+  than refusing mail.
+- **An application's CPU is shown against what it can burst to, not its request.** Under CPU
+  shares the request is the tenant's share under contention, so "8m / 100m" read as an app at 8%
+  of its room when it could use six cores. The Applications list and cards now show
+  `used / burst ceiling` ("8m / 6 cores"), and the details window's CPU tile shows the same,
+  without the request. A custom app whose every service sets a CPU limit is measured against the
+  sum of those limits.
+- **A suspended tenant's backups read "paused", not "failing".** Backups are paused while a
+  tenant is suspended, so its last bundle — often a partial one from the suspension itself — kept
+  the Tenants card amber or red for as long as the suspension lasted. Health rows have a new
+  `paused` state (info severity). The card counts such a tenant as *N paused (suspended)*, and
+  recent activity says *paused — tenant suspended*.
+- **Saving a retention that limits nothing is refused** (400 `RETENTION_UNLIMITED`). Set days,
+  keep-last, or both. Every schedule card now shows both fields, states the rule, and says what
+  it will keep.
+- **Tenant page:** the Overview's Websites card is now a **Domains** table and an
+  **Applications** table. The Storage tab's **DATA** pill is solid blue with white text, like
+  ACTIVE, and is in the legend.
+- **A node that is down no longer sets off alerts about itself.** A server shut down on purpose
+  produced, beside its own down / shutting-down / startup notices, "Node subsystem health"
+  (Calico degraded during the shutdown, recovered during the boot) and one "Scrape target down"
+  per kubelet target on it — the same root cause, told again. Alerts **about** a node — Calico /
+  Longhorn CSI health, SLO alerts on series labelled with that node, and after a reboot its own
+  "Node health" transitions while it settles (a CSI driver not registered yet) — are now held
+  while it is down and for 10 minutes after it is Ready again, on the same terms as the join
+  window: the state is still recorded and shown, a problem that outlives the hold is announced,
+  one that cleared sends nothing. Alerts about other nodes are unaffected, and a kernel OOM
+  alert is never held — it may be why the node went down. The "mail port exposure" alert holds a
+  mail endpoint on such a node the same way: it reported the node's missing stalwart-haproxy pod
+  and advised re-applying the port-exposure mode. The mail server's own alerts (the Stalwart pod,
+  JMAP, the mail ports) are not held — if it ran there, mail is down.
+- **One outage, one going-down notice, worded by what the kubelet said.** "Rebooting" was sent
+  for a server being shut down — and for a crash, claiming a drain that never ran — and arrived
+  minutes after "down" for the same event. The kubelet's graceful-shutdown report now decides:
+  **Node shutting down** (the category formerly called *Node rebooting*; its id
+  `admin.node_rebooting` is unchanged) when it reported one, **down** otherwise, sent once by
+  whichever detector sees it first. *Startup complete* no longer says "rebooted", and the
+  "Node health: recovered to normal" sent in the same minute is gone; a node back on the same
+  boot (a lost network) still gets it, as its only back notice. Migration `0160` renames the
+  category on existing installs unless an operator renamed it. **If you muted *Node rebooting*,**
+  a graceful shutdown is now announced only through that category (as *Node shutting down*),
+  so muting it hides that outage's going-down notice too — unmute it to hear about shutdowns.
+
+### Fixed
+
+- **Postgres backup times read through the backup shim were the year 2000.** The shim serves
+  S3 with `--no-modtime` and reports one placeholder time for every object. The WAL summary took
+  it as each segment's upload time. On a chain with a gap, "continuous until" — the ceiling the
+  restore wizard holds a point-in-time restore to — read as the year 2000, so every real target
+  time looked unreachable. Segment times now come from the target itself (`rclone lsjson`
+  against the class's own target); if that listing fails, a time is unknown, never the
+  placeholder. A base backup's "uploaded at" ignores the placeholder too; the panel uses the
+  backup's own end time.
+- **A node's startup notice reported a fraction of its downtime.** A server shut down for about 21
+  minutes came back as "~1m 59s": the figure ran from the reconciler's last tick, and the
+  reconciler keeps ticking while a node is down. It now runs from the moment the node left
+  `Ready`, recorded by whichever detector sees it first (migration `0161` adds
+  `node_health_state.down_since`). A node that reported its new boot before it was `Ready` — a
+  k3s node waits for its network — could also lose its startup notice altogether, when a tick
+  landed in that window; the new boot is now taken on once the node is `Ready`.
+- **Tenants were emailed that their cron task failed when the platform could not reach its own
+  cluster.** During a server shutdown a Moodle cron job's run reported "did not run: connect
+  ETIMEDOUT <cluster-ip>:443" to the tenant's contacts: the platform's connection to the
+  Kubernetes API timed out before the command was sent. A run that fails because the platform
+  could not reach its cluster API (a connection refused, reset or timed out) is never reported to
+  the tenant; the run is recorded as failed, its output (now shown in both panels) saying it was
+  a platform problem. A scheduled
+  run that failed while connecting — so the command was certainly never sent — is tried once more
+  30 seconds later; one whose connection broke during the exec handshake is not, since the command
+  may have started. If it still did not run, the operator gets one "Scheduled tasks" platform
+  notice a day, opening Tenants → Cron jobs, decided 90 seconds after the first failure so a
+  crashed node can be seen down — and not sent while a node outage explains it: a node that went
+  down in the last 15 minutes, is back and settling, or is joining. "Run now" is not retried and
+  notifies no one.
+
+- **Validating a custom container with a private image always warned `IMAGE_ACCESS_DENIED`.**
+  Validate left the registry credential out of the request ("a dry run"), and the server never
+  used one, so the private image was probed anonymously and could only answer "denied". Validate
+  now sends the credential, as Deploy does; editing a deployment validates with its stored
+  credential (`POST …/custom-deployments/validate?deployment_id=`).
+- **Private custom images never showed an update.** The update check used the stored credential
+  only when the deployment's spec named it, which the panel never did, so it asked the registry
+  anonymously and got `unknown`. The check (and auto-update) now uses the deployment's stored
+  credential, and only for the registry it belongs to. A registry that challenges with HTTP
+  Basic rather than a token realm (a plain `registry:2`, some Nexus and Artifactory setups) now
+  gets the credential too; create also reported those images as a rejected credential. A result
+  read with a credential is no longer cached, because the cache is shared by image name and would
+  show a private repository's tags to another tenant. The tag-list probe now refuses internal
+  registry addresses, as the manifest probe already did.
+- **A custom app's details showed its disk as "0 B".** The details window measured disk only
+  while the app was running, and printed "0 B" while the figure loaded; the list measured it for
+  any app not being deleted. It now measures like the list, shows "…" while loading, and scales
+  the bar by the tenant's storage limit instead of a fixed 10 GB. The window also no longer
+  prints "Resource breakdown is not applicable to custom deployments …" as a red error.
+
+### Removed
+
+- **The per-target "Retention (days)" and "Schedule (cron)" fields** on Remote Storage Targets,
+  from the page and from the API (`retention_days` / `schedule_expression` on create and update,
+  `retentionDays` / `scheduleExpression` in responses). Both were stored and read by nothing,
+  while each class's schedule card decided the real retention and cadence. The columns stay,
+  for DR import; a client still sending the keys has them ignored.
+
 ## [2026.10.14] - 2026-10-19
 
 ### Changed

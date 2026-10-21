@@ -217,11 +217,11 @@ describe('CpuSchedulingPage', () => {
    * makes something happen. A page asserting its own inertness while carrying
    * an apply button is worse than no label.
    */
-  it('describes itself honestly now that it can act', () => {
+  it('says tenants on the old model are moved automatically', () => {
     ok(preview());
     render(<CpuSchedulingPage />);
-    expect(screen.getByText(/nothing changes until you migrate a tenant/i)).toBeInTheDocument();
-    expect(screen.queryByText(/dry run — changes nothing/i)).toBeNull();
+    expect(screen.getByTestId('cpu-auto-migrate-badge')).toHaveTextContent('tenants on the old model are moved automatically');
+    expect(screen.queryByText(/nothing changes until you migrate a tenant/i)).toBeNull();
   });
 
   // ─── R2 controls ───────────────────────────────────────────────────────
@@ -242,11 +242,13 @@ describe('CpuSchedulingPage', () => {
   });
 
   // A tenant already tiered must be offered the way BACK, not a second run.
-  it('offers revert instead of migrate once a tenant is tiered', async () => {
+  it('offers re-apply, never a revert to the old model, once a tenant is tiered', async () => {
+    // CPU cores are retired; a reverted tenant would only be moved again.
     ok(preview({ tenants: [tenant({ schedulingMode: 'tiered' })] }));
     render(<CpuSchedulingPage />);
     await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
-    expect(screen.getByTestId('cpu-revert-t1')).toBeInTheDocument();
+    expect(screen.getByTestId('cpu-reapply-t1')).toBeInTheDocument();
+    expect(screen.queryByTestId('cpu-revert-t1')).toBeNull();
     expect(screen.queryByTestId('cpu-migrate-t1')).toBeNull();
   });
 

@@ -165,6 +165,9 @@ export const BACKUP_RETENTION_RESOURCE = 'backup_retention';
 /** `resourceType` of what the automatic archive/delete sweep did (`admin.platform_event`). */
 export const TENANT_AUTOMATION_RESOURCE = 'tenant_lifecycle_automation';
 
+/** `resourceType` of a scheduled task the platform could not start (`admin.platform_event`). */
+export const CRON_PLATFORM_FAULT_RESOURCE = 'cron_platform_fault';
+
 /**
  * Categories that report on several subsystems, where the emitter names WHICH
  * one with `resourceType`: category → resourceType → page.
@@ -180,7 +183,11 @@ export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, str
   // operator acts on it from Backups, not from the cluster storage page.
   'admin.storage_event': { [BACKUP_RETENTION_RESOURCE]: '/backups' },
   // The sweep is switched on, and its backlog shown, at the top of this page.
-  'admin.platform_event': { [TENANT_AUTOMATION_RESOURCE]: '/platform/lifecycle-hooks' },
+  'admin.platform_event': {
+    [TENANT_AUTOMATION_RESOURCE]: '/platform/lifecycle-hooks',
+    // Every tenant's cron jobs, with each run's last result.
+    [CRON_PLATFORM_FAULT_RESOURCE]: '/tenants/cron-jobs',
+  },
 };
 
 export function notificationActionPath(input: ActionPathInput): string | null {

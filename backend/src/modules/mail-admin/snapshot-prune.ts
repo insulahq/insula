@@ -95,7 +95,7 @@ export interface MailPruneResult {
   readonly error: string | null;
 }
 
-type RepoEnv = Readonly<Record<string, string | undefined>>;
+export type RepoEnv = Readonly<Record<string, string | undefined>>;
 
 export interface MailSnapshotPruneDeps {
   readonly disabled: () => boolean;
@@ -202,9 +202,26 @@ export async function runMailSnapshotPrune(deps: MailSnapshotPruneDeps): Promise
   return result;
 }
 
+/**
+ * Prune at once instead of in the next daily slot — called after a retention
+ * change forgot snapshots, so the space they held is freed now rather than
+ * tomorrow. Pulls the due time to now and runs the normal, fully gated pass.
+ *
+ * Not while a prune is already running: pulling the due time forward would
+ * break its lease and let a second replica prune alongside it. That prune
+ * started before the forget, so it may miss what was just forgotten; the next
+ * daily slot catches it.
+ */
+export async function pruneMailSnapshotsNow(deps: MailSnapshotPruneDeps): Promise<MailPruneResult> {
+  const previous = await deps.readLastResult();
+  if (previous?.outcome === 'running') return skip('not-due', deps.now());
+  await deps.setNextDue(deps.now().toISOString());
+  return runMailSnapshotPrune(deps);
+}
+
 // ─── Real dependencies ──────────────────────────────────────────────────────
 
-async function findMailTargetId(db: Database): Promise<string | null> {
+export async function findMailTargetId(db: Database): Promise<string | null> {
   // Same lookup triggerMailSnapshot uses to decide whether a mail target is
   // bound and writable.
   const rows = await db
@@ -217,7 +234,7 @@ async function findMailTargetId(db: Database): Promise<string | null> {
   return rows[0]?.targetId ?? null;
 }
 
-async function readRepoEnv(core: k8s.CoreV1Api): Promise<RepoEnv | null> {
+export async function readRepoEnv(core: k8s.CoreV1Api): Promise<RepoEnv | null> {
   try {
     const secret = (await core.readNamespacedSecret({
       name: MAIL_RESTIC_SECRET_NAME,

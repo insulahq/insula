@@ -68,7 +68,6 @@ const SCHEDULE_META: Record<string, {
   readOnly?: boolean;
   readOnlyReason?: string;
   hideRetention?: boolean;
-  hideRetentionDays?: boolean;
 }> = {
   mail: {
     title: 'Mail snapshot schedule',
@@ -87,24 +86,18 @@ const SCHEDULE_META: Record<string, {
     description:
       'How often the cluster-database snapshots k3s has written to disk are collected and '
       + 'uploaded to the bound system target. (k3s writes those snapshots on its own schedule, '
-      + 'every 12 hours.) Retention is a number of snapshots, not a number of days.',
-    // This job keeps the newest N objects — there is no time window to set, so
-    // the days field would be a control with nothing behind it.
-    hideRetentionDays: true,
+      + 'every 12 hours.)',
   },
   secrets_bundle: {
     title: 'Secrets bundle',
     description:
       'Age-encrypted copy of the cluster secrets — the bundle you need to rebuild this platform '
-      + 'somewhere else. Retention is a number of bundles, not a number of days.',
-    hideRetentionDays: true,
+      + 'somewhere else.',
   },
   cluster_state: {
     title: 'Cluster state dump',
     description:
-      'Platform-wide inventory of Kubernetes objects, for rebuilding after a total loss. '
-      + 'Retention is a number of dumps, not a number of days.',
-    hideRetentionDays: true,
+      'Platform-wide inventory of Kubernetes objects, for rebuilding after a total loss.',
   },
 };
 
@@ -282,7 +275,6 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
                 readOnly={meta.readOnly}
                 readOnlyReason={meta.readOnlyReason}
                 hideRetention={meta.hideRetention}
-                hideRetentionDays={meta.hideRetentionDays}
               />
             );
           })}
