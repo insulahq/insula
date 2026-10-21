@@ -23,7 +23,7 @@
 
 import {
   DOCKER_HUB_INDEX_HOST,
-  fetchBearerToken,
+  answerChallenge,
   isRealmUrlBlocked,
   timedFetch,
 } from './update-checker.js';
@@ -90,14 +90,15 @@ export async function resolveTagDigest(
       if (first.status !== 401) return first;
       const wwwAuth = first.headers.get('www-authenticate');
       if (!wwwAuth) return first;
-      // fetchBearerToken carries the SSRF / PAT-exfiltration guard on the
-      // realm URL — do not bypass it with a hand-rolled token exchange.
-      const token = await fetchBearerToken(fetchImpl, wwwAuth, opts.authCreds);
-      if (!token) return first;
+      // answerChallenge (fetchBearerToken) carries the SSRF /
+      // PAT-exfiltration guard on the realm URL — do not bypass it with a
+      // hand-rolled token exchange.
+      const authorization = await answerChallenge(fetchImpl, wwwAuth, opts.authCreds);
+      if (!authorization) return first;
       return await timedFetch(
         fetchImpl,
         url,
-        { method, headers: { ...headers, authorization: `Bearer ${token}` } },
+        { method, headers: { ...headers, authorization } },
         REQUEST_TIMEOUT_MS,
       );
     } catch {

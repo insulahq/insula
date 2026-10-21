@@ -34,7 +34,6 @@ import {
 } from './schema.js';
 import { checkForUpdate } from './update-checker.js';
 import { getRunningDigest } from './image-audit.js';
-import { loadDecryptedToken } from './pat-store.js';
 import type { CallerRole } from './role-types.js';
 
 export async function customDeploymentRoutes(app: FastifyInstance): Promise<void> {
@@ -82,8 +81,9 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
   // ─── Validate (preview) ──────────────────────────────────────────────────
 
   app.post('/tenants/:tenantId/custom-deployments/validate', async (request) => {
-    // tenantId on the path is used only by the auth hook
-    // (requireTenantAccess); validation itself is tenant-agnostic.
+    // tenantId on the path is used by the auth hook (requireTenantAccess),
+    // and to scope `?deployment_id=` — validation itself is tenant-agnostic.
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = createCustomDeploymentSchema.safeParse(request.body);
     if (!parsed.success) {
       // Zod-level errors surface as a single issue list. The UI
@@ -100,6 +100,10 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
         rendered: [],
       });
     }
+    // Editing a deployment: its stored credential, so an edit of a private
+    // image is not validated anonymously (the edit form does not re-ask for
+    // the token). A typed one, on create, wins.
+    const stored = await storedCredentialForValidate(app, tenantId, request.query);
     const result = parsed.data.mode === 'compose'
       ? await service.validateComposeSpec(
         app.db,
@@ -109,10 +113,11 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
           name: parsed.data.name,
         },
         { role: roleOf(request) },
+        service.probeCredentialOf(parsed.data) ?? stored,
       )
       : await service.validateSimpleSpec(app.db, parsed.data, {
         role: roleOf(request),
-      });
+      }, stored);
     return success({
       ok: result.ok,
       issues: result.issues,
@@ -306,9 +311,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
           results[id] = { status: 'unknown', current: null, latest: null, reason: 'no service image', checkedAt: new Date().toISOString() };
           return;
         }
-        const cred = dep.customSpec.pullCredentialId
-          ? await loadPatForUpdateCheck(app, id)
-          : undefined;
+        const cred = await service.storedCredentialForImage(app.db, id, image, process.env.PLATFORM_ENCRYPTION_KEY);
         const r = await checkForUpdate({
           db: app.db,
           image,
@@ -471,19 +474,20 @@ function roleOf(request: { user: { role?: string } }): CallerRole {
 }
 
 /**
- * Resolve the decrypted PAT for use in an update-check call against
- * a private registry. Ownership is verified by the caller via
- * `getCustomDeployment(db, tenantId, id)` before this helper runs;
- * we don't re-check here. The decrypted cleartext exists only for
- * the duration of one HTTP call to the registry.
+ * The stored credential of the deployment named by `?deployment_id=` on a
+ * validate call, or undefined. The deployment must be this tenant's:
+ * getCustomDeployment 404s another tenant's id, so the query cannot borrow
+ * somebody else's token.
  */
-async function loadPatForUpdateCheck(
+export async function storedCredentialForValidate(
   app: FastifyInstance,
-  deploymentId: string,
-): Promise<{ username: string; password: string } | undefined> {
-  const key = process.env.PLATFORM_ENCRYPTION_KEY;
-  if (!key) return undefined;
-  const decrypted = await loadDecryptedToken(app.db, deploymentId, key);
-  if (!decrypted) return undefined;
-  return { username: decrypted.username, password: decrypted.token };
+  tenantId: string,
+  query: unknown,
+): Promise<service.ProbeCredential | undefined> {
+  const deploymentId = (query as { deployment_id?: unknown } | undefined)?.deployment_id;
+  if (typeof deploymentId !== 'string' || !UUID_RE.test(deploymentId)) return undefined;
+  await service.getCustomDeployment(app.db, tenantId, deploymentId);
+  return service.storedProbeCredential(app.db, deploymentId, process.env.PLATFORM_ENCRYPTION_KEY);
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

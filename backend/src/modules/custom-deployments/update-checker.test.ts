@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { checkForUpdate, isRealmUrlBlocked } from './update-checker.js';
+import { answerChallenge, checkForUpdate, isRealmUrlBlocked } from './update-checker.js';
 import type { Database } from '../../db/index.js';
 
 // Minimal stub DB — the update-checker reads/writes the cache table
@@ -454,5 +454,95 @@ describe('checkForUpdate — SSRF guard', () => {
         throw new Error(`PAT was sent in basic-auth header: ${authHeader}`);
       }
     }
+  });
+});
+
+// ─── Private images ─────────────────────────────────────────────────────────
+//
+// The cache is keyed by image alone. A result read WITH a tenant's credential
+// is that tenant's: cached, it would answer any other tenant naming the same
+// private image — tags or digest of a repository they cannot read.
+
+describe('checkForUpdate — a credentialed check is never shared through the cache', () => {
+  const CREDS = { username: 'bot', password: 'pat-123' };
+  function stubDbWithFreshCache(): Database {
+    const row = { severity: 'major', currentTag: '1.0.0', latestTag: '9.0.0', reason: null, checkedAt: new Date() };
+    return {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => [row]) })) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => {}) })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => {}) })) })),
+    } as unknown as Database;
+  }
+
+  it('semver: asks the registry instead of reading the shared row, and writes none', async () => {
+    const db = stubDbWithFreshCache();
+    const fetchImpl = vi.fn().mockResolvedValueOnce(makeResponse(200, { tags: ['1.0.0', '1.0.1'] })) as unknown as typeof fetch;
+    const r = await checkForUpdate({ db, image: 'ghcr.io/acme/private:1.0.0', authCreds: CREDS, fetchImpl });
+    expect(r.status).toBe('patch');
+    expect(r.latest).toBe('1.0.1');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('digest: resolves the registry digest itself and caches nothing', async () => {
+    const { db } = stubDb();
+    const r = await checkForUpdate({
+      db, image: 'ghcr.io/acme/private:latest', authCreds: CREDS,
+      runningImageId: `ghcr.io/acme/private@${DIGEST_A}`, fetchImpl: headDigest(DIGEST_B),
+    });
+    expect(r.status).toBe('digest');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('an anonymous check still uses the cache', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const r = await checkForUpdate({ db: stubDbWithFreshCache(), image: 'ghcr.io/acme/public:1.0.0', fetchImpl });
+    expect(r.latest).toBe('9.0.0');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('answerChallenge', () => {
+  const CREDS = { username: 'bot', password: 'pat-123' };
+
+  it('answers a Basic challenge with the credential itself', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const auth = await answerChallenge(fetchImpl, 'Basic realm="Registry Realm"', CREDS);
+    expect(auth).toBe(`Basic ${Buffer.from('bot:pat-123').toString('base64')}`);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('has nothing to answer a Basic challenge with, anonymously', async () => {
+    expect(await answerChallenge(vi.fn() as unknown as typeof fetch, 'Basic realm="x"', undefined)).toBeNull();
+  });
+
+  it('exchanges a Bearer challenge for a token', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(makeResponse(200, { token: 'tok' })) as unknown as typeof fetch;
+    expect(await answerChallenge(fetchImpl, 'Bearer realm="https://ghcr.io/token",service="ghcr.io"', CREDS)).toBe('Bearer tok');
+  });
+});
+
+describe('checkForUpdate — a registry that challenges with Basic', () => {
+  it('reads the tag list with the credential', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401, headers: { 'www-authenticate': 'Basic realm="Registry"' } }))
+      .mockResolvedValueOnce(makeResponse(200, { tags: ['2.0.0', '2.1.0'] })) as unknown as typeof fetch;
+    const r = await checkForUpdate({
+      db: stubDb().db, image: 'registry.example.test/acme/app:2.0.0',
+      authCreds: { username: 'bot', password: 'pat-123' }, fetchImpl,
+    });
+    expect(r.status).toBe('minor');
+    const second = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(second[1].headers.authorization).toMatch(/^Basic /);
+  });
+});
+
+describe('checkForUpdate — tag-list SSRF guard', () => {
+  it('does not ask a registry on an internal address', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const r = await checkForUpdate({ db: stubDb().db, image: 'kubernetes.default.svc/x/y:1.0.0', fetchImpl });
+    expect(r.status).toBe('unknown');
+    expect(r.reason).toBe('registry host is not a public address');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

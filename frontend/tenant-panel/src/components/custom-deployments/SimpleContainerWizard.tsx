@@ -89,7 +89,7 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const { data: tenantCpuData } = useTenantCpuModel(tenantId);
   const tenantCpu = tenantCpuData?.data;
   const tieredCpu = tenantCpu?.cpuModel === 'tiered';
-  const validateMutation = useValidateCustomDeployment(tenantId);
+  const validateMutation = useValidateCustomDeployment(tenantId, existingDeployment?.id);
   const createMutation = useCreateCustomDeployment(tenantId);
   const updateMutation = useUpdateCustomDeployment(tenantId);
 
@@ -148,10 +148,11 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
   const runValidate = async () => {
     setSubmitError(null);
     try {
-      // Same as the compose editor: validate is a dry run, keep the token off
-      // the wire for it.
-      const { pull_credential: _omitted, ...dryRun } = buildInput();
-      const r = await validateMutation.mutateAsync(dryRun as CreateCustomDeploymentSimpleInput);
+      // WITH the credential, as create sends it. Validated without it, a
+      // private image can only answer "access denied" — which it did, for
+      // every tenant who had configured a correct token. An edit names the
+      // deployment instead (the hook), whose stored token the server uses.
+      const r = await validateMutation.mutateAsync(buildInput());
       setIssues(r.data.issues);
       const errs = r.data.issues.filter(i => i.severity === 'error').length;
       const warns = r.data.issues.filter(i => i.severity === 'warning').length;

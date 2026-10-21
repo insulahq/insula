@@ -8,6 +8,7 @@ import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './Extra
 import { useSetMultihost } from '@/hooks/use-deployments';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
+import { CustomUpdatesCard } from '@/components/custom-deployments/CustomUpdatesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
@@ -49,6 +50,9 @@ import ChangeStoragePathModal from './ChangeStoragePathModal';
 import WebTerminal from './WebTerminal';
 import ErrorPanel from './ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
+import { cpuCeilingCores, cpuCores, formatCpuCeiling } from '@/lib/cpu-ceiling';
+import { useResourceMetrics } from '@/hooks/use-resource-metrics';
+import { formatGiB, resourceBarColor, resourcePercent, resourceRatio } from '@/lib/resource-usage';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
 interface ComponentEntry {
@@ -187,7 +191,16 @@ export default function InstalledAppDetailModal({
   const [showLogs, setShowLogs] = useState(false);
   const [changingStoragePath, setChangingStoragePath] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
-  const liveMetrics = useDeploymentLiveMetrics(tenantId, deployment?.status === 'running' ? deployment?.id : undefined);
+  // Fetched for anything not being deleted, as the list's Disk column is: a
+  // stopped app still occupies its volume, and gating this on `running`
+  // showed "0 B" for it here while the list showed the real size. CPU and
+  // memory are read from it only while the app runs.
+  const liveMetrics = useDeploymentLiveMetrics(
+    tenantId,
+    deployment && !['deleted', 'deleting'].includes(deployment.status) ? deployment.id : undefined,
+  );
+  const running = deployment?.status === 'running';
+  const { data: tenantResources } = useResourceMetrics();
 
   // ─── Configuration editing ────────────────────────────────────────────────
   // Version switching replaces the old one-step Rollback button: any listed
@@ -434,8 +447,15 @@ export default function InstalledAppDetailModal({
           </div>
         )}
 
+        {/* A custom app's updates come from its registry, not the catalog:
+            the catalog card asks for versions a custom image does not have,
+            and rendered nothing for it. */}
+        {tenantId && deployment.source === 'custom' && (
+          <CustomUpdatesCard tenantId={tenantId} deployment={deployment} />
+        )}
+
         {/* Available updates — only renders when there's an upgrade or rollback available */}
-        {tenantId && (
+        {tenantId && deployment.source !== 'custom' && (
           <AvailableUpgradesCard
             tenantId={tenantId}
             deploymentId={deployment.id}
@@ -690,8 +710,12 @@ export default function InstalledAppDetailModal({
                 </p>
               )}
               {/* Per-component breakdown — surfaced while editing so the user
-                  sees what their CPU/memory split looks like across the app. */}
-              <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
+                  sees what their CPU/memory split looks like across the app.
+                  Not for a custom app: it has no catalog components, and the
+                  API's refusal used to be printed here as a red error. */}
+              {deployment.source !== 'custom' && (
+                <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
@@ -699,29 +723,43 @@ export default function InstalledAppDetailModal({
                 icon={<Cpu size={16} className="mx-auto mb-1 text-gray-400" />}
                 label="CPU"
                 request={deployment.cpuRequest}
-                used={liveMetrics.data?.data?.cpuUsed}
+                used={running ? liveMetrics.data?.data?.cpuUsed : undefined}
                 type="cpu"
+                ceilingCores={tieredCpu ? cpuCeilingCores(deployment, tenantCpu?.cpuBurstCores) : null}
               />
               <DetailMetricCard
                 icon={<HardDrive size={16} className="mx-auto mb-1 text-gray-400" />}
                 label="Memory"
                 request={deployment.memoryRequest}
-                used={liveMetrics.data?.data?.memoryUsedMi}
+                used={running ? liveMetrics.data?.data?.memoryUsedMi : undefined}
                 type="memory"
               />
               {(() => {
-                const storageBytes = liveMetrics.data?.data?.storageUsedBytes ?? 0;
-                const usedGb = storageBytes / (1024 * 1024 * 1024);
-                const pct = Math.min((usedGb / 10) * 100, 100);
-                const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+                const metrics = liveMetrics.data?.data;
+                // Divided by the tenant's storage limit, as the grid's disk
+                // tile is — a fixed 10 GB here said 60% of a 100 GB volume.
+                const usedGb = (metrics?.storageUsedBytes ?? 0) / (1024 * 1024 * 1024);
+                const limitGb = tenantResources?.data?.storage.available ?? 0;
                 return (
-                  <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+                  <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center" data-testid="detail-disk">
                     <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
                     <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
-                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data?.data?.storageUsedFormatted ?? '0 B'}</p>
-                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
-                      <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
-                    </div>
+                    {/* Not measured yet is not zero: "0 B" while the figure was
+                        loading read as an empty volume. */}
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {metrics?.storageUsedBytes ? metrics.storageUsedFormatted : liveMetrics.isLoading ? '…' : '—'}
+                      {metrics?.storageUsedBytes && limitGb > 0 ? (
+                        <span className="ml-1 text-xs font-normal text-gray-500 dark:text-gray-400">of {formatGiB(limitGb)} GB</span>
+                      ) : null}
+                    </p>
+                    {metrics?.storageUsedBytes ? (
+                      <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+                        <div
+                          className={clsx('h-full rounded-full transition-all', resourceBarColor(resourceRatio(usedGb, limitGb)))}
+                          style={{ width: `${resourcePercent(usedGb, limitGb)}%` }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 );
               })()}
@@ -729,7 +767,7 @@ export default function InstalledAppDetailModal({
           )}
           {/* Per-component breakdown (read-only view). Hidden for
               single-component apps where the breakdown adds no info. */}
-          {!editingResources && (
+          {!editingResources && deployment.source !== 'custom' && (
             <div className="mt-3">
               <ResourceBreakdown tenantId={deployment.tenantId} deploymentId={deployment.id} />
             </div>
@@ -1257,19 +1295,46 @@ function DetailMetricCard({
   request,
   used,
   type,
+  ceilingCores = null,
 }: {
   readonly icon: React.ReactNode;
   readonly label: string;
   readonly request: string;
   readonly used: number | undefined;
   readonly type: 'cpu' | 'memory';
+  /** CPU only: what the app can burst to (lib/cpu-ceiling), shown instead of the request. */
+  readonly ceilingCores?: number | null;
 }) {
   let requestNum = 0;
   const usedNum = used ?? 0;
   let usedLabel = '';
 
+  if (type === 'cpu' && ceilingCores != null) {
+    // "<used> / <ceiling>" and no request: under tiers the request is the
+    // tenant's share under contention, and read as the app's size it is
+    // both wrong and a number the tenant never chose.
+    const pct = Math.min((usedNum / ceilingCores) * 100, 100);
+    const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+    return (
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center" data-testid="detail-cpu">
+        {icon}
+        <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+        <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          {used != null ? `${(usedNum * 1000).toFixed(0)}m` : '—'}
+          <span className="text-sm font-normal text-gray-400 dark:text-gray-500"> / {formatCpuCeiling(ceilingCores)}</span>
+        </p>
+        {used != null && (
+          <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+            <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+          </div>
+        )}
+        <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">used / burst ceiling</p>
+      </div>
+    );
+  }
+
   if (type === 'cpu') {
-    requestNum = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    requestNum = cpuCores(request);
     usedLabel = used != null ? `${(usedNum * 1000).toFixed(0)}m used` : '';
   } else {
     if (request.endsWith('Gi')) requestNum = parseFloat(request) * 1024;

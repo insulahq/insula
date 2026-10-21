@@ -67,9 +67,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - **Backups → Tenants**: the storage used by all tenant backups.
   New endpoints: `GET /admin/backup-configs/usage` and
   `POST /admin/backup-configs/:id/usage/refresh` (202).
+- **A cron task's last output, in both panels.** Under the last run's status, **Output** unfolds
+  what the run printed: the command's output, a webcron's response body, or why it did not run.
+  A failed run used to show a red badge and an exit code, with the reason only in the API.
+- **The tenant dashboard shows when the plan renews**, under the plan name ("Next renewal date"),
+  from the subscription's expiry date. A plan that never expires shows none.
+- **A custom application's details show its updates.** The Applications page opens every app in
+  the same details window, and for a custom app it offered no updates: the upgrade card asks
+  the catalog, which has no versions of a custom image. A custom app now gets the Custom
+  Containers tab's controls there: the update check, **Update** (re-pull the current tag),
+  **Auto-update** (single container) and, for a newer tag, the tag upgrade.
 
 ### Changed
 
+- **An application's CPU is shown against what it can burst to, not its request.** Under CPU
+  shares the request is the tenant's share under contention, so "8m / 100m" read as an app at 8%
+  of its room when it could use six cores. The Applications list and cards now show
+  `used / burst ceiling` ("8m / 6 cores"), and the details window's CPU tile shows the same,
+  without the request. A custom app whose every service sets a CPU limit is measured against the
+  sum of those limits.
 - **A suspended tenant's backups read "paused", not "failing".** Backups are paused while a
   tenant is suspended, so its last bundle — often a partial one from the suspension itself — kept
   the Tenants card amber or red for as long as the suspension lasted. Health rows have a new
@@ -128,7 +144,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   ETIMEDOUT <cluster-ip>:443" to the tenant's contacts: the platform's connection to the
   Kubernetes API timed out before the command was sent. A run that fails because the platform
   could not reach its cluster API (a connection refused, reset or timed out) is never reported to
-  the tenant; the run is recorded as failed, its output saying it was a platform problem. A scheduled
+  the tenant; the run is recorded as failed, its output (now shown in both panels) saying it was
+  a platform problem. A scheduled
   run that failed while connecting — so the command was certainly never sent — is tried once more
   30 seconds later; one whose connection broke during the exec handshake is not, since the command
   may have started. If it still did not run, the operator gets one "Scheduled tasks" platform
@@ -136,6 +153,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   crashed node can be seen down — and not sent while a node outage explains it: a node that went
   down in the last 15 minutes, is back and settling, or is joining. "Run now" is not retried and
   notifies no one.
+
+- **Validating a custom container with a private image always warned `IMAGE_ACCESS_DENIED`.**
+  Validate left the registry credential out of the request ("a dry run"), and the server never
+  used one, so the private image was probed anonymously and could only answer "denied". Validate
+  now sends the credential, as Deploy does; editing a deployment validates with its stored
+  credential (`POST …/custom-deployments/validate?deployment_id=`).
+- **Private custom images never showed an update.** The update check used the stored credential
+  only when the deployment's spec named it, which the panel never did, so it asked the registry
+  anonymously and got `unknown`. The check (and auto-update) now uses the deployment's stored
+  credential, and only for the registry it belongs to. A registry that challenges with HTTP
+  Basic rather than a token realm (a plain `registry:2`, some Nexus and Artifactory setups) now
+  gets the credential too; create also reported those images as a rejected credential. A result
+  read with a credential is no longer cached, because the cache is shared by image name and would
+  show a private repository's tags to another tenant. The tag-list probe now refuses internal
+  registry addresses, as the manifest probe already did.
+- **A custom app's details showed its disk as "0 B".** The details window measured disk only
+  while the app was running, and printed "0 B" while the figure loaded; the list measured it for
+  any app not being deleted. It now measures like the list, shows "…" while loading, and scales
+  the bar by the tenant's storage limit instead of a fixed 10 GB. The window also no longer
+  prints "Resource breakdown is not applicable to custom deployments …" as a red error.
 
 ### Removed
 

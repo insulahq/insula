@@ -16,6 +16,8 @@ import { Link } from 'react-router-dom';
 import type { TenantSite } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useOverviewSummary, useOverviewLive } from '@/hooks/use-hosting-overview';
+import { useSubscription } from '@/hooks/use-subscription';
+import { formatRenewalDate } from '@/lib/format-renewal-date';
 import {
   AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
@@ -51,6 +53,10 @@ export default function Dashboard() {
   const { tenantId } = useTenantContext();
   const summary = useOverviewSummary(tenantId ?? undefined);
   const live = useOverviewLive(tenantId ?? undefined);
+  // When the plan runs out — the date the expiry warnings count down to. A
+  // plan that never expires has none, and shows none.
+  const { data: subscription } = useSubscription(tenantId ?? undefined);
+  const renewal = formatRenewalDate(subscription?.data?.subscription_expires_at);
 
   const s = summary.data?.data;
   const l = live.data?.data;
@@ -61,9 +67,16 @@ export default function Dashboard() {
     <div className="w-full px-1 pb-16">
       <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Hosting Overview</h1>
-        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
-          {s?.plan.data ? `${s.plan.data.name} plan` : 'loading…'}
-        </span>
+        <div className="flex flex-col">
+          <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+            {s?.plan.data ? `${s.plan.data.name} plan` : 'loading…'}
+          </span>
+          {renewal && (
+            <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="dashboard-renewal">
+              Next renewal date: {renewal}
+            </span>
+          )}
+        </div>
         <RefreshButton
           busy={summary.isFetching || live.isFetching}
           onClick={() => { void summary.refetch(); void live.refetch(); }}
