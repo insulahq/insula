@@ -705,6 +705,62 @@ data:
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
         SecRule REQUEST_URI "@rx ^/api/v1/admin/notifications/providers(/[^/]+)?(\?|$)" "t:none"
 
+    # ── Mail: the message is the payload ─────────────────────────
+    #
+    # Webmail and the Stalwart host run behind the WAF like every other
+    # platform UI (backend/src/shared/traefik-mail-waf.ts). What a mailbox
+    # owner writes — an HTML message, a signature, a pasted code snippet, a
+    # SQL query sent to a colleague — is exactly what the injection families
+    # (941 XSS, 942 SQLi, 932 RCE, 933 PHP, 930 LFI) are built to score, so
+    # inspected it would refuse ordinary mail. The same bytes reach the same
+    # mailbox over SMTP, which has no WAF in front of it, and they are stored
+    # as mail, not executed.
+    #
+    # 9000118: the JMAP API call itself — POST /jmap/, which carries
+    # Bulwark's Email/set, identities and Sieve updates. Its JSON body is the
+    # message, so the body and every argument parsed from it go uninspected.
+    # The URI and headers keep coverage, and so does every other JMAP path:
+    # the session, download and event-source endpoints, and anything with a
+    # query string. Stalwart authenticates the call before it reads the body.
+    # The blob upload is a route without the WAF (an attachment is over the
+    # body cap).
+    #
+    # 9000119: Roundcube's message, subject and signature fields, and only on
+    # the POSTs that carry them (`_action` send — sending and saving a draft —
+    # or save-identity). Phase 2, because `_action` may be in the body. Every
+    # other argument, method and action on the webmail host keeps coverage.
+    #
+    # Host-scoped to the mail hosts as seeded. The converger reads these two
+    # patterns back and puts the WAF on a mail route only when the running
+    # sidecar has the exclusion for that route's host, so a renamed webmail
+    # host keeps CrowdSec without the WAF rather than refusing mail.
+    # `t:none` keeps an action list on each chain's last rule (see 9000112).
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^stalwart\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000118,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_NAMES,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST_NAMES"
+        SecRule REQUEST_METHOD "@streq POST" "chain,t:none"
+        SecRule REQUEST_URI "@rx ^/jmap/?$" "t:none"
+
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^webmail\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000119,\
+         phase:2,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:_message,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:_subject,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:_signature"
+        SecRule REQUEST_METHOD "@streq POST" "chain,t:none"
+        SecRule ARGS:_action "@rx ^(send|save-identity)$" "t:none"
+
     # ── ADR-060: raw transport for custom-container specs ─────────────
     #
     # A compose document and its env files are shell commands and KEY=value
@@ -758,3 +814,4 @@ data:
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
         SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/[^/]+)?(\?|$)" "t:none"
+

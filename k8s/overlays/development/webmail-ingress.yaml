@@ -46,6 +46,15 @@ spec:
     - match: "Host(`webmail.${DOMAIN}`)"
       kind: Rule
       middlewares:
+        # CrowdSec + the WAF, as on every platform UI. Flux-disowned: running
+        # clusters get the chain from platform-api
+        # (backend/src/shared/traefik-mail-waf.ts).
+        - name: crowdsec
+          namespace: traefik
+        - name: waf-body-limit
+          namespace: traefik
+        - name: modsecurity-crs
+          namespace: traefik
         - name: inflight-per-client
           namespace: traefik
         - name: compress

@@ -1941,7 +1941,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
           const webmailRouterHandle = startWebmailRouterReconciler(
             app.db,
-            { custom: k8sForImapsync.custom, apps: k8sForImapsync.apps },
+            { custom: k8sForImapsync.custom, apps: k8sForImapsync.apps, core: k8sForImapsync.core },
             app.log,
           );
           app.addHook('onClose', () => webmailRouterHandle.stop());

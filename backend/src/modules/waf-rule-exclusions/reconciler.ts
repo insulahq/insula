@@ -92,6 +92,18 @@ async function loadBypassIps(log: Pick<Logger, 'warn'>): Promise<string[]> {
   }
 }
 
+/**
+ * The stamp the modsec-crs pod template carries once it runs `staticContent`
+ * and the dynamic rules hashed `renderedHash`. Also read by the mail-route
+ * converger (shared/traefik-mail-waf.ts), which turns the WAF on for a mail
+ * host only once the sidecar runs the exclusions that host needs.
+ */
+export function modsecDeployHash(renderedHash: string, staticContent: string): string {
+  return staticContent
+    ? createHash('sha256').update(`${renderedHash}\n${staticContent}`).digest('hex')
+    : renderedHash;
+}
+
 export async function reconcileWafExclusions(
   db: Db,
   clients: WafExclusionClients,
@@ -201,9 +213,7 @@ export async function reconcileWafExclusions(
       'waf-rule-exclusions: static ConfigMap read failed — deploy hash falls back to dynamic-only',
     );
   }
-  const deployHash = staticContent
-    ? createHash('sha256').update(`${rendered.hash}\n${staticContent}`).digest('hex')
-    : rendered.hash;
+  const deployHash = modsecDeployHash(rendered.hash, staticContent);
 
   let deployStamped = false;
   try {

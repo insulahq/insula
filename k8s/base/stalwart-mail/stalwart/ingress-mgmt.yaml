@@ -28,6 +28,15 @@
 #      because the IngressRoute resource itself carries the admin-ui
 #      label + auth-gate annotation.
 #
+#   Every route runs CrowdSec first and — except the JMAP blob upload —
+#   the WAF (`waf-body-limit` then `modsecurity-crs`), as the panels do.
+#   Upload is its own route because an attachment (up to Stalwart's 100 MB
+#   upload limit) is over the WAF's 12.5 MiB body cap: inspected, it would be
+#   refused. Message bodies inside the JMAP API calls are excluded from
+#   inspection by rule (modsec-crs exclusion 9000118), not by route.
+#   This object is Flux-disowned: running clusters get the chain from
+#   platform-api (backend/src/shared/traefik-mail-waf.ts).
+#
 # URL: https://stalwart.${DOMAIN}/
 # Backend: stalwart-mgmt.mail.svc.cluster.local:8080
 #
@@ -58,12 +67,31 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # Route 0 — JMAP blob upload: CrowdSec, no WAF (see the header). The
+    # priority beats route 1's, which defaults to its (longer) rule's length.
+    - match: "Host(`stalwart.${DOMAIN}`) && PathPrefix(`/jmap/upload`)"
+      kind: Rule
+      priority: 1000
+      middlewares:
+        - name: crowdsec
+          namespace: traefik
+        - name: stalwart-jmap-cors
+          namespace: mail
+        - name: inflight-per-client
+          namespace: traefik
+        - name: compress
+          namespace: traefik
+      services:
+        - name: stalwart-mgmt
+          port: 8080
     # Route 1 — JMAP protocol (no admin-auth-cookie gate).
     # Stalwart owns auth here. PathPrefix matches are higher priority
     # than the Host-only catch-all below, so /jmap requests land here.
     - match: "Host(`stalwart.${DOMAIN}`) && (PathPrefix(`/jmap`) || Path(`/.well-known/jmap`))"
       kind: Rule
       middlewares:
+        - name: crowdsec
+          namespace: traefik
         # Browser CORS for Bulwark webmail's client-side JMAP calls.
         # Bulwark's SPA (served from webmail.${DOMAIN}) fetches
         # ${stalwart}/.well-known/jmap → /jmap/session cross-origin after
@@ -80,6 +108,11 @@ spec:
         # break webmail. See docs/features/BULWARK_WEBMAIL.md.
         - name: stalwart-jmap-cors
           namespace: mail
+        # After the CORS headers, so a refusal reaches the SPA as a refusal.
+        - name: waf-body-limit
+          namespace: traefik
+        - name: modsecurity-crs
+          namespace: traefik
         # Per-client concurrency cap, directly before compress like on every
         # compressing route — and after the CORS headers, so a 429 still
         # carries ACAO instead of reaching the SPA as a CORS error.
@@ -94,7 +127,13 @@ spec:
     - match: "Host(`stalwart.${DOMAIN}`)"
       kind: Rule
       middlewares:
+        - name: crowdsec
+          namespace: traefik
         - name: admin-auth-cookie
+          namespace: traefik
+        - name: waf-body-limit
+          namespace: traefik
+        - name: modsecurity-crs
           namespace: traefik
         - name: inflight-per-client
           namespace: traefik

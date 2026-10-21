@@ -80,6 +80,7 @@ grep -q 'middlewares-waf-body-limit.yaml' "$REPO_ROOT/k8s/base/traefik/kustomiza
 EMITTERS=(
   "backend/src/modules/system-settings/ingress-reconciler.ts"
   "backend/src/modules/ingress-routes/annotation-sync.ts"
+  "backend/src/shared/traefik-mail-waf.ts"
 )
 for f in "${EMITTERS[@]}"; do
   p="$REPO_ROOT/$f"

@@ -80,6 +80,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Webmail and the Stalwart host are behind CrowdSec and the WAF**, like every other platform
+  UI. Neither had either, so an address CrowdSec had banned reached the webmail and Stalwart
+  admin logins, and no request to them was inspected. Every route now runs CrowdSec first and the
+  WAF (`waf-body-limit`, then `modsecurity-crs`), with two exceptions. The JMAP blob upload
+  (`/jmap/upload`) keeps CrowdSec but not the WAF, because an attachment (up to 100 MB) is over
+  the WAF's 12.5 MiB body cap. And what a mailbox owner writes is excluded from inspection,
+  because ordinary mail reads as injection and the same bytes arrive over SMTP with no WAF: the
+  body of the JMAP API call (`POST /jmap/`, exclusion `9000118`), and Roundcube's message, subject
+  and signature on the posts that send, save a draft or save a signature (`9000119`). Both
+  IngressRoutes are Flux-disowned, so running clusters get the chain from platform-api, every
+  webmail-router tick (5 minutes). The JMAP route and webmail get the WAF only once the WAF pods
+  run the exclusion for their host; a renamed webmail host keeps CrowdSec without the WAF rather
+  than refusing mail.
 - **An application's CPU is shown against what it can burst to, not its request.** Under CPU
   shares the request is the tenant's share under contention, so "8m / 100m" read as an app at 8%
   of its room when it could use six cores. The Applications list and cards now show
