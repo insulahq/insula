@@ -60,8 +60,11 @@ interface DnsLite {
 const HOOK_NAME = 'dns-zone-cleanup';
 
 async function runImpl(ctx: HookCtx): Promise<HookResult> {
-  if (ctx.transition !== 'deleted') {
-    return { status: 'noop', detail: 'only runs on deleted' };
+  // Archived too (operator decision): an archived tenant's zones are removed
+  // like a deleted one's. Its domain and record rows stay — restore publishes
+  // the zones again from them (tenant-archive/restore-dns.ts).
+  if (ctx.transition !== 'deleted' && ctx.transition !== 'archived') {
+    return { status: 'noop', detail: 'only runs on deleted and archived' };
   }
   if (!isHookAuthoritative(HOOK_NAME)) {
     // Operator kill-switch via LIFECYCLE_HOOK_DNS_ZONE_CLEANUP=disable.
@@ -141,7 +144,7 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
 
 export const dnsZoneCleanupHook: LifecycleHook = {
   name: HOOK_NAME,
-  transitions: ['deleted'],
+  transitions: ['deleted', 'archived'],
   // Order 400 — after PV cleanup (100) + DB hooks (200-250). The
   // domains rows are still present at this point because the FK
   // cascade in cascades.applyDeleted runs AFTER the registry dispatch.

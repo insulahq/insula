@@ -147,13 +147,16 @@ export const updateTenantSchema = z.object({
   // M7: toggle tenant HA. Flipping 'local' → 'ha' on a provisioned
   // tenant marks the intent but doesn't move existing data.
   storage_tier: tenantStorageTierEnum.optional(),
-  // Status-driven lifecycle (collapse phase): when status flips to
-  // 'archived' we dispatch the storage-lifecycle archiveTenant
-  // orchestrator (final snapshot + workload+PVC delete) and use this
-  // value for the snapshot retention. Falls back to platform setting
-  // `storage.retention.pre_archive_days` (default 90) when omitted.
-  // Ignored on every status that isn't 'archived'.
-  archive_retention_days: z.number().int().min(1).max(365).optional(),
+  // Status-driven lifecycle: when status flips to 'archived' (from
+  // 'suspended' only) the storage-lifecycle archiveTenant orchestrator takes
+  // the tenant's final full bundle and tears the tenant down. This is how
+  // long that bundle is kept; when it expires the tenant is deleted. Falls
+  // back to the platform setting `storage.retention.pre_archive_days`
+  // (default 90). Ignored on every status that isn't 'archived'.
+  archive_retention_days: z.number().int().min(1).max(3650).optional(),
+  // Keep the archive's bundle until the tenant is deleted by hand: no
+  // expiry, and so no automatic delete. Wins over archive_retention_days.
+  archive_never_expires: z.boolean().optional(),
   // Notification-system Phase 1: when true, the lifecycle hook
   // `notify-tenant-on-transition` skips the tenant-facing notification
   // for this transition. Admin toolbar checkbox "Notify tenant" inverts

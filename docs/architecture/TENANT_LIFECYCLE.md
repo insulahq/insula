@@ -14,8 +14,8 @@
 | Shrink storage            | ResourceLimits → Storage Limit ↓ → confirm destructive dialog | POST /admin/tenants/:id/storage/resize { newGi }            |
 | Suspend                   | Status dropdown → suspended                                    | PATCH /tenants/:id { status: 'suspended' }                  |
 | Resume                    | Status dropdown → active                                       | PATCH /tenants/:id { status: 'active' }                     |
-| Archive (with retention)  | Status dropdown → archived (+ retention_days input)            | PATCH /tenants/:id { status: 'archived', archive_retention_days } |
-| Restore from archive      | Status dropdown → active (with confirm modal)                  | PATCH /tenants/:id { status: 'active' }                     |
+| Archive (suspended only)  | Actions → Archive… (days, or Never expire)                     | PATCH /tenants/:id { status: 'archived', archive_retention_days \| archive_never_expires } |
+| Restore from archive      | Archived tenant page → Restore archived tenant                 | PATCH /tenants/:id { status: 'active' }                     |
 | Manual snapshot           | Storage / Snapshots → "Take snapshot"                          | POST /tenants/:id/snapshots (on-server Longhorn CSI)        |
 | Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/tenants/:id/storage/clear-failed                |
 | Hard delete               | Top-bar → Delete                                               | DELETE /tenants/:id                                         |
@@ -36,8 +36,8 @@ The flows are intentionally *not* symmetric:
 | Shrink            | Destructive   | Pre-resize snapshot kept (default 7d). Restore via /storage/restore |
 | Suspend           | Reversible    | Workloads scaled to 0; resume restores prior replica counts   |
 | Resume            | Reversible    | unquiesce reads QuiesceSnapshot from the suspend op row       |
-| Archive           | Destructive   | Final pre-archive snapshot kept (default 90d). Workloads + PVC + mailboxes deleted |
-| Restore (archived → active) | Destructive | Recreates PVC, restores data. Workloads must be redeployed manually. Mailboxes are NOT recreated. |
+| Archive           | Destructive   | Suspended tenants only. Final full bundle kept off-site (default 90d, or no end date); then almost a delete — see *Archive and restore* |
+| Restore (archived → active) | Destructive | Everything back from the bundle; mailboxes need new passwords |
 | Hard delete       | Irreversible  | Drops namespace, snapshots, DB rows                           |
 
 ## Endpoint catalogue
@@ -54,7 +54,8 @@ are still called by:
 | POST /admin/tenants/:id/storage/resize             | ResourceLimits shrink confirm                    |
 | POST /admin/tenants/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/resume             | (script-only; status flip uses cascade path)     |
-| POST /admin/tenants/:id/storage/archive            | PATCH /tenants status:archived                   |
+| POST /admin/tenants/:id/storage/archive            | PATCH /tenants status:archived (`retentionDays`, `neverExpires`) |
+| GET  /admin/tenants/:id/archive                    | The archived tenant page: bundle, size, expiry, restorable |
 | POST /admin/tenants/:id/storage/restore            | PATCH /tenants status:active (when archived)     |
 | POST /admin/tenants/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
 | GET  /admin/storage/operations/:opId               | OperationProgressModal poll                      |
@@ -67,6 +68,65 @@ are still called by:
 > /admin/storage/snapshots/:id` routes remain for the restic `bundle:` rows
 > (pre-resize / pre-archive) still recorded in `storage_snapshots`.
 
+## Archive and restore
+
+**Archive** takes a **suspended** tenant only (409 `TENANT_NOT_SUSPENDED`
+otherwise) and needs a tenant backup target (409 `NO_BACKUP_TARGET`).
+
+1. The final bundle: a full tenant bundle (`system_trigger = pre_archive`) —
+   files (the databases' data with them), mailboxes with their mail,
+   configuration, TLS secrets — to the tenant backup target. The suspension's
+   mail-login block is lifted for the capture only (inbound mail stays
+   refused). Anything short of `completed` stops the archive with nothing
+   removed (`SNAPSHOT_INCOMPLETE`).
+2. Teardown, almost a delete: Deployments, CronJobs, Services, the PVC **and
+   its volume** (the Released PV and the Longhorn volume — `longhorn-tenant`
+   keeps a volume whose claim is deleted, so it used to be left orphaned);
+   the mail domains, DKIM keys, mail accounts and alias lists on the mail
+   server; the DNS zones on the DNS servers. The `domains`, `dns_records`,
+   `mailboxes`, `email_aliases` and `deployments` rows stay: restore rebuilds
+   from them. The namespace stays.
+3. Sign-in closes everywhere: password, passkey, OIDC, admin "Login as
+   tenant", SFTP, and sessions already open (refresh tokens revoked; every
+   tenant-panel request checks the tenant, 403 `TENANT_ARCHIVED`). Each API
+   replica caches the answer for 10 seconds, so an open session ends within
+   seconds, not on the instant — and a restored tenant's users may meet
+   `TENANT_ARCHIVED` for as long.
+4. The tenant's notice (`tenant.archived`, honours "Notify tenant") says
+   sign-in is closed and how long the backup is kept.
+
+The archive's expiry is the bundle's. **When it expires the tenant is
+deleted** (the snapshot-expiry sweep, `tenant-archive/expiry.ts`) — only by
+the expiry of its newest archive, and never while a restore owns it: the
+bundle of an archive the tenant was restored from expires as any bundle, even
+when the tenant was archived again since. An archive kept with no end date is
+never deleted automatically, and the automation card's delete step skips it. New bundles of an archived tenant are refused
+(409 `TENANT_ARCHIVED`), so the archive bundle stays its newest; its older
+bundles expire as usual. Backups → Tenants keeps the tenant, marked Archived.
+
+**Restore** of a whole archive brings back, in order: a fresh volume with the
+bundle's files; the DNS zones and their records (SOA and apex NS come with
+the zone; a rebuilt mail domain's MX, SPF, DKIM, DMARC, SRV and webmail
+records are left out, its rebuild writes them afresh); each mail domain (a
+new DKIM key, published); each mailbox, its
+mail imported from the bundle (a restore job of the tenant, in the restore
+history); the `restored` hooks (status active, aliases' lists, ingress); then
+every application deployed again and set back to the replica count it had
+before the suspension (0 included). Mailboxes get new random passwords — the
+mail server never returns a stored one, so no archive can hold it — and the
+restore notice tells the tenant to set new ones. An archive taken before
+archives were whole (`pre_resize`, files only) restores the files only, as it
+always did. A resumed restore repeats no step's effect: zones and records are
+written idempotently, rebuilt mail domains are skipped, and the mail import
+skips messages it already has.
+
+While an archive runs, the 15-minute mail-rules sweep leaves the tenant's
+mailboxes alone (their logins are open for the capture). A failed archive
+hook is not retried once the tenant has been restored — it would tear the
+restored tenant down again — and the 6-hourly sweep that removes an archived
+tenant's leftover volume skips a tenant a restore owns, and never touches a
+volume whose PV is still bound.
+
 ## Status transitions and the orchestrators
 
 ```
@@ -77,12 +137,12 @@ are still called by:
             ▼                             ▼                              ▼
     status: suspended             status: active                  status: archived
        │                            │  │                              │
-       │ applySuspended (sync)      │  │ applyActive (sync)           │ archiveClient orchestrator
+       │ applySuspended (sync)      │  │ applyActive (sync)           │ archiveTenant (suspended only)
        │ (cascades.ts)              │  │ (cascades.ts)                │ (storage-lifecycle/service.ts)
-       ▼                            │  │                              │   ├─ quiesce
-   ingress patched                  │  │                              │   ├─ snapshot (kind=pre-archive)
-   workloads scaled to 0            │  │                              │   ├─ delete deployments + PVC
-   mailboxes disabled               │  │                              │   └─ applyArchived (cascades)
+       ▼                            │  │                              │   ├─ final full bundle (pre_archive)
+   ingress patched                  │  │                              │   ├─ delete workloads, PVC, volume
+   workloads scaled to 0            │  │                              │   ├─ applyArchived (mail, DNS, status)
+   mailboxes disabled               │  │                              │   └─ end the tenant's sessions
                                     │  │                              ▼
                                     │  │                         status: archived
                                     │  │                         storage_operations row written
@@ -90,11 +150,12 @@ are still called by:
               from archived ────────┘  └──── from suspended
                      │                           │
                      ▼                           ▼
-              restoreArchivedClient           applyActive (sync)
+              restoreArchivedTenant           applyActive (sync)
               (storage-lifecycle/service.ts)  (cascades.ts)
-                ├─ recreate PVC               ingress restored
-                ├─ restore data from snap     workloads scaled back
-                └─ status='active'            mailboxes re-enabled
+                ├─ fresh PVC + files          ingress restored
+                ├─ DNS zones, mail, mailboxes workloads scaled back
+                ├─ applyRestored (status)     mailboxes re-enabled
+                └─ redeploy applications
               storage_operations row written
 ```
 
@@ -126,8 +187,10 @@ opens OperationProgressModal which polls
 
 | Failure                                | Where to look                                              |
 | -------------------------------------- | ---------------------------------------------------------- |
-| Archive: snapshot store unreachable    | storage_operations.lastError (OperatorError envelope)      |
-| Restore: pre-archive snapshot expired  | NO_ARCHIVE_SNAPSHOT 404 from PATCH                         |
+| Archive: final bundle not complete     | storage_operations.lastError (`SNAPSHOT_INCOMPLETE`); the bundle's components under Backups → Tenants |
+| Archive: mail server unreachable       | `MAIL_SERVER_UNREACHABLE` — nothing removed; retry        |
+| Restore: archive bundle expired        | the tenant was deleted with it (no restore)               |
+| Restore: a step failed (DNS, mail, an application) | the operation's closing message lists them; the restore went on |
 | Shrink: destructive resize stuck       | Storage Operations card → Reset to idle (clear-failed)     |
 | Suspend cascade race                   | backend logs "[clients] Lifecycle cascade failed"          |
 

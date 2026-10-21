@@ -50,6 +50,7 @@ function makeFakeDb(opts: {
   runs: FakeRun[];
   transitions: FakeTransition[];
   tenantNamespace?: string;
+  tenantStatus?: string;
 }) {
   const db = {
     select: (_cols?: unknown) => ({
@@ -62,8 +63,8 @@ function makeFakeDb(opts: {
             if (table === tenantLifecycleTransitions) {
               return opts.transitions;
             }
-            // tenants table fallback for namespace lookup
-            return [{ ns: opts.tenantNamespace ?? 'tenant-test' }];
+            // tenants table: namespace fallback and the still-archived check
+            return [{ ns: opts.tenantNamespace ?? 'tenant-test', status: opts.tenantStatus ?? 'archived' }];
           },
         }),
       }),
@@ -227,5 +228,50 @@ describe('runRetryTick', () => {
     // gets skipped on this same tick because the breaker opens
     // mid-tick on the 5th failure.
     expect(r.skippedBreaker).toBeGreaterThanOrEqual(1);
+  });
+
+  it('closes an archive step instead of retrying it once the tenant was restored', async () => {
+    let called = 0;
+    registerLifecycleHook({
+      name: 'zone-teardown',
+      transitions: ['archived'],
+      order: 100,
+      blocking: 'continue',
+      run: async () => { called++; return { status: 'ok' }; },
+    });
+    const runs: FakeRun[] = [{
+      id: 'r1', transitionId: 't1', hookName: 'zone-teardown',
+      state: 'failed', attempts: 1, maxAttempts: 3,
+      nextAttemptAt: new Date(Date.now() - 1000),
+    }];
+    const transitions: FakeTransition[] = [{ id: 't1', tenantId: 'c1', transitionKind: 'archived' }];
+    const db = makeFakeDb({ runs, transitions, tenantStatus: 'active' });
+    const r = await runRetryTick(db as never, {} as never);
+    expect(called).toBe(0);
+    expect(r.permanentlyFailed).toBe(1);
+    expect(runs[0].state).toBe('failed');
+    expect(runs[0].nextAttemptAt).toBeNull();
+    expect(runs[0].lastError).toMatchObject({ title: 'Not retried: the tenant is no longer archived' });
+  });
+
+  it('still retries an archive step while the tenant stays archived', async () => {
+    let called = 0;
+    registerLifecycleHook({
+      name: 'zone-teardown',
+      transitions: ['archived'],
+      order: 100,
+      blocking: 'continue',
+      run: async () => { called++; return { status: 'ok' }; },
+    });
+    const runs: FakeRun[] = [{
+      id: 'r1', transitionId: 't1', hookName: 'zone-teardown',
+      state: 'failed', attempts: 1, maxAttempts: 3,
+      nextAttemptAt: new Date(Date.now() - 1000),
+    }];
+    const transitions: FakeTransition[] = [{ id: 't1', tenantId: 'c1', transitionKind: 'archived' }];
+    const db = makeFakeDb({ runs, transitions, tenantStatus: 'archived' });
+    const r = await runRetryTick(db as never, {} as never);
+    expect(called).toBe(1);
+    expect(r.succeeded).toBe(1);
   });
 });

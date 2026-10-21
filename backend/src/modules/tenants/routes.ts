@@ -501,6 +501,9 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     config: { apiTokenForbidden: 'Impersonation hands out a tenant credential. Agents act as a tenant with asTenant.' },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
+    // An archived tenant has nothing to sign in to: restore it first.
+    const { assertTenantOpenForSignIn } = await import('../tenant-archive/sessions.js');
+    await assertTenantOpenForSignIn(app.db, tenantId);
     const tenantUser = await findImpersonationTarget(app.db, tenantId);
     const token = signImpersonationToken(app, {
       target: tenantUser, tenantId, impersonatorId: request.user.sub, ttlSeconds: 3600,

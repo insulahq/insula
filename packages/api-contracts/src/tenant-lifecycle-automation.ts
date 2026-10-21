@@ -212,17 +212,19 @@ export function tenantAutomationPlan(
 }
 
 /**
- * How long the archive taken by the automatic archive step is kept: the
- * platform's archive retention, or — when automatic delete is on — the delete
- * limit plus the notice period when that is longer. An archive must not
- * expire before its tenant is deleted, and a tenant told late is deleted up
- * to a notice period after its limit.
+ * How long the archive taken by the automatic archive step is kept, in days,
+ * or null for no end date. An archive that expires deletes its tenant, so:
+ * while automatic delete is on, the platform's archive retention or the delete
+ * limit plus the notice period when that is longer — the archive must not
+ * expire, and delete its tenant, before the delete step would (a tenant told
+ * late is deleted up to a notice period after its limit); while it is off, no
+ * end date — nothing deletes an archived tenant by itself then.
  */
 export function tenantAutomationArchiveRetentionDays(
   settings: Pick<TenantAutomationSettings, 'autoDeleteEnabled' | 'autoDeleteAfterDays' | 'noticeDays'>,
   archiveRetentionDays: number,
-): number {
+): number | null {
   return settings.autoDeleteEnabled
     ? Math.max(archiveRetentionDays, settings.autoDeleteAfterDays + settings.noticeDays)
-    : archiveRetentionDays;
+    : null;
 }

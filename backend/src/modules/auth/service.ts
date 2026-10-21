@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
-import { users, tenants } from '../../db/schema.js';
+import { users } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
 import { normalizeEmail } from '../../lib/email-normalize.js';
 
@@ -52,19 +52,13 @@ export async function authenticateUser(
     throw invalidToken();
   }
 
-  // Archived tenants are terminal — block login for any user attached to one.
-  // Suspended is allowed (user still sees the suspension banner in tenant-panel
-  // and can request reactivation); archived is irreversible and the data is
-  // pending purge, so authenticating offers nothing useful.
+  // An archived tenant is closed to its users. Suspended is allowed (the user
+  // sees the suspension banner in the tenant panel and can ask for
+  // reactivation). Said as it is, after the password checked out: the account
+  // is closed, not the password wrong.
   if (user.tenantId) {
-    const [c] = await db
-      .select({ status: tenants.status })
-      .from(tenants)
-      .where(eq(tenants.id, user.tenantId))
-      .limit(1);
-    if (c && c.status === 'archived') {
-      throw invalidToken();
-    }
+    const { assertTenantOpenForSignIn } = await import('../tenant-archive/sessions.js');
+    await assertTenantOpenForSignIn(db, user.tenantId);
   }
 
   // Re-hash legacy SHA-256 passwords to bcrypt on successful login

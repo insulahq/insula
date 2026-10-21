@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { eq, and, sql, desc, lte, inArray, notInArray } from 'drizzle-orm';
 import {
+  backupJobs,
   tenants,
   storageSnapshots,
   storageOperations,
@@ -12,6 +13,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { type SnapshotStore } from './snapshot-store.js';
 import {
+  captureArchiveBundle,
   captureFilesOnlyBundle,
   restoreFilesBundleIntoPvc,
   reapPreResizeBundle,
@@ -2339,11 +2341,18 @@ export async function resumeTransitionOp(ctx: RunCtx, opId: string): Promise<Res
 // ─── Archive / Restore ─────────────────────────────────────────────────
 
 export async function archiveTenant(
-  ctx: ServiceCtx,
+  ctx: RunCtx & Partial<Pick<ServiceCtx, 'targetId' | 'backupClass'>>,
   tenantId: string,
   params: {
-    retentionDays?: number;
+    /**
+     * How long the final bundle is kept, in days; null keeps it until it is
+     * deleted by hand ("never expire"). When it expires, the tenant is
+     * deleted (tenant-archive/expiry.ts). Omitted: 90.
+     */
+    retentionDays?: number | null;
     triggeredByUserId?: string | null;
+    /** The admin's "Notify tenant" unticked: no archive notice to the tenant. */
+    suppressTenantNotification?: boolean;
     /**
      * Archive only a tenant that is still suspended, and has been since before
      * this moment — checked under the tenant's lock. For the automatic sweep,
@@ -2358,7 +2367,7 @@ export async function archiveTenant(
 }
 
 async function startArchive(
-  ctx: ServiceCtx,
+  ctx: RunCtx & Partial<Pick<ServiceCtx, 'targetId' | 'backupClass'>>,
   tenantId: string,
   params: NonNullable<Parameters<typeof archiveTenant>[2]>,
 ): Promise<{ operationId: string; snapshotId: string }> {
@@ -2366,6 +2375,16 @@ async function startArchive(
   await mustBeIdle(ctx.db, tenantId);
   if (tenant.status === 'archived') {
     throw new ApiError('ALREADY_ARCHIVED', 'Tenant is already archived', 409);
+  }
+  // Every archive, not only the sweep's: archiving tears down what a suspension
+  // only switched off, and its final bundle reads the suspended tenant's mail.
+  if (tenant.status !== 'suspended') {
+    throw new ApiError(
+      'TENANT_NOT_SUSPENDED',
+      'Only a suspended tenant can be archived — suspend it first',
+      409,
+      { status: tenant.status },
+    );
   }
   if (params.onlyIfSuspendedBefore
     && !(tenant.status === 'suspended' && tenant.suspendedAt && tenant.suspendedAt < params.onlyIfSuspendedBefore)) {
@@ -2377,31 +2396,48 @@ async function startArchive(
     throw new ApiError('NO_LONGER_DUE', 'Tenant is kept out of automatic archive and delete', 409);
   }
 
+  // The final bundle goes to the tenant backup target, as every tenant bundle
+  // does. Checked here, before anything is touched.
+  const { resolveTenantBundleTarget } = await import('./prebundle.js');
+  const target = await resolveTenantBundleTarget(ctx.db).catch((err: unknown) => {
+    if (err instanceof ApiError && err.code === 'NO_SNAPSHOT_TARGET') {
+      throw new ApiError(
+        'NO_BACKUP_TARGET',
+        'Archiving takes a final backup bundle off-site, but no tenant backup target is configured. Assign one under Backups → Targets, then retry.',
+        409,
+      );
+    }
+    throw err;
+  });
+
   const opId = uuid();
   const snapId = uuid();
-  // Archive is now a restic files bundle (off-site, file-level restorable),
-  // not the legacy off-site tar. The row's archivePath becomes `bundle:<id>`
-  // once the capture completes; until then it carries the `bundle:pending`
-  // placeholder (mirrors the destructive-resize pre-bundle path).
+  // The archive is the tenant's final full bundle (restic, off-site). The
+  // row's archivePath becomes `bundle:<id>` once the capture completes; until
+  // then it carries the `bundle:pending` placeholder.
   const archivePath = 'bundle:pending';
-  const retentionDays = params.retentionDays ?? 90;
-  const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
+  const retentionDays = params.retentionDays === undefined ? 90 : params.retentionDays;
+  const expiresAt = retentionDays === null ? null : new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
 
   await ctx.db.transaction(async (tx) => {
     await tx.insert(storageSnapshots).values({
       id: snapId, tenantId, kind: 'pre-archive', status: 'creating',
       archivePath, expiresAt,
       label: `Archive ${new Date().toISOString().slice(0, 10)}`,
-      // Phase 3: pre-archive snapshots are tenant_snapshot class.
       backupClass: ctx.backupClass ?? 'tenant_snapshot',
       subsystem: 'tenant-pvc',
-      targetId: ctx.targetId ?? null,
+      // Where the bundle goes — the row's own class has no target of its own.
+      targetId: target.id,
     });
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'archive',
       state: 'quiescing', progressPct: 0, progressMessage: 'Preparing archive',
       snapshotId: snapId,
-      params: { retentionDays, [AWAITING_LOCK]: true },
+      params: {
+        retentionDays,
+        suppressTenantNotification: params.suppressTenantNotification === true,
+        [AWAITING_LOCK]: true,
+      },
       triggeredByUserId: params.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
@@ -2565,13 +2601,13 @@ async function runArchive(
 
     const tenantId = (await currentTenantId(ctx.db, opId))!;
     const pvcName = `${namespace}-storage`;
-    preArchiveBundleId = (resumed ? await bundleOnSnapshot(ctx.db, snapId) : null)
+    preArchiveBundleId = (resumed ? await resumableArchiveBundle(ctx, snapId, namespace, pvcName) : null)
       ?? await (async () => {
-        await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
+        await progress('snapshotting', 30, 'Taking the final backup bundle: files, databases, mailboxes, configuration');
         return takeArchive(ctx, opId, snapId, tenantId, resumed, stillMine);
       })();
 
-    await progress('replacing', 70, 'Removing live workloads and PVC');
+    await progress('replacing', 70, 'Removing workloads and the volume');
     // Delete PVC last so deployments releasing claims don't race.
     await deleteAllDeploymentsCronJobsServices(ctx.k8s, namespace);
     await stillMine();
@@ -2580,20 +2616,35 @@ async function runArchive(
     } catch (err) {
       if (!is404(err)) throw err;
     }
+    // And the volume itself. The tenant storage class keeps a volume whose
+    // claim is deleted (reclaimPolicy Retain), so the claim's delete used to
+    // leave the PV Released and the Longhorn volume, with all the tenant's
+    // data, in place until the tenant was deleted. The final bundle is the
+    // restore source now (restore builds a fresh volume from it).
+    const { reapNamespaceVolumes, realReapDeps } = await import('../tenant-lifecycle/reap-namespace-volumes.js');
+    await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
 
-    // Cross-cutting archive cascades: delete mailboxes + aliases,
-    // mark domains suspended, stop deployments in DB, set status.
-    await progress('archiving', 90, 'Cleaning up mail + domains');
+    // The tenant's own cascades: mail accounts, mail domains, DNS zones,
+    // domains, deployments, the status and the tenant's notice.
+    await progress('archiving', 90, 'Removing mailboxes, mail domains and DNS zones');
     await stillMine();
     const cascades = await import('../tenant-lifecycle/cascades.js');
+    const cascadeCtx = {
+      db: ctx.db,
+      k8s: ctx.k8s,
+      suppressTenantNotification: await suppressNoticeFor(ctx.db, opId),
+    };
     if (resumed) {
       // Not again when the first run did them — and to their end when it died
       // among them: the tenant's status is stamped by one hook, with others
       // after it.
-      await cascades.applyOnceSince({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace, 'archived', await startOf(ctx.db, opId));
+      await cascades.applyOnceSince(cascadeCtx, tenantId, namespace, 'archived', await startOf(ctx.db, opId));
     } else {
-      await cascades.applyArchived({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
+      await cascades.applyArchived(cascadeCtx, tenantId, namespace);
     }
+    // Nobody signs in to an archived tenant: end the sessions it has.
+    const { endTenantSessions } = await import('../tenant-archive/sessions.js');
+    await endTenantSessions(ctx.db, tenantId);
 
     await stillMine();
     await updateOp(ctx.db, opId, {
@@ -2620,6 +2671,37 @@ async function runArchive(
     await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
+  }
+}
+
+/** Is `bundleId` an archive's own whole bundle (not an older files-only one)? */
+async function isWholeArchive(db: Database, bundleId: string): Promise<boolean> {
+  const [job] = await db.select({ systemTrigger: backupJobs.systemTrigger }).from(backupJobs).where(eq(backupJobs.id, bundleId));
+  return job?.systemTrigger === 'pre_archive';
+}
+
+/** The admin's "Notify tenant" choice, as the archive operation recorded it. */
+async function suppressNoticeFor(db: Database, opId: string): Promise<boolean> {
+  const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
+  return (op?.params as { suppressTenantNotification?: unknown } | null)?.suppressTenantNotification === true;
+}
+
+/**
+ * The bundle a resumed archive goes on with: the one its first run took. An
+ * archive started before archives took everything holds a files-only bundle;
+ * while the volume is still there, a whole one is taken instead (null), so the
+ * teardown never removes mail the bundle does not hold. Once the volume is
+ * gone the first run was already tearing down — on the files-only bundle.
+ */
+async function resumableArchiveBundle(ctx: RunCtx, snapId: string, namespace: string, pvcName: string): Promise<string | null> {
+  const bundleId = await bundleOnSnapshot(ctx.db, snapId);
+  if (!bundleId || await isWholeArchive(ctx.db, bundleId)) return bundleId;
+  try {
+    await ctx.k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.readNamespacedPersistentVolumeClaim>[0]);
+    return null;
+  } catch (err) {
+    if (is404(err)) return bundleId;
+    throw err;
   }
 }
 
@@ -2655,24 +2737,26 @@ async function takeArchive(
     const { settleInterruptedCaptures } = await import('./prebundle.js');
     await settleInterruptedCaptures(ctx.db, ctx.k8s, tenantId, op?.createdAt ?? new Date(0));
   }
-  // The archive IS a restic files bundle — the same off-site, file-level
-  // restorable bundle the destructive-resize path uses, NOT the legacy tar.
-  // Retain it for the archive retention window (default 90d) since the
-  // bundle is the ONLY restore source after the PVC is deleted.
-  const retentionDays = (op?.params as { retentionDays?: number } | null)?.retentionDays ?? 90;
-  const bundle = await captureFilesOnlyBundle({
+  // The archive is the tenant's FULL final bundle — files (with the databases'
+  // data), mailboxes with their mail, configuration, TLS secrets — kept for
+  // the archive's window, or until deleted by hand (null). After this the
+  // volume, the mailboxes and the domains are removed; it is the only copy.
+  const recorded = (op?.params as { retentionDays?: number | null } | null)?.retentionDays;
+  const retentionDays = recorded === undefined ? 90 : recorded;
+  const { withMailCaptureLogin } = await import('../tenant-archive/mail-capture-window.js');
+  const bundle = await withMailCaptureLogin(ctx.db, tenantId, () => captureArchiveBundle({
     db: ctx.db,
     k8s: ctx.k8s,
     tenantId,
     label: `Archive ${new Date().toISOString().slice(0, 10)}`,
     retentionDays,
-  });
-  // A `partial` bundle means the files component didn't fully capture —
-  // refuse to deprovision the tenant (delete PVC) without a complete archive.
+  }));
+  // `partial` means a component did not capture in full — the mail of one
+  // mailbox, the files. Nothing is removed without the whole archive.
   if (bundle.status !== 'completed') {
     throw new ApiError(
       'SNAPSHOT_INCOMPLETE',
-      `Archive files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to deprovision without a complete archive.`,
+      `The final bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — nothing was removed. Check the bundle's components under Backups → Tenants, then archive again.`,
       500,
     );
   }
@@ -2902,6 +2986,27 @@ async function runRestoreArchive(
       });
     }
 
+    // An archive taken whole (its bundle is the archive's own, `pre_archive`)
+    // brings everything back: what the archive removed beyond the volume.
+    // One from before — a files-only bundle, its mailboxes deleted with their
+    // rows — brings back the files only, as it always did.
+    const whole = await isWholeArchive(ctx.db, bundleId);
+    const problems: string[] = [];
+    if (whole && !(resumed && tenant?.status !== 'archived')) {
+      const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '';
+      await guard.stillMine();
+      await updateOp(ctx.db, opId, { progressPct: 55, progressMessage: 'Publishing the DNS zones again' });
+      const { republishTenantZones } = await import('../tenant-archive/restore-dns.js');
+      const dns = await republishTenantZones(ctx.db, tenantId, encryptionKey);
+      problems.push(...dns.failures.map((f) => `DNS: ${f}`));
+
+      await guard.stillMine();
+      await updateOp(ctx.db, opId, { progressPct: 65, progressMessage: 'Rebuilding mail domains and mailboxes, importing their mail' });
+      const { restoreTenantMail } = await import('../tenant-archive/restore-mail.js');
+      const mail = await restoreTenantMail(ctx.db, tenantId, bundleId, encryptionKey);
+      problems.push(...mail.failures.map((f) => `Mail: ${f}`));
+    }
+
     // Phase A1: dispatch the explicit `restored` transition so the
     // hook_runs audit trail records this as restore-from-archive
     // rather than plain unsuspend. tenants-status-stamp hook writes
@@ -2919,10 +3024,24 @@ async function runRestoreArchive(
       await cascades.applyRestored({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
     }
 
+    if (whole) {
+      // After the tenant reads active again: a deploy refuses a tenant that
+      // is not.
+      await guard.stillMine();
+      await updateOp(ctx.db, opId, { progressPct: 85, progressMessage: 'Deploying the applications again' });
+      const { redeployTenantWorkloads } = await import('../tenant-archive/restore-workloads.js');
+      const apps = await redeployTenantWorkloads(ctx.db, ctx.k8s, tenantId, namespace);
+      problems.push(...apps.failures.map((f) => `Application: ${f}`));
+    }
+
     await guard.stillMine();
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
-      progressMessage: 'Restore complete — redeploy workloads via deployments API to bring the tenant back online',
+      progressMessage: !whole
+        ? 'Files restored. This archive is from before archives held everything: redeploy the applications and recreate the mailboxes from the tenant page.'
+        : problems.length === 0
+          ? 'Restored: files, databases, applications, mailboxes with their mail, domains. Mailboxes need new passwords.'
+          : `Restored, with ${problems.length} problem(s): ${problems.slice(0, 5).join(' · ')}${problems.length > 5 ? ' …' : ''}`,
       completedAt: new Date(),
     });
     await ctx.db.update(tenants).set({
@@ -3628,6 +3747,16 @@ export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
       // Skip frozen targets entirely — the DB row stays 'ready' so the
       // next sweep re-evaluates once the operator unfreezes.
       if (snap.targetId && frozenTargetIds.has(snap.targetId)) continue;
+      // An archived tenant whose archive expired is deleted, bundle and all
+      // (tenant-archive/expiry.ts). Its snapshot row goes with the tenant. The
+      // bundle of an older archive — the tenant was restored since — expires
+      // as any other.
+      if (snap.kind === 'pre-archive') {
+        const { deleteTenantOfExpiredArchive } = await import('../tenant-archive/expiry.js');
+        const outcome = await deleteTenantOfExpiredArchive(ctx.db, ctx.k8s, snap.tenantId, snap.id);
+        if (outcome === 'deleted') { reaped += 1; continue; }
+        if (outcome === 'deferred') continue;
+      }
       // Per-target delete (same rationale as deleteSnapshot above —
       // legacy ctx.store would route every expire to the wrong bucket
       // for Phase 3+ snapshots). TARGET_REMOVED means the target's

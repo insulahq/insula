@@ -120,11 +120,14 @@ export async function reapNamespaceVolumes(
     }
 
     // Catch-all: Longhorn volume CRs still tagged with this namespace whose PV
-    // is already gone (the by-PV-name hook is blind to these).
+    // is already gone (the by-PV-name hook is blind to these). A volume whose
+    // PV is still there and not Released is in use — a new claim in the same
+    // namespace (a restore's fresh volume) — and is never touched.
+    const inUse = new Set(pvs.filter((pv) => pv.phase !== 'Released').map((pv) => pv.name));
     const vols = await deps.listLonghornVolumes().catch(() => [] as ReapLonghornVolume[]);
     for (const v of vols) {
       if (v.namespace !== namespace) continue;
-      if (reapedVols.has(v.name)) continue;
+      if (reapedVols.has(v.name) || inUse.has(v.name)) continue;
       freshThisPass++;
       await deps.deleteLonghornVolume(v.name).catch(() => undefined);
       reapedVols.add(v.name);

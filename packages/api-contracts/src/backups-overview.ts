@@ -79,6 +79,11 @@ export const tenantBackupOverviewRowSchema = z.object({
    * retention keeps its existing ones (backend tenant-bundles/suspension.ts).
    */
   backupsPaused: z.boolean(),
+  /**
+   * TRUE for an archived tenant: nothing is backed up any more, and its
+   * archive bundle — kept for the archive's window — is its backup.
+   */
+  archived: z.boolean(),
   /** Three-state representation of the override column. */
   scheduledBundlesOverride: z.enum(['inherit', 'on', 'off']),
   /** Tenant-PVC snapshot stats (class=tenant_snapshot). */

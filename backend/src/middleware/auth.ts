@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { insufficientPermissions, missingToken, invalidToken, ApiError } from '../shared/errors.js';
 import { enforceApiScope, type ApiTokenClaim } from '../shared/api-scope.js';
 import { looksLikeToken, resolveToken } from '../modules/mcp/tokens.js';
+import { tenantArchivedError, tenantClosedForSignIn } from '../modules/tenant-archive/sessions.js';
+import type { Database } from '../db/index.js';
 
 export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read_only';
 export type TenantRole = 'tenant_admin' | 'tenant_user';
@@ -200,6 +202,18 @@ export function authenticate(
     enforceApiScope(request);
   } catch (err) {
     done(err as Error);
+    return;
+  }
+  // A tenant-panel token of a tenant archived since it was signed: the session
+  // ends with the tenant, not 30 minutes later (tenant-archive/sessions.ts).
+  const db = (request.server as { db?: Database }).db;
+  if (decoded.panel === 'tenant' && decoded.tenantId && db) {
+    tenantClosedForSignIn(db, decoded.tenantId).then(
+      (closed) => done(closed ? tenantArchivedError() : undefined),
+      // The status could not be read: the request goes on and meets the same
+      // database further in. Refusing would lock every tenant out of a blip.
+      () => done(),
+    );
     return;
   }
   done();

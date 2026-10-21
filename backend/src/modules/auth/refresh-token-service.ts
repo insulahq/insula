@@ -26,7 +26,9 @@ export type RevokedReason =
   | 'rotated'
   | 'reuse_detected'
   | 'password_change'
-  | 'admin_revoke';
+  | 'admin_revoke'
+  /** The user's tenant was archived: nobody signs in to it any more. */
+  | 'tenant_archived';
 
 export interface IssueRefreshTokenInput {
   readonly userId: string;

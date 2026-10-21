@@ -132,8 +132,8 @@ describe('tenantAutomationPlan', () => {
 
 describe('tenantAutomationArchiveRetentionDays', () => {
   const base = { autoDeleteEnabled: true, autoDeleteAfterDays: 90, noticeDays: 0 };
-  it('is the platform retention while automatic delete is off', () => {
-    expect(tenantAutomationArchiveRetentionDays({ ...base, autoDeleteEnabled: false, autoDeleteAfterDays: 400, noticeDays: 30 }, 90)).toBe(90);
+  it('has no end date while automatic delete is off: an expiring archive would delete its tenant', () => {
+    expect(tenantAutomationArchiveRetentionDays({ ...base, autoDeleteEnabled: false, autoDeleteAfterDays: 400, noticeDays: 30 }, 90)).toBeNull();
   });
   it('covers the delete limit plus the notice period when that is longer', () => {
     expect(tenantAutomationArchiveRetentionDays({ ...base, autoDeleteAfterDays: 400 }, 90)).toBe(400);

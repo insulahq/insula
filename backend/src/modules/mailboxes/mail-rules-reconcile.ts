@@ -73,10 +73,16 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
       autoReplySubject: mailboxes.autoReplySubject,
       autoReplyBody: mailboxes.autoReplyBody,
       stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+      tenantId: mailboxes.tenantId,
     })
     .from(mailboxes)
     .where(isNotNull(mailboxes.stalwartPrincipalId));
   if (rows.length === 0) return;
+
+  // A tenant being archived has its mailboxes' logins open for the final
+  // bundle's capture (tenant-archive/mail-capture-window.ts): not closed here.
+  const { tenantsBeingArchived } = await import('../tenant-archive/mail-capture-window.js');
+  const beingArchived = await tenantsBeingArchived(db).catch(() => new Set<string>());
 
   // Resolve the admin principals account once. Unreachable Stalwart =
   // skip the sweep (dev stacks without the mail overlay, unit tests).
@@ -118,6 +124,7 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
   let failed = 0;
   for (const row of rows) {
     if (!row.stalwartPrincipalId) continue; // not provisioned yet — principals-sync backfills first
+    if (beingArchived.has(row.tenantId)) continue;
     const mailboxType = row.mailboxType === 'send_only' ? 'send_only' : 'mailbox';
     const suspended = row.status === 'disabled';
     try {

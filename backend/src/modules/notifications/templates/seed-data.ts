@@ -1375,19 +1375,25 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your account is active again',
     bodyTemplate: emailMjml(
       'Account restored',
-      'Your account {{tenantName}} has been restored. All services are back online.',
+      'Your account {{tenantName}} has been restored from its archive. You can sign in again, and its websites, applications and databases are back.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxNote', type: 'string', required: false },
+    ],
   },
   {
     categoryId: 'tenant.restored',
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account restored',
-    bodyTemplate: '{{tenantName}} was restored on {{occurredAt}}. All services are back online.',
+    bodyTemplate: '{{tenantName}} was restored from its archive on {{occurredAt}}.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
     bodyFormat: 'plaintext',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'mailboxNote', type: 'string', required: false },
+    ],
   },
 
   // ── tenant.archive_scheduled ───────────────────────────────────────
@@ -1398,7 +1404,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your account will be archived on {{dueDate}}',
     bodyTemplate: emailMjml(
       'Account will be archived',
-      'Your account {{tenantName}} is suspended. On {{dueDate}} it will be archived: its websites, mailboxes and applications are removed, and a copy of its files is kept for a limited time. Contact support before that date to keep the account.',
+      'Your account {{tenantName}} is suspended. On {{dueDate}} it will be archived: nobody can sign in to it any more, and its websites, applications, mailboxes and domains are removed. A full backup is kept for a limited time, from which it can be restored. Contact support before that date to keep the account.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1411,7 +1417,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account will be archived on {{dueDate}}',
-    bodyTemplate: '{{tenantName}} is suspended and will be archived on {{dueDate}}: its websites, mailboxes and applications are removed. Contact support before then to keep the account.',
+    bodyTemplate: '{{tenantName}} is suspended and will be archived on {{dueDate}}: sign-in stops and its websites, applications, mailboxes and domains are removed. Contact support before then to keep the account.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -1427,19 +1433,25 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your account has been archived',
     bodyTemplate: emailMjml(
       'Account archived',
-      'Your account {{tenantName}} has been archived. Data is retained read-only.',
+      'Your account {{tenantName}} has been archived and is no longer active. Nobody can sign in to it, and its websites, applications, mailboxes and domains have been removed. Your hosting provider keeps a full backup of it {{keptUntil}} and can restore the account from it. Contact them if you need it back.',
     ),
     bodyFormat: 'mjml',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'keptUntil', type: 'string', required: true },
+    ],
   },
   {
     categoryId: 'tenant.archived',
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account archived',
-    bodyTemplate: '{{tenantName}} was archived on {{occurredAt}}. Data is retained read-only.',
+    bodyTemplate: '{{tenantName}} was archived on {{occurredAt}}: sign-in is closed and its websites, applications, mailboxes and domains are removed. Its backup is kept {{keptUntil}}.',
     bodyFormat: 'plaintext',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'keptUntil', type: 'string', required: true },
+    ],
   },
 
   // ── tenant.deleted ─────────────────────────────────────────────────

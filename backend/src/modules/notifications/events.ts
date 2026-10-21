@@ -661,7 +661,11 @@ async function dispatchReporting(
   scope: Parameters<typeof emitEvent>[1]['scope'],
   variables: object,
   tenantId?: string,
-  extraOpts?: { readonly dedupeKey?: string },
+  extraOpts?: {
+    readonly dedupeKey?: string;
+    /** The admin's "Notify tenant" unticked: the tenant is not told. */
+    readonly suppressTenantNotification?: boolean;
+  },
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await emitEvent(db, {
@@ -670,6 +674,7 @@ async function dispatchReporting(
       variables: { ...variables } as Record<string, unknown>,
       tenantId,
       dedupeKey: extraOpts?.dedupeKey,
+      suppressTenantNotification: extraOpts?.suppressTenantNotification === true,
     });
     return { ok: true };
   } catch (err) {
@@ -677,6 +682,37 @@ async function dispatchReporting(
     console.error(`[notifications] dispatch of '${categoryId}' FAILED: ${error}`);
     return { ok: false, error };
   }
+}
+
+/**
+ * The tenant's account was archived. `keptUntil` is how long its backup is
+ * kept, as the sentence reads it: "until January 18, 2027" or "with no end
+ * date". Sent by the lifecycle hook (notify-on-transition.ts).
+ */
+export async function notifyTenantArchived(
+  db: Database,
+  tenantId: string,
+  payload: { readonly keptUntil: string },
+  opts: { readonly suppressTenantNotification?: boolean } = {},
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.archived', { kind: 'tenant', tenantId }, {
+    keptUntil: payload.keptUntil,
+  }, tenantId, { suppressTenantNotification: opts.suppressTenantNotification });
+}
+
+/**
+ * The tenant's account was restored from its archive. `mailboxNote` tells
+ * restored mailboxes they need new passwords; undefined when it has none.
+ */
+export async function notifyTenantRestored(
+  db: Database,
+  tenantId: string,
+  payload: { readonly mailboxNote?: string },
+  opts: { readonly suppressTenantNotification?: boolean } = {},
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.restored', { kind: 'tenant', tenantId }, {
+    mailboxNote: payload.mailboxNote,
+  }, tenantId, { suppressTenantNotification: opts.suppressTenantNotification });
 }
 
 export interface TenantWorkloadsDownPayload {

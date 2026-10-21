@@ -14,6 +14,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### BREAKING
 
+- **Archiving takes a suspended tenant only, and keeps the whole tenant; when the archive
+  expires, the tenant is deleted.** Archive is refused for an active tenant (409
+  `TENANT_NOT_SUSPENDED`): suspend it first. What changes for an archive:
+  - **The archive is a full backup bundle**: files (with the databases' data), mailboxes with
+    their mail, configuration and TLS secrets, off-site on the tenant backup target. It used to
+    hold the files only, and archiving then deleted the mailboxes, so their mail was lost. To
+    read a suspended tenant's mail, the bundle may log in to its mailboxes for the length of the
+    capture; inbound mail stays refused. Archive no longer needs a "tenant snapshot" target.
+  - **The tenant is taken down almost as if deleted**: nobody can sign in (password, passkey,
+    OIDC, "Login as tenant", SFTP — and sessions already open end within seconds, 403 `TENANT_ARCHIVED`); its
+    applications, volume, mailboxes, DNS zones, mail domains and DKIM keys are removed. The
+    volume used to stay behind, with all the tenant's data, until the tenant was deleted;
+    volumes earlier archives left behind are removed too, once their archive bundle is ready.
+  - **Restore brings everything back**: files and databases, DNS zones and records, mail
+    domains with a new DKIM key, mailboxes with their mail, aliases, and every application at
+    the replica count it had before the suspension. Mailboxes need new passwords: the mail
+    server never gives a stored one back, so no archive can hold it. The restore notice says so.
+    An archive taken before this release holds the files only, and restores the files only.
+  - **An archive is kept 1–3650 days, or with no end date ("Never expire")**, and **its expiry
+    deletes the tenant**: there is nothing left to restore from. An archive with no end date is
+    never deleted automatically, and the automation card's delete step skips it. Nor is a tenant
+    kept out of automatic archive and delete: its expired archive waits, bundle and all. Only
+    the expiry of a tenant's newest archive deletes it — an older one, from before a restore,
+    expires as any bundle. **On upgrade, a tenant already archived is deleted when its archive
+    expires.**
+  - **The automatic archive step keeps its archives with no end date while automatic delete is
+    off** (an expiring archive would delete the tenant). While it is on, as before: the
+    platform's archive retention, or the delete limit plus the notice period when longer.
+  - New bundles of an archived tenant are refused (409 `TENANT_ARCHIVED`), so the archive bundle
+    stays its newest; its older bundles expire as usual.
+
 - **Retention now means one thing for every backup class, and a change applies within minutes.**
   A copy is removed when it is older than **Retention (days)** or not among the newest **keep
   last N**, whichever comes first. The newest copy of every class is always kept, and nothing is
@@ -57,6 +88,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **An archived tenant's page shows only its archive**: ARCHIVED, the archive bundle's date and
+  size, how long it is kept, and **Restore archived tenant** — the sections of a live tenant
+  would show nothing true. `GET /api/v1/admin/tenants/:tenantId/archive`. **Backups → Tenants**
+  keeps archived tenants, marked Archived (`archived` on the overview row), with no "Backup now".
+- **The archive dialog** says what archiving removes, takes 1–3650 days, and has **Never
+  expire** (`archive_never_expires` on `PATCH /tenants/:id`, `neverExpires` on the storage
+  route). The archive notice says sign-in is closed and until when the backup is kept, and the
+  admin's "Notify tenant" choice is honoured — archiving used to notify regardless.
 - **Storage by target.** Every backup target is measured every 6 hours, or on demand with
   **Measure now**, with rclone against the target itself. Each measurement records the bytes per
   class folder and, for SMB/CIFS and SFTP, total / used / free. S3 reports no free space, and says
