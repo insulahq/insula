@@ -178,6 +178,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Restoring an archived tenant on a plan with less than 1 GiB of storage was refused**
+  (`PROVISION_QUOTA_EXCEEDED`). Restore sized the new volume from the plan, rounded to whole
+  GiB, and ignored a storage size set on the tenant itself. A 0.5 GiB plan asked for 1 GiB,
+  which the tenant's 512 MiB storage quota refused. Restore now uses the tenant's own size, the
+  same one provisioning and the quota use. A restore from a retained volume no longer rounds the
+  tenant's storage size to whole GiB either.
 - **Roundcube rendered without its styles and scripts.** Roundcube 1.7 serves every skin and
   script file through `static.php/<path>`, and the webmail's nginx passed only URLs ending in
   `.php` to PHP, so each of those requests got the login page back instead. Pages showed as

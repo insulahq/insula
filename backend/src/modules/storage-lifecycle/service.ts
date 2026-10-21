@@ -626,8 +626,7 @@ export async function resizeDryRunMib(
     // to override / plan default. Logged as a warning; dryrun caller
     // should treat this as best-effort.
     console.warn(`[resizeDryRunMib] PVC read failed for ${namespace}/${pvcName}, falling back to override: ${(err as Error).message}`);
-    const currentGi = Math.round(Number(tenant.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, tenant.planId);
-    currentMib = currentGi * 1024;
+    currentMib = Math.round(await tenantStorageGi(ctx.db, tenant) * 1024);
   }
   const currentGi = Math.ceil(currentMib / 1024);
 
@@ -661,9 +660,21 @@ export async function resizeDryRun(
   return resizeDryRunMib(ctx, tenantId, newGi * 1024);
 }
 
-async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, planId));
-  return plan ? Math.round(Number(plan.storageLimit) || 10) : 10;
+/**
+ * The size the tenant's volume is provisioned at, in GiB: its own override,
+ * else its plan's. Not rounded: provisioning and the namespace's storage quota
+ * use this same number, so a 0.5 GiB plan has a 512Mi quota, and a claim
+ * rounded up to 1Gi is refused by it.
+ */
+async function tenantStorageGi(
+  db: Database,
+  tenant: { storageLimitOverride: string | null; planId: string },
+): Promise<number> {
+  const own = Number(tenant.storageLimitOverride ?? 0);
+  if (own > 0) return own;
+  const [plan] = await db.select({ storageLimit: hostingPlans.storageLimit }).from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
+  const planGi = Number(plan?.storageLimit ?? 0);
+  return planGi > 0 ? planGi : 10;
 }
 
 async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<number> {
@@ -1761,7 +1772,9 @@ async function runRestoreFromRetained(
       // raised `<ns>-storage-quota` instead of reconciling it back down to the
       // shrunk override and fighting the now-larger PVC.
       await guard.stillMine();
-      const restoredGi = Math.max(1, Math.round(parseQuantityToBytes(restoredCapacity) / (1024 ** 3)));
+      // Rounded up to the override's two decimals, never to a whole GiB: a
+      // 512Mi volume stays 0.50, not a 1 GiB quota around a 512Mi claim.
+      const restoredGi = Math.max(0.01, Math.ceil(parseQuantityToBytes(restoredCapacity) / (1024 ** 3) * 100) / 100);
       const tIdForSize = await currentTenantId(db, opId);
       if (tIdForSize) {
         await db.update(tenants).set({ storageLimitOverride: restoredGi.toFixed(2) }).where(eq(tenants.id, tIdForSize));
@@ -2797,7 +2810,8 @@ async function deleteAllDeploymentsCronJobsServices(k8s: K8sClients, namespace: 
 
 /**
  * Restore an archived tenant from their most recent pre-archive snapshot.
- * Creates a new PVC (default: snapshot's original size, admin can override),
+ * Creates a new PVC (default: the tenant's own size, as provisioning and its
+ * storage quota have it; admin can override),
  * extracts the tarball, flips tenant.status back to 'active'. Deployments
  * are NOT automatically redeployed — the caller should trigger the normal
  * deployment reconciler after restore.
@@ -2829,7 +2843,7 @@ async function startRestoreArchived(
   }
 
   const opId = uuid();
-  const targetGi = params.newGi ?? await getPlanStorageGi(ctx.db, tenant.planId);
+  const targetGi = params.newGi ?? await tenantStorageGi(ctx.db, tenant);
   await ctx.db.transaction(async (tx) => {
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'restore',
@@ -3807,7 +3821,7 @@ export async function storageAuditReport(ctx: ServiceCtx): Promise<Array<{
   );
   const out = [];
   for (const r of rows) {
-    const provisionedGi = Math.round(Number(r.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, r.planId);
+    const provisionedGi = await tenantStorageGi(ctx.db, r);
     const used = await measurePvcUsed(ctx, r.ns!);
     const provisionedBytes = provisionedGi * 1024 * 1024 * 1024;
     const wastePct = provisionedBytes > 0 ? Math.round(((provisionedBytes - used) / provisionedBytes) * 100) : 0;
