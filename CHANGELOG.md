@@ -236,6 +236,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   while each class's schedule card decided the real retention and cadence. The columns stay,
   for DR import; a client still sending the keys has them ignored.
 
+### Security
+
+- **Roundcube 1.7.4 → 1.7.5, on PHP 8.4.27.** Roundcube fixes IMAP command injections, several
+  mail-header injections, a CSRF bypass in mark-as-junk, an XSS in password-change errors, an
+  SSRF-filter bypass and remote-content blocker bypasses. PHP 8.4.27 fixes PHP2Shell
+  (CVE-2026-109618 / CVE-2026-109619): remote code execution through a multipart request that
+  ends in an out-of-memory or other fatal error. The image Insula ran had PHP 8.4.15. The image's Alpine base moves from 3.21 to 3.24.
+
 ## [2026.10.14] - 2026-10-19
 
 ### Changed

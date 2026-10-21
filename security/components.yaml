@@ -290,7 +290,7 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:cced4c7d40c21ec138b3622be13cadd2bbe7467eacd17029340b8650d7237ecf"
+    pinned: "sha256:7b5be4f46c775e705f8093ff1950a8decf7c59cf6c73115fb562a1c65634ef3b"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
