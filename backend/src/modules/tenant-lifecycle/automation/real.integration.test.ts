@@ -76,6 +76,10 @@ describe.skipIf(!url)('tenant automation: reads and verdicts (real Postgres)', (
       primary_email varchar(255) NOT NULL DEFAULT 'owner@acme.example.test', secondary_email varchar(255))`);
     await pool.query(`CREATE TABLE storage_operations (id varchar(36) PRIMARY KEY, state varchar(32) NOT NULL DEFAULT 'quiescing',
       completed_at timestamp, last_error text)`);
+    // The columns the delete step reads to leave a never-expiring archive alone.
+    await pool.query(`CREATE TABLE storage_snapshots (id varchar(36) PRIMARY KEY, tenant_id varchar(36) NOT NULL,
+      kind varchar(32) NOT NULL, status varchar(32) NOT NULL DEFAULT 'ready', archive_path varchar(500) NOT NULL DEFAULT 'bundle:x',
+      expires_at timestamp, created_at timestamp NOT NULL DEFAULT now())`);
     // The exemption column and the notices table come from the migration that
     // ships them — run as it is, and twice: it has to be safe to run again.
     const migration = readFileSync(new URL('../../../db/migrations/0157_tenant_automation_notices.sql', import.meta.url), 'utf8');
@@ -90,7 +94,7 @@ describe.skipIf(!url)('tenant automation: reads and verdicts (real Postgres)', (
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE platform_settings, tenants, storage_operations, tenant_automation_notices');
+    await pool.query('TRUNCATE platform_settings, tenants, storage_operations, storage_snapshots, tenant_automation_notices');
     archiveTenant.mockReset(); deleteTenant.mockReset(); notifyAdmins.mockClear();
     archiveTarget = null;
     emitted.length = 0; emitFails = null; mailProvider = { smtpHost: 'smtp.example.test' };
@@ -148,6 +152,22 @@ describe.skipIf(!url)('tenant automation: reads and verdicts (real Postgres)', (
       expect(ids(line).slice(0, 3)).toEqual(['long', 'just', 'at']);
       expect(ids(line).slice(3).sort()).toEqual(['suspended-long-ago', 'undated']);
       expect(dueAmong(line)).toEqual(['long', 'just']);
+    });
+
+    it('delete: never a tenant whose newest archive is kept with no end date — an older one with a date does not count', async () => {
+      await tenant('forever', 'archived', 'archived_at', -86_400 * 400);
+      await tenant('dated', 'archived', 'archived_at', -86_400 * 400);
+      await tenant('was-dated', 'archived', 'archived_at', -86_400 * 400);
+      const snap = (id: string, tenantId: string, expires: string | null, createdSecondsAgo: number) => pool.query(
+        `INSERT INTO storage_snapshots (id, tenant_id, kind, expires_at, created_at)
+         VALUES ($1, $2, 'pre-archive', $3::timestamp, now() - make_interval(secs => $4))`,
+        [id, tenantId, expires, createdSecondsAgo],
+      );
+      await snap('s1', 'forever', null, 10);
+      await snap('s2', 'dated', '2099-01-01T00:00:00Z', 10);
+      await snap('s3', 'was-dated', null, 100);                     // older, no end date …
+      await snap('s4', 'was-dated', '2099-01-01T00:00:00Z', 10);   // … newest has one: in line
+      expect(ids(await io().inLine('delete')).sort()).toEqual(['dated', 'was-dated']);
     });
 
     it('never the SYSTEM tenant, whatever a hand-written row says about it', async () => {

@@ -322,7 +322,7 @@ export async function settleInterruptedCaptures(db: Database, k8s: K8sClients, t
       eq(backupJobs.tenantId, tenantId),
       inArray(backupJobs.status, ['pending', 'running']),
       eq(backupJobs.initiator, 'system'),
-      eq(backupJobs.systemTrigger, 'pre_resize'),
+      inArray(backupJobs.systemTrigger, ['pre_resize', 'pre_archive']),
       gte(backupJobs.createdAt, since),
     ))
     .returning({ id: backupJobs.id });

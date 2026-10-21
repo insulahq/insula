@@ -52,6 +52,7 @@ vi.mock('./prebundle.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveTenantBundleTarget: async () => ({ id: 'target-1' }),
   captureFilesOnlyBundle: async () => { did.push('capture'); return { bundleId: 'bkp-1', status: 'completed', sizeBytes: 10 }; },
+  captureArchiveBundle: async () => { did.push('capture'); return { bundleId: 'bkp-1', status: 'completed', sizeBytes: 10 }; },
   restoreFilesBundleIntoPvc: async () => { did.push('restore'); },
   reapPreResizeBundle: async () => undefined,
 }));
