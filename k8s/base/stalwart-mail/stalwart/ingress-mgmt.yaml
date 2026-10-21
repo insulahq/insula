@@ -28,12 +28,14 @@
 #      because the IngressRoute resource itself carries the admin-ui
 #      label + auth-gate annotation.
 #
-#   Every route runs CrowdSec first and — except the JMAP blob upload —
-#   the WAF (`waf-body-limit` then `modsecurity-crs`), as the panels do.
-#   Upload is its own route because an attachment (up to Stalwart's 100 MB
-#   upload limit) is over the WAF's 12.5 MiB body cap: inspected, it would be
-#   refused. Message bodies inside the JMAP API calls are excluded from
-#   inspection by rule (modsec-crs exclusion 9000118), not by route.
+#   Every route runs CrowdSec first and — except route 0 — the WAF
+#   (`waf-body-limit` then `modsecurity-crs`), as the panels do. Route 0 is
+#   JMAP's blob upload, blob download and event stream: an attachment (up to
+#   Stalwart's 100 MB) is over the WAF's 12.5 MiB body cap, and the cap is a
+#   `buffering` middleware that holds a whole response before sending it, so
+#   the never-ending event stream would deliver nothing. Message bodies inside
+#   the JMAP API calls are excluded from inspection by rule (modsec-crs
+#   exclusion 9000118), not by route.
 #   This object is Flux-disowned: running clusters get the chain from
 #   platform-api (backend/src/shared/traefik-mail-waf.ts).
 #
@@ -67,9 +69,9 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # Route 0 — JMAP blob upload: CrowdSec, no WAF (see the header). The
-    # priority beats route 1's, which defaults to its (longer) rule's length.
-    - match: "Host(`stalwart.${DOMAIN}`) && PathPrefix(`/jmap/upload`)"
+    # Route 0 — JMAP upload, download, event stream: CrowdSec, no WAF (see the
+    # header). The priority beats route 1's, which defaults to its rule's length.
+    - match: "Host(`stalwart.${DOMAIN}`) && (PathPrefix(`/jmap/upload`) || PathPrefix(`/jmap/download`) || PathPrefix(`/jmap/eventsource`))"
       kind: Rule
       priority: 1000
       middlewares:

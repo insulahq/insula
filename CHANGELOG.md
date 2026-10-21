@@ -83,9 +83,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Webmail and the Stalwart host are behind CrowdSec and the WAF**, like every other platform
   UI. Neither had either, so an address CrowdSec had banned reached the webmail and Stalwart
   admin logins, and no request to them was inspected. Every route now runs CrowdSec first and the
-  WAF (`waf-body-limit`, then `modsecurity-crs`), with two exceptions. The JMAP blob upload
-  (`/jmap/upload`) keeps CrowdSec but not the WAF, because an attachment (up to 100 MB) is over
-  the WAF's 12.5 MiB body cap. And what a mailbox owner writes is excluded from inspection,
+  WAF (`waf-body-limit`, then `modsecurity-crs`), with two exceptions. JMAP's blob upload,
+  blob download and event stream (`/jmap/upload`, `/jmap/download`, `/jmap/eventsource`) keep
+  CrowdSec but not the WAF: an attachment (up to 100 MB) is over the WAF's 12.5 MiB body cap, and
+  the cap holds a whole response before sending it, so webmail's live updates would never arrive.
+  And what a mailbox owner writes is excluded from inspection,
   because ordinary mail reads as injection and the same bytes arrive over SMTP with no WAF: the
   body of the JMAP API call (`POST /jmap/`, exclusion `9000118`), and Roundcube's message, subject
   and signature on the posts that send, save a draft or save a signature (`9000119`). Both

@@ -23,10 +23,18 @@
  * without the WAF instead of refusing ordinary mail. The Stalwart admin route
  * carries no mail and always gets both.
  *
- * ONE carve-out, by route: JMAP blob upload. An attachment is a raw body of up
- * to Stalwart's upload limit (100 MB), and `waf-body-limit` refuses anything
- * over the sidecar's 12.5 MiB. The upload route keeps CrowdSec and Stalwart's
- * own authentication; the JMAP route gets the WAF only once it exists.
+ * ONE carve-out route, for JMAP's three blob and stream paths, with CrowdSec
+ * and Stalwart's own authentication but neither the cap nor the WAF:
+ *   - upload: an attachment is a raw body of up to Stalwart's upload limit
+ *     (100 MB), and `waf-body-limit` refuses anything over 12.5 MiB;
+ *   - download and eventsource: `waf-body-limit` is Traefik's `buffering`
+ *     middleware and holds the WHOLE response before sending a byte (measured,
+ *     system-settings/ingress-reconciler.ts DOWNLOAD carve-out). The event
+ *     stream never ends, so webmail's live updates never arrived, and a large
+ *     attachment was spooled to the node's disk first. The WAF goes with the
+ *     cap, as on the panels' download route: without the cap it would read a
+ *     body a GET is not prevented from carrying.
+ * The JMAP route gets the WAF only once this route exists.
  */
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
@@ -57,13 +65,13 @@ const STALWART_ROUTE = 'stalwart-webadmin';
 /** The exclusion each message-carrying route needs (exclusion-rules-configmap.yaml). */
 export const JMAP_EXCLUSION_ID = '9000118';
 export const WEBMAIL_EXCLUSION_ID = '9000119';
-const JMAP_UPLOAD_PREFIX = '/jmap/upload';
+/** The JMAP paths that carry raw blobs or a never-ending response (see the header). */
+export const JMAP_STREAM_PREFIXES = ['/jmap/upload', '/jmap/download', '/jmap/eventsource'] as const;
 /**
  * Above the JMAP route, whose default priority is its rule's length (~90 with
- * a long apex). Traefik orders routers by priority, then rule length — without
- * this the shorter upload rule loses to `PathPrefix(`/jmap`)` and the carve-out
- * never matches. Higher than the panels' 101 because this rule's competitor
- * grows with the apex.
+ * a long apex). Traefik orders routers by priority, then rule length — an
+ * explicit priority makes the carve-out win whatever the two rules' lengths.
+ * Higher than the panels' 101 because the competitor grows with the apex.
  */
 export const JMAP_UPLOAD_PRIORITY = 1000;
 
@@ -113,7 +121,12 @@ interface Route {
  */
 export type LiveExclusions = ReadonlyMap<string, RegExp> | null;
 
-const isUploadRoute = (r: Route): boolean => (r.match ?? '').includes(`PathPrefix(\`${JMAP_UPLOAD_PREFIX}\`)`);
+/** The carve-out's rule for `host`. */
+export function jmapStreamMatch(host: string): string {
+  return `Host(\`${host}\`) && (${JMAP_STREAM_PREFIXES.map((p) => `PathPrefix(\`${p}\`)`).join(' || ')})`;
+}
+
+const isUploadRoute = (r: Route): boolean => (r.match ?? '').includes(`PathPrefix(\`${JMAP_STREAM_PREFIXES[0]}\`)`);
 const isJmapRoute = (r: Route): boolean => !isUploadRoute(r) && (r.match ?? '').includes('PathPrefix(`/jmap`)');
 
 function covered(live: LiveExclusions, id: string, route: Route): boolean | null {
@@ -136,20 +149,29 @@ export function withMailEdgeGuards(
   let list: Route[] = [...routes];
   let changed = false;
 
-  // The carve-out first: the JMAP route may take the WAF only beside it.
-  if (name === STALWART_ROUTE && !list.some(isUploadRoute)) {
-    const jmapAt = list.findIndex(isJmapRoute);
-    const host = jmapAt >= 0 ? extractHostFromMatch(list[jmapAt].match ?? '') : null;
-    if (host) {
-      const jmap = list[jmapAt];
-      const upload: Route = {
-        ...jmap,
-        match: `Host(\`${host}\`) && PathPrefix(\`${JMAP_UPLOAD_PREFIX}\`)`,
-        priority: JMAP_UPLOAD_PRIORITY,
-        middlewares: withEdgeGuards(jmap.middlewares ?? [], { waf: false }).middlewares,
-      };
-      list = [...list.slice(0, jmapAt), upload, ...list.slice(jmapAt)];
+  // The carve-out first: the JMAP route may take the WAF only beside it. An
+  // existing one is brought up to the current path set (it once covered
+  // upload alone).
+  if (name === STALWART_ROUTE) {
+    const at = list.findIndex(isUploadRoute);
+    const host = at >= 0 ? extractHostFromMatch(list[at].match ?? '') : null;
+    if (at >= 0 && host && (list[at].match !== jmapStreamMatch(host) || list[at].priority !== JMAP_UPLOAD_PRIORITY)) {
+      list = list.map((r, i) => (i === at ? { ...r, match: jmapStreamMatch(host), priority: JMAP_UPLOAD_PRIORITY } : r));
       changed = true;
+    } else if (at < 0) {
+      const jmapAt = list.findIndex(isJmapRoute);
+      const jmapHost = jmapAt >= 0 ? extractHostFromMatch(list[jmapAt].match ?? '') : null;
+      if (jmapHost) {
+        const jmap = list[jmapAt];
+        const carveOut: Route = {
+          ...jmap,
+          match: jmapStreamMatch(jmapHost),
+          priority: JMAP_UPLOAD_PRIORITY,
+          middlewares: withEdgeGuards(jmap.middlewares ?? [], { waf: false }).middlewares,
+        };
+        list = [...list.slice(0, jmapAt), carveOut, ...list.slice(jmapAt)];
+        changed = true;
+      }
     }
   }
   const uploadExists = list.some(isUploadRoute);

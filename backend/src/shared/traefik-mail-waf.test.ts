@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   JMAP_UPLOAD_PRIORITY,
   exclusionHostPatterns,
+  jmapStreamMatch,
   liveMailExclusions,
   reconcileMailEdgeGuards,
   withEdgeGuards,
@@ -92,11 +93,11 @@ describe('exclusionHostPatterns — read back from the real exclusion file', () 
 });
 
 describe('withMailEdgeGuards', () => {
-  it('Stalwart: upload carve-out above the JMAP route, the WAF on JMAP and admin', () => {
+  it('Stalwart: upload/download/event-stream carve-out above the JMAP route, the WAF on JMAP and admin', () => {
     const r = withMailEdgeGuards('stalwart-webadmin', stalwartRoutes(), LIVE);
     expect(r.routes).toHaveLength(3);
     const [upload, jmap, admin] = r.routes;
-    expect(upload.match).toBe(`Host(\`${HOST}\`) && PathPrefix(\`/jmap/upload\`)`);
+    expect(upload.match).toBe(`Host(\`${HOST}\`) && (PathPrefix(\`/jmap/upload\`) || PathPrefix(\`/jmap/download\`) || PathPrefix(\`/jmap/eventsource\`))`);
     expect(upload.priority).toBe(JMAP_UPLOAD_PRIORITY);
     expect(names(upload.middlewares)).toEqual(['crowdsec', 'stalwart-jmap-cors', 'inflight-per-client', 'compress']);
     expect(upload.services).toEqual([{ name: 'stalwart-mgmt', port: 8080 }]);
@@ -142,6 +143,20 @@ describe('withMailEdgeGuards', () => {
     const r = withMailEdgeGuards('stalwart-webadmin', routes, LIVE);
     expect(r.routes).toHaveLength(2);
     expect(names(r.routes[0].middlewares)).not.toContain('modsecurity-crs');
+  });
+
+  it('widens an upload-only carve-out — the buffering cap held the event stream and downloads back', () => {
+    const uploadOnly = {
+      ...stalwartRoutes()[0],
+      match: `Host(\`${HOST}\`) && PathPrefix(\`/jmap/upload\`)`,
+      priority: JMAP_UPLOAD_PRIORITY,
+      middlewares: [mw('crowdsec'), mw('stalwart-jmap-cors', 'mail'), mw('inflight-per-client'), mw('compress')],
+    };
+    const r = withMailEdgeGuards('stalwart-webadmin', [uploadOnly, ...stalwartRoutes()], LIVE);
+    expect(r.changed).toBe(true);
+    expect(r.routes).toHaveLength(3);
+    expect(r.routes[0].match).toBe(jmapStreamMatch(HOST));
+    expect(names(r.routes[0].middlewares)).not.toContain('waf-body-limit');
   });
 
   it('converged routes are left alone', () => {
