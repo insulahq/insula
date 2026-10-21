@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.15-rc.1] - 2026-10-21
+
 ### BREAKING
 
 - **Retention now means one thing for every backup class, and a change applies within minutes.**
