@@ -696,6 +696,7 @@ describe('TenantDetail — an archived tenant', () => {
     expect(screen.getByTestId('restore-archived-button')).toBeEnabled();
     expect(screen.queryByTestId('tenant-tabs')).toBeNull();
     expect(screen.queryByTestId('impersonate-button')).toBeNull();
+    expect(screen.queryByTestId('impersonate-caption')).toBeNull();
   });
 
   it('an archive kept with no end date says so', async () => {

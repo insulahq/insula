@@ -12,7 +12,11 @@
  *      archive's copies of those records are cleared (mail-dns-rows.ts);
  *   2. each mailbox account created again from its row and its mail imported
  *      from the bundle — the restore cart's own mailbox executor, run as a
- *      restore job of the tenant so it shows in the restore history.
+ *      restore job of the tenant so it shows in the restore history;
+ *   3. the account of every mailbox the bundle does not hold, from its row —
+ *      the platform's own `postmaster@` intake (which `dmarc@` is an alias
+ *      of; the intake reconciler leaves an existing row alone) is never
+ *      captured, and without its account both addresses bounce.
  *
  * The aliases' lists come back with the `restored` hooks, which run after this
  * and need the domains' ids. Mail passwords do not come back: the mail server
@@ -134,6 +138,22 @@ export async function restoreTenantMail(
     failures.push(`mail import: ${say(err)}`);
     await db.update(restoreItems).set({ status: 'failed', lastError: say(err), finishedAt: new Date() }).where(eq(restoreItems.id, itemId));
     await db.update(restoreJobs).set({ status: 'failed', lastError: say(err), finishedAt: new Date() }).where(eq(restoreJobs.id, jobId));
+  }
+
+  const left = (await db.select({ fullAddress: mailboxes.fullAddress, stalwartPrincipalId: mailboxes.stalwartPrincipalId })
+    .from(mailboxes).where(eq(mailboxes.tenantId, tenantId)))
+    .filter((m) => !m.stalwartPrincipalId)
+    .map((m) => m.fullAddress);
+  if (left.length > 0) {
+    try {
+      const { ensureStalwartPrincipals } = await import('../backup-restore/executors/ensure-stalwart-principals.js');
+      const { outcomes } = await ensureStalwartPrincipals({ app: executorApp(db), addresses: left });
+      for (const o of outcomes) {
+        if (o.status === 'failed') failures.push(`mailbox ${o.address}: ${o.reason}`);
+      }
+    } catch (err) {
+      failures.push(`mailboxes not in the bundle (${left.join(', ')}): ${say(err)}`);
+    }
   }
   return { domains: domainsBuilt, mailboxes: rows.length, failures };
 }

@@ -421,10 +421,12 @@ export default function TenantDetail() {
                 <span>Login as tenant</span>
               </button>}
             </div>
-            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-              <ExternalLink size={12} aria-hidden="true" />
-              opens that page of the tenant panel, signed in as this tenant
-            </span>
+            {tenant.status !== 'archived' && (
+              <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400" data-testid="impersonate-caption">
+                <ExternalLink size={12} aria-hidden="true" />
+                opens that page of the tenant panel, signed in as this tenant
+              </span>
+            )}
           </div>
         </div>
 

@@ -6,11 +6,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * restore job of the tenant, so it shows in the restore history.
  */
 
-const { enable, dispatch, resolveStore } = vi.hoisted(() => ({
+const { enable, dispatch, resolveStore, ensurePrincipals } = vi.hoisted(() => ({
   enable: vi.fn(async () => ({})),
   dispatch: vi.fn(async () => undefined),
   resolveStore: vi.fn(async () => ({ kind: 'shim' })),
+  ensurePrincipals: vi.fn(async (_args: { addresses: readonly string[] }) => ({ outcomes: [] as Array<{ status: string; address: string; reason?: string }>, recreated: 0 })),
 }));
+vi.mock('../backup-restore/executors/ensure-stalwart-principals.js', () => ({ ensureStalwartPrincipals: ensurePrincipals }));
 vi.mock('../email-domains/service.js', () => ({ enableEmailForDomain: enable }));
 vi.mock('../backup-restore/shared.js', () => ({ dispatchExecutor: dispatch, resolveStoreForBundle: resolveStore }));
 
@@ -85,6 +87,24 @@ describe('restoreTenantMail', () => {
     ]);
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(r).toMatchObject({ mailboxes: 2, failures: [] });
+  });
+
+  it('gives an account back to every mailbox the bundle does not hold — the platform\'s postmaster@ intake', async () => {
+    const db = fakeDb([], [
+      { id: 'm1', fullAddress: 'keeper@example.test', stalwartPrincipalId: 'p' },
+      { id: 'm2', fullAddress: 'postmaster@example.test', stalwartPrincipalId: null },
+    ]);
+    ensurePrincipals.mockResolvedValueOnce({ outcomes: [{ status: 'recreated', address: 'postmaster@example.test' }], recreated: 1 });
+    const r = await restoreTenantMail(db as never, 't1', 'bkp-1', 'key');
+    expect(ensurePrincipals).toHaveBeenCalledWith(expect.objectContaining({ addresses: ['postmaster@example.test'] }));
+    expect(r.failures).toEqual([]);
+  });
+
+  it('a mailbox whose account cannot be given back is reported', async () => {
+    const db = fakeDb([], [{ id: 'm2', fullAddress: 'postmaster@example.test', stalwartPrincipalId: null }]);
+    ensurePrincipals.mockResolvedValueOnce({ outcomes: [{ status: 'failed', address: 'postmaster@example.test', reason: 'domain missing' }], recreated: 0 });
+    const r = await restoreTenantMail(db as never, 't1', 'bkp-1', 'key');
+    expect(r.failures).toEqual(['mailbox postmaster@example.test: domain missing']);
   });
 
   it('a failed import is reported and recorded on the job; the restore goes on', async () => {

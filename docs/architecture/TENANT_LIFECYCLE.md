@@ -108,9 +108,11 @@ bundles expire as usual. Backups → Tenants keeps the tenant, marked Archived.
 bundle's files; the DNS zones and their records (SOA and apex NS come with
 the zone; a rebuilt mail domain's MX, SPF, DKIM, DMARC, SRV and webmail
 records are left out, its rebuild writes them afresh); each mail domain (a
-new DKIM key, published); each mailbox, its
-mail imported from the bundle (a restore job of the tenant, in the restore
-history); the `restored` hooks (status active, aliases' lists, ingress); then
+new DKIM key, published); each mailbox, its mail imported from the bundle
+(a restore job of the tenant, in the restore history); the account of every
+mailbox the bundle does not hold, from its row — the platform's `postmaster@`
+intake, which `dmarc@` is an alias of, is never captured; the `restored`
+hooks (status active, aliases' lists, ingress); then
 every application deployed again and set back to the replica count it had
 before the suspension (0 included). Mailboxes get new random passwords — the
 mail server never returns a stored one, so no archive can hold it — and the
