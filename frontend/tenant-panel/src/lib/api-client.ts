@@ -199,6 +199,11 @@ async function apiFetchWithRetry<T>(
       // the original error reach the caller.
     } else if (res.status === 401 && code === 'INVALID_TOKEN' && !isAuthEndpoint) {
       showTokenExpiredAndRedirect();
+    } else if (res.status === 403 && code === 'TENANT_ARCHIVED' && !isAuthEndpoint) {
+      // The account was archived while this session was open: it ends, and
+      // the sign-in page says why (it shows `?error=&message=` as it does for
+      // an OIDC refusal).
+      endArchivedSession(body.error?.message ?? 'This account has been archived.');
     }
 
     throw new ApiError(
@@ -236,6 +241,15 @@ async function apiFetchWithRetry<T>(
 }
 
 let tokenExpiredShown = false;
+
+function endArchivedSession(message: string): void {
+  if (tokenExpiredShown) return;
+  tokenExpiredShown = true;
+  localStorage.removeItem('auth_token');
+  localStorage.removeItem('auth_refresh_token');
+  localStorage.removeItem('auth_user');
+  window.location.href = `/login?error=tenant_archived&message=${encodeURIComponent(message)}`;
+}
 
 function showTokenExpiredAndRedirect(): void {
   if (tokenExpiredShown) return;

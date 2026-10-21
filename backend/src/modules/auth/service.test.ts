@@ -120,7 +120,7 @@ describe('authenticateUser', () => {
       .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
   });
 
-  it('should throw INVALID_TOKEN when the user.s tenant is archived', async () => {
+  it('should refuse with TENANT_ARCHIVED when the user.s tenant is archived — the account is closed, not the password wrong', async () => {
     const password = 'my-password';
     const userRow = {
       id: 'u1',
@@ -147,7 +147,7 @@ describe('authenticateUser', () => {
     } as unknown as Parameters<typeof authenticateUser>[0];
 
     await expect(authenticateUser(db, 'tenant-admin@example.com', password))
-      .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
+      .rejects.toMatchObject({ code: 'TENANT_ARCHIVED', status: 403 });
   });
 
   it('should still authenticate when the user.s tenant is suspended (only archived blocks login)', async () => {

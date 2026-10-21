@@ -16,11 +16,11 @@ import {
  * immediately — before `enabled` was DB-only
  *                  fiction so the flag alone was "enough"; now the
  *                  MailingList is the live delivery path)
- *   - archived   → destroy the MailingLists, then DELETE the rows
- *                  (destroy FIRST: the boot reconcile's orphan
- *                  detection is keyed off email_aliases rows, so a
- *                  row deleted before its list is destroyed leaves an
- *                  invisible forwarder running forever)
+ *   - archived   → destroy the MailingLists and KEEP the rows, enabled=0
+ *                  with no list id — as a suspension leaves them. Restore
+ *                  re-creates the lists from them (the `restored` branch).
+ *                  Destroy first: the boot reconcile's orphan detection is
+ *                  keyed off email_aliases rows.
  *   - restored   → enabled=1 + recreate (rows restored by the
  *                  storage-lifecycle restore op are that op's
  *                  responsibility; this hook flips + re-provisions)
@@ -44,8 +44,8 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
         // so the rows keep pointing at the leftover list.
         return { status: 'retry', detail: `archive blocked on Stalwart list destroy: ${stalwart.detail}` };
       }
-      await ctx.db.delete(emailAliases).where(eq(emailAliases.tenantId, ctx.tenantId));
-      return { status: 'ok', detail: `archived: deleted email_aliases (${stalwart.detail})` };
+      await ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.tenantId, ctx.tenantId));
+      return { status: 'ok', detail: `archived: lists removed, rows kept for restore (${stalwart.detail})` };
     }
     case 'suspended': {
       const stalwart = await destroyTenantLists(ctx);

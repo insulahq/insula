@@ -14,6 +14,11 @@ vi.mock('./quiesce.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   quiesce: vi.fn().mockRejectedValue(new Error('not under test')),
 }));
+// The tenant backup target the final bundle goes to: one is configured.
+vi.mock('./prebundle.js', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  resolveTenantBundleTarget: vi.fn().mockResolvedValue({ id: 'target-1' }),
+}));
 
 const LIMIT = new Date('2026-03-01T00:00:00.000Z');
 
@@ -44,8 +49,13 @@ function attempt(tenant: Record<string, unknown>, onlyIfSuspendedBefore: Date | 
 }
 
 describe('archiveTenant, only if still suspended for long enough', () => {
+  it('refuses a tenant resumed since — active again is not archivable at all — and claims nothing', async () => {
+    const { outcome, claims } = await attempt({ status: 'active', suspendedAt: null });
+    expect(outcome).toMatchObject({ code: 'TENANT_NOT_SUSPENDED', status: 409 });
+    expect(claims).toEqual([]);
+  });
+
   it.each([
-    ['resumed since: active again', { status: 'active', suspendedAt: null }],
     ['suspended again since: not for long enough', { status: 'suspended', suspendedAt: new Date('2026-03-02') }],
     ['suspended exactly at the limit', { status: 'suspended', suspendedAt: LIMIT }],
     ['with no suspension date on record', { status: 'suspended', suspendedAt: null }],
@@ -81,8 +91,14 @@ describe('archiveTenant, only if still suspended for long enough', () => {
     expect(claims).toEqual([]);
   });
 
-  it('an operator\'s archive asks none of this: an active tenant is archived', async () => {
+  it('an operator\'s archive of an active tenant is refused too: suspend first', async () => {
     const { outcome, claims } = await attempt({ status: 'active', suspendedAt: null }, null);
+    expect(outcome).toMatchObject({ code: 'TENANT_NOT_SUSPENDED', status: 409 });
+    expect(claims).toEqual([]);
+  });
+
+  it('an operator\'s archive of a suspended tenant goes ahead, whatever its dates', async () => {
+    const { outcome, claims } = await attempt({ status: 'suspended', suspendedAt: new Date('2026-03-05') }, null);
     expect(outcome).toMatchObject({ operationId: expect.any(String) });
     expect(claims).toHaveLength(1);
   });

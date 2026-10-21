@@ -140,11 +140,12 @@ describe('mailboxes-status hook', () => {
     expect(fake.calls.at(-1)).toMatchObject({ op: 'update', patch: { status: 'disabled' } });
   });
 
-  it('DELETEs on archived', async () => {
+  it('keeps the rows on archived — restore re-creates every mailbox from its row', async () => {
     const c = { ...ctx('archived'), db: fake.db as never };
     const r = await mailboxesStatusHook.run(c);
     expect(r.status).toBe('ok');
-    expect(fake.calls.at(-1)).toMatchObject({ op: 'delete', table: 'mailboxes' });
+    expect(fake.calls.at(-1)).toMatchObject({ op: 'update', table: 'mailboxes', patch: { status: 'disabled' } });
+    expect(fake.calls.some((call) => call.op === 'delete')).toBe(false);
   });
 });
 
@@ -166,10 +167,11 @@ describe('email-aliases-enable hook', () => {
     expect(fake.calls.at(-1)).toMatchObject({ op: 'update', patch: { enabled: 0 } });
   });
 
-  it('DELETEs on archived', async () => {
+  it('keeps the rows on archived, disabled — restore re-creates their lists', async () => {
     const c = { ...ctx('archived'), db: fake.db as never };
     await emailAliasesEnableHook.run(c);
-    expect(fake.calls.at(-1)).toMatchObject({ op: 'delete', table: 'emailAliases' });
+    expect(fake.calls.at(-1)).toMatchObject({ op: 'update', table: 'emailAliases', patch: { enabled: 0 } });
+    expect(fake.calls.some((call) => call.op === 'delete')).toBe(false);
   });
 });
 

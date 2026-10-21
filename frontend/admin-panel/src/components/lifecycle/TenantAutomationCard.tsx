@@ -276,9 +276,12 @@ export default function TenantAutomationCard() {
           blocked={!!status.archiveBlockedReason}
           explanation={
             <>
-              Archiving copies a tenant&apos;s files to the backup target, then deletes its mailboxes, aliases,
-              deployments and storage volume. The tenant can be restored for as long as the archive is kept
-              ({retention} days).
+              Archiving takes a final backup bundle of everything — files, databases, mailboxes with their mail —
+              and stores it off-site, then removes the tenant&apos;s applications, volume, mailboxes, DNS zones and
+              mail domains; nobody can sign in to it. It can be restored from the bundle for as long as the archive
+              is kept: {retention === null
+                ? 'with automatic delete off, with no end date'
+                : `${retention} days, and then the tenant is deleted`}.
             </>
           }
           warning={status.archiveBlockedReason && (shown.autoArchiveEnabled || saved.autoArchiveEnabled) ? (

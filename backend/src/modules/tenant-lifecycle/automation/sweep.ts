@@ -82,7 +82,8 @@ export interface SweepIo {
    */
   readonly archiveBlockedReason: () => Promise<string | null>;
   /** Archive one tenant and wait for the archive to finish. */
-  readonly archive: (tenant: DueTenant, opts: { readonly retentionDays: number; readonly suspendedBefore: Date }) => Promise<ActionOutcome>;
+  /** `retentionDays` null: the archive is kept with no end date. */
+  readonly archive: (tenant: DueTenant, opts: { readonly retentionDays: number | null; readonly suspendedBefore: Date }) => Promise<ActionOutcome>;
   readonly remove: (tenant: DueTenant, opts: { readonly archivedBefore: Date }) => Promise<ActionOutcome>;
   /** Tell one tenant that it will be archived (or deleted) on `date`, and write that down. */
   readonly tell: (step: Step, tenant: InLineTenant, date: Date) => Promise<TellOutcome>;

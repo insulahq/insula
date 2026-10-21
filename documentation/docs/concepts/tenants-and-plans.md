@@ -31,17 +31,18 @@ work behind the scenes and shows live progress.
 |---|---|---|
 | **active** | Normal, running | Workloads serve traffic; mail flows. |
 | **suspended** | Temporarily off | Workloads scale to zero, mail access is blocked, ingress is gated — **data is kept**. Reversible: resuming restores the prior replica counts. |
-| **archived** | Cold, retained | A final snapshot is taken, then workloads, storage volume, and mailboxes are deleted. The snapshot is retained (default 90 days). |
+| **archived** | Cold, retained | Only from suspended. A final backup bundle of everything is stored off-site, then nobody can sign in and the workloads, storage volume, mailboxes, DNS zones and mail domains are removed. The bundle is kept for the days chosen (default 90), or with no end date; when it expires, the tenant is deleted. |
 | **deleted** | Gone | Namespace, snapshots, and database rows are dropped. Irreversible. |
 
-Restoring an archived tenant back to **active** recreates its storage and
-restores data from the pre-archive snapshot.
+Restoring an archived tenant back to **active** brings everything back from
+the archive bundle: files and databases, DNS zones, mail domains, mailboxes
+with their mail, and the applications.
 
 !!! warning "Suspend keeps data, archive deletes it"
     **Suspend** is the reversible "pause" — nothing is destroyed. **Archive**
-    is destructive: it removes the running tenant but keeps a snapshot you can
-    restore from for the retention window. Workloads must be redeployed and
-    mailboxes are **not** automatically recreated after restoring from archive.
+    removes the running tenant but keeps a full backup bundle you can restore
+    from until it expires — and its expiry deletes the tenant. Mailboxes come
+    back with their mail but need new passwords.
 
 ## CPU is a share, not a reservation
 

@@ -100,6 +100,19 @@ describe('reapNamespaceVolumes', () => {
     expect(h.remainingPvs()).toHaveLength(1);
   });
 
+  it('NEVER deletes the Longhorn volume behind a Bound PV, in the catch-all either', async () => {
+    // A restore's fresh volume in the namespace of an archived tenant: its PV
+    // is Bound and its volume CR is tagged with the namespace.
+    const h = makeHarness({
+      pvs: [{ name: 'pvc-restoring', claimNamespace: NS, phase: 'Bound' }],
+      vols: [{ name: 'pvc-restoring', namespace: NS }],
+    });
+    const r = await reapNamespaceVolumes(h.deps, NS, { intervalMs: 10, timeoutMs: 100 });
+    expect(h.deletedVols).toEqual([]);
+    expect(r.lhVolsReaped).toEqual([]);
+    expect(h.remainingVols()).toHaveLength(1);
+  });
+
   it('NEVER touches PVs/volumes belonging to another namespace', async () => {
     const h = makeHarness({
       pvs: [{ name: 'pvc-other', claimNamespace: 'tenant-other-xyz', phase: 'Released' }],

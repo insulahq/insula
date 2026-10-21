@@ -12,9 +12,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.15-rc.1] - 2026-10-21
-
 ### BREAKING
+
+- **Archiving takes a suspended tenant only, and keeps the whole tenant; when the archive
+  expires, the tenant is deleted.** Archive is refused for an active tenant (409
+  `TENANT_NOT_SUSPENDED`): suspend it first. What changes for an archive:
+  - **The archive is a full backup bundle**: files (with the databases' data), mailboxes with
+    their mail, configuration and TLS secrets, off-site on the tenant backup target. It used to
+    hold the files only, and archiving then deleted the mailboxes, so their mail was lost. To
+    read a suspended tenant's mail, the bundle may log in to its mailboxes for the length of the
+    capture; inbound mail stays refused. Archive no longer needs a "tenant snapshot" target.
+  - **The tenant is taken down almost as if deleted**: nobody can sign in (password, passkey,
+    OIDC, "Login as tenant", SFTP — and sessions already open end within seconds, 403 `TENANT_ARCHIVED`); its
+    applications, volume, mailboxes, DNS zones, mail domains and DKIM keys are removed. The
+    volume used to stay behind, with all the tenant's data, until the tenant was deleted;
+    volumes earlier archives left behind are removed too, once their archive bundle is ready.
+  - **Restore brings everything back**: files and databases, DNS zones and records, mail
+    domains with a new DKIM key, mailboxes with their mail, aliases, and every application at
+    the replica count it had before the suspension. Mailboxes need new passwords: the mail
+    server never gives a stored one back, so no archive can hold it. The restore notice says so.
+    An archive taken before this release holds the files only, and restores the files only.
+  - **An archive is kept 1–3650 days, or with no end date ("Never expire")**, and **its expiry
+    deletes the tenant**: there is nothing left to restore from. An archive with no end date is
+    never deleted automatically, and the automation card's delete step skips it. Nor is a tenant
+    kept out of automatic archive and delete: its expired archive waits, bundle and all. Only
+    the expiry of a tenant's newest archive deletes it — an older one, from before a restore,
+    expires as any bundle. **On upgrade, a tenant already archived is deleted when its archive
+    expires.**
+  - **The automatic archive step keeps its archives with no end date while automatic delete is
+    off** (an expiring archive would delete the tenant). While it is on, as before: the
+    platform's archive retention, or the delete limit plus the notice period when longer.
+  - New bundles of an archived tenant are refused (409 `TENANT_ARCHIVED`), so the archive bundle
+    stays its newest; its older bundles expire as usual.
 
 - **Retention now means one thing for every backup class, and a change applies within minutes.**
   A copy is removed when it is older than **Retention (days)** or not among the newest **keep
@@ -59,6 +88,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **An archived tenant's page shows only its archive**: ARCHIVED, the archive bundle's date and
+  size, how long it is kept, and **Restore archived tenant** — the sections of a live tenant
+  would show nothing true. `GET /api/v1/admin/tenants/:tenantId/archive`. **Backups → Tenants**
+  keeps archived tenants, marked Archived (`archived` on the overview row), with no "Backup now".
+- **The archive dialog** says what archiving removes, takes 1–3650 days, and has **Never
+  expire** (`archive_never_expires` on `PATCH /tenants/:id`, `neverExpires` on the storage
+  route). The archive notice says sign-in is closed and until when the backup is kept, and the
+  admin's "Notify tenant" choice is honoured — archiving used to notify regardless.
 - **Storage by target.** Every backup target is measured every 6 hours, or on demand with
   **Measure now**, with rclone against the target itself. Each measurement records the bytes per
   class folder and, for SMB/CIFS and SFTP, total / used / free. S3 reports no free space, and says
@@ -141,6 +178,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Restoring an archived tenant on a plan with less than 1 GiB of storage was refused**
+  (`PROVISION_QUOTA_EXCEEDED`). Restore sized the new volume from the plan, rounded to whole
+  GiB, and ignored a storage size set on the tenant itself. A 0.5 GiB plan asked for 1 GiB,
+  which the tenant's 512 MiB storage quota refused. Restore now uses the tenant's own size, the
+  same one provisioning and the quota use. A restore from a retained volume no longer rounds the
+  tenant's storage size to whole GiB either.
+- **Roundcube rendered without its styles and scripts.** Roundcube 1.7 serves every skin and
+  script file through `static.php/<path>`, and the webmail's nginx passed only URLs ending in
+  `.php` to PHP, so each of those requests got the login page back instead. Pages showed as
+  bare, unstyled HTML, and the webmail could not be used. The platform logo and favicon were
+  broken as well: their path pointed inside the skin folder. Installs that use Bulwark, the
+  default webmail, were not affected.
 - **Postgres backup times read through the backup shim were the year 2000.** The shim serves
   S3 with `--no-modtime` and reports one placeholder time for every object. The WAL summary took
   it as each segment's upload time. On a chain with a gap, "continuous until" — the ceiling the
@@ -198,6 +247,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `retentionDays` / `scheduleExpression` in responses). Both were stored and read by nothing,
   while each class's schedule card decided the real retention and cadence. The columns stay,
   for DR import; a client still sending the keys has them ignored.
+
+### Security
+
+- **Roundcube 1.7.4 → 1.7.5, on PHP 8.4.27.** Roundcube fixes IMAP command injections, several
+  mail-header injections, a CSRF bypass in mark-as-junk, an XSS in password-change errors, an
+  SSRF-filter bypass and remote-content blocker bypasses. PHP 8.4.27 fixes PHP2Shell
+  (CVE-2026-109618 / CVE-2026-109619): remote code execution through a multipart request that
+  ends in an out-of-memory or other fatal error. The image Insula ran had PHP 8.4.15. The image's Alpine base moves from 3.21 to 3.24.
 
 ## [2026.10.14] - 2026-10-19
 

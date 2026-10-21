@@ -11,7 +11,10 @@ import OperationProgressModal from '@/components/OperationProgressModal';
 import TransitionProgressModal from '@/components/TransitionProgressModal';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 import ErrorPanel from '@/components/ErrorPanel';
-import ArchiveTenantDialog from '@/components/tenant-detail/ArchiveTenantDialog';
+import ArchiveTenantDialog, { type ArchiveRetention } from '@/components/tenant-detail/ArchiveTenantDialog';
+import ArchivedTenantView from '@/components/tenant-detail/ArchivedTenantView';
+import { useTenantArchive } from '@/hooks/use-tenant-archive';
+import { useStorageLifecycleSettings } from '@/hooks/use-storage-settings';
 import OverviewTab from '@/components/tenant-detail/OverviewTab';
 import TenantEmailTab from '@/components/tenant-detail/EmailTab';
 import TenantTrafficTab from '@/components/tenant-detail/TrafficTab';
@@ -98,6 +101,10 @@ export default function TenantDetail() {
   }, [id]);
   const updateTenant = useUpdateTenant(id ?? '');
   const impersonate = useLoginAsTenant();
+  // The archive's bundle: what restore brings back (a whole archive, or files only).
+  const archiveInfo = useTenantArchive(id, tenant?.status === 'archived');
+  // The platform's archive retention: the dialog's starting value.
+  const storageSettings = useStorageLifecycleSettings();
   const provisioningStatus = tenant?.provisioningStatus as string | undefined;
   const triggerProvision = useTriggerProvisioning();
   const bulkRestart = useBulkRestartDeployments();
@@ -146,20 +153,27 @@ export default function TenantDetail() {
   };
 
   const handleSuspend = () => runTransition('suspended', { status: 'suspended' });
-  const handleArchive = async (retentionDays: number) => {
+  const handleArchive = async (retention: ArchiveRetention) => {
     setArchiveOpen(false);
-    await runTransition('archived', { status: 'archived', archive_retention_days: retentionDays });
+    await runTransition('archived', retention === null
+      ? { status: 'archived', archive_never_expires: true }
+      : { status: 'archived', archive_retention_days: retention });
+  };
+  const handleRestoreArchived = async (whole: boolean) => {
+    const ok = confirm(whole
+      ? 'Restore this tenant from its archive?\n\n'
+        + 'Its files and databases, applications, DNS zones, mail domains and mailboxes with their mail come back, '
+        + 'and its users can sign in again. Mailboxes need new passwords: the mail server never kept a copy the '
+        + 'archive could hold. Estimated time: a few minutes per GiB of stored data.\n\nContinue?'
+      : 'Restore this tenant from its archive?\n\n'
+        + 'This archive is from before archives held everything: only the files come back. Applications have to be '
+        + 'redeployed and mailboxes set up again.\n\nContinue?');
+    if (!ok) return;
+    await runTransition('restored', { status: 'active' });
   };
   const handleReactivate = async () => {
     if (tenant?.status === 'archived') {
-      const ok = confirm(
-        'Restore this tenant from the pre-archive snapshot?\n\n'
-        + 'Workloads were deleted at archive time and will need to be redeployed after restore. '
-        + 'The volume is recreated and its data restored from the snapshot. '
-        + 'Estimated time: a few minutes per GiB of stored data.\n\nContinue?',
-      );
-      if (!ok) return;
-      await runTransition('restored', { status: 'active' });
+      await handleRestoreArchived(archiveInfo.data?.data?.bundle?.whole ?? false);
       return;
     }
     await runTransition('active', { status: 'active' });
@@ -367,12 +381,21 @@ export default function TenantDetail() {
                   </ActionsMenuItem>
                 )}
                 {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && provisioningStatus === 'provisioned' && (
-                  <ActionsMenuItem onClick={() => setArchiveOpen(true)} disabled={updateTenant.isPending} icon={<ServerCrash size={14} />} title="Take a final snapshot, then delete volume, workloads and mailboxes. Restorable until the snapshot expires." testId="archive-button">
+                  <ActionsMenuItem
+                    onClick={() => setArchiveOpen(true)}
+                    // Archive takes a suspended tenant only: suspend first.
+                    disabled={updateTenant.isPending || tenant.status !== 'suspended'}
+                    icon={<ServerCrash size={14} />}
+                    title={tenant.status === 'suspended'
+                      ? 'Take a final full backup off-site, then remove the tenant almost as if deleted. Restorable until the archive expires.'
+                      : 'Only a suspended tenant can be archived — suspend it first.'}
+                    testId="archive-button"
+                  >
                     Archive…
                   </ActionsMenuItem>
                 )}
                 {tenant.status === 'archived' && !tenant.isSystem && (
-                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Recreate the volume and restore its data from the pre-archive snapshot. Workloads need to be redeployed after the restore." testId="restore-button">
+                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Bring the tenant back from its archive bundle." testId="restore-button">
                     Restore
                   </ActionsMenuItem>
                 )}
@@ -382,7 +405,7 @@ export default function TenantDetail() {
                   </ActionsMenuItem>
                 )}
               </ActionsMenu>
-              <button
+              {tenant.status !== 'archived' && <button
                 type="button"
                 onClick={async () => {
                   try {
@@ -396,16 +419,18 @@ export default function TenantDetail() {
               >
                 {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
                 <span>Login as tenant</span>
-              </button>
+              </button>}
             </div>
-            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-              <ExternalLink size={12} aria-hidden="true" />
-              opens that page of the tenant panel, signed in as this tenant
-            </span>
+            {tenant.status !== 'archived' && (
+              <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400" data-testid="impersonate-caption">
+                <ExternalLink size={12} aria-hidden="true" />
+                opens that page of the tenant panel, signed in as this tenant
+              </span>
+            )}
           </div>
         </div>
 
-        <nav className="-mx-2 mt-4 flex gap-1 overflow-x-auto" aria-label="Tenant sections" data-testid="tenant-tabs">
+        {tenant.status !== 'archived' && <nav className="-mx-2 mt-4 flex gap-1 overflow-x-auto" aria-label="Tenant sections" data-testid="tenant-tabs">
           {tabs.map((key) => (
             <button
               key={key}
@@ -423,7 +448,7 @@ export default function TenantDetail() {
               {TAB_LABELS[key]}
             </button>
           ))}
-        </nav>
+        </nav>}
       </div>
 
       {lifecycleActionError !== null && (
@@ -475,14 +500,22 @@ export default function TenantDetail() {
           changes, and a tab's own state — limit drafts, a pending shrink, a
           chosen pin, a traffic subject — belongs to the tenant it was made on.
           Limits also remount on a plan change, to re-read the plan's values. */}
-      <Fragment key={id}>
+      {tenant.status === 'archived' && (
+        <ArchivedTenantView
+          tenantId={id}
+          restoring={updateTenant.isPending}
+          keptOutOfAutomation={tenant.lifecycleAutomationExempt === true}
+          onRestore={handleRestoreArchived}
+        />
+      )}
+      {tenant.status !== 'archived' && <Fragment key={id}>
         {activeTab === 'overview' && <OverviewTab tenant={tenant} tenantId={id} planName={planName} issues={tenantIssues} placement={placement} onTab={setActiveTab} />}
         {activeTab === 'email' && <TenantEmailTab tenant={tenant} tenantId={id} />}
         {activeTab === 'traffic' && <TenantTrafficTab tenant={tenant} tenantId={id} />}
         {activeTab === 'storage' && <StorageTab tenant={tenant} tenantId={id} />}
         {activeTab === 'limits' && <LimitsTab key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id} />}
         {activeTab === 'activity' && <ActivityTab tenantId={id} />}
-      </Fragment>
+      </Fragment>}
 
       <EditTenantModal open={editOpen} onClose={() => setEditOpen(false)} tenant={tenant} />
 
@@ -498,6 +531,7 @@ export default function TenantDetail() {
         <ArchiveTenantDialog
           tenantName={name}
           busy={updateTenant.isPending}
+          defaultDays={storageSettings.data?.data?.retentionPreArchiveDays ?? 90}
           onConfirm={handleArchive}
           onClose={() => setArchiveOpen(false)}
         />

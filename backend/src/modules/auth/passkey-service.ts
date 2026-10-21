@@ -387,6 +387,9 @@ export async function completeAuthentication(
   if (user.status !== 'active') {
     throw new ApiError('USER_INACTIVE', 'User account is not active', 401);
   }
+  // An archived tenant is closed to its users, whichever way they sign in.
+  const { assertTenantOpenForSignIn } = await import('../tenant-archive/sessions.js');
+  await assertTenantOpenForSignIn(db, user.tenantId);
 
   // Panel binding: a user with 'admin' panel can't log into the tenant
   // panel via passkey, and vice versa.

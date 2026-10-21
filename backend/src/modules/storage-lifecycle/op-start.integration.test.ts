@@ -16,11 +16,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
-import { storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
+import { hostingPlans, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const did: string[] = [];
+/** The size, in GiB, of every claim the restore asked for. */
+const claimsAskedGi: string[] = [];
 /** What asking for an operation's lock comes to: taken, held by another process, or the database not answering. */
 let claim: 'taken' | 'held elsewhere' | 'database down' = 'taken';
 
@@ -52,6 +54,7 @@ vi.mock('./prebundle.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveTenantBundleTarget: async () => ({ id: 'target-1' }),
   captureFilesOnlyBundle: async () => { did.push('capture'); return { bundleId: 'bkp-1', status: 'completed', sizeBytes: 10 }; },
+  captureArchiveBundle: async () => { did.push('capture'); return { bundleId: 'bkp-1', status: 'completed', sizeBytes: 10 }; },
   restoreFilesBundleIntoPvc: async () => { did.push('restore'); },
   reapPreResizeBundle: async () => undefined,
 }));
@@ -67,7 +70,7 @@ vi.mock('./archived-volume.js', async (orig) => ({
   inspectArchivedVolume: async () => ({ kind: 'absent' }),
 }));
 vi.mock('../k8s-provisioner/service.js', () => ({
-  applyPVC: async () => { did.push('apply claim'); },
+  applyPVC: async (_k8s: unknown, _ns: string, gi: string) => { did.push('apply claim'); claimsAskedGi.push(gi); },
   selectTenantStorageClass: () => 'longhorn-tenant',
 }));
 vi.mock('../file-manager/idle-cleanup.js', () => ({ recordFileManagerAccess: () => undefined }));
@@ -151,7 +154,7 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     const region = await seedRegion(db());
     const plan = await seedPlan(db());
     tenantId = (await seedTenant(db(), region.id, plan.id, { status: 'suspended', suspendedAt: new Date(Date.now() - 40 * 86_400_000) })).id;
-    did.length = 0; claim = 'taken'; claimGi = 20;
+    did.length = 0; claimsAskedGi.length = 0; claim = 'taken'; claimGi = 20;
   });
 
   const tenantRow = async () => (await db().select().from(tenants).where(eq(tenants.id, tenantId)))[0];
@@ -205,6 +208,22 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     expect(await tenantRow()).toMatchObject({ storageLifecycleState: 'idle', activeStorageOpId: null });
     expect(did).toEqual(does);
     expect(await leases()).toBe(0);                    // the tenant's lock and the operation's, both given back
+  });
+
+  // The namespace's storage quota is the tenant's size to the MiB: a claim
+  // rounded up to a whole GiB is refused by it, and the restore with it.
+  it.each([
+    { size: 'a 0.5 GiB plan', plan: '0.50', own: null, asks: '0.5' },
+    { size: 'its own 2.5 GiB', plan: '0.50', own: '2.50', asks: '2.5' },
+    { size: 'a 20 GiB plan', plan: '20.00', own: null, asks: '20' },
+  ])('a restore asks for a claim of the tenant\'s own size: $size', async ({ plan, own, asks }) => {
+    const { planId } = await tenantRow();
+    await db().update(hostingPlans).set({ storageLimit: plan }).where(eq(hostingPlans.id, planId));
+    await db().update(tenants).set({ storageLimitOverride: own }).where(eq(tenants.id, tenantId));
+    await archived();
+    const { operationId } = await restoreArchivedTenant(ctx(), tenantId);
+    await finished(operationId);
+    expect(claimsAskedGi).toEqual([asks]);
   });
 
   describe.each(KINDS)('$name whose lock cannot be taken', ({ prepare, start, writesSnapshot }) => {

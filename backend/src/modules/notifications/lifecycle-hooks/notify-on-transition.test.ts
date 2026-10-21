@@ -75,3 +75,35 @@ describe('notify-tenant-on-transition hook', () => {
     expect(notifyOnTransitionHook.transitions).toEqual(['suspended', 'restored', 'archived', 'deleted']);
   });
 });
+
+describe('what the archive and restore notices say', () => {
+  const dbReturning = (rows: unknown[]) => ({
+    select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve(rows), { orderBy: () => ({ limit: async () => rows }) }) }) }),
+  });
+  const vars = () => (emitEventMock.mock.calls[0][1] as { variables: Record<string, string> }).variables;
+
+  it('archived: how long the backup is kept', async () => {
+    await notifyOnTransitionHook.run(ctx({ transition: 'archived', db: dbReturning([{ expiresAt: new Date('2027-01-18T10:00:00Z') }]) }) as never);
+    expect(vars().keptUntil).toBe('until January 18, 2027');
+  });
+
+  it('archived with no expiry: kept with no end date', async () => {
+    await notifyOnTransitionHook.run(ctx({ transition: 'archived', db: dbReturning([{ expiresAt: null }]) }) as never);
+    expect(vars().keptUntil).toBe('with no end date');
+  });
+
+  it('archived, details unreadable: still sent, vaguer', async () => {
+    await notifyOnTransitionHook.run(ctx({ transition: 'archived', db: {} }) as never);
+    expect(vars().keptUntil).toBe('for a limited time');
+  });
+
+  it('restored with mailboxes: they need new passwords', async () => {
+    await notifyOnTransitionHook.run(ctx({ transition: 'restored', db: dbReturning([{ n: 3 }]) }) as never);
+    expect(vars().mailboxNote).toContain('new password');
+  });
+
+  it('restored without mailboxes: no mailbox note', async () => {
+    await notifyOnTransitionHook.run(ctx({ transition: 'restored', db: dbReturning([{ n: 0 }]) }) as never);
+    expect(vars().mailboxNote).toBeUndefined();
+  });
+});

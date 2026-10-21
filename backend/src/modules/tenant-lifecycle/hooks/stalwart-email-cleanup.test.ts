@@ -11,8 +11,11 @@ vi.mock('../../email-domains/service.js', () => ({
 import { stalwartEmailCleanupHook } from './stalwart-email-cleanup.js';
 import type { HookCtx } from '../registry/index.js';
 
+const updates: Array<Record<string, unknown>> = [];
+
 function makeCtx(
   rows: Array<{ id: string; stalwartDomainId: string | null }>,
+  transition: 'deleted' | 'archived' = 'deleted',
 ): HookCtx {
   return {
     db: {
@@ -21,12 +24,13 @@ function makeCtx(
           where: async () => rows,
         }),
       }),
+      update: () => ({ set: (patch: Record<string, unknown>) => ({ where: async () => { updates.push(patch); } }) }),
     } as never,
     k8s: {} as never,
     tenantId: 'c1',
     namespace: 'tenant-test',
     transitionId: 't1',
-    transition: 'deleted',
+    transition,
     attempt: 1,
   };
 }
@@ -34,11 +38,29 @@ function makeCtx(
 describe('stalwart-email-cleanup hook', () => {
   beforeEach(() => {
     destroySpy.mockReset().mockResolvedValue(undefined);
+    updates.length = 0;
   });
 
-  it('is registered for the deleted transition only, non-blocking', () => {
-    expect(stalwartEmailCleanupHook.transitions).toEqual(['deleted']);
+  it('is registered for deleted and archived, non-blocking', () => {
+    expect(stalwartEmailCleanupHook.transitions).toEqual(['deleted', 'archived']);
     expect(stalwartEmailCleanupHook.blocking).toBe('continue');
+  });
+
+  it('on archive, the kept rows forget the mail server ids — restore builds the domain and its mailboxes again', async () => {
+    const r = await stalwartEmailCleanupHook.run(makeCtx([{ id: 'ed1', stalwartDomainId: 'sd1' }], 'archived'));
+    expect(r.status).toBe('ok');
+    expect(updates).toEqual([{ stalwartPrincipalId: null }, { stalwartDomainId: null }]);
+  });
+
+  it('on archive, a Domain that could not be removed keeps its id', async () => {
+    destroySpy.mockResolvedValueOnce({ domainDestroyed: false, failures: ['unreachable'] } as never);
+    await stalwartEmailCleanupHook.run(makeCtx([{ id: 'ed1', stalwartDomainId: 'sd1' }], 'archived'));
+    expect(updates).toEqual([]);
+  });
+
+  it('on delete, writes nothing — the rows go with the tenant', async () => {
+    await stalwartEmailCleanupHook.run(makeCtx([{ id: 'ed1', stalwartDomainId: 'sd1' }], 'deleted'));
+    expect(updates).toEqual([]);
   });
 
   it('returns ok with no email domains', async () => {

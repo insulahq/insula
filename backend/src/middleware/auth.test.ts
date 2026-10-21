@@ -514,3 +514,44 @@ describe('auth middleware', () => {
     });
   });
 });
+
+// An archived tenant's sessions end with it: a tenant-panel token signed before
+// the archive is refused on its next request, not 30 minutes later.
+describe('authenticate — a tenant archived since the token was signed', () => {
+  let archivedApp: FastifyInstance;
+  let status = 'archived';
+
+  beforeAll(async () => {
+    archivedApp = Fastify();
+    archivedApp.setErrorHandler(errorHandler);
+    await archivedApp.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
+    archivedApp.decorate('db', {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ status }] }) }) }),
+    });
+    archivedApp.get('/tenant-thing', { preHandler: [authenticate] }, async () => ({ ok: true }));
+    await archivedApp.ready();
+  });
+
+  afterAll(async () => { await archivedApp.close(); });
+
+  it('refuses the archived tenant\'s token with TENANT_ARCHIVED', async () => {
+    const { resetTenantSignInCache } = await import('../modules/tenant-archive/sessions.js');
+    resetTenantSignInCache();
+    status = 'archived';
+    const token = archivedApp.jwt.sign({ sub: 'u', role: 'tenant_admin', panel: 'tenant', tenantId: 'arch-1' });
+    const res = await archivedApp.inject({ method: 'GET', url: '/tenant-thing', headers: { authorization: `Bearer ${token}` } });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('TENANT_ARCHIVED');
+  });
+
+  it('lets an active tenant\'s token through, and an admin token never asks', async () => {
+    const { resetTenantSignInCache } = await import('../modules/tenant-archive/sessions.js');
+    resetTenantSignInCache();
+    status = 'active';
+    const tenantToken = archivedApp.jwt.sign({ sub: 'u', role: 'tenant_admin', panel: 'tenant', tenantId: 'live-1' });
+    expect((await archivedApp.inject({ method: 'GET', url: '/tenant-thing', headers: { authorization: `Bearer ${tenantToken}` } })).statusCode).toBe(200);
+    status = 'archived';
+    const adminToken = archivedApp.jwt.sign({ sub: 'a', role: 'admin', panel: 'admin' });
+    expect((await archivedApp.inject({ method: 'GET', url: '/tenant-thing', headers: { authorization: `Bearer ${adminToken}` } })).statusCode).toBe(200);
+  });
+});

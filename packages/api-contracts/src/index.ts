@@ -148,6 +148,7 @@ export * from './namespace-integrity.js';
 export * from './cert-download.js';
 export * from './storage-lifecycle.js';
 export * from './tenant-lifecycle-automation.js';
+export * from './tenant-archive.js';
 export * from './dns-servers.js';
 export * from './node-operations.js';
 export * from './tenant-health.js';

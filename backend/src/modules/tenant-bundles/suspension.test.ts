@@ -10,6 +10,12 @@ describe('assertTenantBackupsAllowed', () => {
     );
   });
 
+  it('refuses an archived tenant with 409 TENANT_ARCHIVED — its archive bundle is its backup, and must stay the newest', () => {
+    expect(() => assertTenantBackupsAllowed({ status: 'archived' })).toThrow(
+      expect.objectContaining({ code: 'TENANT_ARCHIVED', status: 409 }),
+    );
+  });
+
   it.each(['active', 'pending'])('lets a %s tenant through', (status) => {
     expect(() => assertTenantBackupsAllowed({ status })).not.toThrow();
   });

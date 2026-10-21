@@ -790,8 +790,10 @@ function BackupsTab(p: BackupsTabProps) {
         // A suspended tenant's backups are paused: it is not in tonight's run
         // even when its plan includes it.
         const pausedCount = p.rollupRows.filter((r) => r.backupsPaused).length;
-        const included = p.rollupRows.filter((r) => r.includedInScheduledBundles && !r.backupsPaused).length;
-        const excludedCount = total - included - pausedCount;
+        // An archived tenant has nothing left to back up: its archive bundle is its backup.
+        const archivedCount = p.rollupRows.filter((r) => r.archived).length;
+        const included = p.rollupRows.filter((r) => r.includedInScheduledBundles && !r.backupsPaused && !r.archived).length;
+        const excludedCount = total - included - pausedCount - archivedCount;
         if (total === 0) return null;
         const sortedRollup = [...p.rollupRows]
           .sort((a, b) => a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
@@ -802,9 +804,10 @@ function BackupsTab(p: BackupsTabProps) {
           >
             <summary className="cursor-pointer font-medium text-gray-700 dark:text-gray-300">
               Scheduled inclusion: {included}/{total} tenants in the daily backup cron
-              {(excludedCount > 0 || pausedCount > 0) && ` (${[
+              {(excludedCount > 0 || pausedCount > 0 || archivedCount > 0) && ` (${[
                 excludedCount > 0 ? `${excludedCount} excluded` : null,
                 pausedCount > 0 ? `${pausedCount} paused — suspended` : null,
+                archivedCount > 0 ? `${archivedCount} archived` : null,
               ].filter(Boolean).join(', ')})`}
             </summary>
             <div className="mt-2 space-y-1 text-gray-600 dark:text-gray-400">
@@ -821,16 +824,20 @@ function BackupsTab(p: BackupsTabProps) {
                         <span className="font-mono text-[11px]">{r.tenantName}</span>
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
-                            r.backupsPaused
+                            r.archived
+                              ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
+                              : r.backupsPaused
                               ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
                               : r.includedInScheduledBundles
                               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
                               : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
                           }`}
-                          title={r.backupsPaused ? 'Backups are paused while this tenant is suspended; its existing backups are kept' : undefined}
+                          title={r.archived
+                            ? 'Archived: nothing is backed up any more; its archive bundle is kept for the archive\u2019s window'
+                            : r.backupsPaused ? 'Backups are paused while this tenant is suspended; its existing backups are kept' : undefined}
                           data-testid={`inclusion-state-${r.tenantId}`}
                         >
-                          {r.backupsPaused ? 'paused — suspended' : r.includedInScheduledBundles ? 'included' : 'excluded'}
+                          {r.archived ? 'archived' : r.backupsPaused ? 'paused — suspended' : r.includedInScheduledBundles ? 'included' : 'excluded'}
                         </span>
                       </span>
                       <span className="inline-flex items-center gap-1.5">
@@ -841,10 +848,12 @@ function BackupsTab(p: BackupsTabProps) {
                         <button
                           type="button"
                           onClick={() => p.onBundle(r.tenantId)}
-                          disabled={p.tenantPendingBundle === r.tenantId || !p.tenantTargetBound || r.backupsPaused}
+                          disabled={p.tenantPendingBundle === r.tenantId || !p.tenantTargetBound || r.backupsPaused || r.archived}
                           className="inline-flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
                           data-testid={`inclusion-bundle-now-${r.tenantId}`}
-                          title={r.backupsPaused
+                          title={r.archived
+                            ? 'This tenant is archived — restore it to back it up again'
+                            : r.backupsPaused
                             ? 'Backups are paused while this tenant is suspended — reactivate it to back it up'
                             : p.tenantTargetBound ? 'Create a bundle for this tenant now' : 'Bind a target on tab (c) first'}
                         >
@@ -930,6 +939,15 @@ function BackupsTab(p: BackupsTabProps) {
                 >
                   {open ? <ChevronDown size={14} className="shrink-0 text-gray-500" /> : <ChevronRight size={14} className="shrink-0 text-gray-500" />}
                   <span className="font-medium text-gray-900 dark:text-gray-100">{g.tenantName}</span>
+                  {roll?.archived && (
+                    <span
+                      className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+                      title="Archived: its archive bundle is its backup, kept for the archive's window"
+                      data-testid={`tenant-backup-archived-${g.tenantId}`}
+                    >
+                      Archived
+                    </span>
+                  )}
                   {/* The count is the tenant's real total, from the rollup.
                       There is no longer any other number it could be: the
                       group holds no bundles until it is opened. */}
@@ -1156,7 +1174,7 @@ export default function TenantsBackupsPage() {
   };
 
   const eligibleForBundle = (rollupData?.data?.rows ?? [])
-    .filter((r) => r.includedInScheduledBundles && !r.backupsPaused)
+    .filter((r) => r.includedInScheduledBundles && !r.backupsPaused && !r.archived)
     .map((r) => r.tenantId);
   const allTenantIds = tenantOptions.map((t) => t.id);
 

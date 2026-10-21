@@ -185,7 +185,19 @@ async function inLine(db: Database, step: Step): Promise<InLineTenant[]> {
     .leftJoin(tenantAutomationNotices, and(eq(tenantAutomationNotices.tenantId, tenants.id), eq(tenantAutomationNotices.step, step)))
     // The SYSTEM tenant can be neither suspended nor archived through the API;
     // the filter is for a row written past it (ADR-040, ci-system-tenant-check).
-    .where(and(eq(tenants.status, status), eq(tenants.isSystem, false), eq(tenants.lifecycleAutomationExempt, false)))
+    .where(and(
+      eq(tenants.status, status),
+      eq(tenants.isSystem, false),
+      eq(tenants.lifecycleAutomationExempt, false),
+      // An archive kept "with no end date" is never deleted automatically
+      // (operator decision): its newest archive snapshot has no expiry.
+      ...(step === 'delete' ? [sql`not exists (
+        select 1 from storage_snapshots s
+        where s.tenant_id = ${tenants.id} and s.kind = 'pre-archive' and s.expires_at is null
+          and s.created_at = (select max(s2.created_at) from storage_snapshots s2
+                              where s2.tenant_id = ${tenants.id} and s2.kind = 'pre-archive')
+      )`] : []),
+    ))
     .orderBy(sql`${since} asc nulls last`, asc(tenants.name));
   return rows.map((r) => ({
     tenantId: r.tenantId,

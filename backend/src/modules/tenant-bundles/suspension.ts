@@ -28,9 +28,20 @@ import { ApiError } from '../../shared/errors.js';
 export const TENANT_SUSPENDED_BACKUP_MESSAGE =
   'Backups are paused while this tenant is suspended. Reactivate the tenant to back it up again.';
 
-/** Refuse to start a bundle for a suspended tenant. */
+export const TENANT_ARCHIVED_BACKUP_MESSAGE =
+  'This tenant is archived: it has nothing left to back up, and its archive bundle is its backup. Restore the tenant to back it up again.';
+
+/**
+ * Refuse to start a bundle for a suspended or archived tenant. Archived: the
+ * volume, the mailboxes and the domains are gone, so a bundle could only come
+ * back partial — and, the newest bundle, it would rank ahead of the archive's
+ * own under keep-last-N.
+ */
 export function assertTenantBackupsAllowed(tenant: { readonly status: string }): void {
   if (tenant.status === 'suspended') {
     throw new ApiError('TENANT_SUSPENDED', TENANT_SUSPENDED_BACKUP_MESSAGE, 409);
+  }
+  if (tenant.status === 'archived') {
+    throw new ApiError('TENANT_ARCHIVED', TENANT_ARCHIVED_BACKUP_MESSAGE, 409);
   }
 }
