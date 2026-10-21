@@ -203,6 +203,56 @@ export async function captureFilesOnlyBundle(args: {
   readonly label: string;
   readonly retentionDays?: number;
 }): Promise<PreResizeBundleResult> {
+  return captureSystemBundle({
+    ...args,
+    systemTrigger: 'pre_resize',
+    description: 'Pre-resize rollback snapshot (files-only, off-site).',
+    retentionDays: args.retentionDays ?? PRE_RESIZE_RETENTION_DAYS,
+    // Files only: the rest of the bundle (mailboxes/config/secrets) is
+    // irrelevant for a PVC rollback and would needlessly slow the
+    // shrink + grow the artifact.
+    components: { files: true, mailboxes: false, config: false, secrets: false },
+  });
+}
+
+/**
+ * Capture an archived tenant's FINAL bundle: every component — the files
+ * (with the databases' data), the mailboxes with their mail, the tenant's
+ * configuration and its TLS secrets. It is what "Restore archived tenant"
+ * brings the tenant back from, and after the archive the only copy: the
+ * volume, the mailboxes and the domains are removed. `retentionDays` null
+ * keeps it until it is deleted by hand ("never expire").
+ *
+ * The caller lets the bundle read the mail of a suspended tenant
+ * (tenant-archive/mail-capture-window.ts) and asserts `completed`.
+ */
+export async function captureArchiveBundle(args: {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly tenantId: string;
+  readonly label: string;
+  readonly retentionDays: number | null;
+}): Promise<PreResizeBundleResult> {
+  return captureSystemBundle({
+    ...args,
+    systemTrigger: 'pre_archive',
+    description: 'Final archive bundle: files, databases, mailboxes and configuration.',
+    // runBundle reads <= 0 as "no expiry".
+    retentionDays: args.retentionDays ?? 0,
+    components: { files: true, mailboxes: true, config: true, secrets: true },
+  });
+}
+
+async function captureSystemBundle(args: {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly tenantId: string;
+  readonly label: string;
+  readonly systemTrigger: 'pre_resize' | 'pre_archive';
+  readonly description: string;
+  readonly retentionDays: number;
+  readonly components: { files: boolean; mailboxes: boolean; config: boolean; secrets: boolean };
+}): Promise<PreResizeBundleResult> {
   const { db, k8s, tenantId } = args;
   const secretsKeyHex = secretsKey();
   const cfg = await resolveTenantBundleTarget(db);
@@ -222,28 +272,21 @@ export async function captureFilesOnlyBundle(args: {
     {
       tenantId,
       initiator: 'system',
-      systemTrigger: 'pre_resize',
+      systemTrigger: args.systemTrigger,
       label: args.label,
-      description: 'Pre-resize rollback snapshot (files-only, off-site).',
-      retentionDays: args.retentionDays ?? PRE_RESIZE_RETENTION_DAYS,
+      description: args.description,
+      retentionDays: args.retentionDays,
       targetConfigId: cfg.id,
       targetUri: `${store.kind}://${cfg.id}`,
-      // Files only: the rest of the bundle (mailboxes/config/secrets) is
-      // irrelevant for a PVC rollback and would needlessly slow the
-      // shrink + grow the artifact.
-      components: { files: true, mailboxes: false, config: false, secrets: false },
+      components: args.components,
     },
   );
 
-  // Pull the files-component size for the storage_snapshots row.
-  const [comp] = await db
+  // The bundle's size: every component it holds, as the bundle lists show it.
+  const comps = await db
     .select({ sizeBytes: backupComponents.sizeBytes })
     .from(backupComponents)
-    .where(and(
-      eq(backupComponents.backupJobId, result.bundleId),
-      eq(backupComponents.component, 'files'),
-    ))
-    .limit(1);
+    .where(eq(backupComponents.backupJobId, result.bundleId));
 
   // CRITICAL for the destructive-shrink path: the files-capture Job's
   // Completed pod still holds the PVC RO mount, and the pvc-protection
@@ -257,7 +300,7 @@ export async function captureFilesOnlyBundle(args: {
   return {
     bundleId: result.bundleId,
     status: result.status,
-    sizeBytes: comp?.sizeBytes ?? 0,
+    sizeBytes: comps.reduce((sum, c) => sum + Number(c.sizeBytes ?? 0), 0),
   };
 }
 
@@ -279,7 +322,7 @@ export async function settleInterruptedCaptures(db: Database, k8s: K8sClients, t
       eq(backupJobs.tenantId, tenantId),
       inArray(backupJobs.status, ['pending', 'running']),
       eq(backupJobs.initiator, 'system'),
-      eq(backupJobs.systemTrigger, 'pre_resize'),
+      inArray(backupJobs.systemTrigger, ['pre_resize', 'pre_archive']),
       gte(backupJobs.createdAt, since),
     ))
     .returning({ id: backupJobs.id });

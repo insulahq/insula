@@ -279,7 +279,9 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       FROM tenant_restic_repo_state
       WHERE tenant_id = t.id AND repo_total_bytes IS NOT NULL
     ) repo ON TRUE
-    WHERE t.status != 'archived'
+    -- Archived tenants stay (operator decision): their archive bundle is
+    -- their backup, and the row says they are archived.
+    WHERE TRUE
       ${opts.filter ? sql`AND t.name ILIKE ${'%' + opts.filter + '%'}` : sql``}
     ORDER BY t.is_system DESC, t.name
     LIMIT ${limit}
@@ -321,6 +323,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       planName: r.plan_name,
       includedInScheduledBundles: r.resolved_include === true,
       backupsPaused: r.tenant_status === 'suspended',
+      archived: r.tenant_status === 'archived',
       scheduledBundlesOverride: r.include_override === null
         ? 'inherit'
         : r.include_override

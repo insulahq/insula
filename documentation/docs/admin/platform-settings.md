@@ -193,7 +193,7 @@ itself. Both steps are **off** until you switch them on.
 
 | Step | What it does | Default limit |
 |------|--------------|---------------|
-| **Archive suspended tenants** | A tenant that has been suspended for longer than the limit is archived — the same [Archive](tenants.md#the-lifecycle-suspend-resume-archive-restore-delete) as on the tenant page: its files are copied to the backup target, then its mailboxes, aliases, deployments and storage volume are deleted. | 30 days |
+| **Archive suspended tenants** | A tenant that has been suspended for longer than the limit is archived — the same [Archive](tenants.md#the-lifecycle-suspend-resume-archive-restore-delete) as on the tenant page: a final backup bundle of everything is stored off-site, then its applications, volume, mailboxes, DNS zones and mail domains are removed and nobody can sign in. | 30 days |
 | **Delete archived tenants** | A tenant that has been archived for longer than the limit is deleted — the same Delete as on the tenant page. | 90 days |
 
 The platform checks every **6 hours**. Days are counted from the moment the
@@ -247,10 +247,12 @@ first and names every one of them. A tenant that is only told at first is
 asked about here too: its archive or delete follows on its date with no
 further question. Anything that ends in a delete has to be typed.
 
-**How long an archive is kept.** An archive taken automatically is kept for
-the platform's archive retention (90 days unless changed), or — when automatic
-delete is on — for the delete limit plus the notice period when that is
-longer, so an archive never expires before its tenant is deleted. A deleted
+**How long an archive is kept.** An archive's expiry deletes its tenant, so
+an archive taken automatically is kept **with no end date while automatic
+delete is off**. While it is on, it is kept for the platform's archive
+retention (90 days unless changed), or for the delete limit plus the notice
+period when that is longer, so it never expires before the delete step would
+delete the tenant. A deleted
 tenant can be recovered only for as
 long as its backups are kept: see
 [Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant).

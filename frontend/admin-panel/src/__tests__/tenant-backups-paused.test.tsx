@@ -15,13 +15,14 @@ vi.mock('react-router-dom', async (importOriginal) => ({
 
 const ACTIVE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SUSPENDED = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const row = (tenantId: string, tenantName: string, backupsPaused: boolean) => ({
-  tenantId, tenantName, backupsPaused, includedInScheduledBundles: true, scheduledBundlesOverride: 'inherit',
+const ARCHIVED = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const row = (tenantId: string, tenantName: string, backupsPaused: boolean, archived = false) => ({
+  tenantId, tenantName, backupsPaused, archived, includedInScheduledBundles: true, scheduledBundlesOverride: 'inherit',
   bundleCount: 3, bundleBytes: 0, repoTotalBytes: null, repoStatsAt: null, repoVerifiedAt: null, repoTotalSource: null,
   snapshotCount: 0, snapshotBytes: 0, lastSnapshotAt: null, lastBundleAt: null, snapshotQuotaPct: null,
   openCartId: null, isSystem: false, planName: 'Starter',
 });
-const ROLLUP = [row(ACTIVE, 'Acme', false), row(SUSPENDED, 'Paused Co', true)];
+const ROLLUP = [row(ACTIVE, 'Acme', false), row(SUSPENDED, 'Paused Co', true), row(ARCHIVED, 'Gone Ltd', false, true)];
 
 const apiFetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
   if (url.includes('/admin/backups/tenants/overview')) return { data: { rows: ROLLUP, kpi: {}, generatedAt: '' } };
@@ -58,7 +59,7 @@ describe('a suspended tenant on the Tenant Backups page', () => {
     expect(screen.getByTestId(`inclusion-bundle-now-${ACTIVE}`)).toBeEnabled();
     // Not counted as in tonight's run.
     expect(screen.getByTestId('tenant-inclusion-summary').querySelector('summary'))
-      .toHaveTextContent('Scheduled inclusion: 1/2 tenants in the daily backup cron (1 paused — suspended)');
+      .toHaveTextContent('Scheduled inclusion: 1/3 tenants in the daily backup cron (1 paused — suspended, 1 archived)');
   });
 
   it('"Bundle all eligible tenants" leaves it out', async () => {
@@ -70,5 +71,27 @@ describe('a suspended tenant on the Tenant Backups page', () => {
       .filter(([u, i]) => u === '/api/v1/admin/tenant-bundles' && i?.method === 'POST')
       .map(([, i]) => (JSON.parse(i?.body ?? '{}') as { tenantId: string }).tenantId);
     expect(bundled).toEqual([ACTIVE]);
+  });
+});
+
+// An archived tenant stays on the page (operator decision), marked as such: its
+// archive bundle is its backup, and there is nothing left to back up.
+describe('an archived tenant on the Tenant Backups page', () => {
+  it('is listed, marked ARCHIVED, and cannot be backed up', async () => {
+    renderPage();
+    expect(await screen.findByTestId(`tenant-backup-archived-${ARCHIVED}`)).toHaveTextContent('Archived');
+    expect(screen.getByTestId(`inclusion-state-${ARCHIVED}`)).toHaveTextContent('archived');
+    expect(screen.getByTestId(`inclusion-bundle-now-${ARCHIVED}`)).toBeDisabled();
+  });
+
+  it('"Bundle all eligible tenants" leaves it out', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('tenants-bundle-all')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('tenants-bundle-all'));
+    await waitFor(() => expect(apiFetch.mock.calls.some(([u, i]) => u === '/api/v1/admin/tenant-bundles' && i?.method === 'POST')).toBe(true));
+    const bundled = apiFetch.mock.calls
+      .filter(([u, i]) => u === '/api/v1/admin/tenant-bundles' && i?.method === 'POST')
+      .map(([, i]) => (JSON.parse(i?.body ?? '{}') as { tenantId: string }).tenantId);
+    expect(bundled).not.toContain(ARCHIVED);
   });
 });

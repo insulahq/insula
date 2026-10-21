@@ -38,16 +38,28 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
   }
 
   try {
-    await emitEvent(ctx.db, {
-      categoryId,
-      scope: { kind: 'tenant', tenantId: ctx.tenantId },
-      tenantId: ctx.tenantId,
-      suppressTenantNotification: ctx.suppressTenantNotification === true,
-      variables: {
+    const suppressTenantNotification = ctx.suppressTenantNotification === true;
+    const vars = await transitionVariables(ctx).catch(() => fallbackVariables(ctx));
+    if (ctx.transition === 'archived') {
+      const { notifyTenantArchived } = await import('../events.js');
+      const r = await notifyTenantArchived(ctx.db, ctx.tenantId, { keptUntil: vars.keptUntil ?? 'for a limited time' }, { suppressTenantNotification });
+      if (!r.ok) throw new Error(r.error ?? 'dispatch failed');
+    } else if (ctx.transition === 'restored') {
+      const { notifyTenantRestored } = await import('../events.js');
+      const r = await notifyTenantRestored(ctx.db, ctx.tenantId, { mailboxNote: vars.mailboxNote }, { suppressTenantNotification });
+      if (!r.ok) throw new Error(r.error ?? 'dispatch failed');
+    } else {
+      await emitEvent(ctx.db, {
+        categoryId,
+        scope: { kind: 'tenant', tenantId: ctx.tenantId },
         tenantId: ctx.tenantId,
-        platformName: 'Hosting Platform',
-      },
-    });
+        suppressTenantNotification,
+        variables: {
+          tenantId: ctx.tenantId,
+          platformName: 'Hosting Platform',
+        },
+      });
+    }
     return { status: 'ok' };
   } catch (err) {
     // Continue policy: never block a state transition because we
@@ -66,6 +78,43 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       },
     };
   }
+}
+
+/**
+ * What the archive and restore notices say beyond the tenant's name: how long
+ * the archive's backup is kept, and that restored mailboxes need new
+ * passwords — the mail server never gives a stored password back, so the
+ * archive cannot carry one.
+ */
+async function transitionVariables(ctx: HookCtx): Promise<Record<string, string>> {
+  const { and, desc, eq, sql } = await import('drizzle-orm');
+  const { mailboxes, storageSnapshots } = await import('../../../db/schema.js');
+  if (ctx.transition === 'archived') {
+    const [snap] = await ctx.db
+      .select({ expiresAt: storageSnapshots.expiresAt })
+      .from(storageSnapshots)
+      .where(and(eq(storageSnapshots.tenantId, ctx.tenantId), eq(storageSnapshots.kind, 'pre-archive')))
+      .orderBy(desc(storageSnapshots.createdAt))
+      .limit(1);
+    if (!snap) return { keptUntil: 'for a limited time' };
+    return {
+      keptUntil: snap.expiresAt
+        ? `until ${snap.expiresAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}`
+        : 'with no end date',
+    };
+  }
+  if (ctx.transition === 'restored') {
+    const [row] = await ctx.db.select({ n: sql<number>`count(*)` }).from(mailboxes).where(eq(mailboxes.tenantId, ctx.tenantId));
+    return Number(row?.n ?? 0) > 0
+      ? { mailboxNote: 'Your mailboxes are back with their mail, but each needs a new password: set one under Email in your control panel.' }
+      : {};
+  }
+  return {};
+}
+
+/** What the notices say when the details could not be read: true, if vaguer. */
+function fallbackVariables(ctx: HookCtx): Record<string, string> {
+  return ctx.transition === 'archived' ? { keptUntil: 'for a limited time' } : {};
 }
 
 export const notifyOnTransitionHook: LifecycleHook = {

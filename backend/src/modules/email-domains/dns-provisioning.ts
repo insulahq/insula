@@ -648,45 +648,49 @@ export async function unpublishWebmailDnsRecord(
   return true;
 }
 
+/**
+ * Is this stored record one that enabling email writes (MX, SPF, DKIM, DMARC,
+ * the mail-discovery SRV records, the legacy autoconfig/MTA-STS ones)? Picked
+ * by (type, name pattern, value prefix), so no type allowlist is needed.
+ */
+export function isEmailDnsRecord(r: { recordType: string; recordName: string | null; recordValue: string | null }): boolean {
+  if (r.recordType === 'MX') return true;
+  if (r.recordType === 'A' && r.recordName?.startsWith('mail.')) return true;
+  if (r.recordType === 'SRV') {
+    // Catches every mail-discovery SRV record by name prefix
+    // (_imaps._tcp / _imap._tcp / _pop3s._tcp / _submissions._tcp / _submission._tcp).
+    const name = r.recordName ?? '';
+    return /^_(imaps?|pop3s?|submissions?)\._tcp\./.test(name);
+  }
+  if (r.recordType === 'CNAME') {
+    // Legacy autoconfig / autodiscover / mta-sts CNAMEs created by
+    // earlier provisioning code. Cleanup
+    // catches them so re-provisioning leaves no orphans in PowerDNS.
+    const name = r.recordName ?? '';
+    return /^(autoconfig|autodiscover|mta-sts)\./.test(name);
+  }
+  if (r.recordType === 'TXT') {
+    const val = r.recordValue ?? '';
+    return (
+      val.startsWith('v=spf1') ||
+      val.startsWith('v=DKIM1') ||
+      val.startsWith('v=DMARC1') ||
+      val.startsWith('v=STSv1')
+    );
+  }
+  return false;
+}
+
 export async function deprovisionEmailDns(
   db: Database,
   domainId: string,
 ): Promise<void> {
-  // Find all email-related DNS records for this domain. The filter
-  // below picks them by (type, name-pattern, value-prefix) — so a
-  // generic recordType allowlist is unnecessary.
   const allRecords = await db
     .select()
     .from(dnsRecords)
     .where(eq(dnsRecords.domainId, domainId));
 
-  const emailRecords = allRecords.filter((r) => {
-    if (r.recordType === 'MX') return true;
-    if (r.recordType === 'A' && r.recordName?.startsWith('mail.')) return true;
-    if (r.recordType === 'SRV') {
-      // Catches all four mail-discovery SRV records by name prefix
-      // (_imaps._tcp / _imap._tcp / _submissions._tcp / _submission._tcp).
-      const name = r.recordName ?? '';
-      return /^_(imaps?|submissions?)\._tcp\./.test(name);
-    }
-    if (r.recordType === 'CNAME') {
-      // Legacy autoconfig / autodiscover / mta-sts CNAMEs created by
-      // earlier provisioning code. Cleanup
-      // catches them so re-provisioning leaves no orphans in PowerDNS.
-      const name = r.recordName ?? '';
-      return /^(autoconfig|autodiscover|mta-sts)\./.test(name);
-    }
-    if (r.recordType === 'TXT') {
-      const val = r.recordValue ?? '';
-      return (
-        val.startsWith('v=spf1') ||
-        val.startsWith('v=DKIM1') ||
-        val.startsWith('v=DMARC1') ||
-        val.startsWith('v=STSv1')
-      );
-    }
-    return false;
-  });
+  const emailRecords = allRecords.filter(isEmailDnsRecord);
 
   for (const record of emailRecords) {
     await db.delete(dnsRecords).where(eq(dnsRecords.id, record.id));

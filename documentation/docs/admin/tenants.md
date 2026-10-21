@@ -254,13 +254,22 @@ current status:
 |-------------|--------|--------|
 | active | **Suspend** | Scales workloads to 0, swaps the website to a "suspended" page, disables cron, and shuts mail down completely: incoming mail (mailboxes, aliases, and mailing lists) is refused with a bounce, and mail accounts cannot sign in or send until re-activation. Backups pause too: no new bundles, and the existing ones are kept until re-activation ([details](backups-and-restore.md#tenant-backups)). Fully reversible — mail settings are preserved. |
 | suspended | **Reactivate** | Restores workloads to their pre-suspend replica counts, unpatches ingress, re-enables cron and the full mail configuration (mailboxes, aliases, forwarding, auto-reply). |
-| active / suspended | **Archive** | Takes a final snapshot, then deletes the volume, workloads, and mailboxes. The tenant row and snapshot are kept for the configured retention window — restorable. |
-| archived | **Restore** | Recreates the volume and restores data from the pre-archive snapshot. (Workloads are redeployed afterwards.) |
+| suspended | **Archive** | Takes a final backup bundle of everything — files and databases, mailboxes with their mail, configuration — and stores it off-site on the tenant backup target. Then the tenant is taken down almost as if deleted: nobody can sign in, and its applications, volume, mailboxes, DNS zones, mail domains and DKIM keys are removed. The tenant row and the bundle are kept — restorable. An active tenant has to be suspended first. |
+| archived | **Restore archived tenant** | Brings everything back from the bundle: files and databases, DNS zones, mail domains (with a new DKIM key), mailboxes with their mail, and every application at the replica count it had before the suspension. Mailboxes need new passwords; the restore notice tells the tenant. |
 | any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered — see [Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant) — then removed automatically. |
 
-**Archive…** asks how long to keep the pre-archive snapshot (1 to 365 days,
-90 by default) before anything is deleted; the tenant can be restored until
-the snapshot expires.
+**Archive…** asks how long to keep the archive (1 to 3650 days, the
+platform's archive retention by default), or **Never expire**. **When the
+archive expires, the tenant is deleted** — there is nothing left to restore it
+from. An archive that never expires is kept until you delete the tenant by
+hand, and so is the archive of a tenant kept out of automatic archive and
+delete.
+
+An archived tenant's page shows only that: **ARCHIVED**, the archive bundle's
+date and size, how long it is kept, and **Restore archived tenant**. Its
+earlier backup bundles expire as usual; the archive bundle stays its newest,
+since no new bundle is taken of an archived tenant. **Backups → Tenants**
+keeps listing it, marked *Archived*.
 
 Archive and Delete can also happen by themselves: a suspended tenant archived
 after a set number of days, an archived one deleted after another, each told
@@ -271,16 +280,14 @@ archive and delete**: it is saved at once, the page then says *Kept out of
 automatic archive and delete* under the tenant's name, and the tenant is never
 archived or deleted by itself — you still can, by hand.
 
-An archived tenant has no storage volume: archiving deletes it after copying
-the files to the backup target, and **Restore** creates a new one. Releases
-before this one could leave an empty volume on an archived tenant; the
-platform removes such a volume by itself when it has never been written to,
-and tells you (*Namespace integrity repaired*). A volume that holds anything
-is never removed.
+An archived tenant has no storage volume: archiving deletes it once the
+bundle is complete, and **Restore** creates a new one. Volumes that earlier
+releases left behind on archived tenants are removed by the platform once
+their archive bundle is ready.
 
 !!! warning "Archive vs Delete"
     **Archive** is the safe choice when a customer leaves but might come
-    back — their data survives as a snapshot. **Delete** is permanent and
+    back — everything survives in the archive bundle until it expires. **Delete** is permanent and
     triggers full cleanup. The Delete button opens a type-to-confirm
     dialog. Once the delete succeeds you are taken back to the tenants list,
     which confirms it; **Review the deletion steps** there opens

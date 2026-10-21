@@ -90,7 +90,18 @@ export function startStorageLifecycleScheduler(
       // One replica expires: a snapshot on an SSH or CIFS target is deleted by a
       // one-shot Job, and two replicas each started one for the same snapshot.
       const leased = await withSchedulerLease(db, 'storage-snapshot-expiry', EXPIRY_INTERVAL_MS * 1.5,
-        async () => expireSnapshots(await buildCtx()));
+        async () => {
+          const ctx = await buildCtx();
+          const expired = await expireSnapshots(ctx);
+          // And the volumes archives left behind (tenant-archive/expiry.ts).
+          const { reapArchivedTenantVolumes } = await import('../tenant-archive/expiry.js');
+          const volumes = await reapArchivedTenantVolumes(ctx.db, ctx.k8s).catch((err: unknown) => {
+            console.error('[storage-lifecycle-scheduler] archived-tenant volume reap failed:', (err as Error).message);
+            return 0;
+          });
+          if (volumes > 0) console.log(`[storage-lifecycle-scheduler] Removed ${volumes} volume(s) archived tenants had left behind`);
+          return expired;
+        });
       const reaped = leased.ran ? leased.value : 0;
       if (reaped > 0) console.log(`[storage-lifecycle-scheduler] Reaped ${reaped} expired snapshot(s)`);
     } catch (err) {

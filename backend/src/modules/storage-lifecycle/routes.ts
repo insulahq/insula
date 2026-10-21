@@ -25,6 +25,8 @@ const resizeSchema = z.object({
 });
 const archiveSchema = z.object({
   retentionDays: z.number().int().min(1).max(3650).optional(),
+  /** Keep the archive bundle until deleted by hand; wins over retentionDays. */
+  neverExpires: z.boolean().optional(),
 });
 const restoreSchema = z.object({
   newGi: z.number().int().min(1).max(1000).optional(),
@@ -177,12 +179,22 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = archiveSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    // Archive takes a pre-archive snapshot — class-routed so the
-    // long-retention archive lands on the operator-chosen target.
-    return success(await service.archiveTenant(await snapshotCtx('tenant_snapshot'), tenantId, {
-      retentionDays: parsed.data.retentionDays,
+    // The final bundle goes to the tenant backup target (archiveTenant checks
+    // there is one), not to a snapshot-class target.
+    const { db, k8s } = await ctx();
+    return success(await service.archiveTenant({ db, k8s }, tenantId, {
+      retentionDays: parsed.data.neverExpires === true ? null : parsed.data.retentionDays,
       triggeredByUserId: userId,
     }));
+  });
+
+  app.get('/admin/tenants/:tenantId/archive', {
+    onRequest: adminGate,
+    schema: { tags: ['Storage Lifecycle'], summary: 'An archived tenant\'s archive bundle, its expiry, and whether it can be restored', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { getTenantArchiveInfo } = await import('../tenant-archive/info.js');
+    return success(await getTenantArchiveInfo(app.db, tenantId));
   });
 
   app.post('/admin/tenants/:tenantId/storage/restore', {

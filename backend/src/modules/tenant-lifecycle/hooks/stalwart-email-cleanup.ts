@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { emailDomains } from '../../../db/schema.js';
+import { emailDomains, mailboxes } from '../../../db/schema.js';
 import {
   registerLifecycleHook,
   type HookCtx,
@@ -9,7 +9,15 @@ import {
 import { destroyStalwartArtifactsForEmailDomain } from '../../email-domains/service.js';
 
 /**
- * stalwart-email-cleanup hook ('deleted' transition only).
+ * stalwart-email-cleanup hook ('deleted' and 'archived').
+ *
+ * ARCHIVED (operator decision: archive removes the mail domains like a
+ * delete; restore re-creates them from the rows, which the archive keeps):
+ * the same teardown, then the rows forget the mail server's ids — the domain's,
+ * each mailbox's — so restore sees them as not provisioned and builds them
+ * again. Only for a domain whose Domain did go: one left standing keeps its id,
+ * and its rows still name what is there.
+ *
  *
  * Tenant deletion removes email_domains / mailboxes rows via the SQL
  * FK cascade in cascades.applyDeleted — which never talks to Stalwart.
@@ -53,8 +61,13 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
     // inert orphan that principals-sync surfaces (a hook-level retry can't help —
     // the FK cascade deletes this email_domain row moments after we return).
     const outcome = await destroyStalwartArtifactsForEmailDomain(ctx.db, row);
-    if (outcome?.domainDestroyed ?? true) destroyed += 1;
-    else stranded.push(row.stalwartDomainId);
+    if (outcome?.domainDestroyed ?? true) {
+      destroyed += 1;
+      if (ctx.transition === 'archived') {
+        await ctx.db.update(mailboxes).set({ stalwartPrincipalId: null }).where(eq(mailboxes.emailDomainId, row.id));
+        await ctx.db.update(emailDomains).set({ stalwartDomainId: null }).where(eq(emailDomains.id, row.id));
+      }
+    } else stranded.push(row.stalwartDomainId);
   }
 
   if (stranded.length > 0) {
@@ -74,7 +87,7 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
 
 export const stalwartEmailCleanupHook: LifecycleHook = {
   name: HOOK_NAME,
-  transitions: ['deleted'],
+  transitions: ['deleted', 'archived'],
   // Order 150 — before the DB-status hooks (200+) purely for log
   // readability; all hooks run while the rows still exist (the FK
   // cascade fires after the dispatch in cascades.applyDeleted).

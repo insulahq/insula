@@ -100,8 +100,18 @@ export async function enableEmailForDomain(
   domainId: string,
   input: EnableEmailDomainInput,
   encryptionKey: string,
+  opts: {
+    /**
+     * Restoring an archived tenant (tenant-archive/restore-mail.ts): its mail
+     * domains are built again from their rows before the tenant reads active
+     * — the hooks that make it active push mail state onto them.
+     */
+    readonly restoringArchivedTenant?: boolean;
+  } = {},
 ) {
-  assertTenantActive(await getTenantById(db, tenantId), 'enable email for a domain');
+  if (!opts.restoringArchivedTenant) {
+    assertTenantActive(await getTenantById(db, tenantId), 'enable email for a domain');
+  }
 
   const domain = await verifyDomainOwnership(db, tenantId, domainId);
 
@@ -305,10 +315,13 @@ export async function enableEmailForDomain(
 
   // Phase 3 round-2: notify tenant admins that email is now live.
   // Fire-and-forget; a failure here cannot roll back the enable.
-  void notifyTenantEmailBootstrapped(db, tenantId, {
-    emailDomainId: id,
-    domainName: domain.domainName,
-  });
+  // Not for a restore: the tenant hears once, that it is back.
+  if (!opts.restoringArchivedTenant) {
+    void notifyTenantEmailBootstrapped(db, tenantId, {
+      emailDomainId: id,
+      domainName: domain.domainName,
+    });
+  }
 
   return { ...created, domainName: domain.domainName };
 }

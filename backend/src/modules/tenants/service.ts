@@ -1283,42 +1283,27 @@ export async function updateTenant(
     if (existing.status !== 'archived') {
       try {
         const { archiveTenant } = await import('../storage-lifecycle/service.js');
-        // Phase 3 of the snapshot-storage overhaul: PATCH status:archived
-        // writes a pre-archive snapshot, so it must route through the
-        // per-class resolver (NOT the legacy single-active-target
-        // fallback). Throws NO_SNAPSHOT_TARGET (409) if the
-        // tenant_snapshot class is unassigned — operator must
-        // configure an assignment before archive can proceed.
-        const { resolveSnapshotStoreForClass } = await import('../storage-lifecycle/snapshot-store.js');
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const k8s = opts.k8sTenants ?? createK8sClients(process.env.KUBECONFIG_PATH);
-        const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
-        const bundle = await resolveSnapshotStoreForClass(
-          db,
-          process.env as Record<string, unknown>,
-          'tenant_snapshot',
-          // Phase 11: k8s ctx for CIFS read paths.
-          { k8sCtx: { k8s, namespace: platformNamespace } },
-        );
-        const retentionDays = input.archive_retention_days
-          ?? (await loadPreArchiveRetentionDays(db));
+        // The archive's final bundle goes to the tenant backup target, like
+        // every tenant bundle; archiveTenant checks there is one.
+        const retentionDays = input.archive_never_expires === true
+          ? null
+          : input.archive_retention_days ?? (await loadPreArchiveRetentionDays(db));
         const { operationId } = await archiveTenant(
-          {
-            db,
-            k8s,
-            store: bundle.store,
-            platformNamespace,
-            targetId: bundle.targetId,
-            backupClass: 'tenant_snapshot',
-          },
+          { db, k8s },
           id,
-          { retentionDays, triggeredByUserId: opts.triggeredByUserId ?? null },
+          {
+            retentionDays,
+            triggeredByUserId: opts.triggeredByUserId ?? null,
+            suppressTenantNotification: opts.suppressTenantNotification === true,
+          },
         );
         storageArchiveOperationId = operationId;
       } catch (err) {
         if (err instanceof ApiError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
-        throw new ApiError('ARCHIVE_FAILED', `Failed to start archive: ${msg}`, 502, undefined, 'Check storage-lifecycle settings (snapshot backend) and retry');
+        throw new ApiError('ARCHIVE_FAILED', `Failed to start archive: ${msg}`, 502, undefined, 'Check the tenant backup target under Backups → Targets and retry');
       }
     }
     // PATCH status:archived on already-archived tenant is a no-op —
@@ -1533,6 +1518,14 @@ export interface DeleteTenantOptions {
    * owned by an operation.
    */
   readonly onlyIfArchivedBefore?: Date;
+  /**
+   * Delete only a tenant still archived from this `pre-archive` snapshot —
+   * its newest — and with no storage operation under way, checked under the
+   * tenant's lock. For the sweep that deletes a tenant whose archive expired
+   * (tenant-archive/expiry.ts): a tenant restored since, or archived again,
+   * is refused with NO_LONGER_DUE.
+   */
+  readonly onlyIfArchiveExpired?: string;
 }
 
 /**
@@ -1624,6 +1617,11 @@ async function deleteTenantLocked(
         { currentState: row.state },
       );
     }
+  }
+
+  if (opts.onlyIfArchiveExpired) {
+    const { assertArchiveExpiryStillDue } = await import('../tenant-archive/expiry.js');
+    await assertArchiveExpiryStillDue(db, id, opts.onlyIfArchiveExpired);
   }
 
   // Unified hard-delete cascade via tenant-lifecycle/cascades.ts —

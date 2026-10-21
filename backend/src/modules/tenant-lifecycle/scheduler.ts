@@ -166,6 +166,21 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
       continue;
     }
 
+    // An archive step retried after the tenant was restored would tear the
+    // restored tenant down again (its zones, its mail domains). Once the
+    // tenant is no longer archived, the step is closed instead.
+    if (parent.transitionKind === 'archived' && !(await stillArchived(db, parent.tenantId))) {
+      await db.update(tenantLifecycleHookRuns)
+        .set({
+          state: 'failed',
+          nextAttemptAt: null,
+          lastError: { title: 'Not retried: the tenant is no longer archived', detail: 'The tenant was restored before this archive step could be retried, so it was closed instead.' } as Record<string, unknown>,
+        })
+        .where(eq(tenantLifecycleHookRuns.id, row.id));
+      permanentlyFailed++;
+      continue;
+    }
+
     const attempt = row.attempts + 1;
     await db.update(tenantLifecycleHookRuns)
       .set({ state: 'running', attempts: attempt, startedAt: new Date() })
@@ -308,6 +323,15 @@ export function resetBreakerForHook(hookName: string): boolean {
   state.recentFailures = [];
   state.openUntil = 0;
   return wasOpen;
+}
+
+async function stillArchived(db: Database, tenantId: string): Promise<boolean> {
+  const { tenants } = await import('../../db/schema.js');
+  const [row] = await db.select({ status: tenants.status })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return row?.status === 'archived';
 }
 
 async function notifyHookPermanentFailure(

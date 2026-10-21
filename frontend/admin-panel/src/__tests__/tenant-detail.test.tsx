@@ -616,22 +616,116 @@ describe('TenantDetail delete', () => {
 
 describe('TenantDetail — archive', () => {
   beforeEach(() => { vi.resetAllMocks(); setupMockApi(); });
+  const suspended = { ...MOCK_CLIENT.data, status: 'suspended' as const };
 
-  it('asks how long to keep the snapshot and sends it with the archive', async () => {
+  it('takes a suspended tenant only: suspend first', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    const archive = await screen.findByTestId('archive-button');
+    expect(archive).toBeDisabled();
+    expect(archive).toHaveAttribute('title', expect.stringContaining('suspend it first'));
+  });
+
+  it('asks how long to keep the archive and sends it with the archive', async () => {
+    setupMockApi(suspended);
     renderTenantDetail();
     fireEvent.click(await screen.findByTestId('tenant-actions-button'));
     fireEvent.click(await screen.findByTestId('archive-button'));
-    fireEvent.change(await screen.findByTestId('archive-retention-input'), { target: { value: '30' } });
+    fireEvent.change(await screen.findByTestId('archive-retention-input'), { target: { value: '730' } });
     fireEvent.click(screen.getByTestId('archive-confirm'));
-    await waitFor(() => expect(lastPatch()).toMatchObject({ status: 'archived', archive_retention_days: 30 }));
+    await waitFor(() => expect(lastPatch()).toMatchObject({ status: 'archived', archive_retention_days: 730 }));
   });
 
-  it('refuses a retention outside 1–365 days before sending anything', async () => {
+  it('"Never expire" keeps it with no end date — and no automatic delete', async () => {
+    setupMockApi(suspended);
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('archive-button'));
+    fireEvent.click(await screen.findByTestId('archive-never-expires'));
+    expect(screen.getByTestId('archive-retention-input')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('archive-confirm'));
+    await waitFor(() => expect(lastPatch()).toEqual(expect.objectContaining({ status: 'archived', archive_never_expires: true })));
+    expect(lastPatch()).not.toHaveProperty('archive_retention_days');
+  });
+
+  it('says what archiving removes before anyone confirms', async () => {
+    setupMockApi(suspended);
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    fireEvent.click(await screen.findByTestId('archive-button'));
+    const list = await screen.findByTestId('archive-consequences');
+    expect(list).toHaveTextContent('nobody can sign in');
+    expect(list).toHaveTextContent('DNS zones, mail domains and DKIM keys');
+  });
+
+  it('refuses a retention outside 1–3650 days before sending anything', async () => {
+    setupMockApi(suspended);
     renderTenantDetail();
     fireEvent.click(await screen.findByTestId('tenant-actions-button'));
     fireEvent.click(await screen.findByTestId('archive-button'));
     fireEvent.change(await screen.findByTestId('archive-retention-input'), { target: { value: '0' } });
     expect(screen.getByTestId('archive-confirm')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('archive-retention-input'), { target: { value: '3651' } });
+    expect(screen.getByTestId('archive-confirm')).toBeDisabled();
+  });
+});
+
+describe('TenantDetail — an archived tenant', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  const archived = { ...MOCK_CLIENT.data, status: 'archived' as const, archivedAt: '2026-10-20T10:00:00Z' };
+  const info = (over: Record<string, unknown> = {}) => ({
+    data: {
+      archivedAt: '2026-10-20T10:00:00Z',
+      bundle: { id: 'bkp-1', createdAt: '2026-10-20T10:00:00Z', sizeBytes: 3 * 1024 * 1024 * 1024, whole: true },
+      expiresAt: '2027-01-18T10:00:00Z',
+      restorable: true,
+      notRestorableReason: null,
+      ...over,
+    },
+  });
+  const withArchive = (body: unknown) => setupMockApi(archived, (path) => (path.endsWith('/archive') ? Promise.resolve(body) : undefined));
+
+  it('shows nothing but the archive: the notice, the bundle\u2019s date and size, its expiry, and Restore', async () => {
+    withArchive(info());
+    renderTenantDetail();
+    const view = await screen.findByTestId('archived-tenant-view');
+    expect(view).toHaveTextContent('ARCHIVED');
+    expect(await screen.findByTestId('archive-bundle-size')).toHaveTextContent('3');
+    expect(screen.getByTestId('archive-bundle-date')).toHaveTextContent('2026');
+    expect(screen.getByTestId('archive-expiry')).toHaveTextContent('then the tenant is deleted');
+    expect(screen.getByTestId('restore-archived-button')).toBeEnabled();
+    expect(screen.queryByTestId('tenant-tabs')).toBeNull();
+    expect(screen.queryByTestId('impersonate-button')).toBeNull();
+    expect(screen.queryByTestId('impersonate-caption')).toBeNull();
+  });
+
+  it('an archive kept with no end date says so', async () => {
+    withArchive(info({ expiresAt: null }));
+    renderTenantDetail();
+    expect(await screen.findByTestId('archive-expiry')).toHaveTextContent('with no end date');
+  });
+
+  it('restores after a confirmation that says mailboxes need new passwords', async () => {
+    withArchive(info());
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    expect(confirmSpy.mock.calls[0][0]).toContain('new passwords');
+    await waitFor(() => expect(lastPatch()).toMatchObject({ status: 'active' }));
+    confirmSpy.mockRestore();
+  });
+
+  it('an archive from before archives held everything says restore brings back the files only', async () => {
+    withArchive(info({ bundle: { id: 'bkp-0', createdAt: '2026-10-01T10:00:00Z', sizeBytes: 1024, whole: false } }));
+    renderTenantDetail();
+    expect(await screen.findByTestId('archive-files-only')).toHaveTextContent('files only');
+  });
+
+  it('no restore when there is nothing to restore from, and why', async () => {
+    withArchive(info({ bundle: null, restorable: false, notRestorableReason: 'There is no archive bundle to restore from.' }));
+    renderTenantDetail();
+    expect(await screen.findByTestId('restore-archived-button')).toBeDisabled();
+    expect(screen.getByTestId('archive-not-restorable')).toHaveTextContent('no archive bundle');
   });
 });
 

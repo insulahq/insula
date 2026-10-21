@@ -178,6 +178,16 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
 
+    // An archived tenant is closed to its users, whichever way they sign in.
+    const { tenantArchivedError, tenantClosedForSignIn } = await import('../tenant-archive/sessions.js');
+    if (user.tenantId && await tenantClosedForSignIn(app.db, user.tenantId, { fresh: true })) {
+      const frontendRedirect = pkce.frontendRedirect;
+      const sep = frontendRedirect.includes('?') ? '&' : '?';
+      return reply.redirect(
+        `${frontendRedirect}${sep}error=tenant_archived&message=${encodeURIComponent(tenantArchivedError().message)}`,
+      );
+    }
+
     const jwtPayload: Record<string, unknown> = {
       sub: user.id, role: user.roleName, panel: user.panel ?? 'admin',
       exp: Math.floor(Date.now() / 1000) + 86400, iat: Math.floor(Date.now() / 1000),

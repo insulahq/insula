@@ -25,14 +25,15 @@ import {
  *                    · alias map pushed all-off — alias RCPT 550 too.
  *                  Alias rows and send-as identities keep the tenant's
  *                  configuration for reactivation.
- *   - archived   → destroy the Stalwart account principals FIRST, then
- * DELETE FROM mailboxes (drift audit: rows
- *                  used to be deleted with the principals left alive —
- *                  live invisible mailboxes no reconcile could ever see
- *                  because the platform row was gone. Destroy-first +
- *                  retry mirrors the email-aliases archive ordering; the
- *                  tenant bundle taken before archive is the recovery
- *                  path for mail data.)
+ *   - archived   → destroy the Stalwart account principals (most are gone
+ *                  already: stalwart-email-cleanup removed the tenant's
+ *                  mail domains, order 150), forget their ids, and KEEP
+ *                  the rows, status 'disabled'. Restore re-creates every
+ *                  mailbox from its row and puts its mail back from the
+ *                  archive's final bundle, which holds it
+ *                  (tenant-archive/restore-mail.ts). Rows without an id
+ *                  are left alone by principals-sync and the mail-rules
+ *                  reconcile, so nothing re-creates them in between.
  *   - restored   → status='active' + restore the full mail state
  *
  * Stalwart-side failures return `retry` (2-min hook scheduler re-runs);
@@ -49,8 +50,8 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       if (!stalwart.ok) {
         return { status: 'retry', detail: `archive blocked on Stalwart principal destroy: ${stalwart.detail}` };
       }
-      await ctx.db.delete(mailboxes).where(eq(mailboxes.tenantId, ctx.tenantId));
-      return { status: 'ok', detail: `archived: deleted mailboxes (${stalwart.detail})` };
+      await ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.tenantId, ctx.tenantId));
+      return { status: 'ok', detail: `archived: mail accounts removed, rows kept for restore (${stalwart.detail})` };
     }
     case 'suspended': {
       await ctx.db.update(mailboxes)

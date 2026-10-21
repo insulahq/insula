@@ -122,8 +122,8 @@ describe('the automatic archive/delete sweep', () => {
     const run = await runTenantAutomationSweep(h.io, 'schedule');
     expect(h.calls).toEqual([
       'list-archive', 'blocked?',
-      'archive oldest keep=90 before=2026-05-16',
-      'archive old keep=90 before=2026-05-16',
+      'archive oldest keep=null before=2026-05-16',
+      'archive old keep=null before=2026-05-16',
     ]);
     expect(names(run.archived)).toEqual(['oldest', 'old']);
     expect(run.deleted).toEqual([]);          // the delete step is off
@@ -168,11 +168,11 @@ describe('the automatic archive/delete sweep', () => {
     expect(run.trigger).toBe('manual');
   });
 
-  it('keeps an archive for the platform\'s archive retention — or for the delete limit, when automatic delete is on and longer', async () => {
+  it('keeps an archive with no end date while automatic delete is off — otherwise for the platform\'s archive retention, or the delete limit when longer', async () => {
     const suspended = { old: 45 };
     const plain = harness(world({ settings: { ...OFF, autoArchiveEnabled: true, autoDeleteAfterDays: 400 }, suspended, archiveRetentionDays: 90 }));
     await runTenantAutomationSweep(plain.io, 'schedule');
-    expect(plain.calls.at(-1)).toContain('keep=90');           // delete is off: its limit means nothing
+    expect(plain.calls.at(-1)).toContain('keep=null');         // delete is off: an expiring archive would delete the tenant
 
     const longer = harness(world({ settings: { ...OFF, autoArchiveEnabled: true, autoDeleteEnabled: true, autoDeleteAfterDays: 400 }, suspended, archiveRetentionDays: 90 }));
     await runTenantAutomationSweep(longer.io, 'schedule');
@@ -313,14 +313,14 @@ describe('the automatic archive/delete sweep', () => {
   it('an archive is kept for what the settings say when it is taken, not when the sweep began', async () => {
     const w = world({ settings: { ...OFF, autoArchiveEnabled: true }, suspended: { a: 90, b: 60 }, archiveRetentionDays: 90 });
     const h = harness(w);
-    const kept: number[] = [];
+    const kept: Array<number | null> = [];
     h.io.archive = async (_tenant, opts) => {
       kept.push(opts.retentionDays);
       w.settings = { ...w.settings, autoDeleteEnabled: true, autoDeleteAfterDays: 400 };
       return { kind: 'done' };
     };
     await runTenantAutomationSweep(h.io, 'schedule');
-    expect(kept).toEqual([90, 400]);
+    expect(kept).toEqual([null, 400]);
   });
 
   // ── a step that cannot go on ─────────────────────────────────────────────
@@ -432,7 +432,7 @@ describe('the automatic archive/delete sweep', () => {
       archiveNotices: { due: { toldDaysAgo: 8, dateInDays: -1 }, waiting: { toldDaysAgo: 2, dateInDays: 5 } },
     }));
     const run = await runTenantAutomationSweep(h.io, 'schedule');
-    expect(h.calls.filter((c) => c.startsWith('archive') || c.startsWith('tell'))).toEqual(['archive due keep=90 before=2026-05-16']);
+    expect(h.calls.filter((c) => c.startsWith('archive') || c.startsWith('tell'))).toEqual(['archive due keep=null before=2026-05-16']);
     expect(names(run.archived)).toEqual(['due']);
     expect(run.told).toEqual([]);            // `waiting` has its notice; it is not told twice
   });

@@ -57,14 +57,17 @@ vi.mock('./quiesce.js', async (orig) => ({
   },
   clearQuiesceHold: async () => { did.push('clear hold'); },
 }));
+/** The capture stand-in: a shrink's files-only bundle and an archive's whole one alike. */
+const capture = async () => {
+  did.push('capture');
+  await gate;
+  if (captureOutcome instanceof Error) throw captureOutcome;
+  return { bundleId: 'bkp-new', status: captureOutcome.status, sizeBytes: 4242 };
+};
 vi.mock('./prebundle.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  captureFilesOnlyBundle: async () => {
-    did.push('capture');
-    await gate;
-    if (captureOutcome instanceof Error) throw captureOutcome;
-    return { bundleId: 'bkp-new', status: captureOutcome.status, sizeBytes: 4242 };
-  },
+  captureFilesOnlyBundle: capture,
+  captureArchiveBundle: capture,
   restoreFilesBundleIntoPvc: async (args: { bundleId: string; resumed?: boolean }) => {
     did.push(`restore ${args.bundleId}${args.resumed ? ' (looking for the Job left behind)' : ''}`);
     await gate;
@@ -634,8 +637,15 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       expect(did[0]).toBe('quiesce (writing the counts down)');
     });
 
+    /** The bundle a first run recorded, as its capture wrote it. */
+    const capturedBundle = (id: string, tenantId: string, systemTrigger: 'pre_archive' | 'pre_resize') => db().insert(backupJobs).values({
+      id, tenantId, initiator: 'system', systemTrigger, status: 'completed',
+      targetKind: 's3', targetUri: 's3://example.test/b', retentionDays: 90,
+    });
+
     it('does not take a capture that is already there', async () => {
       const taken = await archive({ captured: 'bkp-first', state: 'replacing' });
+      await capturedBundle('bkp-first', taken.tenantId, 'pre_archive');
       await lock(taken.opId, DEAD);
       await pickUp();
       await ended(taken.opId);
@@ -643,14 +653,24 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       expect((await snapshot(taken.snapId)).archivePath).toBe('bundle:bkp-first');
     });
 
-    it.each<[string, () => Promise<InFlight>]>([
-      ['an archive', () => archive()],
-      ['a shrink', () => shrink()],
-    ])('%s fails the capture the dead process was in the middle of, removes its Job, and touches no other bundle', async (_kind, start) => {
+    it('takes a whole capture when the first run, from before archives were whole, left a files-only one and the volume is still there', async () => {
+      const taken = await archive({ captured: 'bkp-files-only', state: 'replacing' });
+      await capturedBundle('bkp-files-only', taken.tenantId, 'pre_resize');
+      await lock(taken.opId, DEAD);
+      await pickUp();
+      await ended(taken.opId);
+      expect(did).toContain('capture');
+      expect((await snapshot(taken.snapId)).archivePath).toBe('bundle:bkp-new');
+    });
+
+    it.each<[string, () => Promise<InFlight>, 'pre_archive' | 'pre_resize']>([
+      ['an archive', () => archive(), 'pre_archive'],
+      ['a shrink', () => shrink(), 'pre_resize'],
+    ])('%s fails the capture the dead process was in the middle of, removes its Job, and touches no other bundle', async (_kind, start, trigger) => {
       const a = await start();
       const other = await seedTenant(db(), regionId, planId);
       const bundle = (id: string, tenantId: string, over: Partial<typeof backupJobs.$inferInsert> = {}) => db().insert(backupJobs).values({
-        id, tenantId, initiator: 'system', systemTrigger: 'pre_resize', status: 'running',
+        id, tenantId, initiator: 'system', systemTrigger: trigger, status: 'running',
         targetKind: 's3', targetUri: 's3://example.test/b', retentionDays: 90, createdAt: new Date(Date.now() - 20 * 60_000), ...over,
       });
       await bundle('bkp-cut-off', a.tenantId);
