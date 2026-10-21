@@ -178,6 +178,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Roundcube rendered without its styles and scripts.** Roundcube 1.7 serves every skin and
+  script file through `static.php/<path>`, and the webmail's nginx passed only URLs ending in
+  `.php` to PHP, so each of those requests got the login page back instead. Pages showed as
+  bare, unstyled HTML, and the webmail could not be used. Installs that use Bulwark, the default
+  webmail, were not affected.
 - **Postgres backup times read through the backup shim were the year 2000.** The shim serves
   S3 with `--no-modtime` and reports one placeholder time for every object. The WAL summary took
   it as each segment's upload time. On a chain with a gap, "continuous until" — the ceiling the
