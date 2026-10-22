@@ -39,7 +39,7 @@
 
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import crypto from 'node:crypto';
-import { and, desc, gt, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { crowdsecAutobanRuns, platformSettings, wafLogs } from '../../db/schema.js';
 import { addBan } from '../security-hardening/crowdsec.js';
@@ -256,6 +256,18 @@ interface RawWafLogRow {
  * equal to the detection window is the only choice that does what the
  * feature claims: act on what is happening now.
  */
+/**
+ * How old a waf_logs row must be before it is judged. The scraper can write a
+ * transaction's [error] line one cycle before it reads its JSON audit record —
+ * and only the record carries the real hostname, the route (so the tenant) and
+ * the detection-only marker; the next cycle's upsert repairs the row. Judged
+ * any earlier, a request on a detection-only route — which the tenant chose to
+ * block nothing — could get its source banned, and a tenant route's event
+ * could pass for an admin host's. Two scrape cycles (30 s each) and a margin;
+ * the cursor does not move past an unsettled row, so it is judged next tick.
+ */
+const SETTLE_SECONDS = 70;
+
 async function newWafEventsSince(
   db: Db,
   cursor: WafCursor | null,
@@ -267,6 +279,8 @@ async function newWafEventsSince(
                source_ip, hostname, rule_id, severity, tenant_id
         FROM waf_logs
         WHERE (created_at, id) > (${cursor.createdAt}::timestamp, ${cursor.id})
+          AND created_at < NOW() - (${SETTLE_SECONDS} * INTERVAL '1 second')
+          AND NOT detection_only
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `)
     : await db.execute(sql`
@@ -274,6 +288,8 @@ async function newWafEventsSince(
                source_ip, hostname, rule_id, severity, tenant_id
         FROM waf_logs
         WHERE created_at > NOW() - (${lookbackSeconds} * INTERVAL '1 second')
+          AND created_at < NOW() - (${SETTLE_SECONDS} * INTERVAL '1 second')
+          AND NOT detection_only
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `);
   const rawRows = ((result as unknown as { rows?: RawWafLogRow[] }).rows) ?? [];
@@ -555,7 +571,8 @@ export async function calibrateAutoban(
       tenantId: wafLogs.tenantId,
     })
     .from(wafLogs)
-    .where(gt(wafLogs.createdAt, since))
+    // Detection-only routes block nothing, and nothing bans for them either.
+    .where(and(gt(wafLogs.createdAt, since), eq(wafLogs.detectionOnly, false)))
     .orderBy(desc(wafLogs.createdAt))
     .limit(10_000);
 

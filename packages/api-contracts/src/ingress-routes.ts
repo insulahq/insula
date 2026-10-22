@@ -12,6 +12,10 @@ function isValidCidrList(value: string): boolean {
 
 // ─── Response ───────────────────────────────────────────────────────────────
 
+/** A route's WAF: off, detection only (logged, never blocked), or enforced. */
+export const wafModeSchema = z.enum(['off', 'detection', 'enforced']);
+export type WafMode = z.infer<typeof wafModeSchema>;
+
 export const ingressRouteResponseSchema = z.object({
   id: uuidField,
   domainId: z.string(),
@@ -40,6 +44,13 @@ export const ingressRouteResponseSchema = z.object({
   rateLimitBurstMultiplier: z.string().nullable(),
   // WAF settings
   wafEnabled: z.boolean(),
+  /**
+   * Off, detection only, or enforced. Detection only checks every request and
+   * logs every rule match, but blocks nothing — a sustained dry run before
+   * enforcing. `wafEnabled` is true for both detection and enforced.
+   */
+  wafMode: wafModeSchema,
+  wafDetectionOnly: z.boolean(),
   wafOwaspCrs: z.boolean(),
   wafAnomalyThreshold: z.number(),
   wafExcludedRules: z.string().nullable(),
@@ -197,6 +208,8 @@ export const updateSecuritySettingsSchema = z.object({
   rate_limit_connections: z.number().int().min(1).max(10000).nullable().optional(),
   rate_limit_burst_multiplier: z.number().min(1).max(10).nullable().optional(),
   waf_enabled: z.boolean().optional(),
+  /** Off, detection only (every rule match logged, nothing blocked), or enforced. Wins over waf_enabled. */
+  waf_mode: wafModeSchema.optional(),
   waf_owasp_crs: z.boolean().optional(),
   waf_anomaly_threshold: z.number().int().min(1).max(100).optional(),
   waf_excluded_rules: z.string().max(2000).nullable().optional(),

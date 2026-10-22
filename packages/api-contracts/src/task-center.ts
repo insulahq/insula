@@ -94,6 +94,9 @@ export const TASK_KIND_REGISTRY = [
   'mail.port-exposure',
   'mail.migration',
   'mail.snapshot.trigger',
+  // A new mail standby's first copy, from labelling to its first complete
+  // report (mail-admin/standby-prepare-task.ts). Opens `mail-operation`.
+  'mail.standby-prepare',
   'webmail.engine-flip',
   'cache.purge',
   'restore.cart',

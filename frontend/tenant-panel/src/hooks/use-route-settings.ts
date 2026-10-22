@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { z } from 'zod';
-import type { IngressRouteResponse, WafRuleExclusionScope } from '@insula/api-contracts';
+import type { IngressRouteResponse, WafMode, WafRuleExclusionScope } from '@insula/api-contracts';
 import { updateRedirectSettingsSchema } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
@@ -43,6 +43,8 @@ export interface WafLogEntry {
   readonly requestMethod: string | null;
   readonly sourceIp: string | null;
   readonly createdAt: string;
+  /** Logged while the route's WAF was in detection-only mode: the request was not blocked. */
+  readonly detectionOnly?: boolean;
 }
 
 // ─── Route Detail ───────────────────────────────────────────────────────────
@@ -100,6 +102,8 @@ export function useUpdateRouteSecurity(tenantId: string | undefined, routeId: st
       // the contract for the admin path + a future per-route WAF re-
       // enable, but never sent from this hook.
       readonly waf_enabled?: boolean;
+      /** Off, detection only (logged, never blocked) or enforced — what the WAF card sends. */
+      readonly waf_mode?: WafMode;
     }) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(tenantId!, routeId!)}/security`,

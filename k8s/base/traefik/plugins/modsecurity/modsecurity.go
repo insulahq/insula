@@ -78,7 +78,22 @@ type Config struct {
 	// records the outcome (a status code, "unhealthy" or "error") so access
 	// logs can show it.
 	ModSecurityStatusRequestHeader string `json:"modSecurityStatusRequestHeader,omitempty"`
+	// DetectOnly asks the sidecar for its verdict on every request, as usual —
+	// so every rule match is logged — but never acts on it: the request goes on
+	// to the backend whatever the verdict, and also when the sidecar cannot be
+	// reached (a route on trial must not go down with its WAF). The request to
+	// the sidecar carries WafModeHeader so its log can tell these events apart.
+	// The body limits still apply: a body over maxBodyBytes is still 413, and
+	// one this pod cannot buffer (its spool disk failing) still 500 — such a
+	// body is already partly read and cannot be passed on intact.
+	DetectOnly bool `json:"detectOnly,omitempty"`
 }
+
+// WafModeHeader tells the sidecar's audit log that a request was checked in
+// detection-only mode. Only the plugin sets it: a value the client sent is
+// removed on every route — from the check and from the request passed on — so
+// it cannot mark an enforced route's events as detection-only.
+const WafModeHeader = "X-Insula-Waf-Mode"
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
@@ -104,6 +119,7 @@ type Modsecurity struct {
 	spoolDir      string
 	backOffPeriod time.Duration
 	statusHeader  string
+	detectOnly    bool
 	logger        *log.Logger
 
 	mu             sync.Mutex
@@ -198,6 +214,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		spoolDir:      config.SpoolDir,
 		backOffPeriod: time.Duration(config.UnhealthyWafBackOffPeriodSecs) * time.Second,
 		statusHeader:  config.ModSecurityStatusRequestHeader,
+		detectOnly:    config.DetectOnly,
 		logger:        log.New(os.Stdout, "", log.LstdFlags),
 	}, nil
 }
@@ -206,6 +223,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 // `Upgrade: websocket`, whatever its method or body, which let a single header
 // take any request past the WAF.
 func (m *Modsecurity) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	req.Header.Del(WafModeHeader)
 	if m.backingOff() {
 		m.mark(req, "unhealthy")
 		m.next.ServeHTTP(rw, req)
@@ -238,6 +256,11 @@ func (m *Modsecurity) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		cancel()
 		m.logger.Printf("modsecurity[%s]: no verdict: %v", m.name, withoutURL(err))
+		if m.detectOnly {
+			m.mark(req, "error")
+			m.forward(rw, req, body)
+			return
+		}
 		if m.startBackOff() {
 			m.mark(req, "error")
 			m.forward(rw, req, body)
@@ -247,6 +270,15 @@ func (m *Modsecurity) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Detection only: the verdict is logged by the sidecar, and the request
+	// goes on regardless.
+	if m.detectOnly && verdict.StatusCode >= http.StatusMultipleChoices {
+		_ = verdict.Body.Close()
+		cancel()
+		m.mark(req, "detected-"+strconv.Itoa(verdict.StatusCode))
+		m.forward(rw, req, body)
+		return
+	}
 	// 3xx counts as a decision too: ModSecurity's `redirect` action answers
 	// with one, and passing such a request on would undo it.
 	if verdict.StatusCode >= http.StatusMultipleChoices {
@@ -288,6 +320,9 @@ func (m *Modsecurity) ask(ctx context.Context, req *http.Request, body *requestB
 	}
 	proxyReq.ContentLength = body.size
 	proxyReq.Header = sidecarHeaders(req)
+	if m.detectOnly {
+		proxyReq.Header.Set(WafModeHeader, "detect")
+	}
 	// Host stays the sidecar's, as upstream had it: Traefik only routed this
 	// request here because Host matched the route's domain, and the platform's
 	// exclusion rules and WAF event log key on X-Forwarded-Host, which carries
@@ -349,6 +384,7 @@ func sidecarHeaders(req *http.Request) http.Header {
 	for _, k := range hopHeaders {
 		h.Del(k)
 	}
+	h.Del(WafModeHeader)
 	if ip := clientIP(req.RemoteAddr); ip != "" {
 		if prior := h.Values("X-Forwarded-For"); len(prior) > 0 {
 			h.Set("X-Forwarded-For", strings.Join(prior, ", ")+", "+ip)

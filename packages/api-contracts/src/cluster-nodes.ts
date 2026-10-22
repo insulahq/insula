@@ -16,12 +16,34 @@ export type NodeRole = z.infer<typeof nodeRoleSchema>;
 export const nodeIngressModeSchema = z.enum(['all', 'local', 'none']);
 export type NodeIngressMode = z.infer<typeof nodeIngressModeSchema>;
 
+// Which tenants a node takes.
+//   all    — any tenant; Auto placement (new tenants, a drain's Auto) may pick it.
+//   pinned — only tenants an operator places here. Auto never picks it, and
+//            Kubernetes steers tenant pods not pinned here away from it.
+//            Local tier only: an HA-tier tenant is not held to one node.
+//   none   — no tenants ("Can host tenant workloads" off).
+export const nodeTenantHostingSchema = z.enum(['all', 'pinned', 'none']);
+export type NodeTenantHosting = z.infer<typeof nodeTenantHostingSchema>;
+
+/**
+ * A node's tenant hosting mode from a node response. Falls back to the
+ * boolean for a response from an API that predates the mode.
+ */
+export function nodeTenantHosting(
+  node: { readonly canHostTenantWorkloads: boolean; readonly tenantHosting?: NodeTenantHosting },
+): NodeTenantHosting {
+  return node.tenantHosting ?? (node.canHostTenantWorkloads ? 'all' : 'none');
+}
+
 export const clusterNodeSchema = z.object({
   name: z.string(),
   /** Operator-friendly alias. Falls back to `name` when null. */
   displayName: z.string().nullable(),
   role: nodeRoleSchema,
+  /** True for tenant hosting `all` and `pinned`. */
   canHostTenantWorkloads: z.boolean(),
+  /** Optional only so a panel newer than its API still reads the list. */
+  tenantHosting: nodeTenantHostingSchema.optional(),
   ingressMode: nodeIngressModeSchema,
   publicIp: z.string().nullable(),
   /**
@@ -99,7 +121,10 @@ export const updateClusterNodeSchema = z.object({
    */
   displayName: z.string().max(63).nullable().optional(),
   role: nodeRoleSchema.optional(),
+  /** Off = tenant hosting `none`; on = back to `all`, or to `pinned` when the
+   *  node was pinned-only before it was turned off. `tenantHosting` wins. */
   canHostTenantWorkloads: z.boolean().optional(),
+  tenantHosting: nodeTenantHostingSchema.optional(),
   ingressMode: nodeIngressModeSchema.optional(),
   notes: z.string().max(2000).nullable().optional(),
   /** Toggle the k8s spec.unschedulable flag (cordon/uncordon). When

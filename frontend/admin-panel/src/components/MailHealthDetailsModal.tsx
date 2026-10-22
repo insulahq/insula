@@ -400,6 +400,12 @@ function ageText(seconds: number): string {
   return seconds < 120 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
 }
 
+function firstCopyText(state: 'preparing' | 'not_running' | 'overdue', standbyFor: number): string {
+  if (state === 'not_running') return `first copy not started: its copier is not running (a standby for ${ageText(standbyFor)})`;
+  if (state === 'overdue') return `first copy not finished after ${ageText(standbyFor)}`;
+  return `first copy in progress (a standby for ${ageText(standbyFor)})`;
+}
+
 function StandbyCard({ data }: { readonly data: MailHealthStandbyComponent | undefined }) {
   const nodeLabel = useNodeLabel();
   const nodeText = useNodeText();
@@ -424,7 +430,10 @@ function StandbyCard({ data }: { readonly data: MailHealthStandbyComponent | und
       assertion="Each standby node holds a recent complete copy of the mail data"
       actual={data.nodes.length > 0
         ? data.nodes.map((n) => `${nodeLabel(n.node)}: `
-          + (n.ageSeconds === null ? 'no complete copy yet' : `copy ${ageText(n.ageSeconds)} old`)
+          + (n.firstCopySince
+            // A node that just became a standby (a standby move) makes its first copy.
+            ? firstCopyText(n.firstCopy ?? 'preparing', Math.max(0, Math.round((Date.now() - Date.parse(n.firstCopySince)) / 1000)))
+            : n.ageSeconds === null ? 'no complete copy yet' : `copy ${ageText(n.ageSeconds)} old`)
           + (n.durationSeconds !== null ? ` (last sync took ${ageText(Math.round(n.durationSeconds))})` : '')).join(' • ')
         : 'no standby nodes'}
       expected={`a copy younger than ${limit} min on every standby node`}

@@ -39,7 +39,7 @@ export async function buildWebDefence(
            COUNT(DISTINCT source_ip)::int AS sources,
            MODE() WITHIN GROUP (ORDER BY rule_id) AS top_rule
       FROM waf_logs
-     WHERE created_at > NOW() - INTERVAL '24 hours'
+     WHERE created_at > NOW() - INTERVAL '24 hours' AND NOT detection_only
   `);
   const a = (agg.rows ?? [])[0] ?? {};
 
@@ -49,13 +49,13 @@ export async function buildWebDefence(
   const offenders = await db.execute<{ source_ip: string; hits: number }>(sql`
     SELECT source_ip, COUNT(*)::int AS hits
       FROM waf_logs
-     WHERE created_at > NOW() - INTERVAL '24 hours' AND source_ip IS NOT NULL
+     WHERE created_at > NOW() - INTERVAL '24 hours' AND source_ip IS NOT NULL AND NOT detection_only
      GROUP BY source_ip ORDER BY hits DESC LIMIT 3
   `);
 
   const recent = await db.execute<{ severity: string; message: string | null; source_ip: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
     SELECT severity, message, source_ip, hostname, request_uri, created_at
-      FROM waf_logs ORDER BY created_at DESC LIMIT 6
+      FROM waf_logs WHERE NOT detection_only ORDER BY created_at DESC LIMIT 6
   `);
 
   // null, not 0, when the LAPI did not answer: "no bans" is a claim.

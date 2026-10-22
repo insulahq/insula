@@ -19,7 +19,9 @@
 #   - a failed pass is resumed; a silent publisher leaves everything alone;
 #   - the previous generation survives while a restore holds the read lock;
 #   - the old in-place layout is adopted without copying;
-#   - one writer at a time; the bandwidth limit is validated before use.
+#   - one writer at a time; the bandwidth limit is validated before use;
+#   - a first copy (DaemonSet mode, no current copy) posts its progress, and
+#     still fails when its pull fails; later passes run exactly as before.
 set -uo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$REPO_ROOT/images/tenant-backup-tools/standby-replicate.sh"
@@ -42,6 +44,7 @@ cat > "$WORK/bin/rsync" <<STUB
 #!/bin/sh
 echo "\$*" >> "\${RSYNC_ARGS_LOG:-/dev/null}"
 for a in "\$@"; do [ "\$a" = "--list-only" ] && exec "$REAL_RSYNC" "\$@"; done
+if [ -n "\${FAKE_TRAILING_BLANK:-}" ]; then "$REAL_RSYNC" "\$@"; rc=\$?; echo; echo; exit \$rc; fi
 if [ "\${FAKE_PULL_RC:-0}" != 0 ]; then
   eval dest=\\\${\$#}
   mkdir -p "\$dest" && echo partial > "\$dest/partial-file"
@@ -201,6 +204,56 @@ truthy "…is not passed to rsync" '! grep -q -- "--bwlimit" "$WORK/args2"'
 truthy "…and is reported" 'grep -q "ignoring invalid bwlimit" "$B.log"'
 check "no settings → no limit" "0" "$(pass_once "$B" "$S" RSYNC_ARGS_LOG="$WORK/args3")"
 truthy "…no --bwlimit" '! grep -q -- "--bwlimit" "$WORK/args3"'
+
+echo "── a first copy reports its progress ──"
+# curl stub: records each POST's URL and body.
+cat > "$WORK/bin/curl" <<'STUB'
+#!/bin/sh
+url=""; body=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d) body="$2"; shift ;;
+    http*) url="$1" ;;
+  esac
+  shift
+done
+echo "$url $body" >> "${CURL_LOG:-/dev/null}"
+STUB
+chmod +x "$WORK/bin/curl"
+# loop_pass <dir> [env...] — one DaemonSet-mode pass with an API token (killed while it sleeps).
+loop_pass() {
+  local d="$1"; shift
+  env PATH="$WORK/bin:$PATH" STANDBY_DIR="$d" PUBLISHER_RSYNC_URL="$S/" LOOP_INTERVAL_SECONDS=100 \
+    NODE_NAME=n1 STANDBY_SETTINGS_DIR="$WORK/no-settings" PLATFORM_API_TOKEN=t PLATFORM_API_URL=http://api.test \
+    PROGRESS_REPORT_SECONDS=0 CURL_LOG="$d.curl" RSYNC_ARGS_LOG="$d.args" "$@" timeout 12 sh "$SCRIPT" > "$d.loop.log" 2>&1
+}
+head -c 300000 /dev/urandom > "$S/stalwart/000006.blob"
+G="$WORK/first"; mkdir -p "$G"; loop_pass "$G"
+truthy "the first copy is promoted" '[ -f "$(cur "$G")/stalwart/000006.blob" ]'
+truthy "…its pull asked rsync for overall progress over the whole file list" 'grep -v -- --list-only "$G.args" | grep -q -- "--info=progress2 --no-inc-recursive"'
+truthy "…it posted its progress to platform-api" 'grep -q "^http://api.test/api/v1/internal/mail/standby-replicate-progress {\"node\":\"n1\",\"bytes\":[0-9]*,\"percent\":[0-9]*}" "$G.curl"'
+check "…100% exactly once" "1" "$(grep -c '"percent":100}' "$G.curl")"
+truthy "…then its report, as before" 'grep -q "standby-replicate-report" "$G.curl"'
+truthy "…and no progress line reached the log" '! grep -q "to-chk=" "$G.loop.log"'
+: > "$G.curl"; : > "$G.args"
+head -c 1000 /dev/urandom > "$S/stalwart/000007.blob"
+loop_pass "$G"
+truthy "a later pass links from the copy and reports no progress" 'grep -v -- --list-only "$G.args" | grep -q -- "--link-dest" && ! grep -q -- "--info=progress2" "$G.args" && ! grep -q "standby-replicate-progress" "$G.curl"'
+F3="$WORK/first-fails"; mkdir -p "$F3"; loop_pass "$F3" FAKE_PULL_RC=23
+truthy "a first copy whose pull fails promotes nothing" '[ ! -e "$F3/current" ] && [ ! -e "$F3/.standby-complete" ]'
+truthy "…and says so with rsync's exit code" 'grep -q "rsync FAILED (exit 23)" "$F3.loop.log" && grep -q "iteration failed" "$F3.loop.log"'
+# A copy slowed to ~6 s: its progress must arrive while it runs, not all at its end.
+SLOW="$WORK/slow-src"; mkdir -p "$SLOW/stalwart" "$WORK/slow-settings"
+head -c 6000000 /dev/urandom > "$SLOW/stalwart/big.blob"; echo 1m > "$WORK/slow-settings/bwlimit"
+SL="$WORK/slow"; mkdir -p "$SL"
+loop_pass "$SL" PUBLISHER_RSYNC_URL="$SLOW/" STANDBY_SETTINGS_DIR="$WORK/slow-settings" PROGRESS_REPORT_SECONDS=1
+mid=$(grep -c '"percent":\([1-9]\|[1-9][0-9]\)}' "$SL.curl")
+truthy "a slow first copy posts its progress while it runs (${mid} posts between 1 and 99%)" '[ "$mid" -ge 2 ]'
+TB="$WORK/trailing-blank"; mkdir -p "$TB"; loop_pass "$TB" FAKE_TRAILING_BLANK=1 PROGRESS_REPORT_SECONDS=abc
+truthy "rsync output ending in blank lines (and a malformed report interval) still promotes the first copy" '[ -f "$(cur "$TB")/stalwart/CURRENT" ] && grep -q "standby-replicate-report" "$TB.curl" && ! ls "$TB"/.rsync-rc.* >/dev/null 2>&1'
+O="$WORK/one-shot"; mkdir -p "$O"
+check "a one-shot pass (the planned-move final sync) still succeeds" "0" "$(pass_once "$O" "$S" PLATFORM_API_TOKEN=t PLATFORM_API_URL=http://api.test CURL_LOG="$O.curl" RSYNC_ARGS_LOG="$O.args")"
+truthy "…and reports no progress" '! grep -q -- "--info=progress2" "$O.args" && ! grep -q "standby-replicate-progress" "$O.curl"'
 
 echo "── report + defaults ──"
 truthy "the OK line reports the current generation's size and name" 'grep -E "OK \([0-9]+s, [0-9]+ bytes, [0-9]+ files, generation [0-9]+" "$D.log" >/dev/null'

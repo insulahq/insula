@@ -200,6 +200,8 @@ export interface RouteSettingsLike {
   rateLimitConnections: number | null;
   rateLimitBurstMultiplier: string | null;
   wafEnabled: number;
+  /** 1 = detection only (migration 0162). Optional: a caller predating it enforces, as before. */
+  wafDetectionOnly?: number;
   wafOwaspCrs: number;
   wafAnomalyThreshold: number;
   wafExcludedRules: string | null;
@@ -440,7 +442,9 @@ export function buildMiddlewaresForRoute(
     // refusal to the edge, as a 413, before the memory is spent.
     // Guard: scripts/ci-waf-body-limit-check.sh.
     refs.push({ name: 'waf-body-limit', namespace: 'traefik' });
-    refs.push({ name: 'modsecurity-crs', namespace: 'traefik' });
+    // Detection only: the same check, logged, never acted on
+    // (k8s/base/traefik/middlewares-modsecurity.yaml).
+    refs.push({ name: route.wafDetectionOnly ? 'modsecurity-crs-detect' : 'modsecurity-crs', namespace: 'traefik' });
   }
 
   // ── Custom Error Pages ─────────────────────────────────────────────

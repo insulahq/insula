@@ -262,6 +262,20 @@ out="$(run "$d")" && grep -q "worker/least-priv" <<<"$out" && [[ ! -s "$d/helm.c
 d="$WORK/no-ds"; fixture "$d"; rm -f "$d/ds.json"
 out="$(run "$d")" && grep -q "no Traefik DaemonSet" <<<"$out" && [[ ! -s "$d/helm.calls" ]] && ok "no Traefik DaemonSet: skips" || no "no-ds: $out"
 
+# ── later releases re-run a COPY of 0002 to re-stamp the hash ────────────────
+# A plugin source change needs one (README "How it reaches Traefik"). The copy
+# is tested by being 0002's code exactly: only comments and its MIG name may
+# differ, so everything proven above holds for it too.
+echo "── copies of 2026.10.11/0002 (later plugin changes) ──"
+code_of() { grep -v '^[[:space:]]*#' "$1" | grep -v '^MIG=' ; }
+for copy in "$HERE"/platform/host-migrations/*/[0-9]*-traefik-modsecurity-plugin-*.sh; do
+  [[ "$copy" == "$MIG" ]] && continue
+  rel="${copy#"$HERE"/}"
+  if diff <(code_of "$MIG") <(code_of "$copy") >/dev/null; then ok "$rel is 0002's code (comments and name aside)"
+  else no "$rel differs from 0002 beyond comments and its name: $(diff <(code_of "$MIG") <(code_of "$copy") | head -4 | tr '\n' ' ')"; fi
+  grep -q '^# phase: after-services' "$copy" && ok "$rel runs after-services" || no "$rel phase header"
+done
+
 echo
 echo "traefik modsecurity plugin migration: ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

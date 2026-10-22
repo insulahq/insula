@@ -33,6 +33,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getMailNodeStorage, type MailNodeStorage } from './mail-node-storage.js';
 import { getStandbyReports, type NodeStandbyReport } from './standby-reports.js';
 import { getMailPlacement } from './placement.js';
+import { firstCopyState, onFirstCopy } from './standby-since.js';
 
 /** Default of `FAST_PATH_MAX_AGE_SECONDS` in the Stalwart restore-state init container. */
 export const DEFAULT_STANDBY_MAX_AGE_SECONDS = 1800;
@@ -70,9 +71,16 @@ function gib(bytes: number): string {
 
 /**
  * How fresh the standby copies are. A copy's data dates from when its sync
- * started, so its age is the report's age plus how long that sync took. Pure.
+ * started, so its age is the report's age plus how long that sync took.
+ *
+ * A node that has just become a standby is making its first copy
+ * (standby-since.ts): it is preparing, not failing, for up to
+ * FIRST_COPY_GRACE_SECONDS while its copier runs — moving the standby to another
+ * node is an ordinary operation, and alerting on it taught operators to ignore
+ * the alert. A copier that is not running ten minutes on fails at once: the
+ * grace is for a slow copy, not for one that never started. Pure.
  */
-export function evaluateStandby(input: MailCapacityInput): MailHealthStandbyComponent {
+export function evaluateStandby(input: MailCapacityInput, now: number = Date.now()): MailHealthStandbyComponent {
   const { maxAgeSeconds } = input;
   // The active node serves mail; a copy on it is no failover target.
   const standbyNodes = input.nodes.filter((n) => n.isStandby && !n.isActive);
@@ -81,7 +89,12 @@ export function evaluateStandby(input: MailCapacityInput): MailHealthStandbyComp
   }
   const reports = new Map(input.reports.map((r) => [r.node, r]));
   const nodes: MailHealthStandbyNode[] = standbyNodes.map((n) => {
-    const report = reports.get(n.nodeName);
+    const since = n.standbySince ?? null;
+    const reported = reports.get(n.nodeName);
+    // A report from before the node became a standby again is from an
+    // earlier stint, whose copy was set aside when it was de-elected.
+    const firstCopy = onFirstCopy(since, reported?.reportedAt);
+    const report = firstCopy ? undefined : reported;
     const ageSeconds = report ? report.ageSeconds + Math.round(report.durationSeconds) : null;
     return {
       node: n.nodeName,
@@ -89,9 +102,13 @@ export function evaluateStandby(input: MailCapacityInput): MailHealthStandbyComp
       durationSeconds: report?.durationSeconds ?? null,
       sizeBytes: report?.sizeBytes ?? null,
       fresh: ageSeconds !== null && ageSeconds <= maxAgeSeconds,
+      firstCopySince: firstCopy ? since : null,
+      firstCopy: firstCopy && since
+        ? firstCopyState({ since, now, copierRunning: n.copierRunning ?? null })
+        : null,
     };
   });
-  const stale = nodes.filter((n) => !n.fresh).length;
+  const stale = nodes.filter((n) => !n.fresh && n.firstCopy !== 'preparing').length;
   if (stale === 0) {
     return { status: 'ok', healthy: true, error: null, maxAgeSeconds, nodes };
   }
@@ -151,11 +168,18 @@ export function capacityItems(key: string, component: unknown): string[] {
   const c = component as { healthy?: boolean; nodes?: unknown } | null;
   if (!c || c.healthy !== false || !Array.isArray(c.nodes)) return [];
   if (key === 'standby') {
+    const now = Date.now();
+    const since = (n: MailHealthStandbyNode) => minutes((now - Date.parse(n.firstCopySince ?? '')) / 1000);
     return (c.nodes as MailHealthStandbyNode[])
-      .filter((n) => !n.fresh)
-      .map((n) => (n.ageSeconds === null
-        ? `${n.node}: has never finished a copy`
-        : `${n.node}: newest complete copy ${minutes(n.ageSeconds)} old`));
+      // Preparing (a first copy within its grace) is not failing.
+      .filter((n) => !n.fresh && n.firstCopy !== 'preparing')
+      .map((n) => (n.firstCopy === 'not_running'
+        ? `${n.node}: became a standby ${since(n)} ago, and its copier is not running`
+        : n.firstCopy === 'overdue'
+          ? `${n.node}: first copy not finished ${since(n)} after it became a standby`
+          : n.ageSeconds === null
+            ? `${n.node}: has never finished a copy`
+            : `${n.node}: newest complete copy ${minutes(n.ageSeconds)} old`));
   }
   if (key === 'storage') {
     return (c.nodes as MailHealthStorageNode[])

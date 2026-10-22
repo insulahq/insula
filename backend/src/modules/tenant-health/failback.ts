@@ -10,7 +10,9 @@
  *
  * Acknowledgement is recorded the same way (`tenant.failback_reviewed`), so an
  * item leaves the review when the operator either moves the tenant again or
- * explicitly decides not to. "Latest placement event wins" is the whole rule.
+ * explicitly decides not to. "Latest placement event wins", and a tenant whose
+ * pin has changed since that event was moved again: other moves (the
+ * Placement card, a drain) write no row of their own here.
  *
  * The functions here are pure so the decision table is testable without a
  * cluster: the caller fetches rows and node readiness, these decide.
@@ -54,6 +56,18 @@ export function movedFromNode(row: PlacementAuditRow): string | null {
   const c = row.changes ?? {};
   const v = row.actionType === 'tenant.auto_repin' ? c.strandedOn : c.from;
   return typeof v === 'string' && v !== '' ? v : null;
+}
+
+/**
+ * The pin a placement event left the tenant with: none after an automatic
+ * unpin, the wizard's target after a re-pin. `undefined` when the row does not
+ * say (a re-pin row written before `to` was recorded).
+ */
+export function pinLeftBy(row: PlacementAuditRow): string | null | undefined {
+  if (row.actionType === 'tenant.auto_repin') return null;
+  const to = (row.changes ?? {}).to;
+  if (to === null) return null;
+  return typeof to === 'string' && to !== '' ? to : undefined;
 }
 
 function recommend(tier: string, currentNode: string | null): {
@@ -128,6 +142,14 @@ export function selectFailbackReviewItems(input: FailbackInput): FailbackReviewI
     const tenant = tenantById.get(tenantId);
     // Tenant deleted since the move; nothing to fail back.
     if (!tenant) continue;
+
+    // Moved again since, by a path that writes none of these rows — the
+    // tenant's Placement card, a drain, migrate-to-worker. Its pin no longer
+    // matches what the outage move left, so that move is not where it is
+    // now; back on the node it left is the plainest case.
+    if (tenant.currentNode === from) continue;
+    const left = pinLeftBy(row);
+    if (left !== undefined && tenant.currentNode !== left) continue;
 
     const { recommendation, detail } = recommend(tenant.storageTier, tenant.currentNode);
     items.push({

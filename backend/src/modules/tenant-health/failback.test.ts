@@ -3,6 +3,7 @@ import {
   selectFailbackReviewItems,
   returnedNodesFrom,
   movedFromNode,
+  pinLeftBy,
   FAILBACK_ACK_ACTION,
   type PlacementAuditRow,
   type FailbackTenantFact,
@@ -43,6 +44,20 @@ describe('movedFromNode', () => {
     expect(movedFromNode({
       tenantId: 't1', actionType: 'tenant.repin', createdAt: at('2026-09-11T20:30:00Z'), changes: { from: '' },
     })).toBeNull();
+  });
+});
+
+describe('pinLeftBy', () => {
+  it('is no pin after an automatic unpin, and the target after a re-pin', () => {
+    expect(pinLeftBy(autoRow('t1', 'n2', '2026-09-11T20:30:00Z'))).toBeNull();
+    expect(pinLeftBy(manualRow('t1', 'n2', 'n3', '2026-09-11T20:30:00Z'))).toBe('n3');
+    expect(pinLeftBy(manualRow('t1', 'n2', null, '2026-09-11T20:30:00Z'))).toBeNull();
+  });
+
+  it('does not guess when a re-pin row has no target', () => {
+    expect(pinLeftBy({
+      tenantId: 't1', actionType: 'tenant.repin', createdAt: at('2026-09-11T20:30:00Z'), changes: { from: 'n2' },
+    })).toBeUndefined();
   });
 });
 
@@ -141,6 +156,43 @@ describe('selectFailbackReviewItems', () => {
       rows, tenants: [tenant('t1', 'acme', 'ha', null)], readyNodes: new Set(['n2', 'n3']),
     });
     expect(item.movedFromNode).toBe('n3');
+  });
+
+  it('drops a tenant moved back to the node it left by another path', () => {
+    // Production: unpinned off its node during an outage, later switched to
+    // Local and moved back there from its Placement card — which writes no
+    // placement row. The review read "n2 -> n2" until acknowledged.
+    expect(selectFailbackReviewItems({
+      rows: [autoRow('t1', 'n2', '2026-09-11T20:30:00Z')],
+      tenants: [tenant('t1', 'acme', 'local', 'n2')],
+      readyNodes: new Set(['n2']),
+    })).toEqual([]);
+  });
+
+  it('drops a tenant whose pin changed since the outage move', () => {
+    // Automatic unpin left no pin; the operator pinned it to n3 since.
+    expect(selectFailbackReviewItems({
+      rows: [autoRow('t1', 'n2', '2026-09-11T20:30:00Z')],
+      tenants: [tenant('t1', 'acme', 'local', 'n3')],
+      readyNodes: new Set(['n2', 'n3']),
+    })).toEqual([]);
+    // The wizard moved it to n3; a drain moved it on to n4 since.
+    expect(selectFailbackReviewItems({
+      rows: [manualRow('t1', 'n2', 'n3', '2026-09-11T20:30:00Z')],
+      tenants: [tenant('t1', 'acme', 'local', 'n4')],
+      readyNodes: new Set(['n2', 'n3', 'n4']),
+    })).toEqual([]);
+  });
+
+  it('keeps the item when an older re-pin row does not say where it went', () => {
+    const items = selectFailbackReviewItems({
+      rows: [{
+        tenantId: 't1', actionType: 'tenant.repin', createdAt: at('2026-09-11T20:30:00Z'), changes: { from: 'n2' },
+      }],
+      tenants: [tenant('t1', 'acme', 'local', 'n3')],
+      readyNodes: new Set(['n2', 'n3']),
+    });
+    expect(items.map((i) => i.currentNode)).toEqual(['n3']);
   });
 
   it('skips a tenant that no longer exists', () => {

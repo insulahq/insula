@@ -31,6 +31,14 @@
 }
 
 @layer base {
+  /* A table heading aligns like its column — left — unless it says otherwise
+     (text-right on a number column wins: utilities outrank this layer). The
+     browser centres a <th> by default, and Tailwind's preflight leaves that as
+     it is, so every heading without a class sat in the middle of a
+     left-aligned column. */
+  th {
+    text-align: left;
+  }
   body {
     @apply bg-gray-50 text-gray-900 antialiased;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;

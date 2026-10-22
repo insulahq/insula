@@ -156,6 +156,12 @@ export interface TaskProgressArgs {
   readonly text?: SafeText | null;
   /** Merge-patch into the existing details JSONB. */
   readonly detailsPatch?: Record<string, unknown> | null;
+  /**
+   * Write only while the row is in one of these states — for a driver that
+   * read the row, decided, and must not overwrite a state another writer set
+   * meanwhile (a run finished by another path). Unset: written regardless.
+   */
+  readonly expectStatus?: readonly TaskStatus[];
 }
 
 export async function progress(db: Database, id: string, args: TaskProgressArgs): Promise<void> {
@@ -175,7 +181,11 @@ export async function progress(db: Database, id: string, args: TaskProgressArgs)
     update.details = sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb`;
   }
 
-  await db.update(tasks).set(update).where(eq(tasks.id, id));
+  await db.update(tasks).set(update).where(and(eq(tasks.id, id), ...statusGuard(args.expectStatus)));
+}
+
+function statusGuard(expect: readonly TaskStatus[] | undefined) {
+  return expect && expect.length > 0 ? [inArray(tasks.status, [...expect])] : [];
 }
 
 /**
@@ -344,6 +354,8 @@ export interface TaskFinishArgs {
    * failed. See orchestrator `runBundle` finishByRef call.
    */
   readonly clearImmediately?: boolean;
+  /** As TaskProgressArgs.expectStatus — honoured by `finish` (by id). */
+  readonly expectStatus?: readonly TaskStatus[];
 }
 
 /**
@@ -478,7 +490,7 @@ export async function finalizeByRef(
 }
 
 export async function finish(db: Database, id: string, args: TaskFinishArgs): Promise<void> {
-  await db.update(tasks).set(buildFinishUpdate(args)).where(eq(tasks.id, id));
+  await db.update(tasks).set(buildFinishUpdate(args)).where(and(eq(tasks.id, id), ...statusGuard(args.expectStatus)));
 }
 
 // ─── tracked() — try/finally sugar ───────────────────────────────────────

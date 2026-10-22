@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { X, Save, Loader2, AlertCircle, CheckCircle, ShieldAlert } from 'lucide-react';
 import { useDrainImpact, useUpdateClusterNode } from '@/hooks/use-cluster-nodes';
 import MailRoleNotice from '@/components/nodes/MailRoleNotice';
-import type { ClusterNodeResponse, NodeIngressMode } from '@insula/api-contracts';
+import { nodeTenantHosting, type ClusterNodeResponse, type NodeIngressMode, type NodeTenantHosting } from '@insula/api-contracts';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -25,6 +25,27 @@ const INGRESS_MODE_OPTIONS: ReadonlyArray<{ readonly value: NodeIngressMode; rea
   },
 ];
 
+const TENANT_HOSTING_OPTIONS: ReadonlyArray<{ readonly value: NodeTenantHosting; readonly label: string; readonly hint: string }> = [
+  {
+    value: 'all',
+    label: 'ALL TENANTS',
+    hint: 'Any tenant may run here, and Auto placement (a new tenant, a drain\'s Auto) may pick this node.',
+  },
+  {
+    value: 'pinned',
+    label: 'PINNED TENANTS ONLY',
+    hint: 'Only tenants you place here yourself: on create, with Placement → Move, or as a drain target. '
+      + 'Auto never picks this node, and Kubernetes runs other tenants\' pods elsewhere whenever another node fits. '
+      + 'Local storage tier only — an HA-tier tenant is not held to one node. For a remote server, or one kept for particular customers.',
+  },
+  {
+    value: 'none',
+    label: 'NO TENANTS',
+    hint: 'No tenant runs here. On a server, a NoSchedule taint keeps tenant pods off; system services tolerate it '
+      + 'and keep running and starting here. Servers default to no tenants; workers to all tenants.',
+  },
+];
+
 interface NodeEditModalProps {
   readonly node: ClusterNodeResponse;
   readonly onClose: () => void;
@@ -40,7 +61,9 @@ interface NodeEditModalProps {
  *
  * Fields:
  *  - displayName (alias) — operator-friendly label, falls back to k8s name.
- *  - role + canHostTenantWorkloads — preserved from the legacy form.
+ *  - role — preserved from the legacy form.
+ *  - tenant hosting — three-state (all / pinned / none); replaced the
+ *    "Can host tenant workloads" switch.
  *  - ingressMode — three-state (all / local / none) — sets the
  *    insula.host/ingress-mode label which the
  *    ingress-nginx DaemonSet's nodeAffinity respects.
@@ -50,7 +73,11 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
   const update = useUpdateClusterNode(node.name);
   const [displayName, setDisplayName] = useState(node.displayName ?? '');
   const [role, setRole] = useState<'server' | 'worker'>(node.role);
-  const [canHost, setCanHost] = useState(node.canHostTenantWorkloads);
+  const initialHosting = nodeTenantHosting(node);
+  const [tenantHosting, setTenantHosting] = useState<NodeTenantHosting>(initialHosting);
+  // Sent only when changed: a drained pinned-only node reads "No tenants", and
+  // re-sending that with a note would drop the pinned setting it returns to.
+  const hostingChanged = tenantHosting !== initialHosting;
   const [cordoned, setCordoned] = useState(node.cordoned);
   const [ingressMode, setIngressMode] = useState<NodeIngressMode>(node.ingressMode);
   const [notes, setNotes] = useState(node.notes ?? '');
@@ -73,7 +100,9 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
         // Empty string clears the alias on the server.
         displayName: displayName.trim(),
         role,
-        canHostTenantWorkloads: canHost,
+        tenantHosting: hostingChanged ? tenantHosting : undefined,
+        // An API that predates tenant hosting reads only the boolean.
+        canHostTenantWorkloads: hostingChanged ? tenantHosting !== 'none' : undefined,
         cordoned: cordoned !== node.cordoned ? cordoned : undefined,
         ingressMode,
         notes: notes.trim() === '' ? null : notes,
@@ -154,38 +183,24 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
             </p>
           </div>
 
-          <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-            <div className="flex-1">
-              <label
-                htmlFor="node-can-host-toggle"
-                className="block text-sm font-medium text-gray-900 dark:text-gray-100"
-              >
-                Can host tenant workloads
-              </label>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                When ON, tenant pods may schedule here. When OFF, a NoSchedule taint
-                blocks tenant pods; system services tolerate it and keep running and
-                starting here. Servers default to OFF; workers default to ON.
-              </p>
-            </div>
-            <button
-              id="node-can-host-toggle"
-              data-testid="node-can-host-toggle"
-              type="button"
-              role="switch"
-              aria-checked={canHost}
-              onClick={() => setCanHost(!canHost)}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
-                canHost ? 'bg-brand-500' : 'bg-gray-300 dark:bg-gray-600'
-              }`}
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-tenant-hosting">
+              Tenant hosting
+            </label>
+            <select
+              id="node-tenant-hosting"
+              value={tenantHosting}
+              onChange={(e) => setTenantHosting(e.target.value as NodeTenantHosting)}
+              className={INPUT_CLASS}
+              data-testid="node-tenant-hosting-select"
             >
-              <span
-                aria-hidden="true"
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${
-                  canHost ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
+              {TENANT_HOSTING_OPTIONS.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="node-tenant-hosting-hint">
+              {TENANT_HOSTING_OPTIONS.find((o) => o.value === tenantHosting)?.hint}
+            </p>
           </div>
 
           <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
@@ -199,8 +214,8 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 When ON, the scheduler refuses to place ANY new pod on this node —
                 system ones included (a database rebuild, a mail failover);
-                existing pods stay running. To keep only tenants off, turn off
-                <strong> Can host tenant workloads</strong> or use
+                existing pods stay running. To keep only tenants off, set
+                <strong> Tenant hosting</strong> to No tenants or use
                 <strong> Drain Tenants</strong> on the card, which also moves the
                 tenants already here.
               </p>

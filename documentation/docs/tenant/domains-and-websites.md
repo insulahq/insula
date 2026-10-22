@@ -120,7 +120,12 @@ certificate state for that route.
 Click any route to open its detail page, which has these tabs:
 
 - **Redirects** — www and HTTPS behavior (below).
-- **Security** — a per-website firewall (WAF) that blocks common attacks.
+- **Security** — a per-website firewall (WAF) against common attacks. Its
+  **Mode** is **Off**, **Detection only** or **Enforced**. *Detection only*
+  checks every request and lists every rule match in the **WAF Log**, marked
+  *detected · not blocked*, but blocks nothing: run it against your real
+  traffic for as long as you need, add exclusions for anything your site
+  legitimately does, then switch to *Enforced*, which blocks with a 403.
 - **Access Control** — sign-in gates and
   [password-protected folders](protected-directories.md).
 - **Advanced** — custom error pages, extra response headers, and

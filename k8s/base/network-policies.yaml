@@ -438,7 +438,8 @@ spec:
     # Mail-namespace platform reporters: the stalwart-snapshot Jobs POST
     # run stats to /api/v1/internal/mail/snapshot-last-run and the
     # standby-replicate DaemonSet POSTs to
-    # /api/v1/internal/mail/standby-replicate-report (both bearer-gated
+    # /api/v1/internal/mail/standby-replicate-report and, during a first
+    # copy, …/standby-replicate-progress (all bearer-gated
     # by PLATFORM_INTERNAL_SECRET). The mail-side EGRESS for these was
     # opened long ago, but no platform-side ingress ever admitted them:
     # uploads worked while every stats report died with curl 000, so the

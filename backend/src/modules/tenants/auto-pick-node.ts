@@ -1,5 +1,5 @@
 /**
- * Pick a tenant-capable node for a Local-tier tenant's data: the one with the
+ * Pick a node that takes all tenants for a Local-tier tenant's data: the one with the
  * most free Longhorn-schedulable bytes (alphabetical on a tie). Used at
  * provisioning, and by a drain's "Auto" for a stopped tenant whose data has to
  * move somewhere. Kept apart from storage-placement-service so the drain does
@@ -8,6 +8,7 @@
 import { clusterNodes } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { takesAutoPlacedTenants } from '../nodes/tenant-hosting.js';
 
 export interface NodeCapacityForPick {
   readonly name: string;
@@ -33,7 +34,7 @@ export interface LhNode {
 
 /**
  * Auto-pick a worker node for a Local-tier tenant at provisioning.
- * Strategy: among host-tenant-workloads nodes, pick the one with the
+ * Strategy: among nodes that take all tenants, pick the one with the
  * MOST free Longhorn-schedulable bytes. Tie-break alphabetically for
  * determinism. Returns null if Longhorn is unavailable or no eligible
  * node exists — caller falls back to leaving nodeName null
@@ -67,7 +68,9 @@ export async function rankNodesByFreeSpace(
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]);
     const items = ((lhResp as { items?: LhNode[] }).items ?? []);
     const platformNodes = await db.select().from(clusterNodes);
-    const tenantCapable = new Map(platformNodes.map((n) => [n.name, n.canHostTenantWorkloads]));
+    // Only an `all` node: a pinned-only node takes the tenants an operator
+    // places there, never one the platform chose (nodes/tenant-hosting.ts).
+    const tenantCapable = new Map(platformNodes.map((n) => [n.name, takesAutoPlacedTenants(n)]));
 
     for (const lh of items) {
       const name = lh.metadata?.name;

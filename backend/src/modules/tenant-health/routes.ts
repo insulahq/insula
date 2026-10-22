@@ -32,6 +32,7 @@ import {
 import { tenants as tenantsTable, auditLogs } from '../../db/schema.js';
 import { inArray, desc, eq } from 'drizzle-orm';
 import crypto from 'node:crypto';
+import { assertNodeTakesTier } from '../nodes/tenant-hosting.js';
 
 const CACHE_TTL_MS = 15_000;
 
@@ -135,7 +136,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
     const { tenants } = await import('../../db/schema.js');
     const { eq } = await import('drizzle-orm');
     const [tenant] = await app.db
-      .select({ id: tenants.id, ns: tenants.kubernetesNamespace, pin: tenants.nodeName })
+      .select({ id: tenants.id, name: tenants.name, ns: tenants.kubernetesNamespace, pin: tenants.nodeName, tier: tenants.storageTier })
       .from(tenants)
       .where(eq(tenants.id, id));
     if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${id}' not found`, 404);
@@ -154,6 +155,7 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
           { node_name: targetNode },
         );
       }
+      await assertNodeTakesTier(app.db, targetNode, tenant.tier, tenant.name);
     }
 
     const { buildDrainImpact, repinTenantPlacement, makeLonghornHostTagEnsurer } =

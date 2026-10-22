@@ -65,6 +65,8 @@ interface WafLogRow {
   readonly requestMethod: string | null;
   readonly sourceIp: string | null;
   readonly createdAt: Date | string;
+  /** Optional: a row from before migration 0162 has none. */
+  readonly detectionOnly?: boolean;
 }
 
 function rowToEvent(row: WafLogRow): WafEvent {
@@ -84,6 +86,7 @@ function rowToEvent(row: WafLogRow): WafEvent {
     requestMethod: row.requestMethod,
     sourceIp: row.sourceIp,
     occurredAt: ts,
+    detectionOnly: row.detectionOnly ?? false,
   };
 }
 
@@ -161,7 +164,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
   const cutoff = new Date(Date.now() - STATS_WINDOW_SECONDS * 1000);
   const baseWhere = gte(wafLogs.createdAt, cutoff);
 
-  type TotalsRow = { total: number; tenant_route: number; admin_host: number; most_recent: string | Date | null };
+  type TotalsRow = { total: number; tenant_route: number; admin_host: number; detection_only: number; most_recent: string | Date | null };
   type TopRuleRow = { rule_id: string; cnt: number; message: string | null; severity: string | null };
   type HostRow = { hostname: string; is_admin_host: boolean; cnt: number };
 
@@ -172,6 +175,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
         COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE route_id IS NOT NULL)::int AS tenant_route,
         COUNT(*) FILTER (WHERE route_id IS NULL)::int AS admin_host,
+        COUNT(*) FILTER (WHERE detection_only)::int AS detection_only,
         MAX(created_at) AS most_recent
       FROM waf_logs
       WHERE created_at >= ${cutoff}
@@ -224,7 +228,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
   ]);
 
   const totalsArr = (totalsRaw as unknown as { rows?: TotalsRow[] }).rows ?? [];
-  const totals: TotalsRow = totalsArr[0] ?? { total: 0, tenant_route: 0, admin_host: 0, most_recent: null };
+  const totals: TotalsRow = totalsArr[0] ?? { total: 0, tenant_route: 0, admin_host: 0, detection_only: 0, most_recent: null };
 
   const topRules: WafTopRule[] = (((topRulesRaw as unknown as { rows?: TopRuleRow[] }).rows) ?? []).map((row) => ({
     ruleId: row.rule_id,
@@ -254,6 +258,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
     windowSeconds: STATS_WINDOW_SECONDS,
     totalEvents: Number(totals.total ?? 0),
     totalEventsTenantRoute: Number(totals.tenant_route ?? 0),
+    totalEventsDetectionOnly: Number(totals.detection_only ?? 0),
     totalEventsAdminHost: Number(totals.admin_host ?? 0),
     topRules,
     topHosts,
