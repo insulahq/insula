@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.15-rc.4] - 2026-10-22
+
 ### BREAKING
 
 - **Archiving takes a suspended tenant only, and keeps the whole tenant; when the archive
