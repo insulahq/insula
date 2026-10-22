@@ -104,6 +104,7 @@ describe('mail health pass: look twice before telling anyone', () => {
       mailHostname: 'mail.example.test',
       detail: ' 1 failing check:',
       items: ['reverse DNS for 198.51.100.11 (node-b): (no records)'],
+      impact: 'Mail delivery is likely affected.',
     });
     expect(dedupeKey).toBe('mail-health:deliverability:2026-10-13:am');
     // What failed is in the log too: the alert used to be the only record, and it named nothing.
@@ -121,6 +122,18 @@ describe('mail health pass: look twice before telling anyone', () => {
     const { fired } = await pass([down, down]);
     expect(fired).toBe(1);
     expect(state.notified[0]!.payload).toMatchObject({ component: 'Stalwart pod', detail: ' no Running pod', items: [] });
+  });
+
+  // A standby that is behind is not an outage: the alert used to end with
+  // "Mail delivery is likely affected" for it too.
+  it('a failing standby copy says delivery is not affected, and what is at stake', async () => {
+    const behind = { healthy: false, components: { pod: { healthy: true }, standby: { healthy: false, error: '1 standby node has no copy younger than 30 min.' } } };
+    const { fired } = await pass([behind, behind]);
+    expect(fired).toBe(1);
+    expect(state.notified[0]!.payload).toMatchObject({
+      component: 'standby mail copy',
+      impact: 'Mail delivery is not affected, but a failover now would lose the mail received since the newest copy.',
+    });
   });
 
   it('caps a long list of failing checks instead of sending forty lines', async () => {

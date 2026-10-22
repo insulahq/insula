@@ -48,6 +48,8 @@ export const standbyReportsResponseSchema = z.object({
     state: z.enum(['preparing', 'not_running', 'overdue']).optional(),
     /** The Task Center task tracking this first copy, when there is one. */
     taskId: z.string().uuid().optional(),
+    /** How far the copy is (0–100), once its copier has reported progress. */
+    copyPercent: z.number().int().min(0).max(100).optional(),
   })).optional(),
 });
 

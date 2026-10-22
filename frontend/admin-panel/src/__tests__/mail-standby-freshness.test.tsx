@@ -8,7 +8,7 @@ import MailStandbyFreshness, { MailStandbyPreparingNotice } from '../components/
 // before it reports. The page says it is being prepared; the old node is gone
 // from the tile instead of turning red.
 
-let payload: { reports: unknown[]; preparing?: Array<{ node: string; since: string; state?: string }> } = { reports: [] };
+let payload: { reports: unknown[]; preparing?: Array<{ node: string; since: string; state?: string; copyPercent?: number }> } = { reports: [] };
 vi.mock('@/hooks/use-mail-standby-reports', () => ({
   useMailStandbyReports: () => ({ data: { data: payload }, isLoading: false, isError: false }),
 }));
@@ -29,6 +29,12 @@ describe('MailStandbyFreshness', () => {
     wrap(<MailStandbyFreshness />);
     expect(screen.getByTestId('mail-standby-preparing-sv-c')).toHaveTextContent('first copy in progress — standby for 6 min');
     expect(screen.getByTestId('mail-standby-row-sv-b')).toBeInTheDocument();
+  });
+
+  it('shows how far the first copy is, once its copier reports it', () => {
+    payload = { reports: [], preparing: [{ node: 'sv-c', since: ago(360), copyPercent: 47 }] };
+    wrap(<MailStandbyFreshness />);
+    expect(screen.getByTestId('mail-standby-preparing-sv-c')).toHaveTextContent('first copy in progress — 47% — standby for 6 min');
   });
 
   it('shows the tile while the only standby is preparing', () => {

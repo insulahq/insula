@@ -92,8 +92,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   moving the standby to another node, or a migration that leaves a different node as standby,
   starts a full copy of the mail store on that node. **Prepare the mail standby on <node>** now
   follows it, from the save to the node's first complete copy: saving the placement opens its
-  progress modal (start the copier, copy the mail store, with the time so far and the expected
-  size), and the "Preparing the standby" notice on Email → Operations has **View progress**. The
+  progress modal (start the copier, then copy the mail store with its percentage, what has been
+  copied and about how long is left — the copier reports its progress every 15 seconds during a
+  first copy), the "Preparing the standby" notice on Email → Operations has **View progress**,
+  and the standby's row shows the percentage too. The
   task fails with the reason when the copier is not running ten minutes on (the node is down, the
   pod cannot be scheduled or keeps failing) or the copy has not finished after six hours — the
   same verdict as the standby check. A primary move is still followed by its **Migrate mail to
@@ -199,6 +201,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Every mail health alert said "Mail delivery is likely affected"**, also for a standby copy that
+  was only behind and for a mail disk running short — neither stops delivery. The alert now closes
+  with what the failure means: for the standby copy, that delivery is not affected but a failover
+  would lose the mail received since the newest copy; for the disk, that delivery is not affected
+  yet but a full disk would stop the mail server; for the other checks, as before. Unedited alert
+  templates are updated when platform-api starts; one you edited keeps your text.
+- **Security → Web defense → Settings, WAF Auto-Ban: the dry-run result's column headings were
+  centred** over left-aligned columns, as were the sortable headings of **Recent decisions** beside
+  its left-aligned ones. They are left-aligned.
 - **Moving the mail standby to another node raised "[MAIL] standby mail copy check failing"**
   ("has never finished a copy"), and Email → Operations kept the old standby in **Standby data
   freshness**, red, for good. A new standby copies the whole mail store before its first report,

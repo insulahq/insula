@@ -89,3 +89,19 @@ describe('every seeded template renders', () => {
     expect(r.body).toContain(MISSING_VALUE);
   });
 });
+
+// The mail-health alert ended every body with "Mail delivery is likely
+// affected", also for a standby copy that was merely behind. Its closing
+// sentence is now the component's own (health-scheduler componentImpact).
+describe('admin.mail_health_degraded says what the failure means for mail', () => {
+  it.each(['in_app', 'email', 'ntfy'])('%s: the impact sentence, never the old fixed one', async (channel) => {
+    const t = ALL_SEED_TEMPLATES.find((x) => x.categoryId === 'admin.mail_health_degraded' && x.channel === channel);
+    expect(t, `no ${channel} template`).toBeDefined();
+    const impact = 'Mail delivery is not affected, but a failover now would lose the mail received since the newest copy.';
+    const r = await renderForDelivery(asTemplate(t!), {
+      component: 'standby mail copy', mailHostname: 'mail.example.test', detail: ' 1 standby node is behind.', items: ['n2: newest complete copy 40 min old'], impact,
+    }, { skipMjml: true });
+    expect(r.body).toContain(impact);
+    expect(r.body).not.toContain('likely affected');
+  });
+});

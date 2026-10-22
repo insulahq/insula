@@ -56,7 +56,9 @@ import {
 import { MAIL_ARCHIVE_ENABLED } from './archive-dormant.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import { getCurrentStandbyReports, recordStandbyReport } from './standby-reports.js';
-import { enrollStandbyPrepareTasks, finishStandbyPrepareOnReport, standbyPrepareTaskIds } from './standby-prepare-task.js';
+import {
+  enrollStandbyPrepareTasks, finishStandbyPrepareOnReport, recordStandbyCopyProgress, standbyPrepareTasksFor,
+} from './standby-prepare-task.js';
 import { STANDBY_REPLICATOR_SELECTOR } from './standby-since.js';
 import {
   getMailSnapshotSchedule,
@@ -1273,6 +1275,29 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // A new standby's first copy posts its progress every 15 s
+  // (standby-replicate.sh); it goes into the node's Task Center task.
+  app.post(
+    '/internal/mail/standby-replicate-progress',
+    INTERNAL_BEARER_ROUTE,
+    async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
+      assertInternalBearer(req.headers);
+      const body = (req.body ?? {}) as { node?: unknown; bytes?: unknown; percent?: unknown };
+      const node = typeof body.node === 'string' ? body.node.trim() : '';
+      if (!node || node.length > 253) {
+        throw new ApiError('VALIDATION_ERROR', 'node must be a non-empty hostname (≤253 chars)', 400);
+      }
+      // Numbers only: Number(null), Number('') and Number(true) would pass as 0 or 1.
+      const bytes = typeof body.bytes === 'number' ? body.bytes : NaN;
+      const percent = typeof body.percent === 'number' ? body.percent : NaN;
+      if (!Number.isFinite(bytes) || bytes < 0 || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+        throw new ApiError('VALIDATION_ERROR', 'bytes must be a non-negative number and percent 0–100', 400);
+      }
+      const tasksUpdated = await recordStandbyCopyProgress(app.db, node, { bytes, percent });
+      return success({ recorded: true, tasksUpdated });
+    },
+  );
+
   // ─── Admin: read standby-replicate per-node freshness ────────────
   app.get(
     '/admin/mail/standby-reports',
@@ -1286,11 +1311,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           namespace: 'mail', labelSelector: STANDBY_REPLICATOR_SELECTOR,
         })) as { items?: [] }).items ?? [],
       });
-      // Each first copy's task, for the page's "View progress".
-      const taskIds = await standbyPrepareTaskIds(app.db, view.preparing).catch(() => new Map<string, string>());
+      // Each first copy's task, for the page's "View progress", and how far its copy is.
+      const taskOf = await standbyPrepareTasksFor(app.db, view.preparing)
+        .catch(() => new Map<string, { taskId: string; copyPercent?: number }>());
       return success({
         ...view,
-        preparing: view.preparing.map((p) => (taskIds.has(p.node) ? { ...p, taskId: taskIds.get(p.node) } : p)),
+        preparing: view.preparing.map((p) => ({ ...p, ...(taskOf.get(p.node) ?? {}) })),
       });
     },
   );

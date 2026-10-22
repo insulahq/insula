@@ -45,7 +45,14 @@ vi.mock('@/hooks/use-crowdsec', () => {
       }],
     }),
     usePatchCrowdsecAutobanConfig: mut,
-    useCalibrateAutoban: mut,
+    // A dry run answers at once with two rules.
+    useCalibrateAutoban: () => ({
+      ...mut(),
+      mutate: (_vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => opts?.onSuccess?.({ data: {
+        totalEventsConsidered: 1200, hypotheticalBans: 3, distinctSourceIpsAboveThreshold: 2, windowSeconds: 300,
+        topRulesInBatch: [{ ruleId: '920350', distinctIps: 2, eventCount: 40 }, { ruleId: '930120', distinctIps: 1, eventCount: 21 }],
+      } }),
+    }),
     useCrowdsecScenarios: () => scenarios(),
     useSetScenarioSimulation: mut,
     useSetTrafficDetection: () => setDetectionState(),
@@ -303,6 +310,29 @@ describe('Scenario table alignment', () => {
       }
     });
     expect(headers.map(align)).toEqual(['left', 'left', 'right', 'right', 'left']);
+  });
+});
+
+// A <th> is centred unless it says otherwise: the dry-run table's headings sat
+// in the middle of left-aligned columns.
+describe('Auto-ban tables — headings left-aligned like their columns', () => {
+  const headings = (table: HTMLElement) => Array.from(table.querySelectorAll('thead th'));
+
+  it('the dry-run result', () => {
+    render(<WafSettingsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('autoban-calibrate'));
+    const table = screen.getByTestId('autoban-calib-rules');
+    expect(headings(table).map((th) => th.textContent)).toEqual(['Rule', 'Distinct IPs', 'Events']);
+    for (const th of headings(table)) expect(th.className).toMatch(/\btext-left\b/);
+    expect(table.querySelector('tbody tr')!.textContent).toContain('920350');
+  });
+
+  it('the recent decisions', () => {
+    render(<WafSettingsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('autoban-recent-decisions-toggle'));
+    const table = within(screen.getByTestId('autoban-recent-decisions-body')).getByRole('table');
+    expect(headings(table)).toHaveLength(7);
+    for (const th of headings(table)) expect(th.className).toMatch(/\btext-left\b/);
   });
 });
 

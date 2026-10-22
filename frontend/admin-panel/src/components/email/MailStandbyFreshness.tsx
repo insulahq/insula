@@ -107,7 +107,9 @@ export default function MailStandbyFreshness() {
         uses this instead of pulling from the active node.
       </p>
       <div className="space-y-1.5">
-        {preparing.map((p) => <PreparingRow key={p.node} node={p.node} since={p.since} state={p.state ?? 'preparing'} />)}
+        {preparing.map((p) => (
+          <PreparingRow key={p.node} node={p.node} since={p.since} state={p.state ?? 'preparing'} copyPercent={p.copyPercent} />
+        ))}
         {reports.map((r) => <StandbyRow key={r.node} report={r} />)}
       </div>
     </div>
@@ -116,7 +118,13 @@ export default function MailStandbyFreshness() {
 
 type FirstCopyState = 'preparing' | 'not_running' | 'overdue';
 
-function PreparingRow({ node, since, state }: { readonly node: string; readonly since: string; readonly state: FirstCopyState }) {
+function PreparingRow({ node, since, state, copyPercent }: {
+  readonly node: string;
+  readonly since: string;
+  readonly state: FirstCopyState;
+  /** Once the copier reports progress. */
+  readonly copyPercent?: number;
+}) {
   if (state !== 'preparing') {
     return (
       <div
@@ -147,7 +155,7 @@ function PreparingRow({ node, since, state }: { readonly node: string; readonly 
         <NodeName name={node} />
       </code>
       <span className="font-medium text-sky-700 dark:text-sky-300">
-        first copy in progress — standby for {elapsed(since)}
+        first copy in progress{copyPercent !== undefined && ` — ${copyPercent}%`} — standby for {elapsed(since)}
       </span>
     </div>
   );

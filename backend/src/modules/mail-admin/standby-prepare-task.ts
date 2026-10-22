@@ -79,7 +79,23 @@ export interface StandbyPrepareInput {
   readonly nodeReady: boolean | null;
   /** The newest complete copy on another node — about the size this one will be. */
   readonly expectedBytes: number | null;
+  /** How far the copy is, as its copier last posted it; null before the first post (or an older copier). */
+  readonly copy?: CopyProgress | null;
 }
+
+/** A first copy's progress, as the copier posts it (standby-replicate.sh, every 15 s). */
+export interface CopyProgress {
+  readonly bytes: number;
+  /** Of the whole store: rsync builds the full file list before it copies. */
+  readonly percent: number;
+  /** When this was posted. */
+  readonly at: string;
+  /** When the first post of this copy came — what the time left is estimated from. */
+  readonly startedAt: string;
+}
+
+/** Progress unreported this long while the copier runs is said so (it posts every 15 s). */
+const PROGRESS_STALE_SECONDS = 120;
 
 function duration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
@@ -91,6 +107,31 @@ function duration(seconds: number): string {
 
 function gb(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+const COPY_NOTE = 'A first copy moves everything; later ones only what changed';
+
+/**
+ * The copy with its reported progress: the percentage, what has been copied,
+ * and the time left estimated from the rate so far. Depends only on the post
+ * and on `now` past the stale mark, so a watch pass between two posts writes
+ * nothing. Pure.
+ */
+export function copyingVerdict(node: string, copy: CopyProgress, now: number): Extract<StandbyPrepareVerdict, { status: 'running' }> {
+  const p = Math.max(0, Math.min(100, Math.floor(copy.percent)));
+  const ran = (Date.parse(copy.at) - Date.parse(copy.startedAt)) / 1000;
+  const left = p >= 2 && p < 100 && ran >= 60 ? `, about ${duration((ran * (100 - p)) / p)} left` : '';
+  const quiet = (now - Date.parse(copy.at)) / 1000;
+  const stale = quiet > PROGRESS_STALE_SECONDS ? ` — no progress reported for ${duration(quiet)}` : '';
+  return {
+    status: 'running',
+    // 100% copied is not done: the copy is promoted and reported first.
+    pct: Math.min(p, 99),
+    text: p >= 100
+      ? `Finishing the first copy on ${node}: ${gb(copy.bytes)} copied${stale}`
+      : `Copying the mail store to ${node}: ${p}%, ${gb(copy.bytes)} so far${left}${stale}`,
+    steps: steps(node, 'done', 'running', { copy: COPY_NOTE }),
+  };
 }
 
 /** What a task should say now. Pure. */
@@ -117,7 +158,10 @@ export function judgeStandbyPrepare(i: StandbyPrepareInput): StandbyPrepareVerdi
     return { status: 'cancelled', text: `${node} is no longer a mail standby`, steps: steps(node, 'done', 'pending'), clear: false };
   }
 
-  const running = i.copier ? i.copier.running : null;
+  // The copier's own progress, posted in the last two minutes, is better
+  // evidence that it runs than a pod list read at another moment.
+  const copyFresh = !!i.copy && (i.now - Date.parse(i.copy.at)) / 1000 <= PROGRESS_STALE_SECONDS;
+  const running = copyFresh ? true : i.copier ? i.copier.running : null;
   const why = i.nodeReady === false ? 'the node is not ready'
     : i.copier && !i.copier.running ? (i.copier.reason ?? 'its pod is not running')
     : null;
@@ -134,12 +178,13 @@ export function judgeStandbyPrepare(i: StandbyPrepareInput): StandbyPrepareVerdi
     return { status: 'failed', text: 'The standby copier did not start', error, steps: steps(node, 'failed', 'pending', { copier: why ?? undefined }) };
   }
   if (running === true) {
+    if (i.copy) return copyingVerdict(node, i.copy, i.now);
     const size = i.expectedBytes ? `, about ${gb(i.expectedBytes)} in all` : '';
     return {
       status: 'running',
       pct: null,
       text: `Copying the mail store to ${node}: ${duration(elapsed)} so far${size}`,
-      steps: steps(node, 'done', 'running', { copy: 'A first copy moves everything; later ones only what changed' }),
+      steps: steps(node, 'done', 'running', { copy: COPY_NOTE }),
     };
   }
   const waitNote = running === null ? 'Its state could not be read' : `${why} — given ${duration(COPIER_START_SECONDS)} to start`;
@@ -222,6 +267,15 @@ interface OpenTask {
   readonly since: string;
   readonly progressText: string | null;
   readonly steps: unknown;
+  readonly copy: CopyProgress | null;
+}
+
+/** details.copy as written by recordStandbyCopyProgress; anything else is no progress. */
+function copyFrom(raw: unknown): CopyProgress | null {
+  const c = raw as Partial<CopyProgress> | null | undefined;
+  if (!c || typeof c.bytes !== 'number' || typeof c.percent !== 'number'
+    || typeof c.at !== 'string' || typeof c.startedAt !== 'string') return null;
+  return { bytes: c.bytes, percent: c.percent, at: c.at, startedAt: c.startedAt };
 }
 
 async function openTasks(db: Database, node?: string): Promise<OpenTask[]> {
@@ -234,11 +288,11 @@ async function openTasks(db: Database, node?: string): Promise<OpenTask[]> {
       ...(node ? [sql`${tasks.details}->>'node' = ${node}`] : []),
     ));
   return rows.flatMap((r) => {
-    const d = (r.details ?? {}) as { node?: unknown; since?: unknown; steps?: unknown };
+    const d = (r.details ?? {}) as { node?: unknown; since?: unknown; steps?: unknown; copy?: unknown };
     if (typeof d.node !== 'string' || typeof d.since !== 'string') return [];
     return [{
       id: r.id, status: r.status, userId: r.userId ?? null,
-      node: d.node, since: d.since, progressText: r.progressText, steps: d.steps,
+      node: d.node, since: d.since, progressText: r.progressText, steps: d.steps, copy: copyFrom(d.copy),
     }];
   });
 }
@@ -349,7 +403,12 @@ export async function advanceStandbyPrepareTasks(
       copier: copiers ? (copiers.get(task.node) ?? { running: false, reason: 'no copier pod on the node yet' }) : null,
       nodeReady: ready ? ready.status === 'True' : null,
       expectedBytes: expectedBytes(reports, task.node),
+      copy: task.copy,
     });
+    // While posts keep coming, the progress route writes the copying text; a
+    // pass that read the task just before a post would put the older one back.
+    const postsComing = !!task.copy && (now - Date.parse(task.copy.at)) / 1000 <= PROGRESS_STALE_SECONDS;
+    if (verdict.status === 'running' && postsComing && (task.status === 'queued' || task.status === 'running')) continue;
     await apply(db, task, verdict);
   }
   return open.length;
@@ -372,18 +431,61 @@ export async function finishStandbyPrepareOnReport(db: Database, node: string, r
   }
 }
 
-/** The running task of each standby still on its first copy, by node — for "View progress" on the page. */
-export async function standbyPrepareTaskIds(
+/**
+ * The copier's progress post (POST /internal/mail/standby-replicate-progress)
+ * goes into the node's running task at once: the percentage and the time left
+ * show while the copy runs, not only at its end. The post itself proves the
+ * copier runs. A failed task is left for the watch, which re-opens it.
+ */
+export async function recordStandbyCopyProgress(
+  db: Database,
+  node: string,
+  posted: { readonly bytes: number; readonly percent: number },
+  now: number = Date.now(),
+): Promise<number> {
+  const { progress } = await import('../tasks/service.js');
+  let written = 0;
+  for (const task of await openTasks(db, node)) {
+    if (task.status !== 'queued' && task.status !== 'running') continue;
+    const at = new Date(now).toISOString();
+    // A copy that went quiet, or started over (its percentage fell), is timed
+    // afresh: the idle gap is no rate to estimate the time left from.
+    const prev = task.copy;
+    const continues = !!prev && posted.percent >= prev.percent
+      && (now - Date.parse(prev.at)) / 1000 <= PROGRESS_STALE_SECONDS;
+    const copy: CopyProgress = { bytes: posted.bytes, percent: posted.percent, at, startedAt: continues ? prev.startedAt : at };
+    const v = copyingVerdict(node, copy, now);
+    await progress(db, task.id, {
+      pct: v.pct,
+      text: safe(v.text),
+      detailsPatch: { copy, steps: safeSteps(v.steps) },
+      expectStatus: ['queued', 'running'],
+    });
+    written += 1;
+  }
+  return written;
+}
+
+/**
+ * The task of each standby still on its first copy, by node, and how far its
+ * copy is — for the page's "View progress" and its preparing row.
+ */
+export async function standbyPrepareTasksFor(
   db: Database,
   preparing: ReadonlyArray<{ readonly node: string; readonly since: string }>,
-): Promise<Map<string, string>> {
+): Promise<Map<string, { readonly taskId: string; readonly copyPercent?: number }>> {
   if (preparing.length === 0) return new Map();
   const refs = new Map(preparing.map((p) => [standbyPrepareRefId(p.node, p.since), p.node]));
   const rows = await db
-    .select({ id: tasks.id, refId: tasks.refId })
+    .select({ id: tasks.id, refId: tasks.refId, details: tasks.details })
     .from(tasks)
     .where(and(eq(tasks.kind, STANDBY_PREPARE_KIND), inArray(tasks.refId, [...refs.keys()])));
-  return new Map(rows.flatMap((r) => (r.refId && refs.has(r.refId) ? [[refs.get(r.refId) as string, r.id] as const] : [])));
+  return new Map(rows.flatMap((r) => {
+    const node = r.refId ? refs.get(r.refId) : undefined;
+    if (!node) return [];
+    const copy = copyFrom((r.details as { copy?: unknown } | null)?.copy);
+    return [[node, copy ? { taskId: r.id, copyPercent: Math.min(100, Math.max(0, Math.floor(copy.percent))) } : { taskId: r.id }] as const];
+  }));
 }
 
 /**

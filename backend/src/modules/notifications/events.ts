@@ -1699,6 +1699,8 @@ export interface AdminMailHealthDegradedPayload {
   readonly detail?: string;
   /** The failing sub-probes, one per entry. Rendered as a list on every channel. */
   readonly items: readonly string[];
+  /** What it means for mail, one sentence (componentImpact) — not every component carries mail. */
+  readonly impact: string;
   readonly panelUrl?: string;
 }
 /**

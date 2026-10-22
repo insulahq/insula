@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
-  dedupeBucket, componentDetail, componentProbes, componentsToAlert, confirmedFailures, failingChecks, unansweredLookups,
+  dedupeBucket, componentDetail, componentImpact, componentProbes, componentsToAlert, confirmedFailures, failingChecks, unansweredLookups,
 } from './health-scheduler.js';
+
+describe('componentImpact — what the failure means for mail', () => {
+  it('the standby copy and the disk headroom do not stop delivery; the rest likely does', () => {
+    expect(componentImpact('standby')).toMatch(/^Mail delivery is not affected, but a failover now would lose/);
+    expect(componentImpact('storage')).toMatch(/^Mail delivery is not affected yet; a full disk would stop the mail server/);
+    for (const k of ['pod', 'jmap', 'rocksdb', 'cert', 'tcp', 'deliverability', 'exposure', 'something-new']) {
+      expect(componentImpact(k)).toBe('Mail delivery is likely affected.');
+    }
+  });
+});
 
 // The scheduler's value is entirely in its POLICY: which failures alert, how
 // often, and what the operator is told. Those are the parts that turn a useful

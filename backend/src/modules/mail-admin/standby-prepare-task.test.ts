@@ -12,11 +12,13 @@ vi.mock('../tasks/service.js', () => taskService);
 import {
   STANDBY_PREPARE_KIND,
   advanceStandbyPrepareTasks,
+  copyingVerdict,
   enrollStandbyPrepareTasks,
   finishStandbyPrepareOnReport,
   judgeStandbyPrepare,
+  recordStandbyCopyProgress,
   standbyPrepareRefId,
-  standbyPrepareTaskIds,
+  standbyPrepareTasksFor,
   type StandbyPrepareInput,
 } from './standby-prepare-task.js';
 import { copierStateByNode } from './standby-since.js';
@@ -156,7 +158,7 @@ function fakeDb(state: {
   readonly running: Array<{ id: string; status?: string; userId?: string | null; details: Record<string, unknown>; progressText: string | null }>;
   readonly reports?: Record<string, unknown>;
   readonly active?: string | null;
-  readonly refs?: Array<{ id: string; refId: string }>;
+  readonly refs?: Array<{ id: string; refId: string; details?: Record<string, unknown> }>;
 }): Database {
   return {
     select: vi.fn((fields: Record<string, unknown>) => ({
@@ -276,10 +278,101 @@ describe('finishStandbyPrepareOnReport', () => {
   });
 });
 
-describe('standbyPrepareTaskIds', () => {
-  it('maps each preparing standby to its task', async () => {
-    const db = fakeDb({ running: [], refs: [{ id: 't9', refId: standbyPrepareRefId('n2', SINCE) }] });
-    const ids = await standbyPrepareTaskIds(db, [{ node: 'n2', since: SINCE }, { node: 'n3', since: SINCE }]);
-    expect([...ids]).toEqual([['n2', 't9']]);
+describe('standbyPrepareTasksFor', () => {
+  it('maps each preparing standby to its task, and how far its copy is', async () => {
+    const db = fakeDb({ running: [], refs: [
+      { id: 't9', refId: standbyPrepareRefId('n2', SINCE), details: { copy: { bytes: 2e10, percent: 47.6, at: SINCE, startedAt: SINCE } } },
+      { id: 't8', refId: standbyPrepareRefId('n3', SINCE), details: {} },
+    ] as never });
+    const ids = await standbyPrepareTasksFor(db, [{ node: 'n2', since: SINCE }, { node: 'n3', since: SINCE }, { node: 'n4', since: SINCE }]);
+    expect([...ids]).toEqual([['n2', { taskId: 't9', copyPercent: 47 }], ['n3', { taskId: 't8' }]]);
+  });
+});
+
+// The copier posts its overall progress every 15 s during a first copy
+// (standby-replicate.sh): the task shows the percentage and the time left.
+describe('copy progress', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  const copy = (percent: number, bytes: number, startedMin: number, atMin: number) => ({
+    bytes, percent, startedAt: new Date(at(startedMin)).toISOString(), at: new Date(at(atMin)).toISOString(),
+  });
+
+  it('the percentage, what has been copied, and the time left at the rate so far', () => {
+    const v = copyingVerdict('n2', copy(40, 17.6e9, 2, 10), at(10));
+    expect(v).toMatchObject({ status: 'running', pct: 40 });
+    // 8 min for 40% → 12 min for the other 60%.
+    expect(v.text).toBe('Copying the mail store to n2: 40%, 17.6 GB so far, about 12 min left');
+  });
+
+  it('no time left until there is a rate to go by', () => {
+    expect(copyingVerdict('n2', copy(1, 0.4e9, 2, 4), at(4)).text).toBe('Copying the mail store to n2: 1%, 0.4 GB so far');
+    expect(copyingVerdict('n2', copy(30, 9e9, 2, 2.5), at(2.5)).text).toBe('Copying the mail store to n2: 30%, 9.0 GB so far');
+  });
+
+  it('copied is not done: 99% until the copy is promoted and reported', () => {
+    expect(copyingVerdict('n2', copy(100, 44e9, 2, 12), at(12))).toMatchObject({ pct: 99, text: 'Finishing the first copy on n2: 44.0 GB copied' });
+  });
+
+  it('says so when progress stops coming', () => {
+    expect(copyingVerdict('n2', copy(40, 17.6e9, 2, 10), at(15)).text).toMatch(/ — no progress reported for 5 min$/);
+  });
+
+  it('the watch keeps the reported progress (and writes nothing between posts)', () => {
+    const c = copy(40, 17.6e9, 2, 10);
+    const v = judgeStandbyPrepare({ ...base, now: at(10.2), copy: c });
+    expect(v).toMatchObject({ status: 'running', pct: 40, text: 'Copying the mail store to n2: 40%, 17.6 GB so far, about 12 min left' });
+    expect(judgeStandbyPrepare({ ...base, now: at(11), copy: c }).text).toBe(v.text);
+  });
+
+  it('fresh progress is the copier running — whatever a pod list read at another moment says', () => {
+    expect(judgeStandbyPrepare({ ...base, now: at(10.5), copier: null, copy: copy(40, 1e9, 2, 10) })).toMatchObject({ pct: 40 });
+    expect(judgeStandbyPrepare({ ...base, now: at(11.5), copier: { running: false, reason: 'no copier pod on the node yet' }, copy: copy(40, 1e9, 2, 10) }))
+      .toMatchObject({ status: 'running', pct: 40 });
+  });
+
+  it('stale progress is no claim: an unreadable copier is preparing, a stopped one fails', () => {
+    expect(judgeStandbyPrepare({ ...base, now: at(30), copier: null, copy: copy(40, 1e9, 2, 10) }).text).toBe('Preparing the standby on n2');
+    expect(judgeStandbyPrepare({ ...base, now: at(30), copier: { running: false, reason: 'CrashLoopBackOff' }, copy: copy(40, 1e9, 2, 10) }).status).toBe('failed');
+  });
+
+  it('a post goes into the running task at once, keeping when the copy started', async () => {
+    const db = fakeDb({ running: [{ id: 't1', details: { node: 'n2', since: SINCE, copy: copy(38, 16.7e9, 2, 9.75) }, progressText: null }] });
+    expect(await recordStandbyCopyProgress(db, 'n2', { bytes: 17.6e9, percent: 40 }, at(10))).toBe(1);
+    expect(taskService.progress).toHaveBeenCalledWith(db, 't1', expect.objectContaining({
+      pct: 40,
+      text: 'Copying the mail store to n2: 40%, 17.6 GB so far, about 12 min left',
+      expectStatus: ['queued', 'running'],
+      detailsPatch: expect.objectContaining({ copy: { bytes: 17.6e9, percent: 40, at: new Date(at(10)).toISOString(), startedAt: new Date(at(2)).toISOString() } }),
+    }));
+  });
+
+  it('a copy that went quiet or started over is timed afresh', async () => {
+    const quiet = fakeDb({ running: [{ id: 't1', details: { node: 'n2', since: SINCE, copy: copy(30, 4e9, 2, 4) }, progressText: null }] });
+    await recordStandbyCopyProgress(quiet, 'n2', { bytes: 5e9, percent: 35 }, at(20));
+    const restarted = fakeDb({ running: [{ id: 't1', details: { node: 'n2', since: SINCE, copy: copy(60, 4e9, 2, 10) }, progressText: null }] });
+    await recordStandbyCopyProgress(restarted, 'n2', { bytes: 1e9, percent: 12 }, at(10.2));
+    for (const call of taskService.progress.mock.calls) {
+      const c = (call[2] as { detailsPatch: { copy: { startedAt: string; at: string } } }).detailsPatch.copy;
+      expect(c.startedAt).toBe(c.at);
+    }
+  });
+
+  it('while posts keep coming the watch leaves the copying text to them', async () => {
+    const cluster = { listNodes: async () => [node('n2')], listCopierPods: async () => [runningPod('n2')] };
+    await advanceStandbyPrepareTasks(fakeDb({ running: [{ id: 't1', details: { node: 'n2', since: SINCE, copy: copy(40, 4e9, 2, 10) }, progressText: 'older' }] }), cluster, at(10.3));
+    expect(taskService.progress).not.toHaveBeenCalled();
+    // Gone quiet: the watch says so.
+    await advanceStandbyPrepareTasks(fakeDb({ running: [{ id: 't1', details: { node: 'n2', since: SINCE, copy: copy(40, 4e9, 2, 10) }, progressText: 'older' }] }), cluster, at(15));
+    expect((taskService.progress.mock.calls[0][2] as { text: string }).text).toMatch(/no progress reported for 5 min/);
+  });
+
+  it('the first post starts the clock; a failed task is left for the watch', async () => {
+    const db = fakeDb({ running: [
+      { id: 't1', details: { node: 'n2', since: SINCE }, progressText: null },
+      { id: 't2', status: 'failed', details: { node: 'n2', since: SINCE }, progressText: null },
+    ] });
+    expect(await recordStandbyCopyProgress(db, 'n2', { bytes: 0, percent: 0 }, at(3))).toBe(1);
+    const patch = (taskService.progress.mock.calls[0][2] as { detailsPatch: { copy: { startedAt: string; at: string } } }).detailsPatch.copy;
+    expect(patch.startedAt).toBe(patch.at);
   });
 });

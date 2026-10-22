@@ -19,7 +19,7 @@
  *   • A failure must be seen TWICE, a minute apart, before anyone is told. One
  *     failing pass is not an outage: a probe that execs into the pod or asks a
  *     resolver on the internet fails now and then for reasons that are gone a
- *     second later, and this alert says "Mail delivery is likely affected".
+ *     second later, and this alert says mail delivery is likely affected.
  *     The second look comes after a minute, not at the next 15-minute pass, so
  *     a real outage is announced as fast as before.
  *   • One notification PER COMPONENT, deduped into a 12h bucket, so a sustained
@@ -59,6 +59,24 @@ const COMPONENT_LABELS: Record<string, string> = {
   standby: 'standby mail copy',
   storage: 'mail disk headroom',
 };
+
+/**
+ * What the failure means for mail, as the alert's closing sentence. Most
+ * components carry mail itself, so a failure likely affects delivery. The
+ * standby copy and the disk headroom do not: every alert used to say "Mail
+ * delivery is likely affected", which read as an outage for a standby that was
+ * merely behind.
+ */
+export function componentImpact(key: string): string {
+  switch (key) {
+    case 'standby':
+      return 'Mail delivery is not affected, but a failover now would lose the mail received since the newest copy.';
+    case 'storage':
+      return 'Mail delivery is not affected yet; a full disk would stop the mail server.';
+    default:
+      return 'Mail delivery is likely affected.';
+  }
+}
 
 /** 12h bucket: two alerts/day per component while a failure is sustained. */
 export function dedupeBucket(now: number): string {
@@ -394,6 +412,7 @@ export async function runMailHealthCheckOnce(
           mailHostname,
           detail: componentDetail(key, component, items),
           items: cappedList(items, MAX_LISTED_CHECKS),
+          impact: componentImpact(key),
           panelUrl: '/monitoring/mail',
         },
         // Per endpoint set as well: one endpoint's alert must not swallow
