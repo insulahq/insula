@@ -40,6 +40,11 @@ export const wafEventSchema = z.object({
   requestMethod: z.string().max(10).nullable(),
   sourceIp: z.string().max(45).nullable(),
   occurredAt: z.string().datetime(),
+  /**
+   * Logged on a route whose WAF is in detection-only mode: the request was
+   * checked but NOT blocked. Absent from an older backend.
+   */
+  detectionOnly: z.boolean().optional(),
 });
 export type WafEvent = z.infer<typeof wafEventSchema>;
 
@@ -106,6 +111,11 @@ export const wafEventsStatsSchema = z.object({
   totalEvents: z.number().int().min(0),
   totalEventsTenantRoute: z.number().int().min(0),
   totalEventsAdminHost: z.number().int().min(0),
+  /**
+   * Of totalEvents, those from tenant routes in detection-only mode — checked
+   * and logged, not blocked. Absent from an older backend.
+   */
+  totalEventsDetectionOnly: z.number().int().min(0).optional(),
   topRules: z.array(wafTopRuleSchema),
   topHosts: z.array(wafTopHostSchema),
   topSourceIps: z.array(wafTopSourceIpSchema),

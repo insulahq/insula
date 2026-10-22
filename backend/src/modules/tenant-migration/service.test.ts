@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { assertTargetHasRoom } from './service.js';
+import { assertTargetHasRoom, migrateTenantToWorker } from './service.js';
+import type { Database } from '../../db/index.js';
 import type { MovePlan } from './stop-move-start.js';
 
 const GIB = 2 ** 30;
@@ -73,5 +74,34 @@ describe('assertTargetHasRoom', () => {
     await expect(assertTargetHasRoom(k8s, move(MOVE, 3))).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not check that node-a has room for tenant-acme \(settings\.longhorn\.io is forbidden\)/);
+  });
+});
+
+describe('migrateTenantToWorker — a node that takes pinned tenants only', () => {
+  // Reads in order: the tenant, the target node, the target's hosting (HA only).
+  const dbFor = (tier: 'local' | 'ha') => {
+    const pinnedNode = {
+      name: 'za-1', canHostTenantWorkloads: true, labels: { 'insula.host/tenant-placement': 'pinned' },
+    };
+    const reads = [
+      [{ id: 't1', name: 'Acme', storageTier: tier, storageLifecycleState: 'idle', activeStorageOpId: null, nodeName: 'de-1', kubernetesNamespace: NS }],
+      [pinnedNode],
+      [pinnedNode],
+    ];
+    let i = 0;
+    return { select: () => ({ from: () => ({ where: () => ({ limit: async () => reads[i++] ?? [] }) }) }) } as unknown as Database;
+  };
+
+  it('refuses an HA-tier tenant before touching the cluster', async () => {
+    const k8s = new Proxy({}, { get: () => { throw new Error('the cluster must not be read'); } }) as unknown as K8sClients;
+    await expect(migrateTenantToWorker(dbFor('ha'), k8s, 't1', { nodeName: 'za-1' } as never))
+      .rejects.toMatchObject({ code: 'NODE_PINNED_TENANTS_ONLY', status: 409 });
+  });
+
+  it('lets a Local-tier tenant past the hosting check', async () => {
+    // It goes on to read the cluster — the guard did not stop it.
+    const k8s = new Proxy({}, { get: () => { throw new Error('reached the cluster'); } }) as unknown as K8sClients;
+    await expect(migrateTenantToWorker(dbFor('local'), k8s, 't1', { nodeName: 'za-1' } as never))
+      .rejects.toThrow('reached the cluster');
   });
 });

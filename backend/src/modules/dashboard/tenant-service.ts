@@ -245,7 +245,7 @@ export async function buildTenantLive(
              COALESCE(d.status::text, 'unknown') AS status,
              r.created_at,
              (SELECT COUNT(*)::int FROM waf_logs w
-               WHERE w.route_id = r.id AND w.created_at > NOW() - INTERVAL '7 days') AS blocked,
+               WHERE w.route_id = r.id AND w.created_at > NOW() - INTERVAL '7 days' AND NOT w.detection_only) AS blocked,
              (SELECT COUNT(*)::int FROM cron_jobs c WHERE c.deployment_id = d.id) AS crons,
              (SELECT MIN(EXTRACT(DAY FROM (s.expires_at - NOW())))::int FROM ssl_certificates s
                WHERE s.domain_id = r.domain_id AND s.expires_at IS NOT NULL) AS tls_days
@@ -276,7 +276,7 @@ export async function buildTenantLive(
   const blocked = await collect('blocked', async () => {
     const r = await db.execute<{ severity: string; message: string | null; hostname: string | null; request_uri: string | null; created_at: string }>(sql`
       SELECT severity, message, hostname, request_uri, created_at
-        FROM waf_logs WHERE tenant_id = ${tenantId}
+        FROM waf_logs WHERE tenant_id = ${tenantId} AND NOT detection_only
        ORDER BY created_at DESC LIMIT 6
     `);
     return (r.rows ?? []).map((x) => ({

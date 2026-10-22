@@ -56,3 +56,29 @@ spec:
       # round-trip stays under 50 ms in the smoke test, so this is a safety
       # net, not a planned cost.
       timeoutMillis: 3000
+---
+# The same plugin and sidecar in DETECTION-ONLY mode, for a tenant route whose
+# WAF is set to "Detection only" (ingress_routes.waf_detection_only=1). Every
+# request is still checked and every rule match logged (it shows in the route's
+# WAF LOGS, marked as not blocked), but the verdict is never acted on — so an
+# operator can run the rules against real traffic for as long as they like
+# before enforcing them. A sidecar that cannot be reached lets the request
+# through rather than answering 502: a route on trial must not go down with its
+# WAF. The check carries X-Insula-Waf-Mode: detect; the plugin removes a
+# client-sent copy of that header on every route.
+#
+# Settings other than detectOnly mirror modsecurity-crs above.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: modsecurity-crs-detect
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  plugin:
+    modsecurity:
+      modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
+      timeoutMillis: 3000
+      detectOnly: true

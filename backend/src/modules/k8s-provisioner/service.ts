@@ -898,6 +898,11 @@ export async function applyTargetNodePlacement(
     }
     throw err;
   }
+  // A pinned-only node takes Local-tier tenants only (nodes/tenant-hosting.ts).
+  const [row] = await db.select({ name: tenants.name, tier: tenants.storageTier })
+    .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  const { assertNodeTakesTier } = await import('../nodes/tenant-hosting.js');
+  await assertNodeTakesTier(db, targetNode, row?.tier, row?.name ?? null);
   await db.update(tenants).set({ nodeName: targetNode }).where(eq(tenants.id, tenantId));
 }
 

@@ -23,8 +23,8 @@ You manage all of this from **Cluster → Nodes** in the admin panel.
 Each node is a card. The header tells you, at a glance:
 
 - **Role pill** — `server` or `worker`.
-- **`hosts tenants`** / **`system only`** — whether tenant pods may schedule
-  here (`canHostTenantWorkloads`).
+- **`hosts tenants`** / **`pinned tenants only`** / **`system only`** — which
+  tenants the node takes ([Tenant hosting](#tenant-hosting)).
 - **Ready pill** — `Ready`, `NotReady`, or `Unknown` (the Kubernetes node
   condition).
 - **last-seen** — colour-coded: green (< 5 min, healthy), amber (5–30 min,
@@ -165,6 +165,37 @@ storage and its data:
 5. In the panel, **Remove orphan** on the duplicate's card — it removes only
    the platform's row.
 
+## Tenant hosting
+
+**Edit** on a node card sets which tenants the node takes:
+
+| Tenant hosting | Takes | Auto placement |
+|---|---|---|
+| **All tenants** | Any tenant | May pick it |
+| **Pinned tenants only** | Local-tier tenants you place there yourself | Never picks it |
+| **No tenants** | None | Never picks it |
+
+**Pinned tenants only** is for a node that should hold particular tenants and
+nothing else — a server in another region, or one kept for a customer. You
+place a tenant there by choosing the node when you create it, with
+**Placement** on its page, or as a drain's target; node pickers mark it
+*pinned tenants only*. Auto placement — a new tenant left on Auto, a drain's
+Auto for a stopped tenant — never picks it. The node also carries a
+`PreferNoSchedule` taint (`insula.host/pinned-tenants-only`), so Kubernetes runs
+any tenant pod that is not pinned there on another node whenever one fits; pods
+already running there keep running. On a server, system services still run and
+start there, and prefer another server only when they have a choice.
+
+It takes **Local-tier** tenants only. An HA-tier tenant is not held to one node
+— it fails over to any node holding a copy of its data — so placing one there,
+switching one there to HA, and switching a node to pinned-only while HA-tier
+tenants are pinned to it are all refused (`NODE_PINNED_TENANTS_ONLY`). The
+setting does not decide where Longhorn keeps the second copy of an HA-tier
+tenant's volume: that copy can still land on a pinned-only node.
+
+On a server, a drain that keeps new tenants off sets a pinned-only node to No
+tenants; set it back to Pinned tenants only when it may take them again.
+
 ## Cordon, drain, and maintenance
 
 A server does two jobs: it hosts tenants and it runs the platform (the
@@ -172,7 +203,7 @@ database, mail, the operators, Longhorn). The node actions keep them apart:
 
 | Action | Tenants | System services |
 |---|---|---|
-| **Can host tenant workloads** off | No new tenant lands here | Keep running **and keep starting** here |
+| **Tenant hosting** set to No tenants | No new tenant lands here | Keep running **and keep starting** here |
 | **Drain Tenants** | Moved to other nodes; no new ones land here | Untouched — the platform keeps using the server |
 | **Cordon** | No new pod lands here | No new pod lands here either — a database rebuild or a mail failover cannot use the node |
 | **Delete** | Must already be gone | Moved off, then the node is removed |
@@ -188,20 +219,21 @@ node card click **Drain Tenants**. A modal computes the impact:
   A running tenant's data follows its restarted pod. A tenant marked **not
   running** (stopped or suspended) has no pod for its data to follow, so the
   drain attaches its volume on the new node and Longhorn copies the data there;
-  for such a tenant **Auto** picks the tenant-capable node with the most free
-  space (never the drained node, a cordoned one or one that is not Ready), and
+  for such a tenant **Auto** picks the node with the most free space among
+  those that take all tenants (never the drained node, a cordoned one or one
+  that is not Ready), and
   every target is checked for room first — the drain is refused, with nothing
   changed, when no node can take the data. A tenant already pinned to another
   node keeps that node by default. Either way **Delete** unlocks only once the
   copies have left the node.
 - **Non-system pods** — what gets evicted; controllers recreate them elsewhere.
-- **Keep new tenants off this node** (on by default) — on a server this turns
-  **Can host tenant workloads** off: a `NoSchedule` taint that tenant pods do
+- **Keep new tenants off this node** (on by default) — on a server this sets
+  **Tenant hosting** to No tenants: a `NoSchedule` taint that tenant pods do
   not tolerate and every system service does. The server is **not cordoned**,
   so mail can still fail over to it, a database instance can still be rebuilt
   on it, and a system replica that has to move can still land there. On a
-  worker, which runs no system services, the drain cordons it. Turn the
-  setting back on (node card → **Edit**) when the node may take tenants again.
+  worker, which runs no system services, the drain cordons it. Set it back
+  (node card → **Edit**) when the node may take tenants again.
 - **Mail** — the drain never moves mail, and a drained server stays a mail
   failover target. If mail runs on the node, the modal says **Delete** is
   refused until mail is moved; if the node is a failover target, it says where
@@ -238,7 +270,7 @@ Click **Drain tenants**. When no tenant pod is left on the node it is tagged
     would come back without its storage. The 2026.10.12 upgrade adds the
     toleration (host-migration `0002-system-tolerates-tenant-drain-taint`;
     Longhorn's node components restart once, volumes stay attached). Until
-    then, turning **Can host tenant workloads** off on a server — directly or
+    then, setting **Tenant hosting** to No tenants on a server — directly or
     through the drain — is refused with `NODE_TENANT_TAINT_UNSAFE` and nothing
     changes.
 
@@ -248,9 +280,9 @@ Click **Drain tenants**. When no tenant pod is left on the node it is tagged
     draining it would leave every tenant pod Pending with nowhere to go. Add
     capacity first.
 
-To put a node back into service after maintenance, turn **Can host tenant
-workloads** back on (or, for a worker, switch **Cordon** off) on the node's
-edit form. Either clears the **Tenants drained** mark.
+To put a node back into service after maintenance, set **Tenant hosting** back
+to All tenants or Pinned tenants only (or, for a worker, switch **Cordon** off)
+on the node's edit form. Either clears the **Tenants drained** mark.
 
 !!! info "Two replicas, two servers"
     In HA mode the platform's two-replica components — the WAF and the
@@ -401,7 +433,9 @@ the right outcome — but it should never be a surprise.
 
 **Cluster → Nodes** shows a **&lt;node&gt; is back online** panel listing every
 tenant still placed elsewhere, how it got there (automatically, or by an
-operator), and which way Insula leans:
+operator), and which way Insula leans. A tenant leaves the list once it is
+moved again by any route — its **Placement**, a drain, or back to the node it
+came from:
 
 | It says | Meaning |
 |---|---|

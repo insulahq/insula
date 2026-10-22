@@ -86,6 +86,65 @@ describe('evaluateStandby — can a failover start from a standby copy?', () => 
     expect(c.status).toBe('not_implemented');
   });
 
+  // A standby move labels a new node, which copies the whole store before it
+  // reports. Production: the move alerted "<new standby>: has never finished a copy"
+  // six minutes in; the copy finished at ten.
+  const since = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString();
+
+  it('a node that just became a standby is preparing, not failing', () => {
+    const c = evaluateStandby(input([node('a', { isActive: true }), node('b', { isStandby: true, standbySince: since(360) })]));
+    expect(c).toMatchObject({ status: 'ok', healthy: true, error: null });
+    expect(c.nodes[0]).toMatchObject({ node: 'b', ageSeconds: null, fresh: false, firstCopySince: expect.any(String), firstCopy: 'preparing' });
+    expect(capacityItems('standby', c)).toEqual([]);
+  });
+
+  it('a report from before the node became a standby again does not count — it is preparing', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true, standbySince: since(300) })], [report('b', 3 * 86_400)]));
+    expect(c.status).toBe('ok');
+    expect(c.nodes[0]).toMatchObject({ ageSeconds: null, sizeBytes: null, firstCopySince: expect.any(String) });
+  });
+
+  it('its first report ends the preparing — then it is judged as any standby', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true, standbySince: since(900) })], [report('b', 60)]));
+    expect(c.status).toBe('ok');
+    expect(c.nodes[0]).toMatchObject({ ageSeconds: 60, fresh: true, firstCopySince: null });
+  });
+
+  it('a first copy that has not finished after six hours fails, saying so', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true, standbySince: since(6 * 3600 + 60) })]));
+    expect(c.status).toBe('fail');
+    expect(capacityItems('standby', c)).toEqual(['b: first copy not finished 361 min after it became a standby']);
+  });
+
+  it('preparing does not hide another standby that is stale', () => {
+    const c = evaluateStandby(input(
+      [node('b', { isStandby: true, standbySince: since(120) }), node('c', { isStandby: true })],
+      [report('c', 4000)],
+    ));
+    expect(c.status).toBe('fail');
+    expect(capacityItems('standby', c)).toEqual(['c: newest complete copy 67 min old']);
+  });
+
+  it('a first copy whose copier is not running ten minutes on fails — the grace is for a slow copy', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true, standbySince: since(15 * 60), copierRunning: false })]));
+    expect(c.status).toBe('fail');
+    expect(c.nodes[0]).toMatchObject({ firstCopy: 'not_running' });
+    expect(capacityItems('standby', c)).toEqual(['b: became a standby 15 min ago, and its copier is not running']);
+  });
+
+  it('a copier still starting, or one that could not be checked, leaves it preparing', () => {
+    expect(evaluateStandby(input([node('b', { isStandby: true, standbySince: since(120), copierRunning: false })])).status).toBe('ok');
+    expect(evaluateStandby(input([node('b', { isStandby: true, standbySince: since(3600), copierRunning: null })])).status).toBe('ok');
+    expect(evaluateStandby(input([node('b', { isStandby: true, standbySince: since(3600), copierRunning: true })])).nodes[0])
+      .toMatchObject({ firstCopy: 'preparing' });
+  });
+
+  it('a standby labelled before the time was recorded is judged as before', () => {
+    const c = evaluateStandby(input([node('b', { isStandby: true, standbySince: null })]));
+    expect(c.status).toBe('fail');
+    expect(capacityItems('standby', c)).toEqual(['b: has never finished a copy']);
+  });
+
   it('ignores reports from nodes that are no longer standby', () => {
     const c = evaluateStandby(input([node('b', { isStandby: true })], [report('b', 5), report('gone', 99_999)]));
     expect(c.status).toBe('ok');

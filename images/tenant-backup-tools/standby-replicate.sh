@@ -53,6 +53,18 @@
 #                                         (MiB/s); unset or empty = no limit
 #   WRITER_LOCK_WAIT_SECONDS  one-shot mode: how long to wait for a running
 #                             pass to finish (default 600)
+#   PROGRESS_REPORT_SECONDS   a first copy's progress is posted at most this
+#                             often (default 15)
+#
+# ── A first copy reports its progress ────────────────────────────────────
+#
+# A node that has just become a standby has no copy to link from, so its
+# first pass moves the whole store — minutes to hours. Platform-api follows it
+# as a Task Center task. That pass (DaemonSet mode, no current copy) runs rsync
+# with its overall progress (--info=progress2, the file list built first so the
+# percentage is of the whole store) and posts bytes and percent to
+# /internal/mail/standby-replicate-progress. Every later pass, and the
+# planned-move final sync, runs exactly as before.
 
 set -e
 
@@ -62,6 +74,9 @@ PUBLISHER_RSYNC_URL="${PUBLISHER_RSYNC_URL:-rsync://mail-stack-rsyncd.mail.svc.c
 NODE_NAME="${NODE_NAME:-unknown}"
 STANDBY_SETTINGS_DIR="${STANDBY_SETTINGS_DIR:-/etc/mail-standby}"
 WRITER_LOCK_WAIT_SECONDS="${WRITER_LOCK_WAIT_SECONDS:-600}"
+PROGRESS_REPORT_SECONDS="${PROGRESS_REPORT_SECONDS:-15}"
+# A number, or the default: the filter's arithmetic must never fail.
+case "$PROGRESS_REPORT_SECONDS" in ''|*[!0-9]*) PROGRESS_REPORT_SECONDS=15 ;; esac
 # DaemonSet mode (LOOP_INTERVAL_SECONDS > 0) runs forever sleeping
 # between iterations so EVERY standby refreshes on its own cadence.
 # LOOP_INTERVAL_SECONDS=0 runs once and exits (for one-shot Jobs).
@@ -174,6 +189,53 @@ bwlimit_arg() {
   fi
 }
 
+# post_progress <bytes> <percent> — best effort: a post that fails never
+# touches the pass.
+post_progress() {
+  curl -sS -m 5 -o /dev/null \
+    -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -X POST "${PLATFORM_API_URL}/api/v1/internal/mail/standby-replicate-progress" \
+    -d "$(printf '{"node":"%s","bytes":%s,"percent":%s}' "$NODE_NAME" "$1" "$2")" >/dev/null 2>&1 || true
+}
+
+# progress_filter — reads rsync's --info=progress2 output on stdin. Progress
+# lines (they end in \r, not \n) are posted at most every
+# PROGRESS_REPORT_SECONDS, and 100% once; every other line goes to the log.
+#   "     1,234,567  45%   10.52MB/s    0:01:23 (xfr#12, to-chk=1000/2000)"
+progress_filter() {
+  set -f
+  _last=0
+  _done=""
+  # tr block-buffers into a pipe: without stdbuf every line of a long copy
+  # would arrive at its end, and the posts with it.
+  if command -v stdbuf >/dev/null 2>&1; then stdbuf -oL tr '\r' '\n'; else tr '\r' '\n'; fi \
+  | while IFS= read -r _line; do
+    # shellcheck disable=SC2086 # split into fields on purpose (globbing is off)
+    set -- $_line
+    case "${2:-}" in
+      [0-9]%|[0-9][0-9]%|100%)
+        _pct=${2%\%}
+        _bytes=$(printf '%s' "$1" | tr -dc 0-9)
+        _now=$(date +%s)
+        if [ "$_pct" = 100 ]; then
+          [ -n "$_done" ] && continue
+          _done=1
+        elif [ $((_now - _last)) -lt "$PROGRESS_REPORT_SECONDS" ]; then
+          continue
+        fi
+        _last=$_now
+        post_progress "${_bytes:-0}" "$_pct"
+        continue
+        ;;
+    esac
+    # An `if`, not `&&`: a false && list as the loop's last command would make
+    # the filter exit 1 on a trailing blank line.
+    if [ -n "$_line" ]; then printf '%s\n' "$_line"; fi
+  done
+  return 0
+}
+
 run_once() {
 echo "=== standby-replicate: node=$NODE_NAME dir=$STANDBY_DIR ==="
 
@@ -224,12 +286,35 @@ echo "standby-replicate: rsync $PUBLISHER_RSYNC_URL → $NEXT_DIR/${cur:+ (uncha
 #                 the nobody-uid rsyncd sidecar cannot enter it (exit 23)
 # Without --inplace rsync writes each file to a temp name and renames it, so a
 # hard link shared with the current copy is never modified in place.
-if ! rsync -a --delete --partial --timeout=60 \
+#
+# A first copy in DaemonSet mode (see the header) also reports its progress:
+#   --info=progress2     one overall progress line instead of per-file output
+#   --no-inc-recursive   the whole file list first, so the percentage is of
+#                        the whole store (the store is a few hundred files)
+# rsync's own exit code is carried out of the pipe in a file (sh has no
+# PIPESTATUS); its && / || list keeps errexit from cutting it short, and the
+# filter's status (the pipe's) never decides the pass.
+if [ -z "$cur" ] && [ "$LOOP_INTERVAL_SECONDS" -gt 0 ] && [ -n "${PLATFORM_API_TOKEN:-}" ]; then
+  echo "standby-replicate: first copy on this node — reporting its progress"
+  rc_file="$STANDBY_DIR/.rsync-rc.$$"
+  { rsync -a --delete --partial --timeout=60 \
+      --info=progress2 --no-inc-recursive \
+      --exclude='lost+found/' \
+      ${bw:+"$bw"} \
+      "$PUBLISHER_RSYNC_URL" "$NEXT_DIR/" 2>&1 \
+      && echo 0 > "$rc_file" || echo "$?" > "$rc_file"; } | progress_filter || true
+  rsync_rc=$(cat "$rc_file" 2>/dev/null || echo 1)
+  rm -f "$rc_file"
+else
+  rsync_rc=0
+  rsync -a --delete --partial --timeout=60 \
      --exclude='lost+found/' \
      ${cur:+"--link-dest=$cur"} \
      ${bw:+"$bw"} \
-     "$PUBLISHER_RSYNC_URL" "$NEXT_DIR/" 2>&1; then
-  echo "standby-replicate: rsync FAILED — the current copy stays as it was; the next pass resumes this one"
+     "$PUBLISHER_RSYNC_URL" "$NEXT_DIR/" 2>&1 || rsync_rc=$?
+fi
+if [ "$rsync_rc" -ne 0 ]; then
+  echo "standby-replicate: rsync FAILED (exit $rsync_rc) — the current copy stays as it was; the next pass resumes this one"
   return 1
 fi
 end_ts=$(date +%s)

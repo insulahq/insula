@@ -5,7 +5,7 @@ import {
   ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { WafRuleExclusionScope } from '@insula/api-contracts';
+import type { WafMode, WafRuleExclusionScope } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
@@ -365,7 +365,8 @@ function SecurityTab({ tenantId, routeId, route }: {
      a SHARED modsec-crs sidecar — per-route values are inert (see
      annotation-sync.ts:351-375). Domain-scoped rule exclusions are now
      managed via the WAF Exclusions panel below (B2 design). */
-  const [wafEnabled, setWafEnabled] = useState(route.wafEnabled);
+  // An older backend sends no wafMode: on means enforced, as it always did.
+  const [wafMode, setWafMode] = useState<WafMode>(route.wafMode ?? (route.wafEnabled ? 'enforced' : 'off'));
   const [wafDirty, setWafDirty] = useState(false);
   const [showWafLog, setShowWafLog] = useState(false);
   const markWafDirty = () => setWafDirty(true);
@@ -404,7 +405,7 @@ function SecurityTab({ tenantId, routeId, route }: {
       // backend Zod schema accepts (waf_owasp_crs, waf_anomaly_threshold,
       // waf_excluded_rules) have no runtime effect under the shared-sidecar
       // architecture, so we don't surface them to tenants.
-      await updateSecurity.mutateAsync({ waf_enabled: wafEnabled });
+      await updateSecurity.mutateAsync({ waf_mode: wafMode });
       setWafDirty(false);
     } catch (err) {
       setWafSaveError(err instanceof Error ? err.message : 'Failed to save WAF settings');
@@ -467,8 +468,11 @@ function SecurityTab({ tenantId, routeId, route }: {
             {wafOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">WAF (Web Application Firewall)</h3>
           </div>
-          <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', wafEnabled ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400')}>
-            {wafEnabled ? 'Enabled' : 'Disabled'}
+          <span
+            className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', WAF_MODE_BADGE[route.wafMode ?? (route.wafEnabled ? 'enforced' : 'off')])}
+            data-testid="waf-mode-badge"
+          >
+            {WAF_MODE_LABEL[route.wafMode ?? (route.wafEnabled ? 'enforced' : 'off')]}
           </span>
         </button>
         {wafOpen && (
@@ -479,25 +483,51 @@ function SecurityTab({ tenantId, routeId, route }: {
         >
 
         <div>
-          <label className="flex items-center justify-between">
-            <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={wafEnabled}
-              onClick={() => { setWafEnabled(!wafEnabled); markWafDirty(); }}
-              className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                wafEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-              )}
-              data-testid="waf-enabled-toggle"
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-gray-700 dark:text-gray-300" id="waf-mode-label">Mode</span>
+            {/* A radio group: one tab stop (the chosen mode), arrow keys move
+                and choose — the ARIA radio pattern. */}
+            <div
+              role="radiogroup"
+              aria-labelledby="waf-mode-label"
+              className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 p-0.5 bg-gray-50 dark:bg-gray-900"
+              data-testid="waf-mode"
+              onKeyDown={(e) => {
+                const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+                  : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+                if (!step) return;
+                e.preventDefault();
+                const next = WAF_MODES[(WAF_MODES.indexOf(wafMode) + step + WAF_MODES.length) % WAF_MODES.length];
+                setWafMode(next);
+                markWafDirty();
+                (e.currentTarget.querySelector(`[data-testid="waf-mode-${next}"]`) as HTMLButtonElement | null)?.focus();
+              }}
             >
-              <span className={clsx(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                wafEnabled ? 'translate-x-5' : 'translate-x-0',
-              )} />
-            </button>
-          </label>
+              {WAF_MODES.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="radio"
+                  aria-checked={wafMode === m}
+                  tabIndex={wafMode === m ? 0 : -1}
+                  onClick={() => { if (wafMode !== m) { setWafMode(m); markWafDirty(); } }}
+                  className={clsx(
+                    'rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wide transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-gray-900',
+                    wafMode === m
+                      ? WAF_MODE_SELECTED[m]
+                      : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                  )}
+                  data-testid={`waf-mode-${m}`}
+                >
+                  {WAF_MODE_LABEL[m]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid="waf-mode-help">
+            {WAF_MODE_HELP[wafMode]}
+          </p>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             ModSecurity / OWASP CRS Web Application Firewall protects against common web
             attacks (SQL injection, XSS, LFI/RFI, etc.). Inspection runs on a shared
@@ -1169,6 +1199,28 @@ function ProtectedDirDetail({ tenantId, routeId, dir }: {
 
 // ─── WAF Log Section ────────────────────────────────────────────────────────
 
+// ─── WAF mode ───────────────────────────────────────────────────────────────
+// Off, detection only (every request checked and every match logged, nothing
+// blocked — run it as long as needed before enforcing), or enforced.
+const WAF_MODES: readonly WafMode[] = ['off', 'detection', 'enforced'];
+const WAF_MODE_LABEL: Record<WafMode, string> = { off: 'Off', detection: 'Detection only', enforced: 'Enforced' };
+const WAF_MODE_BADGE: Record<WafMode, string> = {
+  off: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+  detection: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
+  enforced: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+};
+const WAF_MODE_SELECTED: Record<WafMode, string> = {
+  off: 'bg-gray-600 text-white dark:bg-gray-500',
+  detection: 'bg-sky-600 text-white dark:bg-sky-500',
+  enforced: 'bg-green-600 text-white dark:bg-green-500',
+};
+const WAF_MODE_HELP: Record<WafMode, string> = {
+  off: 'Requests are not checked.',
+  detection: 'Every request is checked and every rule match is logged below, but nothing is blocked — '
+    + 'run it as long as you need, add exclusions for false positives, then enforce.',
+  enforced: 'Requests that trip the rules are blocked (403) and logged below.',
+};
+
 const SEV_STYLE: Record<string, string> = {
   critical: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
@@ -1251,6 +1303,15 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
                   </span>
                 </td>
                 <td className="px-2 py-1.5" title={log.message}>
+                  {log.detectionOnly && (
+                    <span
+                      className="mr-1.5 inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase bg-sky-900/60 text-sky-200"
+                      title="Logged in detection-only mode: this request was not blocked"
+                      data-testid={`waf-log-detected-${log.id}`}
+                    >
+                      detected · not blocked
+                    </span>
+                  )}
                   <span className="text-blue-400 font-bold">{log.ruleId}</span>
                   <span className="text-gray-600 mx-1">-</span>
                   <span className="text-gray-300">{ruleName}</span>

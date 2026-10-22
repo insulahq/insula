@@ -10,6 +10,7 @@ import { useSystemSettings } from '@/hooks/use-system-settings';
 import { formatCurrency } from '@/lib/format-currency';
 import ProvisioningProgressModal from './ProvisioningProgressModal';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import { nodeTakesTier, pinnedOnlySuffix } from '@/lib/tenant-hosting';
 
 /**
  * Same "free / total" formatter as PlacementCard. Kept colocated rather
@@ -473,16 +474,18 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
               >
                 <option value="">Auto (recommended — scheduler picks based on capacity)</option>
                 {(nodesData?.data ?? [])
-                  .filter((n) => n.canHostTenantWorkloads)
+                  .filter((n) => nodeTakesTier(n, storageTier))
                   .map((n) => (
                     <option key={n.name} value={n.name}>
                       {nodeLabel(n.name)}
+                      {pinnedOnlySuffix(n)}
                       {formatAvailability(usageByName.get(n.name))}
                     </option>
                   ))}
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Pod and primary Longhorn replica land on this node. Auto picks the node with most free capacity at provisioning. HA tier can fail over to other nodes.
+                Pod and primary Longhorn replica land on this node. Auto picks the node with most free capacity at
+                provisioning, among nodes that take all tenants. HA tier can fail over to other nodes.
               </p>
             </div>
 
@@ -493,7 +496,13 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
               <select
                 id="storage-tier"
                 value={storageTier}
-                onChange={(e) => setStorageTier(e.target.value as 'local' | 'ha')}
+                onChange={(e) => {
+                  const tier = e.target.value as 'local' | 'ha';
+                  setStorageTier(tier);
+                  // A pinned-only node takes Local-tier tenants only: back to Auto.
+                  const picked = (nodesData?.data ?? []).find((n) => n.name === nodeName);
+                  if (picked && !nodeTakesTier(picked, tier)) setNodeName('');
+                }}
                 className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                 data-testid="storage-tier-select"
               >

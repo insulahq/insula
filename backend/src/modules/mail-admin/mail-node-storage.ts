@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { parseQuantity } from './mail-pvc.js';
 import { findRunningStalwartPod } from './stalwart-pod.js';
+import { STANDBY_REPLICATOR_SELECTOR, copierRunningByNode, onFirstCopy, standbySinceFrom } from './standby-since.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STANDBY_NODE_LABEL_KEY = 'insula.host/mail-standby';
@@ -58,6 +59,17 @@ export interface MailNodeStorage {
   readonly mailUsedBytes: number | null;
   /** ISO timestamp of the data source (standby report time, or "live" for active). */
   readonly mailUsedReportedAt: string | null;
+  /**
+   * When this node became a standby (standby-since.ts); null when not a
+   * standby or labelled before that was recorded. A report from before it is
+   * from an earlier stint and is not used.
+   */
+  readonly standbySince?: string | null;
+  /**
+   * Is this standby's replicator pod running? Null when not a standby or the
+   * pods could not be read.
+   */
+  readonly copierRunning?: boolean | null;
 }
 
 export interface MailNodeStorageDeps {
@@ -121,6 +133,16 @@ export async function getMailNodeStorage(
     }
   }
 
+  // 2b. The standby replicator pods: a new standby whose copier is not
+  //     running is not "preparing" (standby-since.ts). Null when unreadable.
+  let copiers: Map<string, boolean> | null = null;
+  try {
+    const pods = await core.listNamespacedPod({ namespace: 'mail', labelSelector: STANDBY_REPLICATOR_SELECTOR }) as { items?: [] };
+    copiers = copierRunningByNode(pods.items ?? []);
+  } catch (err) {
+    log.warn('mail-node-storage: listing the standby replicator pods failed:', err);
+  }
+
   // 3. Pre-read mail_standby_reports JSONB so we can fold per-node
   //    sizeBytes in step 5 without one query per node.
   const standbyReports = await readStandbyReports(db, log);
@@ -166,7 +188,9 @@ export async function getMailNodeStorage(
       // naming nodes by private DNS), so look under both.
       const kubeName = node?.metadata?.name;
       const r = standbyReports[nodeName] ?? (kubeName ? standbyReports[kubeName] : undefined);
-      if (r) {
+      // A copy reported before the node became a standby again was set aside
+      // when it was de-elected; until its first copy since, the size is unknown.
+      if (r && !onFirstCopy(isStandby ? standbySinceFrom(node?.metadata?.annotations) : null, r.reportedAt)) {
         mailUsedBytes = r.sizeBytes;
         mailUsedReportedAt = r.reportedAt;
       }
@@ -181,6 +205,8 @@ export async function getMailNodeStorage(
       freeBytes,
       mailUsedBytes,
       mailUsedReportedAt,
+      standbySince: isStandby ? standbySinceFrom(node?.metadata?.annotations) : null,
+      copierRunning: isStandby && copiers ? (copiers.get(node?.metadata?.name ?? nodeName) ?? false) : null,
     });
   }
 
@@ -196,7 +222,7 @@ export async function getMailNodeStorage(
 // ── helpers ──────────────────────────────────────────────────────────
 
 interface NodeShape {
-  metadata?: { name?: string; labels?: Record<string, string> };
+  metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
   status?: {
     allocatable?: { 'ephemeral-storage'?: string };
     capacity?: { 'ephemeral-storage'?: string };

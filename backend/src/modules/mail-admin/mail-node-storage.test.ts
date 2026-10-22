@@ -212,6 +212,19 @@ describe('mail-node-storage', () => {
     expect(cards[0].mailUsedReportedAt).toBe('2026-05-26T14:51:33.949Z');
   });
 
+  it('a report from before the node became a standby again is not its size', async () => {
+    // The earlier stint's copy was set aside when it was de-elected.
+    const n = node('staging1', { standby: true });
+    const relabelled = { ...n, metadata: { ...n.metadata, annotations: { 'insula.host/mail-standby-since': '2026-10-22T09:03:21.000Z' } } };
+    const cards = await getMailNodeStorage(buildDeps({
+      nodes: [relabelled],
+      pvs: [],
+      placement: { activeNode: null, primaryNode: null, secondaryNode: null, tertiaryNode: null },
+      standbyReports: { staging1: { sizeBytes: 22_124_071, reportedAt: '2026-10-01T00:00:00.000Z' } },
+    }));
+    expect(cards[0]).toMatchObject({ mailUsedBytes: null, standbySince: '2026-10-22T09:03:21.000Z' });
+  });
+
   it('graceful when standby node has no report yet', async () => {
     const cards = await getMailNodeStorage(buildDeps({
       nodes: [node('staging1', { standby: true })],

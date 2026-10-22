@@ -33,7 +33,15 @@ Two **Capacity** checks sit in the same modal and raise an admin alert when they
   restores the fresher of that copy and the newest backup snapshot, so an old copy
   means mail received since would be lost. Copies age while a standby re-copies the
   whole store, after a large import or after the mail store rewrites its files; the
-  previous copy stays in place until the new one is complete.
+  previous copy stays in place until the new one is complete. A node that has just
+  become a standby — you moved the standby to it — copies the whole store before its
+  first report. Until then it is **preparing**, not failing, and raises no alert — as long
+  as its copier runs. A first copy whose copier is not running ten minutes after the move
+  (the node is down, or the copier pod cannot start) fails the check at once, and one that
+  has not finished after six hours fails it too. A failing standby check does not stop
+  mail delivery, and its alert says so — what is at stake is mail received since the newest
+  copy, should a failover happen now. The same goes for **Disk headroom** until the disk
+  is full.
 - **Disk headroom.** Every mail node needs free space at least the size of its mail
   data. The mail store periodically rewrites its message files and holds the old and
   new files until it finishes.
@@ -227,7 +235,15 @@ that feature in the webmail UI.
 
 - **Placement & migration** — the mail-server placement and **disaster
   recovery** card: failover, failback, migrate to another node, and
-  standby data-freshness. Below it, the **Mail Port Exposure** card shows
+  standby data-freshness, which lists the nodes that are standbys now. After you
+  choose a secondary or tertiary, or move the standby to another node, the card says
+  the new standby is being prepared until its first copy is complete, and the old node
+  leaves the list. The first copy is a **Task Center** task, *Prepare the mail standby
+  on &lt;node&gt;*: saving opens its progress — the percentage copied and about how long
+  is left, which the copier reports every 15 seconds — and **View progress** on the notice
+  re-opens it. It fails with the reason when the copier does not start or the copy runs past
+  six hours. Moving the primary is followed by its own *Migrate mail to &lt;node&gt;* task.
+  Below it, the **Mail Port Exposure** card shows
   how the mail ports are published — the default (`allServerNodes`) is
   correct for almost everyone.
 - **Storage** — per-node storage for the mail data. Each mail-relevant node

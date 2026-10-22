@@ -25,6 +25,8 @@ import { useTenantPlacement } from '@/hooks/use-tenant-placement';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { Card, Chip } from './ui';
 import { formatAvailability } from './placement-format';
+import { nodeTakesTier, pinnedOnlySuffix } from '@/lib/tenant-hosting';
+import { nodeTenantHosting } from '@insula/api-contracts';
 
 export default function PlacementSection({ tenant, tenantId }: { readonly tenant: Tenant; readonly tenantId: string }) {
   const { data: placementRes, isLoading } = useTenantPlacement(tenantId);
@@ -41,6 +43,9 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
 
   const nodes = (nodesRes?.data ?? []).filter((n) => n.canHostTenantWorkloads);
   const usageByName = new Map((usageRes?.data ?? []).map((u) => [u.name, u]));
+  // A pinned-only node takes Local-tier tenants only (lib/tenant-hosting).
+  const pinNode = nodes.find((n) => n.name === pinTarget);
+  const haBlockedByPin = pinNode ? !nodeTakesTier(pinNode, 'ha') : false;
   const active = placement ? (placement.workloadNodes.length > 0 ? placement.workloadNodes : placement.attachedNodes) : [];
   const pinned = placement?.primaryNode ?? tenant.nodeName ?? null;
   const dataNodes = placement?.dataNodes ?? [];
@@ -147,6 +152,7 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
                   {isPinned && active.length === 0 && <li>Nothing runs now: no pod, no attached volume</li>}
                   {isActive && !holdsData && dataNodes.length > 0 && <li className="text-amber-700 dark:text-amber-400">Reads its data over the network</li>}
                   {n.cordoned && <li className="text-amber-700 dark:text-amber-400">Cordoned: no new pods are scheduled here</li>}
+                  {nodeTenantHosting(n) === 'pinned' && <li>Takes pinned tenants only</li>}
                   {usage && <li className="text-xs text-gray-500 dark:text-gray-400">{formatAvailability(usage).replace(/^ — /, '')}</li>}
                 </ul>
               </div>
@@ -164,8 +170,8 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
               data-testid="placement-worker-select"
             >
               <option value="">Auto: the scheduler picks by free capacity</option>
-              {nodes.map((n) => (
-                <option key={n.name} value={n.name}>{nodeLabel(n.name)}{n.cordoned ? ' (cordoned)' : ''}{formatAvailability(usageByName.get(n.name))}</option>
+              {nodes.filter((n) => nodeTakesTier(n, tierTarget) || n.name === pinTarget).map((n) => (
+                <option key={n.name} value={n.name}>{nodeLabel(n.name)}{pinnedOnlySuffix(n)}{n.cordoned ? ' (cordoned)' : ''}{formatAvailability(usageByName.get(n.name))}</option>
               ))}
             </select>
           </label>
@@ -178,9 +184,11 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
               data-testid="placement-tier-select"
             >
               <option value="local">Local: 1 replica, restore from backup if the node is lost</option>
-              <option value="ha" disabled={nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha'}>
+              <option value="ha" disabled={haBlockedByPin || (nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha')}>
                 HA: 2 replicas, automatic failover in 30–90 s, 2× storage
-                {nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha' ? ` (needs 3 tenant nodes; the cluster has ${nodes.length})` : ''}
+                {haBlockedByPin
+                  ? ' (not on a node that takes pinned tenants only)'
+                  : nodes.length < 3 && (tenant.storageTier ?? 'local') !== 'ha' ? ` (needs 3 tenant nodes; the cluster has ${nodes.length})` : ''}
               </option>
             </select>
           </label>

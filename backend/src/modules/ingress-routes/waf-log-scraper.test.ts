@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseContributingRules, parseModSecurityLine } from './waf-log-scraper.js';
+import { parseContributingRules, parseModSecurityLine, parseScrapedLog } from './waf-log-scraper.js';
 
 /**
  * Shape copied from a real modsec-crs audit record, with every identifier
@@ -128,5 +128,35 @@ describe('parseModSecurityLine — dedup identity', () => {
     const second = parseModSecurityLine(withoutUid)!;
     expect(second.uniqueId).not.toBe(first.uniqueId);
     expect(first.hasStableUid).toBe(false);
+  });
+});
+
+// A route in detection-only mode: the ModSecurity plugin's check carries
+// X-Insula-Waf-Mode: detect, which the audit record keeps. Its events are
+// marked, so the route's WAF Log says "not blocked" and auto-ban skips them.
+describe('parseScrapedLog — detection-only events', () => {
+  const record = (uid: string, headers: Record<string, string>) => JSON.stringify({
+    transaction: {
+      client_ip: '192.0.2.60',
+      unique_id: uid,
+      request: { method: 'GET', uri: '/?q=<script>', headers: { 'X-Forwarded-Host': 'shop.example.test', ...headers } },
+      response: { http_code: 403 },
+      messages: [{
+        message: 'XSS Attack Detected via libinjection',
+        details: { match: 'x', ruleId: '941100', file: 'REQUEST-941-APPLICATION-ATTACK-XSS.conf', severity: '2' },
+      }],
+    },
+  });
+
+  it('marks the events of a request checked in detection-only mode', () => {
+    const events = parseScrapedLog([record('111.1', { 'X-Insula-Waf-Mode': 'detect' }), record('222.2', {})].join('\n'));
+    expect(events.map((e) => [e.uniqueId, e.hostname, e.detectionOnly])).toEqual([
+      ['111.1:941100', 'shop.example.test', true],
+      ['222.2:941100', 'shop.example.test', false],
+    ]);
+  });
+
+  it('only the value the plugin sets counts', () => {
+    expect(parseScrapedLog(record('333.3', { 'X-Insula-Waf-Mode': 'enforce' }))[0]?.detectionOnly).toBe(false);
   });
 });

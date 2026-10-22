@@ -2524,7 +2524,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'Mail health degraded: {{component}}',
       'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} {{items}} '
-      + 'Mail delivery is likely affected. Open Monitoring → Mail for the full component '
+      + '{{impact}} Open Monitoring → Mail for the full component '
       + 'breakdown and per-probe remediation.',
       'Open mail monitoring',
       '{{panelUrl}}',
@@ -2539,6 +2539,9 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       // rather than as a stray separator.
       { name: 'detail', type: 'string', required: false },
       { name: 'items', type: 'list', required: false },
+      // What it means for mail (componentImpact): the standby copy and the disk
+      // headroom do not stop delivery, the other components do.
+      { name: 'impact', type: 'string', required: false },
       { name: 'panelUrl', type: 'string', required: false },
     ],
   },
@@ -2548,7 +2551,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     locale: 'en',
     subjectTemplate: '[MAIL] {{component}} check failing',
     bodyTemplate: 'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}}{{items}}\n'
-      + 'Mail delivery is likely affected — see Monitoring → Mail.',
+      + '{{impact}} See Monitoring → Mail.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -2556,6 +2559,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'mailHostname', type: 'string', required: true },
       { name: 'detail', type: 'string', required: false },
       { name: 'items', type: 'list', required: false },
+      { name: 'impact', type: 'string', required: false },
       { name: 'panelUrl', type: 'string', required: false },
     ],
   },

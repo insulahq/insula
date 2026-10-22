@@ -11,7 +11,7 @@ import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import { useAuth } from '@/hooks/use-auth';
 import type { AdminNode, ClusterNodeResponse, NodeIngressMode, HostMigrationNodeStatus } from '@insula/api-contracts';
-import { nodeChecksForUpdatesHourly } from '@insula/api-contracts';
+import { nodeChecksForUpdatesHourly, nodeTenantHosting } from '@insula/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
@@ -442,7 +442,15 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
                   {health.severity === 'critical' ? '⚠ critical' : '! warning'}
                 </span>
               )}
-              {node.canHostTenantWorkloads ? (
+              {nodeTenantHosting(node) === 'pinned' ? (
+                <span
+                  className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800 dark:bg-sky-900/40 dark:text-sky-300"
+                  title="Takes only tenants placed here by hand — Auto placement never picks it"
+                  data-testid={`node-pinned-only-tag-${node.name}`}
+                >
+                  pinned tenants only
+                </span>
+              ) : node.canHostTenantWorkloads ? (
                 <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
                   hosts tenants
                 </span>

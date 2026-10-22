@@ -27,6 +27,14 @@ vi.mock('../../db/schema.js', () => ({
   },
 }));
 
+// The HA-tenant lookup is the one query updateNode's chainable stubs cannot
+// tell apart; everything else in the module is real.
+const haTenantsPinnedTo = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+vi.mock('./tenant-hosting.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./tenant-hosting.js')>()),
+  haTenantsPinnedTo,
+}));
+
 interface MockTenantRow {
   id: string;
   name: string;
@@ -482,6 +490,11 @@ describe('countOtherSchedulableTenantNodes (drain guard #0 predicate)', () => {
     expect(countOtherSchedulableTenantNodes('a', dbTwo, [liveNode({ name: 'a' }), liveNode({ name: 'b', unschedulable: true })])).toBe(0);
   });
 
+  it('excludes a peer that takes pinned tenants only — unpinned tenants would land there for want of anywhere else', () => {
+    const db = [dbTwo[0], { ...dbTwo[1], labels: { 'insula.host/tenant-placement': 'pinned' } }];
+    expect(countOtherSchedulableTenantNodes('a', db, [liveNode({ name: 'a' }), liveNode({ name: 'b' })])).toBe(0);
+  });
+
   it('excludes a NotReady peer (degraded node is not safe schedulable surface)', () => {
     expect(countOtherSchedulableTenantNodes('a', dbTwo, [liveNode({ name: 'a' }), liveNode({ name: 'b', notReady: true })])).toBe(0);
   });
@@ -868,6 +881,117 @@ describe('Postgres instances on a drained / deleted node', () => {
     expect(JSON.stringify(patchNode.mock.calls[0][0])).toContain('"insula.host/tenants-drained":null');
   });
 
+  describe('tenant hosting (all / pinned / none)', () => {
+    type Taint = { key: string; value?: string; effect: string };
+    const nodeDb = (row: { role?: string; canHost?: boolean; pinned?: boolean; taints?: Taint[] }): Database => {
+      const rows = Object.assign([{
+        name: 'w1', role: row.role ?? 'worker', canHostTenantWorkloads: row.canHost ?? true, ingressMode: 'all',
+        labels: row.pinned ? { 'insula.host/tenant-placement': 'pinned' } : {},
+        taints: row.taints ?? [],
+      }], { rows: [] as unknown[] });
+      const proxy: unknown = new Proxy(() => proxy, {
+        get: (_t, prop) => (prop === 'then' ? (res: (v: unknown) => void) => res(rows) : () => proxy),
+        apply: () => proxy,
+      });
+      return proxy as Database;
+    };
+    const k8sFor = () => {
+      const patchNode = vi.fn(async () => ({}));
+      const k8s = {
+        core: { patchNode, readNode: vi.fn(async () => { throw new Error('skip refresh'); }) },
+        custom: {},
+      } as unknown as K8sClients;
+      return { k8s, patchNode };
+    };
+    const sent = (patchNode: ReturnType<typeof vi.fn>) => patchNode.mock.calls[0][0] as {
+      body: { metadata: { labels: Record<string, string | null> }; spec: { taints: Taint[] } };
+    };
+    const PINNED_TAINT = { key: 'insula.host/pinned-tenants-only', value: 'true', effect: 'PreferNoSchedule' };
+    const SERVER_ONLY = { key: 'insula.host/server-only', value: 'true', effect: 'NoSchedule' };
+
+    it('pinned: takes tenants, carries the label and only a PreferNoSchedule taint', async () => {
+      const { k8s, patchNode } = k8sFor();
+      await updateNode(nodeDb({}), k8s, 'w1', { tenantHosting: 'pinned' });
+      const { body } = sent(patchNode);
+      expect(body.metadata.labels).toMatchObject({
+        'insula.host/host-tenant-workloads': 'true', 'insula.host/tenant-placement': 'pinned',
+      });
+      expect(body.spec.taints).toEqual([PINNED_TAINT]);
+    });
+
+    it('all: drops the label and the taint, and keeps taints that are not ours', async () => {
+      const { k8s, patchNode } = k8sFor();
+      const foreign = { key: 'example.test/gpu', value: 'true', effect: 'NoSchedule' };
+      await updateNode(nodeDb({ pinned: true, taints: [PINNED_TAINT, foreign] }), k8s, 'w1', { tenantHosting: 'all' });
+      const { body } = sent(patchNode);
+      expect(body.metadata.labels['insula.host/tenant-placement']).toBeNull();
+      expect(body.metadata.labels['insula.host/host-tenant-workloads']).toBe('true');
+      expect(body.spec.taints).toEqual([foreign]);
+    });
+
+    it('none on a server: host label off, label dropped, server-only taint instead', async () => {
+      const { k8s, patchNode } = k8sFor();
+      // Longhorn's toleration check reads these; a tolerant cluster.
+      tolerantLonghorn(k8s, [{ operator: 'Exists' }]);
+      await updateNode(nodeDb({ role: 'server', pinned: true, taints: [PINNED_TAINT] }), k8s, 'w1', { tenantHosting: 'none' });
+      const { body } = sent(patchNode);
+      expect(body.metadata.labels).toMatchObject({
+        'insula.host/host-tenant-workloads': 'false', 'insula.host/tenant-placement': null,
+      });
+      expect(body.spec.taints).toEqual([SERVER_ONLY]);
+    });
+
+    it('a drain turning hosting off keeps "pinned" for when tenants are let back', async () => {
+      const { k8s, patchNode } = k8sFor();
+      await updateNode(nodeDb({ pinned: true, taints: [PINNED_TAINT] }), k8s, 'w1', { canHostTenantWorkloads: false });
+      const off = sent(patchNode).body;
+      expect(off.metadata.labels).toMatchObject({
+        'insula.host/host-tenant-workloads': 'false', 'insula.host/tenant-placement': 'pinned',
+      });
+      expect(off.spec.taints).toEqual([]);
+
+      patchNode.mockClear();
+      await updateNode(nodeDb({ canHost: false, pinned: true }), k8s, 'w1', { canHostTenantWorkloads: true });
+      const back = sent(patchNode).body as { metadata: { labels: Record<string, string | null>; annotations?: Record<string, null> }; spec: { taints: Taint[] } };
+      expect(back.metadata.labels['insula.host/tenant-placement']).toBe('pinned');
+      expect(back.spec.taints).toEqual([PINNED_TAINT]);
+      expect(back.metadata.annotations).toEqual({ 'insula.host/tenants-drained': null });
+    });
+
+    it('starts from the node itself, not a stored row a sync tick behind', async () => {
+      // Pinned a moment ago; the row has not caught up. A save of the notes
+      // must not rebuild the labels and taints from the stale row.
+      const patchNode = vi.fn(async () => ({}));
+      const readNode = vi.fn(async () => ({
+        metadata: { name: 'w1', labels: {
+          'insula.host/node-role': 'worker', 'insula.host/host-tenant-workloads': 'true', 'insula.host/tenant-placement': 'pinned',
+        } },
+        spec: { taints: [PINNED_TAINT] },
+        status: {},
+      }));
+      const k8s = { core: { patchNode, readNode }, custom: {} } as unknown as K8sClients;
+      await updateNode(nodeDb({}), k8s, 'w1', { role: 'worker', ingressMode: 'all', notes: 'remote' });
+      const { body } = sent(patchNode);
+      expect(body.metadata.labels['insula.host/tenant-placement']).toBe('pinned');
+      expect(body.spec.taints).toEqual([PINNED_TAINT]);
+    });
+
+    it('refuses pinned-only while HA-tier tenants are pinned to the node — nothing patched', async () => {
+      const { k8s, patchNode } = k8sFor();
+      haTenantsPinnedTo.mockResolvedValueOnce(['Acme']);
+      await expect(updateNode(nodeDb({}), k8s, 'w1', { tenantHosting: 'pinned' }))
+        .rejects.toMatchObject({ code: 'NODE_PINNED_TENANTS_ONLY', status: 409, details: { tenants: ['Acme'] } });
+      expect(patchNode).not.toHaveBeenCalled();
+    });
+
+    it('re-saving a node that is already pinned-only does not look the HA tenants up again', async () => {
+      const { k8s } = k8sFor();
+      haTenantsPinnedTo.mockClear();
+      await updateNode(nodeDb({ pinned: true, taints: [PINNED_TAINT] }), k8s, 'w1', { tenantHosting: 'pinned', notes: 'remote' });
+      expect(haTenantsPinnedTo).not.toHaveBeenCalled();
+    });
+  });
+
   it('drainNode: an uncovered database instance does not hold a TENANT drain back — the drain never touches it', async () => {
     const { k8s } = makeHaK8s([
       { name: 'system-db-1', node: 's1', primary: true, ready: false },
@@ -1127,9 +1251,12 @@ describe('drain of a node holding a stopped tenant\'s only copy', () => {
     return { k8s, patches };
   }
 
-  function makeTenantDb(pin = 's2'): Database {
-    const nodeRows = ['s1', 's2', 's3'].map((name) => ({ name, role: 'server', canHostTenantWorkloads: true }));
-    const tenantRows = [{ id: 'hat-id', name: 'Hat Co', ns: NS, tier: 'local', pin }];
+  function makeTenantDb(pin = 's2', opts: { tier?: 'local' | 'ha'; pinnedOnly?: string[] } = {}): Database {
+    const nodeRows = ['s1', 's2', 's3'].map((name) => ({
+      name, role: 'server', canHostTenantWorkloads: true,
+      labels: opts.pinnedOnly?.includes(name) ? { 'insula.host/tenant-placement': 'pinned' } : {},
+    }));
+    const tenantRows = [{ id: 'hat-id', name: 'Hat Co', ns: NS, tier: opts.tier ?? 'local', pin }];
     return {
       select: () => ({
         from: (tbl: object) => {
@@ -1168,6 +1295,28 @@ describe('drain of a node holding a stopped tenant\'s only copy', () => {
     const result = await drainNode(k8s, makeTenantDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
     expect(result.pickedTargets).toEqual({ 'hat-id': 's1' });
     expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('"Auto" never picks a node that takes pinned tenants only', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb('s2', { pinnedOnly: ['s3'] }), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({ 'hat-id': 's1' });
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's1' }]);
+  });
+
+  it('a pinned-only node is still an explicit target for a Local-tier tenant', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    const result = await drainNode(k8s, makeTenantDb('s2', { pinnedOnly: ['s3'] }), 's2', { tenantPlacement: { 'hat-id': 's3' }, blockNewTenants: false });
+    expect(result.pickedTargets).toEqual({});
+    expect(tickets(patches)).toEqual([{ volume: 'pvc-hat', node: 's3' }]);
+  });
+
+  it('an HA-tier tenant is refused a pinned-only node — before anything moves', async () => {
+    const { k8s, patches } = makeStoppedTenantK8s();
+    await expect(drainNode(k8s, makeTenantDb('s2', { tier: 'ha', pinnedOnly: ['s3'] }), 's2', {
+      tenantPlacement: { 'hat-id': 's3' }, blockNewTenants: false,
+    })).rejects.toMatchObject({ code: 'NODE_PINNED_TENANTS_ONLY', status: 409 });
+    expect(patches).toEqual([]);
   });
 
   it('an explicit target moves the data to that node', async () => {

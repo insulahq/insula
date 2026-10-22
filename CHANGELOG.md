@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.15-rc.3] - 2026-10-22
-
 ### BREAKING
 
 - **Archiving takes a suspended tenant only, and keeps the whole tenant; when the archive
@@ -90,6 +88,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **A route's WAF can run in detection only.** On a route's page, the WAF card's on/off switch is
+  now **Off | Detection only | Enforced**. Detection only checks every request against the rules and
+  logs every match in the route's **WAF Log** — marked *detected · not blocked* — but blocks
+  nothing, so the rules can run against real traffic for as long as needed (and exclusions be
+  added for false positives) before enforcing them. If the WAF itself cannot be reached, a
+  detection-only route keeps serving. Those events are also marked on Security → Web defense → WAF
+  events, and they never lead to an auto-ban or count as blocked on the dashboards. Auto-ban now
+  judges an event about a minute after it is logged, once the log reader has matched it to its
+  site and its mode — before, an event read in two halves could pass for an admin-site one.
+  Turning a route's WAF off through the older `waf_enabled` API field also clears detection only,
+  so turning it on again that way enforces. Installing the release restarts Traefik once, one node
+  at a time, to load the updated WAF plugin.
+- **A new mail standby's first copy is a Task Center task.** Choosing a secondary or tertiary,
+  moving the standby to another node, or a migration that leaves a different node as standby,
+  starts a full copy of the mail store on that node. **Prepare the mail standby on <node>** now
+  follows it, from the save to the node's first complete copy: saving the placement opens its
+  progress modal (start the copier, then copy the mail store with its percentage, what has been
+  copied and about how long is left — the copier reports its progress every 15 seconds during a
+  first copy), the "Preparing the standby" notice on Email → Operations has **View progress**,
+  and the standby's row shows the percentage too. The
+  task fails with the reason when the copier is not running ten minutes on (the node is down, the
+  pod cannot be scheduled or keeps failing) or the copy has not finished after six hours — the
+  same verdict as the standby check. A primary move is still followed by its **Migrate mail to
+  <node>** task; a node that becomes a standby during a DR failover or at platform-api start-up
+  gets a task every admin sees.
+- **A node can take pinned tenants only.** **Edit** on a node card now sets **Tenant hosting**
+  — All tenants, Pinned tenants only, or No tenants — in place of the "Can host tenant
+  workloads" switch. A pinned-only node holds the Local-tier tenants you place there (on create,
+  with **Placement**, or as a drain's target) and nothing else: Auto placement never picks it,
+  and a `PreferNoSchedule` taint (`insula.host/pinned-tenants-only`) makes Kubernetes run tenant
+  pods not pinned there on other nodes whenever one fits. For a server in another region, or one
+  kept for a customer. HA-tier tenants are refused there (409 `NODE_PINNED_TENANTS_ONLY`): they
+  are not held to one node. Stored as the label `insula.host/tenant-placement=pinned` next to
+  `insula.host/host-tenant-workloads`, which is unchanged; `PATCH /api/v1/admin/nodes/:name`
+  takes `tenantHosting`, and node responses carry it.
 - **An archived tenant's page shows only its archive**: ARCHIVED, the archive bundle's date and
   size, how long it is kept, and **Restore archived tenant** — the sections of a live tenant
   would show nothing true. `GET /api/v1/admin/tenants/:tenantId/archive`. **Backups → Tenants**
@@ -180,6 +213,40 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Deleting a tenant's last route, or its domain, left the site's HTTP→HTTPS router behind**
+  (`<namespace>-ingress-http`), so a plain-HTTP request for a site that no longer existed was still
+  redirected; an mTLS router and its TLS options stayed too. Every "nothing left to serve" path of the
+  ingress reconcile now removes everything it creates — and brings multi-host site config in step:
+  removing a multi-host deployment's last route now also clears its site configuration, which
+  restarts that deployment's pod once.
+- **Table headings sat centred over left-aligned columns** across the admin and tenant panels —
+  the WAF events and auto-ban tables, audit logs, and most sortable tables. Headings are left-aligned
+  by default; number columns that align right keep doing so.
+- **Every mail health alert said "Mail delivery is likely affected"**, also for a standby copy that
+  was only behind and for a mail disk running short — neither stops delivery. The alert now closes
+  with what the failure means: for the standby copy, that delivery is not affected (its detail
+  already says what a failover would lose); for the disk, that delivery is not affected yet but a
+  full disk would stop the mail server; for the other checks, as before. Unedited alert
+  templates are updated when platform-api starts; one you edited keeps your text.
+- **Security → Web defense → Settings, WAF Auto-Ban: the dry-run result's column headings were
+  centred** over left-aligned columns, as were the sortable headings of **Recent decisions** beside
+  its left-aligned ones. They are left-aligned.
+- **Moving the mail standby to another node raised "[MAIL] standby mail copy check failing"**
+  ("has never finished a copy"), and Email → Operations kept the old standby in **Standby data
+  freshness**, red, for good. A new standby copies the whole mail store before its first report,
+  and the check read that as broken. The platform now records when a node became a standby (the
+  Node annotation `insula.host/mail-standby-since`); until its first copy is complete the node is
+  **preparing** — no alert, no error in the health banner, and a notice on Email → Operations —
+  while its copier runs. A first copy whose copier is not running ten minutes on, or that has not
+  finished after six hours, fails the check and shows red with the reason. The freshness list
+  shows only the nodes that are standbys now; a report from before a node became a standby again
+  no longer counts. A standby labelled before this release has no recorded time and is judged as
+  before.
+- **Cluster → Nodes kept saying a tenant was "still placed elsewhere after the outage" after it
+  had been moved back**, naming the same node on both sides of the arrow. The review counted only moves made from its own
+  wizard; a move from the tenant's Placement, a drain or migrate-to-worker left the outage move
+  looking like the latest. A tenant now leaves the review once its pin has changed since the
+  outage move, or it is back on the node it left.
 - **Restoring an archived tenant on a plan with less than 1 GiB of storage was refused**
   (`PROVISION_QUOTA_EXCEEDED`). Restore sized the new volume from the plan, rounded to whole
   GiB, and ignored a storage size set on the tenant itself. A 0.5 GiB plan asked for 1 GiB,

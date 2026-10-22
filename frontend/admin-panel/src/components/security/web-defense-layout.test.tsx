@@ -45,7 +45,14 @@ vi.mock('@/hooks/use-crowdsec', () => {
       }],
     }),
     usePatchCrowdsecAutobanConfig: mut,
-    useCalibrateAutoban: mut,
+    // A dry run answers at once with two rules.
+    useCalibrateAutoban: () => ({
+      ...mut(),
+      mutate: (_vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => opts?.onSuccess?.({ data: {
+        totalEventsConsidered: 1200, hypotheticalBans: 3, distinctSourceIpsAboveThreshold: 2, windowSeconds: 300,
+        topRulesInBatch: [{ ruleId: '920350', distinctIps: 2, eventCount: 40 }, { ruleId: '930120', distinctIps: 1, eventCount: 21 }],
+      } }),
+    }),
     useCrowdsecScenarios: () => scenarios(),
     useSetScenarioSimulation: mut,
     useSetTrafficDetection: () => setDetectionState(),
@@ -306,6 +313,29 @@ describe('Scenario table alignment', () => {
   });
 });
 
+// A <th> is centred unless it says otherwise: the dry-run table's headings sat
+// in the middle of left-aligned columns.
+describe('Auto-ban tables — headings left-aligned like their columns', () => {
+  const headings = (table: HTMLElement) => Array.from(table.querySelectorAll('thead th'));
+
+  it('the dry-run result', () => {
+    render(<WafSettingsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('autoban-calibrate'));
+    const table = screen.getByTestId('autoban-calib-rules');
+    expect(headings(table).map((th) => th.textContent)).toEqual(['Rule', 'Distinct IPs', 'Events']);
+    for (const th of headings(table)) expect(th.className).toMatch(/\btext-left\b/);
+    expect(table.querySelector('tbody tr')!.textContent).toContain('920350');
+  });
+
+  it('the recent decisions', () => {
+    render(<WafSettingsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('autoban-recent-decisions-toggle'));
+    const table = within(screen.getByTestId('autoban-recent-decisions-body')).getByRole('table');
+    expect(headings(table)).toHaveLength(7);
+    for (const th of headings(table)) expect(th.className).toMatch(/\btext-left\b/);
+  });
+});
+
 describe('WAF Events — one header row', () => {
   beforeEach(() => {
     wafEvents.mockReturnValue({
@@ -332,5 +362,36 @@ describe('WAF Events — one header row', () => {
     const text = screen.getByTestId('waf-events-description').textContent ?? '';
     expect(text.length).toBeLessThan(120);
     expect(screen.queryByText(/admin-host events are capped at 500 globally/)).not.toBeInTheDocument();
+  });
+});
+
+// A tenant route in detection-only mode: its events are logged, not blocked.
+describe('WAF Events — detection-only events', () => {
+  const ev = (id: string, detectionOnly?: boolean) => ({
+    id, scope: 'tenant-route', hostname: 'shop.example.test', routeId: '00000000-0000-4000-8000-000000000001', tenantId: null,
+    ruleId: '941100', severity: 'critical', message: 'XSS Attack Detected', requestUri: '/?q=x', requestMethod: 'GET',
+    sourceIp: '192.0.2.60', occurredAt: '2026-01-01T00:00:00.000Z', ...(detectionOnly === undefined ? {} : { detectionOnly }),
+  });
+  beforeEach(() => {
+    wafEvents.mockReturnValue({
+      ...ok({
+        events: [ev('00000000-0000-4000-8000-00000000000a', true), ev('00000000-0000-4000-8000-00000000000b', false), ev('00000000-0000-4000-8000-00000000000c')],
+        truncated: false,
+        stats: { windowSeconds: 86_400, totalEvents: 3, totalEventsAdminHost: 0, totalEventsTenantRoute: 3, totalEventsDetectionOnly: 1, topRules: [], topHosts: [], mostRecentAt: null },
+        scraperStatus: { hasRunOnce: true, modsecPodFound: true, lastRunAt: null, scrapeIntervalMs: 30_000, lastCycleErrors: [] },
+      }),
+    });
+  });
+
+  it('marks them "Detected · not blocked" — and only them', () => {
+    render(<WafEventsTab />, { wrapper });
+    expect(screen.getByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000a')).toHaveTextContent('Detected · not blocked');
+    expect(screen.queryByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000b')).toBeNull();
+    expect(screen.queryByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000c')).toBeNull();
+  });
+
+  it('the events tile says how many of them were detected only', () => {
+    render(<WafEventsTab />, { wrapper });
+    expect(screen.getByTestId('waf-stats-detection-only')).toHaveTextContent('1 detected only — not blocked');
   });
 });

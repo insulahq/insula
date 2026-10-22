@@ -7,6 +7,7 @@
 
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { ingressRoutes, wafLogs, domains } from '../../db/schema.js';
+import type { WafMode } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import {
   autoProvisionRouteDns,
@@ -40,11 +41,19 @@ async function verifyRouteOwnership(db: Database, routeId: string, tenantId: str
   return route;
 }
 
+/** The route's WAF as one setting: off, detection only (logged, never blocked), or enforced. */
+export function wafModeOf(row: { readonly wafEnabled: number; readonly wafDetectionOnly?: number | null }): WafMode {
+  if (!row.wafEnabled) return 'off';
+  return row.wafDetectionOnly ? 'detection' : 'enforced';
+}
+
 export function mapRouteToResponse(row: typeof ingressRoutes.$inferSelect) {
   return {
     ...row,
     forceHttps: Boolean(row.forceHttps),
     wafEnabled: Boolean(row.wafEnabled),
+    wafDetectionOnly: Boolean(row.wafDetectionOnly),
+    wafMode: wafModeOf(row),
     wafOwaspCrs: Boolean(row.wafOwaspCrs),
     hstsEnabled: Boolean(row.hstsEnabled),
     hstsIncludeSubdomains: Boolean(row.hstsIncludeSubdomains),
@@ -127,7 +136,17 @@ export async function updateSecuritySettings(
       ? String(input.rate_limit_burst_multiplier)
       : null;
   }
-  if (input.waf_enabled !== undefined) updateValues.wafEnabled = input.waf_enabled ? 1 : 0;
+  // waf_mode is the setting the route page sends. waf_enabled alone (an older
+  // client, a script) turns the WAF on or off: off also clears detection-only,
+  // so off-then-on through it can only come back ENFORCED — never silently as
+  // a dry run the client did not ask for. On leaves the mode as it was.
+  if (input.waf_mode !== undefined) {
+    updateValues.wafEnabled = input.waf_mode === 'off' ? 0 : 1;
+    updateValues.wafDetectionOnly = input.waf_mode === 'detection' ? 1 : 0;
+  } else if (input.waf_enabled !== undefined) {
+    updateValues.wafEnabled = input.waf_enabled ? 1 : 0;
+    if (!input.waf_enabled) updateValues.wafDetectionOnly = 0;
+  }
   if (input.waf_owasp_crs !== undefined) updateValues.wafOwaspCrs = input.waf_owasp_crs ? 1 : 0;
   if (input.waf_anomaly_threshold !== undefined) updateValues.wafAnomalyThreshold = input.waf_anomaly_threshold;
   if (input.waf_excluded_rules !== undefined) updateValues.wafExcludedRules = input.waf_excluded_rules;

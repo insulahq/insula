@@ -80,6 +80,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/wal-archive-health/scheduler.ts', job: 'wal-archive-health' },
   { file: 'modules/mail-admin/blocklist-scheduler.ts', job: 'mail-blocklist-watch' },
   { file: 'modules/mail-admin/health-scheduler.ts', job: 'mail-health-watch' },
+  { file: 'modules/mail-admin/standby-prepare-task.ts', job: 'mail-standby-prepare-watch' },
   { file: 'modules/notifications/escalation/scheduler.ts', job: 'notification-escalation' },
   { file: 'modules/subscriptions/expiry-warning-scheduler.ts', job: 'subscription-expiry-warning' },
   { file: 'modules/platform-storage-policy/capacity-reconciler.ts', job: 'storage-capacity-watch' },
