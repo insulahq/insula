@@ -271,6 +271,15 @@ earlier backup bundles expire as usual; the archive bundle stays its newest,
 since no new bundle is taken of an archived tenant. **Backups → Tenants**
 keeps listing it, marked *Archived*.
 
+A restore that fails leaves the tenant archived, with its storage state
+**failed**, and every later restore is refused until that is reset. The
+archived page then shows the failed operation's error and **Reset to idle**,
+and **Restore archived tenant** (on the page and in **Actions**) stays off,
+with the reason beside it. Read the error, deal with its cause, click
+**Reset to idle**, then restore again. While a restore is running, Restore
+stays off too and the page says what is running. The archive bundle is not
+touched by a failed restore.
+
 Archive and Delete can also happen by themselves: a suspended tenant archived
 after a set number of days, an archived one deleted after another, each told
 some days ahead. Both are off until switched on — see
