@@ -11,6 +11,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateTenantInput, UpdateTenantInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { assertNodeTakesTier } from '../nodes/tenant-hosting.js';
 
 function generateNamespace(name: string): string {
   return `tenant-${name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 50)}-${crypto.randomUUID().slice(0, 8)}`;
@@ -132,6 +133,8 @@ export async function createTenant(
   // Validate worker pin early so the error surfaces before we touch
   // k8s or write the tenant row.
   await validateWorkerPin(db, input.node_name);
+  // A pinned-only node takes Local-tier tenants only (nodes/tenant-hosting.ts).
+  await assertNodeTakesTier(db, input.node_name, input.storage_tier ?? 'local', input.name);
 
   // Validate plan_id + region_id referential integrity before the
   // insert so an invalid UUID surfaces as a clean validation error
@@ -1165,6 +1168,17 @@ export async function updateTenant(
       await assertHaTierFeasible(db);
     }
     updateValues.storageTier = tierChange;
+  }
+
+  // A pinned-only node takes Local-tier tenants only (nodes/tenant-hosting.ts):
+  // check the pair as it will be — a move onto the node, or a flip to HA there.
+  if (input.node_name !== undefined || tierChange !== undefined) {
+    await assertNodeTakesTier(
+      db,
+      input.node_name !== undefined ? input.node_name : existing.nodeName,
+      tierChange ?? existing.storageTier,
+      existing.name,
+    );
   }
 
   if (Object.keys(updateValues).length > 0) {

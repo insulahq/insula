@@ -88,6 +88,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **A node can take pinned tenants only.** **Edit** on a node card now sets **Tenant hosting**
+  — All tenants, Pinned tenants only, or No tenants — in place of the "Can host tenant
+  workloads" switch. A pinned-only node holds the Local-tier tenants you place there (on create,
+  with **Placement**, or as a drain's target) and nothing else: Auto placement never picks it,
+  and a `PreferNoSchedule` taint (`insula.host/pinned-tenants-only`) makes Kubernetes run tenant
+  pods not pinned there on other nodes whenever one fits. For a server in another region, or one
+  kept for a customer. HA-tier tenants are refused there (409 `NODE_PINNED_TENANTS_ONLY`): they
+  are not held to one node. Stored as the label `insula.host/tenant-placement=pinned` next to
+  `insula.host/host-tenant-workloads`, which is unchanged; `PATCH /api/v1/admin/nodes/:name`
+  takes `tenantHosting`, and node responses carry it.
 - **An archived tenant's page shows only its archive**: ARCHIVED, the archive bundle's date and
   size, how long it is kept, and **Restore archived tenant** — the sections of a live tenant
   would show nothing true. `GET /api/v1/admin/tenants/:tenantId/archive`. **Backups → Tenants**
@@ -178,6 +188,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Cluster → Nodes kept saying a tenant was "still placed elsewhere after the outage" after it
+  had been moved back**, naming the same node on both sides of the arrow. The review counted only moves made from its own
+  wizard; a move from the tenant's Placement, a drain or migrate-to-worker left the outage move
+  looking like the latest. A tenant now leaves the review once its pin has changed since the
+  outage move, or it is back on the node it left.
 - **Restoring an archived tenant on a plan with less than 1 GiB of storage was refused**
   (`PROVISION_QUOTA_EXCEEDED`). Restore sized the new volume from the plan, rounded to whole
   GiB, and ignored a storage size set on the tenant itself. A 0.5 GiB plan asked for 1 GiB,

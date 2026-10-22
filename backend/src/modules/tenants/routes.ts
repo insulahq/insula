@@ -171,7 +171,9 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       if (tier === 'ha') {
         await assertHaTierFeasible(app.db);
       }
-      const preflight = await checkProvisioningCapacity(app.db, preflightK8s, parsed.data.plan_id, tier);
+      const preflight = await checkProvisioningCapacity(app.db, preflightK8s, parsed.data.plan_id, tier, {
+        autoPlacement: tier === 'local' && !parsed.data.node_name,
+      });
       if (!preflight.ok && preflight.reason && preflight.fittingNodes < preflight.required.replicaCount) {
         const planSizeGiB = preflight.required.planSizeBytes / (1024 ** 3);
         const fmtBytes = (n: number): string => `${(n / (1024 ** 3)).toFixed(1)} GiB`;

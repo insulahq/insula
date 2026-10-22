@@ -7,6 +7,7 @@ import { withDbRetry } from '../../shared/db-retry.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listNodes, listNodesEnriched, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
+import { tenantHostingOf } from './tenant-hosting.js';
 
 // RFC-1123 DNS subdomain label with dots — matches k8s' own node-name
 // validation. We reject anything else at the route boundary so a path
@@ -82,12 +83,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     validateNodeName(name);
     const row = await getNode(app.db, name);
     if (!row) throw new ApiError('NODE_NOT_FOUND', `Node '${name}' not found`, 404, { node_name: name });
-    return success(row);
+    return success({ ...row, tenantHosting: tenantHostingOf(row) });
   });
 
   // PATCH /api/v1/admin/nodes/:name
   //
-  // Body: { role?, canHostTenantWorkloads?, notes?, force? }
+  // Body: { role?, tenantHosting?, canHostTenantWorkloads?, notes?, force? }
   //
   // k8s labels are written first (authoritative); DB is refreshed
   // from k8s state. If the target is a server→worker demotion and
@@ -131,7 +132,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // no way to confirm the cordon flip from the PATCH itself.
     const allEnriched = await listNodesEnriched(app.db, k8s);
     const enriched = allEnriched.find((n) => n.name === updated.name) ?? {
-      ...updated, cordoned: false, drained: false, existsInKubernetes: true,
+      ...updated, cordoned: false, drained: false, existsInKubernetes: true, tenantHosting: tenantHostingOf(updated),
     };
     return success(enriched);
   });

@@ -8,6 +8,7 @@ import { startDataRelocation } from '../tenant-placement/relocate.js';
 import { checkTargetCapacity } from '../tenant-placement/target-capacity.js';
 import { repinDeployments } from './repin.js';
 import { beginTenantMove, planTenantMove, readMoveFacts, type MovePlan } from './stop-move-start.js';
+import { assertNodeTakesTier } from '../nodes/tenant-hosting.js';
 
 // M6: minimal tenant migration between workers.
 //
@@ -125,6 +126,7 @@ export async function migrateTenantToWorker(
       { node_name: input.nodeName },
     );
   }
+  await assertNodeTakesTier(db, input.nodeName, tenant.storageTier, tenant.name);
 
   const previousWorker = tenant.nodeName ?? null;
   const namespace = tenant.kubernetesNamespace;

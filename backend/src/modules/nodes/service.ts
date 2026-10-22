@@ -2,7 +2,7 @@ import { eq, sql, desc } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clusterNodes, type ClusterNode } from '../../db/schema.js';
-import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@insula/api-contracts';
+import type { NodeRole, NodeIngressMode, NodeTenantHosting, UpdateClusterNodeInput } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { withDbRetry } from '../../shared/db-retry.js';
 import { projectNode } from './k8s-sync.js';
@@ -16,6 +16,9 @@ import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
 import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
 import { assertNoSharedEtcdMember } from './etcd-identity.js';
+import {
+  haOnPinnedOnlyError, haTenantsPinnedTo, PINNED_ONLY_TAINT_KEY, takesAutoPlacedTenants, TENANT_PLACEMENT_LABEL, TENANT_PLACEMENT_PINNED, tenantHostingOf,
+} from './tenant-hosting.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -97,12 +100,18 @@ export async function listNodes(db: Database): Promise<ClusterNode[]> {
 export async function listNodesEnriched(
   db: Database,
   k8s: K8sClients | null,
-): Promise<Array<ClusterNode & { cordoned: boolean; drained: boolean; existsInKubernetes: boolean }>> {
+): Promise<Array<ClusterNode & {
+  cordoned: boolean; drained: boolean; existsInKubernetes: boolean; tenantHosting: NodeTenantHosting;
+}>> {
   const rows = await listNodes(db);
   // No K8s tenant → we can't tell orphan from healthy, so don't lie.
   // `existsInKubernetes: true` preserves the previous UI (no orphan pill,
   // normal Drain/Delete). Orphan detection requires a live cluster read.
-  if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false, existsInKubernetes: true }));
+  if (!k8s) {
+    return rows.map((r) => ({
+      ...r, cordoned: false, drained: false, existsInKubernetes: true, tenantHosting: tenantHostingOf(r),
+    }));
+  }
 
   // Each call is wrapped in a try/catch — either may be missing in tests
   // (a mock that only stubs a subset) or fail in production. We tolerate
@@ -160,7 +169,7 @@ export async function listNodesEnriched(
     // a failed/empty listNode() leaves every row as `true` so a
     // transient API blip doesn't trigger a bulk-orphan UI flip.
     const existsInKubernetes = !k8sListSucceeded || observedNodeNames.has(r.name);
-    return { ...r, cordoned, drained, existsInKubernetes };
+    return { ...r, cordoned, drained, existsInKubernetes, tenantHosting: tenantHostingOf(r) };
   });
 }
 
@@ -282,6 +291,26 @@ export async function listSystemPodsOnNode(k8s: K8sClients, nodeName: string): P
   return blockers;
 }
 
+type NodeTaint = { key: string; value?: string; effect: string };
+
+/** The node's hosting labels and taints, live; the stored row when the read fails. */
+async function liveHostingFacts(
+  k8s: K8sClients,
+  name: string,
+  stored: ClusterNode,
+): Promise<{ canHostTenantWorkloads: boolean; labels: Record<string, string>; taints: NodeTaint[] }> {
+  try {
+    const observed = projectNode((await k8s.core.readNode({ name })) as Parameters<typeof projectNode>[0]);
+    return { canHostTenantWorkloads: observed.canHostTenantWorkloads, labels: observed.labels, taints: observed.taints };
+  } catch {
+    return {
+      canHostTenantWorkloads: stored.canHostTenantWorkloads,
+      labels: (stored.labels ?? {}) as Record<string, string>,
+      taints: Array.isArray(stored.taints) ? (stored.taints as NodeTaint[]) : [],
+    };
+  }
+}
+
 /**
  * k8s-first update. The previous version issued two separate
  * `patchNode` calls (labels, then taints), which could leave k8s in
@@ -306,8 +335,40 @@ export async function updateNode(
   }
 
   const targetRole: NodeRole = patch.role ?? existing.role;
-  const targetCanHost = patch.canHostTenantWorkloads ?? existing.canHostTenantWorkloads;
   const targetIngressMode: NodeIngressMode = patch.ingressMode ?? existing.ingressMode;
+  // Tenant hosting (tenant-hosting.ts): `tenantHosting` sets both labels; the
+  // bare boolean (a drain, an older panel) flips only host-tenant-workloads
+  // and leaves a pinned-only node's label for when tenants are let back.
+  // Labels, taints and hosting from the node itself when it can be read: the
+  // row mirrors it up to a sync tick late, and this patch rebuilds all three
+  // from what it starts with — a save just after a change would undo it.
+  const current = await liveHostingFacts(k8s, name, existing);
+  const observedLabels = current.labels;
+  const existingHosting = tenantHostingOf(current);
+  const targetCanHost = patch.tenantHosting !== undefined
+    ? patch.tenantHosting !== 'none'
+    : patch.canHostTenantWorkloads ?? current.canHostTenantWorkloads;
+  const targetPinnedLabel = patch.tenantHosting !== undefined
+    ? patch.tenantHosting === 'pinned'
+    : observedLabels[TENANT_PLACEMENT_LABEL] === TENANT_PLACEMENT_PINNED;
+  const targetHosting = tenantHostingOf({
+    canHostTenantWorkloads: targetCanHost,
+    labels: targetPinnedLabel ? { [TENANT_PLACEMENT_LABEL]: TENANT_PLACEMENT_PINNED } : {},
+  });
+  if (targetHosting === 'pinned' && existingHosting !== 'pinned') {
+    const haTenants = await haTenantsPinnedTo(db, name);
+    if (haTenants.length > 0) {
+      throw new ApiError(
+        'NODE_PINNED_TENANTS_ONLY',
+        `'${name}' cannot take pinned tenants only while HA-tier tenants are pinned to it: `
+          + `${haTenants.slice(0, 10).join(', ')}${haTenants.length > 10 ? ` and ${haTenants.length - 10} more` : ''}. `
+          + 'An HA-tier tenant is not held to one node and would leave it. Move them, or switch them to the '
+          + 'Local tier, first — nothing was changed.',
+        409,
+        { node_name: name, tenants: haTenants.slice(0, 50) },
+      );
+    }
+  }
 
   // Safety check: block server→worker demotion if system pods would be
   // evicted. `force: true` bypasses (admin accepts responsibility).
@@ -353,31 +414,35 @@ export async function updateNode(
   // Build the labels object we want on the node. Merge with observed
   // labels so operator-set labels (kubernetes.io/*, custom team tags)
   // aren't wiped. Drizzle returns JSONB as already-parsed objects.
-  const observedLabels = (existing.labels ?? {}) as Record<string, string>;
   const nextLabels: Record<string, string | null> = {
     ...observedLabels,
     [NODE_ROLE_LABEL]: targetRole,
     [HOST_TENANT_WORKLOADS_LABEL]: String(targetCanHost),
+    // null removes it (strategic merge).
+    [TENANT_PLACEMENT_LABEL]: targetPinnedLabel ? TENANT_PLACEMENT_PINNED : null,
     [INGRESS_MODE_LABEL]: targetIngressMode,
   };
 
   // Compose labels + taints in a single strategic-merge patch to
   // avoid the old "labels succeeded, taints failed" orphan state.
   // We always patch when any k8s-projected field changes (role,
-  // canHost, or ingressMode), since each maps to a label.
+  // tenant hosting, or ingressMode), since each maps to a label.
   const k8sFieldsChanged =
     patch.role !== undefined
     || patch.canHostTenantWorkloads !== undefined
+    || patch.tenantHosting !== undefined
     || patch.ingressMode !== undefined;
-  // Letting tenants back (Can host tenant workloads on, or an uncordon) ends
+  // Letting tenants back (tenant hosting on again, or an uncordon) ends
   // a "Drain tenants": the node is no longer ready to delete.
   // Only a real change counts: the edit form re-sends the setting on every save.
-  const tenantsLetBack = (patch.canHostTenantWorkloads === true && !existing.canHostTenantWorkloads)
-    || patch.cordoned === false;
+  const tenantsLetBack = (
+    (patch.canHostTenantWorkloads !== undefined || patch.tenantHosting !== undefined)
+    && targetCanHost && !current.canHostTenantWorkloads
+  ) || patch.cordoned === false;
   const annotationPatch = tenantsLetBack ? { annotations: { [TENANTS_DRAINED_ANNOTATION]: null } } : {};
   if (k8sFieldsChanged) {
-    const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
-    const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
+    const existingTaints = current.taints;
+    const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY && t.key !== PINNED_ONLY_TAINT_KEY);
     const shouldTaint = targetRole === 'server' && !targetCanHost;
     // The taint keeps tenants off and must not keep the platform off: refuse
     // while a node-bound system component would not come back here after a
@@ -385,9 +450,14 @@ export async function updateNode(
     if (shouldTaint && !existingTaints.some((t) => t.key === SERVER_ONLY_TAINT_KEY)) {
       await assertTaintSafeForSystem(k8s, name);
     }
-    const nextTaints = shouldTaint
-      ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
-      : withoutOurs;
+    // Pinned-only: PreferNoSchedule only scores, so it never blocks a pod —
+    // a tenant hard-pinned here, a DaemonSet, a system pod with nowhere else
+    // to go all still schedule. Pods with a choice go elsewhere.
+    const nextTaints = [
+      ...withoutOurs,
+      ...(shouldTaint ? [{ key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }] : []),
+      ...(targetHosting === 'pinned' ? [{ key: PINNED_ONLY_TAINT_KEY, value: 'true', effect: 'PreferNoSchedule' }] : []),
+    ];
 
     // Single atomic patch. The library's auto-generated tenant picks
     // Content-Type = application/json-patch+json by default; pass a
@@ -1196,10 +1266,12 @@ type LiveNodeLite = {
  */
 export function countOtherSchedulableTenantNodes(
   drainTarget: string,
-  dbNodes: ReadonlyArray<{ name: string; canHostTenantWorkloads: boolean }>,
+  dbNodes: ReadonlyArray<{ name: string; canHostTenantWorkloads: boolean; labels?: unknown }>,
   liveNodes: ReadonlyArray<LiveNodeLite>,
 ): number {
-  const tenantCapable = new Map(dbNodes.map((n) => [n.name, n.canHostTenantWorkloads]));
+  // A node that takes pinned tenants only is no landing place: the tenants a
+  // drain unpins would go there only because nothing else is left.
+  const tenantCapable = new Map(dbNodes.map((n) => [n.name, takesAutoPlacedTenants(n)]));
   let count = 0;
   for (const kn of liveNodes) {
     const nodeName = kn.metadata?.name;
@@ -1563,9 +1635,10 @@ export async function drainNode(
   if (countOtherSchedulableTenantNodes(name, dbNodes, liveNodes) === 0) {
     throw new ApiError(
       'NODE_DRAIN_BLOCKED_LAST_NODE',
-      `Node '${name}' is the only schedulable tenant-capable node — draining it would leave the cluster ` +
-      `unable to host tenant workloads (on a single-node cluster this bricks it). Add and Ready another ` +
-      `tenant-capable node, or uncordon an existing one, before draining this node.`,
+      `Node '${name}' is the only schedulable node that takes all tenants — draining it would leave the cluster ` +
+      `unable to host tenant workloads (on a single-node cluster this bricks it; a node that takes pinned ` +
+      `tenants only does not count). Add and Ready another node that takes all tenants, or uncordon an ` +
+      `existing one, before draining this node.`,
       409,
     );
   }
@@ -1645,6 +1718,13 @@ export async function drainNode(
       409,
       { tenant_id: tenantId, target },
     );
+  }
+  // A pinned-only node takes Local-tier tenants only (tenant-hosting.ts).
+  const pinnedOnly = new Set(dbNodes.filter((n) => tenantHostingOf(n) === 'pinned').map((n) => n.name));
+  for (const [tenantId, target] of Object.entries(opts.tenantPlacement ?? {})) {
+    if (!target || target === 'stay' || !pinnedOnly.has(target)) continue;
+    const c = impact.pinnedTenants.find((p) => p.tenantId === tenantId);
+    if (c?.storageTier === 'ha') throw haOnPinnedOnlyError(target, c.tenantName);
   }
   const requested: Record<string, string> = { ...(opts.tenantPlacement ?? {}) };
   for (const c of impact.pinnedTenants) {

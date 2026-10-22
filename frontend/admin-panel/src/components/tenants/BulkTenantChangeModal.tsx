@@ -7,6 +7,7 @@ import { useSystemInfo } from '@/hooks/use-system-info';
 import { formatCurrency } from '@/lib/format-currency';
 import { plural } from '@/lib/bulk-run';
 import type { BulkTarget } from '@/hooks/use-bulk-tenants';
+import { pinnedOnlySuffix } from '@/lib/tenant-hosting';
 
 export type TenantChangeKind = 'placement' | 'plan';
 
@@ -147,7 +148,8 @@ function useTargetOptions(kind: TenantChangeKind): { readonly items: readonly Ta
       .filter((n) => n.canHostTenantWorkloads)
       .map((n) => {
         const label = nodeLabel(n.name);
-        return { id: n.name, label, optionText: label === n.name ? label : `${label} (${n.name})` };
+        const text = label === n.name ? label : `${label} (${n.name})`;
+        return { id: n.name, label, optionText: `${text}${pinnedOnlySuffix(n)}` };
       });
     return { items, loading: nodes.isLoading };
   }

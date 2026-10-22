@@ -29,6 +29,7 @@ import { hostingPlans, clusterNodes } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
+import { takesAutoPlacedTenants } from '../nodes/tenant-hosting.js';
 
 /**
  * Minimum number of tenant-capable nodes required to make the HA
@@ -47,10 +48,13 @@ export const HA_MIN_TENANT_NODES = 3;
  * silently put the DB into a state the cluster cannot honour.
  */
 export async function assertHaTierFeasible(db: Database): Promise<void> {
-  const eligible = await db
-    .select({ name: clusterNodes.name })
+  // A node that takes pinned tenants only refuses HA-tier tenants and keeps
+  // their pods off (nodes/tenant-hosting.ts), so it is no failover target.
+  const eligible = (await db
+    .select({ name: clusterNodes.name, canHostTenantWorkloads: clusterNodes.canHostTenantWorkloads, labels: clusterNodes.labels })
     .from(clusterNodes)
-    .where(eq(clusterNodes.canHostTenantWorkloads, true));
+    .where(eq(clusterNodes.canHostTenantWorkloads, true)))
+    .filter((n) => takesAutoPlacedTenants(n));
   const count = eligible.length;
   if (count >= HA_MIN_TENANT_NODES) return;
 
@@ -64,7 +68,7 @@ export async function assertHaTierFeasible(db: Database): Promise<void> {
         title: 'HA tier not available on this cluster',
         detail: `HA replicates each tenant volume across ${HA_MIN_TENANT_NODES} distinct nodes. This cluster has ${count} tenant-capable node(s), so HA cannot be honoured.`,
         remediation: [
-          `Add worker nodes (canHostTenantWorkloads=true) until at least ${HA_MIN_TENANT_NODES} are present.`,
+          `Add worker nodes that take all tenants until at least ${HA_MIN_TENANT_NODES} are present (a node that takes pinned tenants only does not count).`,
           'Or pick the Local storage tier — single-replica volumes work on any cluster size.',
         ],
         retryable: false,
@@ -113,6 +117,10 @@ export async function checkProvisioningCapacity(
   k8s: K8sClients | undefined,
   planId: string,
   storageTier: 'local' | 'ha',
+  /** No node chosen for a Local-tier tenant: provisioning picks one, and only
+   *  among nodes that take all tenants, so count only those. An HA-tier
+   *  tenant always counts only those: it cannot live on a pinned-only node. */
+  opts: { readonly autoPlacement?: boolean } = {},
 ): Promise<PreflightResult> {
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, planId));
   if (!plan) {
@@ -151,6 +159,9 @@ export async function checkProvisioningCapacity(
   }
 
   const nodes: NodeCapacity[] = [];
+  // Set when Auto leaves out a node that takes pinned tenants only, so a
+  // refusal names that rather than reading as a lack of disk.
+  let autoSkippedPinnedOnly = false;
   try {
     const lhResp = await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2',
@@ -163,8 +174,12 @@ export async function checkProvisioningCapacity(
     // server-only nodes that don't accept tenant pods.
     const platformNodes = await db.select().from(clusterNodes);
     const tenantCapable = new Set(
-      platformNodes.filter((n) => n.canHostTenantWorkloads).map((n) => n.name),
+      platformNodes
+        .filter((n) => (opts.autoPlacement || storageTier === 'ha' ? takesAutoPlacedTenants(n) : n.canHostTenantWorkloads))
+        .map((n) => n.name),
     );
+    autoSkippedPinnedOnly = opts.autoPlacement === true && storageTier === 'local'
+      && platformNodes.some((n) => n.canHostTenantWorkloads && !takesAutoPlacedTenants(n));
 
     for (const lhNode of items) {
       const name = lhNode.metadata?.name;
@@ -215,6 +230,9 @@ export async function checkProvisioningCapacity(
     fittingNodes,
     reason: storageTier === 'ha'
       ? `HA tier needs ${replicaCount} nodes each with ≥${planSizeGiB} GiB free; only ${fittingNodes} qualify`
-      : `Local tier needs ≥${planSizeGiB} GiB free on at least one node; none qualify`,
+      : `Local tier needs ≥${planSizeGiB} GiB free on at least one node; none qualify`
+        + (autoSkippedPinnedOnly
+          ? '. Auto uses only nodes that take all tenants — to use a node that takes pinned tenants only, pick it'
+          : ''),
   };
 }

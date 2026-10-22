@@ -68,15 +68,16 @@ a field the endpoint does not accept.
 |---|---|---|
 | `NODE_DRAIN_BLOCKED_LAST_NODE` | 409 | Refusing to drain the only node that can host tenants |
 | `NODE_DRAIN_NO_ROOM_FOR_STOPPED_TENANT` | 409 | A tenant that is not running has its only copy on the node, and no other node can take it — pick a node or free space ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |
-| `NODE_REPIN_TARGET_UNAVAILABLE` | 409 | The node picked for a tenant is being drained, cordoned, not Ready, or does not host tenants (**Can host tenant workloads** off) |
+| `NODE_REPIN_TARGET_UNAVAILABLE` | 409 | The node picked for a tenant is being drained, cordoned, not Ready, or does not host tenants (**Tenant hosting** No tenants) |
+| `NODE_PINNED_TENANTS_ONLY` | 409 | An HA-tier tenant cannot be placed on a node that takes pinned tenants only, nor switched to HA there; and a node cannot be made pinned-only while HA-tier tenants are pinned to it ([Tenant hosting](../operator/nodes-and-cluster.md#tenant-hosting)) |
 | `NODE_DRAIN_TENANT_STAYS` | 409 | A tenant is set to stay on the node — a drain moves every tenant off it; pick Auto or another node |
 | `NODE_DELETE_HOLDS_LAST_COPY` | 409 | Volumes other than tenant data or a database instance — platform volumes, leftovers nothing uses — keep their only copy on the node; deleting it deletes them. Delete leftovers on Orphaned volumes, or confirm with `forceLastReplica` ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
 | `NODE_DELETE_SHARED_ETCD_MEMBER` | 409 | The node and another node object are the same server registered under two names, and carry the same etcd member — deleting either would remove that live member ([When a node comes back under another name](../operator/nodes-and-cluster.md#when-a-node-comes-back-under-another-name)) |
 | `NODE_DELETE_NOT_DRAINED` | 409 | Delete was pressed on a node whose tenants were not drained — run **Drain Tenants** first |
 | `NODE_DELETE_RUNS_MAIL` | 409 | Mail runs on the node — move it first (**Email → Operations → Placement**) |
 | `NODE_DELETE_EVICTION_BLOCKED` | 409 | A system pod could not be moved off (its disruption budget refused the eviction, or it was still shutting down when the wait ran out) — the node is left cordoned and nothing was deleted; press **Delete** again ([Removing a node](../operator/nodes-and-cluster.md#removing-a-node)) |
-| `NODE_DRAIN_BLOCK_FAILED` | 500 | The drain re-pinned the tenants but could not turn **Can host tenant workloads** off — run the drain again |
-| `NODE_TAINT_PRECHECK_FAILED` | 503 | Reading Longhorn's DaemonSets or its `taint-toleration` setting failed, so turning **Can host tenant workloads** off was refused — nothing was changed |
+| `NODE_DRAIN_BLOCK_FAILED` | 500 | The drain re-pinned the tenants but could not set **Tenant hosting** to No tenants — run the drain again |
+| `NODE_TAINT_PRECHECK_FAILED` | 503 | Reading Longhorn's DaemonSets or its `taint-toleration` setting failed, so setting **Tenant hosting** to No tenants was refused — nothing was changed |
 | `NODE_TENANT_TAINT_UNSAFE` | 409 | Keeping tenants off a server would also keep Longhorn's node components (its DaemonSets, or the instance managers its `taint-toleration` setting governs) off it — the 2026.10.12 upgrade adds the toleration; nothing was changed |
 | `NODE_DELETE_PRECHECK_FAILED` | 503 | Reading Longhorn or the database instances failed, so the delete could not confirm the node holds no data — nothing was deleted |
 | `NODE_DELETE_HOLDS_TENANT_DATA` | 409 | The node holds the only copy of a tenant volume — re-pin the tenant and let its data move first ([Cordon, drain, and maintenance](../operator/nodes-and-cluster.md#cordon-drain-and-maintenance)) |

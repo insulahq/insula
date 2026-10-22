@@ -613,10 +613,17 @@ describe('K8s Provisioner Service', () => {
     // Focused DB mock that records every `.set()` payload so we can assert
     // whether tenants.nodeName was persisted (and that it was NOT persisted
     // when validation fails).
-    function makeRecordingDb() {
+    function makeRecordingDb(opts: { tier?: 'local' | 'ha'; pinnedOnlyNode?: boolean } = {}) {
       const updateSets: Array<Record<string, unknown>> = [];
+      // First read: the tenant's tier. Second (HA only): the target node.
+      const reads = [
+        [{ name: 'Acme', tier: opts.tier ?? 'local' }],
+        [{ canHostTenantWorkloads: true, labels: opts.pinnedOnlyNode ? { 'insula.host/tenant-placement': 'pinned' } : {} }],
+      ];
+      let read = 0;
       const db = {
         updateSets,
+        select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => reads[read++] ?? [] }) }) })),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
             updateSets.push(data);
@@ -641,6 +648,23 @@ describe('K8s Provisioner Service', () => {
 
       expect(mockK8s.core.readNode).toHaveBeenCalledWith(expect.objectContaining({ name: 'worker-2' }));
       expect(db.updateSets).toEqual([{ nodeName: 'worker-2' }]);
+    });
+
+    it('refuses an HA-tier tenant on a node that takes pinned tenants only — nothing persisted', async () => {
+      const { applyTargetNodePlacement } = await import('./service.js');
+      const db = makeRecordingDb({ tier: 'ha', pinnedOnlyNode: true });
+      (mockK8s.core.readNode as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { name: 'za-1' } });
+      await expect(applyTargetNodePlacement(
+        db as unknown as Parameters<typeof applyTargetNodePlacement>[0], mockK8s, 'tenant-123', 'za-1',
+      )).rejects.toMatchObject({ code: 'NODE_PINNED_TENANTS_ONLY', status: 409 });
+      expect(db.updateSets).toEqual([]);
+
+      // The same node is fine for a Local-tier tenant.
+      const local = makeRecordingDb({ tier: 'local', pinnedOnlyNode: true });
+      await applyTargetNodePlacement(
+        local as unknown as Parameters<typeof applyTargetNodePlacement>[0], mockK8s, 'tenant-123', 'za-1',
+      );
+      expect(local.updateSets).toEqual([{ nodeName: 'za-1' }]);
     });
 
     it('throws TARGET_NODE_NOT_FOUND (404) and does NOT mutate when the node is missing', async () => {

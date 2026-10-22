@@ -17,6 +17,7 @@ import { extractOperatorError } from '@/lib/extract-operator-error';
 import NodeName from '@/components/nodes/NodeName';
 import MailRoleNotice from '@/components/nodes/MailRoleNotice';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import { nodeTakesTier, pinnedOnlySuffix } from '@/lib/tenant-hosting';
 
 /**
  * Render "free / total" CPU + RAM + Disk for a worker option in the
@@ -144,14 +145,15 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
     const list = nodesQuery.data?.data ?? [];
     return list
       .filter((n) => n.name !== node.name && n.canHostTenantWorkloads)
-      .map((n) => ({ name: n.name, usage: usageByName.get(n.name) }));
+      .map((n) => ({ name: n.name, usage: usageByName.get(n.name), node: n }));
   }, [nodesQuery.data, node.name, usageByName]);
 
   // Default per tenant, as the backend's: keep its pin when that is another
   // node this tenant could be re-pinned to (a re-run keeps what an earlier
   // run picked), else Auto.
   const defaultPlacementFor = (c: DrainImpact['pinnedTenants'][number]): string =>
-    c.currentNodeName && c.currentNodeName !== node.name && targetNodeOptions.some((n) => n.name === c.currentNodeName)
+    c.currentNodeName && c.currentNodeName !== node.name
+      && targetNodeOptions.some((n) => n.name === c.currentNodeName && nodeTakesTier(n.node, c.storageTier))
       ? c.currentNodeName
       : '';
 
@@ -362,9 +364,10 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                 >
                                   <option value="stay">Stay (refuse to move)</option>
                                   <option value="">{stoppedHere ? 'Auto (node with the most free space)' : 'Auto (clear pin)'}</option>
-                                  {targetNodeOptions.map((n) => (
+                                  {/* A pinned-only node takes Local-tier tenants only. */}
+                                  {targetNodeOptions.filter((n) => nodeTakesTier(n.node, c.storageTier)).map((n) => (
                                     <option key={n.name} value={n.name}>
-                                      {nodeLabel(n.name)}{formatNodeAvailability(n.usage)}
+                                      {nodeLabel(n.name)}{pinnedOnlySuffix(n.node)}{formatNodeAvailability(n.usage)}
                                     </option>
                                   ))}
                                 </select>

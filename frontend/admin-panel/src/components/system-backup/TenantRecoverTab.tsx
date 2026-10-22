@@ -37,6 +37,7 @@ import SearchablePicker from '@/components/ui/SearchablePicker';
 import { BundleChooser, TenantFacts } from './RecoverTenantPickers';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import { pinnedOnlySuffix } from '@/lib/tenant-hosting';
 
 // ── Static option data ────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ export default function TenantRecoverTab() {
     .map((n) => ({
       key: n.name,
       label: nodeLabel(n.name),
-      meta: `${n.role}${n.statusConditions?.find((c) => c.type === 'Ready')?.status === 'True' ? '' : ' · NotReady'}${nodeLabel(n.name) !== n.name ? ` · ${n.name}` : ''}`,
+      meta: `${n.role}${n.statusConditions?.find((c) => c.type === 'Ready')?.status === 'True' ? '' : ' · NotReady'}${nodeLabel(n.name) !== n.name ? ` · ${n.name}` : ''}${pinnedOnlySuffix(n) ? ' · pinned tenants only' : ''}`,
     }));
   const [targetNode, setTargetNode] = useState('');
   const [components, setComponents] = useState<ReadonlySet<DrRecoverComponent>>(
