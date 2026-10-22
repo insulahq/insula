@@ -192,8 +192,8 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   }
 
   // Tenants left storage-state FAILED. Every later resize, restore, suspend,
-  // resume, archive and move is refused ("A failed operation is already in
-  // progress") until someone resets it — while the tenant itself may be
+  // resume, archive and move is refused (409 STORAGE_OP_IN_PROGRESS) until
+  // someone resets it — while the tenant itself may be
   // running fine, so no workloads-down tile will ever show it. On production
   // a tenant sat FAILED after an outage and nothing on the
   // dashboard said so. Same category the quiesce watchdog uses when it marks
@@ -229,7 +229,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
         `${what(r)} failed` + (r.minutes !== null ? ` · ${r.minutes} min ago` : ''),
       ] as [string, string]),
       note: 'Resize, restore, suspend, resume, archive and moving are refused until this is dealt with. '
-        + 'Open the tenant, read the failed operation on its storage card, then use Reset to idle.',
+        + 'Open the tenant, read the failed operation on its Storage tab (an archived tenant shows it on its page), then use Reset to idle.',
     }));
   }
 
