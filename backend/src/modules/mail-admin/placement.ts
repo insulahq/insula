@@ -28,6 +28,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { mailMigrationInFlight, resolveActiveMailNode } from './active-node.js';
+import { MAIL_STANDBY_SINCE_ANNOTATION } from './standby-since.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -685,7 +686,7 @@ async function reconcileMailStandbyLabel(
   const STANDBY_LABEL = 'insula.host/mail-standby';
   const wantSet = new Set(standbyNodes);
 
-  let allNodes: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> = [];
+  let allNodes: Array<{ metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> } }> = [];
   try {
     const res = await core.listNode() as { items?: typeof allNodes };
     allNodes = res.items ?? [];
@@ -701,11 +702,25 @@ async function reconcileMailStandbyLabel(
     const shouldHave = wantSet.has(name);
     if (hasLabel === shouldHave) continue;
 
-    // JSON-Patch: add or remove the label. Path uses ~1 to escape '/'.
+    // JSON-Patch: add or remove the label, and with it the time the node
+    // became a standby (standby-since.ts). Path uses ~1 to escape '/'.
     const escaped = STANDBY_LABEL.replace(/~/g, '~0').replace(/\//g, '~1');
-    const patch = shouldHave
-      ? [{ op: 'add', path: `/metadata/labels/${escaped}`, value: 'true' }]
-      : [{ op: 'remove', path: `/metadata/labels/${escaped}` }];
+    const sinceEscaped = MAIL_STANDBY_SINCE_ANNOTATION.replace(/~/g, '~0').replace(/\//g, '~1');
+    const annotations = node.metadata?.annotations;
+    const since: Array<Record<string, unknown>> = shouldHave
+      ? [annotations
+        ? { op: 'add', path: `/metadata/annotations/${sinceEscaped}`, value: new Date().toISOString() }
+        : { op: 'add', path: '/metadata/annotations', value: { [MAIL_STANDBY_SINCE_ANNOTATION]: new Date().toISOString() } }]
+      // Removing a path that is not there fails the whole patch.
+      : annotations?.[MAIL_STANDBY_SINCE_ANNOTATION] !== undefined
+        ? [{ op: 'remove', path: `/metadata/annotations/${sinceEscaped}` }]
+        : [];
+    const patch = [
+      shouldHave
+        ? { op: 'add', path: `/metadata/labels/${escaped}`, value: 'true' }
+        : { op: 'remove', path: `/metadata/labels/${escaped}` },
+      ...since,
+    ];
     try {
       await core.patchNode(
         { name, body: patch } as unknown as Parameters<typeof core.patchNode>[0],

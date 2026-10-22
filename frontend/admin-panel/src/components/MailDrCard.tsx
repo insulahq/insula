@@ -8,7 +8,6 @@ import {
   ArrowRight,
   ChevronDown,
   Info,
-  Database,
   Wrench,
   RefreshCw,
 } from 'lucide-react';
@@ -22,10 +21,10 @@ import {
 } from '@/hooks/use-mail-placement';
 import { useStartMailMigration } from '@/hooks/use-mail-migration';
 import { useMailRecoveryStatus, useStartMailRecover } from '@/hooks/use-mail-recovery';
-import { useMailStandbyReports } from '@/hooks/use-mail-standby-reports';
+import MailStandbyFreshness, { MailStandbyPreparingNotice } from '@/components/email/MailStandbyFreshness';
 import { useQueryClient } from '@tanstack/react-query';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
-import type { NodeCandidate, StandbyReport } from '@insula/api-contracts';
+import type { NodeCandidate } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 
@@ -416,6 +415,9 @@ export default function MailDrCard() {
         </div>
       )}
 
+      {/* A standby that is still making its first copy (a standby move). */}
+      <MailStandbyPreparingNotice />
+
       {/* Node assignments */}
       <div className="space-y-3">
         <div className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -652,7 +654,7 @@ export default function MailDrCard() {
       </div>
 
       {/* Standby data freshness (A5 — rsync replication) */}
-      <StandbyDataSection />
+      <MailStandbyFreshness />
 
       {/* Candidate nodes info */}
       {candidates.length > 0 && (
@@ -857,90 +859,6 @@ function CandidateRow({ candidate, active }: { readonly candidate: NodeCandidate
       </span>
       <span className="text-gray-500 dark:text-gray-400">
         {bytesToGiB(candidate.freeMemoryBytes)} GiB RAM
-      </span>
-    </div>
-  );
-}
-
-// ─── Standby data freshness panel ──────────────────────────────────
-//
-// Reads the per-node reports posted by mail-stack-standby-replicate
-// (A5 rsync DaemonSet) — one row per standby-labelled node with the
-// last-known size, file count, rsync duration, and age. Traffic-light
-// by age vs the DaemonSet's 5-min cadence:
-//   <10 min = green (fresh, FAST PATH would use it)
-//   <30 min = amber (stale but usable; investigate)
-//   else    = red (broken or never reported)
-//
-// Renders nothing when no reports exist yet (e.g. cluster never had
-// HA configured, or DaemonSet just spun up — the first report lands
-// within 5 min). Avoids a "no data" tile that confuses operators who
-// haven't enabled mail HA yet.
-
-function StandbyDataSection() {
-  const { data, isLoading, isError } = useMailStandbyReports();
-  const reports = data?.data.reports ?? [];
-
-  if (isLoading || isError) return null;
-  if (reports.length === 0) return null;
-
-  return (
-    <div className="space-y-2 border-t border-gray-200 dark:border-gray-700 pt-4">
-      <div className="flex items-center gap-2">
-        <Database size={13} className="text-gray-500 dark:text-gray-400" />
-        <div className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-          Standby data freshness
-        </div>
-      </div>
-      <p className="text-xs text-gray-500 dark:text-gray-400">
-        Pre-staged mail data on standby-labelled nodes. FAST PATH on failover
-        uses this instead of pulling from the active node.
-      </p>
-      <div className="space-y-1.5">
-        {reports.map((r) => <StandbyRow key={r.node} report={r} />)}
-      </div>
-    </div>
-  );
-}
-
-function StandbyRow({ report }: { readonly report: StandbyReport }) {
-  const min = Math.floor(report.ageSeconds / 60);
-  const sec = report.ageSeconds % 60;
-  const ageStr = min === 0 ? `${sec}s` : `${min}m ${sec}s`;
-
-  // 5-min DaemonSet cadence → green band covers the normal case
-  // (~2x cadence to account for one missed iteration).
-  const dotCls =
-    report.ageSeconds < 600
-      ? 'bg-green-500'
-      : report.ageSeconds < 1800
-      ? 'bg-amber-500'
-      : 'bg-red-500';
-
-  const sizeMiB = (report.sizeBytes / 1024 / 1024).toFixed(1);
-
-  return (
-    <div
-      className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-xs"
-      data-testid={`mail-standby-row-${report.node}`}
-    >
-      <div className={`w-2 h-2 rounded-full shrink-0 ${dotCls}`} />
-      <code className="font-mono font-medium text-gray-900 dark:text-gray-100 flex-1 truncate">
-        <NodeName name={report.node} />
-      </code>
-      <span className="text-gray-500 dark:text-gray-400">{sizeMiB} MiB</span>
-      <span className="text-gray-500 dark:text-gray-400">{report.fileCount} files</span>
-      <span className="text-gray-500 dark:text-gray-400">{report.durationSeconds}s rsync</span>
-      <span
-        className={
-          report.ageSeconds < 600
-            ? 'text-green-700 dark:text-green-300 font-medium'
-            : report.ageSeconds < 1800
-            ? 'text-amber-700 dark:text-amber-300 font-medium'
-            : 'text-red-700 dark:text-red-300 font-medium'
-        }
-      >
-        {ageStr} ago
       </span>
     </div>
   );

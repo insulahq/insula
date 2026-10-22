@@ -188,6 +188,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Moving the mail standby to another node raised "[MAIL] standby mail copy check failing"**
+  ("has never finished a copy"), and Email → Operations kept the old standby in **Standby data
+  freshness**, red, for good. A new standby copies the whole mail store before its first report,
+  and the check read that as broken. The platform now records when a node became a standby (the
+  Node annotation `insula.host/mail-standby-since`); until its first copy is complete the node is
+  **preparing** — no alert, no error in the health banner, and a notice on Email → Operations —
+  while its copier runs. A first copy whose copier is not running ten minutes on, or that has not
+  finished after six hours, fails the check and shows red with the reason. The freshness list
+  shows only the nodes that are standbys now; a report from before a node became a standby again
+  no longer counts. A standby labelled before this release has no recorded time and is judged as
+  before.
 - **Cluster → Nodes kept saying a tenant was "still placed elsewhere after the outage" after it
   had been moved back**, naming the same node on both sides of the arrow. The review counted only moves made from its own
   wizard; a move from the tenant's Placement, a drain or migrate-to-worker left the outage move

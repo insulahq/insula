@@ -45,6 +45,8 @@ function invalidateMailDerivedQueries(
     qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
     qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
     qc.invalidateQueries({ queryKey: ['mail', 'port-exposure'] }),
+    // A placement change can make another node the standby: show it preparing.
+    qc.invalidateQueries({ queryKey: ['mail', 'standby-reports'] }),
   ]);
 }
 

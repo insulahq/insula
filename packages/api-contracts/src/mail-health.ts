@@ -212,8 +212,9 @@ export type MailHealthExposureNode = z.infer<typeof mailHealthExposureNodeSchema
  * the newest backup snapshot, so an old copy means mail received since it would
  * be lost (unless the backup is newer). The component fails when a copy is
  * older than the target age (`FAST_PATH_MAX_AGE_SECONDS`, 30 min by default)
- * or a standby never finished one. `not_implemented` when no node is labelled
- * for standby.
+ * or a standby never finished one — except a node still making its first copy
+ * since it became a standby, which is preparing (`firstCopySince`).
+ * `not_implemented` when no node is labelled for standby.
  */
 export const mailHealthStandbyNodeSchema = z.object({
   node: z.string(),
@@ -227,6 +228,18 @@ export const mailHealthStandbyNodeSchema = z.object({
   sizeBytes: z.number().nonnegative().nullable(),
   /** The copy is younger than the target age. */
   fresh: z.boolean(),
+  /**
+   * Set while the node is making its FIRST copy as a standby: when it became
+   * one (a standby move labels a new node). It is then preparing, not failing,
+   * for up to six hours. Absent from an older backend.
+   */
+  firstCopySince: z.string().nullable().optional(),
+  /**
+   * Where that first copy stands: `preparing` (not failing), `not_running` (its
+   * copier is not running ten minutes on) or `overdue` (not finished after six
+   * hours) — both fail. Null when the node is not on its first copy.
+   */
+  firstCopy: z.enum(['preparing', 'not_running', 'overdue']).nullable().optional(),
 });
 
 export const mailHealthStandbyComponentSchema = componentStatusSchema.extend({

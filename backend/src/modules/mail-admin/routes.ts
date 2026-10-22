@@ -55,7 +55,8 @@ import {
 } from './archive-schedule.js';
 import { MAIL_ARCHIVE_ENABLED } from './archive-dormant.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
-import { getStandbyReports, recordStandbyReport } from './standby-reports.js';
+import { getCurrentStandbyReports, recordStandbyReport } from './standby-reports.js';
+import { STANDBY_REPLICATOR_SELECTOR } from './standby-since.js';
 import {
   getMailSnapshotSchedule,
   updateMailSnapshotSchedule,
@@ -1272,8 +1273,15 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     '/admin/mail/standby-reports',
     { preHandler: requireRole('super_admin', 'admin') },
     async () => {
-      const reports = await getStandbyReports(app.db);
-      return success({ reports });
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const view = await getCurrentStandbyReports(app.db, {
+        listNodes: async () => ((await createK8sClients(kubeconfigPath).core.listNode()) as { items?: [] }).items ?? [],
+        listCopierPods: async () => ((await createK8sClients(kubeconfigPath).core.listNamespacedPod({
+          namespace: 'mail', labelSelector: STANDBY_REPLICATOR_SELECTOR,
+        })) as { items?: [] }).items ?? [],
+      });
+      return success(view);
     },
   );
 

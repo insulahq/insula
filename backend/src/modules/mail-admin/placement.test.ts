@@ -669,4 +669,40 @@ describe('mail-admin/placement.applyMailStandbyLabels', () => {
     await applyMailStandbyLabels(core as never, { createNamespacedJob } as never, { primary: 's1', secondary: 's2', tertiary: 's3' }, 's2');
     expect(patchNode).not.toHaveBeenCalled();
   });
+
+  // Moving the standby labels a new node, which then copies the whole store:
+  // the time it became a standby is what tells "preparing" from "failing".
+  it('records when a node became a standby, and clears it with the label', async () => {
+    const SINCE = 'insula.host~1mail-standby-since';
+    type Op = { op: string; path: string; value?: unknown };
+    const patchNode = vi.fn(async (_req: { name: string; body: Op[] }) => undefined);
+    const core = {
+      listNode: vi.fn(async () => ({
+        items: [
+          { metadata: { name: 's1', labels: {}, annotations: { 'k3s.io/hostname': 's1' } } },
+          { metadata: { name: 's2', labels: { [STANDBY]: 'true' }, annotations: { 'insula.host/mail-standby-since': '2026-10-01T00:00:00.000Z' } } },
+          { metadata: { name: 's3', labels: { [STANDBY]: 'true' }, annotations: {} } },
+          { metadata: { name: 's4', labels: {} } },
+        ],
+      })),
+      patchNode,
+    };
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    await applyMailStandbyLabels(
+      core as never, { createNamespacedJob: vi.fn(async () => undefined) } as never,
+      { primary: 'a', secondary: 's1', tertiary: 's4' }, 'a',
+    );
+    const body = (name: string) => patchNode.mock.calls.find(([req]) => req.name === name)?.[0].body ?? [];
+    // Added: the label, then the time — into an existing map, or as a new one.
+    expect(body('s1')[1]).toMatchObject({ op: 'add', path: `/metadata/annotations/${SINCE}` });
+    expect(Date.parse(body('s1')[1].value as string)).toBeGreaterThan(Date.now() - 60_000);
+    expect(body('s4')[1]).toMatchObject({ op: 'add', path: '/metadata/annotations', value: { 'insula.host/mail-standby-since': expect.any(String) } });
+    // Removed: the time goes with the label; a node without it gets no remove op
+    // (removing a missing path fails the whole patch, label included).
+    expect(body('s2')).toEqual([
+      { op: 'remove', path: '/metadata/labels/insula.host~1mail-standby' },
+      { op: 'remove', path: `/metadata/annotations/${SINCE}` },
+    ]);
+    expect(body('s3')).toEqual([{ op: 'remove', path: '/metadata/labels/insula.host~1mail-standby' }]);
+  });
 });
