@@ -266,8 +266,9 @@ version combination. Note: application-specific images like WordPress are in the
 
 | Catalog ID               | Base Image                          | Web Server | Runtime         | Status |
 | ------------------------ | ----------------------------------- | ---------- | --------------- | ------ |
-| `apache-php`             | serversideup/php:8.4-fpm-apache     | Apache 2.4 | PHP 8.3/8.4/8.5 | Active |
-| `nginx-php`              | serversideup/php:8.4-fpm-nginx-alpine | Nginx    | PHP 8.3/8.4/8.5 | Active |
+| `apache-php`             | `serversideup/php:<php>-fpm-apache`   | Apache 2.4 | PHP 8.3/8.4/8.5 (default 8.5) | Active |
+| `nginx-php`              | `serversideup/php:<php>-fpm-nginx-alpine` | Nginx | PHP 8.3/8.4/8.5 (default 8.5) | Active |
+| `apache-php-office`      | `apache-php` + LibreOffice, Ghostscript | Apache 2.4 | PHP 8.3/8.4/8.5 (default 8.5) | Active |
 | `nodejs`                 | node:22-alpine                      | (none)     | Node.js 22      | Active |
 | `python-312`             | python:3.12-slim                    | (none)     | Python 3.12     | Active |
 | `ruby-33`                | ruby:3.3-alpine                     | (none)     | Ruby 3.3        | Active |
