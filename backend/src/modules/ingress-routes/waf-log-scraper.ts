@@ -64,6 +64,9 @@ const INGRESS_LABEL = 'app.kubernetes.io/name=modsec-crs';
 // record with credential headers masked; a pod predating that sidecar simply
 // fails that one read (handled soft, per-target).
 const WAF_LOG_CONTAINERS = ['modsec', 'audit-redactor'] as const;
+// Set by the ModSecurity plugin on its check of a detection-only route
+// (k8s/base/traefik/plugins/modsecurity, WafModeHeader).
+const WAF_MODE_HEADER = 'X-Insula-Waf-Mode';
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
@@ -195,6 +198,12 @@ interface ParsedWafEvent {
   readonly requestMethod: string;
   readonly sourceIp: string;
   readonly hostname: string;
+  /**
+   * Checked on a route in detection-only mode, so NOT blocked. Only the JSON
+   * audit record knows (the plugin's X-Insula-Waf-Mode: detect header); an
+   * event seen only in an [error] line is not marked until its record is read.
+   */
+  readonly detectionOnly?: boolean;
 }
 
 /**
@@ -301,6 +310,121 @@ export function parseModSecurityLine(line: string): ParsedWafEvent | null {
 }
 
 /**
+ * Pass 1 and 2 of a scrape, without the cluster or the database: the events in
+ * one read of the modsec pods' logs, hostnames and addresses resolved from the
+ * JSON audit records, de-duplicated. Pure.
+ */
+export function parseScrapedLog(logOutput: string): ParsedWafEvent[] {
+  // 2. Parse ModSecurity events — two-pass to resolve hostnames
+  // Pass 1: Parse all lines and group by unique_id prefix
+  const lines = logOutput.split('\n');
+  const allParsed: ParsedWafEvent[] = [];
+  const uidToHostname = new Map<string, string>();
+  const uidToXfHost = new Map<string, string>();
+  const uidToRealIp = new Map<string, string>();
+  // Transactions checked in detection-only mode (the plugin's header, which it
+  // strips from what clients send — so it cannot be forged).
+  const uidDetectionOnly = new Set<string>();
+
+  for (const line of lines) {
+    // 1a. JSON audit-log lines contain the REAL client-facing hostname in
+    // request.headers["X-Forwarded-Host"] — the [error] line only knows
+    // about `server: localhost` (nginx server_name on the modsec pod) and
+    // `[hostname "modsec-crs.traefik.svc.cluster.local"]` (the Service
+    // hostname the Traefik plugin proxies to). Without this, every event
+    // would collapse under hostname="localhost" and the Top Hosts panel
+    // would be useless.
+    if (line.length > 0 && line.charCodeAt(0) === 0x7b /* { */ && line.includes('"transaction"')) {
+      const xfHost = extractJsonField(line, 'X-Forwarded-Host');
+      const xRealIp = extractJsonField(line, 'X-Real-Ip');
+      const jsonUid = extractJsonField(line, 'unique_id');
+      if (jsonUid) {
+        if (xfHost) uidToXfHost.set(jsonUid, xfHost);
+        if (xRealIp) uidToRealIp.set(jsonUid, xRealIp);
+        if (extractJsonField(line, WAF_MODE_HEADER) === 'detect') uidDetectionOnly.add(jsonUid);
+      }
+      // The JSON record is also the ONLY place the contributing rules appear
+      // (see parseContributingRules). Emit one event per contributing rule so
+      // the operator can whitelist the rule that actually matched.
+      if (jsonUid) {
+        // URI + method come from the JSON record itself rather than the uid
+        // maps, because an allowlisted (DetectionOnly) request produces NO
+        // [error] line at all — verified against the CRS image —
+        // so those maps are empty for exactly the traffic the operator
+        // allowlisted. Without this, every allowlisted event would land in
+        // WAF Events as "GET /".
+        const jsonUri = extractJsonField(line, 'uri');
+        const jsonMethod = extractJsonField(line, 'method');
+        for (const r of parseContributingRules(line)) {
+          allParsed.push({
+            uniqueId: `${jsonUid}:${r.ruleId}`,
+            // jsonUid is ModSecurity's own transaction id, read straight out of
+            // the audit record — stable across re-reads by construction.
+            hasStableUid: true,
+            ruleId: r.ruleId,
+            severity: r.severity,
+            message: r.message,
+            requestUri: jsonUri || '/',
+            requestMethod: jsonMethod || 'GET',
+            // Hostname and source IP still resolve in pass 2 via uidToXfHost /
+            // uidToRealIp, which are filled from this same JSON line above.
+            sourceIp: '0.0.0.0',
+            hostname: '',
+          });
+        }
+      }
+      // JSON lines don't match the parser's [id "..."] regex — skip per-line parse.
+      continue;
+    }
+
+    const event = parseModSecurityLine(line);
+    if (!event) continue;
+    allParsed.push(event);
+    // The blocking rule (949110) includes "server: hostname" and "tenant: ip" in [error] lines
+    // Use it to map unique_id → hostname/ip/uri for all related rules
+    const uidPrefix = event.uniqueId.split(':')[0];
+    const serverMatch = line.match(/server: ([^,]+)/);
+    if (serverMatch && serverMatch[1]) {
+      uidToHostname.set(uidPrefix, serverMatch[1]);
+    }
+    // Also store tenant IP and request URI from error lines for the group
+    if (event.sourceIp !== '0.0.0.0') uidToHostname.set(`${uidPrefix}:ip`, event.sourceIp);
+    if (event.requestUri !== '/') uidToHostname.set(`${uidPrefix}:uri`, event.requestUri);
+    if (event.requestMethod !== 'GET') uidToHostname.set(`${uidPrefix}:method`, event.requestMethod);
+  }
+
+  // Pass 2: Assign resolved hostnames and deduplicate.
+  // Hostname preference: JSON-line X-Forwarded-Host (real client host) >
+  // [error]-line server: value (nginx server_name, typically 'localhost' or
+  // the modsec Service hostname) > event-line hostname (the [hostname "..."]
+  // field, also a proxy artifact). IP preference: JSON-line X-Real-Ip > [error]
+  // tenant: > event-line sourceIp.
+  const events: ParsedWafEvent[] = [];
+  const seenUids = new Set<string>();
+  for (const event of allParsed) {
+    if (seenUids.has(event.uniqueId)) continue;
+    seenUids.add(event.uniqueId);
+    const uidPrefix = event.uniqueId.split(':')[0];
+    const resolvedHostname =
+      uidToXfHost.get(uidPrefix) ||
+      uidToHostname.get(uidPrefix) ||
+      event.hostname;
+    if (!resolvedHostname || resolvedHostname === '127.0.0.1') continue;
+    const resolvedIp =
+      uidToRealIp.get(uidPrefix) ||
+      (event.sourceIp !== '0.0.0.0' ? event.sourceIp : (uidToHostname.get(`${uidPrefix}:ip`) || '0.0.0.0'));
+    const resolvedUri = event.requestUri !== '/' ? event.requestUri : (uidToHostname.get(`${uidPrefix}:uri`) || '/');
+    const resolvedMethod = event.requestMethod !== 'GET' ? event.requestMethod : (uidToHostname.get(`${uidPrefix}:method`) || 'GET');
+    events.push({
+      ...event, hostname: resolvedHostname, sourceIp: resolvedIp, requestUri: resolvedUri, requestMethod: resolvedMethod,
+      detectionOnly: uidDetectionOnly.has(uidPrefix),
+    });
+  }
+
+  return events;
+}
+
+/**
  * Scrape ModSecurity logs from the NGINX Ingress Controller
  * and insert new events into the waf_logs table.
  */
@@ -386,105 +510,8 @@ export async function scrapeWafLogs(
     return { scraped: 0, inserted: 0, errors: [`Failed to list modsec-crs pods: ${err instanceof Error ? err.message : String(err)}`] };
   }
 
-  // 2. Parse ModSecurity events — two-pass to resolve hostnames
-  // Pass 1: Parse all lines and group by unique_id prefix
-  const lines = logOutput.split('\n');
-  const allParsed: ParsedWafEvent[] = [];
-  const uidToHostname = new Map<string, string>();
-  const uidToXfHost = new Map<string, string>();
-  const uidToRealIp = new Map<string, string>();
-
-  for (const line of lines) {
-    // 1a. JSON audit-log lines contain the REAL client-facing hostname in
-    // request.headers["X-Forwarded-Host"] — the [error] line only knows
-    // about `server: localhost` (nginx server_name on the modsec pod) and
-    // `[hostname "modsec-crs.traefik.svc.cluster.local"]` (the Service
-    // hostname the Traefik plugin proxies to). Without this, every event
-    // would collapse under hostname="localhost" and the Top Hosts panel
-    // would be useless.
-    if (line.length > 0 && line.charCodeAt(0) === 0x7b /* { */ && line.includes('"transaction"')) {
-      const xfHost = extractJsonField(line, 'X-Forwarded-Host');
-      const xRealIp = extractJsonField(line, 'X-Real-Ip');
-      const jsonUid = extractJsonField(line, 'unique_id');
-      if (jsonUid) {
-        if (xfHost) uidToXfHost.set(jsonUid, xfHost);
-        if (xRealIp) uidToRealIp.set(jsonUid, xRealIp);
-      }
-      // The JSON record is also the ONLY place the contributing rules appear
-      // (see parseContributingRules). Emit one event per contributing rule so
-      // the operator can whitelist the rule that actually matched.
-      if (jsonUid) {
-        // URI + method come from the JSON record itself rather than the uid
-        // maps, because an allowlisted (DetectionOnly) request produces NO
-        // [error] line at all — verified against the CRS image —
-        // so those maps are empty for exactly the traffic the operator
-        // allowlisted. Without this, every allowlisted event would land in
-        // WAF Events as "GET /".
-        const jsonUri = extractJsonField(line, 'uri');
-        const jsonMethod = extractJsonField(line, 'method');
-        for (const r of parseContributingRules(line)) {
-          allParsed.push({
-            uniqueId: `${jsonUid}:${r.ruleId}`,
-            // jsonUid is ModSecurity's own transaction id, read straight out of
-            // the audit record — stable across re-reads by construction.
-            hasStableUid: true,
-            ruleId: r.ruleId,
-            severity: r.severity,
-            message: r.message,
-            requestUri: jsonUri || '/',
-            requestMethod: jsonMethod || 'GET',
-            // Hostname and source IP still resolve in pass 2 via uidToXfHost /
-            // uidToRealIp, which are filled from this same JSON line above.
-            sourceIp: '0.0.0.0',
-            hostname: '',
-          });
-        }
-      }
-      // JSON lines don't match the parser's [id "..."] regex — skip per-line parse.
-      continue;
-    }
-
-    const event = parseModSecurityLine(line);
-    if (!event) continue;
-    allParsed.push(event);
-    // The blocking rule (949110) includes "server: hostname" and "tenant: ip" in [error] lines
-    // Use it to map unique_id → hostname/ip/uri for all related rules
-    const uidPrefix = event.uniqueId.split(':')[0];
-    const serverMatch = line.match(/server: ([^,]+)/);
-    if (serverMatch && serverMatch[1]) {
-      uidToHostname.set(uidPrefix, serverMatch[1]);
-    }
-    // Also store tenant IP and request URI from error lines for the group
-    if (event.sourceIp !== '0.0.0.0') uidToHostname.set(`${uidPrefix}:ip`, event.sourceIp);
-    if (event.requestUri !== '/') uidToHostname.set(`${uidPrefix}:uri`, event.requestUri);
-    if (event.requestMethod !== 'GET') uidToHostname.set(`${uidPrefix}:method`, event.requestMethod);
-  }
-
-  // Pass 2: Assign resolved hostnames and deduplicate.
-  // Hostname preference: JSON-line X-Forwarded-Host (real client host) >
-  // [error]-line server: value (nginx server_name, typically 'localhost' or
-  // the modsec Service hostname) > event-line hostname (the [hostname "..."]
-  // field, also a proxy artifact). IP preference: JSON-line X-Real-Ip > [error]
-  // tenant: > event-line sourceIp.
-  const events: ParsedWafEvent[] = [];
-  const seenUids = new Set<string>();
-  for (const event of allParsed) {
-    if (seenUids.has(event.uniqueId)) continue;
-    seenUids.add(event.uniqueId);
-    const uidPrefix = event.uniqueId.split(':')[0];
-    const resolvedHostname =
-      uidToXfHost.get(uidPrefix) ||
-      uidToHostname.get(uidPrefix) ||
-      event.hostname;
-    if (!resolvedHostname || resolvedHostname === '127.0.0.1') continue;
-    const resolvedIp =
-      uidToRealIp.get(uidPrefix) ||
-      (event.sourceIp !== '0.0.0.0' ? event.sourceIp : (uidToHostname.get(`${uidPrefix}:ip`) || '0.0.0.0'));
-    const resolvedUri = event.requestUri !== '/' ? event.requestUri : (uidToHostname.get(`${uidPrefix}:uri`) || '/');
-    const resolvedMethod = event.requestMethod !== 'GET' ? event.requestMethod : (uidToHostname.get(`${uidPrefix}:method`) || 'GET');
-    events.push({ ...event, hostname: resolvedHostname, sourceIp: resolvedIp, requestUri: resolvedUri, requestMethod: resolvedMethod });
-    scraped++;
-  }
+  const events = parseScrapedLog(logOutput);
+  scraped = events.length;
 
   if (events.length === 0) return { scraped: 0, inserted: 0, errors: [] };
 
@@ -553,6 +580,7 @@ export async function scrapeWafLogs(
         // column comment. Postgres treats NULLs as distinct under a unique
         // index, so those rows neither dedupe nor collide.
         eventKey: event.hasStableUid ? truncate(event.uniqueId, 128) : null,
+        detectionOnly: event.detectionOnly ?? false,
       };
       const written = await db
         .insert(wafLogs)
@@ -568,6 +596,10 @@ export async function scrapeWafLogs(
                             THEN excluded.request_uri ELSE ${wafLogs.requestUri} END`,
             routeId: sql`coalesce(${wafLogs.routeId}, excluded.route_id)`,
             tenantId: sql`coalesce(${wafLogs.tenantId}, excluded.tenant_id)`,
+            // The [error] line can be written before its JSON record is read
+            // (another cycle): only the record marks detection-only, so a
+            // later read may set it and nothing unsets it.
+            detectionOnly: sql`${wafLogs.detectionOnly} OR excluded.detection_only`,
           },
         })
         .returning({ id: wafLogs.id });

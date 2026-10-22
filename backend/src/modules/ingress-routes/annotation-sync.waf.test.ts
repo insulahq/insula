@@ -18,6 +18,25 @@ const baseRoute: RouteSettingsLike = {
 };
 
 describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', () => {
+  // Detection only: the same sidecar, through the plugin's detectOnly
+  // Middleware — checked and logged, never blocked — and still capped first.
+  it('attaches modsecurity-crs-detect (not modsecurity-crs) in detection-only mode, body limit first', () => {
+    const { referenceList } = buildMiddlewaresForRoute(
+      { ...baseRoute, wafEnabled: 1, wafDetectionOnly: 1 },
+      'route-12345678',
+      'tenant-ns',
+    );
+    const names = referenceList.map((r) => r.name);
+    expect(referenceList.find((r) => r.name === 'modsecurity-crs-detect')).toEqual({ name: 'modsecurity-crs-detect', namespace: 'traefik' });
+    expect(names).not.toContain('modsecurity-crs');
+    expect(names.indexOf('waf-body-limit')).toBe(names.indexOf('modsecurity-crs-detect') - 1);
+  });
+
+  it('detection-only on a route whose WAF is off attaches nothing', () => {
+    const { referenceList } = buildMiddlewaresForRoute({ ...baseRoute, wafEnabled: 0, wafDetectionOnly: 1 }, 'route-12345678', 'tenant-ns');
+    expect(referenceList.map((r) => r.name).filter((n) => n.startsWith('modsecurity') || n === 'waf-body-limit')).toEqual([]);
+  });
+
   it('emits NO WAF ref when wafEnabled=0', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, wafEnabled: 0 },

@@ -121,7 +121,11 @@ four tabs:
 
 - **WAF Events** — the cluster-wide ModSecurity / CRS event stream, with
   source-IP and date-range filters. The block button on a row opens the ban
-  dialog with the **Permanent** duration preselected (see below).
+  dialog with the **Permanent** duration preselected (see below). A row marked
+  *Detected · not blocked* comes from a tenant route whose WAF is in
+  **Detection only** (the route page's WAF mode): the request was checked and
+  logged but let through. Those events never trigger an auto-ban, and the
+  dashboards do not count them as blocked.
 - **Banned IPs** — **this platform's own** ban decisions, one row per address:
   operator bans (timed or permanent), the WAF auto-ban scheduler, and
   detections made by the log-processing agent. The **Added by** column says

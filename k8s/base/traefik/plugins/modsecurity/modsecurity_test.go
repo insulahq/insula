@@ -695,3 +695,88 @@ func TestTrailingSlashOnTheSidecarURL(t *testing.T) {
 		t.Fatalf("sidecar saw %q, want /path", side.uri)
 	}
 }
+
+func TestDetectOnlyPassesABlockedRequestOnAndTagsTheCheck(t *testing.T) {
+	srv, side := sidecar(t, http.StatusForbidden, nil)
+	next, back := backend()
+	h := plugin(t, srv.URL, next, func(c *Config) {
+		c.DetectOnly = true
+		c.ModSecurityStatusRequestHeader = "X-Waf-Status"
+	})
+
+	rec := serve(h, httptest.NewRequest(http.MethodPost, "/?q=attack", strings.NewReader("payload")))
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "backend" || back.count() != 1 {
+		t.Fatalf("status %d, body %q, backend hits %d — detection only must never block", rec.Code, rec.Body.String(), back.count())
+	}
+	if string(back.body) != "payload" {
+		t.Fatalf("backend body %q", back.body)
+	}
+	if side.count() != 1 || side.header.Get(WafModeHeader) != "detect" {
+		t.Fatalf("sidecar hits %d, mode header %q — every request is still checked, and marked", side.count(), side.header.Get(WafModeHeader))
+	}
+	if got := back.header.Get("X-Waf-Status"); got != "detected-403" {
+		t.Fatalf("status header %q, want detected-403", got)
+	}
+}
+
+func TestDetectOnlyPassesAnAllowedRequestUnmarked(t *testing.T) {
+	srv, _ := sidecar(t, http.StatusOK, nil)
+	next, back := backend()
+	h := plugin(t, srv.URL, next, func(c *Config) {
+		c.DetectOnly = true
+		c.ModSecurityStatusRequestHeader = "X-Waf-Status"
+	})
+
+	rec := serve(h, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK || back.header.Get("X-Waf-Status") != "200" {
+		t.Fatalf("status %d, status header %q", rec.Code, back.header.Get("X-Waf-Status"))
+	}
+}
+
+func TestDetectOnlyFailsOpenWhenTheSidecarIsGone(t *testing.T) {
+	srv, _ := sidecar(t, http.StatusOK, nil)
+	url := srv.URL
+	srv.Close()
+	next, back := backend()
+	h := plugin(t, url, next, func(c *Config) { c.DetectOnly = true })
+
+	rec := serve(h, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK || back.count() != 1 {
+		t.Fatalf("status %d, backend hits %d — a route on trial must not go down with its WAF", rec.Code, back.count())
+	}
+}
+
+func TestEnforcingStillBlocksAndDropsAForgedModeHeader(t *testing.T) {
+	srv, side := sidecar(t, http.StatusForbidden, nil)
+	next, back := backend()
+	h := plugin(t, srv.URL, next, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(WafModeHeader, "detect")
+
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusForbidden || back.count() != 0 {
+		t.Fatalf("status %d, backend hits %d — the client's header must not switch enforcement off", rec.Code, back.count())
+	}
+	if got := side.header.Values(WafModeHeader); len(got) != 0 {
+		t.Fatalf("sidecar saw %s %q — a client must not be able to mark its own events", WafModeHeader, got)
+	}
+}
+
+func TestAForgedModeHeaderDoesNotReachTheBackend(t *testing.T) {
+	srv, _ := sidecar(t, http.StatusOK, nil)
+	next, back := backend()
+	h := plugin(t, srv.URL, next, func(c *Config) { c.DetectOnly = true })
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add("x-insula-waf-mode", "detect")
+	req.Header.Add(WafModeHeader, "detect")
+
+	serve(h, req)
+
+	if back.count() != 1 || len(back.header.Values(WafModeHeader)) != 0 {
+		t.Fatalf("backend hits %d, saw %s %q", back.count(), WafModeHeader, back.header.Values(WafModeHeader))
+	}
+}

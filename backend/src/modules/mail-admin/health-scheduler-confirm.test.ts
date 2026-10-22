@@ -132,7 +132,7 @@ describe('mail health pass: look twice before telling anyone', () => {
     expect(fired).toBe(1);
     expect(state.notified[0]!.payload).toMatchObject({
       component: 'standby mail copy',
-      impact: 'Mail delivery is not affected, but a failover now would lose the mail received since the newest copy.',
+      impact: 'Mail delivery is not affected.',
     });
   });
 

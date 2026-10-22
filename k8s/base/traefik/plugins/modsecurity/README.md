@@ -38,6 +38,7 @@ PR #19 (opt-in fail-open back-off; the platform keeps it off), #21
 | `maxConnsPerHost` / `maxIdleConnsPerHost` | 0 / 64 | Sidecar connection pool. |
 | `unhealthyWafBackOffPeriodSecs` | 0 | > 0 lets requests through UNINSPECTED for that long after the sidecar fails. 0 answers 502. |
 | `modSecurityStatusRequestHeader` | — | Request header recording the outcome, for access logs. |
+| `detectOnly` | false | Check every request as usual (every rule match is logged) but never act on the verdict, and let requests through when the sidecar fails. The check carries `X-Insula-Waf-Mode: detect` for the audit log; a client-sent copy is removed on every route. The `modsecurity-crs-detect` Middleware sets it. |
 
 Keys it does not know (upstream's `jail*`, the old `maxBodySize`) are dropped
 by Traefik without an error.

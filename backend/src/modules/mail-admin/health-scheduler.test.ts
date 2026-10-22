@@ -5,7 +5,7 @@ import {
 
 describe('componentImpact — what the failure means for mail', () => {
   it('the standby copy and the disk headroom do not stop delivery; the rest likely does', () => {
-    expect(componentImpact('standby')).toMatch(/^Mail delivery is not affected, but a failover now would lose/);
+    expect(componentImpact('standby')).toBe('Mail delivery is not affected.');
     expect(componentImpact('storage')).toMatch(/^Mail delivery is not affected yet; a full disk would stop the mail server/);
     for (const k of ['pod', 'jmap', 'rocksdb', 'cert', 'tcp', 'deliverability', 'exposure', 'something-new']) {
       expect(componentImpact(k)).toBe('Mail delivery is likely affected.');

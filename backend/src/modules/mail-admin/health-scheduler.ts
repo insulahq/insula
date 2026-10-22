@@ -70,7 +70,8 @@ const COMPONENT_LABELS: Record<string, string> = {
 export function componentImpact(key: string): string {
   switch (key) {
     case 'standby':
-      return 'Mail delivery is not affected, but a failover now would lose the mail received since the newest copy.';
+      // Its detail already says what a failover now would lose.
+      return 'Mail delivery is not affected.';
     case 'storage':
       return 'Mail delivery is not affected yet; a full disk would stop the mail server.';
     default:

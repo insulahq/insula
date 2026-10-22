@@ -105,8 +105,9 @@ function duration(seconds: number): string {
   return m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+/** 44.1 GB; below a gigabyte in MB ("0.0 GB so far" said nothing on a small store). */
 function gb(bytes: number): string {
-  return `${(bytes / 1e9).toFixed(1)} GB`;
+  return bytes < 1e9 ? `${Math.round(bytes / 1e6)} MB` : `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
 const COPY_NOTE = 'A first copy moves everything; later ones only what changed';

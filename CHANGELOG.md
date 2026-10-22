@@ -88,6 +88,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **A route's WAF can run in detection only.** On a route's page, the WAF card's on/off switch is
+  now **Off | Detection only | Enforced**. Detection only checks every request against the rules and
+  logs every match in the route's **WAF Log** — marked *detected · not blocked* — but blocks
+  nothing, so the rules can run against real traffic for as long as needed (and exclusions be
+  added for false positives) before enforcing them. If the WAF itself cannot be reached, a
+  detection-only route keeps serving. Those events are also marked on Security → Web defense → WAF
+  events, and they never lead to an auto-ban or count as blocked on the dashboards. Auto-ban now
+  judges an event about a minute after it is logged, once the log reader has matched it to its
+  site and its mode — before, an event read in two halves could pass for an admin-site one.
+  Turning a route's WAF off through the older `waf_enabled` API field also clears detection only,
+  so turning it on again that way enforces. Installing the release restarts Traefik once, one node
+  at a time, to load the updated WAF plugin.
 - **A new mail standby's first copy is a Task Center task.** Choosing a secondary or tertiary,
   moving the standby to another node, or a migration that leaves a different node as standby,
   starts a full copy of the mail store on that node. **Prepare the mail standby on <node>** now
@@ -203,9 +215,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 - **Every mail health alert said "Mail delivery is likely affected"**, also for a standby copy that
   was only behind and for a mail disk running short — neither stops delivery. The alert now closes
-  with what the failure means: for the standby copy, that delivery is not affected but a failover
-  would lose the mail received since the newest copy; for the disk, that delivery is not affected
-  yet but a full disk would stop the mail server; for the other checks, as before. Unedited alert
+  with what the failure means: for the standby copy, that delivery is not affected (its detail
+  already says what a failover would lose); for the disk, that delivery is not affected yet but a
+  full disk would stop the mail server; for the other checks, as before. Unedited alert
   templates are updated when platform-api starts; one you edited keeps your text.
 - **Security → Web defense → Settings, WAF Auto-Ban: the dry-run result's column headings were
   centred** over left-aligned columns, as were the sortable headings of **Recent decisions** beside

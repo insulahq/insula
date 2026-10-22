@@ -364,3 +364,34 @@ describe('WAF Events — one header row', () => {
     expect(screen.queryByText(/admin-host events are capped at 500 globally/)).not.toBeInTheDocument();
   });
 });
+
+// A tenant route in detection-only mode: its events are logged, not blocked.
+describe('WAF Events — detection-only events', () => {
+  const ev = (id: string, detectionOnly?: boolean) => ({
+    id, scope: 'tenant-route', hostname: 'shop.example.test', routeId: '00000000-0000-4000-8000-000000000001', tenantId: null,
+    ruleId: '941100', severity: 'critical', message: 'XSS Attack Detected', requestUri: '/?q=x', requestMethod: 'GET',
+    sourceIp: '192.0.2.60', occurredAt: '2026-01-01T00:00:00.000Z', ...(detectionOnly === undefined ? {} : { detectionOnly }),
+  });
+  beforeEach(() => {
+    wafEvents.mockReturnValue({
+      ...ok({
+        events: [ev('00000000-0000-4000-8000-00000000000a', true), ev('00000000-0000-4000-8000-00000000000b', false), ev('00000000-0000-4000-8000-00000000000c')],
+        truncated: false,
+        stats: { windowSeconds: 86_400, totalEvents: 3, totalEventsAdminHost: 0, totalEventsTenantRoute: 3, totalEventsDetectionOnly: 1, topRules: [], topHosts: [], mostRecentAt: null },
+        scraperStatus: { hasRunOnce: true, modsecPodFound: true, lastRunAt: null, scrapeIntervalMs: 30_000, lastCycleErrors: [] },
+      }),
+    });
+  });
+
+  it('marks them "Detected · not blocked" — and only them', () => {
+    render(<WafEventsTab />, { wrapper });
+    expect(screen.getByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000a')).toHaveTextContent('Detected · not blocked');
+    expect(screen.queryByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000b')).toBeNull();
+    expect(screen.queryByTestId('waf-event-detected-00000000-0000-4000-8000-00000000000c')).toBeNull();
+  });
+
+  it('the events tile says how many of them were detected only', () => {
+    render(<WafEventsTab />, { wrapper });
+    expect(screen.getByTestId('waf-stats-detection-only')).toHaveTextContent('1 detected only — not blocked');
+  });
+});

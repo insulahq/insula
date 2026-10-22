@@ -679,6 +679,11 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
         <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           {stats.totalEventsAdminHost.toLocaleString()} admin / {stats.totalEventsTenantRoute.toLocaleString()} tenant
         </div>
+        {(stats.totalEventsDetectionOnly ?? 0) > 0 && (
+          <div className="text-xs text-sky-700 dark:text-sky-300 mt-0.5" data-testid="waf-stats-detection-only">
+            {stats.totalEventsDetectionOnly!.toLocaleString()} detected only — not blocked
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
@@ -745,6 +750,15 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
       </td>
       <td className="px-2 py-2 align-top">
         <div className="font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</div>
+        {ev.detectionOnly && (
+          <span
+            className="mt-0.5 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200"
+            title="The route's WAF is in detection-only mode: this request was logged, not blocked"
+            data-testid={`waf-event-detected-${ev.id}`}
+          >
+            Detected · not blocked
+          </span>
+        )}
         {whitelistAvailable && (
           <button
             type="button"

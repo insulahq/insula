@@ -305,7 +305,7 @@ describe('copy progress', () => {
   });
 
   it('no time left until there is a rate to go by', () => {
-    expect(copyingVerdict('n2', copy(1, 0.4e9, 2, 4), at(4)).text).toBe('Copying the mail store to n2: 1%, 0.4 GB so far');
+    expect(copyingVerdict('n2', copy(1, 0.4e9, 2, 4), at(4)).text).toBe('Copying the mail store to n2: 1%, 400 MB so far');
     expect(copyingVerdict('n2', copy(30, 9e9, 2, 2.5), at(2.5)).text).toBe('Copying the mail store to n2: 30%, 9.0 GB so far');
   });
 

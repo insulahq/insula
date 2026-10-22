@@ -1307,6 +1307,8 @@ export const ingressRoutes = pgTable('ingress_routes', {
   rateLimitBurstMultiplier: numeric('rate_limit_burst_multiplier', { precision: 4, scale: 1 }),
   // ── WAF settings ──
   wafEnabled: integer('waf_enabled').notNull().default(0),
+  // 1 = detection only: checked and logged, never blocked (only while wafEnabled=1).
+  wafDetectionOnly: integer('waf_detection_only').notNull().default(0),
   wafOwaspCrs: integer('waf_owasp_crs').notNull().default(0),
   wafAnomalyThreshold: integer('waf_anomaly_threshold').notNull().default(10),
   wafExcludedRules: text('waf_excluded_rules'),
@@ -1413,6 +1415,8 @@ export const wafLogs = pgTable('waf_logs', {
   // unique index (those rare rows simply keep the old duplicate-prone
   // behaviour rather than colliding with each other).
   eventKey: varchar('event_key', { length: 128 }),
+  // Logged on a route in detection-only mode: the request was NOT blocked.
+  detectionOnly: boolean('detection_only').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('waf_logs_event_key_uniq').on(table.eventKey),
