@@ -29,6 +29,7 @@ import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { mailMigrationInFlight, resolveActiveMailNode } from './active-node.js';
 import { MAIL_STANDBY_SINCE_ANNOTATION } from './standby-since.js';
+import type { NewStandby } from './standby-prepare-task.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -309,10 +310,10 @@ export async function updateMailPlacement(
   db: Database,
   opts: PlacementOptions,
   deps: {
-    readonly apply?: (db: Database, opts: PlacementOptions) => Promise<void>;
+    readonly apply?: (db: Database, opts: PlacementOptions) => Promise<readonly NewStandby[] | void>;
     readonly migrationInFlight?: (db: Database) => Promise<string | null>;
   } = {},
-): Promise<void> {
+): Promise<{ readonly newStandbys: readonly NewStandby[] }> {
   const { core } = await loadK8sCoreTenant(opts.kubeconfigPath);
 
   // Validate that each named node exists in the cluster.
@@ -400,8 +401,10 @@ export async function updateMailPlacement(
   // secondary/tertiary; only platform-api STARTUP used to run this, so a standby
   // chosen here stayed unlabelled until the next deploy — and a DR failover in
   // that window took the restic path, losing mail since the last backup.
+  // The nodes it made standbys are handed back for their Task Center task.
   try {
-    await (deps.apply ?? ensureMailStackPlacementApplied)(db, opts);
+    const newStandbys = await (deps.apply ?? ensureMailStackPlacementApplied)(db, opts);
+    return { newStandbys: newStandbys ?? [] };
   } catch (err) {
     throw new ApiError(
       'MAIL_PLACEMENT_APPLY_FAILED',
@@ -455,7 +458,7 @@ export { MAIL_NAMESPACE };
 export async function ensureMailStackPlacementApplied(
   db: Database,
   opts: PlacementOptions,
-): Promise<void> {
+): Promise<NewStandby[]> {
   const [row] = await db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
 
   const k8s = await import('@kubernetes/client-node');
@@ -552,7 +555,7 @@ export async function ensureMailStackPlacementApplied(
     opts.logger?.warn?.(
       `ensureMailStackPlacementApplied: mail migration ${inFlight} in flight — leaving the stack placement to it`,
     );
-    return;
+    return [];
   }
 
   // Pin to where the stack IS — the live pod, else the node its volume is
@@ -569,7 +572,7 @@ export async function ensureMailStackPlacementApplied(
     opts.logger?.warn?.(
       'ensureMailStackPlacementApplied: no active mail node (no Stalwart pod, no bound mail volume, nothing stored) — skipping affinity reconcile',
     );
-    return;
+    return [];
   }
   if (source !== 'settings' && activeNode !== row?.mailActiveNode) {
     opts.logger?.warn?.(
@@ -611,7 +614,7 @@ export async function ensureMailStackPlacementApplied(
   //
   // Staging a copy on the primary is exactly what makes failback fast, and
   // staging one on the active node is exactly what never helps.
-  await applyMailStandbyLabels(
+  const { added } = await applyMailStandbyLabels(
     core,
     batch,
     {
@@ -622,11 +625,13 @@ export async function ensureMailStackPlacementApplied(
     activeNode,
     opts.logger,
   );
+  return added;
 }
 
 /**
  * Label exactly the nodes that should stage a standby copy for a stack running
- * on `activeNode` (deriveStandbyNodes), de-electing the rest. Returns that set.
+ * on `activeNode` (deriveStandbyNodes), de-electing the rest. Returns that set,
+ * and the nodes it just made standbys (each starts a first copy).
  *
  * A migration calls this once it has moved the stack. Before that, only the
  * start-up reconcile above (which skips while a migration is in flight) and a
@@ -641,10 +646,10 @@ export async function applyMailStandbyLabels(
   placement: { readonly primary: string | null; readonly secondary: string | null; readonly tertiary: string | null },
   activeNode: string,
   logger?: PlacementOptions['logger'],
-): Promise<string[]> {
+): Promise<{ standbyNodes: string[]; added: NewStandby[] }> {
   const standbyNodes = deriveStandbyNodes({ ...placement, activeNode });
-  await reconcileMailStandbyLabel(core, batch, standbyNodes, logger);
-  return standbyNodes;
+  const added = await reconcileMailStandbyLabel(core, batch, standbyNodes, logger);
+  return { standbyNodes, added };
 }
 
 /**
@@ -673,14 +678,15 @@ export function deriveStandbyNodes(input: {
  * A3: ensure exactly the supplied set of nodes carries
  * the `insula.host/mail-standby=true` label. Other
  * nodes get the label removed (cleanup if a previous secondary was
- * de-elected, or HA disabled entirely). Idempotent.
+ * de-elected, or HA disabled entirely). Idempotent. Returns the nodes it
+ * labelled, with the time it stamped on each.
  */
 async function reconcileMailStandbyLabel(
   core: import('@kubernetes/client-node').CoreV1Api,
   batch: import('@kubernetes/client-node').BatchV1Api,
   standbyNodes: readonly string[],
   logger: PlacementOptions['logger'],
-): Promise<void> {
+): Promise<NewStandby[]> {
   const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
   const { spawnStandbyDeelectionCleanupJob } = await import('./standby-cleanup.js');
   const STANDBY_LABEL = 'insula.host/mail-standby';
@@ -692,9 +698,10 @@ async function reconcileMailStandbyLabel(
     allNodes = res.items ?? [];
   } catch (err) {
     logger?.warn?.('reconcileMailStandbyLabel: listNode failed —', err);
-    return;
+    return [];
   }
 
+  const added: NewStandby[] = [];
   for (const node of allNodes) {
     const name = node.metadata?.name;
     if (!name) continue;
@@ -707,10 +714,11 @@ async function reconcileMailStandbyLabel(
     const escaped = STANDBY_LABEL.replace(/~/g, '~0').replace(/\//g, '~1');
     const sinceEscaped = MAIL_STANDBY_SINCE_ANNOTATION.replace(/~/g, '~0').replace(/\//g, '~1');
     const annotations = node.metadata?.annotations;
+    const now = new Date().toISOString();
     const since: Array<Record<string, unknown>> = shouldHave
       ? [annotations
-        ? { op: 'add', path: `/metadata/annotations/${sinceEscaped}`, value: new Date().toISOString() }
-        : { op: 'add', path: '/metadata/annotations', value: { [MAIL_STANDBY_SINCE_ANNOTATION]: new Date().toISOString() } }]
+        ? { op: 'add', path: `/metadata/annotations/${sinceEscaped}`, value: now }
+        : { op: 'add', path: '/metadata/annotations', value: { [MAIL_STANDBY_SINCE_ANNOTATION]: now } }]
       // Removing a path that is not there fails the whole patch.
       : annotations?.[MAIL_STANDBY_SINCE_ANNOTATION] !== undefined
         ? [{ op: 'remove', path: `/metadata/annotations/${sinceEscaped}` }]
@@ -727,6 +735,7 @@ async function reconcileMailStandbyLabel(
         JSON_PATCH,
       );
       logger?.warn?.(`reconcileMailStandbyLabel: ${shouldHave ? 'added' : 'removed'} ${STANDBY_LABEL}=true on node ${name}`);
+      if (shouldHave) added.push({ node: name, since: now });
     } catch (err) {
       logger?.warn?.(`reconcileMailStandbyLabel: patch ${name} failed (non-fatal) —`, err);
       // Don't try cleanup if the label patch failed — node state is
@@ -757,4 +766,5 @@ async function reconcileMailStandbyLabel(
       }
     }
   }
+  return added;
 }

@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Database } from '../../db/index.js';
 import { moveStandbyLabelsWithStack } from './migration.js';
 
+const enroll = vi.hoisted(() => vi.fn(async () => []));
+vi.mock('./standby-prepare-task.js', () => ({ enrollStandbyPrepareTasks: enroll }));
+
 /**
  * Step 8a: a finished migration moves the standby labels with the stack. A VM
  * failover drill ended with the label on the node that had just become active
@@ -49,6 +52,21 @@ describe('moveStandbyLabelsWithStack', () => {
     );
     expect(patchNode.mock.calls.map(([req]) => [req.name, req.body[0].op])).toEqual([['s1', 'remove'], ['s2', 'add']]);
     expect(log.info).toHaveBeenCalledWith(expect.stringContaining('s2'));
+  });
+
+  // The node left as standby copies the whole store first: its own task, in the
+  // chip of whoever started the migration (a DR failover has no one).
+  it('gives the node it made a standby a first-copy task', async () => {
+    enroll.mockClear();
+    const { core, batch } = clients(['s1']);
+    const db = dbWithPlacement({ mailPrimaryNode: 's1', mailSecondaryNode: 's2', mailTertiaryNode: null });
+    await moveStandbyLabelsWithStack({ db, core: core as never, batch: batch as never, userId: 'u1' }, 's1', { warn: vi.fn(), info: vi.fn() });
+    expect(enroll).toHaveBeenCalledWith(db, [{ node: 's2', since: expect.any(String) }], { userId: 'u1' }, expect.anything());
+
+    enroll.mockClear();
+    const again = clients(['s2']);
+    await moveStandbyLabelsWithStack({ db, core: again.core as never, batch: again.batch as never }, 's1', { warn: vi.fn(), info: vi.fn() });
+    expect(enroll).not.toHaveBeenCalled();
   });
 
   it('never fails the migration: an unreadable placement is logged, nothing is patched', async () => {

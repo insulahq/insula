@@ -179,10 +179,13 @@ function ProgressBar({ task }: { task: TaskRow }) {
   // When pct is unknown (null) but task is running, show an
   // indeterminate-style striped bar.
   const isIndeterminate = pct === null && task.status === 'running';
+  // An unknown share of a running task is a full, pulsing bar — an empty one
+  // read as "nothing has happened".
   const fillPct =
     pct !== null ? Math.max(0, Math.min(100, pct))
     : task.status === 'succeeded' ? 100
     : task.status === 'failed' ? 100
+    : isIndeterminate ? 100
     : 0;
   const fillColor =
     task.status === 'failed' ? 'bg-red-500'
@@ -197,7 +200,7 @@ function ProgressBar({ task }: { task: TaskRow }) {
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         <div
-          className={`h-full ${fillColor} ${isIndeterminate ? 'animate-pulse' : ''} transition-all duration-300`}
+          className={`h-full ${fillColor} ${isIndeterminate ? 'animate-pulse opacity-40' : ''} transition-all duration-300`}
           style={{ width: `${fillPct}%` }}
         />
       </div>

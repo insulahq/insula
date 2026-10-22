@@ -76,20 +76,77 @@ export function firstCopyState(input: {
 /** The replicator DaemonSet's pods, as read by the callers below. */
 export const STANDBY_REPLICATOR_SELECTOR = 'app=mail-stack-standby-replicate';
 
+type ContainerStateLite = {
+  running?: unknown;
+  waiting?: { reason?: string; message?: string };
+  terminated?: { reason?: string; exitCode?: number };
+};
+
 type PodLite = {
-  spec?: { nodeName?: string };
-  status?: { phase?: string; containerStatuses?: Array<{ state?: { running?: unknown } }> };
+  spec?: {
+    nodeName?: string;
+    affinity?: { nodeAffinity?: { requiredDuringSchedulingIgnoredDuringExecution?: {
+      nodeSelectorTerms?: Array<{ matchFields?: Array<{ key?: string; values?: string[] }> }>;
+    } } };
+  };
+  status?: {
+    phase?: string;
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+    containerStatuses?: Array<{ state?: ContainerStateLite }>;
+  };
 };
 
 /** Node name → is its replicator pod running (Running, every container running). Pure. */
 export function copierRunningByNode(pods: ReadonlyArray<PodLite>): Map<string, boolean> {
-  const out = new Map<string, boolean>();
+  return new Map([...copierStateByNode(pods)].map(([node, s]) => [node, s.running]));
+}
+
+export interface CopierState {
+  readonly running: boolean;
+  /** Why it is not running, as Kubernetes puts it; null when running or not known. */
+  readonly reason: string | null;
+}
+
+/**
+ * The node a DaemonSet pod is for. A pod the scheduler has not placed has no
+ * nodeName yet — the DaemonSet pins it by a metadata.name field selector, and
+ * that is the pod whose reason ("Unschedulable: …") matters most.
+ */
+function copierNode(p: PodLite): string | undefined {
+  if (p.spec?.nodeName) return p.spec.nodeName;
+  const terms = p.spec?.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms ?? [];
+  for (const t of terms) {
+    const f = (t.matchFields ?? []).find((m) => m.key === 'metadata.name');
+    if (f?.values?.[0]) return f.values[0];
+  }
+  return undefined;
+}
+
+const clip = (s: string): string => (s.length > 200 ? `${s.slice(0, 199)}…` : s);
+
+function notRunningReason(p: PodLite): string | null {
+  for (const c of p.status?.containerStatuses ?? []) {
+    const w = c.state?.waiting;
+    if (w?.reason) return clip(w.message ? `${w.reason}: ${w.message}` : w.reason);
+    const t = c.state?.terminated;
+    if (t) return `exited${t.reason ? ` (${t.reason})` : ''}${t.exitCode !== undefined ? ` with code ${t.exitCode}` : ''}`;
+  }
+  const unscheduled = (p.status?.conditions ?? []).find((c) => c.type === 'PodScheduled' && c.status === 'False');
+  if (unscheduled?.reason) return clip(unscheduled.message ? `${unscheduled.reason}: ${unscheduled.message}` : unscheduled.reason);
+  return p.status?.phase ? `pod ${p.status.phase}` : null;
+}
+
+/** Node name → its replicator pod's state, and why it is not running. Pure. */
+export function copierStateByNode(pods: ReadonlyArray<PodLite>): Map<string, CopierState> {
+  const out = new Map<string, CopierState>();
   for (const p of pods) {
-    const node = p.spec?.nodeName;
+    const node = copierNode(p);
     if (!node) continue;
     const statuses = p.status?.containerStatuses ?? [];
     const running = p.status?.phase === 'Running' && statuses.length > 0 && statuses.every((c) => !!c.state?.running);
-    out.set(node, (out.get(node) ?? false) || running);
+    const prev = out.get(node);
+    if (prev?.running) continue;
+    out.set(node, running ? { running: true, reason: null } : { running: false, reason: notRunningReason(p) ?? prev?.reason ?? null });
   }
   return out;
 }

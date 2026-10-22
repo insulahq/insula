@@ -1,14 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import type {
   MailPlacementResponse,
   MailPlacementUpdateRequest,
+  MailPlacementUpdateResponse,
   MailFailoverRequest,
   MailFailbackRequest,
 } from '@insula/api-contracts';
 
 interface PlacementEnvelope {
   readonly data: MailPlacementResponse;
+}
+interface PlacementUpdateEnvelope {
+  readonly data: MailPlacementUpdateResponse;
 }
 interface RunIdEnvelope {
   readonly data: { readonly runId: string };
@@ -45,8 +50,10 @@ function invalidateMailDerivedQueries(
     qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
     qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
     qc.invalidateQueries({ queryKey: ['mail', 'port-exposure'] }),
-    // A placement change can make another node the standby: show it preparing.
+    // A placement change can make another node the standby: show it preparing,
+    // and the task that follows its first copy.
     qc.invalidateQueries({ queryKey: ['mail', 'standby-reports'] }),
+    qc.invalidateQueries({ queryKey: TASK_CENTER_QUERY_KEY }),
   ]);
 }
 
@@ -54,7 +61,7 @@ export function useUpdateMailPlacement() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: MailPlacementUpdateRequest) =>
-      apiFetch<void>('/api/v1/admin/mail/placement', {
+      apiFetch<PlacementUpdateEnvelope>('/api/v1/admin/mail/placement', {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),

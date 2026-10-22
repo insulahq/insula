@@ -175,6 +175,17 @@ export const mailPlacementUpdateRequestSchema = z.object({
   { message: 'Primary, secondary and tertiary nodes must be distinct' },
 );
 
+/**
+ * Response shape for `PATCH /admin/mail/placement`. `standbyTasks` lists the
+ * nodes the save made standbys, each with the Task Center task that follows
+ * its first copy — the UI opens its progress modal. Empty when the standby set
+ * did not change; absent from an older backend.
+ */
+export const mailPlacementUpdateResponseSchema = z.object({
+  updated: z.literal(true),
+  standbyTasks: z.array(z.object({ node: z.string(), taskId: z.string().uuid() })).optional(),
+});
+
 export const mailFailoverRequestSchema = z.object({
   // Same hostname constraint as mailMigrationStartRequestSchema —
   // failover flows through the same migration Job code path.
@@ -221,6 +232,7 @@ export const mailPortExposureResponseSchema = z.object({
 
 export type MailPlacementResponse = z.infer<typeof mailPlacementResponseSchema>;
 export type MailPlacementUpdateRequest = z.infer<typeof mailPlacementUpdateRequestSchema>;
+export type MailPlacementUpdateResponse = z.infer<typeof mailPlacementUpdateResponseSchema>;
 export type MailFailoverRequest = z.infer<typeof mailFailoverRequestSchema>;
 export type MailFailbackRequest = z.infer<typeof mailFailbackRequestSchema>;
 export type MailPortExposureUpdate = z.infer<typeof mailPortExposureUpdateSchema>;

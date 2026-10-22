@@ -2037,14 +2037,14 @@ async function runMigrationStateMachine(
  * start or placement save re-derives them.
  */
 export async function moveStandbyLabelsWithStack(
-  deps: Pick<MigrationDeps, 'db' | 'core' | 'batch'>,
+  deps: Pick<MigrationDeps, 'db' | 'core' | 'batch' | 'userId'>,
   activeNode: string,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<void> {
   try {
     const [row] = await deps.db.select().from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
     const { applyMailStandbyLabels } = await import('./placement.js');
-    const standby = await applyMailStandbyLabels(
+    const { standbyNodes: standby, added } = await applyMailStandbyLabels(
       deps.core,
       deps.batch,
       {
@@ -2056,6 +2056,12 @@ export async function moveStandbyLabelsWithStack(
       { warn: log.warn },
     );
     log.info(`[migration] standby copies now staged on: ${standby.join(', ') || '(none — single-node placement)'}`);
+    // A node that just became a standby starts a full first copy: its own task,
+    // for whoever started the migration (a DR failover has no one: a system task).
+    if (added.length > 0) {
+      const { enrollStandbyPrepareTasks } = await import('./standby-prepare-task.js');
+      await enrollStandbyPrepareTasks(deps.db, added, { userId: deps.userId ?? null }, log);
+    }
   } catch (err) {
     log.warn('[migration] moving the standby labels with the stack failed (non-fatal — the next platform-api start or placement save re-derives them):', err);
   }

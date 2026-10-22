@@ -42,7 +42,7 @@ const SETTINGS_ID = 'system';
 export async function recordStandbyReport(
   db: Database,
   input: StandbyReportInput,
-): Promise<void> {
+): Promise<StandbyReport> {
   const entry: StandbyReport = {
     sizeBytes: input.sizeBytes,
     fileCount: input.fileCount,
@@ -62,6 +62,7 @@ export async function recordStandbyReport(
       `,
     })
     .where(eq(systemSettings.id, SETTINGS_ID));
+  return entry;
 }
 
 /**

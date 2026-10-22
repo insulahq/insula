@@ -24,6 +24,7 @@ import { useMailRecoveryStatus, useStartMailRecover } from '@/hooks/use-mail-rec
 import MailStandbyFreshness, { MailStandbyPreparingNotice } from '@/components/email/MailStandbyFreshness';
 import { useQueryClient } from '@tanstack/react-query';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
+import MailTaskProgressModal from '@/components/MailTaskProgressModal';
 import type { NodeCandidate } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
@@ -58,6 +59,8 @@ export default function MailDrCard() {
   } | null>(null);
 
   const [migrationRunId, setMigrationRunId] = useState<string | null>(null);
+  // A save that made a node a standby opens its first-copy task (Task Center).
+  const [standbyTaskId, setStandbyTaskId] = useState<string | null>(null);
   // Consolidated "Move mail to…" target — replaces the legacy Manual
   // Failover + Fail-back + Live Migrate trio. The action dispatched
   // is inferred from which node the operator picked: see handleMove.
@@ -164,13 +167,19 @@ export default function MailDrCard() {
   //   `movePending` is still false at that point because handleMove
   // hasn't fired yet. code review HIGH-2.
 
+  // The first new standby's task; the chip lists every one.
+  function openStandbyTask(saved: { readonly data?: { readonly standbyTasks?: ReadonlyArray<{ readonly taskId: string }> } } | undefined): void {
+    const first = saved?.data?.standbyTasks?.[0];
+    if (first) setStandbyTaskId(first.taskId);
+  }
+
   async function persistPlacement(
     extra: { triggerMigration?: boolean } = {},
   ): Promise<void> {
     if (persistingPlacement) return;
     setPersistingPlacement(true);
     try {
-      await update.mutateAsync({
+      const saved = await update.mutateAsync({
         primaryNode: d.primaryNode!,
         // Never submit a value for a slot the node-count gate disables.
         secondaryNode: secondaryDisabled ? null : d.secondaryNode,
@@ -183,9 +192,12 @@ export default function MailDrCard() {
       setTimeout(() => setSaveSuccess(false), 5_000);
       // If the operator chose "Move now", kick off the migration AFTER
       // the placement save lands so the dr-watcher + drift banner see
-      // the new primary while the migration runs.
+      // the new primary while the migration runs. Its progress modal is
+      // the one to show; otherwise a new standby's first copy is.
       if (extra.triggerMigration && d.primaryNode) {
         void handleMove(d.primaryNode);
+      } else {
+        openStandbyTask(saved);
       }
     } catch {
       setDraft(null);
@@ -216,7 +228,7 @@ export default function MailDrCard() {
     // No primary change OR primary change but activeNode already
     // matches (no migration needed) → save immediately.
     try {
-      await update.mutateAsync({
+      const saved = await update.mutateAsync({
         primaryNode: d.primaryNode,
         // Never submit a value for a slot the node-count gate disables.
         secondaryNode: secondaryDisabled ? null : d.secondaryNode,
@@ -227,6 +239,7 @@ export default function MailDrCard() {
       setDraft(null);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 5_000);
+      openStandbyTask(saved);
     } catch {
       // Failed mutation: drop the draft so the form re-syncs to
       // server state on the next render. Without this the operator
@@ -677,6 +690,10 @@ export default function MailDrCard() {
             void qc.invalidateQueries({ queryKey: PLACEMENT_KEY });
           }}
         />
+      )}
+
+      {standbyTaskId && (
+        <MailTaskProgressModal taskId={standbyTaskId} onClose={() => setStandbyTaskId(null)} />
       )}
 
       {showReprovision && (

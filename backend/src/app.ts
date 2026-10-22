@@ -1596,10 +1596,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const stopHealthWatch = startMailHealthScheduler(app.db, app.log, {
           kubeconfigPath: process.env.KUBECONFIG_PATH,
         });
+        // A new mail standby's first copy, followed in the Task Center.
+        const { startStandbyPrepareWatch } = await import('./modules/mail-admin/standby-prepare-task.js');
+        const stopStandbyPrepareWatch = startStandbyPrepareWatch(app.db, app.log, {
+          kubeconfigPath: process.env.KUBECONFIG_PATH,
+        });
         app.addHook('onClose', () => {
           stopMailHealth();
           stopBlocklist();
           stopHealthWatch();
+          stopStandbyPrepareWatch();
         });
       }
 
@@ -2770,6 +2776,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           logger: {
             warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
           },
+        }).then(async (added) => {
+          // A standby labelled here (placement drifted while no API ran) has no
+          // operator behind it: a system task every admin sees.
+          if (added.length === 0) return;
+          const { enrollStandbyPrepareTasks } = await import('./modules/mail-admin/standby-prepare-task.js');
+          await enrollStandbyPrepareTasks(app.db, added, { userId: null }, app.log);
         }).catch((err: unknown) => {
           app.log.warn(
             { err },

@@ -592,6 +592,14 @@ describe('mail-admin/placement.updateMailPlacement applies what it saved', () =>
     expect(order).toEqual(['saved', 'applied']);
   });
 
+  it('hands back the nodes the save made standbys, for their tasks', async () => {
+    const { db: d } = db();
+    const added = [{ node: 'node-1', since: '2026-01-01T10:00:00.000Z' }];
+    const { updateMailPlacement } = await import('./placement.js');
+    await expect(updateMailPlacement({ primaryNode: 'node-0', secondaryNode: 'node-1' }, d, { kubeconfigPath: undefined }, { apply: async () => added, migrationInFlight: idle }))
+      .resolves.toEqual({ newStandbys: added });
+  });
+
   it('a failed apply is reported (placement saved) instead of passing silently', async () => {
     const { db: d, order } = db();
     const apply = vi.fn(async () => { throw new Error('nodes is forbidden'); });
@@ -642,7 +650,7 @@ describe('mail-admin/placement.applyMailStandbyLabels', () => {
     const createNamespacedJob = vi.fn(async () => undefined);
     const core = { listNode: vi.fn(async () => nodes(['s1'])), patchNode };
     const { applyMailStandbyLabels } = await import('./placement.js');
-    const standby = await applyMailStandbyLabels(
+    const { standbyNodes: standby } = await applyMailStandbyLabels(
       core as never, { createNamespacedJob } as never,
       { primary: 's1', secondary: 's2', tertiary: null }, 's1',
     );
@@ -657,7 +665,7 @@ describe('mail-admin/placement.applyMailStandbyLabels', () => {
     const createNamespacedJob = vi.fn(async () => undefined);
     const core = { listNode: vi.fn(async () => nodes(['s2'])), patchNode };
     const { applyMailStandbyLabels } = await import('./placement.js');
-    const standby = await applyMailStandbyLabels(
+    const { standbyNodes: standby } = await applyMailStandbyLabels(
       core as never, { createNamespacedJob } as never,
       { primary: 's1', secondary: 's2', tertiary: 's3' }, 's2',
     );
@@ -688,11 +696,16 @@ describe('mail-admin/placement.applyMailStandbyLabels', () => {
       patchNode,
     };
     const { applyMailStandbyLabels } = await import('./placement.js');
-    await applyMailStandbyLabels(
+    const { added } = await applyMailStandbyLabels(
       core as never, { createNamespacedJob: vi.fn(async () => undefined) } as never,
       { primary: 'a', secondary: 's1', tertiary: 's4' }, 'a',
     );
     const body = (name: string) => patchNode.mock.calls.find(([req]) => req.name === name)?.[0].body ?? [];
+    // The nodes it made standbys, with the very time it stamped: their tasks key on it.
+    expect(added).toEqual([
+      { node: 's1', since: body('s1')[1].value },
+      { node: 's4', since: (body('s4')[1].value as Record<string, string>)['insula.host/mail-standby-since'] },
+    ]);
     // Added: the label, then the time — into an existing map, or as a new one.
     expect(body('s1')[1]).toMatchObject({ op: 'add', path: `/metadata/annotations/${SINCE}` });
     expect(Date.parse(body('s1')[1].value as string)).toBeGreaterThan(Date.now() - 60_000);
@@ -704,5 +717,15 @@ describe('mail-admin/placement.applyMailStandbyLabels', () => {
       { op: 'remove', path: `/metadata/annotations/${SINCE}` },
     ]);
     expect(body('s3')).toEqual([{ op: 'remove', path: '/metadata/labels/insula.host~1mail-standby' }]);
+  });
+
+  it('a label patch that fails is not reported as a new standby', async () => {
+    const core = {
+      listNode: vi.fn(async () => ({ items: [{ metadata: { name: 's1', labels: {}, annotations: {} } }] })),
+      patchNode: vi.fn(async () => { throw new Error('forbidden'); }),
+    };
+    const { applyMailStandbyLabels } = await import('./placement.js');
+    const { added } = await applyMailStandbyLabels(core as never, { createNamespacedJob: vi.fn() } as never, { primary: 'a', secondary: 's1', tertiary: null }, 'a');
+    expect(added).toEqual([]);
   });
 });

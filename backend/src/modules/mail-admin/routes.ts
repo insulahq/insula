@@ -56,6 +56,7 @@ import {
 import { MAIL_ARCHIVE_ENABLED } from './archive-dormant.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import { getCurrentStandbyReports, recordStandbyReport } from './standby-reports.js';
+import { enrollStandbyPrepareTasks, finishStandbyPrepareOnReport, standbyPrepareTaskIds } from './standby-prepare-task.js';
 import { STANDBY_REPLICATOR_SELECTOR } from './standby-since.js';
 import {
   getMailSnapshotSchedule,
@@ -1263,7 +1264,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           400,
         );
       }
-      await recordStandbyReport(app.db, { node, sizeBytes, fileCount, durationSeconds });
+      const report = await recordStandbyReport(app.db, { node, sizeBytes, fileCount, durationSeconds });
+      // A new standby's first complete copy: its task is done now, not on the next watch pass.
+      await finishStandbyPrepareOnReport(app.db, node, report).catch((err: unknown) => {
+        app.log.warn({ err, node }, 'mail-admin: finishing the standby task on its report failed (the watch retries)');
+      });
       return success({ recorded: true });
     },
   );
@@ -1281,7 +1286,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           namespace: 'mail', labelSelector: STANDBY_REPLICATOR_SELECTOR,
         })) as { items?: [] }).items ?? [],
       });
-      return success(view);
+      // Each first copy's task, for the page's "View progress".
+      const taskIds = await standbyPrepareTaskIds(app.db, view.preparing).catch(() => new Map<string, string>());
+      return success({
+        ...view,
+        preparing: view.preparing.map((p) => (taskIds.has(p.node) ? { ...p, taskId: taskIds.get(p.node) } : p)),
+      });
     },
   );
 
@@ -1440,11 +1450,14 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         'mail-admin: placement update requested',
       );
       try {
-        await updateMailPlacement(parsed.data, app.db, {
+        const { newStandbys } = await updateMailPlacement(parsed.data, app.db, {
           kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
         });
-        app.log.warn({ userId }, 'mail-admin: placement updated');
-        return success({ updated: true });
+        app.log.warn({ userId, newStandbys: newStandbys.map((s) => s.node) }, 'mail-admin: placement updated');
+        // Each new standby copies the whole store first: a task the save opens.
+        const standbyTasks = await enrollStandbyPrepareTasks(app.db, newStandbys, { userId: req.user?.sub ?? null }, app.log)
+          .catch(() => []);
+        return success({ updated: true, standbyTasks });
       } catch (err) {
         if (err instanceof ApiError) throw err;
         app.log.error({ err, userId }, 'mail-admin: placement update failed');

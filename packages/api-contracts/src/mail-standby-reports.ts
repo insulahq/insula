@@ -46,6 +46,8 @@ export const standbyReportsResponseSchema = z.object({
      * the standby check fails for both. Absent from an older backend.
      */
     state: z.enum(['preparing', 'not_running', 'overdue']).optional(),
+    /** The Task Center task tracking this first copy, when there is one. */
+    taskId: z.string().uuid().optional(),
   })).optional(),
 });
 

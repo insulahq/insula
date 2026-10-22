@@ -233,8 +233,12 @@ that feature in the webmail UI.
 - **Placement & migration** — the mail-server placement and **disaster
   recovery** card: failover, failback, migrate to another node, and
   standby data-freshness, which lists the nodes that are standbys now. After you
-  move the standby to another node, the card says the new standby is being
-  prepared until its first copy is complete, and the old node leaves the list.
+  choose a secondary or tertiary, or move the standby to another node, the card says
+  the new standby is being prepared until its first copy is complete, and the old node
+  leaves the list. The first copy is a **Task Center** task, *Prepare the mail standby
+  on &lt;node&gt;*: saving opens its progress, **View progress** on the notice re-opens it,
+  and it fails with the reason when the copier does not start or the copy runs past six
+  hours. Moving the primary is followed by its own *Migrate mail to &lt;node&gt;* task.
   Below it, the **Mail Port Exposure** card shows
   how the mail ports are published — the default (`allServerNodes`) is
   correct for almost everyone.

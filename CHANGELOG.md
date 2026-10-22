@@ -88,6 +88,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **A new mail standby's first copy is a Task Center task.** Choosing a secondary or tertiary,
+  moving the standby to another node, or a migration that leaves a different node as standby,
+  starts a full copy of the mail store on that node. **Prepare the mail standby on <node>** now
+  follows it, from the save to the node's first complete copy: saving the placement opens its
+  progress modal (start the copier, copy the mail store, with the time so far and the expected
+  size), and the "Preparing the standby" notice on Email → Operations has **View progress**. The
+  task fails with the reason when the copier is not running ten minutes on (the node is down, the
+  pod cannot be scheduled or keeps failing) or the copy has not finished after six hours — the
+  same verdict as the standby check. A primary move is still followed by its **Migrate mail to
+  <node>** task; a node that becomes a standby during a DR failover or at platform-api start-up
+  gets a task every admin sees.
 - **A node can take pinned tenants only.** **Edit** on a node card now sets **Tenant hosting**
   — All tenants, Pinned tenants only, or No tenants — in place of the "Can host tenant
   workloads" switch. A pinned-only node holds the Local-tier tenants you place there (on create,

@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { Database, Loader2 } from 'lucide-react';
 import type { StandbyReport } from '@insula/api-contracts';
 import { useMailStandbyReports } from '@/hooks/use-mail-standby-reports';
 import NodeName from '@/components/nodes/NodeName';
+import MailTaskProgressModal from '@/components/MailTaskProgressModal';
 
 /**
  * Standby data freshness, and a standby that is still being prepared.
@@ -32,11 +34,17 @@ function elapsed(since: string): string {
  * The standbys still making their first copy, as a notice. Nothing when none.
  * A first copy that stalled (its copier not running, or past six hours) is no
  * longer "in progress": it is red in the list below and fails the health check.
+ * Each copy is a Task Center task; "View progress" opens its steps. The modal
+ * outlives the notice: the notice goes when the copy finishes (or stalls), the
+ * very moment the modal has the outcome to show.
  */
 export function MailStandbyPreparingNotice() {
   const { data } = useMailStandbyReports();
+  const [openTask, setOpenTask] = useState<string | null>(null);
   const preparing = (data?.data.preparing ?? []).filter((p) => (p.state ?? 'preparing') === 'preparing');
-  if (preparing.length === 0) return null;
+  const tracked = preparing.filter((p): p is typeof p & { taskId: string } => !!p.taskId);
+  const modal = openTask && <MailTaskProgressModal taskId={openTask} onClose={() => setOpenTask(null)} />;
+  if (preparing.length === 0) return modal || null;
   return (
     <div
       className="rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-sm dark:border-sky-700 dark:bg-sky-900/25"
@@ -56,8 +64,24 @@ export function MailStandbyPreparingNotice() {
             to hours, depending on the store and the link. Mail keeps running meanwhile. Until the copy
             finishes, a failover to {preparing.length === 1 ? 'it' : 'them'} restores from the newest backup instead.
           </div>
+          {tracked.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {tracked.map((p) => (
+                <button
+                  key={p.node}
+                  type="button"
+                  onClick={() => setOpenTask(p.taskId)}
+                  data-testid={`mail-standby-preparing-view-${p.node}`}
+                  className="rounded-md border border-sky-300 bg-white px-2.5 py-1 text-xs font-medium text-sky-800 hover:bg-sky-100 dark:border-sky-600 dark:bg-sky-950/40 dark:text-sky-100 dark:hover:bg-sky-900/50"
+                >
+                  View progress{tracked.length > 1 && <> — <NodeName name={p.node} /></>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
+      {modal}
     </div>
   );
 }
