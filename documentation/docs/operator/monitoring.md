@@ -365,8 +365,8 @@ recovery that the node's return made moot would otherwise refuse every later
 resize, restore, suspend or move. A failure left by an operation *you* started
 (resize, restore, disk check) stays failed for you to read. Any tenant whose
 storage state is failed shows on the dashboard as **Tenant storage operation
-failed**; open the tenant, read the failed operation on its storage card, then
-use **Reset to idle**.
+failed**; open the tenant, read the failed operation on its storage card (an
+archived tenant shows it on its page), then use **Reset to idle**.
 
 The tenant is told too, in their own panel, in terms they can use: their
 application is not running, automatic restart did not succeed, and operators have
