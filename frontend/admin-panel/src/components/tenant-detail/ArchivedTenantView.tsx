@@ -1,5 +1,7 @@
 import { Archive, Loader2, Play } from 'lucide-react';
 import { useTenantArchive } from '@/hooks/use-tenant-archive';
+import { useStorageOperations } from '@/hooks/use-storage-lifecycle';
+import { FailedStorageOperation } from './FailedStorageOperation';
 import { formatBytes } from '@/lib/format-snapshot-size';
 
 const longDate = (iso: string): string =>
@@ -10,14 +12,21 @@ const longDate = (iso: string): string =>
  * ARCHIVED notice, the archive bundle's date and size, how long it is kept,
  * and the way back. The sections a live tenant has describe what the archive
  * removed; they would show nothing true.
+ *
+ * A restore that failed leaves the tenant in the `failed` storage state, which
+ * refuses the next restore. This page has no Storage tab, so the failed
+ * operation's error and its Reset to idle are shown here.
  */
 export default function ArchivedTenantView({
   tenantId,
+  storageState = 'idle',
   restoring,
   keptOutOfAutomation = false,
   onRestore,
 }: {
   readonly tenantId: string;
+  /** The tenant's storage lifecycle state; a restore needs it idle. */
+  readonly storageState?: string;
   readonly restoring: boolean;
   /** Kept out of automatic archive and delete: an expired archive waits instead of deleting the tenant. */
   readonly keptOutOfAutomation?: boolean;
@@ -25,6 +34,19 @@ export default function ArchivedTenantView({
 }) {
   const { data, isLoading, isError } = useTenantArchive(tenantId);
   const info = data?.data;
+  const ops = useStorageOperations(tenantId).data?.data ?? [];
+  const runningOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
+  // The reset is the only way out of `failed` this page has, so it is shown
+  // whenever the tenant is failed: with the newest failed operation's error
+  // when there is one to read, without it when not.
+  const failedOp = ops.find((o) => o.state === 'failed') ?? null;
+  // Why Restore is off: the storage state first, as it is the tenant's own
+  // and the archive info may be a read older.
+  const blockedBy = storageState === 'failed'
+    ? 'The last storage operation failed. Reset to idle, then restore.'
+    : storageState !== 'idle'
+      ? `A storage operation is running (${runningOp?.progressMessage ?? storageState}).`
+      : !info?.restorable ? info?.notRestorableReason ?? 'The archive cannot be restored.' : null;
 
   return (
     <section
@@ -86,19 +108,24 @@ export default function ArchivedTenantView({
               back; applications and mailboxes have to be set up again.
             </p>
           )}
+          {storageState === 'failed' && (
+            <div className="mt-5">
+              <FailedStorageOperation tenantId={tenantId} op={failedOp} />
+            </div>
+          )}
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => onRestore(info.bundle?.whole ?? false)}
-              disabled={!info.restorable || restoring}
+              disabled={blockedBy !== null || restoring}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
               data-testid="restore-archived-button"
             >
               {restoring ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
               Restore archived tenant
             </button>
-            {!info.restorable && info.notRestorableReason && (
-              <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="archive-not-restorable">{info.notRestorableReason}</span>
+            {blockedBy && (
+              <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="archive-not-restorable">{blockedBy}</span>
             )}
           </div>
         </>

@@ -56,6 +56,32 @@ describe('getTenantArchiveInfo', () => {
     expect(info).toMatchObject({ bundle: null, restorable: false, notRestorableReason: expect.stringContaining('no archive bundle') });
   });
 
+  it('a restore that failed left the tenant failed: not restorable until it is reset to idle', async () => {
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, storageState: 'failed' }, snap(), job()), 't1');
+    expect(info).toMatchObject({ restorable: false, notRestorableReason: expect.stringContaining('Reset to idle') });
+    expect(info.bundle?.id).toBe('bkp-1');
+  });
+
+  it('a storage operation running: not restorable while it runs', async () => {
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, storageState: 'restoring' }, snap(), job()), 't1');
+    expect(info).toMatchObject({ restorable: false, notRestorableReason: expect.stringContaining('restoring') });
+  });
+
+  it('no bundle says so before the storage state: a reset would not help', async () => {
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, storageState: 'failed' }, snap({ status: 'failed', archivePath: 'bundle:pending' }), null), 't1');
+    expect(info.notRestorableReason).toContain('no archive bundle');
+  });
+
+  it('a storage state not read: restorable on the bundle alone', async () => {
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, storageState: null }, snap(), job()), 't1');
+    expect(info.restorable).toBe(true);
+  });
+
+  it('idle: restorable', async () => {
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, storageState: 'idle' }, snap(), job()), 't1');
+    expect(info.restorable).toBe(true);
+  });
+
   it('refuses a tenant that does not exist', async () => {
     await expect(getTenantArchiveInfo(db(null, null, null), 't1')).rejects.toMatchObject({ code: 'TENANT_NOT_FOUND' });
   });

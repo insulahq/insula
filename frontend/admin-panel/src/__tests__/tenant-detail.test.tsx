@@ -727,6 +727,126 @@ describe('TenantDetail — an archived tenant', () => {
     expect(await screen.findByTestId('restore-archived-button')).toBeDisabled();
     expect(screen.getByTestId('archive-not-restorable')).toHaveTextContent('no archive bundle');
   });
+
+  /**
+   * A restore that failed leaves the tenant in the failed storage state, and
+   * every later restore is refused until it is reset to idle. The archived
+   * page has no Storage tab, so the error and Reset to idle are shown on it.
+   */
+  describe('after a restore that failed', () => {
+    const quotaError = JSON.stringify({
+      code: 'PROVISION_QUOTA_EXCEEDED',
+      title: 'ResourceQuota exceeded',
+      detail: 'The platform or tenant ResourceQuota is full — Kubernetes refused to create the resource.',
+      remediation: ['Open the namespace’s ResourceQuota and check used vs. hard.'],
+      retryable: true,
+    });
+    const failedRestore = (lastError: string) => ({
+      id: 'op-1', tenantId: 'tenant-001', opType: 'restore', state: 'failed', progressPct: 0,
+      progressMessage: 'Recreating PVC', lastError, createdAt: '2026-10-21T22:20:28Z', completedAt: '2026-10-21T22:20:28Z',
+    });
+    function serve(state: string, ops: unknown[], onPost?: (path: string) => void): void {
+      setupMockApi({ ...archived, storageLifecycleState: state }, (path, init) => {
+        if (init?.method === 'POST') { onPost?.(path); return Promise.resolve({ data: { previousState: state } }); }
+        if (path.endsWith('/storage/operations')) return Promise.resolve({ data: ops });
+        if (path.endsWith('/archive')) {
+          return Promise.resolve(info(state === 'idle' ? {} : { restorable: false, notRestorableReason: 'The last storage operation failed. Reset to idle, then restore.' }));
+        }
+        return undefined;
+      });
+    }
+
+    it('shows the failed restore’s error, and Restore stays off until it is reset to idle', async () => {
+      serve('failed', [failedRestore(quotaError)]);
+      renderTenantDetail();
+      const failed = await screen.findByTestId('lifecycle-failed-op');
+      expect(failed).toHaveTextContent('Last restore failed');
+      expect(screen.getByTestId('lifecycle-error-panel')).toHaveTextContent('ResourceQuota exceeded');
+      expect(screen.getByTestId('restore-archived-button')).toBeDisabled();
+      expect(screen.getByTestId('archive-not-restorable')).toHaveTextContent('Reset to idle');
+    });
+
+    it('Reset to idle clears it, and Restore comes back', async () => {
+      const posted: string[] = [];
+      serve('failed', [failedRestore(quotaError)], (path) => {
+        posted.push(path);
+        serve('idle', [failedRestore(quotaError)]); // what the API answers after the reset
+      });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      renderTenantDetail();
+      fireEvent.click(await screen.findByTestId('lifecycle-clear-failed-button'));
+      await waitFor(() => expect(posted).toEqual(['/api/v1/admin/tenants/tenant-001/storage/clear-failed']));
+      await waitFor(() => expect(screen.getByTestId('restore-archived-button')).toBeEnabled());
+      expect(screen.queryByTestId('lifecycle-failed-op')).toBeNull();
+      expect(screen.queryByTestId('archive-not-restorable')).toBeNull();
+      confirmSpy.mockRestore();
+    });
+
+    it('a reset the API refuses says why', async () => {
+      const { ApiError } = await import('@/lib/api-client');
+      setupMockApi({ ...archived, storageLifecycleState: 'failed' }, (path, init) => {
+        if (init?.method === 'POST') return Promise.reject(new ApiError(409, 'NOT_IN_FAILED_STATE', "Tenant is in state 'idle', not 'failed'"));
+        if (path.endsWith('/storage/operations')) return Promise.resolve({ data: [failedRestore(quotaError)] });
+        if (path.endsWith('/archive')) return Promise.resolve(info({ restorable: false, notRestorableReason: 'x' }));
+        return undefined;
+      });
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      renderTenantDetail();
+      fireEvent.click(await screen.findByTestId('lifecycle-clear-failed-button'));
+      expect(await screen.findByTestId('lifecycle-clear-failed-error')).toHaveTextContent('NOT_IN_FAILED_STATE');
+      confirmSpy.mockRestore();
+    });
+
+    it('an error stored as plain text is shown as it is', async () => {
+      serve('failed', [failedRestore('restic: repository is locked')]);
+      renderTenantDetail();
+      expect(await screen.findByTestId('lifecycle-failed-op')).toHaveTextContent('restic: repository is locked');
+      expect(screen.queryByTestId('lifecycle-error-panel')).toBeNull();
+    });
+
+    it('a newer operation over the failed one: the reset is still there, with the failed one’s error', async () => {
+      const newer = { ...failedRestore(''), id: 'op-2', opType: 'autoheal', state: 'idle', lastError: null, createdAt: '2026-10-21T23:00:00Z' };
+      serve('failed', [newer, failedRestore(quotaError)]);
+      renderTenantDetail();
+      expect(await screen.findByTestId('lifecycle-error-panel')).toHaveTextContent('ResourceQuota exceeded');
+      expect(screen.getByTestId('lifecycle-failed-op')).toHaveTextContent('Last restore failed');
+      expect(screen.getByTestId('lifecycle-clear-failed-button')).toBeEnabled();
+    });
+
+    it('the operations cannot be read: the reset is still offered', async () => {
+      setupMockApi({ ...archived, storageLifecycleState: 'failed' }, (path) => {
+        if (path.endsWith('/storage/operations')) return Promise.reject(new Error('network down'));
+        if (path.endsWith('/archive')) return Promise.resolve(info({ restorable: false, notRestorableReason: 'x' }));
+        return undefined;
+      });
+      renderTenantDetail();
+      expect(await screen.findByTestId('lifecycle-failed-op')).toHaveTextContent('A storage operation failed');
+      expect(screen.getByTestId('lifecycle-clear-failed-button')).toBeEnabled();
+    });
+
+    it('Restore in the Actions menu is off too', async () => {
+      serve('failed', [failedRestore(quotaError)]);
+      renderTenantDetail();
+      await screen.findByTestId('lifecycle-failed-op');
+      fireEvent.click(screen.getByTestId('tenant-actions-button'));
+      expect(await screen.findByTestId('restore-button')).toBeDisabled();
+    });
+
+    it('a failed operation the tenant has moved on from shows nothing', async () => {
+      serve('idle', [failedRestore(quotaError)]);
+      renderTenantDetail();
+      expect(await screen.findByTestId('restore-archived-button')).toBeEnabled();
+      expect(screen.queryByTestId('lifecycle-failed-op')).toBeNull();
+    });
+
+    it('a restore running: Restore is off, and the page says what is running', async () => {
+      serve('restoring', [{ ...failedRestore(''), state: 'restoring', lastError: null, completedAt: null, progressMessage: 'Restoring files' }]);
+      renderTenantDetail();
+      await waitFor(() => expect(screen.getByTestId('archive-not-restorable')).toHaveTextContent('Restoring files'));
+      expect(screen.getByTestId('restore-archived-button')).toBeDisabled();
+      expect(screen.queryByTestId('lifecycle-failed-op')).toBeNull();
+    });
+  });
 });
 
 /**

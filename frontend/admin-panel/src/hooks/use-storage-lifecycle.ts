@@ -198,7 +198,9 @@ export function useClearFailedState() {
   return useMutation({
     mutationFn: async (tenantId: string) =>
       apiFetch(`/api/v1/admin/tenants/${tenantId}/storage/clear-failed`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries(),
+    // Settled, not success: a reset refused because someone else already
+    // reset the tenant must still show the tenant as it is now.
+    onSettled: () => qc.invalidateQueries(),
   });
 }
 

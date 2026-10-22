@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import OperationProgressModal from '@/components/OperationProgressModal';
-import { useStorageOperations, useClearFailedState, useCancelStorageOperation } from '@/hooks/use-storage-lifecycle';
-import ErrorPanel from '@/components/ErrorPanel';
+import { useStorageOperations, useCancelStorageOperation } from '@/hooks/use-storage-lifecycle';
+import { FailedStorageOperation } from './FailedStorageOperation';
 
 export function StorageLifecycleCard({ tenantId, tenant, children }: {
   readonly tenantId: string;
@@ -21,7 +21,6 @@ export function StorageLifecycleCard({ tenantId, tenant, children }: {
   //     transition started elsewhere is running)
   //   • Reset-to-idle (recovery valve when an op left state=failed)
   const opsQuery = useStorageOperations(tenantId);
-  const clearFailed = useClearFailedState();
   const cancelOp = useCancelStorageOperation();
 
   const ops = opsQuery.data?.data ?? [];
@@ -103,65 +102,9 @@ export function StorageLifecycleCard({ tenantId, tenant, children }: {
           the error when they triggered it, so a persistent, un-dismissable
           banner just nags. Gating on lifecycleState also makes "Reset to idle"
           below clear this banner (resetting the state hides it). */}
-      {!activeOp && lifecycleState === 'failed' && recentOp && recentOp.state === 'failed' && (() => {
-        // Try to parse lastError as the structured OperatorError envelope.
-        let envelope: import('@insula/api-contracts').OperatorError | null = null;
-        let plainDetail = '';
-        if (recentOp.lastError && recentOp.lastError.trim()) {
-          try {
-            const parsed = JSON.parse(recentOp.lastError);
-            if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
-              envelope = parsed as import('@insula/api-contracts').OperatorError;
-            } else {
-              plainDetail = recentOp.lastError;
-            }
-          } catch {
-            plainDetail = recentOp.lastError;
-          }
-        }
-        const showClearButton = lifecycleState === 'failed';
-        const clearButton = showClearButton ? (
-          <button
-            onClick={() => {
-              if (confirm("Reset this tenant's storage state back to 'idle'? The failed operation's log is kept for debugging.")) {
-                clearFailed.mutate(tenantId);
-              }
-            }}
-            disabled={clearFailed.isPending}
-            className="shrink-0 rounded-md border border-red-300 dark:border-red-700 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
-            data-testid="lifecycle-clear-failed-button"
-          >
-            {clearFailed.isPending ? 'Clearing…' : 'Reset to idle'}
-          </button>
-        ) : null;
-
-        if (envelope) {
-          return (
-            <div className="mb-3">
-              <div className="mb-1 text-xs font-medium text-red-800 dark:text-red-200">
-                Last {recentOp.opType} failed
-              </div>
-              <ErrorPanel
-                error={envelope}
-                severity="error"
-                testId="lifecycle-error-panel"
-              />
-              {clearButton && <div className="mt-2 flex justify-end">{clearButton}</div>}
-            </div>
-          );
-        }
-        return (
-          <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-medium text-red-800 dark:text-red-200">Last {recentOp.opType} failed</div>
-                {plainDetail && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{plainDetail}</p>}
-              </div>
-              {clearButton}
-            </div>
-          </div>
-        );
-      })()}
+      {!activeOp && lifecycleState === 'failed' && recentOp && recentOp.state === 'failed' && (
+        <FailedStorageOperation tenantId={tenantId} op={recentOp} />
+      )}
 
       {/* Inline error banner — shown when the snapshot op rejects synchronously. */}
       {opError && (
