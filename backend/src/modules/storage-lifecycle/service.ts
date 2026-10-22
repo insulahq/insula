@@ -109,7 +109,9 @@ async function mustBeIdle(db: Database, tenantId: string) {
   if (tenant.state !== 'idle') {
     throw new ApiError(
       'STORAGE_OP_IN_PROGRESS',
-      `A ${tenant.state} operation is already in progress for this tenant`,
+      tenant.state === 'failed'
+        ? 'The last storage operation on this tenant failed and left it in the failed state. Reset it to idle, then try again.'
+        : `A ${tenant.state} operation is already in progress for this tenant`,
       409,
       { currentState: tenant.state, activeOpId: tenant.opId },
     );

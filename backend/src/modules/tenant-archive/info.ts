@@ -13,7 +13,11 @@ import { ApiError } from '../../shared/errors.js';
 const iso = (d: Date | null | undefined): string | null => (d ? d.toISOString() : null);
 
 export async function getTenantArchiveInfo(db: Database, tenantId: string): Promise<TenantArchiveInfo> {
-  const [tenant] = await db.select({ status: tenants.status, archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
+  const [tenant] = await db.select({
+    status: tenants.status,
+    archivedAt: tenants.archivedAt,
+    storageState: tenants.storageLifecycleState,
+  }).from(tenants).where(eq(tenants.id, tenantId));
   if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
 
   const [snap] = await db.select().from(storageSnapshots)
@@ -40,6 +44,9 @@ export async function getTenantArchiveInfo(db: Database, tenantId: string): Prom
   if (tenant.status !== 'archived') notRestorableReason = 'The tenant is not archived.';
   else if (!snap || snap.status !== 'ready' || !bundle) notRestorableReason = 'There is no archive bundle to restore from: it never completed, or it has expired.';
   else if (job && job.status !== 'completed' && job.status !== 'partial') notRestorableReason = `The archive bundle is ${job.status}.`;
+  // Every storage operation, restore included, refuses a tenant that is not idle.
+  else if (tenant.storageState === 'failed') notRestorableReason = 'The last storage operation failed. Reset to idle, then restore.';
+  else if (tenant.storageState && tenant.storageState !== 'idle') notRestorableReason = `A storage operation is running (${tenant.storageState}).`;
 
   return {
     archivedAt: iso(tenant.archivedAt),

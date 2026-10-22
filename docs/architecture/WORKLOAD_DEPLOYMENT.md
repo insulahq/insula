@@ -34,8 +34,9 @@ The catalog is a curated set of pre-built, tested runtime images. Each entry def
 
 | Catalog ID | Base Image | Web Server | Runtime | Plan | Status |
 | --- | --- | --- | --- | --- | --- |
-| `apache-php` | serversideup/php:8.4-fpm-apache | Apache 2.4 | PHP 8.3 / 8.4 / 8.5 | All | Active |
-| `nginx-php` | serversideup/php:8.4-fpm-nginx-alpine | Nginx | PHP 8.3 / 8.4 / 8.5 | All | Active |
+| `apache-php` | `serversideup/php:<php>-fpm-apache` | Apache 2.4 | PHP 8.3 / 8.4 / 8.5 (default 8.5) | All | Active |
+| `nginx-php` | `serversideup/php:<php>-fpm-nginx-alpine` | Nginx | PHP 8.3 / 8.4 / 8.5 (default 8.5) | All | Active |
+| `apache-php-office` | `apache-php` + LibreOffice, Ghostscript | Apache 2.4 | PHP 8.3 / 8.4 / 8.5 (default 8.5) | Business and above | Active |
 | `nodejs` | node:22-alpine | (none) | Node.js 22 | Business / Premium only | Active |
 | `python-312` | python:3.12-slim | (none) | Python 3.12 | All | Active |
 | `ruby-33` | ruby:3.3-alpine | (none) | Ruby 3.3 | All | Active |

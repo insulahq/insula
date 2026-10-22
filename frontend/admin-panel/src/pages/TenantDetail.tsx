@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, UserCheck, Rocket, ServerCrash, RefreshCw, Copy, Check, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
@@ -100,6 +101,7 @@ export default function TenantDetail() {
     return () => { shownIdRef.current = undefined; };
   }, [id]);
   const updateTenant = useUpdateTenant(id ?? '');
+  const queryClient = useQueryClient();
   const impersonate = useLoginAsTenant();
   // The archive's bundle: what restore brings back (a whole archive, or files only).
   const archiveInfo = useTenantArchive(id, tenant?.status === 'archived');
@@ -395,7 +397,15 @@ export default function TenantDetail() {
                   </ActionsMenuItem>
                 )}
                 {tenant.status === 'archived' && !tenant.isSystem && (
-                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Bring the tenant back from its archive bundle." testId="restore-button">
+                  <ActionsMenuItem
+                    onClick={handleReactivate}
+                    // As the archived page's own Restore: off while the archive
+                    // cannot be restored, the storage state not idle among the reasons.
+                    disabled={updateTenant.isPending || archiveInfo.data?.data?.restorable === false || (tenant.storageLifecycleState ?? 'idle') !== 'idle'}
+                    icon={<Play size={14} />}
+                    title={archiveInfo.data?.data?.notRestorableReason ?? 'Bring the tenant back from its archive bundle.'}
+                    testId="restore-button"
+                  >
                     Restore
                   </ActionsMenuItem>
                 )}
@@ -503,6 +513,7 @@ export default function TenantDetail() {
       {tenant.status === 'archived' && (
         <ArchivedTenantView
           tenantId={id}
+          storageState={tenant.storageLifecycleState ?? 'idle'}
           restoring={updateTenant.isPending}
           keptOutOfAutomation={tenant.lifecycleAutomationExempt === true}
           onRestore={handleRestoreArchived}
@@ -555,7 +566,18 @@ export default function TenantDetail() {
       )}
 
       {/* Progress of a status-driven storage op (archive, restore-from-archive). */}
-      <OperationProgressModal operationId={statusOpId} onClose={() => setStatusOpId(null)} />
+      {/* Closing it re-reads the tenant: a restore that finished turned the
+          archived page into the live one, and one that failed left the tenant
+          in the failed state the archived page offers Reset to idle for. */}
+      <OperationProgressModal
+        operationId={statusOpId}
+        onClose={() => {
+          setStatusOpId(null);
+          for (const queryKey of [['tenants'], ['tenant-archive', id], ['storage-operations', id]]) {
+            void queryClient.invalidateQueries({ queryKey });
+          }
+        }}
+      />
     </div>
   );
 }

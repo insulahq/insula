@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.15-rc.2] - 2026-10-21
-
 ### BREAKING
 
 - **Archiving takes a suspended tenant only, and keeps the whole tenant; when the archive
@@ -186,6 +184,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   which the tenant's 512 MiB storage quota refused. Restore now uses the tenant's own size, the
   same one provisioning and the quota use. A restore from a retained volume no longer rounds the
   tenant's storage size to whole GiB either.
+- **An archived tenant whose restore failed could not be restored again from the admin panel.**
+  A failed restore leaves the tenant's storage in the failed state, and every later restore is
+  refused (409 `STORAGE_OP_IN_PROGRESS`) until it is reset to idle. Reset to idle was only on
+  the Storage tab, and the archived tenant page has no tabs. The archived page now shows the
+  failed operation's error with **Reset to idle**, and keeps Restore off, saying why, while the
+  storage state is not idle (the archive endpoint reports the same). The 409 for a failed state
+  no longer reads "A failed operation is already in progress". The page also re-reads the
+  tenant when the restore's progress dialog is closed.
 - **Roundcube rendered without its styles and scripts.** Roundcube 1.7 serves every skin and
   script file through `static.php/<path>`, and the webmail's nginx passed only URLs ending in
   `.php` to PHP, so each of those requests got the login page back instead. Pages showed as
