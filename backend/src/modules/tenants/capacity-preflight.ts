@@ -178,14 +178,17 @@ export async function checkProvisioningCapacity(
         .filter((n) => (opts.autoPlacement || storageTier === 'ha' ? takesAutoPlacedTenants(n) : n.canHostTenantWorkloads))
         .map((n) => n.name),
     );
-    autoSkippedPinnedOnly = opts.autoPlacement === true && storageTier === 'local'
+    const leftOutPinnedOnly = (opts.autoPlacement === true || storageTier === 'ha')
       && platformNodes.some((n) => n.canHostTenantWorkloads && !takesAutoPlacedTenants(n));
+    autoSkippedPinnedOnly = leftOutPinnedOnly && storageTier === 'local';
 
     for (const lhNode of items) {
       const name = lhNode.metadata?.name;
       if (!name) continue;
       // If we have platform info on this node, skip if it's not tenant-capable.
-      if (tenantCapable.size > 0 && !tenantCapable.has(name)) continue;
+      // An empty set otherwise reads as "no info"; not when it is empty
+      // because pinned-only nodes were left out — then none may count.
+      if ((tenantCapable.size > 0 || leftOutPinnedOnly) && !tenantCapable.has(name)) continue;
       // Cluster-level scheduling disabled for the node: don't count it.
       if (lhNode.spec?.allowScheduling === false) continue;
 

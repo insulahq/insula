@@ -107,6 +107,22 @@ describe('checkProvisioningCapacity — nodes that take pinned tenants only', ()
     expect(r.nodes.map((n) => n.nodeName)).toEqual(['de-1']);
   });
 
+  it('Auto with only pinned-only nodes counts none — not every node', async () => {
+    const onlyPinned = {
+      select: vi.fn(() => ({
+        from: vi.fn((tbl: unknown) => {
+          const rows = (tbl as { storageLimit?: unknown }).storageLimit !== undefined
+            ? [{ id: 'plan-1', storageLimit: '10' }]
+            : [{ name: 'za-1', canHostTenantWorkloads: true, labels: { 'insula.host/tenant-placement': 'pinned' } }];
+          return Object.assign(Promise.resolve(rows), { where: vi.fn(async () => rows) });
+        }),
+      })),
+    };
+    const r = await checkProvisioningCapacity(onlyPinned as never, k8s, 'plan-1', 'local', { autoPlacement: true });
+    expect(r).toMatchObject({ ok: false, fittingNodes: 0, nodes: [] });
+    expect(r.reason).toContain('pick it');
+  });
+
   it('a chosen node may be a pinned-only one, so it counts', async () => {
     const r = await checkProvisioningCapacity(db as never, k8s, 'plan-1', 'local');
     expect(r).toMatchObject({ ok: true, fittingNodes: 1 });
