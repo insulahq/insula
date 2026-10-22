@@ -213,6 +213,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Deleting a tenant's last route, or its domain, left the site's HTTP→HTTPS router behind**
+  (`<namespace>-ingress-http`), so a plain-HTTP request for a site that no longer existed was still
+  redirected; an mTLS router and its TLS options stayed too. Every "nothing left to serve" path of the
+  ingress reconcile now removes everything it creates — and brings multi-host site config in step:
+  removing a multi-host deployment's last route now also clears its site configuration, which
+  restarts that deployment's pod once.
+- **Table headings sat centred over left-aligned columns** across the admin and tenant panels —
+  the WAF events and auto-ban tables, audit logs, and most sortable tables. Headings are left-aligned
+  by default; number columns that align right keep doing so.
 - **Every mail health alert said "Mail delivery is likely affected"**, also for a standby copy that
   was only behind and for a mail disk running short — neither stops delivery. The alert now closes
   with what the failure means: for the standby copy, that delivery is not affected (its detail

@@ -242,9 +242,7 @@ export async function reconcileIngress(
   const ingressName = `${namespace}-ingress`;
 
   if (domainIds.length === 0) {
-    await deleteIngressRoute(k8s.custom, namespace, ingressName);
-    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
-    await gcOrphanTlsSplits(k8s, namespace, new Set());
+    await removeTenantIngress(db, k8s, tenantId, namespace, ingressName);
     return;
   }
 
@@ -313,9 +311,7 @@ export async function reconcileIngress(
   }
 
   if (updatedRoutes.length === 0) {
-    await deleteIngressRoute(k8s.custom, namespace, ingressName);
-    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
-    await gcOrphanTlsSplits(k8s, namespace, new Set());
+    await removeTenantIngress(db, k8s, tenantId, namespace, ingressName);
     return;
   }
 
@@ -576,14 +572,7 @@ export async function reconcileIngress(
   }
 
   if (plainBuilds.length === 0 && mtlsBuilds.length === 0) {
-    await deleteIngressRoute(k8s.custom, namespace, ingressName);
-    // Also drop the HTTP entrypoint companion if it was previously
-    // applied — otherwise it orphans on the cluster after the last
-    // route is deleted.
-    await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
-    await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
-    await gcOrphanMtls(k8s, namespace, new Set(), new Set());
-    await gcOrphanTlsSplits(k8s, namespace, new Set());
+    await removeTenantIngress(db, k8s, tenantId, namespace, ingressName);
     return;
   }
 
@@ -780,20 +769,57 @@ export async function reconcileIngress(
   // Middlewares, oauth2-proxy break-glass middleware, …) stays put.
   await gcOrphanMiddlewares(db, k8s, tenantId, namespace, expectedMiddlewareNames);
 
-  // Multi-host site config. Hooked HERE rather than at each call site because
-  // this function is the one place every route mutation already funnels
-  // through — create, patch, delete, the settings PATCHes, the bandwidth cap
-  // and the mTLS paths all reach it. A new caller therefore cannot forget to
-  // update site config and leave a hostname served from the wrong folder.
-  //
-  // Non-blocking: an unreachable pod must not fail the ingress reconcile that
-  // just applied the tenant's routers. The reconciler is idempotent and runs
-  // again on the next route change, so a miss here is recovered, not lost.
+  await reconcileSites(db, k8s, tenantId, namespace);
+}
+
+/**
+ * Multi-host site config. Run from HERE rather than at each call site because
+ * reconcileIngress is the one place every route mutation already funnels
+ * through — create, patch, delete, the settings PATCHes, the bandwidth cap
+ * and the mTLS paths all reach it. A new caller therefore cannot forget to
+ * update site config and leave a hostname served from the wrong folder. That
+ * includes the exits where the tenant serves nothing (removeTenantIngress):
+ * the last route's site entry has to go as well.
+ *
+ * Non-blocking: an unreachable pod must not fail the ingress reconcile that
+ * just applied the tenant's routers. The reconciler is idempotent and runs
+ * again on the next route change, so a miss here is recovered, not lost.
+ */
+async function reconcileSites(db: Database, k8s: K8sClients, tenantId: string, namespace: string): Promise<void> {
   try {
     await reconcileTenantSites(db, { core: k8s.core, apps: k8s.apps }, tenantId, namespace, process.env.KUBECONFIG_PATH);
   } catch (err) {
     console.warn('[ingress-reconcile] multihost site reconcile failed (non-blocking)', err);
   }
+}
+
+/**
+ * The tenant serves nothing: remove everything reconcileIngress puts on the
+ * cluster for it — the shared IngressRoute, its HTTP→HTTPS companion on the
+ * `web` entrypoint, the TLS splits, the mTLS IngressRoutes and their
+ * TLSOptions — then the Middlewares they referenced, and bring site config in
+ * step.
+ *
+ * The three exits that reach this used to tear down by hand, each its own
+ * subset. "No domains left" and "no routable route left" deleted only the
+ * shared IngressRoute, so deleting a tenant's last route or its domain kept the
+ * hostname's HTTP router (and any mTLS router) alive: plain-HTTP requests for a
+ * site that no longer existed still got a redirect. One function, one list.
+ */
+async function removeTenantIngress(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  namespace: string,
+  ingressName: string,
+): Promise<void> {
+  // The routers and their TLS objects, then the Middlewares they referenced.
+  await deleteIngressRoute(k8s.custom, namespace, ingressName);
+  await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
+  await gcOrphanTlsSplits(k8s, namespace, new Set());
+  await gcOrphanMtls(k8s, namespace, new Set(), new Set());
+  await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
+  await reconcileSites(db, k8s, tenantId, namespace);
 }
 
 // ─── Force-HTTPS HTTP-entrypoint routes ────────────────────────────────────
