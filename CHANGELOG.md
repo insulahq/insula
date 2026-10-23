@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.16-rc.1] - 2026-10-23
+
 ### Security
 
 - **Node.js 22.23.2 → 22.23.4 in every Node image (Node2Shell, CVE-2026-111497).** A crafted
