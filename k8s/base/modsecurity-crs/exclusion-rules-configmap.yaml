@@ -762,6 +762,32 @@ data:
         SecRule REQUEST_METHOD "@streq POST" "chain,t:none"
         SecRule ARGS:_action "@rx ^(send|save-identity)$" "t:none"
 
+    # ── Next.js build chunks: CRS 4.30 RCE rules read the URL path ────
+    #
+    # CRS 4.30 (GHSA-575j-qr6p-9763) added REQUEST_FILENAME to the RCE
+    # rules (932125–932390), so a payload placed in the URL path is caught.
+    # Next.js App Router names its build chunks after the source tree —
+    # route groups and dynamic segments, e.g.
+    #   /_next/static/chunks/app/(main)/%5Blocale%5D/page-<hash>.js
+    # and 932130 ("Unix Shell Expression") reads `/[locale]` as a shell
+    # glob. Measured on DEV with CRS 4.30.0: every Bulwark chunk 403'd
+    # (932130, then 949110 at score 5), so webmail never left "Loading…";
+    # a tenant's Next.js app with route groups or dynamic segments breaks
+    # the same way when its WAF is Enforced.
+    #
+    # Dropped: only the RCE rules' REQUEST_FILENAME target, only under
+    # /_next/static/ — immutable build output, never a shell argument; the
+    # same coverage those paths had before 4.30. Query string, cookies,
+    # headers and body are still inspected there, and every other rule
+    # (traversal 930xxx included) still reads the path.
+    SecRule REQUEST_FILENAME "@beginsWith /_next/static/" \
+        "id:9000120,\
+         phase:1,\
+         pass,\
+         nolog,\
+         t:none,\
+         ctl:ruleRemoveTargetByTag=attack-rce;REQUEST_FILENAME"
+
     # ── ADR-060: raw transport for custom-container specs ─────────────
     #
     # A compose document and its env files are shell commands and KEY=value
