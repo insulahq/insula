@@ -34,6 +34,13 @@ export default function TenantStorageTotal() {
           <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Storage used by all tenant backups</div>
           {isLoading ? (
             <div className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400"><Loader2 size={12} className="animate-spin" /> Loading…</div>
+          ) : holding.length === 0 && unlisted.length > 0 ? (
+            // Measured, but the tenant folder could not be walked: no figure, and not "never measured".
+            <div className="text-sm text-amber-700 dark:text-amber-400" data-testid="tenant-storage-total-unlisted">
+              Could not be listed on {unlisted.map((t) => t.name).join(', ')}
+              {unlisted[0].usage?.errors.tenant ? `: ${unlisted[0].usage.errors.tenant}` : ''} —{' '}
+              <Link to="/backups/targets" className="font-medium text-brand-600 hover:underline dark:text-brand-400">measure again</Link>
+            </div>
           ) : holding.length === 0 ? (
             <div className="text-sm text-gray-600 dark:text-gray-400" data-testid="tenant-storage-total-none">
               Not measured yet — <Link to="/backups/targets" className="font-medium text-brand-600 hover:underline dark:text-brand-400">measure a target</Link>

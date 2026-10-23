@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Storage used by all tenant backups" (and a target's tenant figure) could read 0 B while the
+  target held every tenant's backups.** The measurement walks the tenant folder on the target,
+  and a folder that vanishes during the walk fails it: the backup shim removes a folder once its
+  last file is deleted, so each restic repository's `locks/` folder exists only while a backup,
+  stats, check or forget holds a lock. A failed walk that said "directory not found" was then read
+  as "nothing was ever written here", and stored as 0. Against Samba, with locks coming and going
+  through the shim, the released measurement stored tenant = 0 B in 4 of 10 runs. Now lock
+  folders are not walked (a few hundred bytes each), a walk that failed on a vanished folder is
+  walked again (up to three times), and a class is 0 only when the target root has no folder for
+  it. A class that still cannot be walked is shown as "could not be listed" with the reason, and
+  the tenant total says so rather than "Not measured yet". Under the same churn the fixed
+  measurement was correct in 15 of 15 runs.
+
 ## [2026.10.15] - 2026-10-23
 
 ### BREAKING

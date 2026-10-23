@@ -32,6 +32,7 @@ describe.skipIf(!dbAvailable)('target usage (integration)', () => {
   const fake = (): RcloneRunner => async (args) => {
     const where = args[args.length - 1];
     if (args[0] === 'about') return { code: 0, stdout: '{"total":1000,"used":400,"free":600}', stderr: '' };
+    if (args[0] === 'lsf') return { code: 0, stdout: 'tenant/\n', stderr: '' };
     if (where.endsWith('/tenant')) return { code: 0, stdout: '{"count":2,"bytes":300}', stderr: '' };
     return { code: 3, stdout: '', stderr: 'directory not found' };
   };
