@@ -12,6 +12,7 @@
  * (`renderUpstreamSection`) so every target kind is reached the way backups
  * reach it:
  *
+ *   `rclone lsf --dirs-only <root>`      which class folders exist at all
  *   `rclone size <root>/<class> --json`  bytes and objects per class folder
  *   `rclone about <root> --json`         the target's total / used / free
  *
@@ -54,6 +55,28 @@ const REMOTE = 'usage';
 const ABOUT_TIMEOUT_MS = 2 * 60 * 1000;
 /** A large tenant class over SMB lists in minutes; a stuck listing must still end. */
 const SIZE_TIMEOUT_MS = 30 * 60 * 1000;
+const TIMED_OUT = 124;
+/**
+ * Folders vanish while a class is walked, and rclone fails the whole `size`
+ * on the first one it can no longer list ("directory not found").
+ *
+ * The shim (`rclone serve s3`) removes a folder once its last object is
+ * deleted, so a restic repository's `locks/` exists only while something holds
+ * a lock — every backup, stats, check and forget takes one. Measured against
+ * Samba with locks coming and going through the shim, about a third of plain
+ * `rclone size` walks of the tenant folder failed; with lock folders left out,
+ * none did. Lock files are a few hundred bytes. The pattern is deliberately
+ * unanchored: it matches the `locks/` of every repository in every class (the
+ * mail class is a restic repository too), and no other folder the platform
+ * writes to a target is named `locks`.
+ */
+const SIZE_FILTER = ['--exclude', 'locks/**'] as const;
+/**
+ * Other folders vanish too — prune emptying a pack folder, retention removing
+ * a bundle's — far less often: a walk that failed on one is walked again. Any
+ * other failure (refused, reset, denied) is reported at once.
+ */
+const SIZE_ATTEMPTS = 3;
 /**
  * The per-target measuring lease. Short and renewed while the measurement runs
  * (scheduler-lease renews every third of it), so a replica that dies mid-way
@@ -124,14 +147,67 @@ export function remoteFor(target: BackupTargetConfig): { env: Record<string, str
 
 const at = (root: string, sub: string) => `${REMOTE}:${[root, sub].filter((s) => s.length > 0).join('/')}`;
 
-function lastLine(stderr: string): string {
+function lastLine(stderr: string, preferError = false): string {
   const lines = stderr.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  // A walk's ERROR line names the path that failed; the NOTICE after it only counts the errors.
+  const errorLine = preferError ? lines.filter((l) => /^(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} )?ERROR ?:/.test(l)).at(-1) : undefined;
   // rclone prefixes every log line with a timestamp and level; keep the message.
-  return (lines.at(-1) ?? 'rclone failed').replace(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ ?:\s*/, '').slice(0, 300);
+  return (errorLine ?? lines.at(-1) ?? 'rclone failed').replace(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ ?:\s*/, '').slice(0, 300);
 }
 
 const isMissingDir = (stderr: string) => /directory not found|not found|does not exist|NoSuchKey|NoSuchBucket/i.test(stderr);
+/**
+ * rclone's own text for a folder that is not there (`fs.ErrorDirNotFound`),
+ * whatever the backend. Narrow on purpose: it is what may make a class 0, and
+ * a looser match ("user not found", "command not found") would zero a target
+ * that could not be reached.
+ */
+const isDirNotFound = (stderr: string) => /\bdirectory not found\b/i.test(stderr);
 const isAboutUnsupported = (stderr: string) => /doesn'?t support about|not supported|about is not supported/i.test(stderr);
+
+/**
+ * The folders directly under the target root, or whether the root itself is
+ * missing.
+ *
+ * This, not a failed walk, is what makes a class 0: a walk also fails with
+ * "directory not found" when a folder INSIDE the class vanishes while it runs,
+ * and that read as "nothing was ever written here" showed a full tenant class
+ * as 0 B. Unknown when the root could not be listed — the classes are then
+ * walked, and a failed walk is an error, never 0.
+ */
+type RootFolders =
+  | { readonly kind: 'listed'; readonly names: ReadonlySet<string> }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unknown' };
+
+async function listRootFolders(run: RcloneRunner, env: Record<string, string>, root: string): Promise<RootFolders> {
+  // Not recursive, so "directory not found" can only mean the root itself. A
+  // root that could not be listed in time is unknown like any other failure.
+  const res = await run(['lsf', '--dirs-only', at(root, '')], env, ABOUT_TIMEOUT_MS);
+  if (res.code === 0) {
+    return { kind: 'listed', names: new Set(res.stdout.split('\n').map((l) => l.trim().replace(/\/+$/, '')).filter(Boolean)) };
+  }
+  return isDirNotFound(res.stderr) ? { kind: 'absent' } : { kind: 'unknown' };
+}
+
+async function sizeFolder(run: RcloneRunner, env: Record<string, string>, path: string): Promise<{ usage: ClassUsage } | { error: string }> {
+  let error = 'rclone failed';
+  for (let attempt = 1; attempt <= SIZE_ATTEMPTS; attempt += 1) {
+    const res = await run(['size', '--json', ...SIZE_FILTER, path], env, SIZE_TIMEOUT_MS);
+    if (res.code === 0) {
+      try {
+        const parsed = JSON.parse(res.stdout) as { bytes?: number; count?: number };
+        return { usage: { bytes: Math.max(0, Math.trunc(parsed.bytes ?? 0)), objects: Math.max(0, Math.trunc(parsed.count ?? 0)) } };
+      } catch {
+        return { error: 'rclone size returned output that is not JSON' };
+      }
+    }
+    error = lastLine(res.stderr, true);
+    // Half an hour per try: a walk that slow is not walked again.
+    if (res.code === TIMED_OUT || !isDirNotFound(res.stderr)) break;
+  }
+  return { error };
+}
 
 // ─── one target ─────────────────────────────────────────────────────────────
 
@@ -145,21 +221,16 @@ export async function measureTarget(
   const classes: Record<BackupUsageClass, ClassUsage | null> = { system: null, tenant: null, mail: null };
   const errors: Record<string, string> = {};
 
+  const rootFolders = await listRootFolders(run, env, root);
   for (const cls of BACKUP_USAGE_CLASSES) {
-    const res = await run(['size', '--json', at(root, cls)], env, SIZE_TIMEOUT_MS);
-    if (res.code === 0) {
-      try {
-        const parsed = JSON.parse(res.stdout) as { bytes?: number; count?: number };
-        classes[cls] = { bytes: Math.max(0, Math.trunc(parsed.bytes ?? 0)), objects: Math.max(0, Math.trunc(parsed.count ?? 0)) };
-      } catch {
-        errors[cls] = 'rclone size returned output that is not JSON';
-      }
-    } else if (isMissingDir(res.stderr)) {
+    if (rootFolders.kind === 'absent' || (rootFolders.kind === 'listed' && !rootFolders.names.has(cls))) {
       // Nothing of this class was ever written here.
       classes[cls] = { bytes: 0, objects: 0 };
-    } else {
-      errors[cls] = lastLine(res.stderr);
+      continue;
     }
+    const sized = await sizeFolder(run, env, at(root, cls));
+    if ('usage' in sized) classes[cls] = sized.usage;
+    else errors[cls] = sized.error;
   }
 
   let capacity: TargetCapacity | null = null;

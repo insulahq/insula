@@ -7,6 +7,7 @@ import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
 import websocket from '@fastify/websocket';
 import { errorHandler } from './middleware/error-handler.js';
+import { COMPRESS_OPTIONS } from './plugins/compress-options.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
 import { getSettings as getSystemSettings } from './modules/system-settings/service.js';
@@ -443,7 +444,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       cb(null, { origin: allowedOrigins });
     },
   });
-  await app.register(fastifyCompress, { global: true });
+  await app.register(fastifyCompress, COMPRESS_OPTIONS);
   // @fastify/multipart powers the tenant-bundles import endpoint
   // (encrypted tarball upload). Limits chosen to allow >1 GiB
   // bundles — staging has bundles in the 200-800 MiB range and

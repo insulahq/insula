@@ -5,7 +5,7 @@
 # See server.mjs for the validator semantics (operators, rule file
 # format, sidecar lifecycle).
 
-FROM node:22-alpine3.20@sha256:2289fb1fba0f4633b08ec47b94a89c7e20b829fc5679f9b7b298eaa2f1ed8b7e
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
 WORKDIR /app
 

@@ -18,7 +18,7 @@ COPY cmd ./cmd
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o sftp-serve ./cmd/sftp-serve
 
 # Stage 3: Runtime
-FROM node:22-alpine3.20@sha256:2289fb1fba0f4633b08ec47b94a89c7e20b829fc5679f9b7b298eaa2f1ed8b7e
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 RUN apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync
 COPY --from=chroot-builder /build/sftp-serve /usr/local/bin/sftp-serve
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
