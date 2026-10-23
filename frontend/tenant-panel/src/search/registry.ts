@@ -91,5 +91,5 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     keywords: ['share', 'tunnel', 'public url', 'expose'] },
 
   { id: 'user-settings', label: 'My Settings', group: 'Account', to: '/user-settings',
-    keywords: ['profile', 'password', 'timezone', 'passkey', 'preferences', 'my account', 'ai agent', 'mcp', 'claude', 'cursor'] },
+    keywords: ['profile', 'password', 'passkey', 'preferences', 'my account', 'ai agent', 'mcp', 'claude', 'cursor'] },
 ];

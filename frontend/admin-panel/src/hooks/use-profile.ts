@@ -11,7 +11,6 @@ interface ProfileResponse {
     readonly email: string;
     readonly fullName: string;
     readonly role: string;
-    readonly timezone?: string | null;
   };
 }
 

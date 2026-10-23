@@ -49,6 +49,13 @@ describe('UserSettings page', () => {
     expect(screen.getByTestId('profile-email')).toHaveValue('admin@test.com');
   });
 
+  // Times follow the browser's zone everywhere; a profile zone nothing read is gone.
+  it('has no time zone setting', () => {
+    render(<UserSettings />, { wrapper: createWrapper() });
+    expect(screen.queryByLabelText(/time ?zone/i)).toBeNull();
+    expect(screen.queryByText(/time ?zone/i)).toBeNull();
+  });
+
   it('renders the password section', () => {
     render(<UserSettings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('password-section')).toBeInTheDocument();

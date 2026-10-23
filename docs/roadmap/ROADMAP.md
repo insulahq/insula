@@ -2299,3 +2299,26 @@ two columns (expand/contract as R43: the old pods select them by name), drop
 `deployments.cpu_request_pre_migration` (a baseline nothing restores now that
 revert is gone), and retire `platform_settings.cpu_scheduling_default` and the
 `cpu_auto_migrate_attempt:*` keys.
+
+## R46 — Drop the retired `users.timezone` column
+
+The profile "Timezone" setting claimed to set how the panels display times,
+but nothing read it: every panel time now follows the browser's zone and
+names its offset. The setting left both panels' User Settings, the profile
+API (`updateProfileSchema`, `GET`/`PATCH /auth/profile`) and the Drizzle
+schema in one release; the column stays in the database for now, because the
+old backend pods select every schema column by name on each user read
+(expand/contract as R43 — here that read is every login).
+
+Unlike R43's column, `users` IS in the tenant bundle `config` dump
+(`SELECT *`), and a restore writes a row by its own keys
+(`backup-restore/executors/_shared.ts:upsertRow`). So every bundle taken
+before the drop carries `timezone`. The same release added
+`RETIRED_BUNDLE_COLUMNS` (`users: ['timezone']`), which upsertRow skips — keep
+that entry for as long as such bundles can be restored.
+
+**To do, in the release after:** a migration
+`ALTER TABLE "users" DROP COLUMN IF EXISTS "timezone";`. Same skip-a-release
+caveat as R43: a cluster jumping straight to it still runs the older pods
+during the rollout. `user_notification_settings.timezone` (quiet hours) and
+`tenants.timezone` (the TZ of a tenant's containers) are live and stay.

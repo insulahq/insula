@@ -211,5 +211,5 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
 
   // ─── Account ───────────────────────────────────────────────────────────────
   { id: 'user-settings', label: 'My Settings', group: 'Account', to: '/user-settings',
-    keywords: ['profile', 'password', 'timezone', 'passkey', 'preferences', 'my account', 'api token', 'ai agent', 'mcp'] },
+    keywords: ['profile', 'password', 'passkey', 'preferences', 'my account', 'api token', 'ai agent', 'mcp'] },
 ];

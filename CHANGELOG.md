@@ -63,6 +63,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   not. They now read in the browser's zone like the WAF tables; a time with no column header to
   name the zone carries its offset ("2026-10-03 10:36 UTC+9"), and dates are the local calendar
   date. A test in each panel fails the build if a displayed time is cut from a UTC string again.
+- **The profile "Timezone" setting is gone from User Settings in both panels.** It said it set how
+  dates are displayed, but nothing read it; every time now follows the browser's zone instead. The
+  profile API no longer accepts or returns `timezone`. The database column stays one more release
+  (old pods read it during the rollout) and is dropped in the next; restoring a tenant backup taken
+  before then skips it.
 
 ### Fixed
 

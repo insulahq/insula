@@ -201,7 +201,10 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
-  timezone: varchar('timezone', { length: 50 }),
+  // `timezone` (a per-user display zone) is retired: the panels show every
+  // time in the browser's zone. The column stays until a later migration
+  // drops it (expand/contract, see 0148), and bundle restores skip it
+  // (RETIRED_BUNDLE_COLUMNS in backup-restore/executors/_shared.ts).
   // Passkey integration (migration 0061). NULL = password-only (default).
   // 'alternative' = either factor logs in. 'second_factor' = password
   // then passkey, 2-step. Setting 'second_factor' requires ≥1 verified
