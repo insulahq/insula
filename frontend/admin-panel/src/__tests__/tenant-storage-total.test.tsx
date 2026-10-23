@@ -50,4 +50,14 @@ describe('TenantStorageTotal', () => {
     renderIt();
     expect(screen.getByTestId('tenant-storage-total')).toHaveTextContent('Broken could not be listed');
   });
+
+  it('the only target could not be listed: says so with the reason — neither 0 nor "not measured"', () => {
+    const broken = t('Box', null, true);
+    targets = [{ ...broken, usage: { ...broken.usage!, errors: { tenant: 'restic/r7/locks: error listing: directory not found' } } }];
+    renderIt();
+    expect(screen.getByTestId('tenant-storage-total-unlisted'))
+      .toHaveTextContent('Could not be listed on Box: restic/r7/locks: error listing: directory not found — measure again');
+    expect(screen.queryByTestId('tenant-storage-total-bytes')).toBeNull();
+    expect(screen.queryByTestId('tenant-storage-total-none')).toBeNull();
+  });
 });

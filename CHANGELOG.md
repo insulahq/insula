@@ -12,6 +12,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Node.js 22.23.2 → 22.23.4 in every Node image (Node2Shell, CVE-2026-111497).** A crafted
+  Brotli stream could drive Node's Brotli decoder into an out-of-bounds write. The platform API
+  decoded Brotli request bodies, and on routes that need no login (the login form among them),
+  anyone who could reach the API could reach the decoder. The same Node release fixes TLS
+  certificate hostname-check bypasses (CVE-2026-106069, CVE-2026-106072), `dns.resolve`
+  truncating names at a NUL character (CVE-2026-105482) and a keep-alive socket reading a
+  response written before its request (CVE-2026-105481), and updates the bundled OpenSSL,
+  undici, c-ares and CA certificates. Changed: the platform API and version poller, the file
+  manager and claim validator, and the panels' build stage. The file manager and claim
+  validator had stayed on Node 22.16.0: they were pinned to Docker's `alpine3.20` variant,
+  which gets no newer Node builds. They now follow `node:22-alpine` (Alpine 3.24) like the API.
+- **The platform API no longer decodes Brotli or zstd request bodies.** It now accepts a
+  compressed request body only as gzip or deflate, and refuses Brotli and zstd with 415
+  without decoding them. Decoding happens before the body is parsed, which on some routes is
+  before the login check, and nothing the platform ships sends a compressed request, so a
+  future decoder bug in either can't be reached this way. Responses are still compressed with
+  Brotli.
+
+### Fixed
+
+- **"Storage used by all tenant backups" (and a target's tenant figure) could read 0 B while the
+  target held every tenant's backups.** The measurement walks the tenant folder on the target,
+  and a folder that vanishes during the walk fails it: the backup shim removes a folder once its
+  last file is deleted, so each restic repository's `locks/` folder exists only while a backup,
+  stats, check or forget holds a lock. A failed walk that said "directory not found" was then read
+  as "nothing was ever written here", and stored as 0. Against Samba, with locks coming and going
+  through the shim, the released measurement stored tenant = 0 B in 4 of 10 runs. Now lock
+  folders are not walked (a few hundred bytes each), a walk that failed on a vanished folder is
+  walked again (up to three times), and a class is 0 only when the target root has no folder for
+  it. A class that still cannot be walked is shown as "could not be listed" with the reason, and
+  the tenant total says so rather than "Not measured yet". Under the same churn the fixed
+  measurement was correct in 15 of 15 runs.
+
 ## [2026.10.15] - 2026-10-23
 
 ### BREAKING

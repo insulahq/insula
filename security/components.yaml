@@ -673,7 +673,7 @@ components:
     scan: trivy+osv
     deps: [images/claim-validator/Dockerfile]
     owner: platform
-    notes: First-party (Node 22-alpine3.20).
+    notes: First-party (Node 22-alpine).
 
   - id: age
     name: age (secrets-bundle encryption tool)
