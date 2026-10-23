@@ -72,7 +72,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   host-migrations 2026.10.17/0007 and 0008: calico-node rolls node by node and the cluster keeps
   the Calico API mode it runs in; the Longhorn manager and CSI roll while attached volumes keep
   serving, and Longhorn's new `longhorn-global-manager` Deployment takes over its cluster-wide
-  controllers. The Longhorn step refuses to run while any volume is Faulted. Two new defaults are
+  controllers. **On a multi-node cluster the Calico step interrupts new requests for about 30
+  seconds** (measured on a 3-node cluster while old and new Calico run side by side; once per
+  upgrade — a calico-node restart under 3.33 alone interrupts nothing), so pull this release in a
+  quiet window. The Longhorn step refuses to run while any volume is Faulted. Two new defaults are
   not taken: Calico 3.33 would put a fresh install on native v3 CRDs, so bootstrap applies the v1
   CRDs first and new clusters run the same mode as every existing one; Longhorn 1.13's internal
   NetworkPolicies would block the metrics scrape and the platform's own Longhorn API calls, so they

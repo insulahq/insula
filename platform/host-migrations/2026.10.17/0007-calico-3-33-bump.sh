@@ -29,9 +29,11 @@ set -euo pipefail
 # version (v3.32.1), which never matched (the operator is versioned apart —
 # 3.32.1 ships operator v1.42.3); this one checks the operator's own version.
 #
-# Blast radius (by design): calico-node rolls one node at a time; each node's
-# pod networking blips while its calico-node restarts (established connections
-# usually survive — the dataplane stays programmed). Budget: operator 120s,
+# Blast radius (by design): calico-node rolls one node at a time. Measured on
+# the 3-node lab staging: while the operator moved calico-node and typha from
+# 3.32 to 3.33, NEW requests through the ingress failed (502) for about 30s;
+# single-node DEV saw none, and a later calico-node restart under 3.33 failed
+# none — it is the old and new Calico side by side, once per upgrade. Budget: operator 120s,
 # image switch 90s, calico-node roll 240s, status 60s — inside the runner's
 # 10 minutes; a run cut short re-waits on the next converge.
 
