@@ -323,7 +323,7 @@ K3S_FRESH_INSTALL=false
 # system-upgrade-controller compatibility check. Existing clusters take this pin
 # through the upgrade run's opt-in Kubernetes step (ADR-064 §8), not a host-migration.
 K3S_VERSION="v1.36.5+k3s1"
-CALICO_VERSION="v3.32.1"
+CALICO_VERSION="v3.33.0"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via
@@ -507,7 +507,7 @@ DRY_RUN=false
 #   2. All Helm chart versions are published at their respective repos
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
-LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) so the v1.12 V2-backing-image removal is a no-op here
+LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 adds the longhorn-global-manager Deployment and internal NetworkPolicies — see install_longhorn
 # Flux CLI + controllers (flux install deploys controller versions
 # matching the CLI). Pinned — the GitOps engine was the
 # LAST unpinned core component: every bootstrap silently took whatever
@@ -5130,7 +5130,28 @@ install_calico() {
     return 1
   fi
 
+  # Calico's projectcalico.org resources run in one of two modes: the
+  # aggregation API server over v1 CRDs (crd.projectcalico.org), or native v3
+  # CRDs. The operator picks the mode from the CRDs ALREADY present, and since
+  # 3.33 a brand-new install defaults to native v3 — while every cluster
+  # installed before keeps the API server (an upgrade never switches modes;
+  # moving is a maintenance-window migration). Applying the v1 CRDs first keeps
+  # fresh installs in the same mode as the existing fleet, so there is one
+  # Calico to test, not two. It is the same command Calico documents for
+  # upgrading an API-server cluster, and what host-migration
+  # 2026.10.17/0006 applies to existing ones. The APIServer CR below then runs
+  # calico-apiserver as before.
+  local calico_crd_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml"
+  local calico_crd_manifest="/var/lib/insula/cache/calico-v1-crds-${CALICO_VERSION}.yaml"
+  if ! fetch_manifest_cached "$calico_crd_url" "$calico_crd_manifest"; then
+    error "Could not download the Calico v1 CRD manifest from ${calico_crd_url}. Pre-stage it at ${calico_crd_manifest} and re-run."
+    return 1
+  fi
   local _apply_out
+  if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_crd_manifest" 2>&1)"; then
+    error "Calico v1 CRD apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
   if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_manifest" 2>&1)"; then
     error "tigera-operator apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
     return 1
@@ -6795,6 +6816,18 @@ install_longhorn() {
   # on every distro because k3s ALWAYS uses /var/lib/kubelet (see
   # install_k3s_server — no --kubelet-arg=root-dir override). Surfaced
   # on Rocky 10.1 fresh install.
+  # Longhorn 1.13:
+  #   * networkPolicies.restrictInternalTraffic=false — 1.13 turns on ingress
+  #     NetworkPolicies for its internal endpoints by default. They admit
+  #     longhorn-manager :9500 only from longhorn-system, which cuts off the
+  #     VictoriaMetrics scrape (monitoring) and platform-api's longhorn-backend
+  #     calls; and k3s with Calico VXLAN + WireGuard is not among the CNI
+  #     combinations Longhorn has validated the policies on. Turning it on is
+  #     a separate hardening step with additive policies for those callers.
+  #   * longhornGlobalManager.tolerations — the new cluster-wide pod/PV
+  #     controller Deployment (three replicas, spread by preference) tolerates
+  #     the server-only taint like the rest of Longhorn, so it can run on a
+  #     server that opted out of tenant workloads.
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -6815,6 +6848,10 @@ install_longhorn() {
     --set 'longhornDriver.resources.requests.memory=128Mi' \
     --set 'longhornUI.resources.requests.cpu=10m' \
     --set 'longhornUI.resources.requests.memory=64Mi' \
+    --set networkPolicies.restrictInternalTraffic=false \
+    --set 'longhornGlobalManager.tolerations[0].key=insula.host/server-only' \
+    --set 'longhornGlobalManager.tolerations[0].operator=Exists' \
+    --set 'longhornGlobalManager.tolerations[0].effect=NoSchedule' \
     --wait \
     --timeout 600s
 

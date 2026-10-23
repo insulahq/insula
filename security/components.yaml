@@ -77,7 +77,7 @@ components:
     name: Calico CNI (network policy + WireGuard)
     tier: "0"
     kind: binary
-    pinned: "v3.32.1"
+    pinned: "v3.33.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
@@ -321,7 +321,7 @@ components:
     name: Longhorn (distributed block storage — all PVs)
     tier: "1"
     kind: chart
-    pinned: "v1.12.0"
+    pinned: "v1.13.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: longhorn/longhorn, advisories: longhorn/longhorn }

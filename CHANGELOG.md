@@ -68,6 +68,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   profile API no longer accepts or returns `timezone`. The database column stays one more release
   (old pods read it during the rollout) and is dropped in the next; restoring a tenant backup taken
   before then skips it.
+- **Calico 3.32.1 → 3.33.0 and Longhorn 1.12.0 → 1.13.0.** Existing clusters move with
+  host-migrations 2026.10.17/0006 and 0007: calico-node rolls node by node and the cluster keeps
+  the Calico API mode it runs in; the Longhorn manager and CSI roll while attached volumes keep
+  serving, and Longhorn's new `longhorn-global-manager` Deployment takes over its cluster-wide
+  controllers. The Longhorn step refuses to run while any volume is Faulted. Two new defaults are
+  not taken: Calico 3.33 would put a fresh install on native v3 CRDs, so bootstrap applies the v1
+  CRDs first and new clusters run the same mode as every existing one; Longhorn 1.13's internal
+  NetworkPolicies would block the metrics scrape and the platform's own Longhorn API calls, so they
+  stay off as before.
 
 ### Security
 
