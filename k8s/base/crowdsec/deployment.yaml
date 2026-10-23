@@ -274,8 +274,10 @@ spec:
           effect: NoSchedule
       containers:
         - name: crowdsec
-          # v1.7.8 — latest stable on the v1.7.x line. Includes
-          # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
+          # v1.8.1 — latest stable. 1.8.0 fixes two denial-of-service bugs in
+          # the HTTP and k8s-audit datasources (unused here) and migrates the
+          # LAPI's Postgres schema on start, additively (bouncers.stream_cursor,
+          # a new decisions index); each bouncer does one full resync after.
           image: docker.io/crowdsecurity/crowdsec:v1.8.1
           imagePullPolicy: IfNotPresent
           # DISABLE_ONLINE_API comes from the crowdsec-capi-config ConfigMap

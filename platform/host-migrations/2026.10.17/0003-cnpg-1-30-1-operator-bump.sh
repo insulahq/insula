@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # description: The CloudNativePG operator moves to v1.30.1 (chart 0.29.1): a webhook path-traversal validation fix and a gRPC security update; the operator rolls, Postgres keeps running.
-# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the cnpg release is already at chart 0.29.1 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
+# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the cnpg release is `deployed` at chart 0.29.1 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
 # allow-paths: none — operates solely on the cluster via helm + the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
-# blocks-on-failure: no    # ADR-056: on failure the previous CloudNativePG operator keeps running and the next converge retries; no later migration depends on this one.
+# blocks-on-failure: no    # ADR-056: --atomic rolls a failed upgrade back, so on failure the previous CloudNativePG operator keeps running and the next converge retries; no later migration depends on this one.
 # phase: before-services    # ADR-064: a chart-version swap under the release's own values; needs nothing from the new release's manifests
 set -euo pipefail
 
@@ -17,7 +17,9 @@ set -euo pipefail
 # changed, but every Cluster here pins imageName.
 #
 # HOW: `--reset-then-reuse-values` — the NEW chart's defaults, then the
-# release's own user-supplied values on top. Plain `--reuse-values` keeps the
+# release's own user-supplied values on top — with `--atomic`, so a release
+# that does not become ready is rolled back rather than left `failed` at the
+# new chart version (240s each way fits the runner's 10 minutes). Plain `--reuse-values` keeps the
 # OLD chart's defaults, so a key the new chart added has no value — the 0.29.1 chart fails on that with
 # "nil pointer … scratchData.emptyDir".
 #
@@ -51,12 +53,15 @@ mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
 # Deployed chart version of the release, or "" if absent. A failed READ exits
 # non-zero (the runner retries next converge).
-if ! releases="$("$HELM" list -n cnpg-system -o json 2>"$HELM_HOME_DIR/helm.err")"; then
+if ! releases="$("$HELM" list -n cnpg-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
   echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_HOME_DIR/helm.err")" >&2
   exit 1
 fi
 cur="$(printf '%s' "$releases" \
   | sed -n 's/.*"name":"cnpg"[^}]*"chart":"cloudnative-pg-\([^"]*\)".*/\1/p' \
+  | head -n1)"
+status="$(printf '%s' "$releases" \
+  | sed -n 's/.*"name":"cnpg"[^}]*"status":"\([^"]*\)".*/\1/p' \
   | head -n1)"
 if [ -z "$cur" ]; then
   echo "${MIG}: cnpg release not installed in cnpg-system here — skipping (migration never first-installs a chart)."
@@ -68,7 +73,13 @@ chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
   [ "$a" = "$b" ] && return 0
   [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
 }
-if chart_ver_ge "$cur" "$TARGET_CHART"; then
+case "$status" in
+  pending-*)
+    echo "${MIG}: the cnpg release is ${status} (an earlier helm run was cut short) — not upgrading over it. Check 'helm history cnpg -n cnpg-system', then roll back to its last deployed revision; the next converge retries." >&2
+    exit 1 ;;
+esac
+# A `failed` release at the target chart is not done: upgrade it again.
+if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
   echo "${MIG}: cnpg already at chart ${cur} (>= ${TARGET_CHART}) — nothing to do."
   exit 0
 fi
@@ -81,8 +92,9 @@ echo "${MIG}: upgrading cnpg chart ${cur} -> ${TARGET_CHART} (operator v1.30.1, 
   --namespace cnpg-system \
   --version "$TARGET_CHART" \
   --reset-then-reuse-values \
+  --atomic \
   --wait \
-  --timeout 600s
+  --timeout 240s
 
 echo "${MIG}: cnpg now at chart ${TARGET_CHART} (operator v1.30.1)."
 exit 0

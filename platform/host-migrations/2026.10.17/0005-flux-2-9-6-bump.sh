@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # description: Flux moves to v2.9.6 (CLI on the host, controllers in flux-system) with patch fixes; the four Flux controllers roll and GitOps reconciliation pauses for seconds.
 # idempotent: the guard checks the flux CLI version and the source-controller image; it exits 0 when the CLI is v2.9.6 and source-controller runs v1.9.6 (the controller version Flux 2.9.6 ships). `flux install` re-applied at the same version is itself a no-op (server-side apply of unchanged manifests). Runs on CONTROL-PLANE nodes only (`flux install` needs the admin kubeconfig; workers exit 0 without acting).
-# allow-paths: /usr/local/bin/flux — the fluxcd install.sh drops the pinned CLI here (same path and trust model as scripts/bootstrap.sh install_flux: HTTPS to fluxcd.io, version pinned). No other managed host files are touched.
+# allow-paths: /usr/local/bin/flux — the fluxcd install.sh drops the pinned CLI here (same path and trust model as scripts/bootstrap.sh install_flux: HTTPS to fluxcd.io, the installer verified against bootstrap's FLUX_INSTALLER_SHA256 before it runs, version pinned). No other managed host files are touched.
 # blocks-on-failure: no    # ADR-056: on failure the previous Flux keeps reconciling and the next converge retries; no later migration depends on this one.
 # phase: before-services    # ADR-064: upgrades the controllers that apply the release; needs nothing from the new release's manifests
 set -euo pipefail
@@ -31,6 +31,9 @@ set -euo pipefail
 MIG="flux-2-9-6-bump"
 TARGET="2.9.6"
 TARGET_SOURCE_CONTROLLER="v1.9.6"
+# Same pin as FLUX_INSTALLER_SHA256 in scripts/bootstrap.sh: the installer runs
+# as root, so it runs only when it is byte-for-byte the reviewed one.
+FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
 
 if [ -r /etc/rancher/k3s/k3s.yaml ]; then
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -66,9 +69,21 @@ fi
 
 if [ "$have" != "$TARGET" ]; then
   echo "${MIG}: installing flux CLI v${TARGET} (current: v${have:-none}) ..."
-  installer="$(curl -fsSL https://fluxcd.io/install.sh)"
+  # The `&& printf x` sentinel keeps trailing newlines, which command
+  # substitution would strip and so change the digest (as in bootstrap's
+  # fetch_verified_script).
+  if ! installer="$(curl --retry 3 --retry-delay 2 -fsSL https://fluxcd.io/install.sh && printf 'x')"; then
+    echo "${MIG}: could not download the flux installer — will retry on the next converge." >&2
+    exit 1
+  fi
+  installer="${installer%x}"
   [ -n "$installer" ] || { echo "${MIG}: empty flux installer payload — will retry on the next converge." >&2; exit 1; }
-  FLUX_VERSION="$TARGET" bash -c "$installer"
+  actual="$(printf '%s' "$installer" | sha256sum | awk '{print $1}')"
+  if [ "$actual" != "$FLUX_INSTALLER_SHA256" ]; then
+    echo "${MIG}: flux installer checksum MISMATCH (expected ${FLUX_INSTALLER_SHA256}, got ${actual}) — refusing to run it. Upstream may have published a new installer; review it and update the pin here and in scripts/bootstrap.sh." >&2
+    exit 1
+  fi
+  printf '%s' "$installer" | FLUX_VERSION="$TARGET" bash
   have="$(cli_ver || true)"
   [ "$have" = "$TARGET" ] || { echo "${MIG}: flux CLI still v${have:-none} after install — aborting." >&2; exit 1; }
 fi

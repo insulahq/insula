@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # description: The Sealed Secrets controller moves to 0.40.0 (chart 2.20.0), which stops its /v1/verify and /v1/rotate endpoints acting as decryption oracles; the controller rolls.
-# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the sealed-secrets release is already at chart 2.20.0 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
+# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the sealed-secrets release is `deployed` at chart 2.20.0 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
 # allow-paths: none — operates solely on the cluster via helm + the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
-# blocks-on-failure: no    # ADR-056: on failure the previous Sealed Secrets keeps running and the next converge retries; no later migration depends on this one.
+# blocks-on-failure: no    # ADR-056: --atomic rolls a failed upgrade back, so on failure the previous Sealed Secrets keeps running and the next converge retries; no later migration depends on this one.
 # phase: before-services    # ADR-064: a chart-version swap under the release's own values; needs nothing from the new release's manifests
 set -euo pipefail
 
@@ -15,7 +15,9 @@ set -euo pipefail
 # (controller 0.40.0) is the newest chart.
 #
 # HOW: `--reset-then-reuse-values` — the NEW chart's defaults, then the
-# release's own user-supplied values on top. Plain `--reuse-values` keeps the
+# release's own user-supplied values on top — with `--atomic`, so a release
+# that does not become ready is rolled back rather than left `failed` at the
+# new chart version (240s each way fits the runner's 10 minutes). Plain `--reuse-values` keeps the
 # OLD chart's defaults, so a key the new chart added has no value and the image tag stays the old one (0.38.4).
 #
 # Blast radius (by design): the controller Deployment rolls; existing Secrets are untouched, and
@@ -47,12 +49,15 @@ mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
 # Deployed chart version of the release, or "" if absent. A failed READ exits
 # non-zero (the runner retries next converge).
-if ! releases="$("$HELM" list -n kube-system -o json 2>"$HELM_HOME_DIR/helm.err")"; then
+if ! releases="$("$HELM" list -n kube-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
   echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_HOME_DIR/helm.err")" >&2
   exit 1
 fi
 cur="$(printf '%s' "$releases" \
   | sed -n 's/.*"name":"sealed-secrets"[^}]*"chart":"sealed-secrets-\([^"]*\)".*/\1/p' \
+  | head -n1)"
+status="$(printf '%s' "$releases" \
+  | sed -n 's/.*"name":"sealed-secrets"[^}]*"status":"\([^"]*\)".*/\1/p' \
   | head -n1)"
 if [ -z "$cur" ]; then
   echo "${MIG}: sealed-secrets release not installed in kube-system here — skipping (migration never first-installs a chart)."
@@ -64,7 +69,13 @@ chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
   [ "$a" = "$b" ] && return 0
   [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
 }
-if chart_ver_ge "$cur" "$TARGET_CHART"; then
+case "$status" in
+  pending-*)
+    echo "${MIG}: the sealed-secrets release is ${status} (an earlier helm run was cut short) — not upgrading over it. Check 'helm history sealed-secrets -n kube-system', then roll back to its last deployed revision; the next converge retries." >&2
+    exit 1 ;;
+esac
+# A `failed` release at the target chart is not done: upgrade it again.
+if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
   echo "${MIG}: sealed-secrets already at chart ${cur} (>= ${TARGET_CHART}) — nothing to do."
   exit 0
 fi
@@ -77,8 +88,9 @@ echo "${MIG}: upgrading sealed-secrets chart ${cur} -> ${TARGET_CHART} (controll
   --namespace kube-system \
   --version "$TARGET_CHART" \
   --reset-then-reuse-values \
+  --atomic \
   --wait \
-  --timeout 300s
+  --timeout 240s
 
 echo "${MIG}: sealed-secrets now at chart ${TARGET_CHART} (controller 0.40.0)."
 exit 0
