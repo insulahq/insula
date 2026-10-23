@@ -29,6 +29,7 @@ import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
 import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
+import { readPublishedDkimRecords, withPublishedDkim } from '../email-dkim/keys.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -765,16 +766,20 @@ export async function getEmailDomainDnsRecords(
   const { buildEmailDnsRecordsForDisplay } = await import('./dns-provisioning.js');
   const mailServerHostname = await getMailServerHostname(db);
 
-  // M13: dkimSelector / dkimPublicKey dropped from email_domains (migration 0075).
-  // DKIM TXT records are now published by the dns-sync reconciler from
-  // Stalwart's dnsZoneFile. Pass empty strings so buildEmailDnsRecordsForDisplay
-  // omits the DKIM entry from the display set.
-  const specs = buildEmailDnsRecordsForDisplay(
-    ed.domainName,
-    '', // dkimSelector — now managed by Stalwart; shown via /dkim-status
-    '', // dkimPublicKey — now managed by Stalwart; shown via /dkim-status
-    mailServerHostname,
-    { webmailEnabled: ed.webmailEnabled === 1 },
+  // The DKIM key lives in Stalwart, not in email_domains, so the builder gets
+  // no selector and leaves DKIM out. The TXT records enable and rotation
+  // published are read back from dns_records and slotted in where the builder
+  // would have put them. Leaving them out meant a tenant on external DNS was
+  // never shown the one record that carries a key.
+  const withDkim = withPublishedDkim(
+    buildEmailDnsRecordsForDisplay(
+      ed.domainName,
+      '',
+      '',
+      mailServerHostname,
+      { webmailEnabled: ed.webmailEnabled === 1 },
+    ),
+    await readPublishedDkimRecords(db, ed.domainId, ed.domainName),
   );
 
   return {
@@ -784,7 +789,7 @@ export async function getEmailDomainDnsRecords(
     // MUST publish the records at their own DNS provider.
     manualRequired: ed.dnsMode !== 'primary',
     mailServerHostname,
-    records: specs.map((s) => ({
+    records: withDkim.map((s) => ({
       type: s.recordType,
       name: s.recordName,
       value: s.recordValue,

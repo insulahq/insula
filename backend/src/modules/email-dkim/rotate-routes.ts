@@ -26,6 +26,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { emailDomains, domains, auditLogs } from '../../db/schema.js';
 import { rotateDkimKey, DkimRotationError } from './rotate.js';
+import { redactPemBlocks } from './signatures.js';
 
 const paramsSchema = z.object({
   tenantId: z.string().uuid(),
@@ -98,36 +99,25 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       const encryptionKey =
         process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
+      let result: Awaited<ReturnType<typeof rotateDkimKey>>;
       try {
-        const result = await rotateDkimKey(app.db, domainId, encryptionKey);
-
-        // Explicit audit-log entry for this high-impact, irreversible
-        // operation. Don't include the private key; record the new
-        // selector + Stalwart signature ID + the actor identity so a
-        // forensic timeline of key rotations is reconstructable.
-        await app.db.insert(auditLogs).values({
-          id: crypto.randomUUID(),
-          actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
-          actorType: 'user',
-          actionType: 'email_domain.dkim.rotate',
-          resourceType: 'email_domain',
-          resourceId: domainId,
-          changes: {
-            tenantId,
-            domainName: row.domainName,
-            // Record the actor ROLE too: admin/support can rotate any
-            // tenant's keys, so actorId alone doesn't tell a forensic
-            // reader whether this was the tenant or platform staff.
-            actorRole: userRole ?? 'unknown',
-            newSelector: result.newSelector,
-            previousSelector: result.previousSelector,
-            destroyedSelectors: result.destroyedSelectors,
-            stalwartDkimSignatureId: result.stalwartDkimSignatureId,
-          } as unknown as Record<string, unknown>,
-        });
-
-        return success(result);
+        result = await rotateDkimKey(app.db, domainId, encryptionKey);
       } catch (err) {
+        const classified = err instanceof DkimRotationError && err.code !== 'STALWART_API_ERROR';
+        // A failure on the mail server (or anywhere unclassified) carries text
+        // that names internal hosts. Staff see it; a tenant gets a sentence,
+        // and the detail goes to the log.
+        if (!classified && userRole === 'tenant_admin') {
+          request.log.warn(
+            { err: redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500), emailDomainId: domainId },
+            'DKIM rotation failed',
+          );
+          throw new ApiError(
+            'DKIM_ROTATION_FAILED',
+            'The key could not be rotated. The current key keeps signing your mail; try again later or contact support.',
+            502,
+          );
+        }
         if (err instanceof DkimRotationError) {
           throw new ApiError(
             err.code,
@@ -139,6 +129,33 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
         }
         throw err;
       }
+
+      // Explicit audit-log entry for this high-impact, irreversible
+      // operation. Don't include the private key; record the new
+      // selector + Stalwart signature ID + the actor identity so a
+      // forensic timeline of key rotations is reconstructable.
+      await app.db.insert(auditLogs).values({
+        id: crypto.randomUUID(),
+        actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+        actorType: 'user',
+        actionType: 'email_domain.dkim.rotate',
+        resourceType: 'email_domain',
+        resourceId: domainId,
+        changes: {
+          tenantId,
+          domainName: row.domainName,
+          // Record the actor ROLE too: admin/support can rotate any
+          // tenant's keys, so actorId alone doesn't tell a forensic
+          // reader whether this was the tenant or platform staff.
+          actorRole: userRole ?? 'unknown',
+          newSelector: result.newSelector,
+          previousSelector: result.previousSelector,
+          destroyedSelectors: result.destroyedSelectors,
+          stalwartDkimSignatureId: result.stalwartDkimSignatureId,
+        } as unknown as Record<string, unknown>,
+      });
+
+      return success(result);
     },
   );
 }

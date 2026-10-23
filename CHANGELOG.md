@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tenant panel, Email → Settings: the DKIM record and signing keys are shown again, and
+  Rotate key works.** Mail was being signed all along; only the panel was blind to it. The DNS
+  records list left the DKIM TXT record out on every domain, so a tenant on external DNS was
+  never shown the one record that carries a key. The signing-keys card asked for an endpoint
+  that no longer existed, ignored the failure and said "No DKIM keys yet". Rotate key sent the
+  domain id to a route that takes the email-domain id, so every rotation answered "Email domain
+  not found". The record list now includes the published `dkim-1` / `dkim-2` TXT records; the
+  card lists the keys the mail server holds, flags a key with no TXT record, shows a failed read
+  as a failure, and asks before rotating. After a rotation on external DNS it says to publish
+  the new record instead of claiming it was published. When the mail server fails during
+  rotation, a tenant gets a plain sentence; its raw error, which names internal hosts, goes to
+  the log and to platform staff only. The unused Activate button and the admin panel's dead DKIM
+  key hooks are gone.
+
 ## [2026.10.16] - 2026-10-23
 
 ### Security

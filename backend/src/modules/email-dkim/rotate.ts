@@ -170,7 +170,15 @@ export async function rotateDkimKey(
   }
   const stalwartDomainId = emailDomain.stalwartDomainId;
 
-  const accountId = await resolveDkimAccountId(process.env.STALWART_MGMT_URL);
+  let accountId: Awaited<ReturnType<typeof resolveDkimAccountId>>;
+  try {
+    accountId = await resolveDkimAccountId(process.env.STALWART_MGMT_URL);
+  } catch (err) {
+    throw new DkimRotationError(
+      `Stalwart session lookup failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500),
+      'STALWART_API_ERROR',
+    );
+  }
 
   // 1+2. Plan the flip and clear the target selector.
   let rows: readonly StalwartDkimSignatureRow[];
@@ -186,11 +194,19 @@ export async function rotateDkimKey(
 
   const destroyRows = [...plan.staleTargetRows, ...plan.stragglerRows];
   if (destroyRows.length > 0) {
-    const res = await dkimSignatureSet({
-      accountId,
-      destroy: destroyRows.map((r) => r.id),
-      baseUrl: process.env.STALWART_MGMT_URL,
-    });
+    let res: Awaited<ReturnType<typeof dkimSignatureSet>>;
+    try {
+      res = await dkimSignatureSet({
+        accountId,
+        destroy: destroyRows.map((r) => r.id),
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+    } catch (err) {
+      throw new DkimRotationError(
+        `Stalwart DkimSignature destroy failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500),
+        'STALWART_API_ERROR',
+      );
+    }
     const destroyedSet = new Set(res.destroyed ?? []);
     // Target-selector leftovers are fatal — creating the replacement
     // would leave two active signatures on one selector.

@@ -144,6 +144,7 @@ import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
 import { emailDkimRotateRoutes } from './modules/email-dkim/rotate-routes.js';
+import { emailDkimKeysRoutes } from './modules/email-dkim/keys-routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
 import { registerMailDriftRoutes } from './modules/mail-drift/routes.js';
@@ -781,6 +782,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
   await app.register(emailDkimRotateRoutes, { prefix: '/api/v1' }); // 2026-05-06: manual DKIM rotation endpoint
+  await app.register(emailDkimKeysRoutes, { prefix: '/api/v1' }); // tenant-panel DKIM signing-keys list
   // mail-submit (PHP sendmail-compat credential provisioning) removed:
   // obsolete + never production-tested. Tenant apps that need to send mail
   // configure an external SMTP relay (or mail.<apex> with manual credentials)
