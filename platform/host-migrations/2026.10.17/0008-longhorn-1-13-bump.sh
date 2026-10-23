@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # description: Longhorn moves to v1.13.0: manager and CSI roll node by node, and a new longhorn-global-manager Deployment takes over the cluster-wide pod/PV controllers; attached volumes keep serving.
-# idempotent: the guard reads the release with `helm list` and exits 0 when it is `deployed` at chart v1.13.0 or newer (a floor, never a ceiling); a `failed` release at the target is upgraded again. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers exit 0 without acting). A release not installed here is skipped.
+# idempotent: the guard reads the release with `helm list`; when it is `deployed` at chart v1.13.0 or newer (a floor, never a ceiling) it only confirms longhorn-manager runs 1.13 on every node and longhorn-global-manager is available, and exits 0. A `failed` release at the target is upgraded again. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers exit 0 without acting). A release not installed here is skipped.
 # allow-paths: none — operates solely on the cluster via helm + kubectl and the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
 # blocks-on-failure: no    # ADR-056: on failure Longhorn keeps running the version it was on, the volumes keep serving, and the next converge retries; no later migration depends on this one.
-# phase: after-services     # ADR-064: step 3 — after step 1 ran 0007 (the multipath blacklist) on EVERY node, so no node's multipathd can take a 1.13 disk
+# phase: after-services     # ADR-064: step 3, after step 1 ran 0006 (the multipath blacklist) on every node — which this script also confirms from every node's relayed status before it starts
 set -euo pipefail
 
 # Backfills the Longhorn bump onto EXISTING clusters. scripts/bootstrap.sh
-# installs v1.13.0 with the same two extra values on fresh clusters
+# installs v1.13.0 with the same extra values on fresh clusters
 # (install_longhorn); ci-migration-coverage.sh requires this migration to
 # accompany the LONGHORN_VERSION change.
 #   - Longhorn v1.12.x -> v1.13.0, one minor step (Longhorn refuses to skip
 #     one). V1 data engine only — nothing here uses dataEngine v2.
 #   - 1.13 moves the cluster-wide pod and PV controllers out of the
 #     longhorn-manager DaemonSet into a longhorn-global-manager Deployment
-#     (three replicas, spread across nodes by preference). It gets the
-#     server-only toleration the rest of Longhorn has, so it can run on a
-#     server that opted out of tenant workloads.
+#     (three replicas — about 22 MiB each — spread across nodes by
+#     preference). It gets the server-only toleration the rest of Longhorn
+#     has, so it can run on a server that opted out of tenant workloads.
 #   - 1.13 turns on ingress NetworkPolicies for its internal endpoints by
 #     default; they would admit longhorn-manager :9500 only from
 #     longhorn-system, cutting off the VictoriaMetrics scrape and
@@ -27,34 +27,49 @@ set -euo pipefail
 # HOW: `--reset-then-reuse-values` — the 1.13 chart's defaults (its image
 # tags among them: Longhorn pins tags in values.yaml, so plain
 # `--reuse-values` would keep the 1.12 images, and it also fails on 1.13's
-# new keys) plus the release's own values, plus the two settings above.
+# new keys) plus the release's own values, plus the settings above.
+#
+# What it refuses, each with the reason:
+#   * a node whose relayed host-migration status (ConfigMap
+#     platform-system/host-config-drift-<node>) does not show 0006 applied.
+#     During the roll a node runs the 1.12 and the 1.13 instance manager side
+#     by side, whose iSCSI disks can share a WWID; an Ubuntu node's
+#     multipathd then claims the new disk and the volume can be neither
+#     formatted nor mounted. Phase order puts 0006 first in an upgrade run,
+#     but a node that missed step 1 (offline, overridden gate, a timer
+#     converge) would not be covered — so every node is checked.
+#   * a Faulted volume: Longhorn warns an upgrade may delete a faulted
+#     volume's unusable replicas — permanent loss without a backup.
+#   * a release left pending-*: Longhorn refuses downgrades, so `helm
+#     rollback` is no way out; an operator looks.
+#
+# Time: the host-config unit bounds the WHOLE converge to 600s, every pending
+# script together, and a kill inside `helm upgrade` would leave the release
+# pending. So helm runs without --wait (it returns once the manifests and the
+# chart's pre-upgrade hook are applied — the release is `deployed` within
+# seconds) and kubectl waits for the roll afterwards; a later converge only
+# re-checks it. And when this converge has already used most of its 600s,
+# the script defers to the next converge instead of starting.
 #
 # NOT --atomic: Longhorn refuses downgrades, so an automatic rollback from a
-# half-rolled 1.13 cannot restore 1.12 cleanly. A failed upgrade exits 1 with
-# Longhorn on whatever it reached, for an operator to look at; the guard
-# re-runs a `failed` release.
-#
-# Ordering: 0007 keeps Longhorn's iSCSI disks out of multipathd. During the
-# roll a node runs the 1.12 and the 1.13 instance manager side by side, whose
-# disks can share a WWID; without 0007 an Ubuntu node's multipathd claims the
-# new disk and the volume cannot be formatted or mounted. 0007 is
-# before-services (step 1, every node) and this script after-services (step
-# 3), and this node's own blacklist is checked below as well.
-#
-# Refused, with the reason, while any volume is Faulted: Longhorn warns that an
-# upgrade may delete a faulted volume's unusable replicas — permanent loss
-# when no backup exists.
+# half-rolled 1.13 cannot restore 1.12 cleanly.
 #
 # Blast radius (by design): the longhorn-manager DaemonSet and CSI components
 # roll (RollingUpdate); the V1 engine/replica data plane keeps serving attached
 # volumes across the manager roll, and instance managers move to 1.13 as
-# volumes are next attached. Budget: helm 360s, manager roll 90s, global
-# manager 60s — inside the runner's 10 minutes. On HA clusters helm resets the
-# Longhorn Deployments' replica counts; the storage-policy reconciler restores
-# them within minutes.
+# volumes are next attached. Helm resets the chart Deployments' replica counts
+# to the release values.
 
 MIG="longhorn-1-13-bump"
 TARGET_CHART="v1.13.0"
+BLACKLIST_KEY="2026.10.17/0006-longhorn-multipath-blacklist.sh"
+RELEASE_VERSION="2026.10.17"
+# The converge unit's TimeoutStartSec is 600s; this script needs up to ~330s.
+CONVERGE_BUDGET_LEFT_NEEDED=330
+# Test-only: a lab node on an older CLI cannot relay this release's migrations,
+# so a hand-run test of this script sets it after running 0006 on every node
+# itself. The runner's env carries only PATH and HOME.
+ASSUME_BLACKLISTED="${HM_ASSUME_BLACKLISTED:-}"
 
 if [ -r /etc/rancher/k3s/k3s.yaml ]; then
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -63,6 +78,7 @@ else
   exit 0
 fi
 command -v kubectl >/dev/null 2>&1 || { echo "${MIG}: kubectl not found on PATH — skipping." >&2; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "${MIG}: jq not found on PATH — cannot read the nodes' status." >&2; exit 1; }
 
 HELM=""
 for h in helm /usr/local/bin/helm; do
@@ -78,36 +94,56 @@ export HELM_CONFIG_HOME="$HELM_HOME_DIR/config"
 export HELM_DATA_HOME="$HELM_HOME_DIR/data"
 mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
-# Deployed chart version and status of the release. A failed READ exits
-# non-zero (the runner retries next converge).
-if ! releases="$("$HELM" list -n longhorn-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
+ver_ge() { # ver_ge <have> <want> -> 0 when have >= want (v-prefix ignored)
+  local a="${1#v}" b="${2#v}"
+  [ "$a" = "$b" ] && return 0
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
+}
+
+# Longhorn on 1.13 everywhere: every longhorn-manager pod updated and
+# available, and the global manager available. Bounded waits.
+confirm_rolled() {
+  local img
+  img="$(kubectl -n longhorn-system get ds longhorn-manager \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+  case "$img" in
+    *":${TARGET_CHART}") ;;
+    *) echo "${MIG}: longhorn-manager runs ${img:-nothing}, not ${TARGET_CHART}." >&2; return 1 ;;
+  esac
+  if ! kubectl -n longhorn-system rollout status ds/longhorn-manager --timeout=150s >/dev/null; then
+    echo "${MIG}: longhorn-manager has not finished rolling to ${TARGET_CHART} — Longhorn keeps converging; the next converge re-checks." >&2
+    return 1
+  fi
+  if ! kubectl -n longhorn-system rollout status deploy/longhorn-global-manager --timeout=60s >/dev/null; then
+    echo "${MIG}: longhorn-global-manager is not available — check that one of its pods can be scheduled; the next converge re-checks." >&2
+    return 1
+  fi
+}
+
+# --- where the release is now -------------------------------------------------
+if ! releases="$(timeout 60 "$HELM" list -n longhorn-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
   echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_HOME_DIR/helm.err")" >&2
   exit 1
 fi
-cur="$(printf '%s' "$releases" \
-  | sed -n 's/.*"name":"longhorn"[^}]*"chart":"longhorn-\([^"]*\)".*/\1/p' \
-  | head -n1)"
-status="$(printf '%s' "$releases" \
-  | sed -n 's/.*"name":"longhorn"[^}]*"status":"\([^"]*\)".*/\1/p' \
-  | head -n1)"
+rel="$(jq -c '[.[]? | select(.name == "longhorn")][0] // {}' <<<"$releases")"
+cur="$(jq -r '.chart // ""' <<<"$rel" | sed -n 's/^longhorn-//p')"
+status="$(jq -r '.status // ""' <<<"$rel")"
 if [ -z "$cur" ]; then
   echo "${MIG}: longhorn release not installed in longhorn-system here — skipping (migration never first-installs a chart)."
   exit 0
 fi
 case "$status" in
   pending-*)
-    echo "${MIG}: the longhorn release is ${status} (an earlier helm run was cut short) — not upgrading over it. Check 'helm history longhorn -n longhorn-system'; the next converge retries." >&2
+    echo "${MIG}: the longhorn release is ${status} (an earlier helm run was cut short). Longhorn refuses downgrades, so it is not rolled back automatically: check 'helm history longhorn -n longhorn-system' and the longhorn-manager pods' versions, then finish the upgrade by hand; the next converge re-checks." >&2
     exit 1 ;;
 esac
-
-chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
-  local a="${1#v}" b="${2#v}"
-  [ "$a" = "$b" ] && return 0
-  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
-}
-# A `failed` release at the target chart is not done: upgrade it again.
-if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
-  echo "${MIG}: longhorn already at chart ${cur} (>= ${TARGET_CHART}) — nothing to do."
+if [ "$status" = "deployed" ] && ver_ge "$cur" "$TARGET_CHART"; then
+  if [ "${cur#v}" != "${TARGET_CHART#v}" ]; then
+    echo "${MIG}: longhorn already at chart ${cur} (> ${TARGET_CHART}) — nothing to do."
+    exit 0
+  fi
+  confirm_rolled || exit 1
+  echo "${MIG}: longhorn at chart ${TARGET_CHART}; longhorn-manager rolled, longhorn-global-manager available — nothing to do."
   exit 0
 fi
 case "${cur#v}" in
@@ -117,10 +153,53 @@ case "${cur#v}" in
     exit 1 ;;
 esac
 
-# --- refuse without this node's multipath blacklist (0007) ---------------------
+# --- enough of this converge's 600s left? ---------------------------------------
+# Inside the host-config unit (its cgroup), measure how long this converge
+# has run; started late, a kill would land mid-roll. A manual run is not bounded.
+if grep -q 'platform-ops-host-config.service' /proc/self/cgroup 2>/dev/null; then
+  start_us="$(systemctl show -p ExecMainStartTimestampMonotonic --value platform-ops-host-config.service 2>/dev/null || echo 0)"
+  now_s="$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)"
+  case "$start_us" in ''|*[!0-9]*) start_us=0 ;; esac
+  if [ "$start_us" -gt 0 ]; then
+    elapsed=$(( now_s - start_us / 1000000 ))
+    if [ "$elapsed" -gt $(( 600 - CONVERGE_BUDGET_LEFT_NEEDED )) ]; then
+      echo "${MIG}: this converge has already run ${elapsed}s of its 600s — deferring the Longhorn upgrade to the next converge, which starts it with the time it needs." >&2
+      exit 1
+    fi
+  fi
+fi
+
+# --- every node has the multipath blacklist (0006) -----------------------------
 if command -v multipathd >/dev/null 2>&1 && systemctl is-active --quiet multipathd 2>/dev/null \
    && [ ! -s /etc/multipath/conf.d/insula-longhorn.conf ]; then
-  echo "${MIG}: multipathd runs here but Longhorn's disks are not blacklisted from it (2026.10.17/0007 has not run) — not upgrading; the next converge retries." >&2
+  echo "${MIG}: multipathd runs here but Longhorn's disks are not blacklisted from it (${BLACKLIST_KEY} has not run on this node) — not upgrading; the next converge re-checks." >&2
+  exit 1
+fi
+not_ready=""
+[ "$ASSUME_BLACKLISTED" = "1" ] && echo "${MIG}: HM_ASSUME_BLACKLISTED=1 — not reading the nodes' relayed status (test run)."
+for node in $( [ "$ASSUME_BLACKLISTED" = "1" ] || kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+  snap="$(kubectl -n platform-system get configmap "host-config-drift-${node}" \
+    -o jsonpath='{.data.snapshot}' 2>/dev/null || true)"
+  if [ -z "$snap" ]; then
+    not_ready="${not_ready} ${node}(no status relayed)"
+    continue
+  fi
+  cli="$(jq -r '.hostMigrations.cliVersion // ""' <<<"$snap" 2>/dev/null || true)"
+  state="$(jq -r --arg k "$BLACKLIST_KEY" \
+    '[.hostMigrations.items[]? | select(.key == $k) | .state][0] // ""' <<<"$snap" 2>/dev/null || true)"
+  case "$state" in
+    applied|already-applied|skipped) ;;
+    "")
+      # The relay trims applied items first; absent on a CLI that carries
+      # this release means applied.
+      if [ -z "$cli" ] || ! ver_ge "$cli" "$RELEASE_VERSION"; then
+        not_ready="${not_ready} ${node}(CLI ${cli:-unknown})"
+      fi ;;
+    *) not_ready="${not_ready} ${node}(${state})" ;;
+  esac
+done
+if [ -n "$not_ready" ]; then
+  echo "${MIG}: not every node reports the Longhorn multipath blacklist (${BLACKLIST_KEY}) applied:${not_ready} — not upgrading; the next converge re-checks." >&2
   exit 1
 fi
 
@@ -136,10 +215,12 @@ if [ -n "${faulted// /}" ]; then
   exit 1
 fi
 
-"$HELM" repo add longhorn https://charts.longhorn.io 2>/dev/null || true
-"$HELM" repo update longhorn >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
+timeout 60 "$HELM" repo add longhorn https://charts.longhorn.io >/dev/null 2>&1 || true
+timeout 60 "$HELM" repo update longhorn >/dev/null 2>&1 || timeout 90 "$HELM" repo update >/dev/null 2>&1 || true
 
 echo "${MIG}: upgrading longhorn chart ${cur} (${status}) -> ${TARGET_CHART} (--reset-then-reuse-values) ..."
+# No --wait: the release is `deployed` as soon as the manifests and the
+# pre-upgrade hook are applied; the roll is awaited below, outside helm.
 "$HELM" upgrade longhorn longhorn/longhorn \
   --namespace longhorn-system \
   --version "$TARGET_CHART" \
@@ -148,22 +229,8 @@ echo "${MIG}: upgrading longhorn chart ${cur} (${status}) -> ${TARGET_CHART} (--
   --set 'longhornGlobalManager.tolerations[0].key=insula.host/server-only' \
   --set 'longhornGlobalManager.tolerations[0].operator=Exists' \
   --set 'longhornGlobalManager.tolerations[0].effect=NoSchedule' \
-  --wait \
-  --timeout 360s
+  --timeout 180s
 
-manager_img="$(kubectl -n longhorn-system get ds longhorn-manager \
-  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-case "$manager_img" in
-  *":${TARGET_CHART}") ;;
-  *) echo "${MIG}: helm upgrade finished but longhorn-manager runs ${manager_img:-nothing}, not ${TARGET_CHART}." >&2; exit 1 ;;
-esac
-if ! kubectl -n longhorn-system rollout status ds/longhorn-manager --timeout=90s >/dev/null; then
-  echo "${MIG}: longhorn-manager has not finished rolling within 90s — Longhorn keeps converging; the next converge re-checks." >&2
-  exit 1
-fi
-if ! kubectl -n longhorn-system rollout status deploy/longhorn-global-manager --timeout=60s >/dev/null; then
-  echo "${MIG}: longhorn-global-manager is not available within 60s — check that one of its pods can be scheduled." >&2
-  exit 1
-fi
+confirm_rolled || exit 1
 echo "${MIG}: longhorn now at chart ${TARGET_CHART}; longhorn-manager rolled, longhorn-global-manager available."
 exit 0

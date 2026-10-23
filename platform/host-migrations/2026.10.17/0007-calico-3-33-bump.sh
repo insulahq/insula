@@ -92,19 +92,24 @@ case "$op_img" in
     ;;
   *)
     # The CRD manifest must match the mode the cluster runs in.
-    if $KUBECTL get crd ippools.crd.projectcalico.org >/dev/null 2>&1; then
-      crd_file="v1_crd_projectcalico_org.yaml"
-    elif $KUBECTL get crd ippools.projectcalico.org >/dev/null 2>&1; then
-      crd_file="v3_projectcalico_org.yaml"
-    else
-      echo "${MIG}: neither ippools.crd.projectcalico.org nor ippools.projectcalico.org exists — cannot tell Calico's API mode; refusing to guess." >&2
-      exit 1
-    fi
+    has_v1=0; has_v3=0
+    $KUBECTL get crd ippools.crd.projectcalico.org >/dev/null 2>&1 && has_v1=1
+    $KUBECTL get crd ippools.projectcalico.org >/dev/null 2>&1 && has_v3=1
+    case "${has_v1}${has_v3}" in
+      10) crd_file="v1_crd_projectcalico_org.yaml" ;;
+      01) crd_file="v3_projectcalico_org.yaml" ;;
+      11)
+        echo "${MIG}: both ippools.crd.projectcalico.org (API-server mode) and ippools.projectcalico.org (native v3 CRDs) exist — a half-finished mode migration? Refusing to guess which CRDs to apply." >&2
+        exit 1 ;;
+      *)
+        echo "${MIG}: neither ippools.crd.projectcalico.org nor ippools.projectcalico.org exists — cannot tell Calico's API mode; refusing to guess." >&2
+        exit 1 ;;
+    esac
 
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
     for f in "$crd_file" tigera-operator.yaml; do
-      if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL -o "$TMP/$f" "${BASE}/${f}"; then
+      if ! curl --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 10 --max-time 90 -fsSL -o "$TMP/$f" "${BASE}/${f}"; then
         echo "${MIG}: could not download ${BASE}/${f} — will retry on the next converge." >&2
         exit 1
       fi

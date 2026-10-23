@@ -51,9 +51,27 @@ export HELM_CONFIG_HOME="$HELM_HOME_DIR/config"
 export HELM_DATA_HOME="$HELM_HOME_DIR/data"
 mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
 
+# A pending-* release whose last revision is over 15 minutes old is a run that
+# was killed (the host-config unit bounds a whole converge to 600s), not one in
+# progress. For this stateless controller chart, rolling back to the last
+# deployed revision is safe; the upgrade then runs again.
+recover_stale_pending() { # recover_stale_pending <release> <namespace>
+  local hist updated age rev
+  command -v jq >/dev/null 2>&1 || return 1
+  hist="$(timeout 60 "$HELM" history "$1" -n "$2" -o json 2>/dev/null)" || return 1
+  updated="$(jq -r '.[-1].updated // ""' <<<"$hist")"
+  [ -n "$updated" ] || return 1
+  age=$(( $(date +%s) - $(date -d "$updated" +%s 2>/dev/null || date +%s) ))
+  [ "$age" -gt 900 ] || return 1
+  rev="$(jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | last | .revision // empty' <<<"$hist")"
+  [ -n "$rev" ] || return 1
+  echo "${MIG}: release $1 has been ${status} for ${age}s — a killed run; rolling it back to revision ${rev}." >&2
+  timeout 300 "$HELM" rollback "$1" "$rev" -n "$2" --wait --timeout 240s >&2
+}
+
 # Deployed chart version of the release, or "" if absent. A failed READ exits
 # non-zero (the runner retries next converge).
-if ! releases="$("$HELM" list -n cnpg-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
+if ! releases="$(timeout 60 "$HELM" list -n cnpg-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
   echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_HOME_DIR/helm.err")" >&2
   exit 1
 fi
@@ -75,8 +93,18 @@ chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
 }
 case "$status" in
   pending-*)
-    echo "${MIG}: the cnpg release is ${status} (an earlier helm run was cut short) — not upgrading over it. Check 'helm history cnpg -n cnpg-system', then roll back to its last deployed revision; the next converge retries." >&2
-    exit 1 ;;
+    if recover_stale_pending cnpg cnpg-system \
+       && releases="$(timeout 60 "$HELM" list -n cnpg-system -a -o json 2>"$HELM_HOME_DIR/helm.err")"; then
+      cur="$(printf '%s' "$releases" \
+        | sed -n 's/.*"name":"cnpg"[^}]*"chart":"cloudnative-pg-\([^"]*\)".*/\1/p' \
+        | head -n1)"
+      status="$(printf '%s' "$releases" \
+        | sed -n 's/.*"name":"cnpg"[^}]*"status":"\([^"]*\)".*/\1/p' \
+        | head -n1)"
+    else
+      echo "${MIG}: the cnpg release is ${status} (an earlier helm run was cut short, or one is running) — not upgrading over it. If it stays so, check 'helm history cnpg -n cnpg-system' and roll back to the last deployed revision; the next converge retries." >&2
+      exit 1
+    fi ;;
 esac
 # A `failed` release at the target chart is not done: upgrade it again.
 if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
@@ -85,7 +113,7 @@ if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
 fi
 
 "$HELM" repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
-"$HELM" repo update cnpg >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
+timeout 60 "$HELM" repo update cnpg >/dev/null 2>&1 || timeout 90 "$HELM" repo update >/dev/null 2>&1 || true
 
 echo "${MIG}: upgrading cnpg chart ${cur} -> ${TARGET_CHART} (operator v1.30.1, --reset-then-reuse-values) ..."
 "$HELM" upgrade cnpg cnpg/cloudnative-pg \

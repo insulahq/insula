@@ -5139,7 +5139,7 @@ install_calico() {
   # fresh installs in the same mode as the existing fleet, so there is one
   # Calico to test, not two. It is the same command Calico documents for
   # upgrading an API-server cluster, and what host-migration
-  # 2026.10.17/0006 applies to existing ones. The APIServer CR below then runs
+  # 2026.10.17/0007 applies to existing ones. The APIServer CR below then runs
   # calico-apiserver as before.
   local calico_crd_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml"
   local calico_crd_manifest="/var/lib/insula/cache/calico-v1-crds-${CALICO_VERSION}.yaml"
@@ -6768,12 +6768,12 @@ rightsize_longhorn_disk_reservation() {
 # new volume's mkfs refused with "apparently in use by the system". This is
 # Longhorn's documented prerequisite. The file is written whether or not
 # multipath-tools is installed, so installing it later is covered too;
-# host-migration 2026.10.17/0007 writes the same file on existing nodes.
+# host-migration 2026.10.17/0006 writes the same file on existing nodes.
 LONGHORN_MULTIPATH_CONF="/etc/multipath/conf.d/insula-longhorn.conf"
 configure_longhorn_multipath_blacklist() {
   mkdir -p "$(dirname "$LONGHORN_MULTIPATH_CONF")"
   cat > "$LONGHORN_MULTIPATH_CONF" <<'MULTIPATH_CONF'
-# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0007):
+# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0006):
 # keep Longhorn's iSCSI disks out of multipathd.
 blacklist {
     device {
@@ -6782,6 +6782,13 @@ blacklist {
     }
 }
 MULTIPATH_CONF
+  # A node re-bootstrapped after running Longhorn may still list Longhorn
+  # disks' WWIDs (tgt's 360000000000000000e prefix) as multipath devices; drop
+  # them, or multipathd keeps claiming those disks regardless.
+  local wwids=/etc/multipath/wwids
+  if [[ -f "$wwids" ]] && grep -qE '^/360000000000000000e[0-9a-f]+/$' "$wwids"; then
+    sed -i -E '/^\/360000000000000000e[0-9a-f]+\/$/d' "$wwids"
+  fi
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet multipathd 2>/dev/null; then
     multipathd reconfigure >/dev/null 2>&1 \
       || warn "multipathd reconfigure failed — the Longhorn blacklist applies when multipathd next restarts."

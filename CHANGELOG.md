@@ -69,7 +69,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (old pods read it during the rollout) and is dropped in the next; restoring a tenant backup taken
   before then skips it.
 - **Calico 3.32.1 → 3.33.0 and Longhorn 1.12.0 → 1.13.0.** Existing clusters move with
-  host-migrations 2026.10.17/0006 and 0007: calico-node rolls node by node and the cluster keeps
+  host-migrations 2026.10.17/0007 and 0008: calico-node rolls node by node and the cluster keeps
   the Calico API mode it runs in; the Longhorn manager and CSI roll while attached volumes keep
   serving, and Longhorn's new `longhorn-global-manager` Deployment takes over its cluster-wide
   controllers. The Longhorn step refuses to run while any volume is Faulted. Two new defaults are
@@ -81,9 +81,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   node runs the old and the new instance manager side by side, and their disks can share a WWID;
   multipathd — on by default on Ubuntu — then claims the new disk, which can be neither formatted
   nor mounted (a new volume's pod stays in ContainerCreating). Bootstrap and host-migration
-  2026.10.17/0007 write `/etc/multipath/conf.d/insula-longhorn.conf` (Longhorn's documented
+  2026.10.17/0006 write `/etc/multipath/conf.d/insula-longhorn.conf` (Longhorn's documented
   blacklist) and release any Longhorn disk multipathd already claimed; the Longhorn upgrade runs
-  only after every node has it.
+  only after every node reports it applied. The blacklist matches any iSCSI disk whose vendor is
+  `IET`, so a node that also uses multipath for a real SAN on an IET-based target would lose
+  multipath for it — such a setup needs a narrower rule in its own `multipath.conf`.
 
 ### Security
 

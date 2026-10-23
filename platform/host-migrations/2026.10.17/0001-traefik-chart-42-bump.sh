@@ -89,6 +89,23 @@ chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
   [ "$a" = "$b" ] && return 0
   [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
 }
+# A pending-* release whose last revision is over 15 minutes old is a run that
+# was killed (the host-config unit bounds a whole converge to 600s), not one in
+# progress. For this stateless controller chart, rolling back to the last
+# deployed revision is safe; the upgrade then runs again.
+recover_stale_pending() { # recover_stale_pending <release> <namespace>
+  local hist updated age rev
+  command -v jq >/dev/null 2>&1 || return 1
+  hist="$(timeout 60 "$HELM" history "$1" -n "$2" -o json 2>/dev/null)" || return 1
+  updated="$(jq -r '.[-1].updated // ""' <<<"$hist")"
+  [ -n "$updated" ] || return 1
+  age=$(( $(date +%s) - $(date -d "$updated" +%s 2>/dev/null || date +%s) ))
+  [ "$age" -gt 900 ] || return 1
+  rev="$(jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | last | .revision // empty' <<<"$hist")"
+  [ -n "$rev" ] || return 1
+  echo "${MIG}: release $1 has been ${status} for ${age}s — a killed run; rolling it back to revision ${rev}." >&2
+  timeout 300 "$HELM" rollback "$1" "$rev" -n "$2" --wait --timeout 240s >&2
+}
 ns_annotation() { # ns_annotation <key> -> the traefik namespace's value, or ""
   kubectl get namespace traefik -o json | jq -r --arg a "$1" '.metadata.annotations[$a] // ""'
 }
@@ -97,7 +114,7 @@ ns_annotation() { # ns_annotation <key> -> the traefik namespace's value, or ""
 # A failed READ exits non-zero (the runner retries next converge); only a
 # successful listing without the release means "nothing to do here".
 HELM_ERR="$HELM_HOME_DIR/helm.err"
-if ! releases="$("$HELM" list -n traefik -a -o json 2>"$HELM_ERR")"; then
+if ! releases="$(timeout 60 "$HELM" list -n traefik -a -o json 2>"$HELM_ERR")"; then
   echo "${MIG}: helm list failed — will retry on the next converge: $(cat "$HELM_ERR")" >&2
   exit 1
 fi
@@ -110,8 +127,15 @@ if [ -z "$deployed_ver" ]; then
 fi
 case "$status" in
   pending-*)
-    echo "${MIG}: the traefik release is ${status} (an earlier helm run was cut short) — not upgrading over it. Check 'helm history traefik -n traefik', then 'helm rollback traefik <last deployed revision> -n traefik'; the next converge retries." >&2
-    exit 1 ;;
+    if recover_stale_pending traefik traefik \
+       && releases="$(timeout 60 "$HELM" list -n traefik -a -o json 2>"$HELM_ERR")"; then
+      rel="$(jq -c '[.[]? | select(.name == "traefik")][0] // {}' <<<"$releases")"
+      deployed_ver="$(jq -r '.chart // ""' <<<"$rel" | sed -n 's/^traefik-//p')"
+      status="$(jq -r '.status // ""' <<<"$rel")"
+    else
+      echo "${MIG}: the traefik release is ${status} (an earlier helm run was cut short, or one is running) — not upgrading over it. If it stays so, check 'helm history traefik -n traefik' and roll back to the last deployed revision; the next converge retries." >&2
+      exit 1
+    fi ;;
 esac
 
 need_upgrade=1
@@ -147,8 +171,8 @@ if [ "$need_upgrade" -eq 1 ]; then
     exit 1
   fi
 
-  "$HELM" repo add traefik https://traefik.github.io/charts 2>/dev/null || true
-  "$HELM" repo update traefik >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
+  timeout 60 "$HELM" repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
+  timeout 60 "$HELM" repo update traefik >/dev/null 2>&1 || timeout 90 "$HELM" repo update >/dev/null 2>&1 || true
 
   # --- the release's own values, handed back whole ----------------------------
   # A read that does not look like this platform's release would be installed

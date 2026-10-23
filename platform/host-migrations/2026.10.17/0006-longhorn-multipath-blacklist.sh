@@ -3,7 +3,7 @@
 # idempotent: the conf file is rewritten only when its content differs (cmp -s) and multipathd reconfigured only then; Longhorn WWIDs are removed from /etc/multipath/wwids only when present; only Longhorn multipath maps are flushed, and a map in use is left. A converged node changes nothing. Runs on EVERY node — Longhorn attaches disks on any node.
 # allow-paths: /etc/multipath/conf.d/insula-longhorn.conf, /etc/multipath/wwids
 # blocks-on-failure: yes   # ADR-056: the Longhorn 1.13 upgrade (0008) must not roll while this node can still let multipathd take a Longhorn disk.
-# phase: before-services    # ADR-064: step 1 runs it on every node; 0008 is after-services (step 3), so the whole cluster is covered before Longhorn 1.13 rolls
+# phase: before-services    # ADR-064: step 1 runs it on every node; 0008 is after-services (step 3) and also checks every node's relayed status before Longhorn 1.13 rolls
 set -euo pipefail
 
 # WHY: each Longhorn instance manager numbers its iSCSI targets from 1, and a
@@ -25,7 +25,7 @@ set -euo pipefail
 MIG="longhorn-multipath-blacklist"
 CONF="/etc/multipath/conf.d/insula-longhorn.conf"
 WWIDS="/etc/multipath/wwids"
-WANT='# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0007):
+WANT='# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0006):
 # keep Longhorn'"'"'s iSCSI disks out of multipathd.
 blacklist {
     device {
