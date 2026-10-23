@@ -3,8 +3,9 @@
  *
  * A platform upgrade is a Flux APP re-pin: it rolls the platform's own
  * Deployments (management API, admin/tenant panels, reconcilers) to the new
- * image tag. It does NOT roll the nodes and does NOT touch tenant workloads —
- * tenant sites/DBs keep serving throughout. So:
+ * image tag. It does NOT roll the nodes and does NOT restart tenant workloads.
+ * A release's host changes can still restart a node's ingress (Traefik) — that
+ * is the review's to say, from the release's host-change list. So:
  *   - PROGRESS is "how many platform Deployments have reached the target image
  *     and are Available" — a live per-Deployment view the UI renders as a bar.
  *   - INTERRUPTION is "which platform control-plane services briefly restart",
@@ -281,7 +282,10 @@ export async function computeInterruptionPreview(k8s: K8sClients): Promise<Inter
     readable = false;
   }
 
-  const tail = 'Tenant websites and databases are NOT rolled and keep serving.';
+  // Not "keep serving": a host change that restarts a node's ingress makes sites
+  // unreachable through that node for seconds. Only the review, which has the
+  // release's host-change list, can promise that.
+  const tail = 'Tenant websites and databases are not restarted.';
   if (!readable) {
     // Unknown is not "redundant": never reassure on data we could not read.
     return {
