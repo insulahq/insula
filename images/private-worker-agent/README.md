@@ -154,10 +154,10 @@ not currently published; the `Dockerfile` will fail-fast on unsupported
 
 ## Provenance
 
-The agent embeds a copy of [frp v0.62.1](https://github.com/fatedier/frp/releases/tag/v0.62.1)
+The agent embeds a copy of [frp v0.71.1](https://github.com/fatedier/frp/releases/tag/v0.71.1)
 (`frpc` only). The Dockerfile pins both the version and the per-architecture
 SHA-256 sums against the upstream
-[`frp_sha256_checksums.txt`](https://github.com/fatedier/frp/releases/download/v0.62.1/frp_sha256_checksums.txt).
+[`frp_sha256_checksums.txt`](https://github.com/fatedier/frp/releases/download/v0.71.1/frp_sha256_checksums.txt).
 When upgrading frp, update `FRP_VERSION` **and** both `FRP_SHA256_*` build
 args in `Dockerfile` together — the build will fail if the hashes don't
 match the downloaded tarballs.

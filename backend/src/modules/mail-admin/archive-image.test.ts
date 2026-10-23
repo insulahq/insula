@@ -25,7 +25,7 @@ function appsReturning(containers: Array<{ name?: string; image?: string }>): Ap
   } as unknown as AppsStub;
 }
 
-const FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.26';
+const FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.27';
 
 describe('resolveStalwartImage', () => {
   it('uses the image the live Deployment is actually running', async () => {

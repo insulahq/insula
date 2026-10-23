@@ -69,6 +69,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (old pods read it during the rollout) and is dropped in the next; restoring a tenant backup taken
   before then skips it.
 
+### Security
+
+- **Traefik v3.7.6 → v3.7.16 (chart 41.0.2 → 42.1.3).** Ten patch releases of advisories; the
+  ones this platform is exposed to: a request path with no leading slash that skipped path-scoped
+  routers and their middlewares, request smuggling, header filtering bypassed through request
+  trailers, ForwardAuth identity spoofing through a dotted header alias, and TLS-option conflicts
+  that switched client-certificate (mTLS) checks off on a route. Existing clusters move with
+  host-migration 2026.10.17/0001, which keeps the release's own values and the reconciler's
+  trusted proxies, rolls the DaemonSet node by node, and rolls back if a pod cannot load its
+  plugins. Traefik now also rejects `CONNECT` and drops h2c upgrade headers.
+- **Bulwark webmail 1.12.0 → 1.17.1.** An HTML attachment preview could run the sender's script in
+  the webmail's origin (1.16.0); a signed-in user could reach a Brotli out-of-bounds write in the
+  server through calendar, WebDAV and plugin fetches (1.17.0, Node 24.22.1); delete and move could
+  act on another account's message with the same id (GHSA-8x23-qw3w-mhrx). Failed sign-ins are now
+  capped per client. Bulwark 1.15 hides "Remember me" and remembers every sign-in; the platform
+  sets `LOGIN_SHOW_REMEMBER_ME` so users keep the choice.
+- **OWASP CRS 4.28.0 → 4.30.0** closes three ways past the WAF: command injection placed in the URL
+  path, and two `charset` tricks. The 932 command-injection rules now also read the URL path, and
+  930120/930130 recognise more sensitive file names (`node_modules/`, `.claude`, `Chart.yaml` …), so
+  a tenant route in Enforced mode can see new matches — check its WAF log after the upgrade.
+- **CrowdSec 1.7.8 → 1.8.1** (two denial-of-service fixes, in data sources the platform does not
+  use; the LAPI migrates its Postgres schema additively on start), **VictoriaMetrics v1.148.0 →
+  v1.154.1** (a VMUI cross-site-scripting fix and Go toolchain updates), **cert-manager v1.21.0 →
+  v1.21.2**, **CloudNativePG operator 1.30.0 → 1.30.1** (a webhook path-traversal validation fix),
+  **Sealed Secrets controller 0.38.4 → 0.40.0** (its verify and rotate endpoints no longer act as
+  decryption oracles; 0.41 has no chart yet), **Flux 2.9.2 → 2.9.6** and **Stalwart v0.16.26 →
+  v0.16.27** (bug fixes). The chart-installed ones reach existing clusters through host-migrations
+  2026.10.17/0002–0005.
+- **frp v0.71.1 for private workers, server and agent together.** frps fixes a crash a connected
+  client could cause in its own tenant's tunnel server. frp only guarantees compatibility across 8
+  minor versions, and the agent carried frpc 0.62.1, so the agent image moves to 0.71.1 as well:
+  **a tenant running a private worker must pull the new agent image** after this upgrade.
+
 ### Fixed
 
 - **Tenant panel, Email → Settings: the DKIM record and signing keys are shown again, and

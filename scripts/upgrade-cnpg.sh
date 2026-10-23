@@ -25,7 +25,7 @@
 # When bumping, edit BOTH files in the same commit.
 set -euo pipefail
 
-CNPG_CHART_VERSION="0.29.0"   # operator v1.30.0 — keep in sync with bootstrap.sh
+CNPG_CHART_VERSION="0.29.1"   # operator v1.30.1 — keep in sync with bootstrap.sh
 
 KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
 REMOTE_HOST=""
@@ -108,7 +108,7 @@ if [[ "$current" == "$CNPG_CHART_VERSION" && "$status" == "deployed" ]]; then
 fi
 
 if [[ -n "$current" ]]; then
-  log "Upgrading: chart ${current} (${status:-unknown}) → ${CNPG_CHART_VERSION} (operator v1.30.0)."
+  log "Upgrading: chart ${current} (${status:-unknown}) → ${CNPG_CHART_VERSION} (operator v1.30.1)."
   log "  Existing Cluster CRs will undergo a rolling switchover."
   cluster_count=$(kctl get cluster.postgresql.cnpg.io -A --no-headers 2>/dev/null | wc -l)
   log "  Affected clusters: ${cluster_count}"

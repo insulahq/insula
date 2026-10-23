@@ -128,7 +128,7 @@ spec:
         # copy + chown into an emptyDir, drops all capabilities except the two
         # the copy needs, and the LAPI itself keeps running as uid 1000.
         - name: seed-config
-          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          image: docker.io/crowdsecurity/crowdsec:v1.8.1
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -276,7 +276,7 @@ spec:
         - name: crowdsec
           # v1.7.8 — latest stable on the v1.7.x line. Includes
           # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
-          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          image: docker.io/crowdsecurity/crowdsec:v1.8.1
           imagePullPolicy: IfNotPresent
           # DISABLE_ONLINE_API comes from the crowdsec-capi-config ConfigMap
           # (community blocklist opt-in). `optional: true` is deliberate and

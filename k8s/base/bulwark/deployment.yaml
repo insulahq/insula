@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:31bb0f105d784a6ca953625e14b65a1d1dc3e7a96ba1a17643d472f40324227d
+          image: ghcr.io/bulwarkmail/webmail@sha256:4a766a3f966b0ee382a68475b59aea91b334e633644196eac4aada07c8fd4958
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.12.0 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.17.1 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,8 +360,16 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.12.0.
-          image: ghcr.io/bulwarkmail/webmail@sha256:31bb0f105d784a6ca953625e14b65a1d1dc3e7a96ba1a17643d472f40324227d
+          # from tag 1.17.1.
+          #
+          # 1.16.0 stops an HTML attachment preview from running the sender's
+          # script in the webmail origin, and makes delete/move act on the
+          # clicked message when two accounts hold the same id
+          # (GHSA-8x23-qw3w-mhrx). 1.17.0 runs on Node 24.22.1, which fixes a
+          # Brotli out-of-bounds write a signed-in user could reach through the
+          # server's calendar, WebDAV and plugin fetches. Do not roll back past
+          # 1.17.0.
+          image: ghcr.io/bulwarkmail/webmail@sha256:4a766a3f966b0ee382a68475b59aea91b334e633644196eac4aada07c8fd4958
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -385,6 +393,11 @@ spec:
             - name: NODE_ENV
               value: "production"
             - name: SETTINGS_SYNC_ENABLED
+              value: "true"
+            # Since 1.15.0 the "Remember me" box is hidden and every sign-in
+            # is remembered. Webmail is used on shared computers too: keep
+            # the box, so a session outlives the browser only when asked to.
+            - name: LOGIN_SHOW_REMEMBER_ME
               value: "true"
             - name: ADMIN_DATA_DIR
               value: "/app/data/admin"

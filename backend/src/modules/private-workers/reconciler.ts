@@ -67,7 +67,7 @@ const INGRESS_CONTROLLER_NAMESPACE =
 const TUNNEL_ISSUER_SETTING_KEY = 'private_worker_tunnel_issuer';
 const DEFAULT_TUNNEL_ISSUER = 'letsencrypt-prod-http01';
 const FRPS_BIND_PORT = 7000;
-const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.62.1';
+const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.71.1';
 
 // ─── Public surface ─────────────────────────────────────────────────────────
 

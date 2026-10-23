@@ -515,8 +515,8 @@ LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) 
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8.
-FLUX_VERSION="2.9.2"
-TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
+FLUX_VERSION="2.9.6"
+TRAEFIK_CHART_VERSION="42.1.3"           # app v3.7.16; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a
@@ -694,9 +694,9 @@ MODSECURITY_PLUGIN_MODULE="github.com/insulahq/insula/traefik-plugins/modsecurit
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.21.0"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
-SEALED_SECRETS_CHART_VERSION="2.19.1"    # controller v0.38.4
-CNPG_CHART_VERSION="0.29.0"              # CloudNative-PG operator v1.30.0 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
+CERT_MANAGER_CHART_VERSION="v1.21.2"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
+SEALED_SECRETS_CHART_VERSION="2.20.0"    # controller v0.40.0 (0.41.x has no chart yet)
+CNPG_CHART_VERSION="0.29.1"              # CloudNative-PG operator v1.30.1 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 # --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
