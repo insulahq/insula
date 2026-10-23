@@ -19,6 +19,7 @@
  *     the page when not needed.
  */
 
+import { formatLocalInstant } from '@/lib/format-timestamp';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, RefreshCw, AlertTriangle, Loader2, X } from 'lucide-react';
@@ -214,7 +215,7 @@ function ListenerRow({ status }: { readonly status: ListenerStatus }) {
       </td>
       <td className={`px-2 py-2 align-top text-xs whitespace-nowrap ${expiryColor}`}>
         {status.cert
-          ? `${new Date(status.cert.notAfter).toISOString().slice(0, 10)} (${status.cert.daysUntilExpiry}d)`
+          ? `${formatLocalInstant(status.cert.notAfter, { dateOnly: true })} (${status.cert.daysUntilExpiry}d)`
           : '—'}
       </td>
       <td className="px-2 py-2 align-top">

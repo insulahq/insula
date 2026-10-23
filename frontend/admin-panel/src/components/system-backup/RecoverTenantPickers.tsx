@@ -1,9 +1,11 @@
+import LocalTime from '@/components/ui/LocalTime';
+import { formatLocalInstant, localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import type { DrRecoveryBundle, DrRecoveryInfo } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import { formatBytes } from '@/lib/format-snapshot-size';
 
-const utc = (iso: string): string => `${iso.slice(0, 16).replace('T', ' ')} UTC`;
 
 function age(iso: string, now = Date.now()): string {
   const days = Math.floor((now - new Date(iso).getTime()) / 86_400_000);
@@ -41,7 +43,7 @@ export function TenantFacts({ info, loading }: { readonly info: DrRecoveryInfo |
         <Fact label="Tenant">
           <span className="font-medium">{info.name}</span>
           {info.deleted
-            ? <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300">deleted{info.deletedAt ? ` ${info.deletedAt.slice(0, 10)}` : ''}</span>
+            ? <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300">deleted{info.deletedAt ? ` ${formatLocalInstant(info.deletedAt, { dateOnly: true })}` : ''}</span>
             : info.status && <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-300">{info.status}</span>}
         </Fact>
         <Fact label="Plan">{info.planName ?? dash}</Fact>
@@ -105,7 +107,7 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
         <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/50 dark:text-gray-400">
           <tr>
             <th className="w-8 px-3 py-2" />
-            <th className="px-3 py-2">Taken</th>
+            <th className="px-3 py-2" title={localZoneTitle()}>Taken ({utcOffsetLabel()})</th>
             <th className="px-3 py-2">By</th>
             <th className="px-3 py-2">Contents</th>
             <th className="px-3 py-2 text-right">Size</th>
@@ -130,11 +132,11 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
                     checked={isSelected}
                     disabled={!usable || disabled}
                     onChange={() => onChange(b.id === newest ? '' : b.id)}
-                    aria-label={`Bundle taken ${utc(b.createdAt)}`}
+                    aria-label={`Bundle taken ${formatLocalInstant(b.createdAt)}`}
                   />
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-gray-900 dark:text-gray-100">
-                  {utc(b.createdAt)}
+                  <LocalTime iso={b.createdAt} />
                   <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">{age(b.createdAt)}</span>
                   {b.id === newest && <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-800 dark:bg-green-900/40 dark:text-green-300">newest</span>}
                   {!usable && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">{b.status} — cannot restore</span>}
@@ -146,7 +148,7 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
                     : <span className="text-gray-400 dark:text-gray-500">—</span>}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-gray-900 dark:text-gray-100">{formatBytes(b.sizeBytes)}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-gray-700 dark:text-gray-300">{b.expiresAt ? b.expiresAt.slice(0, 10) : 'no expiry'}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-gray-700 dark:text-gray-300">{b.expiresAt ? <LocalTime iso={b.expiresAt} dateOnly /> : 'no expiry'}</td>
               </tr>
             );
           })}

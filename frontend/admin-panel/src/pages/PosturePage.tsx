@@ -21,6 +21,9 @@
  * Mounted at /security/posture. Super_admin gated at the route level.
  */
 
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -1107,7 +1110,7 @@ function EventsTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <table className="min-w-full text-sm" data-testid="events-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">When</th>
+              <th className="px-4 py-2 text-left" title={localZoneTitle()}>When ({utcOffsetLabel()})</th>
               <th className="px-4 py-2 text-left">Resource</th>
               <th className="px-4 py-2 text-left">Action</th>
               <th className="px-4 py-2 text-left">Outcome</th>
@@ -1117,7 +1120,7 @@ function EventsTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {snapshot.recentEvents.map((e) => (
               <tr key={`${e.occurredAt}-${e.resourceType}-${e.action}-${e.resourceName ?? ''}`}>
-                <td className="px-4 py-2 text-gray-700 dark:text-gray-200 font-mono text-xs">{new Date(e.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
+                <td className="px-4 py-2 text-gray-700 dark:text-gray-200 font-mono text-xs"><LocalTime iso={e.occurredAt} seconds /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{e.resourceType}{e.resourceName ? ` · ${e.resourceName}` : ''}</td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{e.action}</td>
                 <td className="px-4 py-2"><OutcomeBadge outcome={e.outcome} /></td>

@@ -14,6 +14,9 @@
  *     with a "Remove" button.
  */
 
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import { useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import { Info, RefreshCw, Shield, Plus, Trash2 } from 'lucide-react';
@@ -157,7 +160,7 @@ export default function SecretsCoverageSection() {
                       <th className="px-3 py-2 text-left">Secret</th>
                       <th className="px-3 py-2 text-left">Reason</th>
                       <th className="px-3 py-2 text-left">Added by</th>
-                      <th className="px-3 py-2 text-left">Added at</th>
+                      <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added at ({utcOffsetLabel()})</th>
                       <th className="px-3 py-2"></th>
                     </tr>
                   </thead>
@@ -167,7 +170,7 @@ export default function SecretsCoverageSection() {
                         <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{e.namespace}/{e.name}</td>
                         <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{e.reason}</td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200"><UserLabel userId={e.addedBy} /></td>
-                        <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{new Date(e.addedAt).toISOString().slice(0, 19).replace('T', ' ')}</td>
+                        <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200"><LocalTime iso={e.addedAt} seconds /></td>
                         <td className="px-3 py-2 text-right">
                           <button
                             type="button"

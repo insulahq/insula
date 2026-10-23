@@ -7,7 +7,7 @@
  * was not counting, so the most alarming case produced the most reassuring
  * screen.
  */
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const preview = { data: undefined as unknown, isPending: false, isError: false, error: null, mutate: vi.fn(), reset: vi.fn() };
@@ -107,6 +107,20 @@ describe('RecoverAllTab — unrecoverable tenants', () => {
   });
 });
 
+describe('RecoverAllTab — newest bundle time', () => {
+  it('reads in the browser\'s zone and names the offset, with UTC on hover', async () => {
+    const { MemoryRouter } = await import('react-router-dom');
+    vi.stubEnv('TZ', 'Asia/Tokyo');
+    try {
+      preview.data = { data: { dryRun: true, scope: 'missing', total: 0, recovered: 0, failed: 0, targets: [],
+        skipped: [skipped({ tenantId: 'gone-1', tenantName: 'ACME LEARNING', reason: 'deleted', latestBundleStatus: 'completed', latestBundleAt: '2026-10-03T01:36:57.662Z' })] } };
+      render(<MemoryRouter><RecoverAllTab /></MemoryRouter>);
+      const time = within(screen.getByTestId('dr-deleted-skips')).getByText('2026-10-03 10:36 UTC+9');
+      expect(time).toHaveAttribute('title', '2026-10-03 01:36 UTC');
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
 describe('RecoverAllTab — tenants deleted on purpose', () => {
   it('does not call it an all-clear, and lists each with a way to recover it on its own', async () => {
     const { MemoryRouter } = await import('react-router-dom');
@@ -118,6 +132,7 @@ describe('RecoverAllTab — tenants deleted on purpose', () => {
     expect(screen.getByText(/1 tenant\(s\) deleted on purpose are not recovered here/i)).toBeTruthy();
     const table = screen.getByTestId('dr-deleted-skips');
     expect(table.textContent).toContain('ACME LEARNING');
+
     expect(screen.getByRole('link', { name: 'Recover this tenant…' }).getAttribute('href'))
       .toBe('/backups/disaster-recovery?section=recover&tenant=gone-1');
   });

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import LocalTime from './LocalTime';
-import { formatTimestamp, localZoneTitle } from '@/lib/format-timestamp';
+import { formatLocalInstant, formatTimestamp, localZoneTitle } from '@/lib/format-timestamp';
 
 // Berlin, so a daylight-saving change can fall inside a listed window:
 // summer time (UTC+2) ends on the last Sunday of October.
@@ -27,6 +27,10 @@ describe('formatTimestamp', () => {
 
   it('rolls the date over with the zone, not with UTC', () => {
     expect(formatTimestamp(new Date('2026-10-23T23:30:00.000Z'))).toBe('2026-10-24 01:30');
+  });
+
+  it('gives the calendar date in the zone with dateOnly', () => {
+    expect(formatTimestamp(new Date('2026-10-23T23:30:00.000Z'), { dateOnly: true })).toBe('2026-10-24');
   });
 
   it('names the zone in the header tooltip', () => {
@@ -60,5 +64,34 @@ describe('LocalTime', () => {
   it('renders a dash instead of throwing on an unparseable instant', () => {
     render(<LocalTime iso="not a date" />);
     expect(screen.getByText('—')).toBeInTheDocument();
+  });
+});
+
+describe('formatLocalInstant', () => {
+  it('names the offset, since no column header does it for prose', () => {
+    expect(formatLocalInstant('2026-10-23T12:05:09.000Z')).toBe('2026-10-23 14:05 UTC+2');
+    expect(formatLocalInstant('2026-10-23T12:05:09.000Z', { seconds: true })).toBe('2026-10-23 14:05:09 UTC+2');
+  });
+
+  it('a date carries no offset', () => {
+    expect(formatLocalInstant('2026-10-23T23:30:00.000Z', { dateOnly: true })).toBe('2026-10-24');
+  });
+
+  it('a missing or unparseable instant is a dash', () => {
+    expect(formatLocalInstant(null)).toBe('—');
+    expect(formatLocalInstant('not a date')).toBe('—');
+  });
+});
+
+describe('LocalTime variants', () => {
+  it('withOffset names the offset inline', () => {
+    render(<LocalTime iso="2026-10-23T12:05:09.000Z" withOffset />);
+    const time = screen.getByText('2026-10-23 14:05 UTC+2');
+    expect(time).toHaveAttribute('title', '2026-10-23 12:05 UTC');
+  });
+
+  it('dateOnly shows the local date and keeps the UTC instant on hover', () => {
+    render(<LocalTime iso="2026-10-23T23:30:00.000Z" dateOnly />);
+    expect(screen.getByText('2026-10-24')).toHaveAttribute('title', '2026-10-23 23:30 UTC');
   });
 });

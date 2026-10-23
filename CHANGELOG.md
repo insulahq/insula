@@ -57,6 +57,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   labelled. Every one of these columns, and the filter, now uses the browser's zone and names it
   in the header (for example "When (UTC+2)"); hovering a time shows it in UTC, and a row from
   before a daylight-saving change names its own offset.
+- **Every other admin time is in your browser's time zone too.** Security posture events, DR drill
+  runs, secrets coverage, system snapshots, the Recover Tenant bundle list, Recover All, tenant
+  placement and the deleted-tenant dates were cut from UTC strings, some labelled "UTC" and some
+  not. They now read in the browser's zone like the WAF tables; a time with no column header to
+  name the zone carries its offset ("2026-10-03 10:36 UTC+9"), and dates are the local calendar
+  date. A test in each panel fails the build if a displayed time is cut from a UTC string again.
 
 ### Fixed
 

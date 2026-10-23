@@ -1,3 +1,4 @@
+import LocalTime from '@/components/ui/LocalTime';
 import { useState } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -222,8 +223,8 @@ export function PvcPlacementSection({ tenantId, pinnedNode = null, activeNodes =
                     </div>
                   )}
                   {p.lastBackupAt && (
-                    <div className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400" title={p.lastBackupAt}>
-                      backup: {new Date(p.lastBackupAt).toISOString().slice(0, 10)}
+                    <div className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+                      backup: <LocalTime iso={p.lastBackupAt} dateOnly />
                     </div>
                   )}
                 </td>

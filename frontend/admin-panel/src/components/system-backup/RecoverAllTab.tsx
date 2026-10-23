@@ -13,6 +13,7 @@
  * passed over), and the chip re-opens it. The page keeps only the preview.
  */
 
+import LocalTime from '@/components/ui/LocalTime';
 import { useState } from 'react';
 import {
   LifeBuoy, RefreshCw, Play, Loader2, AlertTriangle,
@@ -349,7 +350,7 @@ function DeletedSkipsTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
           {rows.map((r) => (
             <tr key={r.tenantId}>
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}</td>
-              <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{r.latestBundleAt ? `${r.latestBundleAt.slice(0, 16).replace('T', ' ')} UTC` : '—'}</td>
+              <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{r.latestBundleAt ? <LocalTime iso={r.latestBundleAt} withOffset /> : '—'}</td>
               <td className="px-3 py-2 text-right">
                 <Link
                   to={`/backups/disaster-recovery?section=recover&tenant=${encodeURIComponent(r.tenantId)}`}
@@ -391,7 +392,7 @@ function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) 
                   : <span className="text-red-600 dark:text-red-400">never backed up</span>}
               </td>
               <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
-                {r.latestBundleAt ? new Date(r.latestBundleAt).toLocaleString() : '—'}
+                {r.latestBundleAt ? <LocalTime iso={r.latestBundleAt} withOffset /> : '—'}
               </td>
             </tr>
           ))}
