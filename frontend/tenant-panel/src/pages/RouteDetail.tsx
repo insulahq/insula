@@ -10,6 +10,9 @@ import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import MtlsSection from '@/components/MtlsSection';
 import {
   useRouteDetail,
@@ -1227,11 +1230,6 @@ const SEV_STYLE: Record<string, string> = {
   info: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
 };
 
-function formatTs(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
 type SortKey = 'createdAt' | 'sourceIp' | 'severity' | 'ruleId' | 'score' | 'request';
 type SortDir = 'asc' | 'desc';
 
@@ -1262,10 +1260,11 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
     }
   });
 
-  const SortHeader = ({ label, k, className }: { label: string; k: SortKey; className?: string }) => (
+  const SortHeader = ({ label, k, className, title }: { label: string; k: SortKey; className?: string; title?: string }) => (
     <th
       className={clsx('px-2 py-2 cursor-pointer select-none hover:text-gray-300 transition-colors', className)}
       onClick={() => toggleSort(k)}
+      title={title}
     >
       {label} {sortKey === k ? (sortDir === 'asc' ? '▲' : '▼') : ''}
     </th>
@@ -1276,7 +1275,7 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
       <table className="w-full font-mono text-[11px] bg-gray-950">
         <thead>
           <tr className="border-b border-gray-800 text-gray-500 text-left">
-            <SortHeader label="Time" k="createdAt" className="w-[110px]" />
+            <SortHeader label={`Time (${utcOffsetLabel()})`} k="createdAt" className="w-[110px] whitespace-nowrap" title={localZoneTitle()} />
             <SortHeader label="IP" k="sourceIp" className="w-[80px]" />
             <SortHeader label="Level" k="severity" className="w-[62px]" />
             <SortHeader label="Rule" k="ruleId" />
@@ -1295,7 +1294,7 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
                 className={clsx(idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
                 data-testid={`waf-log-entry-${log.id}`}
               >
-                <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{formatTs(log.createdAt)}</td>
+                <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap"><LocalTime iso={log.createdAt} /></td>
                 <td className="px-2 py-1.5 text-gray-400 whitespace-nowrap">{log.sourceIp ?? '-'}</td>
                 <td className="px-2 py-1.5">
                   <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
@@ -1428,7 +1427,7 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
                     <th className="px-3 py-2 text-left">Rule ID</th>
                     <th className="px-3 py-2 text-left">Scope</th>
                     <th className="px-3 py-2 text-left">Reason</th>
-                    <th className="px-3 py-2 text-left">Added</th>
+                    <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added ({utcOffsetLabel()})</th>
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
@@ -1546,7 +1545,7 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
       </td>
       <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[280px] truncate" title={ex.reason}>{ex.reason}</td>
       <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
-        {new Date(ex.createdAt).toISOString().replace('T', ' ').slice(0, 16)}
+        <LocalTime iso={ex.createdAt} />
       </td>
       <td className="px-3 py-2 text-right">
         <button

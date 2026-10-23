@@ -50,6 +50,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Agents signed in before this update must sign in again.** Their 8-hour tokens were not tied to
   a connection that could be listed or revoked, so the update removes them.
 - **Personal access tokens are unchanged.**
+- **WAF times are shown in your browser's time zone, in both panels.** The admin panel showed WAF
+  events, auto-ban runs and WAF exclusions in UTC with no label, while the From/To filter above
+  the events took local time, so a 14:00–15:00 filter in UTC+2 listed rows that read 12:00–13:00.
+  The tenant panel showed a route's WAF log in local time but its exclusions in UTC, neither
+  labelled. Every one of these columns, and the filter, now uses the browser's zone and names it
+  in the header (for example "When (UTC+2)"); hovering a time shows it in UTC, and a row from
+  before a daylight-saving change names its own offset.
 
 ### Fixed
 
