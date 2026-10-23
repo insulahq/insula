@@ -137,9 +137,10 @@ data:
     # SSRF is the SERVER fetching a URL. The OAuth server never fetches a
     # redirect URI: it validates the scheme (https / loopback / private-use,
     # modules/mcp/oauth.ts) and only ever sends the user's BROWSER there.
-    # Removed on these three exact endpoints of the admin host only;
-    # every other route keeps 934110.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^admin\.${DOMAIN}(:[0-9]+)?$" \
+    # Removed on these three exact endpoints of the two panel hosts only —
+    # the admin panel's agents and the tenant panel's each sign in on their
+    # own host; every other route keeps 934110.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000117,\
          phase:1,\
          pass,\

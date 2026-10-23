@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeNextPath } from './safe-next-path';
+import { keepReturnPath, safeNextPath, takeReturnPath } from './safe-next-path';
 
 describe('safeNextPath', () => {
   it('keeps a path inside the panel, with its query and hash', () => {
@@ -37,5 +37,28 @@ describe('safeNextPath', () => {
   it('normalises dot segments instead of escaping with them', () => {
     expect(safeNextPath('/email/../domains')).toBe('/domains');
     expect(safeNextPath('/../../etc')).toBe('/etc');
+  });
+});
+
+describe('the return path kept across an SSO sign-in', () => {
+  const memory = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v); }, removeItem: (k: string) => { m.delete(k); } };
+  };
+
+  it('brings the consent page back with its request, once', () => {
+    const s = memory();
+    keepReturnPath(s, '/oauth/consent?request=abc');
+    expect(takeReturnPath(s)).toBe('/oauth/consent?request=abc');
+    expect(takeReturnPath(s)).toBeNull();
+  });
+
+  it('keeps nothing unsafe, and nothing for the home page', () => {
+    const s = memory();
+    keepReturnPath(s, 'https://evil.test/x');
+    expect(takeReturnPath(s)).toBeNull();
+    keepReturnPath(s, '/files');
+    keepReturnPath(s, '/');
+    expect(takeReturnPath(s)).toBeNull();
   });
 });

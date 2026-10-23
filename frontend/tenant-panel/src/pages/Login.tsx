@@ -9,7 +9,7 @@ import ApiUnavailable from '@/components/ApiUnavailable';
 import { API_BASE, ApiError } from '@/lib/api-client';
 import { useSystemInfo, useDocumentTitle } from '@/hooks/use-system-info';
 import { proxySsoProvider, markProxySsoAttempt, resetProxySso } from '@/lib/proxy-sso';
-import { safeNextPath } from '@/lib/safe-next-path';
+import { keepReturnPath, safeNextPath, takeReturnPath } from '@/lib/safe-next-path';
 
 export default function Login() {
   // The login screen sits OUTSIDE <Layout>, so the useDocumentTitle call
@@ -35,7 +35,10 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
+  // Path AND query: the AI-agent consent page (/oauth/consent?request=…) is
+  // useless without its query when it sends someone here to sign in first.
+  const fromLocation = (location.state as { from?: { pathname: string; search?: string } })?.from;
+  const from = safeNextPath(fromLocation ? `${fromLocation.pathname}${fromLocation.search ?? ''}` : null);
 
   useEffect(() => {
     const token = searchParams.get('token');
@@ -45,8 +48,9 @@ export default function Login() {
         const user = JSON.parse(decodeURIComponent(userJson));
         setTokenAndUser(token, user);
         resetProxySso(sessionStorage);
-        // "Login as tenant" from an admin link names the page it was about.
-        navigate(safeNextPath(searchParams.get('next')), { replace: true });
+        // "Login as tenant" from an admin link names the page it was about; an
+        // SSO sign-in returns to the page that sent the visitor to sign in.
+        navigate(safeNextPath(searchParams.get('next') ?? takeReturnPath(sessionStorage)), { replace: true });
       } catch { /* ignore */ }
     }
   }, [searchParams, navigate, setTokenAndUser]);
@@ -100,6 +104,7 @@ export default function Login() {
 
 
   const handleSso = (providerId: string) => {
+    keepReturnPath(sessionStorage, from);
     const callbackUrl = `${window.location.origin}/login`;
     window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
   };
@@ -121,9 +126,10 @@ export default function Login() {
     if (!providerId) return;
     markProxySsoAttempt(sessionStorage, Date.now());
     setSsoStartingWith(authStatus.providers.find((p) => p.id === providerId)?.displayName ?? 'your provider');
+    keepReturnPath(sessionStorage, from);
     const callbackUrl = `${window.location.origin}/login`;
     window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${providerId}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
-  }, [authStatus, searchParams]);
+  }, [authStatus, searchParams, from]);
 
   const showLocalAuth = authStatus?.localAuthEnabled ?? true;
   const providers = authStatus?.providers ?? [];

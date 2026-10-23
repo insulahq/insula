@@ -150,6 +150,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
   // does not own. A tenant asking for someone else's id gets 404, and no
   // token exists to replay.
   app.post('/tenant/backups/bundles/:id/export-token', {
+    config: { issuesCredential: true },
     schema: {
       tags: ['TenantBundles-Client'],
       summary: 'Mint a single-purpose download URL for one of my bundles',

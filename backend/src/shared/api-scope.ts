@@ -40,6 +40,16 @@ declare module 'fastify' {
      * caller. For routes that manage tokens or credentials themselves.
      */
     apiTokenForbidden?: string;
+    /**
+     * The route creates, resets or hands out a credential that works on its
+     * own — a panel user's password, an SSH key, an SFTP or database login, a
+     * mailbox app password, a client certificate, a webmail session, a
+     * download link. A TENANT agent may not call it: the credential would keep
+     * working after the agent's connection ends or is disconnected, which is
+     * exactly what the 8-hour limit and Disconnect promise. Admin tokens are
+     * not affected.
+     */
+    issuesCredential?: boolean;
   }
 }
 
@@ -98,6 +108,17 @@ export interface ApiTokenClaim {
   readonly scopes: readonly McpScope[];
   /** 'api' = the token was used directly; 'mcp' = through an MCP tool. */
   readonly via: 'api' | 'mcp';
+  /** Which panel's MCP endpoint the token was issued for; absent = admin. */
+  readonly audience?: 'admin' | 'tenant';
+}
+
+export function tenantAgentCredentialRefused(): ApiError {
+  return new ApiError(
+    'AGENT_CREDENTIAL_NOT_ALLOWED',
+    'An AI agent connected to the tenant panel cannot create or reset a login, key, password or link: '
+      + 'it would keep working after the agent is disconnected. Do this in the panel yourself.',
+    403,
+  );
 }
 
 export function insufficientScope(needed: McpScope): ApiError {
@@ -133,6 +154,7 @@ export function enforceApiScope(request: FastifyRequest, stage: 'auth' | 'handle
   if (config?.apiTokenForbidden) {
     throw new ApiError('API_TOKEN_NOT_ALLOWED', config.apiTokenForbidden, 403);
   }
+  if (config?.issuesCredential && claim.audience === 'tenant') throw tenantAgentCredentialRefused();
   const bodyReady = stage === 'handler' || bodySettled(request);
   const needed = requiredScope(request.method, request.routeOptions?.url ?? request.url, config?.apiScope, request, bodyReady);
   if (needed === 'pending') return;

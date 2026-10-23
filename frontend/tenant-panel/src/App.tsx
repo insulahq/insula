@@ -33,6 +33,7 @@ const Monitoring = lazy(() => import('@/pages/Monitoring'));
 const Notifications = lazy(() => import('@/pages/Notifications'));
 const NotificationPreferences = lazy(() => import('@/pages/NotificationPreferences'));
 const Placeholder = lazy(() => import('@/pages/Placeholder'));
+const OAuthConsent = lazy(() => import('@/pages/OAuthConsent'));
 import LifecycleGate from '@/components/LifecycleGate';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -65,6 +66,8 @@ export default function App() {
         <Suspense fallback={<RouteFallback />}>
           <Routes>
           <Route path="/login" element={<Login />} />
+          {/* AI-agent (MCP) OAuth consent: signed in, but outside the app chrome. */}
+          <Route path="/oauth/consent" element={<ProtectedRoute><OAuthConsent /></ProtectedRoute>} />
           <Route
             element={
               <ProtectedRoute>

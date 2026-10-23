@@ -7,6 +7,7 @@ import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import TaskCenterChip from '@/components/TaskCenterChip';
+import AgentIndicator from '@/components/AgentIndicator';
 import GlobalSearch from '@/components/search/GlobalSearch';
 import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 import { suppressProxySso } from '@/lib/proxy-sso';
@@ -70,6 +71,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <div className="ml-auto flex items-center gap-2">
         <ResourceUsageTags />
+        <AgentIndicator />
         <TaskCenterChip />
         <DarkModeToggle />
         <NotificationDropdown />

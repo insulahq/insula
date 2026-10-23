@@ -24,3 +24,30 @@ export function safeNextPath(raw: string | null | undefined): string {
   if (url.pathname === '/login') return '/';
   return `${url.pathname}${url.search}${url.hash}`;
 }
+
+const RETURN_KEY = 'insula:return-to';
+
+/**
+ * Remember where to come back to across an SSO sign-in: the IdP round trip
+ * lands on /login with only `?token=&user=`, and the page that sent the
+ * visitor to sign in (the AI-agent consent page, with its `?request=`) would
+ * be lost. Only a path that passes safeNextPath is kept; `/` is not worth it.
+ */
+export function keepReturnPath(storage: Pick<Storage, 'setItem' | 'removeItem'>, path: string): void {
+  try {
+    const safe = safeNextPath(path);
+    if (safe === '/') storage.removeItem(RETURN_KEY);
+    else storage.setItem(RETURN_KEY, safe);
+  } catch { /* storage blocked: the visitor lands on the home page */ }
+}
+
+/** The remembered path, once — and forgotten, so a later sign-in does not reuse it. */
+export function takeReturnPath(storage: Pick<Storage, 'getItem' | 'removeItem'>): string | null {
+  try {
+    const value = storage.getItem(RETURN_KEY);
+    storage.removeItem(RETURN_KEY);
+    return value;
+  } catch {
+    return null;
+  }
+}

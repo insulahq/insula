@@ -12,6 +12,45 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Tenants can connect AI agents (MCP) to the tenant panel.** Each tenant panel has its own MCP
+  address, `https://tenant.<apex>/api/v1/mcp`, shown under **User Settings → AI agents** with how to
+  add it to an AI client (Claude, Cursor, VS Code, …). The client signs in on a consent page in the
+  tenant panel, and the agent then acts as the user who approved it, with that user's role, inside
+  their own tenant only. It cannot see admin operations or name another tenant: the tenant id is
+  filled in for it. The "nobody has approved this client before" warning on the consent page is
+  now per user, so a client's author approving it once no longer hides the warning from everyone
+  else. An admin impersonating a tenant cannot approve a tenant agent. Admin agents keep
+  `asTenant`, which is logged under the admin.
+- **Connected agents are visible and can be disconnected everywhere they matter.**
+  - **Header chip:** both panels show a chip in the header while an agent is connected (your own,
+    or for a tenant admin any agent of the account), linking to the list.
+  - **Your own agents:** each user sees and disconnects theirs in User Settings. A tenant admin
+    sees every agent connected to the account.
+  - **Platform-wide:** **Security → AI Agents** lists every connected agent on the platform, with
+    who approved it and for which tenant, and disconnects any of them.
+- **Operators decide whether tenants may connect agents.** The switch is under **Security → AI
+  Agents** and is **off by default**, also after an upgrade, so no tenant account is opened to
+  agents until the operator switches it on. Switching it off again disconnects every tenant agent
+  at once. Admin agents are not affected.
+- **A tenant agent cannot create or reset a credential that would outlive it.** This covers panel
+  users, passwords, SSH keys, SFTP and database logins, mailbox passwords, client certificates,
+  webmail sign-ins and backup download links. Each would keep working after the agent is
+  disconnected, so the routes that issue them refuse a tenant agent. Admin agents and PATs keep
+  them.
+
+### Changed
+
+- **An AI agent's sign-in now lasts 1 hour at a time and at most 8 hours, down from 8 hours with no
+  renewal.** The access token lasts an hour, and the client renews it with a refresh token that is
+  replaced on every renewal. Eight hours after approval the connection ends and the client asks
+  again. A spent refresh token presented a second time ends the connection at once, since that
+  means someone else holds a copy.
+- **Agents signed in before this update must sign in again.** Their 8-hour tokens were not tied to
+  a connection that could be listed or revoked, so the update removes them.
+- **Personal access tokens are unchanged.**
+
 ### Fixed
 
 - **Tenant panel, Email → Settings: the DKIM record and signing keys are shown again, and

@@ -6,6 +6,11 @@
  * impersonation carries them, that the impersonation ROUTE is closed to
  * tokens (an agent acts as a tenant in-process, never holding a tenant
  * credential), and that a PAT works on the plain REST API.
+ *
+ * The tenant panel's endpoint (Host tenant.example.test) the same way: a
+ * tenant agent acts as its own tenant user, in its own tenant only, never
+ * sees admin operations, and its token is worthless on the admin host (and
+ * an admin's on the tenant host).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -13,14 +18,20 @@ import fastifyJwt from '@fastify/jwt';
 import { z } from 'zod';
 
 const MCP_URL = 'https://admin.example.test/api/v1/mcp';
+const TENANT_MCP_URL = 'https://tenant.example.test/api/v1/mcp';
+const TENANT_HOST = 'tenant.example.test';
 
 vi.mock('./tokens.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tokens.js')>();
+  const admin = { audience: 'admin', tenantId: null, connectionId: null };
+  const tenant = { audience: 'tenant', tenantId: 'tenant-9', connectionId: 'conn-t' };
   const principals: Record<string, unknown> = {
-    insula_pat_read: { tokenId: 'pat-r', kind: 'pat', name: 'reader', scopes: ['read'], userId: 'admin-1', role: 'admin', resource: null },
-    insula_pat_rw: { tokenId: 'pat-rw', kind: 'pat', name: 'writer', scopes: ['read', 'write'], userId: 'admin-1', role: 'admin', resource: null },
-    insula_oat_good: { tokenId: 'oat-1', kind: 'oauth', name: 'Claude', scopes: ['read', 'write', 'delete'], userId: 'admin-1', role: 'admin', resource: MCP_URL },
-    insula_oat_elsewhere: { tokenId: 'oat-2', kind: 'oauth', name: 'X', scopes: ['read'], userId: 'admin-1', role: 'admin', resource: 'https://other.example.test/mcp' },
+    insula_pat_read: { ...admin, tokenId: 'pat-r', kind: 'pat', name: 'reader', scopes: ['read'], userId: 'admin-1', role: 'admin', resource: null },
+    insula_pat_rw: { ...admin, tokenId: 'pat-rw', kind: 'pat', name: 'writer', scopes: ['read', 'write'], userId: 'admin-1', role: 'admin', resource: null },
+    insula_oat_good: { ...admin, connectionId: 'conn-a', tokenId: 'oat-1', kind: 'oauth', name: 'Claude', scopes: ['read', 'write', 'delete'], userId: 'admin-1', role: 'admin', resource: MCP_URL },
+    insula_oat_elsewhere: { ...admin, connectionId: 'conn-x', tokenId: 'oat-2', kind: 'oauth', name: 'X', scopes: ['read'], userId: 'admin-1', role: 'admin', resource: 'https://other.example.test/mcp' },
+    insula_oat_tenant: { ...tenant, tokenId: 'oat-t', kind: 'oauth', name: 'Claude', scopes: ['read', 'write'], userId: 'tenant-user-1', role: 'tenant_admin', resource: TENANT_MCP_URL },
+    insula_oat_tenant_read: { ...tenant, tokenId: 'oat-tr', kind: 'oauth', name: 'Reader', scopes: ['read'], userId: 'tenant-user-2', role: 'tenant_user', resource: TENANT_MCP_URL },
   };
   return { ...actual, resolveToken: vi.fn(async (_db: unknown, secret: string) => principals[secret] ?? null) };
 });
@@ -37,7 +48,7 @@ vi.mock('../tenants/impersonation.js', async (importOriginal) => {
   };
 });
 
-const { authenticate, requirePanel, requireRole } = await import('../../middleware/auth.js');
+const { authenticate, requirePanel, requireRole, requireTenantAccess } = await import('../../middleware/auth.js');
 const { enforceApiScope } = await import('../../shared/api-scope.js');
 const { errorHandler } = await import('../../middleware/error-handler.js');
 const { collectOperations } = await import('./catalog.js');
@@ -81,6 +92,22 @@ beforeAll(async () => {
       async (request) => ({ data: { tenantId: request.user.tenantId, impersonatedBy: request.user.impersonatedBy } }));
     api.post('/tenant-only', { onRequest: [requirePanel('tenant')] }, async () => ({ data: { wrote: true } }));
     api.post('/auth/whatever', async () => ({ data: 'never via agents' }));
+    // Tenant-panel routes in both shapes the platform uses for the tenant id.
+    const whoAmI = async (request: { user: { sub: string; role: string; tenantId?: string; impersonatedBy?: string }; params: unknown }) => ({
+      data: {
+        actor: request.user.sub, role: request.user.role, tenantId: request.user.tenantId,
+        impersonatedBy: request.user.impersonatedBy ?? null, params: request.params,
+      },
+    });
+    api.get('/tenants/:tenantId/notes', { onRequest: [requireTenantAccess()], schema: { summary: 'List notes' } }, whoAmI);
+    api.post('/tenants/:tenantId/notes', { onRequest: [requireTenantAccess()] }, whoAmI);
+    api.get('/tenants/:id/jobs', { onRequest: [requireTenantAccess()], schema: { summary: 'List jobs' } }, whoAmI);
+    api.get('/admin/notes-overview', { onRequest: [requireRole('admin')], schema: { summary: 'List notes of every tenant' } },
+      async () => ({ data: 'admins only' }));
+    // A route that hands out a credential of its own (like a sub-user's generated password).
+    api.post('/tenants/:tenantId/notes/keys', {
+      onRequest: [requireTenantAccess()], config: { issuesCredential: true }, schema: { summary: 'Create a notes key' },
+    }, async () => ({ data: { key: 'a-key-that-outlives-the-agent' } }));
   }, { prefix: '/api/v1' });
   // What @fastify/cors does: a header set on the reply in a hook.
   app.addHook('onRequest', async (request, reply) => {
@@ -94,12 +121,13 @@ beforeAll(async () => {
 afterAll(async () => { await app.close(); });
 
 let rpcId = 0;
-async function rpc(token: string | null, method: string, params?: unknown) {
+async function rpc(token: string | null, method: string, params?: unknown, host?: string) {
   const res = await app.inject({
     method: 'POST',
     url: '/api/v1/mcp',
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(host ? { host } : {}),
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
     },
@@ -108,8 +136,8 @@ async function rpc(token: string | null, method: string, params?: unknown) {
   return res;
 }
 
-async function callTool(token: string, name: string, args: Record<string, unknown>) {
-  const res = await rpc(token, 'tools/call', { name, arguments: args });
+async function callTool(token: string, name: string, args: Record<string, unknown>, host?: string) {
+  const res = await rpc(token, 'tools/call', { name, arguments: args }, host);
   const body = res.json() as { result: { content: Array<{ text: string }>; isError?: boolean } };
   const textOut = body.result.content[0].text;
   let parsed: unknown = textOut;
@@ -209,6 +237,109 @@ describe('the MCP endpoint', () => {
     const { isError, out } = await callTool('insula_oat_good', 'call_operation', { operation: 'GET /tenant-only' });
     expect(isError).toBe(true);
     expect(out.status).toBe(403);
+  });
+});
+
+describe('the tenant panel\'s MCP endpoint', () => {
+  const tenantCall = (token: string, name: string, args: Record<string, unknown>) => callTool(token, name, args, TENANT_HOST);
+
+  it('challenges toward the TENANT host\'s OAuth metadata', async () => {
+    const res = await rpc(null, 'tools/list', undefined, TENANT_HOST);
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toContain('resource_metadata="https://tenant.example.test/.well-known/oauth-protected-resource/api/v1/mcp"');
+  });
+
+  it('a token works only at the endpoint it was issued for', async () => {
+    expect((await rpc('insula_oat_tenant', 'tools/list', undefined, TENANT_HOST)).statusCode).toBe(200);
+    // A tenant token on the admin host, an admin token or a PAT on the tenant host.
+    expect((await rpc('insula_oat_tenant', 'tools/list')).statusCode).toBe(401);
+    expect((await rpc('insula_oat_good', 'tools/list', undefined, TENANT_HOST)).statusCode).toBe(401);
+    expect((await rpc('insula_pat_rw', 'tools/list', undefined, TENANT_HOST)).statusCode).toBe(401);
+  });
+
+  it('offers no asTenant and leaves admin operations out of search', async () => {
+    const res = await rpc('insula_oat_tenant', 'tools/list', undefined, TENANT_HOST);
+    const tools = (res.json() as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }> } }).result.tools;
+    const call = tools.find((t) => t.name === 'call_operation');
+    expect(call?.inputSchema.properties).not.toHaveProperty('asTenant');
+    const { out } = await tenantCall('insula_oat_tenant', 'find_operations', { query: 'notes' });
+    const ops = (out as unknown as Array<{ operation: string }>).map((o) => o.operation);
+    expect(ops).toContain('GET /tenants/:tenantId/notes');
+    expect(ops).not.toContain('GET /admin/notes-overview');
+  });
+
+  it('runs a route as the tenant user who approved it — not as an impersonating admin', async () => {
+    const { isError, out } = await tenantCall('insula_oat_tenant', 'call_operation', { operation: 'GET /tenants/:tenantId/notes' });
+    expect(isError).toBe(false);
+    expect((out.body as { data: unknown }).data).toEqual({
+      actor: 'tenant-user-1', role: 'tenant_admin', tenantId: 'tenant-9', impersonatedBy: null, params: { tenantId: 'tenant-9' },
+    });
+  });
+
+  it('always acts in ITS tenant, whatever id the agent passes', async () => {
+    const { out } = await tenantCall('insula_oat_tenant', 'call_operation', {
+      operation: 'GET /tenants/:tenantId/notes', pathParams: { tenantId: 'tenant-other' },
+    });
+    expect((out.body as { data: { params: unknown } }).data.params).toEqual({ tenantId: 'tenant-9' });
+    // The `/tenants/:id/…` shape is filled in the same way.
+    const jobs = await tenantCall('insula_oat_tenant', 'call_operation', { operation: 'GET /tenants/:id/jobs' });
+    expect((jobs.out.body as { data: { params: unknown } }).data.params).toEqual({ id: 'tenant-9' });
+  });
+
+  it('refuses asTenant outright', async () => {
+    const { isError, out } = await tenantCall('insula_oat_tenant', 'call_operation', {
+      operation: 'GET /tenants/:tenantId/notes', asTenant: 'tenant-other',
+    });
+    expect(isError).toBe(true);
+    expect(String(out)).toMatch(/asTenant is not available/);
+  });
+
+  it('cannot reach an admin route even by name — the route refuses the tenant user', async () => {
+    const { isError, out } = await tenantCall('insula_oat_tenant', 'call_operation', { operation: 'GET /admin/notes-overview' });
+    expect(isError).toBe(true);
+    expect(out.status).toBe(403);
+  });
+
+  it('cannot mint a credential that would outlive the connection — refused by the ROUTE too', async () => {
+    const viaTool = await tenantCall('insula_oat_tenant', 'call_operation', { operation: 'POST /tenants/:tenantId/notes/keys', body: {} });
+    expect(viaTool.isError).toBe(true);
+    expect(String(viaTool.out)).toMatch(/cannot create or reset/);
+    const { out: found } = await tenantCall('insula_oat_tenant', 'find_operations', { query: 'notes key' });
+    expect((found as unknown as Array<{ operation: string }>).map((o) => o.operation)).not.toContain('POST /tenants/:tenantId/notes/keys');
+    // The route itself refuses a tenant agent's call token, whatever reaches it.
+    const { signAccessToken } = await import('../auth/access-token.js');
+    const callToken = signAccessToken(app, { userId: 'tenant-user-1', role: 'tenant_admin', panel: 'tenant', tenantId: 'tenant-9' }, {
+      ttlSeconds: 60, via: 'mcp', apiToken: { tokenId: 't', kind: 'oauth', name: 'x', scopes: ['read', 'write', 'delete'], via: 'mcp', audience: 'tenant' },
+    });
+    const direct = await app.inject({
+      method: 'POST', url: '/api/v1/tenants/tenant-9/notes/keys',
+      headers: { authorization: `Bearer ${callToken}`, 'content-type': 'application/json' }, payload: '{}',
+    });
+    expect(direct.statusCode).toBe(403);
+    expect(direct.json().error.code).toBe('AGENT_CREDENTIAL_NOT_ALLOWED');
+    expect(direct.body).not.toContain('a-key-that-outlives-the-agent');
+  });
+
+  it('an admin agent keeps that route (acting as the tenant)', async () => {
+    const { isError, out } = await callTool('insula_oat_good', 'call_operation', {
+      operation: 'POST /tenants/:tenantId/notes/keys', pathParams: { tenantId: 'tenant-9' }, asTenant: 'tenant-9', body: {},
+    });
+    expect(isError).toBe(false);
+    expect((out.body as { data: { key: string } }).data.key).toBe('a-key-that-outlives-the-agent');
+  });
+
+  it('refuses "." and ".." as path parameters — they would resolve to another route', async () => {
+    for (const id of ['..', '.']) {
+      const { isError, out } = await callTool('insula_oat_good', 'call_operation', { operation: 'DELETE /things/:id', pathParams: { id } });
+      expect(isError).toBe(true);
+      expect(String(out)).toContain(`cannot be "${id}"`);
+    }
+  });
+
+  it('holds a read connection to read', async () => {
+    const { isError, out } = await tenantCall('insula_oat_tenant_read', 'call_operation', { operation: 'POST /tenants/:tenantId/notes', body: {} });
+    expect(isError).toBe(true);
+    expect(JSON.stringify(out.body)).toContain('INSUFFICIENT_SCOPE');
   });
 });
 

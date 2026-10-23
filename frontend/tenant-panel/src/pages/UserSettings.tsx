@@ -7,6 +7,7 @@ import { ApiError } from '@/lib/api-client';
 import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import TimezoneSelect from '@/components/TimezoneSelect';
 import TotpSection from '@/components/settings/TotpSection';
+import AiAgentsSection from '@/components/settings/AiAgentsSection';
 
 // Lazy so the password inputs stay OUT of the entry chunk — routes are not
 // code-split in this panel, so an inline form here ships on every page view and
@@ -38,6 +39,7 @@ export default function UserSettings() {
 
       <PasskeySection />
       <TotpSection />
+      <AiAgentsSection />
     </div>
   );
 }
