@@ -4,7 +4,7 @@ import LocalTime from './LocalTime';
 import { formatTimestamp, localZoneTitle } from '@/lib/format-timestamp';
 
 // Berlin, so a daylight-saving change can fall inside a listed window:
-// summer time (UTC+2) ends on 2026-10-25.
+// summer time (UTC+2) ends on the last Sunday of October.
 beforeEach(() => {
   vi.stubEnv('TZ', 'Europe/Berlin');
 });

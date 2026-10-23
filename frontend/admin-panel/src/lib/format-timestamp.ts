@@ -11,7 +11,7 @@ function pad(n: number): string {
 }
 
 /**
- * `2026-10-23 14:05` (or `…:09` with `seconds`): sortable and fixed-width.
+ * `YYYY-MM-DD HH:MM` (or `…:SS` with `seconds`): sortable and fixed-width.
  * Viewer's zone by default; `utc` reads the UTC fields instead.
  */
 export function formatTimestamp(at: Date, { seconds = false, utc = false } = {}): string {
