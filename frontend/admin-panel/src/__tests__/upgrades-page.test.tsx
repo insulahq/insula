@@ -295,6 +295,43 @@ describe('UpgradesPage — what the upgrade changes (ADR-064 §6)', () => {
   });
 });
 
+describe('UpgradesPage — whether tenant sites keep serving', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; changes = null; });
+  const base = { fromVersion: '2026.6.2', toVersion: '2026.7.0', known: true, databaseMigrations: 0, platformMigrations: 0, unreportedNodes: [] };
+
+  it('promises "keep serving throughout" only for a release that changes no host', async () => {
+    changes = { ...base, hostChanges: [] };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-tenants-keep-serving')).toHaveTextContent('Tenant websites and databases keep serving throughout.');
+    expect(screen.queryByTestId('upgrade-tenants-host-caveat')).toBeNull();
+  });
+
+  it('with host changes, says a node\'s ingress restart makes sites briefly unreachable through it', async () => {
+    // Seen on a three-node staging upgrade: re-stamping the WAF plugin rolled Traefik node by
+    // node, and each node refused connections for 3–7 s while the review said "keep serving".
+    changes = { ...base, hostChanges: [{ key: '2026.7.0/0001-a.sh', phase: 'after-services', description: 'Rolls Traefik.', nodes: ['sv1', 'sv2'] }] };
+    renderPage('/platform/updates?review=1');
+    const caveat = await screen.findByTestId('upgrade-tenants-host-caveat');
+    expect(caveat).toHaveTextContent(/not restarted\. The host changes run on each node in turn: one that restarts a node's ingress \(Traefik\) makes sites unreachable through that node for a few seconds/);
+    expect(within(screen.getByTestId('upgrade-interruption')).getByTestId('upgrade-tenants-host-caveat')).toBe(caveat);
+    expect(screen.queryByTestId('upgrade-tenants-keep-serving')).toBeNull();
+  });
+
+  it('when the host changes are not known, promises nothing beyond "not restarted"', async () => {
+    changes = { ...base, known: false, hostChanges: [] };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-tenants-not-restarted')).toHaveTextContent('Tenant websites and databases are not restarted.');
+    expect(screen.queryByTestId('upgrade-tenants-keep-serving')).toBeNull();
+  });
+
+  it('nor for another target than the release the changes were read for', async () => {
+    changes = { ...base, toVersion: '2026.8.0', hostChanges: [] };
+    renderPage('/platform/updates?review=1');
+    expect(await screen.findByTestId('upgrade-tenants-not-restarted')).toBeInTheDocument();
+    expect(screen.queryByTestId('upgrade-tenants-keep-serving')).toBeNull();
+  });
+});
+
 describe('UpgradesPage — a refused Approve says so by the buttons', () => {
   beforeEach(() => { updateAvailable = true; role = 'super_admin'; clusterNodes = []; applyMutate.mockClear(); });
 

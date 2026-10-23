@@ -219,6 +219,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   ingress reconcile now removes everything it creates — and brings multi-host site config in step:
   removing a multi-host deployment's last route now also clears its site configuration, which
   restarts that deployment's pod once.
+- **The upgrade review promised "Tenant websites and databases keep serving throughout" for every
+  release**, also for one whose host changes restart Traefik on each node in turn — sites are then
+  unreachable through that node for a few seconds. The promise is now made only for a release that
+  changes no host; with host changes, the review says what a node's ingress restart does.
 - **Table headings sat centred over left-aligned columns** across the admin and tenant panels —
   the WAF events and auto-ban tables, audit logs, and most sortable tables. Headings are left-aligned
   by default; number columns that align right keep doing so.

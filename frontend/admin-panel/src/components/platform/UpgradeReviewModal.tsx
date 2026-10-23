@@ -88,6 +88,10 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
   // The release's restart list belongs to the release the changes were read for.
   const changes = changesQ.data?.data;
   const workloads = changes && changes.toVersion === resolvedTarget ? changes.workloads : undefined;
+  // Host changes run on each node in turn, and one that restarts the node's ingress
+  // (Traefik) makes sites unreachable through it for seconds — so "keep serving
+  // throughout" is promised only for a release known to change no host. null = unknown.
+  const hostChangeCount = changes && changes.toVersion === resolvedTarget && changes.known ? changes.hostChanges.length : null;
 
   const onApproveClick = async () => {
     setApplying(true);
@@ -186,9 +190,16 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
                       database may restart too. Read its release notes before approving.
                     </p>
                   )}
-                  {!preview.interruption.tenantWorkloadsAffected && (
-                    <div className="flex items-center gap-1.5 text-green-700 dark:text-green-400"><CheckCircle className="h-3.5 w-3.5" /> Tenant websites and databases keep serving throughout.</div>
-                  )}
+                  {!preview.interruption.tenantWorkloadsAffected && (hostChangeCount === 0 ? (
+                    <div className="flex items-center gap-1.5 text-green-700 dark:text-green-400" data-testid="upgrade-tenants-keep-serving"><CheckCircle className="h-3.5 w-3.5" /> Tenant websites and databases keep serving throughout.</div>
+                  ) : hostChangeCount != null ? (
+                    <p className="text-amber-700 dark:text-amber-400" data-testid="upgrade-tenants-host-caveat">
+                      Tenant websites and databases are not restarted. The host changes run on each node in turn: one
+                      that restarts a node&apos;s ingress (Traefik) makes sites unreachable through that node for a few seconds.
+                    </p>
+                  ) : (
+                    <p className="text-gray-600 dark:text-gray-400" data-testid="upgrade-tenants-not-restarted">Tenant websites and databases are not restarted.</p>
+                  ))}
                 </div>
               )}
 

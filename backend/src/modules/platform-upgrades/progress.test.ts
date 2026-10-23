@@ -107,7 +107,9 @@ describe('computeInterruptionPreview', () => {
     expect(p.tenantWorkloadsAffected).toBe(false);
     expect(p.services.map((s) => s.name).sort()).toEqual(['admin-panel', 'platform-api', 'tenant-panel']);
     expect(p.services.every((s) => /starts before the old one stops/.test(s.impact))).toBe(true);
-    expect(p.summary).toMatch(/keep serving/i);
+    expect(p.summary).toMatch(/Tenant websites and databases are not restarted\./);
+    // Whether they keep serving depends on the release's host changes, which this does not read.
+    expect(p.summary).not.toMatch(/keep serving/i);
   });
 
   it('multi-node, two replicas → rolling restart via the other replica', async () => {
