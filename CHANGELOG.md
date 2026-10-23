@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Node.js 22.23.2 → 22.23.4 in every Node image (Node2Shell, CVE-2026-111497).** A crafted
+  Brotli stream could drive Node's Brotli decoder into an out-of-bounds write. The platform API
+  decoded Brotli request bodies, and on routes that need no login (the login form among them),
+  anyone who could reach the API could reach the decoder. The same Node release fixes TLS
+  certificate hostname-check bypasses (CVE-2026-106069, CVE-2026-106072), `dns.resolve`
+  truncating names at a NUL character (CVE-2026-105482) and a keep-alive socket reading a
+  response written before its request (CVE-2026-105481), and updates the bundled OpenSSL,
+  undici, c-ares and CA certificates. Changed: the platform API and version poller, the file
+  manager and claim validator, and the panels' build stage. The file manager and claim
+  validator had stayed on Node 22.16.0: they were pinned to Docker's `alpine3.20` variant,
+  which gets no newer Node builds. They now follow `node:22-alpine` (Alpine 3.24) like the API.
+- **The platform API no longer decodes Brotli or zstd request bodies.** It now accepts a
+  compressed request body only as gzip or deflate, and refuses Brotli and zstd with 415
+  without decoding them. Decoding happens before the body is parsed, which on some routes is
+  before the login check, and nothing the platform ships sends a compressed request, so a
+  future decoder bug in either can't be reached this way. Responses are still compressed with
+  Brotli.
+
 ### Fixed
 
 - **"Storage used by all tenant backups" (and a target's tenant figure) could read 0 B while the
