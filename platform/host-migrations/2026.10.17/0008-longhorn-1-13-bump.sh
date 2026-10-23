@@ -3,7 +3,7 @@
 # idempotent: the guard reads the release with `helm list` and exits 0 when it is `deployed` at chart v1.13.0 or newer (a floor, never a ceiling); a `failed` release at the target is upgraded again. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers exit 0 without acting). A release not installed here is skipped.
 # allow-paths: none — operates solely on the cluster via helm + kubectl and the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
 # blocks-on-failure: no    # ADR-056: on failure Longhorn keeps running the version it was on, the volumes keep serving, and the next converge retries; no later migration depends on this one.
-# phase: before-services    # ADR-064: a chart-version swap under the release's own values; needs nothing from the new release's manifests
+# phase: after-services     # ADR-064: step 3 — after step 1 ran 0007 (the multipath blacklist) on EVERY node, so no node's multipathd can take a 1.13 disk
 set -euo pipefail
 
 # Backfills the Longhorn bump onto EXISTING clusters. scripts/bootstrap.sh
@@ -33,6 +33,13 @@ set -euo pipefail
 # half-rolled 1.13 cannot restore 1.12 cleanly. A failed upgrade exits 1 with
 # Longhorn on whatever it reached, for an operator to look at; the guard
 # re-runs a `failed` release.
+#
+# Ordering: 0007 keeps Longhorn's iSCSI disks out of multipathd. During the
+# roll a node runs the 1.12 and the 1.13 instance manager side by side, whose
+# disks can share a WWID; without 0007 an Ubuntu node's multipathd claims the
+# new disk and the volume cannot be formatted or mounted. 0007 is
+# before-services (step 1, every node) and this script after-services (step
+# 3), and this node's own blacklist is checked below as well.
 #
 # Refused, with the reason, while any volume is Faulted: Longhorn warns that an
 # upgrade may delete a faulted volume's unusable replicas — permanent loss
@@ -109,6 +116,13 @@ case "${cur#v}" in
     echo "${MIG}: longhorn is at chart ${cur}; Longhorn upgrades one minor version at a time, so it must reach 1.12.x first (host-migration 2026.7.1/0007)." >&2
     exit 1 ;;
 esac
+
+# --- refuse without this node's multipath blacklist (0007) ---------------------
+if command -v multipathd >/dev/null 2>&1 && systemctl is-active --quiet multipathd 2>/dev/null \
+   && [ ! -s /etc/multipath/conf.d/insula-longhorn.conf ]; then
+  echo "${MIG}: multipathd runs here but Longhorn's disks are not blacklisted from it (2026.10.17/0007 has not run) — not upgrading; the next converge retries." >&2
+  exit 1
+fi
 
 # --- refuse while a volume is Faulted -------------------------------------------
 if ! robustness="$(kubectl -n longhorn-system get volumes.longhorn.io \

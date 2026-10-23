@@ -2,7 +2,7 @@
 # description: Calico moves to v3.33.0 (tigera-operator v1.44.0): its CRDs, then the operator, which rolls calico-node, typha and kube-controllers node by node; the cluster keeps the Calico API mode it already uses.
 # idempotent: the guard exits 0 when the tigera-operator Deployment runs v1.44.0 (the operator Calico 3.33.0 ships), every calico-node pod runs v3.33.0 and tigerastatus/calico is Available; `kubectl apply --server-side` of unchanged manifests is itself a no-op, and a run that finds the operator already upgraded only waits for the roll. Runs on CONTROL-PLANE nodes only (needs the admin kubeconfig; workers exit 0 without acting).
 # allow-paths: none — operates solely on the cluster via kubectl + the node kubeconfig; the two manifests are downloaded to a private mktemp -d removed on EXIT.
-# blocks-on-failure: yes   # ADR-056: a CNI mid-roll is no moment for the Longhorn upgrade (0007) to start rolling the storage data plane; later migrations wait until this one converges.
+# blocks-on-failure: yes   # ADR-056: a CNI mid-roll is no moment for the Longhorn upgrade (0008) to start rolling the storage data plane; later migrations wait until this one converges.
 # phase: before-services    # ADR-064: the CNI upgrade needs nothing from the new release's manifests
 set -euo pipefail
 

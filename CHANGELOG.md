@@ -77,6 +77,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   CRDs first and new clusters run the same mode as every existing one; Longhorn 1.13's internal
   NetworkPolicies would block the metrics scrape and the platform's own Longhorn API calls, so they
   stay off as before.
+- **Longhorn's iSCSI disks are kept out of multipathd on every node.** During a Longhorn upgrade a
+  node runs the old and the new instance manager side by side, and their disks can share a WWID;
+  multipathd — on by default on Ubuntu — then claims the new disk, which can be neither formatted
+  nor mounted (a new volume's pod stays in ContainerCreating). Bootstrap and host-migration
+  2026.10.17/0007 write `/etc/multipath/conf.d/insula-longhorn.conf` (Longhorn's documented
+  blacklist) and release any Longhorn disk multipathd already claimed; the Longhorn upgrade runs
+  only after every node has it.
 
 ### Security
 

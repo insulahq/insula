@@ -6757,6 +6757,38 @@ rightsize_longhorn_disk_reservation() {
   return 0
 }
 
+# Longhorn's iSCSI disks (vendor IET, product VIRTUAL-DISK) must stay out of
+# multipathd. Each Longhorn instance manager numbers its iSCSI targets from 1
+# and a disk's WWID is derived from target + LUN, so while a node runs two
+# instance managers — every Longhorn upgrade, until each volume has re-attached
+# — two disks can share a WWID. multipathd (on by default on Ubuntu) takes them
+# for two paths to one device and claims the new disk, which can then be neither
+# formatted nor mounted, and it records the WWID, so later disks on that target
+# are claimed too. Measured on DEV (Ubuntu 24.04) on the 1.12 -> 1.13 upgrade: a
+# new volume's mkfs refused with "apparently in use by the system". This is
+# Longhorn's documented prerequisite. The file is written whether or not
+# multipath-tools is installed, so installing it later is covered too;
+# host-migration 2026.10.17/0007 writes the same file on existing nodes.
+LONGHORN_MULTIPATH_CONF="/etc/multipath/conf.d/insula-longhorn.conf"
+configure_longhorn_multipath_blacklist() {
+  mkdir -p "$(dirname "$LONGHORN_MULTIPATH_CONF")"
+  cat > "$LONGHORN_MULTIPATH_CONF" <<'MULTIPATH_CONF'
+# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0007):
+# keep Longhorn's iSCSI disks out of multipathd.
+blacklist {
+    device {
+        vendor "IET"
+        product "VIRTUAL-DISK"
+    }
+}
+MULTIPATH_CONF
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet multipathd 2>/dev/null; then
+    multipathd reconfigure >/dev/null 2>&1 \
+      || warn "multipathd reconfigure failed — the Longhorn blacklist applies when multipathd next restarts."
+  fi
+  log "Longhorn iSCSI disks blacklisted from multipathd (${LONGHORN_MULTIPATH_CONF})."
+}
+
 install_longhorn() {
   if [[ "$SKIP_LONGHORN" == true ]]; then
     log "Skipping Longhorn (--skip-longhorn). Using local-path for storage."
@@ -11732,6 +11764,7 @@ main() {
     configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
+    configure_longhorn_multipath_blacklist
     pin_k3s_node_name
   fi
   if [[ "$DRY_RUN" == true ]]; then
