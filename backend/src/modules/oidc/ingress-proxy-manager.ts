@@ -124,6 +124,7 @@ export interface ProxySettings {
   readonly protectTenantViaProxy: boolean;
   readonly breakGlassPath: string | null;
   readonly adminHost?: string | null;
+  readonly tenantHost?: string | null;
 }
 
 /**
@@ -156,6 +157,7 @@ export async function syncProxyIngressAnnotations(
 
   await syncBreakGlassIngressRoute(k8s, settings);
   await syncAgentEndpointsIngressRoute(k8s, settings);
+  await syncTenantAgentEndpointsIngressRoute(k8s, settings);
 }
 
 // ─── Agent / API-token bypass ──────────────────────────────────────────────
@@ -242,6 +244,39 @@ async function syncAgentEndpointsIngressRoute(k8s: K8sClients, settings: ProxySe
   // The middleware first: a route naming a missing middleware is a Traefik 404.
   await applyMiddleware(k8s.custom, middleware);
   await applyIngressRoute(k8s.custom, ingressRoute);
+}
+
+export const TENANT_AGENT_ENDPOINTS_INGRESS_NAME = 'platform-tenant-agent-endpoints';
+const TENANT_PANEL_SERVICE = 'tenant-panel';
+const TENANT_PANEL_PORT = 80;
+
+/**
+ * The tenant panel's own MCP endpoint and OAuth server, past ITS proxy — the
+ * same self-authenticating paths as the admin host. No PAT route: tenants
+ * hold no personal access tokens, so every other /api/ request on the tenant
+ * host keeps going through the proxy.
+ */
+export function buildTenantAgentEndpointsRoute(tenantHost: string) {
+  return buildIngressRoute({
+    name: TENANT_AGENT_ENDPOINTS_INGRESS_NAME,
+    namespace: PLATFORM_NAMESPACE,
+    routes: [{
+      match: agentEndpointsMatch(tenantHost),
+      kind: 'Rule',
+      priority: 100,
+      middlewares: [...PANEL_EDGE_GUARDS.before, ...PANEL_EDGE_GUARDS.after],
+      services: [{ name: TENANT_PANEL_SERVICE, port: TENANT_PANEL_PORT }],
+    }],
+    labels: { 'app.kubernetes.io/component': 'agent-endpoints' },
+  });
+}
+
+async function syncTenantAgentEndpointsIngressRoute(k8s: K8sClients, settings: ProxySettings): Promise<void> {
+  if (!settings.protectTenantViaProxy || !settings.tenantHost) {
+    await deleteIngressRoute(k8s.custom, PLATFORM_NAMESPACE, TENANT_AGENT_ENDPOINTS_INGRESS_NAME);
+    return;
+  }
+  await applyIngressRoute(k8s.custom, buildTenantAgentEndpointsRoute(settings.tenantHost));
 }
 
 // ─── Break-Glass IngressRoute ───────────────────────────────────────────────

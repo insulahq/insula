@@ -40,9 +40,6 @@ import {
   useEmailDomainDisablePreview,
   useUpdateEmailDomain,
   useEmailDomainDnsRecords,
-  useDkimKeys,
-  useRotateDkimKey,
-  useActivateDkimKey,
   useImapSyncJobs,
   useCreateImapSyncJob,
   useCancelImapSyncJob,
@@ -56,12 +53,11 @@ import {
   type EmailAlias,
   type EmailDomain,
   type DnsRecordDisplay,
-  type DkimKey,
-  type DkimRotateResult,
   type ImapSyncJob,
   type CreateLoginPasswordResult,
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
+import DkimKeysCard from '@/components/email/DkimKeysCard';
 import { useTabParam } from '@/hooks/use-tab-param';
 import { useOpenFromQuery } from '@/hooks/use-open-from-query';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -2015,146 +2011,6 @@ function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
       </td>
       <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{record.ttl}</td>
     </tr>
-  );
-}
-
-// ─── DKIM keys card (Phase 3) ──────────────────────────────────────────
-
-function DkimKeysCard({
-  tenantId,
-  domain,
-}: {
-  readonly tenantId: string;
-  readonly domain: EmailDomain;
-}) {
-  const { data: keysRes, isLoading } = useDkimKeys(tenantId, domain.domainId);
-  const rotate = useRotateDkimKey(tenantId, domain.domainId);
-  const activate = useActivateDkimKey(tenantId, domain.domainId);
-  const [lastRotation, setLastRotation] = useState<DkimRotateResult | null>(null);
-  const keys = keysRes?.data ?? [];
-
-  const handleRotate = async () => {
-    setLastRotation(null);
-    try {
-      const res = await rotate.mutateAsync();
-      setLastRotation(res.data);
-    } catch {
-      // shown below
-    }
-  };
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="dkim-card">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Key size={16} className="text-amber-500" />
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            DKIM signing keys
-          </h3>
-        </div>
-        <button
-          type="button"
-          onClick={handleRotate}
-          disabled={rotate.isPending}
-          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="dkim-rotate-button"
-        >
-          {rotate.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Rotate key
-        </button>
-      </div>
-
-      {lastRotation && (
-        <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20 p-3 text-xs">
-          <p className="font-medium text-gray-900 dark:text-gray-100">
-            New key rotated. Selector <code>{lastRotation.newSelector}</code> is now
-            active. The DNS TXT record below was published automatically.
-          </p>
-          <div className="mt-2 grid grid-cols-[80px_1fr] gap-1 font-mono">
-            <span className="text-gray-500 dark:text-gray-400">Type</span><span className="text-gray-900 dark:text-gray-100">TXT</span>
-            <span className="text-gray-500 dark:text-gray-400">Name</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.txtRecordName}</code>
-            <span className="text-gray-500 dark:text-gray-400">Value</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.txtRecordValue}</code>
-          </div>
-          <p className="mt-2 text-gray-600 dark:text-gray-400">
-            Selectors alternate between <code>dkim-1</code> and <code>dkim-2</code> on each
-            rotation, so if your DNS is hosted externally you only ever need these two TXT
-            records — set them up once and future rotations need no DNS changes.
-            {lastRotation.previousSelector && (
-              <>
-                {' '}The previous selector (<code>{lastRotation.previousSelector}</code>) stays
-                published and keeps verifying mail already in transit — nothing to retire.
-              </>
-            )}
-          </p>
-        </div>
-      )}
-
-      {rotate.error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-          <AlertCircle size={14} />
-          {rotate.error instanceof Error ? rotate.error.message : 'Rotation failed'}
-        </div>
-      )}
-
-      {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
-
-      {!isLoading && keys.length === 0 && (
-        <p className="text-xs text-gray-500 dark:text-gray-400 italic">No DKIM keys yet. Click Rotate to generate the first key.</p>
-      )}
-
-      {keys.map((k) => (
-        <DkimKeyRow key={k.id} dkimKey={k} onActivate={() => activate.mutate(k.id)} activatePending={activate.isPending} />
-      ))}
-    </div>
-  );
-}
-
-function DkimKeyRow({
-  dkimKey,
-  onActivate,
-  activatePending,
-}: {
-  readonly dkimKey: DkimKey;
-  readonly onActivate: () => void;
-  readonly activatePending: boolean;
-}) {
-  return (
-    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-1.5 text-xs">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <code className="font-mono text-gray-900 dark:text-gray-100">{dkimKey.selector}</code>
-          <DkimStatusBadge status={dkimKey.status} />
-        </div>
-        {dkimKey.status === 'pending' && (
-          <button
-            type="button"
-            onClick={onActivate}
-            disabled={activatePending}
-            className="rounded-md border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20 px-2 py-0.5 text-xs text-green-700 dark:text-green-400 hover:bg-green-100 disabled:opacity-50"
-            data-testid={`dkim-activate-${dkimKey.id}`}
-          >
-            Activate
-          </button>
-        )}
-      </div>
-      <div className="text-gray-500 dark:text-gray-400">
-        Created {new Date(dkimKey.createdAt).toLocaleString()}
-        {dkimKey.activatedAt && ` · Activated ${new Date(dkimKey.activatedAt).toLocaleString()}`}
-      </div>
-    </div>
-  );
-}
-
-function DkimStatusBadge({ status }: { readonly status: 'pending' | 'active' | 'retired' }) {
-  const styles = {
-    active: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
-    pending: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
-    retired: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
-  } as const;
-  return (
-    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
-      {status}
-    </span>
   );
 }
 

@@ -20,7 +20,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${PLUGIN_SRC:-$HERE/k8s/base/traefik/plugins/modsecurity}"
 # Must match the Traefik that bootstrap's chart (TRAEFIK_CHART_VERSION) deploys.
-TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.7.6}"
+TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.7.16}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"
 WHOAMI_IMAGE="${WHOAMI_IMAGE:-traefik/whoami:v1.11.0}"
 CURL_IMAGE="${CURL_IMAGE:-curlimages/curl:8.10.1}"

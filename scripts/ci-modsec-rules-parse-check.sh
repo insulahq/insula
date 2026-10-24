@@ -32,7 +32,7 @@
 # — a check that has never failed has not been shown to work.
 set -euo pipefail
 
-IMAGE="${MODSEC_IMAGE:-docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307}"
+IMAGE="${MODSEC_IMAGE:-docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202610180210}"
 RULES_MOUNT=/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
 BASE_DIR="k8s/base/modsecurity-crs"
 WORK=$(mktemp -d)

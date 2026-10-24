@@ -17,6 +17,7 @@
  * runbooks in the sibling tabs.
  */
 
+import { formatLocalInstant } from '@/lib/format-timestamp';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { LifeBuoy, Loader2, RotateCcw, ShieldAlert } from 'lucide-react';
@@ -187,7 +188,7 @@ export default function TenantRecoverTab() {
                 options={tenantChoices.map((t) => ({
                   key: t.tenantId,
                   label: t.name,
-                  meta: `${t.deleted ? `DELETED${t.deletedAt ? ` ${t.deletedAt.slice(0, 10)}` : ''} · ` : ''}${t.bundleCount} bundle${t.bundleCount === 1 ? '' : 's'}${t.keptUntil ? ` · until ${t.keptUntil.slice(0, 10)}` : ''}`,
+                  meta: `${t.deleted ? `DELETED${t.deletedAt ? ` ${formatLocalInstant(t.deletedAt, { dateOnly: true })}` : ''} · ` : ''}${t.bundleCount} bundle${t.bundleCount === 1 ? '' : 's'}${t.keptUntil ? ` · until ${formatLocalInstant(t.keptUntil, { dateOnly: true })}` : ''}`,
                 }))}
                 onChange={(k) => setTenantId(k ?? '')}
               />

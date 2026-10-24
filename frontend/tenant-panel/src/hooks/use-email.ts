@@ -1,4 +1,5 @@
-import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest} from '@insula/api-contracts';
+import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimRotateResult } from '@insula/api-contracts';
+export type { DkimKey, DkimRotateResult } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -433,75 +434,37 @@ export function useWebmailToken() {
   });
 }
 
-// ─── Phase 3 T1.1 — DKIM key rotation ──────────────────────────────
+// ─── DKIM signing keys ─────────────────────────────────────────────
+//
+// Both routes take the EMAIL-DOMAIN id (`EmailDomain.id`), not the domain id
+// the `/email/domains/:domainId/...` routes take. Passing the domain id made
+// every rotation answer "Email domain not found".
 
-export interface DkimKey {
-  readonly id: string;
-  readonly emailDomainId: string;
-  readonly selector: string;
-  readonly status: 'pending' | 'active' | 'retired';
-  readonly dnsRecordValue: string;
-  readonly dnsVerifiedAt: string | null;
-  readonly activatedAt: string | null;
-  readonly retiredAt: string | null;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
+interface DkimKeysEnvelope { readonly data: DkimKeysResponse }
+interface DkimRotateEnvelope { readonly data: DkimRotateResult }
 
-interface DkimKeysResponse { readonly data: readonly DkimKey[] }
-
-export interface DkimRotateResult {
-  /** 'dkim-1' | 'dkim-2' — selectors alternate on each rotation (A/B scheme). */
-  readonly newSelector: string;
-  /** Stays published + signing for in-flight mail; nothing to retire. Null on legacy domains. */
-  readonly previousSelector: string | null;
-  readonly newPublicKey: string;
-  readonly txtRecordName: string;
-  readonly txtRecordValue: string;
-  readonly stalwartDkimSignatureId: string;
-  readonly destroyedSelectors: readonly string[];
-}
-
-interface DkimRotateResponse { readonly data: DkimRotateResult }
-
-export function useDkimKeys(tenantId?: string, domainId?: string) {
+export function useDkimKeys(tenantId?: string, emailDomainId?: string) {
   return useQuery({
-    queryKey: ['dkim-keys', tenantId, domainId],
-    queryFn: () => apiFetch<DkimKeysResponse>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/keys`),
-    enabled: !!tenantId && !!domainId,
+    queryKey: ['dkim-keys', tenantId, emailDomainId],
+    queryFn: () =>
+      apiFetch<DkimKeysEnvelope>(`/api/v1/tenants/${tenantId}/email-domains/${emailDomainId}/dkim/keys`),
+    enabled: !!tenantId && !!emailDomainId,
   });
 }
 
-export function useRotateDkimKey(tenantId: string, domainId: string) {
+export function useRotateDkimKey(tenantId: string, emailDomainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      // M13/M12 retired the platform-side DKIM key store;
-      // rotation now uses Stalwart's DkimSignature object via the
-      // platform-api endpoint at /tenants/:tenantId/email-domains/
-      // :domainId/dkim/rotate. Old /email/domains/... path is gone.
-      apiFetch<DkimRotateResponse>(`/api/v1/tenants/${tenantId}/email-domains/${domainId}/dkim/rotate`, {
+      apiFetch<DkimRotateEnvelope>(`/api/v1/tenants/${tenantId}/email-domains/${emailDomainId}/dkim/rotate`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
-      qc.invalidateQueries({ queryKey: ['dns-records'] });
-      qc.invalidateQueries({ queryKey: ['dkim-status', tenantId, domainId] });
-    },
-  });
-}
-
-export function useActivateDkimKey(tenantId: string, domainId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (keyId: string) =>
-      apiFetch<{ data: { id: string; status: string } }>(
-        `/api/v1/tenants/${tenantId}/email/domains/${domainId}/dkim/keys/${keyId}/activate`,
-        { method: 'POST', body: JSON.stringify({}) },
-      ),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, emailDomainId] });
+      // Rotation writes the new selector's TXT row: both the mail Settings
+      // tab's record list and the domain's DNS page show it.
+      qc.invalidateQueries({ queryKey: ['email-domain-dns-records', tenantId] });
       qc.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });

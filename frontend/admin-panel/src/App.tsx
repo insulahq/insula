@@ -65,6 +65,7 @@ const NetworkTrustPage = lazy(() => import('@/pages/NetworkTrustPage'));
 const PosturePage = lazy(() => import('@/pages/PosturePage'));
 const WebDefensePage = lazy(() => import('@/pages/WebDefensePage'));
 const OidcPage = lazy(() => import('@/pages/security/OidcPage'));
+const AiAgentsPage = lazy(() => import('@/pages/security/AiAgentsPage'));
 import ErrorBoundary from '@/components/ErrorBoundary';
 import RouteFallback from '@/components/RouteFallback';
 
@@ -146,6 +147,7 @@ export default function App() {
             <Route path="security/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityAndSessionsPage /></ProtectedRoute>} />
             <Route path="security/web-defense/:tab?" element={<ProtectedRoute allowedRoles={['super_admin']}><TabRoute page="/security/web-defense"><WebDefensePage /></TabRoute></ProtectedRoute>} />
             <Route path="security/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcPage /></ProtectedRoute>} />
+            <Route path="security/ai-agents" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiAgentsPage /></ProtectedRoute>} />
 
             {/* Monitoring */}
             <Route path="monitoring/:tab?" element={<TabRoute page="/monitoring"><Monitoring /></TabRoute>} />

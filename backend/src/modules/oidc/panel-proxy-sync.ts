@@ -113,6 +113,7 @@ export async function syncPanelProxies(
     protectTenantViaProxy: wanted.tenant,
     breakGlassPath: settings.breakGlassPath,
     adminHost: extractHost(urls.admin),
+    tenantHost: extractHost(urls.tenant),
   }, { deleteUnprotected: false });
 
   // 4. Routes.

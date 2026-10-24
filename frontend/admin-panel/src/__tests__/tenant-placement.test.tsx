@@ -81,6 +81,15 @@ describe('PlacementStatusPanel (tenant detail)', () => {
     const banner = screen.getByTestId('placement-misplaced-banner');
     expect(banner).toHaveTextContent('Not on its primary node node-a');
     expect(banner).toHaveTextContent('running on node-b, data on node-b — since 2026-10-02 05:10 UTC');
+  });
+
+  it('names the time in the browser\'s zone, with its offset', () => {
+    vi.stubEnv('TZ', 'Asia/Tokyo');
+    try {
+      withPlacement(full(misplacedSummary));
+      render(<PlacementStatusPanel tenantId="t1" />);
+      expect(screen.getByTestId('placement-misplaced-banner')).toHaveTextContent('since 2026-10-02 14:10 UTC+9');
+    } finally { vi.unstubAllEnvs(); }
     expect(screen.getByTestId('placement-move-back')).toHaveTextContent('Move back to node-a');
     expect(screen.getByTestId('placement-make-primary')).toHaveTextContent('Make node-b the primary node');
   });

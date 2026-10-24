@@ -54,9 +54,9 @@ spec:
         - name: modsec
           # OWASP CRS pre-loaded nginx + libmodsecurity image. The
           # `-alpine` variant is tiny (~150MB final image). Pinned to
-          # the canonical 4.25.0 LTS tag (CRS 4.x stream). Bump via PR
+          # CRS 4.30.0, the newest nginx-alpine build of it. Bump via PR
           # after running the live block-test smoke.
-          image: docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307
+          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202610180210
           imagePullPolicy: IfNotPresent
           env:
             - name: BACKEND
@@ -190,7 +190,7 @@ spec:
         # patch. Redaction is a value-only substitution, so the record stays
         # valid JSON (verified against a real blocked request).
         - name: audit-redactor
-          image: docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307
+          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202610180210
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh

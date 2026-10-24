@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Bot, Loader2, ShieldCheck } from 'lucide-react';
-import { MCP_OAUTH_TOKEN_TTL_SECONDS, type McpScope } from '@insula/api-contracts';
+import { MCP_CONNECTION_MAX_SECONDS, type McpScope } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useConsentDecision, useConsentRequest } from '@/hooks/use-api-tokens';
@@ -43,7 +43,7 @@ export default function OAuthConsent() {
 
   const loadError = request.error ? extractOperatorError(request.error) : null;
   const decideError = decision.error ? extractOperatorError(decision.error) : null;
-  const hours = Math.round(MCP_OAUTH_TOKEN_TTL_SECONDS / 3600);
+  const hours = Math.round(MCP_CONNECTION_MAX_SECONDS / 3600);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-10 dark:bg-gray-900">
@@ -101,8 +101,8 @@ export default function OAuthConsent() {
             </fieldset>
 
             <p className="mt-4 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-              <ShieldCheck size={14} /> Access lasts {hours} hours, never exceeds your role, and is logged. You can
-              revoke it any time under User Settings → API tokens &amp; AI agents.
+              <ShieldCheck size={14} /> Access renews every hour for at most {hours} hours, never exceeds your role,
+              and is logged. You can disconnect the agent any time under User Settings → API tokens &amp; AI agents.
             </p>
 
             {decideError && <div className="mt-4"><ErrorPanel error={decideError} /></div>}

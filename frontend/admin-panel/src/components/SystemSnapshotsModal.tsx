@@ -1,3 +1,6 @@
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -318,7 +321,7 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                   <thead className="text-gray-500 dark:text-gray-400">
                     <tr>
                       <th className="text-left py-1 pr-2">Name</th>
-                      <th className="text-left py-1 pr-2">Created</th>
+                      <th className="text-left py-1 pr-2" title={localZoneTitle()}>Created ({utcOffsetLabel()})</th>
                       <th className="text-right py-1 pr-2">Size</th>
                       <th className="text-left py-1 pr-2">Status</th>
                       <th className="text-left py-1 pr-2">Label</th>
@@ -329,7 +332,7 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                     {snapshots.map((s) => (
                       <tr key={s.snapshotName} className="border-t border-gray-200/60 dark:border-gray-700/40" data-testid={`snapshot-row-${s.snapshotName}`}>
                         <td className="py-1.5 pr-2 font-mono">{s.snapshotName}</td>
-                        <td className="py-1.5 pr-2 text-gray-500">{s.createdAt ? new Date(s.createdAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}</td>
+                        <td className="py-1.5 pr-2 text-gray-500">{s.createdAt ? <LocalTime iso={s.createdAt} /> : '—'}</td>
                         <td className="py-1.5 pr-2 text-right tabular-nums">{formatBytes(s.sizeBytes)}</td>
                         <td className="py-1.5 pr-2">
                           {s.markedForRemoval ? (

@@ -144,6 +144,7 @@ import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
 import { emailDkimRotateRoutes } from './modules/email-dkim/rotate-routes.js';
+import { emailDkimKeysRoutes } from './modules/email-dkim/keys-routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
 import { registerMailDriftRoutes } from './modules/mail-drift/routes.js';
@@ -781,6 +782,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
   await app.register(emailDkimRotateRoutes, { prefix: '/api/v1' }); // 2026-05-06: manual DKIM rotation endpoint
+  await app.register(emailDkimKeysRoutes, { prefix: '/api/v1' }); // tenant-panel DKIM signing-keys list
   // mail-submit (PHP sendmail-compat credential provisioning) removed:
   // obsolete + never production-tested. Tenant apps that need to send mail
   // configure an external SMTP relay (or mail.<apex> with manual credentials)
@@ -1862,6 +1864,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => { principalsSyncHandle.stop(); });
       }
 
+      // Stalwart never deletes an expired login password (app password) — one
+      // given an expiry date, or an "Open webmail" session Bulwark leaves on
+      // the mailbox unless the user signs out. Hourly, one replica. No
+      // mailboxes, no calls.
+      const { startLoginPasswordReaper } = await import('./modules/login-passwords/login-password-reaper.js');
+      const loginPasswordReaperHandle = startLoginPasswordReaper(app.db);
+      app.addHook('onClose', () => loginPasswordReaperHandle.stop());
+
       // Multi-host isolation remediation (ADR-059 amendment).
       //
       // Instances deployed before per-folder mounts keep the whole tenant
@@ -2714,6 +2724,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
         const dnsResolverStop = startDnsResolverReconciler();
         app.addHook('onClose', () => dnsResolverStop());
+
+        // App-password limit reconciler: keeps Stalwart's per-account limit at
+        // 11 or more — 10 login passwords plus one "Open webmail" session.
+        // Stalwart's default of 5 (expired ones counted) left mailboxes unable
+        // to open webmail or take a new login password.
+        // See backend/src/modules/mail-admin/app-password-limit-reconciler.ts.
+        const { startAppPasswordLimitReconciler } = await import(
+          './modules/mail-admin/app-password-limit-reconciler.js'
+        );
+        const appPasswordLimitStop = startAppPasswordLimitReconciler();
+        app.addHook('onClose', () => appPasswordLimitStop());
 
         // Mail-task orphan reaper: mark stale 'running'
         // mail.migration / mail.port-exposure tasks as 'failed' on boot.

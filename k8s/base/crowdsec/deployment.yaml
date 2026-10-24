@@ -128,7 +128,7 @@ spec:
         # copy + chown into an emptyDir, drops all capabilities except the two
         # the copy needs, and the LAPI itself keeps running as uid 1000.
         - name: seed-config
-          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          image: docker.io/crowdsecurity/crowdsec:v1.8.1
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -248,14 +248,17 @@ spec:
             - name: db-credentials
               mountPath: /db
               readOnly: true
-      # Spread replicas across nodes. whenUnsatisfiable: ScheduleAnyway is
-      # deliberate — on a single-node cluster (production today) a DoNotSchedule
-      # constraint would leave the second replica Pending forever, turning an
-      # availability improvement into a permanently degraded Deployment.
+      # One replica per server, hard. Soft (ScheduleAnyway) put both replicas
+      # on the first server back after a full-cluster restart, and nothing
+      # moved them. The system-node-affinity component pins it to servers, so
+      # only servers are spread domains: a one-server cluster still runs both
+      # (one domain, skew 0), and a down or cordoned server makes its replica
+      # wait instead of doubling up. platform-api moves a replica that is
+      # doubled up once a server has room (system-pod-placement).
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           # Count only THIS revision's pods: during a rollout the old pods
           # still match labelSelector, so without this every new pod skews
           # onto whichever node held none of the old ones (a newly joined,
@@ -274,9 +277,11 @@ spec:
           effect: NoSchedule
       containers:
         - name: crowdsec
-          # v1.7.8 — latest stable on the v1.7.x line. Includes
-          # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
-          image: docker.io/crowdsecurity/crowdsec:v1.7.8
+          # v1.8.1 — latest stable. 1.8.0 fixes two denial-of-service bugs in
+          # the HTTP and k8s-audit datasources (unused here) and migrates the
+          # LAPI's Postgres schema on start, additively (bouncers.stream_cursor,
+          # a new decisions index); each bouncer does one full resync after.
+          image: docker.io/crowdsecurity/crowdsec:v1.8.1
           imagePullPolicy: IfNotPresent
           # DISABLE_ONLINE_API comes from the crowdsec-capi-config ConfigMap
           # (community blocklist opt-in). `optional: true` is deliberate and

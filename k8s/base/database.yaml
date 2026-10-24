@@ -258,9 +258,14 @@ spec:
       - key: insula.host/server-only
         operator: Exists
         effect: NoSchedule
-    # Spread across nodes when instances >= 2 — prevents a
-    # multi-instance cluster from co-locating on one server.
-    podAntiAffinityType: preferred
+    # One instance per server, hard. `preferred` let two instances share a
+    # server whenever the scheduler had no better choice at that moment —
+    # production ran system-db-2 and -3 on one server after an HA resize, and
+    # nothing moved them back. An instance that cannot get a server of its
+    # own now waits Pending; HA never asks for more instances than servers
+    # (cnpgInstancesForSystemTier). Changing this rolls the instances once,
+    # the primary last.
+    podAntiAffinityType: required
     topologyKey: kubernetes.io/hostname
 
   # Monitoring: CNPG instance pods ALWAYS serve Postgres metrics on

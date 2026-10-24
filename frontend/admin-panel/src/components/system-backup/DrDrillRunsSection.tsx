@@ -7,6 +7,9 @@
  * (the weekly GitHub Actions workflow + any manual triggers).
  */
 
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import { CheckCircle2, XCircle, Clock, AlertTriangle } from 'lucide-react';
 import type { DrDrillRun } from '@insula/api-contracts';
 import { useDrDrillRuns, useDrDrillSummary } from '@/hooks/use-system-backup';
@@ -67,7 +70,7 @@ export default function DrDrillRunsSection() {
         <table className="min-w-full text-sm" data-testid="dr-drill-runs-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-3 py-2 text-left">When</th>
+              <th className="px-3 py-2 text-left" title={localZoneTitle()}>When ({utcOffsetLabel()})</th>
               <th className="px-3 py-2 text-left">Status</th>
               <th className="px-3 py-2 text-left">Trigger</th>
               <th className="px-3 py-2 text-left">Duration</th>
@@ -80,7 +83,7 @@ export default function DrDrillRunsSection() {
             {runs.map((r) => (
               <tr key={r.id}>
                 <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">
-                  {new Date(r.startedAt).toISOString().slice(0, 19).replace('T', ' ')}
+                  <LocalTime iso={r.startedAt} seconds />
                 </td>
                 <td className="px-3 py-2"><StatusBadge status={r.status} /></td>
                 <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{r.trigger}</td>

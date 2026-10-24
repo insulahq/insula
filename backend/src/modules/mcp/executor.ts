@@ -12,12 +12,19 @@
  * (tenants/impersonation.ts) in-process: a two-minute tenant token that
  * inherits the API token's scopes and never leaves the server; the audit trail
  * records the admin behind every action taken with it.
+ *
+ * A TENANT agent (the tenant panel's MCP endpoint) is the tenant user who
+ * approved it: its calls carry that user's own tenant-panel claims — role,
+ * tenant — so every tenant guard applies exactly as in the panel. Its tenant
+ * id is filled into the path for it; `asTenant` does not exist there.
  */
 import type { FastifyInstance } from 'fastify';
 import type { McpScope } from '@insula/api-contracts';
 import { signAccessToken } from '../auth/access-token.js';
+import { tenantAgentCredentialRefused } from '../../shared/api-scope.js';
 import { API_PREFIX, type Operation } from './catalog.js';
 import type { TokenPrincipal } from './tokens.js';
+import { tenantParamOf } from './tools.js';
 import { findImpersonationTarget, signImpersonationToken } from '../tenants/impersonation.js';
 
 /** Largest response handed back to an agent before it is cut. */
@@ -48,6 +55,11 @@ export function buildPath(op: Operation, params: Record<string, string | number>
     if (v === undefined || v === null || String(v) === '') {
       throw new OperationInputError(`missing path parameter "${name}" for ${op.key}`);
     }
+    // encodeURIComponent leaves `.` alone, and the injected request's URL
+    // would resolve a `..` segment into a different route.
+    if (String(v) === '.' || String(v) === '..') {
+      throw new OperationInputError(`path parameter "${name}" cannot be "${String(v)}"`);
+    }
     return encodeURIComponent(String(v));
   });
 }
@@ -70,11 +82,21 @@ function claimFor(principal: TokenPrincipal) {
     name: principal.name,
     scopes: [...principal.scopes] as McpScope[],
     via: 'mcp' as const,
+    audience: principal.audience,
   };
 }
 
 function adminCallToken(app: FastifyInstance, principal: TokenPrincipal): string {
   return signAccessToken(app, { userId: principal.userId, role: principal.role, panel: 'admin' }, {
+    ttlSeconds: CALL_TOKEN_TTL_SECONDS, via: 'mcp', apiToken: claimFor(principal),
+  });
+}
+
+/** The tenant user's own tenant-panel claims, for a tenant agent's call. */
+function tenantUserCallToken(app: FastifyInstance, principal: TokenPrincipal): string {
+  return signAccessToken(app, {
+    userId: principal.userId, role: principal.role, panel: 'tenant', tenantId: principal.tenantId,
+  }, {
     ttlSeconds: CALL_TOKEN_TTL_SECONDS, via: 'mcp', apiToken: claimFor(principal),
   });
 }
@@ -135,6 +157,18 @@ export async function executeOperation(
   clientIp: string,
 ): Promise<OperationResult> {
   if (op.excluded) throw new OperationInputError(`${op.key} is not available to agents: ${op.excluded}`);
+  if (principal.audience === 'tenant') {
+    if (!principal.tenantId) throw new OperationInputError('this connection is not bound to a tenant');
+    if (input.asTenant) throw new OperationInputError('asTenant is not available here: this agent already acts in its own tenant');
+    // Said here so the agent gets a reason, not a bare 403; the route refuses it too.
+    if (op.issuesCredential) throw new OperationInputError(`${op.key} is not available to agents: ${tenantAgentCredentialRefused().message}`);
+    // The tenant is the connection's, whatever the agent passed — a different
+    // id would only be refused by the route's tenant guard anyway.
+    const tenantParam = tenantParamOf(op);
+    const pathParams = tenantParam ? { ...input.pathParams, [tenantParam]: principal.tenantId } : input.pathParams;
+    const url = `${API_PREFIX}${buildPath(op, pathParams)}${buildQuery(input.query)}`;
+    return injectAs(app, tenantUserCallToken(app, principal), op.method, url, input.body, clientIp);
+  }
   const url = `${API_PREFIX}${buildPath(op, input.pathParams)}${buildQuery(input.query)}`;
   const token = input.asTenant
     ? await tenantCallToken(app, principal, input.asTenant)

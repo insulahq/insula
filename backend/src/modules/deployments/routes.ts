@@ -581,7 +581,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/deployments/:id/db-users
-  app.post('/tenants/:tenantId/deployments/:id/db-users', async (request, reply) => {
+  app.post('/tenants/:tenantId/deployments/:id/db-users', { config: { issuesCredential: true } }, async (request, reply) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const body = (request.body ?? {}) as { username?: string; database?: string; password?: unknown };
     if (!body.username) {
@@ -624,7 +624,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/deployments/:id/db-users/:username/password
-  app.post('/tenants/:tenantId/deployments/:id/db-users/:username/password', async (request) => {
+  app.post('/tenants/:tenantId/deployments/:id/db-users/:username/password', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, id, username } = request.params as { tenantId: string; id: string; username: string };
 
     // See the create route: a submitted password was silently ignored while the

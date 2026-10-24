@@ -1,46 +1,55 @@
 /**
- * OAuth 2.1 authorization server for MCP clients.
+ * OAuth 2.1 authorization server for MCP clients — one per panel host.
  *
  *   discovery     /.well-known/oauth-protected-resource[/api/v1/mcp]   (RFC 9728)
  *                 /.well-known/oauth-authorization-server               (RFC 8414)
  *   registration  POST /api/v1/oauth/register   — open, public clients    (RFC 7591)
  *   authorize     GET  /api/v1/oauth/authorize  — PKCE S256 only; parks the
- *                 request and sends the browser to the admin panel's consent page
+ *                 request and sends the browser to that panel's consent page
  *   consent API   GET  /api/v1/oauth/requests/:id, POST …/:id/decision — called
  *                 by the panel with the signed-in user's session
- *   token         POST /api/v1/oauth/token      — authorization_code only;
- *                 8-hour access token, no refresh token
- *   revocation    POST /api/v1/oauth/revoke     (RFC 7009)
+ *   token         POST /api/v1/oauth/token      — authorization_code creates a
+ *                 CONNECTION (tokens.ts): a 1-hour access token plus a refresh
+ *                 token, renewed with refresh_token (rotated on every use) until
+ *                 the connection ends 8 hours after approval
+ *   revocation    POST /api/v1/oauth/revoke     (RFC 7009) — ends the connection
  *
- * Tokens are issued for ONE resource, the MCP endpoint (RFC 8707), and only to
- * a user holding MCP_ALLOWED_ROLE. The token, discovery, registration and
- * revocation endpoints answer in OAuth's own JSON error format — not the
- * platform envelope — because OAuth clients parse them.
+ * The admin host (admin.<apex>) issues tokens for the admin MCP endpoint to
+ * users holding MCP_ALLOWED_ROLE; the tenant host (tenant.<apex>) issues tokens
+ * for the tenant MCP endpoint to tenant users, while the operator keeps tenant
+ * agents switched on. Every token names its endpoint (RFC 8707 resource), so a
+ * token of one panel is worthless at the other. The token, discovery,
+ * registration and revocation endpoints answer in OAuth's own JSON error
+ * format — not the platform envelope — because OAuth clients parse them.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   MCP_ALLOWED_ROLE, MCP_SCOPES, mcpConsentDecisionSchema, mcpScopeSchema,
-  type McpConsentRequest, type McpScope,
+  type McpAudience, type McpConsentRequest, type McpScope,
 } from '@insula/api-contracts';
-import { mcpOauthClients, mcpOauthRequests, mcpTokens } from '../../db/schema.js';
+import { mcpConnections, mcpOauthClients, mcpOauthRequests, users } from '../../db/schema.js';
+import type { JwtPayload } from '../../middleware/auth.js';
 import { authenticate } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import {
   AUTHORIZATION_SERVER_METADATA_PATH, CONSENT_PAGE_PATH, MCP_PATH, OAUTH_PREFIX,
-  PROTECTED_RESOURCE_METADATA_PATH, agentUrls,
+  PROTECTED_RESOURCE_METADATA_PATH, agentUrls, audienceForHost, audienceForResource,
 } from './paths.js';
+import { tenantAgentsEnabled } from './settings.js';
 import {
-  clearTokenCache, evictUnapprovedClient, hashSecret, issueOauthToken, looksLikeToken, resolveToken,
+  createConnection, evictUnapprovedClient, hashSecret, looksLikeToken, refreshConnection,
+  resolveToken, revokeByClientToken,
 } from './tokens.js';
 
 /** How long a user has to decide, and a client to redeem the code. */
 const REQUEST_TTL_MS = 10 * 60_000;
 /** Registered clients ever kept; registration refuses beyond this. */
 const MAX_CLIENTS = 2000;
+const GRANT_TYPES = ['authorization_code', 'refresh_token'] as const;
 
 const oauthError = (reply: FastifyReply, status: number, error: string, description: string) =>
   reply.code(status).header('cache-control', 'no-store').send({ error, error_description: description });
@@ -100,7 +109,7 @@ const authorizeSchema = z.object({
   resource: z.string().max(2000).optional(),
 });
 
-const tokenSchema = z.object({
+const codeGrantSchema = z.object({
   grant_type: z.literal('authorization_code'),
   code: z.string().min(1).max(200),
   redirect_uri: z.string().min(1).max(2000),
@@ -109,38 +118,82 @@ const tokenSchema = z.object({
   resource: z.string().max(2000).optional(),
 });
 
+const refreshGrantSchema = z.object({
+  grant_type: z.literal('refresh_token'),
+  refresh_token: z.string().min(1).max(200),
+  client_id: z.string().min(1).max(64),
+  resource: z.string().max(2000).optional(),
+  scope: z.string().max(100).optional(),
+});
+
+/**
+ * Whether the signed-in caller may approve an agent for `audience`: an admin
+ * for the admin endpoint; for the tenant endpoint a tenant user signing in as
+ * themselves — never an impersonation session, whose approval would hand staff
+ * a free-standing tenant credential that outlives the impersonation and is
+ * audited as the tenant (staff agents act on tenants with `asTenant` instead).
+ */
+export async function assertMayConnect(app: FastifyInstance, user: JwtPayload, audience: McpAudience): Promise<void> {
+  if (audience === 'admin') {
+    if (user.panel !== 'admin' || user.role !== MCP_ALLOWED_ROLE) {
+      throw new ApiError('AGENT_ACCESS_NOT_ALLOWED', 'Only users with the admin role can connect AI agents to the admin panel.', 403);
+    }
+    return;
+  }
+  if (user.panel !== 'tenant' || !user.tenantId) {
+    throw new ApiError('AGENT_ACCESS_NOT_ALLOWED', 'Sign in to the tenant panel to connect an AI agent to it.', 403);
+  }
+  if (user.impersonatedBy) {
+    throw new ApiError(
+      'AGENT_ACCESS_NOT_ALLOWED',
+      'An impersonation session cannot connect an AI agent for the tenant. Staff agents act on a tenant through the admin MCP endpoint (asTenant).',
+      403,
+    );
+  }
+  if (!(await tenantAgentsEnabled(app.db))) {
+    throw new ApiError('TENANT_AGENTS_DISABLED', 'AI agents are switched off for tenant panels on this platform.', 403);
+  }
+}
+
 export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
-  const urls = agentUrls(app.config as never);
+  const cfg = app.config as never;
+  const urlsFor = (request: FastifyRequest) => agentUrls(cfg, audienceForHost(cfg, request.hostname));
 
   // OAuth clients POST the token / revoke endpoints as a form.
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
     done(null, Object.fromEntries(new URLSearchParams(String(body))));
   });
 
-  // ── discovery ────────────────────────────────────────────────────────────
-  const resourceMetadata = {
-    resource: urls.mcp,
-    authorization_servers: [urls.origin],
-    scopes_supported: [...MCP_SCOPES],
-    bearer_methods_supported: ['header'],
-    resource_name: 'Insula admin (MCP)',
+  // ── discovery (per panel host) ───────────────────────────────────────────
+  const resourceMetadata = async (request: FastifyRequest) => {
+    const urls = urlsFor(request);
+    return {
+      resource: urls.mcp,
+      authorization_servers: [urls.origin],
+      scopes_supported: [...MCP_SCOPES],
+      bearer_methods_supported: ['header'],
+      resource_name: urls.audience === 'tenant' ? 'Insula tenant panel (MCP)' : 'Insula admin (MCP)',
+    };
   };
   for (const path of [PROTECTED_RESOURCE_METADATA_PATH, `${PROTECTED_RESOURCE_METADATA_PATH}${MCP_PATH}`]) {
-    app.get(path, { config: { skipAuth: true } }, async () => resourceMetadata);
+    app.get(path, { config: { skipAuth: true } }, resourceMetadata);
   }
-  app.get(AUTHORIZATION_SERVER_METADATA_PATH, { config: { skipAuth: true } }, async () => ({
-    issuer: urls.origin,
-    authorization_endpoint: `${urls.origin}${OAUTH_PREFIX}/authorize`,
-    token_endpoint: `${urls.origin}${OAUTH_PREFIX}/token`,
-    registration_endpoint: `${urls.origin}${OAUTH_PREFIX}/register`,
-    revocation_endpoint: `${urls.origin}${OAUTH_PREFIX}/revoke`,
-    response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
-    code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: ['none'],
-    revocation_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: [...MCP_SCOPES],
-  }));
+  app.get(AUTHORIZATION_SERVER_METADATA_PATH, { config: { skipAuth: true } }, async (request) => {
+    const { origin } = urlsFor(request);
+    return {
+      issuer: origin,
+      authorization_endpoint: `${origin}${OAUTH_PREFIX}/authorize`,
+      token_endpoint: `${origin}${OAUTH_PREFIX}/token`,
+      registration_endpoint: `${origin}${OAUTH_PREFIX}/register`,
+      revocation_endpoint: `${origin}${OAUTH_PREFIX}/revoke`,
+      response_types_supported: ['code'],
+      grant_types_supported: [...GRANT_TYPES],
+      code_challenge_methods_supported: ['S256'],
+      token_endpoint_auth_methods_supported: ['none'],
+      revocation_endpoint_auth_methods_supported: ['none'],
+      scopes_supported: [...MCP_SCOPES],
+    };
+  });
 
   // ── dynamic client registration (public clients) ─────────────────────────
   app.post(`${OAUTH_PREFIX}/register`, { config: { skipAuth: true } }, async (request, reply) => {
@@ -149,8 +202,8 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
     const meta = parsed.data;
     const bad = meta.redirect_uris.find((u) => !acceptableRedirectUri(u));
     if (bad) return oauthError(reply, 400, 'invalid_redirect_uri', `redirect_uri not allowed: ${bad}`);
-    if (meta.grant_types && meta.grant_types.some((g) => g !== 'authorization_code')) {
-      return oauthError(reply, 400, 'invalid_client_metadata', 'only the authorization_code grant is supported');
+    if (meta.grant_types && meta.grant_types.some((g) => !(GRANT_TYPES as readonly string[]).includes(g))) {
+      return oauthError(reply, 400, 'invalid_client_metadata', 'only the authorization_code and refresh_token grants are supported');
     }
     const [{ n }] = await app.db.select({ n: sql<number>`count(*)::int` }).from(mcpOauthClients);
     if (n >= MAX_CLIENTS && !(await evictUnapprovedClient(app.db))) {
@@ -163,7 +216,7 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
       client_id: id,
       client_name: name,
       redirect_uris: meta.redirect_uris,
-      grant_types: ['authorization_code'],
+      grant_types: [...GRANT_TYPES],
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
       client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -172,6 +225,7 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
 
   // ── authorize: park the request, send the browser to the consent page ────
   app.get(`${OAUTH_PREFIX}/authorize`, { config: { skipAuth: true } }, async (request, reply) => {
+    const urls = urlsFor(request);
     const q = request.query as Record<string, unknown>;
     const clientId = typeof q.client_id === 'string' ? q.client_id : '';
     const redirectUri = typeof q.redirect_uri === 'string' ? q.redirect_uri : '';
@@ -203,13 +257,8 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
     return reply.redirect(`${urls.origin}${CONSENT_PAGE_PATH}?request=${encodeURIComponent(id)}`);
   });
 
-  // ── consent API (the admin panel, with the user's session) ────────────────
+  // ── consent API (a panel, with the user's session) ───────────────────────
   const sessionOnly = 'An API token cannot approve agent access — sign in to the panel.';
-  const consentGuard = (role: string): void => {
-    if (role !== MCP_ALLOWED_ROLE) {
-      throw new ApiError('AGENT_ACCESS_NOT_ALLOWED', 'Only users with the admin role can connect AI agents.', 403);
-    }
-  };
 
   async function pendingRequest(id: string) {
     const [row] = await app.db
@@ -217,31 +266,40 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
         req: mcpOauthRequests,
         clientName: mcpOauthClients.name,
         clientCreatedAt: mcpOauthClients.createdAt,
-        clientLastUsedAt: mcpOauthClients.lastUsedAt,
       })
       .from(mcpOauthRequests)
       .innerJoin(mcpOauthClients, eq(mcpOauthClients.id, mcpOauthRequests.clientId))
       .where(and(eq(mcpOauthRequests.id, id), isNull(mcpOauthRequests.userId), gt(mcpOauthRequests.expiresAt, new Date())))
       .limit(1);
-    if (!row) throw new ApiError('AUTHORIZATION_REQUEST_NOT_FOUND', 'This authorization request has expired or was already answered.', 404);
-    return row;
+    const audience = row ? audienceForResource(cfg, row.req.resource) : null;
+    if (!row || !audience) {
+      throw new ApiError('AUTHORIZATION_REQUEST_NOT_FOUND', 'This authorization request has expired or was already answered.', 404);
+    }
+    return { ...row, audience };
   }
 
   app.get(`${OAUTH_PREFIX}/requests/:id`, {
     onRequest: [authenticate],
     config: { apiTokenForbidden: sessionOnly },
   }, async (request) => {
-    consentGuard(request.user.role);
     const { id } = request.params as { id: string };
-    const { req, clientName, clientCreatedAt, clientLastUsedAt } = await pendingRequest(id);
+    const { req, audience, clientName, clientCreatedAt } = await pendingRequest(id);
+    await assertMayConnect(app, request.user, audience);
+    // Has THIS user approved this client before? Asked per user: a client
+    // anyone may register would otherwise lose the first-time warning for
+    // everyone once its author approved it themselves.
+    const [prior] = await app.db.select({ id: mcpConnections.id }).from(mcpConnections)
+      .where(and(eq(mcpConnections.clientId, req.clientId), eq(mcpConnections.userId, request.user.sub)))
+      .limit(1);
     const body: McpConsentRequest = {
       id: req.id,
       clientName,
+      audience,
       redirectHost: new URL(req.redirectUri).host || req.redirectUri,
       requestedScopes: req.requestedScopes.filter((s): s is McpScope => mcpScopeSchema.safeParse(s).success),
       expiresAt: req.expiresAt.toISOString(),
       clientRegisteredAt: clientCreatedAt.toISOString(),
-      clientApprovedBefore: clientLastUsedAt !== null,
+      clientApprovedBefore: prior !== undefined,
     };
     return success(body);
   });
@@ -250,11 +308,11 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate],
     config: { apiTokenForbidden: sessionOnly },
   }, async (request) => {
-    consentGuard(request.user.role);
     const { id } = request.params as { id: string };
     const parsed = mcpConsentDecisionSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
-    const { req } = await pendingRequest(id);
+    const { req, audience } = await pendingRequest(id);
+    await assertMayConnect(app, request.user, audience);
     const state = req.state ?? undefined;
     if (!parsed.data.approve) {
       await app.db.delete(mcpOauthRequests).where(eq(mcpOauthRequests.id, id));
@@ -272,16 +330,47 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── token ────────────────────────────────────────────────────────────────
+  const tokenResponse = (reply: FastifyReply, issued: { access: { token: string; expiresIn: number }; refreshToken: string }, scopes: readonly McpScope[]) =>
+    reply.header('cache-control', 'no-store').send({
+      access_token: issued.access.token,
+      token_type: 'Bearer',
+      expires_in: issued.access.expiresIn,
+      refresh_token: issued.refreshToken,
+      scope: scopes.join(' '),
+    });
+
+  /**
+   * The approving user may still connect an agent to `audience` — checked
+   * again at redemption, since a role, tenant or switch can change in the ten
+   * minutes a code lives. Returns the tenant a tenant connection belongs to.
+   */
+  async function connectableTenant(userId: string, audience: McpAudience): Promise<{ ok: boolean; tenantId: string | null }> {
+    const [u] = await app.db.select({ status: users.status, panel: users.panel, role: users.roleName, tenantId: users.tenantId })
+      .from(users).where(eq(users.id, userId)).limit(1);
+    if (!u || u.status !== 'active') return { ok: false, tenantId: null };
+    if (audience === 'admin') return { ok: u.panel === 'admin' && u.role === MCP_ALLOWED_ROLE, tenantId: null };
+    const ok = u.panel === 'tenant' && u.tenantId !== null && await tenantAgentsEnabled(app.db);
+    return { ok, tenantId: u.tenantId };
+  }
+
   app.post(`${OAUTH_PREFIX}/token`, { config: { skipAuth: true } }, async (request, reply) => {
-    const parsed = tokenSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const grant = (request.body as { grant_type?: unknown } | null)?.grant_type;
-      return grant && grant !== 'authorization_code'
-        ? oauthError(reply, 400, 'unsupported_grant_type', 'only authorization_code is supported')
-        : oauthError(reply, 400, 'invalid_request', parsed.error.issues[0].message);
+    const grant = (request.body as { grant_type?: unknown } | null)?.grant_type;
+    if (grant === 'refresh_token') {
+      const parsed = refreshGrantSchema.safeParse(request.body);
+      if (!parsed.success) return oauthError(reply, 400, 'invalid_request', parsed.error.issues[0].message);
+      const result = await refreshConnection(app.db, parsed.data.refresh_token, parsed.data.client_id);
+      if (!result.ok) return oauthError(reply, 400, 'invalid_grant', result.reason);
+      if (parsed.data.resource && parsed.data.resource !== result.resource) {
+        return oauthError(reply, 400, 'invalid_target', `resource must be ${result.resource}`);
+      }
+      return tokenResponse(reply, result.issued, result.scopes);
     }
+    if (grant !== undefined && grant !== 'authorization_code') {
+      return oauthError(reply, 400, 'unsupported_grant_type', 'only authorization_code and refresh_token are supported');
+    }
+    const parsed = codeGrantSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return oauthError(reply, 400, 'invalid_request', parsed.error.issues[0].message);
     const t = parsed.data;
-    if (t.resource && t.resource !== urls.mcp) return oauthError(reply, 400, 'invalid_target', `resource must be ${urls.mcp}`);
     // Redeem exactly once: the UPDATE … WHERE code_used_at IS NULL is the lock.
     const [req] = await app.db.update(mcpOauthRequests)
       .set({ codeUsedAt: new Date() })
@@ -292,22 +381,23 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
       ))
       .returning();
     if (!req || !req.userId || !req.grantedScopes) return oauthError(reply, 400, 'invalid_grant', 'invalid or expired code');
+    if (t.resource && t.resource !== req.resource) return oauthError(reply, 400, 'invalid_target', `resource must be ${req.resource}`);
     if (req.clientId !== t.client_id || req.redirectUri !== t.redirect_uri) {
       return oauthError(reply, 400, 'invalid_grant', 'code was issued to another client or redirect_uri');
     }
     if (pkceS256(t.code_verifier) !== req.codeChallenge) return oauthError(reply, 400, 'invalid_grant', 'PKCE verification failed');
+    const audience = audienceForResource(cfg, req.resource);
+    if (!audience) return oauthError(reply, 400, 'invalid_grant', 'invalid or expired code');
+    const who = await connectableTenant(req.userId, audience);
+    if (!who.ok) return oauthError(reply, 400, 'invalid_grant', 'the approving user can no longer connect an agent here');
     const [client] = await app.db.select().from(mcpOauthClients).where(eq(mcpOauthClients.id, req.clientId)).limit(1);
     const scopes = req.grantedScopes.filter((s): s is McpScope => mcpScopeSchema.safeParse(s).success);
-    const issued = await issueOauthToken(app.db, {
-      userId: req.userId, clientId: req.clientId, clientName: client?.name ?? 'MCP client', scopes, resource: req.resource,
+    const issued = await createConnection(app.db, {
+      userId: req.userId, tenantId: who.tenantId, clientId: req.clientId, clientName: client?.name ?? 'MCP client',
+      audience, scopes, resource: req.resource,
     });
     await app.db.update(mcpOauthClients).set({ lastUsedAt: new Date() }).where(eq(mcpOauthClients.id, req.clientId));
-    return reply.header('cache-control', 'no-store').send({
-      access_token: issued.token,
-      token_type: 'Bearer',
-      expires_in: issued.expiresIn,
-      scope: scopes.join(' '),
-    });
+    return tokenResponse(reply, issued, scopes);
   });
 
   // ── edge check for a proxy-protected admin panel ─────────────────────────
@@ -331,11 +421,7 @@ export async function mcpOauthRoutes(app: FastifyInstance): Promise<void> {
   // ── revocation (any client may revoke a token it holds) ──────────────────
   app.post(`${OAUTH_PREFIX}/revoke`, { config: { skipAuth: true } }, async (request, reply) => {
     const token = (request.body as { token?: unknown } | null)?.token;
-    if (typeof token === 'string' && token) {
-      await app.db.update(mcpTokens).set({ revokedAt: new Date() })
-        .where(and(eq(mcpTokens.tokenHash, hashSecret(token)), eq(mcpTokens.kind, 'oauth'), isNull(mcpTokens.revokedAt)));
-      clearTokenCache();
-    }
+    if (typeof token === 'string' && token) await revokeByClientToken(app.db, token);
     return reply.code(200).header('cache-control', 'no-store').send({});
   });
 }

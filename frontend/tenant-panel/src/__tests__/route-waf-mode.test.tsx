@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import RouteDetail from '../pages/RouteDetail';
 import { apiFetch } from '@/lib/api-client';
 
@@ -34,8 +34,10 @@ const LOGS = [
 ];
 
 let patched: unknown[] = [];
+let exclusions: unknown[] = [];
 beforeEach(() => {
   patched = [];
+  exclusions = [];
   mockApiFetch.mockReset();
   mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
     if (url.endsWith('/security') && init?.method === 'PATCH') {
@@ -43,7 +45,7 @@ beforeEach(() => {
       return Promise.resolve({ data: { ...ROUTE, wafMode: 'enforced', wafDetectionOnly: false } }) as never;
     }
     if (url.endsWith('/waf-logs')) return Promise.resolve({ data: LOGS }) as never;
-    if (url.endsWith('/waf-exclusions')) return Promise.resolve({ data: { exclusions: [] } }) as never;
+    if (url.endsWith('/waf-exclusions')) return Promise.resolve({ data: { exclusions } }) as never;
     if (url.endsWith('/routes/route-1')) return Promise.resolve({ data: ROUTE }) as never;
     return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } }) as never;
   });
@@ -107,5 +109,35 @@ describe('route WAF mode', () => {
     await user.click(screen.getByTestId('toggle-waf-log'));
     expect(await screen.findByTestId('waf-log-detected-l1')).toHaveTextContent('detected · not blocked');
     expect(screen.queryByTestId('waf-log-detected-l2')).toBeNull();
+  });
+});
+
+// Times read in the viewer's zone, the column header names it, and UTC stays
+// on hover. Tokyo has no daylight saving, so the offset never depends on the
+// day the suite runs.
+describe('route WAF times', () => {
+  beforeEach(() => { vi.stubEnv('TZ', 'Asia/Tokyo'); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('a WAF log entry reads in local time, under a header naming the zone', async () => {
+    const user = await openWaf();
+    await user.click(screen.getByTestId('toggle-waf-log'));
+    const row = await screen.findByTestId('waf-log-entry-l1');
+    expect(within(row).getByText('2026-01-01 09:00')).toHaveAttribute('title', '2026-01-01 00:00 UTC');
+    const header = within(screen.getByTestId('waf-log-entries')).getByText(/^Time \(UTC\+9\)/);
+    expect(header.getAttribute('title')).toContain('Asia/Tokyo');
+  });
+
+  it('an exclusion\'s "added" time reads in local time too', async () => {
+    exclusions = [{
+      id: '00000000-0000-4000-8000-0000000000e1', ruleId: '941100', hostnameRegex: '^shop\\.example\\.test$', scope: 'full_disable',
+      reason: 'search box', createdBy: 'tenant-user', createdAt: '2026-10-23T18:05:09.000Z', updatedAt: '2026-10-23T18:05:09.000Z',
+      disabled: false, tenantId: 'c1', routeId: 'route-1',
+    }];
+    const user = await openWaf();
+    await user.click(await screen.findByTestId('waf-exclusions-section'));
+    const row = await screen.findByTestId('waf-exclusion-row-00000000-0000-4000-8000-0000000000e1');
+    expect(within(row).getByText('2026-10-24 03:05')).toHaveAttribute('title', '2026-10-23 18:05 UTC');
+    expect(within(screen.getByTestId('waf-exclusions-body')).getByText('Added (UTC+9)')).toBeInTheDocument();
   });
 });

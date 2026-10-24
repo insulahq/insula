@@ -67,3 +67,22 @@ human-facing credential system for a mailbox.
 - Trade-off: an operator who never issues/saves a login password leaves
   a user unable to log in — mitigated by auto-issuing the first one at
   create and surfacing it once.
+- **Limit (amendment).** Stalwart caps app passwords per account — 5 by
+  default, expired ones counted — and Bulwark's "Open webmail" sessions are
+  app passwords too, so the default left busy mailboxes unable to open
+  webmail or take a new login password. The platform allows
+  `MAX_LOGIN_PASSWORDS_PER_MAILBOX` (10) login passwords per mailbox,
+  checked at create after deleting the mailbox's expired ones, and
+  `mail-admin/app-password-limit-reconciler.ts` keeps Stalwart's
+  `maxAppPasswords` at least `MAIL_SERVER_APP_PASSWORD_LIMIT` (11): one slot
+  stays free for a webmail session. It only raises the value; a higher one
+  or none (unlimited) is the operator's. Expired login passwords are deleted
+  hourly (`login-passwords/login-password-reaper.ts`). What the slot does
+  not cover, by design (the mail server's 11 always holds):
+  - one session at a time on a full mailbox — a second within its 8 hours
+    fails until one is signed out or ends;
+  - app passwords a mailbox owner makes in Bulwark's own settings, which
+    can take the slot;
+  - two creates at the same moment, which can both pass the check at 9 and
+    take it (the check and the create are two calls; a lock would have to
+    span replicas).

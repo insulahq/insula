@@ -36,7 +36,7 @@ const configSchema = z.object({
   // cluster-side tunnel server; the agent image is what the tenant runs at
   // home (only referenced from generated docker-compose snippets).
   TUNNEL_BASE_URL: z.string().default('wss://tunnels.example.com'),
-  PRIVATE_WORKER_FRPS_IMAGE: z.string().default('fatedier/frps:v0.62.1'),
+  PRIVATE_WORKER_FRPS_IMAGE: z.string().default('fatedier/frps:v0.71.1'),
   PRIVATE_WORKER_AGENT_IMAGE: z
     .string()
     .default('ghcr.io/insulahq/insula/private-worker-agent:latest'),

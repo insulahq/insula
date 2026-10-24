@@ -8,11 +8,10 @@ import NodeName from '@/components/nodes/NodeName';
 import NodeList from '@/components/nodes/NodeList';
 import NodeText from '@/components/nodes/NodeText';
 import MigrateResultNote from './MigrateResultNote';
+import { formatLocalInstant } from '@/lib/format-timestamp';
 
-function utc(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+function local(iso: string | null): string {
+  return formatLocalInstant(iso);
 }
 
 function Nodes({ names }: { readonly names: readonly string[] }) {
@@ -95,7 +94,7 @@ function PlacementSummary({ placement }: { readonly placement: TenantPlacement |
     return (
       <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
         <HelpCircle size={14} aria-hidden="true" />
-        Actual placement not observed yet{placement ? ` (last check ${utc(placement.checkedAt)})` : ''}.
+        Actual placement not observed yet{placement ? ` (last check ${local(placement.checkedAt)})` : ''}.
       </p>
     );
   }
@@ -152,7 +151,7 @@ export function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm,
         Not on its primary node {primary ? nodeLabel(primary) : ''}
       </p>
       <p className="mt-1 text-xs text-red-800 dark:text-red-300">
-        <NodeText text={placement.reasons.join(', ')} />{placement.misplacedSince ? ` — since ${utc(placement.misplacedSince)}` : ''}.
+        <NodeText text={placement.reasons.join(', ')} />{placement.misplacedSince ? ` — since ${local(placement.misplacedSince)}` : ''}.
         Away from its primary node the tenant may do its disk I/O across the network, and the next
         restart or backup can move its data again.
       </p>
@@ -224,7 +223,7 @@ export function FailoverList({ failovers }: { readonly failovers: readonly Tenan
       <ul className="mt-1 space-y-1">
         {failovers.map((f) => (
           <li key={f.id} className="text-xs text-gray-600 dark:text-gray-400">
-            <span className="font-mono">{utc(f.remountRequestedAt)}</span>
+            <span className="font-mono">{local(f.remountRequestedAt)}</span>
             {' — '}volume {f.pvcName ?? f.volumeName} salvaged and remounted;
             {' '}<span className="font-mono"><Nodes names={f.nodesBefore} /></span>
             {' → '}<span className="font-mono">{f.nodesAfter.length > 0 ? <NodeList names={f.nodesAfter} /> : 'restarting'}</span>
