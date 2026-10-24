@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
+  Bot,
   Users,
   Globe,
   AppWindow,
@@ -145,6 +146,7 @@ const navItems: ReadonlyArray<NavItem> = [
       { kind: 'item', to: '/security/identity',       icon: UserCog,     label: 'Identity & Sessions' },
       { kind: 'item', to: '/security/web-defense',    icon: ShieldAlert, label: 'Web Defense' },
       { kind: 'item', to: '/security/oidc',           icon: KeyRound,    label: 'OIDC / SSO' },
+      { kind: 'item', to: '/security/ai-agents',      icon: Bot,         label: 'AI Agents' },
     ],
   },
   { kind: 'item',  to: '/monitoring',             icon: Activity,        label: 'Monitoring' },

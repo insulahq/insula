@@ -553,6 +553,8 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // and the Zod enum rejects any staff-level role (admin, support,
   // etc.) in the body.
   app.post('/tenants/:tenantId/users', {
+    // Answers with the new user's generated password.
+    config: { issuesCredential: true },
     onRequest: [
       requireRole('super_admin', 'admin', 'tenant_admin'),
       requireTenantAccess(),
@@ -670,6 +672,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // are NOT invalidated — that's blocked on the deferred
   // session-management epic; refresh tokens are revoked below.
   app.post('/tenants/:tenantId/users/:userId/reset-password', {
+    config: { issuesCredential: true },
     onRequest: [
       requireRole('super_admin', 'admin', 'tenant_admin'),
       requireTenantAccess(),

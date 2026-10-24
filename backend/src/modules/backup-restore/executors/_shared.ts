@@ -69,6 +69,19 @@ export async function readAndAuthorizeConfigDump(args: {
 }
 
 /**
+ * Columns a bundle can still carry after the platform stopped using them. A
+ * bundle's `config` dump is a `SELECT *` of the tables as they were when it
+ * was taken, and upsertRow writes a row by its own keys — so once such a
+ * column is dropped, every bundle taken before the drop would fail to
+ * restore. List a column here in the change that retires it, before the
+ * migration that drops it.
+ */
+export const RETIRED_BUNDLE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  // The per-user display zone; the panels show the browser's zone.
+  users: ['timezone'],
+};
+
+/**
  * Generic per-row INSERT … ON CONFLICT (id) DO UPDATE.
  *
  * SAFE:
@@ -83,7 +96,8 @@ export async function upsertRow(
   sqlTable: string,
   row: Record<string, unknown>,
 ): Promise<void> {
-  const keys = Object.keys(row);
+  const retired = RETIRED_BUNDLE_COLUMNS[sqlTable] ?? [];
+  const keys = Object.keys(row).filter((k) => !retired.includes(k));
   if (keys.length === 0) return;
   if (!keys.includes('id')) {
     throw new Error(`upsertRow: row in '${sqlTable}' has no 'id' column — bundle format mismatch`);

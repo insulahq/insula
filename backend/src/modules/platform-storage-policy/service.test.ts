@@ -370,6 +370,11 @@ describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX
     expect(deploymentReplicasForSystemTier('ha', 3)).toBe(3);
     expect(deploymentReplicasForSystemTier('ha', 4)).toBe(3);
     expect(deploymentReplicasForSystemTier('ha', 7)).toBe(3);
+    // Never more than the servers present — each keeps one per server.
+    expect(cnpgInstancesForSystemTier('ha', 2)).toBe(2);
+    expect(cnpgInstancesForSystemTier('ha', 1)).toBe(1);
+    expect(deploymentReplicasForSystemTier('ha', 2)).toBe(2);
+    expect(deploymentReplicasForSystemTier('ha', 1)).toBe(1);
   });
 });
 

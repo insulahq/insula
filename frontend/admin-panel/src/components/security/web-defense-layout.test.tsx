@@ -78,11 +78,18 @@ vi.mock('@/hooks/use-crowdsec', () => {
 });
 
 vi.mock('@/hooks/use-waf-events', () => ({
-  useWafEvents: () => wafEvents(),
+  useWafEvents: (query: unknown) => wafEvents(query),
   useRefreshWafScraper: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-import { WafEventsTab, WafSettingsTab } from './web-defense-tabs';
+const wafExclusions = vi.fn(() => ok({ exclusions: [] }));
+vi.mock('@/hooks/use-waf-rule-exclusions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/use-waf-rule-exclusions')>()),
+  useWafRuleExclusions: () => wafExclusions(),
+}));
+vi.mock('@/components/ui/UserLabel', () => ({ default: ({ userId }: { userId: string }) => <span>{userId}</span> }));
+
+import { WafEventsTab, WafExclusionsTab, WafSettingsTab } from './web-defense-tabs';
 
 function wrapper({ children }: { readonly children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -111,6 +118,7 @@ beforeEach(() => {
   setDetection.mockReset();
   setDetectionState.mockReturnValue({ mutate: setDetection, isPending: false, isError: false, error: null, data: undefined });
   simulationBusy.mockReturnValue(false);
+  wafExclusions.mockReturnValue(ok({ exclusions: [] }));
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -393,5 +401,80 @@ describe('WAF Events — detection-only events', () => {
   it('the events tile says how many of them were detected only', () => {
     render(<WafEventsTab />, { wrapper });
     expect(screen.getByTestId('waf-stats-detection-only')).toHaveTextContent('1 detected only — not blocked');
+  });
+});
+
+// Times read in the viewer's zone — the zone the From/To filter takes — with
+// the zone in the column header and UTC on hover. Tokyo has no daylight
+// saving, so the header's offset is the same whatever day the suite runs.
+describe('WAF times — shown in the browser time zone', () => {
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'Asia/Tokyo');
+    wafEvents.mockReturnValue({
+      ...ok({
+        events: [{
+          id: '00000000-0000-4000-8000-00000000000d', scope: 'admin-host', hostname: 'admin.example.test', routeId: null, tenantId: null,
+          ruleId: '920350', severity: 'warning', message: 'Host header is a numeric IP address', requestUri: '/', requestMethod: 'GET',
+          sourceIp: '192.0.2.60', occurredAt: '2026-10-23T18:05:09.000Z',
+        }],
+        truncated: false,
+        stats: { windowSeconds: 86_400, totalEvents: 1, totalEventsAdminHost: 1, totalEventsTenantRoute: 0, topRules: [], topHosts: [], mostRecentAt: null },
+        scraperStatus: { hasRunOnce: true, modsecPodFound: true, lastRunAt: null, scrapeIntervalMs: 30_000, lastCycleErrors: [] },
+      }),
+    });
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('an event reads in local time, names the zone, and keeps UTC on hover', () => {
+    render(<WafEventsTab />, { wrapper });
+    const time = screen.getByText('2026-10-24 03:05:09');
+    expect(time.tagName).toBe('TIME');
+    expect(time).toHaveAttribute('title', '2026-10-23 18:05:09 UTC');
+    expect(time).toHaveAttribute('dateTime', '2026-10-23T18:05:09.000Z');
+    const header = screen.getByTestId('sort-occurredAt');
+    expect(header).toHaveTextContent('When (UTC+9)');
+    expect(header.getAttribute('title')).toContain('Asia/Tokyo');
+  });
+
+  it('the From/To filter names the same zone the rows are in', () => {
+    render(<WafEventsTab />, { wrapper });
+    const filters = screen.getByTestId('waf-filters');
+    expect(within(filters).getByText('From').parentElement).toHaveTextContent('From(UTC+9)');
+    expect(within(filters).getByText('To').parentElement).toHaveTextContent('To(UTC+9)');
+  });
+
+  it('a range typed as the rows read asks for that instant, so filter and table agree', () => {
+    render(<WafEventsTab />, { wrapper });
+    // The row reads 03:05:09 local; 03:00–04:00 local must be the UTC hour that contains it.
+    fireEvent.change(screen.getByTestId('waf-filter-from-time'), { target: { value: '2026-10-24T03:00' } });
+    fireEvent.change(screen.getByTestId('waf-filter-to-time'), { target: { value: '2026-10-24T04:00' } });
+    const query = wafEvents.mock.calls.at(-1)?.[0] as { fromTime?: string; toTime?: string };
+    expect(query.fromTime).toBe('2026-10-23T18:00:00.000Z');
+    expect(query.toTime).toBe('2026-10-23T19:00:00.000Z');
+    const shown = screen.getByText('2026-10-24 03:05:09');
+    const instant = Date.parse(shown.getAttribute('dateTime')!);
+    expect(instant).toBeGreaterThanOrEqual(Date.parse(query.fromTime!));
+    expect(instant).toBeLessThan(Date.parse(query.toTime!));
+  });
+
+  it('a WAF exclusion\'s "when" reads in local time too', () => {
+    wafExclusions.mockReturnValue(ok({
+      exclusions: [{
+        id: '00000000-0000-4000-8000-0000000000e1', ruleId: '920350', hostnameRegex: '^admin\\.example\\.test$', scope: 'full_disable',
+        reason: 'numeric host probes', createdBy: 'operator', createdAt: '2026-10-23T18:05:09.000Z', updatedAt: '2026-10-23T18:05:09.000Z',
+        disabled: false, tenantId: null, routeId: null, tenantName: null,
+      }],
+    }));
+    render(<WafExclusionsTab />, { wrapper });
+    expect(screen.getByText('2026-10-24 03:05')).toHaveAttribute('title', '2026-10-23 18:05 UTC');
+    expect(screen.getByTestId('sort-createdAt')).toHaveTextContent('By / when (UTC+9)');
+  });
+
+  it('an auto-ban run reads in local time too', () => {
+    render(<WafSettingsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('autoban-recent-decisions-toggle'));
+    const body = screen.getByTestId('autoban-recent-decisions-body');
+    expect(within(body).getByText('2026-01-01 09:00:00')).toHaveAttribute('title', '2026-01-01 00:00:00 UTC');
+    expect(within(body).getByTestId('sort-triggeredAt')).toHaveTextContent('When (UTC+9)');
   });
 });

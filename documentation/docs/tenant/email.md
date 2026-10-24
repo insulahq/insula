@@ -118,8 +118,22 @@ A webmail session opened this way lasts up to **8 hours**, then asks you to
 open it again from the panel. While it is open it appears in the mailbox's
 **Login passwords** list as **Webmail session**, with the time it ends.
 **Sign out** there ends that session; signing out in the webmail removes the
-entry too. No password of yours is involved — the session cannot be used for
-anything but that one webmail tab.
+entry too. A session that simply runs out leaves the list when it ends and is
+deleted from the mailbox within the hour. No password of yours is involved —
+the session cannot be used for anything but that one webmail tab.
+
+A login password you create with an expiry date stops working when that day
+starts in your browser's time zone, leaves the list, and is deleted from the
+mailbox within the hour. The same goes for an app password with an expiry date
+created in the webmail's own settings. The earliest expiry date is tomorrow; leave it empty
+for a password that never expires.
+
+A mailbox can have up to **10** login passwords, the **Initial** one included;
+the list shows how many it has. Webmail sessions do not count: the mail server
+keeps room for one on top of the ten, so **Webmail** still opens on a mailbox
+whose login passwords are all used. A password made in the webmail's own
+settings takes that room, and a second webmail session opened while the ten
+are used waits until another one ends or is signed out.
 
 ## Mailing lists
 

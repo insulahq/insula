@@ -118,6 +118,8 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     roles: ['super_admin'], keywords: ['crowdsec', 'auto-ban', 'l4', 'detection', 'paranoia'] },
   { id: 'security.oidc', label: 'OIDC / SSO', group: 'Security', to: '/security/oidc',
     roles: ['super_admin', 'admin'], keywords: ['dex', 'single sign-on', 'openid', 'saml', 'idp', 'login provider'] },
+  { id: 'security.ai-agents', label: 'AI Agents', group: 'Security', to: '/security/ai-agents',
+    roles: ['super_admin', 'admin'], keywords: ['mcp', 'agent', 'claude', 'cursor', 'connected agents', 'disconnect', 'tenant agents', 'oauth'] },
 
   // ─── Monitoring ────────────────────────────────────────────────────────────
   { id: 'monitoring.active-alerts', label: 'Active Alerts', group: 'Monitoring', to: '/monitoring/active-alerts',
@@ -209,5 +211,5 @@ export const ADMIN_SEARCH_REGISTRY: readonly RegistryEntry[] = [
 
   // ─── Account ───────────────────────────────────────────────────────────────
   { id: 'user-settings', label: 'My Settings', group: 'Account', to: '/user-settings',
-    keywords: ['profile', 'password', 'timezone', 'passkey', 'preferences', 'my account'] },
+    keywords: ['profile', 'password', 'passkey', 'preferences', 'my account', 'api token', 'ai agent', 'mcp'] },
 ];

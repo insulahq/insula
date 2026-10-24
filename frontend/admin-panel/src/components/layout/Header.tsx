@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/use-auth';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import TaskCenterChip from '@/components/TaskCenterChip';
+import AgentIndicator from '@/components/agents/AgentIndicator';
 import GlobalSearch from '@/components/search/GlobalSearch';
 import { suppressProxySso } from '@/lib/proxy-sso';
 
@@ -66,6 +67,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
       <GlobalSearch />
 
       <div className="ml-auto flex items-center gap-2">
+        <AgentIndicator />
         <TaskCenterChip />
         <DarkModeToggle />
         <NotificationDropdown />

@@ -1,3 +1,4 @@
+import LocalTime from '@/components/ui/LocalTime';
 import { Link } from 'react-router-dom';
 import { RotateCcw, Trash2 } from 'lucide-react';
 import { useRecoverableTenants } from '@/hooks/use-dr-recover';
@@ -45,12 +46,12 @@ export default function DeletedTenantsCard() {
             {deleted.map((t) => (
               <tr key={t.tenantId} className="border-t border-amber-200/70 dark:border-amber-800/60" data-testid={`deleted-tenant-${t.tenantId}`}>
                 <td className="py-2 pr-4 font-medium text-gray-900 dark:text-gray-100">{t.name}</td>
-                <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">{t.deletedAt ? t.deletedAt.slice(0, 10) : '—'}</td>
+                <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">{t.deletedAt ? <LocalTime iso={t.deletedAt} dateOnly /> : '—'}</td>
                 <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">
-                  {t.bundleCount}, newest {t.newestBundleAt.slice(0, 10)}
+                  {t.bundleCount}, newest <LocalTime iso={t.newestBundleAt} dateOnly />
                   {!t.newestCompletedBundleId && <span className="ml-1 text-amber-700 dark:text-amber-400">(none complete)</span>}
                 </td>
-                <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">{t.keptUntil ? t.keptUntil.slice(0, 10) : 'no expiry'}</td>
+                <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">{t.keptUntil ? <LocalTime iso={t.keptUntil} dateOnly /> : 'no expiry'}</td>
                 <td className="py-2 text-right">
                   <Link
                     to={recoverTenantPath(t.tenantId)}

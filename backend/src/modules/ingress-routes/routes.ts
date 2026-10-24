@@ -402,6 +402,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users
   app.post('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users', {
+    config: { issuesCredential: true },
     onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],
@@ -457,6 +458,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password
   app.post('/tenants/:tenantId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password', {
+    config: { issuesCredential: true },
     onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Route Protected Dirs'],

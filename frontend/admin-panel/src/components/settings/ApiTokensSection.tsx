@@ -2,14 +2,19 @@
  * User Settings → API tokens & AI agents.
  *
  * Personal access tokens work on the whole REST API (scripts, CI) and on the
- * MCP endpoint (AI agents). AI clients that sign in with OAuth show up here
- * too, so every live credential acting as this user can be seen and revoked
- * in one place. Only users with the admin role may hold either.
+ * MCP endpoint (AI agents). AI clients that sign in with OAuth become
+ * connected agents, listed here too, so every live credential acting as this
+ * user can be seen and revoked in one place. Only users with the admin role
+ * may hold either.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bot, Check, Copy, KeyRound, Loader2, Plus, Trash2 } from 'lucide-react';
-import { MCP_PAT_EXPIRY_DAYS, MCP_SCOPES, type CreatedMcpPat, type McpScope, type McpToken } from '@insula/api-contracts';
+import {
+  MCP_CONNECTION_MAX_SECONDS, MCP_OAUTH_TOKEN_TTL_SECONDS, MCP_PAT_EXPIRY_DAYS, MCP_SCOPES,
+  type CreatedMcpPat, type McpScope, type McpToken,
+} from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
+import AgentConnectionsTable, { ScopeChips } from '@/components/agents/AgentConnectionsTable';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useApiTokens, useCreateApiToken, useRevokeApiToken } from '@/hooks/use-api-tokens';
 
@@ -38,19 +43,6 @@ function CopyButton({ value, label }: { value: string; label: string }) {
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
     </button>
-  );
-}
-
-function ScopeChips({ scopes }: { scopes: readonly McpScope[] }) {
-  const tone: Record<McpScope, string> = {
-    read: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
-    write: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
-    delete: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
-  };
-  return (
-    <span className="inline-flex gap-1">
-      {scopes.map((s) => <span key={s} className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${tone[s]}`}>{s}</span>)}
-    </span>
   );
 }
 
@@ -130,9 +122,9 @@ function TokenRow({ token }: { token: McpToken }) {
   return (
     <tr className="border-t border-gray-100 dark:border-gray-700" data-testid={`api-token-row-${token.id}`}>
       <td className="py-2 pr-3">
-        <div className="font-medium text-gray-900 dark:text-gray-100">{token.kind === 'oauth' ? (token.clientName ?? token.name) : token.name}</div>
+        <div className="font-medium text-gray-900 dark:text-gray-100">{token.name}</div>
         <div className="text-xs text-gray-500 dark:text-gray-400">
-          {token.kind === 'oauth' ? 'AI client (OAuth)' : 'Personal access token'} · <code>{token.prefix}…</code>
+          Personal access token · <code>{token.prefix}…</code>
         </div>
       </td>
       <td className="py-2 pr-3"><ScopeChips scopes={token.scopes} /></td>
@@ -162,17 +154,27 @@ export default function ApiTokensSection() {
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedMcpPat | null>(null);
   const loadError = error ? extractOperatorError(error) : null;
+  const accessMinutes = Math.round(MCP_OAUTH_TOKEN_TTL_SECONDS / 60);
+  const connectionHours = Math.round(MCP_CONNECTION_MAX_SECONDS / 3600);
+  const sectionRef = useRef<HTMLElement>(null);
+  const loaded = Boolean(data);
+
+  // The header's agent chip links to #ai-agents; the router does not scroll to it.
+  useEffect(() => {
+    if (loaded && window.location.hash === '#ai-agents') sectionRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [loaded]);
 
   return (
-    <section className={card} data-testid="api-tokens-section">
+    <section id="ai-agents" ref={sectionRef} className={card} data-testid="api-tokens-section">
       <div className="mb-2 flex items-center gap-3">
         <Bot size={20} className="text-gray-700 dark:text-gray-300" />
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">API tokens &amp; AI agents</h2>
       </div>
       <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">
         A personal access token lets a script use the platform API, and an AI agent use it through MCP. AI clients
-        can also connect with the MCP address below and sign in here (access lasts 8 hours). Either way they act
-        as you, never with more than your role allows, and every action is in the audit log.
+        can also connect with the MCP address below and sign in here: the agent gets {accessMinutes}-minute access
+        that renews by itself for up to {connectionHours} hours, then asks you again. Either way they act as you,
+        never with more than your role allows, and every action is in the audit log.
       </p>
 
       {isLoading && <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400"><Loader2 size={14} className="animate-spin" /> Loading…</div>}
@@ -186,12 +188,20 @@ export default function ApiTokensSection() {
             <CopyButton value={data.endpoint} label="Copy MCP endpoint" />
           </div>
 
+          {data.connections.length > 0 && (
+            <div className="mb-6" data-testid="own-agent-connections">
+              <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">Connected AI agents</h3>
+              <AgentConnectionsTable connections={data.connections} emptyText="No AI agent is connected." />
+            </div>
+          )}
+
           {!data.canUse ? (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100" data-testid="api-tokens-not-allowed">
               Only users with the <strong>admin</strong> role can create API tokens or connect AI agents.
             </p>
           ) : (
             <>
+              <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">Personal access tokens</h3>
               {created && (
                 <div className="mb-4 rounded-lg border border-green-300 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/20" data-testid="api-token-created">
                   <p className="text-sm font-medium text-green-900 dark:text-green-100">Token “{created.name}” created. Copy it now — it will not be shown again.</p>

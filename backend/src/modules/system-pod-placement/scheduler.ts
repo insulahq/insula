@@ -3,15 +3,17 @@ import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { countServers, type ServerCountNode } from '../platform-storage-policy/server-count.js';
+import { rebalanceReplicas } from './rebalance.js';
 
 /**
- * Periodic reconciler that asserts two cluster-wide invariants:
+ * Periodic reconciler that asserts these cluster-wide invariants:
  *
- *  1. Helm-installed singleton control-plane Deployments (Longhorn CSI
- *     controllers, Calico typha + kube-controllers, Longhorn UI) carry
+ *  1. Helm-installed control-plane Deployments (Longhorn CSI controllers,
+ *     UI and global manager; Calico typha + kube-controllers) carry
  *     `nodeSelector: insula.host/node-role=server` plus a
  *     toleration for the matching `server-only` taint, so they don't
- *     consume worker capacity.
+ *     consume worker capacity. The Longhorn global manager — the one
+ *     multi-replica Deployment here — also keeps one replica per server.
  *
  *  2. Calico-typha replicas track the active platform-storage tier:
  *     1 in Local, server-count in HA. Lets the cluster scale Typha out
@@ -22,6 +24,9 @@ import { countServers, type ServerCountNode } from '../platform-storage-policy/s
  *     overriding the cluster-default reserve percentage. New workers
  *     automatically get the lower 10 % reserve at first sync — no manual
  *     post-bootstrap kubectl needed.
+ *
+ *  4. No server holds two replicas of one platform workload while another
+ *     node has room for one (rebalance.ts).
  *
  * Why a reconciler vs. a one-shot bootstrap step: Helm chart upgrades
  * can revert affinity/replica fields back to their chart defaults; the
@@ -34,35 +39,56 @@ const NODE_ROLE_LABEL = 'insula.host/node-role';
 const SERVER_ONLY_TAINT_KEY = 'insula.host/server-only';
 const WORKER_RESERVE_PCT = 10;
 
-interface SingletonTarget {
+interface ServerPinnedTarget {
   readonly namespace: string;
   readonly name: string;
   /** When set, the reconciler also patches replica count to this value. */
   readonly replicas?: 'tracksHaServerCount' | number;
+  /**
+   * Keep one replica per server: a hard (DoNotSchedule) hostname spread,
+   * counted per rollout revision. For a Deployment whose replica count
+   * another reconciler owns (platform-storage-policy's leader-elect tier).
+   */
+  readonly oneReplicaPerServer?: boolean;
 }
 
 /**
- * Helm-installed Deployments we patch directly. Longhorn's CSI controllers
- * + UI have no operator on top so direct Deployment patches stick.
+ * Helm-installed Deployments we patch directly. Longhorn's CSI controllers,
+ * UI and global manager have no operator on top so direct Deployment patches
+ * stick; their chart templates render no topologySpreadConstraints, so a
+ * helm upgrade leaves the spread in place.
  */
-const SINGLETONS: readonly SingletonTarget[] = Object.freeze([
+const SERVER_PINNED: readonly ServerPinnedTarget[] = Object.freeze([
   { namespace: 'longhorn-system', name: 'csi-attacher', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-provisioner', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-resizer', replicas: 1 },
   { namespace: 'longhorn-system', name: 'csi-snapshotter', replicas: 1 },
   { namespace: 'longhorn-system', name: 'longhorn-ui', replicas: 1 },
+  // Longhorn 1.13+. Leader-elected; its replica count is the leader-elect
+  // tier's (1, 2 in HA). The chart spreads it only by preference.
+  { namespace: 'longhorn-system', name: 'longhorn-global-manager', oneReplicaPerServer: true },
 ]);
 
 interface RawDeployment {
   readonly spec?: {
     readonly replicas?: number;
+    readonly selector?: { readonly matchLabels?: Record<string, string> };
     readonly template?: {
       readonly spec?: {
         readonly nodeSelector?: Record<string, string>;
         readonly tolerations?: ReadonlyArray<{ readonly key?: string; readonly operator?: string; readonly value?: string; readonly effect?: string }>;
+        readonly topologySpreadConstraints?: ReadonlyArray<{ readonly topologyKey?: string; readonly whenUnsatisfiable?: string; readonly maxSkew?: number }>;
       };
     };
   };
+}
+
+const HOSTNAME_KEY = 'kubernetes.io/hostname';
+
+function hasOneReplicaPerServerRule(d: RawDeployment): boolean {
+  return (d.spec?.template?.spec?.topologySpreadConstraints ?? []).some(
+    (c) => c.topologyKey === HOSTNAME_KEY && c.whenUnsatisfiable === 'DoNotSchedule' && c.maxSkew === 1,
+  );
 }
 
 function hasServerNodeSelector(d: RawDeployment): boolean {
@@ -105,7 +131,7 @@ async function reconcileSingletonAffinity(k8s: K8sClients): Promise<{ readonly p
   let patched = 0;
   const haServers = await haServerCount(k8s);
 
-  for (const t of SINGLETONS) {
+  for (const t of SERVER_PINNED) {
     let dep: RawDeployment | null = null;
     try {
       dep = await k8s.apps.readNamespacedDeployment({ namespace: t.namespace, name: t.name }) as RawDeployment;
@@ -121,11 +147,17 @@ async function reconcileSingletonAffinity(k8s: K8sClients): Promise<{ readonly p
       ? Math.max(1, haServers)
       : t.replicas;
     const needReplicas = desiredReplicas !== undefined && (dep.spec?.replicas ?? 1) !== desiredReplicas;
-    if (!needNs && !needTol && !needReplicas) continue;
+    const selector = dep.spec?.selector?.matchLabels;
+    let needSpread = t.oneReplicaPerServer === true && !hasOneReplicaPerServerRule(dep);
+    if (needSpread && (!selector || Object.keys(selector).length === 0)) {
+      errors.push(`spread ${t.namespace}/${t.name}: no selector labels to count replicas by`);
+      needSpread = false;
+    }
+    if (!needNs && !needTol && !needReplicas && !needSpread) continue;
 
     const patchBody: Record<string, unknown> = {};
     if (needReplicas) patchBody.spec = { replicas: desiredReplicas };
-    if (needNs || needTol) {
+    if (needNs || needTol || needSpread) {
       const tplSpec: Record<string, unknown> = {};
       if (needNs) {
         // Preserve any existing nodeSelector keys the chart has set
@@ -145,13 +177,26 @@ async function reconcileSingletonAffinity(k8s: K8sClients): Promise<{ readonly p
           { key: SERVER_ONLY_TAINT_KEY, operator: 'Exists', effect: 'NoSchedule' },
         ];
       }
+      if (needSpread) {
+        // One replica per server, hard, counted per rollout revision so a
+        // rolling update never waits on its own old pods. A down or cordoned
+        // server still counts, so a replacement waits for it rather than
+        // doubling up. With one server there is one domain: moot.
+        tplSpec.topologySpreadConstraints = [{
+          maxSkew: 1,
+          topologyKey: HOSTNAME_KEY,
+          whenUnsatisfiable: 'DoNotSchedule',
+          matchLabelKeys: ['pod-template-hash'],
+          labelSelector: { matchLabels: selector },
+        }];
+      }
       patchBody.spec = { ...(patchBody.spec as object | undefined ?? {}), template: { spec: tplSpec } };
     }
 
     try {
       await patchDeployment(k8s, t.namespace, t.name, patchBody);
       patched++;
-      console.log(`[system-pod-placement] patched ${t.namespace}/${t.name}: ns=${needNs} tol=${needTol} replicas=${needReplicas ? desiredReplicas : 'unchanged'}`);
+      console.log(`[system-pod-placement] patched ${t.namespace}/${t.name}: ns=${needNs} tol=${needTol} spread=${needSpread} replicas=${needReplicas ? desiredReplicas : 'unchanged'}`);
     } catch (err) {
       errors.push(`patch ${t.namespace}/${t.name}: ${(err as Error).message}`);
     }
@@ -425,11 +470,14 @@ export function startSystemPodPlacement(db: Database, k8s: K8sClients): { readon
     const b = await reconcileWorkerStorageReserve(k8s);
     const c = await reconcileCalicoInstallation(k8s);
     const d = await reconcileCnpgPrimaryOnlySnapshots(k8s);
+    // Last: the placement patches above can roll a Deployment, and the
+    // rebalance leaves a workload alone until its rollout has settled.
+    const e = await rebalanceReplicas(k8s);
     const cErrors = c.error ? [c.error] : [];
-    const allErrors = [...a.errors, ...b.errors, ...cErrors, ...d.errors];
-    const total = a.patched + b.patched + (c.patched ? 1 : 0) + d.patched;
+    const allErrors = [...a.errors, ...b.errors, ...cErrors, ...d.errors, ...e.errors];
+    const total = a.patched + b.patched + (c.patched ? 1 : 0) + d.patched + e.evicted;
     if (total > 0 || allErrors.length > 0) {
-      console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} cnpg-primary-labels=${d.patched} errors=${allErrors.length}`);
+      console.log(`[system-pod-placement] tick: longhorn-deps=${a.patched} worker-disks=${b.patched} calico-installation=${c.patched ? 1 : 0} cnpg-primary-labels=${d.patched} replicas-moved=${e.evicted} errors=${allErrors.length}`);
     }
     for (const e of allErrors) console.warn('[system-pod-placement]', e);
   };

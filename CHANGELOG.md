@@ -12,6 +12,181 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Tenants can connect AI agents (MCP) to the tenant panel.** Each tenant panel has its own MCP
+  address, `https://tenant.<apex>/api/v1/mcp`, shown under **User Settings → AI agents** with how to
+  add it to an AI client (Claude, Cursor, VS Code, …). The client signs in on a consent page in the
+  tenant panel, and the agent then acts as the user who approved it, with that user's role, inside
+  their own tenant only. It cannot see admin operations or name another tenant: the tenant id is
+  filled in for it. The "nobody has approved this client before" warning on the consent page is
+  now per user, so a client's author approving it once no longer hides the warning from everyone
+  else. An admin impersonating a tenant cannot approve a tenant agent. Admin agents keep
+  `asTenant`, which is logged under the admin.
+- **Connected agents are visible and can be disconnected everywhere they matter.**
+  - **Header chip:** both panels show a chip in the header while an agent is connected (your own,
+    or for a tenant admin any agent of the account), linking to the list.
+  - **Your own agents:** each user sees and disconnects theirs in User Settings. A tenant admin
+    sees every agent connected to the account.
+  - **Platform-wide:** **Security → AI Agents** lists every connected agent on the platform, with
+    who approved it and for which tenant, and disconnects any of them.
+- **Operators decide whether tenants may connect agents.** The switch is under **Security → AI
+  Agents** and is **off by default**, also after an upgrade, so no tenant account is opened to
+  agents until the operator switches it on. Switching it off again disconnects every tenant agent
+  at once. Admin agents are not affected.
+- **A tenant agent cannot create or reset a credential that would outlive it.** This covers panel
+  users, passwords, SSH keys, SFTP and database logins, mailbox passwords, client certificates,
+  webmail sign-ins and backup download links. Each would keep working after the agent is
+  disconnected, so the routes that issue them refuse a tenant agent. Admin agents and PATs keep
+  them.
+
+### Changed
+
+- **An AI agent's sign-in now lasts 1 hour at a time and at most 8 hours, down from 8 hours with no
+  renewal.** The access token lasts an hour, and the client renews it with a refresh token that is
+  replaced on every renewal. Eight hours after approval the connection ends and the client asks
+  again. A spent refresh token presented a second time ends the connection at once, since that
+  means someone else holds a copy.
+- **Agents signed in before this update must sign in again.** Their 8-hour tokens were not tied to
+  a connection that could be listed or revoked, so the update removes them.
+- **Personal access tokens are unchanged.**
+- **WAF times are shown in your browser's time zone, in both panels.** The admin panel showed WAF
+  events, auto-ban runs and WAF exclusions in UTC with no label, while the From/To filter above
+  the events took local time, so a 14:00–15:00 filter in UTC+2 listed rows that read 12:00–13:00.
+  The tenant panel showed a route's WAF log in local time but its exclusions in UTC, neither
+  labelled. Every one of these columns, and the filter, now uses the browser's zone and names it
+  in the header (for example "When (UTC+2)"); hovering a time shows it in UTC, and a row from
+  before a daylight-saving change names its own offset.
+- **Every other admin time is in your browser's time zone too.** Security posture events, DR drill
+  runs, secrets coverage, system snapshots, the Recover Tenant bundle list, Recover All, tenant
+  placement and the deleted-tenant dates were cut from UTC strings, some labelled "UTC" and some
+  not. They now read in the browser's zone like the WAF tables; a time with no column header to
+  name the zone carries its offset ("2026-10-03 10:36 UTC+9"), and dates are the local calendar
+  date. A test in each panel fails the build if a displayed time is cut from a UTC string again.
+- **The profile "Timezone" setting is gone from User Settings in both panels.** It said it set how
+  dates are displayed, but nothing read it; every time now follows the browser's zone instead. The
+  profile API no longer accepts or returns `timezone`. The database column stays one more release
+  (old pods read it during the rollout) and is dropped in the next; restoring a tenant backup taken
+  before then skips it.
+- **Calico 3.32.1 → 3.33.0 and Longhorn 1.12.0 → 1.13.0.** Existing clusters move with
+  host-migrations 2026.10.17/0007 and 0008: calico-node rolls node by node and the cluster keeps
+  the Calico API mode it runs in; the Longhorn manager and CSI roll while attached volumes keep
+  serving, and Longhorn's new `longhorn-global-manager` Deployment takes over its cluster-wide
+  controllers. **On a multi-node cluster the Calico step interrupts new requests for about 30
+  seconds** (measured on a 3-node cluster while old and new Calico run side by side; once per
+  upgrade — a calico-node restart under 3.33 alone interrupts nothing), so pull this release in a
+  quiet window. The Longhorn step refuses to run while any volume is Faulted. Two new defaults are
+  not taken: Calico 3.33 would put a fresh install on native v3 CRDs, so bootstrap applies the v1
+  CRDs first and new clusters run the same mode as every existing one; Longhorn 1.13's internal
+  NetworkPolicies would block the metrics scrape and the platform's own Longhorn API calls, so they
+  stay off as before.
+- **Longhorn's iSCSI disks are kept out of multipathd on every node.** During a Longhorn upgrade a
+  node runs the old and the new instance manager side by side, and their disks can share a WWID;
+  multipathd — on by default on Ubuntu — then claims the new disk, which can be neither formatted
+  nor mounted (a new volume's pod stays in ContainerCreating). Bootstrap and host-migration
+  2026.10.17/0006 write `/etc/multipath/conf.d/insula-longhorn.conf` (Longhorn's documented
+  blacklist) and release any Longhorn disk multipathd already claimed; the Longhorn upgrade runs
+  only after every node reports it applied. The blacklist matches any iSCSI disk whose vendor is
+  `IET`, so a node that also uses multipath for a real SAN on an IET-based target would lose
+  multipath for it — such a setup needs a narrower rule in its own `multipath.conf`.
+
+### Security
+
+- **Traefik v3.7.6 → v3.7.16 (chart 41.0.2 → 42.1.3).** Ten patch releases of advisories; the
+  ones this platform is exposed to: a request path with no leading slash that skipped path-scoped
+  routers and their middlewares, request smuggling, header filtering bypassed through request
+  trailers, ForwardAuth identity spoofing through a dotted header alias, and TLS-option conflicts
+  that switched client-certificate (mTLS) checks off on a route. Existing clusters move with
+  host-migration 2026.10.17/0001, which keeps the release's own values and the reconciler's
+  trusted proxies, rolls the DaemonSet node by node, and rolls back if a pod cannot load its
+  plugins. Traefik now also rejects `CONNECT` and drops h2c upgrade headers.
+- **Bulwark webmail 1.12.0 → 1.17.1.** An HTML attachment preview could run the sender's script in
+  the webmail's origin (1.16.0); a signed-in user could reach a Brotli out-of-bounds write in the
+  server through calendar, WebDAV and plugin fetches (1.17.0, Node 24.22.1); delete and move could
+  act on another account's message with the same id (GHSA-8x23-qw3w-mhrx). Failed sign-ins are now
+  capped per client. Bulwark 1.15 hides "Remember me" and remembers every sign-in; the platform
+  sets `LOGIN_SHOW_REMEMBER_ME` so users keep the choice.
+- **OWASP CRS 4.28.0 → 4.30.0** closes three ways past the WAF: command injection placed in the URL
+  path, and two `charset` tricks. The 932 command-injection rules now also read the URL path, and
+  930120/930130 recognise more sensitive file names (`node_modules/`, `.claude`, `Chart.yaml` …), so
+  a tenant route in Enforced mode can see new matches — check its WAF log after the upgrade.
+- **CrowdSec 1.7.8 → 1.8.1** (two denial-of-service fixes, in data sources the platform does not
+  use; the LAPI migrates its Postgres schema additively on start), **VictoriaMetrics v1.148.0 →
+  v1.154.1** (a VMUI cross-site-scripting fix and Go toolchain updates), **cert-manager v1.21.0 →
+  v1.21.2**, **CloudNativePG operator 1.30.0 → 1.30.1** (a webhook path-traversal validation fix),
+  **Sealed Secrets controller 0.38.4 → 0.40.0** (its verify and rotate endpoints no longer act as
+  decryption oracles; 0.41 has no chart yet), **Flux 2.9.2 → 2.9.6** and **Stalwart v0.16.26 →
+  v0.16.27** (bug fixes). The chart-installed ones reach existing clusters through host-migrations
+  2026.10.17/0002–0005.
+- **frp v0.71.1 for private workers, server and agent together.** frps fixes a crash a connected
+  client could cause in its own tenant's tunnel server. frp only guarantees compatibility across 8
+  minor versions, and the agent carried frpc 0.62.1, so the agent image moves to 0.71.1 as well:
+  **a tenant running a private worker must pull the new agent image** after this upgrade.
+
+### Fixed
+
+- **Tenant panel, Email → Settings: the DKIM record and signing keys are shown again, and
+  Rotate key works.** Mail was being signed all along; only the panel was blind to it. The DNS
+  records list left the DKIM TXT record out on every domain, so a tenant on external DNS was
+  never shown the one record that carries a key. The signing-keys card asked for an endpoint
+  that no longer existed, ignored the failure and said "No DKIM keys yet". Rotate key sent the
+  domain id to a route that takes the email-domain id, so every rotation answered "Email domain
+  not found". The record list now includes the published `dkim-1` / `dkim-2` TXT records; the
+  card lists the keys the mail server holds, flags a key with no TXT record, shows a failed read
+  as a failure, and asks before rotating. After a rotation on external DNS it says to publish
+  the new record instead of claiming it was published. When the mail server fails during
+  rotation, a tenant gets a plain sentence; its raw error, which names internal hosts, goes to
+  the log and to platform staff only. The unused Activate button and the admin panel's dead DKIM
+  key hooks are gone.
+- **A mailbox can have 10 login passwords, and "Open webmail" always has room.** The mail
+  server allowed 5 app passwords per mailbox, expired ones included, and every "Open webmail"
+  session is one: a mailbox with "Initial" and a few sessions could not open webmail or take a
+  new login password ("Mail server rejected the login password (overQuota)"). platform-api now
+  keeps the mail server's limit at 11 (it only raises it; a higher limit or none set by the
+  operator stays), and a mailbox may hold 10 login passwords, "Initial" included, so one webmail
+  session always fits. The list shows "N of 10 login passwords" and the New button stops at
+  ten. Creating one deletes the mailbox's expired passwords first, and the mail server's own
+  limit now reads as a sentence instead of "overQuota". Applied to existing installations by
+  platform-api within 10 minutes of the upgrade, no restart.
+- **Expired login passwords and ended webmail sessions are deleted.** The mail server refuses
+  an expired login password but never deletes it, and "Open webmail" signs in with an 8-hour
+  one that Bulwark deletes only when the user clicks Sign out. So every session that was closed
+  or left to run out, and every login password past its expiry date, stayed for good: in both
+  panels' Login passwords list (a session still labelled "ends by itself") and in Bulwark's own
+  Settings → App passwords, where a session reads "Support session …". The list now leaves out
+  an expired login password, and an hourly sweep deletes it from the mailbox 5 minutes after it
+  expires, including one a mailbox owner created with an expiry date in the webmail's own
+  settings. The first sweep, 10 minutes after the upgrade, clears the ones already there. A login
+  password with no expiry date is never touched. Because an expired password is deleted, a new
+  one's expiry must now be in the future, and the date picker starts tomorrow. The date is now a
+  day in the browser's time zone, like every other time in the panels: the password stops
+  working when that day starts. It was sent as midnight UTC, so west of UTC the list showed it,
+  and the password stopped working, a day before the date picked.
+- **No server holds two replicas of the same service any more.** Replicas that started while
+  only one server was up stayed on it for good: on a fresh multi-server install, after a
+  full-cluster restart, or after a server was replaced. The scheduler never moves a running
+  pod, and several workloads had only a soft spread rule. Measured on a 3-server + worker lab
+  cluster: CrowdSec's 2 replicas, tenant-errors' 2 and all 3 of the Longhorn global manager's
+  sat on one server. On production, two of the three platform-database instances once shared
+  a server.
+  - **Hard one-per-server rules:** CrowdSec and tenant-errors now carry a hard (DoNotSchedule)
+    rule and run on servers, like the other system Deployments. A one-server cluster still runs
+    both copies there. The platform database's CNPG cluster uses `required` anti-affinity. This
+    rolls its instances once on upgrade, the primary last. A replacement for a down or cordoned
+    server waits for it instead of doubling up.
+  - **HA sizing:** HA never asks for more database instances or panel/API replicas than there
+    are servers. It used to ask for at least two, even with one server left.
+  - **Longhorn global manager:** it is leader-elected. It now starts at one replica, scales
+    with the other leader-elect operators (two in HA), runs on servers, and keeps one replica
+    per server. The Longhorn UI and CSI sidecars start at one replica, the count platform-api
+    already held them at. The UI key bootstrap set was never read.
+  - **Rebalance:** every 5 minutes platform-api moves one doubled-up replica of a platform
+    workload onto a node that holds none. It acts only when that workload is fully Ready, has a
+    hard rule, and mounts no PersistentVolumeClaim, and a Ready, schedulable node it fits on is
+    free. It leaves a moved workload alone for 30 minutes. It goes through the Eviction API, so
+    disruption budgets still apply. Tenant workloads are never touched.
+  - **Guard:** a test fails any multi-replica platform workload without a hard rule.
+
 ## [2026.10.16] - 2026-10-23
 
 ### Security

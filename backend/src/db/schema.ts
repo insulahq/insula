@@ -201,7 +201,10 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
-  timezone: varchar('timezone', { length: 50 }),
+  // `timezone` (a per-user display zone) is retired: the panels show every
+  // time in the browser's zone. The column stays until a later migration
+  // drops it (expand/contract, see 0148), and bundle restores skip it
+  // (RETIRED_BUNDLE_COLUMNS in backup-restore/executors/_shared.ts).
   // Passkey integration (migration 0061). NULL = password-only (default).
   // 'alternative' = either factor logs in. 'second_factor' = password
   // then passkey, 2-step. Setting 'second_factor' requires ≥1 verified
@@ -4795,9 +4798,10 @@ export type MonitoringRuleOverrideRow = typeof monitoringRuleOverrides.$inferSel
 
 // ─── AI agents (MCP) ──────────────────────────────────────────────────────────
 // OAuth clients registered dynamically (RFC 7591) by MCP clients, the pending
-// authorizations a user approves on the consent page, and the bearer tokens
-// agents present — OAuth (8 h) and personal access tokens. Secrets are stored
-// as SHA-256 hashes only. See modules/mcp.
+// authorizations a user approves on the consent page, the connections those
+// approvals become (admin or tenant panel, 8 h at most, refreshable), and the
+// bearer tokens agents present — OAuth (1 h, under a connection) and personal
+// access tokens. Secrets are stored as SHA-256 hashes only. See modules/mcp.
 
 export const mcpOauthClients = pgTable('mcp_oauth_clients', {
   id: varchar('id', { length: 64 }).primaryKey(),
@@ -4827,6 +4831,35 @@ export const mcpOauthRequests = pgTable('mcp_oauth_requests', {
   uniqueIndex('mcp_oauth_requests_code_hash_idx').on(table.codeHash),
 ]);
 
+/**
+ * One approved agent: the consent page's answer, for the admin panel's MCP
+ * endpoint or a tenant panel's. Ends at `expiresAt` (8 h after approval) or
+ * when revoked, taking every token issued under it along.
+ */
+export const mcpConnections = pgTable('mcp_connections', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  /** Set for audience 'tenant': the tenant the approving user belongs to. */
+  tenantId: varchar('tenant_id', { length: 36 }).references(() => tenants.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 64 }).notNull().references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  audience: varchar('audience', { length: 10 }).notNull(), // 'admin' | 'tenant'
+  name: varchar('name', { length: 200 }).notNull(),
+  scopes: text('scopes').array().notNull(),
+  resource: text('resource').notNull(),
+  refreshTokenHash: varchar('refresh_token_hash', { length: 64 }).notNull(),
+  /** The refresh token this one replaced; presenting it again revokes the connection. */
+  previousRefreshHash: varchar('previous_refresh_hash', { length: 64 }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mcp_connections_refresh_hash_idx').on(table.refreshTokenHash),
+  index('mcp_connections_previous_refresh_hash_idx').on(table.previousRefreshHash),
+  index('mcp_connections_user_idx').on(table.userId),
+  index('mcp_connections_tenant_idx').on(table.tenantId),
+]);
+
 export const mcpTokens = pgTable('mcp_tokens', {
   id: varchar('id', { length: 36 }).primaryKey(),
   kind: varchar('kind', { length: 10 }).notNull(), // 'pat' | 'oauth'
@@ -4834,6 +4867,8 @@ export const mcpTokens = pgTable('mcp_tokens', {
   prefix: varchar('prefix', { length: 24 }).notNull(),
   userId: varchar('user_id', { length: 36 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
   clientId: varchar('client_id', { length: 64 }).references(() => mcpOauthClients.id, { onDelete: 'cascade' }),
+  /** OAuth tokens: the connection they were issued under. */
+  connectionId: varchar('connection_id', { length: 36 }).references(() => mcpConnections.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 200 }).notNull(),
   scopes: text('scopes').array().notNull(),
   resource: text('resource'),
@@ -4844,4 +4879,5 @@ export const mcpTokens = pgTable('mcp_tokens', {
 }, (table) => [
   uniqueIndex('mcp_tokens_token_hash_idx').on(table.tokenHash),
   index('mcp_tokens_user_idx').on(table.userId),
+  index('mcp_tokens_connection_idx').on(table.connectionId),
 ]);

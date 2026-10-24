@@ -152,7 +152,7 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
   // Issue a fresh user cert from this provider's CA. The cert + key
   // are returned ONCE; the private key is never persisted server-side.
   // The cert itself is now persisted (as of v2) for audit + revocation.
-  app.post('/tenants/:tenantId/mtls-providers/:pid/issue-cert', async (request) => {
+  app.post('/tenants/:tenantId/mtls-providers/:pid/issue-cert', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = mtlsIssueCertInputSchema.safeParse(request.body);
     if (!parsed.success) {

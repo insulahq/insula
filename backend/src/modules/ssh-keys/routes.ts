@@ -20,7 +20,7 @@ export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/ssh-keys
-  app.post('/tenants/:tenantId/ssh-keys', async (request, reply) => {
+  app.post('/tenants/:tenantId/ssh-keys', { config: { issuesCredential: true } }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = createSshKeySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -31,7 +31,7 @@ export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // PATCH /api/v1/tenants/:tenantId/ssh-keys/:keyId
-  app.patch('/tenants/:tenantId/ssh-keys/:keyId', async (request) => {
+  app.patch('/tenants/:tenantId/ssh-keys/:keyId', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, keyId } = request.params as { tenantId: string; keyId: string };
     const parsed = updateSshKeySchema.safeParse(request.body);
     if (!parsed.success) {

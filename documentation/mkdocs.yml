@@ -125,6 +125,7 @@ nav:
       - Cron jobs: tenant/cron-jobs.md
       - Protected directories: tenant/protected-directories.md
       - Account & security: tenant/account-and-security.md
+      - AI agents: tenant/ai-agents.md
   - Reference:
       - reference/index.md
       - API conventions: reference/api.md

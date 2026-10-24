@@ -1,3 +1,4 @@
+import { formatLocalInstant } from '@/lib/format-timestamp';
 import { CheckCircle2, X } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useRecoverableTenants } from '@/hooks/use-dr-recover';
@@ -53,7 +54,7 @@ export default function TenantDeletedBanner() {
         </Link>
         {entry && (
           <span className="mt-1 block" data-testid="tenant-deleted-recoverable">
-            Its backups are kept{entry.keptUntil ? ` until ${entry.keptUntil.slice(0, 10)}` : ''}, so it can still be
+            Its backups are kept{entry.keptUntil ? ` until ${formatLocalInstant(entry.keptUntil, { dateOnly: true })}` : ''}, so it can still be
             recovered —{' '}
             <Link
               to={recoverTenantPath(entry.tenantId)}

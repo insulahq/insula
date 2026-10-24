@@ -28,7 +28,7 @@ import type {
   CreateLoginPasswordResult,
   LoginPassword,
 } from '@insula/api-contracts';
-import { WEBMAIL_SESSION_LABEL_PATTERN } from '@insula/api-contracts';
+import { MAX_LOGIN_PASSWORDS_PER_MAILBOX, WEBMAIL_SESSION_LABEL_PATTERN } from '@insula/api-contracts';
 
 export class LoginPasswordError extends Error {
   constructor(message: string, readonly code: string, readonly status: number) {
@@ -90,7 +90,7 @@ export function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
   // Bulwark (1.11.1+) signs "Open webmail" in with an app password it creates
   // on the mailbox. The create schema refuses this name, so only Bulwark can
   // have given it.
-  const webmailSession = WEBMAIL_SESSION_LABEL_PATTERN.test(row.description ?? '');
+  const webmailSession = isWebmailSession(row);
   return {
     id: row.id,
     label: webmailSession ? 'Webmail session' : row.description ?? '',
@@ -99,6 +99,29 @@ export function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
     expiresAt: row.expiresAt ?? null,
     allowedIps: Object.keys(row.allowedIps ?? {}),
   };
+}
+
+/**
+ * How long after its expiry a webmail session's app password is deleted, so a
+ * pod clock slightly ahead of Stalwart's never cuts a session short.
+ */
+export const SESSION_EXPIRY_GRACE_MS = 5 * 60 * 1000;
+
+function isWebmailSession(row: StalwartAppPasswordRow): boolean {
+  return WEBMAIL_SESSION_LABEL_PATTERN.test(row.description ?? '');
+}
+
+/**
+ * True for a login password that expired `graceMs` or longer ago — one a user
+ * gave an expiry date, or the app password of an "Open webmail" session.
+ * Stalwart refuses an expired app password but never deletes it, and Bulwark
+ * deletes a session's only when the user clicks Sign out, so an expired one
+ * stays on the mailbox until login-password-reaper.ts removes it.
+ */
+export function isExpiredLoginPassword(row: StalwartAppPasswordRow, now: Date, graceMs = 0): boolean {
+  if (!row.expiresAt) return false;
+  const expiresAt = Date.parse(row.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt + graceMs <= now.getTime();
 }
 
 export async function listLoginPasswords(
@@ -111,7 +134,10 @@ export async function listLoginPasswords(
     accountId: mb.stalwartPrincipalId,
     baseUrl: process.env.STALWART_MGMT_URL,
   });
-  return rows.map(toLoginPassword);
+  // An expired login password can no longer sign in, and the reaper deletes it
+  // within the hour: don't list it as if it still worked.
+  const now = new Date();
+  return rows.filter((row) => !isExpiredLoginPassword(row, now)).map(toLoginPassword);
 }
 
 export async function createLoginPassword(
@@ -120,8 +146,42 @@ export async function createLoginPassword(
   mailboxId: string,
   input: CreateLoginPasswordInput,
 ): Promise<CreateLoginPasswordResult> {
+  // An expired login password is deleted: one created already expired would
+  // show its secret once and be gone within the hour, never having worked.
+  if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now()) {
+    throw new LoginPasswordError('The expiry date must be in the future', 'INVALID_FIELD_VALUE', 400);
+  }
   const mb = await resolveMailbox(db, tenantId, mailboxId);
+  await assertRoomForLoginPassword(mb.stalwartPrincipalId);
   return issueLoginPasswordForPrincipal(mb.stalwartPrincipalId, input);
+}
+
+/**
+ * Refuse a login password past MAX_LOGIN_PASSWORDS_PER_MAILBOX. Webmail
+ * sessions do not count: the mail server keeps room for them on top
+ * (mail-admin/app-password-limit-reconciler.ts). Expired passwords are deleted
+ * first — they no longer work and the reaper would delete them within the
+ * hour, but the mail server still counts them.
+ */
+async function assertRoomForLoginPassword(accountId: JmapAccountId): Promise<void> {
+  const baseUrl = process.env.STALWART_MGMT_URL;
+  const now = new Date();
+  const rows = await appPasswordGet({ accountId, baseUrl });
+  const expired = rows
+    .filter((row) => isExpiredLoginPassword(row, now, isWebmailSession(row) ? SESSION_EXPIRY_GRACE_MS : 0))
+    .map((row) => row.id);
+  if (expired.length > 0) {
+    // Best effort: whatever stays is counted below, and the reaper retries.
+    await appPasswordSet({ accountId, baseUrl, destroy: expired }).catch(() => undefined);
+  }
+  const loginPasswords = rows.filter((row) => !expired.includes(row.id) && !isWebmailSession(row)).length;
+  if (loginPasswords >= MAX_LOGIN_PASSWORDS_PER_MAILBOX) {
+    throw new LoginPasswordError(
+      `This mailbox already has ${MAX_LOGIN_PASSWORDS_PER_MAILBOX} login passwords, the most it can have. Revoke one before creating another.`,
+      'LOGIN_PASSWORD_LIMIT',
+      409,
+    );
+  }
 }
 
 /**
@@ -154,6 +214,15 @@ export async function issueLoginPasswordForPrincipal(
   });
 
   const created = res.created?.[tempId];
+  if (!created?.secret && res.notCreated?.[tempId]?.type === 'overQuota') {
+    // The mail server's own limit, which counts open webmail sessions — and
+    // app passwords made in the webmail's settings — beside login passwords.
+    throw new LoginPasswordError(
+      'This mailbox has no room for another password on the mail server: open webmail sessions count too. Revoke a login password or sign out of webmail, then try again.',
+      'LOGIN_PASSWORD_LIMIT',
+      409,
+    );
+  }
   if (!created || !created.secret) {
     // Surface only the JMAP error TYPE to the caller (e.g. "overQuota").
     // The full notCreated body can carry Stalwart-internal detail — log

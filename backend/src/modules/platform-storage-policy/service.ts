@@ -99,7 +99,7 @@ export function replicasForSystemTier(tier: 'local' | 'ha', serverCount: number)
 // `optional`: shipped only by some overlays — Dex and oauth2-proxy are the
 // dev/staging test IdP and never run in production. A missing optional
 // Deployment is "not installed"; a missing required one is still a failure.
-const STATELESS_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
+export const STATELESS_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
   { namespace: 'platform', name: 'admin-panel' },
   { namespace: 'platform', name: 'tenant-panel' },
   { namespace: 'platform', name: 'platform-api' },
@@ -134,9 +134,14 @@ export function replicasFor(d: ManagedDeployment, desired: number): number {
 // 3-server cluster gets 1 pod per server (the "all servers same state"
 // invariant); a 4-5 server cluster still has 3 replicas with the extra
 // servers providing failover headroom for tenant workloads.
+//
+// Never more replicas than servers present: every one of these keeps one
+// replica per server with a hard rule, so an HA cluster whose servers were
+// removed down to one would otherwise ask for a second replica that can
+// never schedule (it used to double up instead).
 export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   if (tier === 'local') return 1;
-  return Math.max(2, Math.min(serverCount, MAX_HA_REPLICAS));
+  return Math.max(1, Math.min(serverCount, MAX_HA_REPLICAS));
 }
 
 // Leader-elect operators. These run with a single active leader at a
@@ -191,6 +196,12 @@ export const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<ManagedDeployment> = [
   // plugin only from the leader, so a standby was never Ready), strips the
   // vendored `replicas: 1`, and adds the topologySpread + PDB.
   { namespace: 'cnpg-system', name: 'barman-cloud' },
+  // Longhorn 1.13+ (absent before it — optional): the cluster-wide pod/PV
+  // controllers, one leader + warm standbys. The chart's three replicas all
+  // started on the first server of a fresh install and stayed there;
+  // bootstrap installs it at one, this tier scales it, and
+  // system-pod-placement keeps one replica per server.
+  { namespace: 'longhorn-system', name: 'longhorn-global-manager', optional: true },
 ];
 
 // Leader-elect cap is 2 — see the LEADER_ELECT_DEPLOYMENTS comment.
@@ -223,10 +234,13 @@ const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
 ];
 // CNPG instance count tracks the same serverCount-aware policy
 // so postgres replication fans out across every server in HA mode
-// (matching Longhorn replicas for symmetric tolerance).
+// (matching Longhorn replicas for symmetric tolerance). Capped at the
+// servers present: the instances keep one per server (`required`
+// anti-affinity in k8s/base/database.yaml), so an instance beyond that
+// would wait Pending for a server that is not there.
 export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', serverCount: number): number {
   if (tier === 'local') return 1;
-  return Math.max(2, Math.min(serverCount, MAX_HA_REPLICAS));
+  return Math.max(1, Math.min(serverCount, MAX_HA_REPLICAS));
 }
 
 // Valkey (platform-wide Redis-protocol coordinator cache) lives in

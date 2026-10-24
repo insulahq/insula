@@ -323,7 +323,7 @@ K3S_FRESH_INSTALL=false
 # system-upgrade-controller compatibility check. Existing clusters take this pin
 # through the upgrade run's opt-in Kubernetes step (ADR-064 §8), not a host-migration.
 K3S_VERSION="v1.36.5+k3s1"
-CALICO_VERSION="v3.32.1"
+CALICO_VERSION="v3.33.0"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via
@@ -507,7 +507,7 @@ DRY_RUN=false
 #   2. All Helm chart versions are published at their respective repos
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
-LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) so the v1.12 V2-backing-image removal is a no-op here
+LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 adds the longhorn-global-manager Deployment and internal NetworkPolicies — see install_longhorn
 # Flux CLI + controllers (flux install deploys controller versions
 # matching the CLI). Pinned — the GitOps engine was the
 # LAST unpinned core component: every bootstrap silently took whatever
@@ -515,8 +515,8 @@ LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) 
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8.
-FLUX_VERSION="2.9.2"
-TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
+FLUX_VERSION="2.9.6"
+TRAEFIK_CHART_VERSION="42.1.3"           # app v3.7.16; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a
@@ -694,9 +694,9 @@ MODSECURITY_PLUGIN_MODULE="github.com/insulahq/insula/traefik-plugins/modsecurit
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.21.0"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
-SEALED_SECRETS_CHART_VERSION="2.19.1"    # controller v0.38.4
-CNPG_CHART_VERSION="0.29.0"              # CloudNative-PG operator v1.30.0 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
+CERT_MANAGER_CHART_VERSION="v1.21.2"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
+SEALED_SECRETS_CHART_VERSION="2.20.0"    # controller v0.40.0 (0.41.x has no chart yet)
+CNPG_CHART_VERSION="0.29.1"              # CloudNative-PG operator v1.30.1 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 # --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
@@ -5130,7 +5130,28 @@ install_calico() {
     return 1
   fi
 
+  # Calico's projectcalico.org resources run in one of two modes: the
+  # aggregation API server over v1 CRDs (crd.projectcalico.org), or native v3
+  # CRDs. The operator picks the mode from the CRDs ALREADY present, and since
+  # 3.33 a brand-new install defaults to native v3 — while every cluster
+  # installed before keeps the API server (an upgrade never switches modes;
+  # moving is a maintenance-window migration). Applying the v1 CRDs first keeps
+  # fresh installs in the same mode as the existing fleet, so there is one
+  # Calico to test, not two. It is the same command Calico documents for
+  # upgrading an API-server cluster, and what host-migration
+  # 2026.10.17/0007 applies to existing ones. The APIServer CR below then runs
+  # calico-apiserver as before.
+  local calico_crd_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml"
+  local calico_crd_manifest="/var/lib/insula/cache/calico-v1-crds-${CALICO_VERSION}.yaml"
+  if ! fetch_manifest_cached "$calico_crd_url" "$calico_crd_manifest"; then
+    error "Could not download the Calico v1 CRD manifest from ${calico_crd_url}. Pre-stage it at ${calico_crd_manifest} and re-run."
+    return 1
+  fi
   local _apply_out
+  if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_crd_manifest" 2>&1)"; then
+    error "Calico v1 CRD apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
   if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_manifest" 2>&1)"; then
     error "tigera-operator apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
     return 1
@@ -6736,6 +6757,45 @@ rightsize_longhorn_disk_reservation() {
   return 0
 }
 
+# Longhorn's iSCSI disks (vendor IET, product VIRTUAL-DISK) must stay out of
+# multipathd. Each Longhorn instance manager numbers its iSCSI targets from 1
+# and a disk's WWID is derived from target + LUN, so while a node runs two
+# instance managers — every Longhorn upgrade, until each volume has re-attached
+# — two disks can share a WWID. multipathd (on by default on Ubuntu) takes them
+# for two paths to one device and claims the new disk, which can then be neither
+# formatted nor mounted, and it records the WWID, so later disks on that target
+# are claimed too. Measured on DEV (Ubuntu 24.04) on the 1.12 -> 1.13 upgrade: a
+# new volume's mkfs refused with "apparently in use by the system". This is
+# Longhorn's documented prerequisite. The file is written whether or not
+# multipath-tools is installed, so installing it later is covered too;
+# host-migration 2026.10.17/0006 writes the same file on existing nodes.
+LONGHORN_MULTIPATH_CONF="/etc/multipath/conf.d/insula-longhorn.conf"
+configure_longhorn_multipath_blacklist() {
+  mkdir -p "$(dirname "$LONGHORN_MULTIPATH_CONF")"
+  cat > "$LONGHORN_MULTIPATH_CONF" <<'MULTIPATH_CONF'
+# Written by Insula (scripts/bootstrap.sh, host-migration 2026.10.17/0006):
+# keep Longhorn's iSCSI disks out of multipathd.
+blacklist {
+    device {
+        vendor "IET"
+        product "VIRTUAL-DISK"
+    }
+}
+MULTIPATH_CONF
+  # A node re-bootstrapped after running Longhorn may still list Longhorn
+  # disks' WWIDs (tgt's 360000000000000000e prefix) as multipath devices; drop
+  # them, or multipathd keeps claiming those disks regardless.
+  local wwids=/etc/multipath/wwids
+  if [[ -f "$wwids" ]] && grep -qE '^/360000000000000000e[0-9a-f]+/$' "$wwids"; then
+    sed -i -E '/^\/360000000000000000e[0-9a-f]+\/$/d' "$wwids"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet multipathd 2>/dev/null; then
+    multipathd reconfigure >/dev/null 2>&1 \
+      || warn "multipathd reconfigure failed — the Longhorn blacklist applies when multipathd next restarts."
+  fi
+  log "Longhorn iSCSI disks blacklisted from multipathd (${LONGHORN_MULTIPATH_CONF})."
+}
+
 install_longhorn() {
   if [[ "$SKIP_LONGHORN" == true ]]; then
     log "Skipping Longhorn (--skip-longhorn). Using local-path for storage."
@@ -6762,12 +6822,11 @@ install_longhorn() {
   helm_cmd repo add --force-update longhorn https://charts.longhorn.io 2>/dev/null || true
   helm_cmd repo update
 
-  # longhornUI.replicaCount=1 — the dashboard is operator-facing only
-  # and not on any client request path. The chart default is 2; on a
-  # 4-node staging cluster the second replica is ~30 MiB + scheduling
-  # overhead with no fault-tolerance benefit (no SLO on Longhorn UI
-  # uptime). Production overlays can override if dashboard HA is
-  # actually needed.
+  # longhornUI.replicas=1 and csi.*ReplicaCount=1 — the counts platform-api
+  # holds these at (system-pod-placement). The chart's defaults (UI 2, each
+  # CSI sidecar 3) all start on this server, the only one at install time,
+  # and sit there until platform-api's first pass. The dashboard is
+  # operator-facing only and on no client request path.
   #
   # guaranteedInstanceManagerCPU=8 (default 12) — each instance-manager
   # *reserves* this % of node CPU regardless of actual usage. At 12%,
@@ -6795,6 +6854,22 @@ install_longhorn() {
   # on every distro because k3s ALWAYS uses /var/lib/kubelet (see
   # install_k3s_server — no --kubelet-arg=root-dir override). Surfaced
   # on Rocky 10.1 fresh install.
+  # Longhorn 1.13:
+  #   * networkPolicies.restrictInternalTraffic=false — 1.13 turns on ingress
+  #     NetworkPolicies for its internal endpoints by default. They admit
+  #     longhorn-manager :9500 only from longhorn-system, which cuts off the
+  #     VictoriaMetrics scrape (monitoring) and platform-api's longhorn-backend
+  #     calls; and k3s with Calico VXLAN + WireGuard is not among the CNI
+  #     combinations Longhorn has validated the policies on. Turning it on is
+  #     a separate hardening step with additive policies for those callers.
+  #   * longhornGlobalManager.tolerations — the new cluster-wide pod/PV
+  #     controller Deployment tolerates the server-only taint like the rest of
+  #     Longhorn, so it can run on a server that opted out of tenant workloads.
+  #   * longhornGlobalManager.replicas=1 — it is leader-elected (one leader,
+  #     warm standbys). The chart's three replicas, spread only by preference,
+  #     all start on this server and never move when the others join.
+  #     platform-api scales it with the other leader-elect operators (two in
+  #     HA) and keeps one per server (system-pod-placement).
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -6808,13 +6883,22 @@ install_longhorn() {
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
     --set-string 'defaultSettings.taintToleration=insula.host/server-only=true:NoSchedule' \
-    --set longhornUI.replicaCount=1 \
+    --set longhornUI.replicas=1 \
+    --set csi.attacherReplicaCount=1 \
+    --set csi.provisionerReplicaCount=1 \
+    --set csi.resizerReplicaCount=1 \
+    --set csi.snapshotterReplicaCount=1 \
     --set 'longhornManager.resources.requests.cpu=50m' \
     --set 'longhornManager.resources.requests.memory=128Mi' \
     --set 'longhornDriver.resources.requests.cpu=50m' \
     --set 'longhornDriver.resources.requests.memory=128Mi' \
     --set 'longhornUI.resources.requests.cpu=10m' \
     --set 'longhornUI.resources.requests.memory=64Mi' \
+    --set networkPolicies.restrictInternalTraffic=false \
+    --set longhornGlobalManager.replicas=1 \
+    --set 'longhornGlobalManager.tolerations[0].key=insula.host/server-only' \
+    --set 'longhornGlobalManager.tolerations[0].operator=Exists' \
+    --set 'longhornGlobalManager.tolerations[0].effect=NoSchedule' \
     --wait \
     --timeout 600s
 
@@ -11695,6 +11779,7 @@ main() {
     configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
+    configure_longhorn_multipath_blacklist
     pin_k3s_node_name
   fi
   if [[ "$DRY_RUN" == true ]]; then

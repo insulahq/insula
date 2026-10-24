@@ -107,6 +107,7 @@ export async function loginPasswordRoutes(app: FastifyInstance): Promise<void> {
     });
 
     scope.post(base, {
+      config: { issuesCredential: true },
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin', 'support')],
     }, async (request) => {
       const { tenantId, mailboxId } = parseTenantParams(request.params);

@@ -98,3 +98,16 @@ patches:
     path: affinity-patch.yaml
   - target: { kind: Deployment, name: modsec-stub, namespace: traefik }
     path: affinity-patch.yaml
+
+  # ── one-per-server workloads with no placement of their own ───────
+  # CrowdSec's LAPI and the tenant error pages keep one replica per
+  # server with a hard (DoNotSchedule) hostname spread. Every node the
+  # pod may land on is a spread domain, and a cordoned, down or
+  # custom-tainted worker still counts as one holding zero replicas —
+  # which would hold the second replica Pending on a one-server cluster
+  # with such a worker. Pinned to servers like the other system
+  # Deployments, only servers count.
+  - target: { kind: Deployment, name: crowdsec, namespace: crowdsec }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: tenant-errors, namespace: platform-system }
+    path: affinity-patch.yaml

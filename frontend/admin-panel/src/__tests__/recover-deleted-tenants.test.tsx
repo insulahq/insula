@@ -5,7 +5,7 @@
  * tenants) lost it within a night or two, and showed it unnamed when it did.
  * These pin that it is findable BY NAME everywhere an operator would look.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -15,6 +15,12 @@ const fetchMock = vi.fn();
 vi.mock('@/lib/api-client', () => ({ apiFetch: (...a: unknown[]) => fetchMock(...a) }));
 
 const { default: DeletedTenantsCard } = await import('@/components/backups/DeletedTenantsCard');
+
+// Dates and times read in the browser's zone. Tokyo (UTC+9, no daylight saving) puts the
+// deletion (17:00 UTC) and the retention end on the next calendar day there, so a date
+// still cut from the UTC string would fail.
+beforeEach(() => { vi.stubEnv('TZ', 'Asia/Tokyo'); });
+afterEach(() => { vi.unstubAllEnvs(); });
 const { default: TenantRecoverTab } = await import('@/components/system-backup/TenantRecoverTab');
 const { default: TenantDeletedBanner } = await import('@/components/tenants/TenantDeletedBanner');
 
@@ -80,8 +86,8 @@ describe('Backups → Tenants: deleted tenants card', () => {
     renderAt('/backups/tenants', <DeletedTenantsCard />);
     const row = await screen.findByTestId(`deleted-tenant-${GONE.tenantId}`);
     expect(row).toHaveTextContent('ACME LEARNING');
-    expect(row).toHaveTextContent('2026-10-03');
-    expect(row).toHaveTextContent('2026-11-02');
+    expect(row).toHaveTextContent('2026-10-04');
+    expect(row).toHaveTextContent('2026-11-03');
     expect(screen.getByTestId(`recover-deleted-${GONE.tenantId}`))
       .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${GONE.tenantId}`);
     // Live tenants are not "deleted tenants".
@@ -103,12 +109,15 @@ describe('DR → Recover Tenant', () => {
     const picker = await screen.findByTestId('dr-recover-tenant-picker');
     await waitFor(() => expect(picker).toHaveTextContent('ACME LEARNING'));
     const facts = await screen.findByTestId('dr-recover-facts');
-    expect(facts).toHaveTextContent('deleted 2026-10-03');
+    expect(facts).toHaveTextContent('deleted 2026-10-04');
     expect(facts).toHaveTextContent('Business');
     expect(facts).toHaveTextContent('tenant-example-0a1b2c3d');
     expect(facts).toHaveTextContent('missing');
     const bundles = screen.getByTestId('dr-recover-bundles');
-    expect(bundles).toHaveTextContent('2026-10-03 01:36 UTC');
+    expect(bundles).toHaveTextContent('2026-10-03 10:36');
+    expect(within(bundles).getByText('2026-10-03 10:36')).toHaveAttribute('title', '2026-10-03 01:36 UTC');
+    expect(bundles.querySelector('thead')).toHaveTextContent('Taken (UTC+9)');
+    expect(screen.getByTestId('dr-bundle-bkp-79a722d1').querySelector('input')).toHaveAttribute('aria-label', 'Bundle taken 2026-10-03 10:36 UTC+9');
     expect(bundles).toHaveTextContent('1.2 GB');
     // The newest completed bundle is the default; an older one is a click away — no ids.
     const newest = screen.getByTestId('dr-bundle-bkp-79a722d1').querySelector('input') as HTMLInputElement;
@@ -135,7 +144,7 @@ describe('the "Tenant was deleted" banner', () => {
     api([GONE]);
     renderAt('/tenants/list', <TenantDeletedBanner />, { deletedTenant: { name: 'ACME LEARNING', id: GONE.tenantId } });
     const line = await screen.findByTestId('tenant-deleted-recoverable');
-    expect(line).toHaveTextContent('kept until 2026-11-02');
+    expect(line).toHaveTextContent('kept until 2026-11-03');
     expect(screen.getByRole('link', { name: 'Recover…' }))
       .toHaveAttribute('href', `/backups/disaster-recovery?section=recover&tenant=${GONE.tenantId}`);
   });

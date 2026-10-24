@@ -62,6 +62,7 @@ export * from './admin-users.js';
 export * from './health.js';
 export * from './export-import.js';
 export * from './email-domains.js';
+export * from './email-dkim.js';
 export * from './mailboxes.js';
 export * from './email-aliases.js';
 export * from './mailbox-aliases.js';

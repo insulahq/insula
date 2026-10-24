@@ -6,9 +6,29 @@ import {
   useRevokeLoginPassword,
   type CreateLoginPasswordResult,
 } from '@/hooks/use-email';
+import { MAX_LOGIN_PASSWORDS_PER_MAILBOX } from '@insula/api-contracts';
+import { formatTimestamp } from '@/lib/format-timestamp';
 
 const INPUT =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
+/**
+ * An expiry date is a day in the viewer's time zone, like every other time in
+ * the panel: the password stops working when that day starts. (Sent as UTC
+ * midnight, a date west of UTC was shown as the day before.) An expiry that is
+ * not in the future is refused — an expired login password is deleted — so
+ * tomorrow is the first date offered.
+ */
+function firstExpiryDate(): string {
+  const now = new Date();
+  return formatTimestamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1), { dateOnly: true });
+}
+
+/** The start of `day` (YYYY-MM-DD) in the viewer's time zone. */
+function expiryInstant(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d).toISOString();
+}
 
 /**
  * Per-mailbox "Login passwords" manager (ADR-049). Login passwords are
@@ -45,6 +65,9 @@ export function MailboxLoginPasswordsModal({
   const [revokeId, setRevokeId] = useState<string | null>(null);
 
   const rows = data?.data ?? [];
+  // Webmail sessions have room of their own on the mail server and do not count.
+  const loginCount = rows.filter((r) => r.kind === 'login').length;
+  const atLimit = loginCount >= MAX_LOGIN_PASSWORDS_PER_MAILBOX;
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -52,7 +75,7 @@ export function MailboxLoginPasswordsModal({
     try {
       const res = await create.mutateAsync({
         label: label.trim(),
-        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+        expiresAt: expiresAt ? expiryInstant(expiresAt) : null,
         allowedIps: ips.length > 0 ? ips : undefined,
       });
       setRevealed(res.data);
@@ -93,14 +116,23 @@ export function MailboxLoginPasswordsModal({
 
           {/* Create */}
           {!showForm ? (
-            <button
-              type="button"
-              onClick={() => setShowForm(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
-              data-testid="new-login-password"
-            >
-              <Plus size={14} /> New login password
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowForm(true)}
+                disabled={atLimit}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="new-login-password"
+              >
+                <Plus size={14} /> New login password
+              </button>
+              {!isLoading && (
+                <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="login-password-count">
+                  {loginCount} of {MAX_LOGIN_PASSWORDS_PER_MAILBOX} login passwords
+                  {atLimit && ' — the most a mailbox can have. Revoke one to create another.'}
+                </span>
+              )}
+            </div>
           ) : (
             <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3" data-testid="new-login-password-form">
               <div>
@@ -108,8 +140,8 @@ export function MailboxLoginPasswordsModal({
                 <input className={INPUT + ' mt-1'} value={label} onChange={(e) => setLabel(e.target.value)} required maxLength={64} placeholder="iPhone Mail" data-testid="login-password-label" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Expires <span className="text-gray-400">(optional)</span></label>
-                <input type="date" className={INPUT + ' mt-1'} value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} data-testid="login-password-expires" />
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Expires <span className="text-gray-400 dark:text-gray-500">(optional; deleted when it expires)</span></label>
+                <input type="date" className={INPUT + ' mt-1'} value={expiresAt} min={firstExpiryDate()} onChange={(e) => setExpiresAt(e.target.value)} data-testid="login-password-expires" />
               </div>
               <button type="button" onClick={() => setShowAdvanced((s) => !s)} className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
                 {showAdvanced ? '▾' : '▸'} Advanced

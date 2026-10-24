@@ -41,6 +41,8 @@ export interface Operation {
   readonly scopeRule: ApiScopeRule | undefined;
   /** Set when agents may not call this route, with the reason. */
   readonly excluded: string | null;
+  /** The route issues a free-standing credential: refused to TENANT agents (shared/api-scope.ts). */
+  readonly issuesCredential: boolean;
 }
 
 declare module 'fastify' {
@@ -114,7 +116,9 @@ export function operationFromRoute(route: RouteOptions, method: string): Operati
   const schema = (route.schema ?? {}) as {
     summary?: string; description?: string; tags?: string[]; querystring?: unknown; body?: unknown;
   };
-  const config = (route.config ?? {}) as { apiScope?: ApiScopeRule; apiBody?: z.ZodType; apiQuery?: z.ZodType };
+  const config = (route.config ?? {}) as {
+    apiScope?: ApiScopeRule; apiBody?: z.ZodType; apiQuery?: z.ZodType; issuesCredential?: boolean;
+  };
   const { roles, panel } = guardTags(route);
   const rule = config.apiScope;
   const scope = typeof rule === 'function' ? 'varies' : requiredScope(method, url, rule) as McpScope;
@@ -133,6 +137,7 @@ export function operationFromRoute(route: RouteOptions, method: string): Operati
     scope,
     scopeRule: rule,
     excluded: exclusionFor(path, route),
+    issuesCredential: config.issuesCredential === true,
   };
 }
 

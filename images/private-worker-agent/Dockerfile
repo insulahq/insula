@@ -7,9 +7,9 @@
 # frpc.toml, and execs frpc to dial a per-client tunnel into the cluster
 # over outbound HTTPS/WSS. No persistent volumes; restart-safe.
 #
-# Pinned to frp v0.62.1 with verified SHA-256 sums from the upstream
+# Pinned to frp v0.71.1 with verified SHA-256 sums from the upstream
 # checksums file:
-#   https://github.com/fatedier/frp/releases/download/v0.62.1/frp_sha256_checksums.txt
+#   https://github.com/fatedier/frp/releases/download/v0.71.1/frp_sha256_checksums.txt
 # Bump FRP_VERSION + matching SHA-256s together when upgrading.
 
 ARG ALPINE_VERSION=3.20
@@ -17,9 +17,9 @@ ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION} AS frpc-fetch
 
 ARG TARGETARCH
-ARG FRP_VERSION=0.62.1
-ARG FRP_SHA256_AMD64=dcf1c62e5862543b6686a8e4c2f430ef636ac33306167f377e7272875020c4d3
-ARG FRP_SHA256_ARM64=94c98c19ce181f8e09e0d0cb79c278c31e9ec936eb713826a1ddf4995e7c2155
+ARG FRP_VERSION=0.71.1
+ARG FRP_SHA256_AMD64=1d9875210972a5d1a62b2dc4c48df45ab0af05d3ca1b5e494a014428259df803
+ARG FRP_SHA256_ARM64=8edf590b0c396fa42f9c147121a76af83cfc2002b08f5aef0ea1008c43482019
 
 RUN apk add --no-cache ca-certificates curl tar coreutils
 

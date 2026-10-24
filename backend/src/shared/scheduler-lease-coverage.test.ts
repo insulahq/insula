@@ -95,6 +95,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'app.ts', job: 'mail-convergence-sweep' },
   // Sweeps that start Jobs or pods, exec into one, or delete volumes.
   { file: 'modules/mail-admin/mail-pvc-reaper.ts', job: 'mail-pvc-reaper' },
+  { file: 'modules/login-passwords/login-password-reaper.ts', job: 'login-password-reaper' },
   { file: 'modules/file-manager/trash-reconciler.ts', job: 'file-trash-reconcile' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-snapshot-expiry' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-audit' },
@@ -202,6 +203,7 @@ const EVERY_REPLICA: Readonly<Record<string, readonly string[]>> = {
   'modules/ingress-nodes/reconciler.ts': ['writes only when the discovered address set changed, from the node list every replica reads'],
   'modules/mail-admin/imap-concurrency.ts': ['sets a fixed value, and only when the live one differs'],
   'modules/mail-admin/dns-resolver-reconciler.ts': ['sets a fixed value, and only when the live one differs; the settings reload it triggers is idempotent'],
+  'modules/mail-admin/app-password-limit-reconciler.ts': ['raises a fixed minimum, and only when the live value is lower; the settings reload it triggers is idempotent'],
   'modules/pod-prune/scheduler.ts': ['recomputes the prunable set each tick and deletes pods by name; notifies nobody'],
   'modules/tenant-snapshots/scheduler.ts': ['both deletes are idempotent — a snapshot already gone is tolerated'],
   'modules/metrics/usage-reaper-scheduler.ts': ['the fold replaces the daily row and commits together with the delete of its source rows'],

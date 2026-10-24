@@ -1,11 +1,10 @@
 import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
-import { User, KeyRound, Save, Loader2, Clock, Fingerprint, Trash2, Plus, AlertCircle } from 'lucide-react';
+import { User, KeyRound, Save, Loader2, Fingerprint, Trash2, Plus, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useUpdateProfile } from '@/hooks/use-profile';
 import { usePasskey } from '@/hooks/use-passkey';
 import { ApiError } from '@/lib/api-client';
 import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
-import TimezoneSelect from '@/components/TimezoneSelect';
 import ApiTokensSection from '@/components/settings/ApiTokensSection';
 import TotpSection from '@/components/settings/TotpSection';
 
@@ -32,7 +31,6 @@ export default function UserSettings() {
       <ProfileForm
         initialName={user?.fullName ?? ''}
         initialEmail={user?.email ?? ''}
-        initialTimezone={(user as unknown as { timezone?: string | null })?.timezone ?? ''}
       />
 
       <PasswordSection />
@@ -289,16 +287,13 @@ function ModeOption({
 function ProfileForm({
   initialName,
   initialEmail,
-  initialTimezone,
 }: {
   readonly initialName: string;
   readonly initialEmail: string;
-  readonly initialTimezone: string;
 }) {
   const updateProfile = useUpdateProfile();
   const [fullName, setFullName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
-  const [timezone, setTimezone] = useState(initialTimezone);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -311,7 +306,6 @@ function ProfileForm({
       const result = await updateProfile.mutateAsync({
         full_name: fullName,
         email,
-        timezone: timezone === '' ? null : timezone,
       });
       // Update local storage with new user data
       const storedUser = localStorage.getItem('auth_user');
@@ -322,7 +316,6 @@ function ProfileForm({
             ...parsed,
             fullName: result.data.fullName,
             email: result.data.email,
-            timezone: result.data.timezone ?? null,
           };
           localStorage.setItem('auth_user', JSON.stringify(updated));
         } catch {
@@ -369,16 +362,6 @@ function ProfileForm({
             onChange={(e) => setEmail(e.target.value)}
             data-testid="profile-email"
           />
-        </div>
-        <div>
-          <label htmlFor="timezone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            <Clock size={14} className="inline -mt-0.5 mr-1" />
-            Timezone
-          </label>
-          <TimezoneSelect value={timezone} onChange={setTimezone} placeholder="Use system default" className="mt-1" />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Used when displaying dates and times in the UI. Leave empty to inherit the system default.
-          </p>
         </div>
         {successMessage && (
           <p className="text-sm text-green-600 dark:text-green-400" data-testid="profile-success">{successMessage}</p>

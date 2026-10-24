@@ -411,6 +411,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         protectTenantViaProxy: settings.protectTenantViaProxy,
         breakGlassPath: newPath,
         adminHost,
+        tenantHost: extractHost(sysSettings.tenantPanelUrl),
       });
     } catch (err) {
       app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations after break-glass regeneration');

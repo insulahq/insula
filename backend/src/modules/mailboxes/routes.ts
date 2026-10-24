@@ -134,6 +134,8 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
 
     // POST /api/v1/tenants/:tenantId/email/domains/:emailDomainId/mailboxes
     tenantScope.post('/tenants/:tenantId/email/domains/:emailDomainId/mailboxes', {
+      // Answers with the mailbox's first login password.
+      config: { issuesCredential: true },
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
     }, async (request, reply) => {
       const { tenantId, emailDomainId } = request.params as { tenantId: string; emailDomainId: string };
@@ -319,6 +321,8 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
     // attacker tries to farm tokens for persistence.
     webmailScope.post('/email/webmail-token', {
       config: {
+        // Signs the caller in to webmail — a session of its own.
+        issuesCredential: true,
         rateLimit: {
           max: 5,
           timeWindow: '1 minute',

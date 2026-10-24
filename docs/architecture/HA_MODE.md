@@ -10,9 +10,23 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 | CNPG **instance** PVCs | ≤2 replicas | **1** replica each | ✓ |
 | Postgres CNPG `Cluster` `spec.instances` | 1 | 3 (sync replication) | ✓ (replicas removed; primary keeps data) |
 | `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 1 replica | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
-| Leader-elect operators: cert-manager (×3), Flux kustomize/helm/notification-controller, sealed-secrets, snapshot-controller, `cnpg-cloudnative-pg` | 1 | 2 (leader + warm standby) | ✓ |
+| Leader-elect operators: cert-manager (×3), Flux kustomize/helm/notification-controller, sealed-secrets, snapshot-controller, `cnpg-cloudnative-pg`, `longhorn-global-manager` (Longhorn 1.13+) | 1 | 2 (leader + warm standby) | ✓ |
 | **`barman-cloud`** (CNPG backup plugin) | 1 | 2, **both active** (leader election off) | ✓ |
 | Flux `source-controller` | 1 | **1** (`maxReplicas: 1`) | — |
+
+> **One replica per server, in both tiers.** Every multi-replica platform
+> workload carries a hard per-node rule (topology spread `DoNotSchedule` on
+> the hostname, or `required` anti-affinity — CNPG instances), so a
+> replacement for a down or cordoned server waits for it instead of doubling
+> up. The rule binds only pods being scheduled; replicas that started while one
+> server was up (fresh install, full-cluster restart, server replaced) are
+> moved by platform-api's placement pass every 5 minutes — one replica per
+> workload per pass, through the Eviction API, only once the workload is fully
+> Ready and a Ready, schedulable node it fits on holds none of it, and never
+> again within 30 minutes (`system-pod-placement/rebalance.ts`). HA never asks
+> for more replicas or database instances than there are servers present. A
+> one-server cluster keeps its copies on its one server. CI guard:
+> `one-replica-per-server.test.ts`.
 
 > **CNPG instance PVCs go DOWN in HA, not up.** Postgres streaming replication
 > already keeps three copies; giving each instance PVC three Longhorn replicas

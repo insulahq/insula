@@ -28,6 +28,9 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import ScenariosCard from './ScenariosCard';
 import { CommunityBlocklistBanner, CommunityBlocklistCard } from './CommunityBlocklist';
 import Disclosure from '@/components/ui/Disclosure';
+import LocalTime from '@/components/ui/LocalTime';
+import { localZoneTitle } from '@/lib/format-timestamp';
+import { utcOffsetLabel } from '@/lib/format-traffic';
 import {
   addedByMeta,
   addedByTooltip,
@@ -284,7 +287,7 @@ export function WafEventsTab() {
           the row-attribute filters (rule, severity, host, IP, …). */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-filters">
         <div className="flex flex-wrap items-end gap-3">
-          <FilterField label="From (datetime)">
+          <FilterField label="From" hint={utcOffsetLabel()}>
             <input
               type="datetime-local"
               value={fromTime}
@@ -303,7 +306,7 @@ export function WafEventsTab() {
               data-testid="waf-filter-from-time"
             />
           </FilterField>
-          <FilterField label="To (datetime)">
+          <FilterField label="To" hint={utcOffsetLabel()}>
             <input
               type="datetime-local"
               value={toTime}
@@ -450,7 +453,7 @@ export function WafEventsTab() {
               </colgroup>
               <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <SortableHeader label="When" sortKey="occurredAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label={`When (${utcOffsetLabel()})`} title={localZoneTitle()} sortKey="occurredAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <SortableHeader label="Rule" sortKey="ruleId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <SortableHeader label="Sev" sortKey="severity" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                   <SortableHeader label="Host" sortKey="hostname" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
@@ -746,7 +749,7 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
   return (
     <tr>
       <td className="px-2 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap align-top">
-        {new Date(ev.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}
+        <LocalTime iso={ev.occurredAt} seconds />
       </td>
       <td className="px-2 py-2 align-top">
         <div className="font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</div>
@@ -1926,7 +1929,7 @@ export function WafExclusionsTab() {
                     looked up per-row in UserLabel and is not on the row object,
                     so a "By" sort would silently order by nothing. "When" is
                     the half of this column that is genuinely sortable. */}
-                <SortableHeader label="By / when" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label={`By / when (${utcOffsetLabel()})`} title={localZoneTitle()} sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <SortableHeader label="Status" sortKey="disabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <th className="px-4 py-2 text-left">Action</th>
               </tr>
@@ -1971,7 +1974,7 @@ export function WafExclusionsTab() {
                   <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-[280px]">{x.reason}</td>
                   <td className="px-4 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     <UserLabel userId={x.createdBy} /><br />
-                    {new Date(x.createdAt).toISOString().replace('T', ' ').slice(0, 16)}
+                    <LocalTime iso={x.createdAt} />
                   </td>
                   <td className="px-4 py-2 text-xs">
                     {x.disabled ? (
@@ -2540,7 +2543,7 @@ function CrowdsecAutobanCard() {
             <table className="min-w-full text-[11px]">
               <thead className="bg-gray-50 dark:bg-gray-900 text-gray-500 dark:text-gray-400 uppercase">
                 <tr>
-                  <SortableHeader label="When" sortKey="triggeredAt" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} className="text-left" padding="px-3 py-1" />
+                  <SortableHeader label={`When (${utcOffsetLabel()})`} title={localZoneTitle()} sortKey="triggeredAt" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} className="text-left" padding="px-3 py-1" />
                   <SortableHeader label="Source IP" sortKey="sourceIp" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} className="text-left" padding="px-3 py-1" />
                   <SortableHeader label="Host" sortKey="hostname" currentKey={runsSortKey} direction={runsSortDirection} onSort={onRunsSort} className="text-left" padding="px-3 py-1" />
                   <th className="text-left px-3 py-1">Rules</th>
@@ -2584,7 +2587,7 @@ function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
   return (
     <tr>
       <td className="px-3 py-1 font-mono text-[10px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
-        {new Date(r.triggeredAt).toISOString().replace('T', ' ').slice(0, 19)}
+        <LocalTime iso={r.triggeredAt} seconds />
       </td>
       <td className="px-3 py-1 font-mono">{r.sourceIp}</td>
       <td className="px-3 py-1 text-gray-700 dark:text-gray-300">{r.hostname ?? '—'}</td>

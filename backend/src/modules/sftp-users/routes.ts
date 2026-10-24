@@ -34,7 +34,7 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/sftp-users
-  app.post('/tenants/:tenantId/sftp-users', async (request, reply) => {
+  app.post('/tenants/:tenantId/sftp-users', { config: { issuesCredential: true } }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = createSftpUserSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -62,7 +62,8 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // PATCH /api/v1/tenants/:tenantId/sftp-users/:userId
-  app.patch('/tenants/:tenantId/sftp-users/:userId', async (request) => {
+  // Attaching keys, re-enabling or extending a user widens a working login.
+  app.patch('/tenants/:tenantId/sftp-users/:userId', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, userId } = request.params as { tenantId: string; userId: string };
     const parsed = updateSftpUserSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -84,7 +85,7 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/sftp-users/:userId/rotate-password
-  app.post('/tenants/:tenantId/sftp-users/:userId/rotate-password', async (request) => {
+  app.post('/tenants/:tenantId/sftp-users/:userId/rotate-password', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, userId } = request.params as { tenantId: string; userId: string };
     const parsed = rotateSftpPasswordSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
