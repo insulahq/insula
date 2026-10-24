@@ -99,7 +99,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   that switched client-certificate (mTLS) checks off on a route. Existing clusters move with
   host-migration 2026.10.17/0001, which keeps the release's own values and the reconciler's
   trusted proxies, rolls the DaemonSet node by node, and rolls back if a pod cannot load its
-  plugins. Traefik now also rejects `CONNECT` and drops h2c upgrade headers.
+  plugins. While a node's Traefik pod is replaced, that node refuses new connections for about
+  5 seconds (measured on a 3-node cluster, one node at a time). Traefik now also rejects
+  `CONNECT` and drops h2c upgrade headers.
 - **Bulwark webmail 1.12.0 → 1.17.1.** An HTML attachment preview could run the sender's script in
   the webmail's origin (1.16.0); a signed-in user could reach a Brotli out-of-bounds write in the
   server through calendar, WebDAV and plugin fetches (1.17.0, Node 24.22.1); delete and move could
@@ -171,9 +173,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   a server.
   - **Hard one-per-server rules:** CrowdSec and tenant-errors now carry a hard (DoNotSchedule)
     rule and run on servers, like the other system Deployments. A one-server cluster still runs
-    both copies there. The platform database's CNPG cluster uses `required` anti-affinity. This
-    rolls its instances once on upgrade, the primary last. A replacement for a down or cordoned
-    server waits for it instead of doubling up.
+    both copies there. The platform database's CNPG cluster uses `required` anti-affinity. A
+    replacement for a down or cordoned server waits for it instead of doubling up.
+  - **The platform database restarts twice during this upgrade:** once for the CloudNativePG
+    operator update (host-migration 2026.10.17/0003) and once for the new rule, the primary last
+    each time. Each restart first waits up to 3 minutes for open connections to close, and new
+    API pods cannot start during that wait. On a one-instance cluster the API then answers with
+    errors for about 30 seconds, twice. During the second restart the Upgrades page may show
+    "Not converging … consider rolling back" for about half a minute; do not roll back, the
+    upgrade finishes by itself (11 minutes from v2026.10.16 on a 3-server cluster).
   - **HA sizing:** HA never asks for more database instances or panel/API replicas than there
     are servers. It used to ask for at least two, even with one server left.
   - **Longhorn global manager:** it is leader-elected. It now starts at one replica, scales
