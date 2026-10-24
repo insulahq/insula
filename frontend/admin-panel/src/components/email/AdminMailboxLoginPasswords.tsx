@@ -6,9 +6,28 @@ import {
   useAdminRevokeLoginPassword,
   type AdminCreateLoginPasswordResult,
 } from '@/hooks/use-email';
+import { formatTimestamp } from '@/lib/format-timestamp';
 
 const INPUT =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
+/**
+ * An expiry date is a day in the viewer's time zone, like every other time in
+ * the panel: the password stops working when that day starts. (Sent as UTC
+ * midnight, a date west of UTC was shown as the day before.) An expiry that is
+ * not in the future is refused — an expired login password is deleted — so
+ * tomorrow is the first date offered.
+ */
+function firstExpiryDate(): string {
+  const now = new Date();
+  return formatTimestamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1), { dateOnly: true });
+}
+
+/** The start of `day` (YYYY-MM-DD) in the viewer's time zone. */
+function expiryInstant(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d).toISOString();
+}
 
 /**
  * Admin/support cross-tenant "Login passwords" manager for a mailbox
@@ -46,7 +65,7 @@ export function AdminMailboxLoginPasswordsModal({
     try {
       const res = await create.mutateAsync({
         label: label.trim(),
-        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+        expiresAt: expiresAt ? expiryInstant(expiresAt) : null,
         allowedIps: ips.length > 0 ? ips : undefined,
       });
       setRevealed(res.data);
@@ -101,8 +120,8 @@ export function AdminMailboxLoginPasswordsModal({
                 <input className={INPUT + ' mt-1'} value={label} onChange={(e) => setLabel(e.target.value)} required maxLength={64} placeholder="iPhone Mail" data-testid="admin-login-password-label" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Expires <span className="text-gray-400">(optional)</span></label>
-                <input type="date" className={INPUT + ' mt-1'} value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Expires <span className="text-gray-400 dark:text-gray-500">(optional; deleted when it expires)</span></label>
+                <input type="date" className={INPUT + ' mt-1'} value={expiresAt} min={firstExpiryDate()} onChange={(e) => setExpiresAt(e.target.value)} data-testid="admin-login-password-expires" />
               </div>
               <button type="button" onClick={() => setShowAdvanced((s) => !s)} className="text-xs text-brand-600 dark:text-brand-400 hover:underline">{showAdvanced ? '▾' : '▸'} Advanced</button>
               {showAdvanced && (
@@ -148,9 +167,6 @@ export function AdminMailboxLoginPasswordsModal({
                       {r.expiresAt
                         ? (r.kind === 'webmail_session' ? new Date(r.expiresAt).toLocaleString() : new Date(r.expiresAt).toLocaleDateString())
                         : 'never'}
-                      {r.kind === 'login' && r.expiresAt && new Date(r.expiresAt) <= new Date() && (
-                        <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`admin-login-password-expired-${r.id}`}>Expired</span>
-                      )}
                     </td>
                     <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">{r.allowedIps.length > 0 ? r.allowedIps.join(', ') : '—'}</td>
                     <td className="py-2.5 text-right">

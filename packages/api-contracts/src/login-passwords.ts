@@ -28,7 +28,10 @@ export const WEBMAIL_SESSION_LABEL_PATTERN =
 export const createLoginPasswordSchema = z.object({
   label: z.string().trim().min(1, 'Label is required').max(64)
     .refine((v) => !WEBMAIL_SESSION_LABEL_PATTERN.test(v), 'This label is reserved for webmail sessions — choose another'),
-  /** ISO-8601 date/datetime; omitted/null = never expires. */
+  /**
+   * ISO-8601 date/datetime; omitted/null = never expires. Must be in the
+   * future (checked at create): an expired login password is deleted.
+   */
   expiresAt: z.string().datetime().nullish(),
   /**
    * Optional IP / CIDR allow-list (v4 or v6, optional /prefix). When

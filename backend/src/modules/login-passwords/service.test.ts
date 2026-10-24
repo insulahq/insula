@@ -3,7 +3,7 @@
  * the live round-trip is covered by the local E2E (create → secret →
  * IMAP/webmail login → revoke).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const jmap = vi.hoisted(() => ({
   appPasswordGet: vi.fn(),
@@ -59,13 +59,13 @@ describe('login-passwords/service: listLoginPasswords', () => {
   it('maps Stalwart rows (description→label, allowedIps map→array, secret never present)', async () => {
     jmap.appPasswordGet.mockResolvedValue([
       { id: 'a1', description: 'iPhone', createdAt: '2026-05-01T00:00:00Z', expiresAt: null, allowedIps: {}, secret: '****' },
-      { id: 'a2', description: 'SMTP', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2026-09-01T00:00:00Z', allowedIps: { '203.0.113.4/32': true } },
+      { id: 'a2', description: 'SMTP', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2099-09-01T00:00:00Z', allowedIps: { '203.0.113.4/32': true } },
     ]);
     const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
     expect(jmap.appPasswordGet).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'b' }));
     expect(out).toEqual([
       { id: 'a1', label: 'iPhone', kind: 'login', createdAt: '2026-05-01T00:00:00Z', expiresAt: null, allowedIps: [] },
-      { id: 'a2', label: 'SMTP', kind: 'login', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2026-09-01T00:00:00Z', allowedIps: ['203.0.113.4/32'] },
+      { id: 'a2', label: 'SMTP', kind: 'login', createdAt: '2026-03-01T00:00:00Z', expiresAt: '2099-09-01T00:00:00Z', allowedIps: ['203.0.113.4/32'] },
     ]);
     expect(JSON.stringify(out)).not.toContain('secret');
   });
@@ -96,17 +96,20 @@ describe('login-passwords/service: listLoginPasswords', () => {
   });
 
   // Stalwart keeps an expired app password, and Bulwark deletes its own only
-  // on Sign out: an ended session stayed in the list as if still open.
-  it('leaves out a webmail session that has ended, but not an expired login password', async () => {
+  // on Sign out: an ended session stayed in the list as if still open, an
+  // expired login password as if it still worked.
+  it('leaves out every login password that has expired', async () => {
     vi.useFakeTimers({ now: new Date('2026-10-24T12:00:00Z'), toFake: ['Date'] });
     try {
       jmap.appPasswordGet.mockResolvedValue([
         { id: 'ended', description: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c', expiresAt: '2026-10-16T03:22:51Z' },
         { id: 'open', description: 'Support session 1c9e5d3f-8b2e-4f6c-8d4b-3a7e9f2c5b8d', expiresAt: '2026-10-24T18:00:00Z' },
         { id: 'login', description: 'Old laptop', expiresAt: '2026-10-01T00:00:00Z' },
+        { id: 'later', description: 'Phone', expiresAt: '2027-01-01T00:00:00Z' },
+        { id: 'standing', description: 'Initial', expiresAt: null },
       ]);
       const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
-      expect(out.map((r) => r.id)).toEqual(['open', 'login']);
+      expect(out.map((r) => r.id)).toEqual(['open', 'later', 'standing']);
     } finally {
       vi.useRealTimers();
     }
@@ -133,6 +136,9 @@ describe('login-passwords/service: listLoginPasswords', () => {
 });
 
 describe('login-passwords/service: createLoginPassword', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-10-24T12:00:00Z'), toFake: ['Date'] }); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it('submits description/expiresAt/allowedIps-map and returns the one-time secret', async () => {
     jmap.appPasswordSet.mockResolvedValue({ created: { n1: { id: 'new1', secret: 'app-aaaa-bbbb' } } });
     const out = await createLoginPassword(dbWith([MB]), 't1', 'mb1', {
@@ -156,6 +162,23 @@ describe('login-passwords/service: createLoginPassword', () => {
     await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Webmail' });
     const arg = jmap.appPasswordSet.mock.calls[0][0];
     expect(arg.create.n1).toEqual({ description: 'Webmail', allowedIps: {}, expiresAt: null });
+  });
+
+  // An expired login password is deleted, so one created already expired would
+  // show its secret once and be gone within the hour, never having worked.
+  it.each([
+    ['in the past', '2026-10-01T00:00:00Z'],
+    ['right now', '2026-10-24T12:00:00Z'],
+  ])('refuses an expiry %s', async (_when, expiresAt) => {
+    await expect(createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Laptop', expiresAt }))
+      .rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE', status: 400, message: 'The expiry date must be in the future' });
+    expect(jmap.appPasswordSet).not.toHaveBeenCalled();
+  });
+
+  it('accepts an expiry a second ahead', async () => {
+    jmap.appPasswordSet.mockResolvedValue({ created: { n1: { id: 'new1', secret: 's' } } });
+    await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Laptop', expiresAt: '2026-10-24T12:00:01Z' });
+    expect(jmap.appPasswordSet).toHaveBeenCalledTimes(1);
   });
 
   it('502 when Stalwart returns no created entry / no secret', async () => {

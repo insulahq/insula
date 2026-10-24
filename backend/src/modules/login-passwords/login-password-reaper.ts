@@ -1,19 +1,21 @@
 /**
- * Delete the app passwords of "Open webmail" sessions that have ended.
+ * Delete the login passwords (Stalwart app passwords) that have expired.
  *
- * Bulwark (1.11.1+) opens a panel "Open webmail" with an app password it
- * creates on the mailbox, `Support session <jti>`, expiring after 8 hours. It
- * deletes that password only when the user clicks Sign out. Stalwart refuses
- * an expired app password but keeps it. So every session that was simply
- * closed, or left to run out, stayed on the mailbox: in the panels' login
- * password list, and in Bulwark's own Settings → App passwords, where the
- * mailbox owner reads "Support session …" as support having opened their mail.
+ * Stalwart refuses an expired app password but never deletes it. Two kinds
+ * expire:
+ *   - one a user or an admin gave an expiry date;
+ *   - the app password Bulwark (1.11.1+) signs a panel "Open webmail" in with,
+ *     `Support session <jti>`, 8 hours. Bulwark deletes it only when the user
+ *     clicks Sign out, so every session that was simply closed, or left to
+ *     run out, stayed.
+ * Both stayed on the mailbox for good: in the panels' login-password list, and
+ * in Bulwark's own Settings → App passwords, where the mailbox owner reads
+ * "Support session …" as support having opened their mail.
  *
- * Hourly, on one replica. A session is deleted only GRACE_MS after it ended,
- * so a pod clock slightly ahead of Stalwart's never cuts one short. One
- * `x:AppPassword/get` per provisioned mailbox, and a destroy only where an
- * ended session exists. Only `Support session <uuid>` rows are touched: a
- * login password someone created with an expiry date is theirs to remove.
+ * Hourly, on one replica. A password is deleted only GRACE_MS after it
+ * expired, so a pod clock slightly ahead of Stalwart's never cuts one short.
+ * One `x:AppPassword/get` per provisioned mailbox, and a destroy only where an
+ * expired password exists. A login password with no expiry is never touched.
  */
 import { isNotNull } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
@@ -21,7 +23,7 @@ import { mailboxes } from '../../db/schema.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { appPasswordGet, appPasswordSet, JmapError } from '../stalwart-jmap/client.js';
-import { isEndedWebmailSession } from './service.js';
+import { isExpiredLoginPassword } from './service.js';
 
 export const REAPER_TICK_MS = 60 * 60 * 1000;
 const REAPER_INITIAL_DELAY_MS = 10 * 60 * 1000;
@@ -43,13 +45,13 @@ function mailServerAnswered(err: unknown): boolean {
 
 export interface ReapResult {
   readonly mailboxesChecked: number;
-  readonly sessionsDeleted: number;
+  readonly passwordsDeleted: number;
   readonly failures: number;
   readonly abandoned: boolean;
   readonly firstError: string | null;
 }
 
-export async function reapEndedWebmailSessions(
+export async function reapExpiredLoginPasswords(
   db: Pick<Database, 'select'>,
   now: Date = new Date(),
 ): Promise<ReapResult> {
@@ -61,7 +63,7 @@ export async function reapEndedWebmailSessions(
 
   const baseUrl = process.env.STALWART_MGMT_URL;
   let mailboxesChecked = 0;
-  let sessionsDeleted = 0;
+  let passwordsDeleted = 0;
   let failures = 0;
   let consecutive = 0;
   let firstError: string | null = null;
@@ -78,14 +80,14 @@ export async function reapEndedWebmailSessions(
       const passwords = await appPasswordGet({ accountId, baseUrl });
       mailboxesChecked += 1;
       consecutive = 0;
-      const ended = passwords.filter((p) => isEndedWebmailSession(p, now, GRACE_MS)).map((p) => p.id);
-      if (ended.length === 0) continue;
-      const res = await appPasswordSet({ accountId, baseUrl, destroy: ended });
-      const gone = ended.filter((id) => (res.destroyed ?? []).includes(id) || res.notDestroyed?.[id]?.type === 'notFound');
-      sessionsDeleted += gone.length;
-      const kept = ended.filter((id) => !gone.includes(id));
+      const expired = passwords.filter((p) => isExpiredLoginPassword(p, now, GRACE_MS)).map((p) => p.id);
+      if (expired.length === 0) continue;
+      const res = await appPasswordSet({ accountId, baseUrl, destroy: expired });
+      const gone = expired.filter((id) => (res.destroyed ?? []).includes(id) || res.notDestroyed?.[id]?.type === 'notFound');
+      passwordsDeleted += gone.length;
+      const kept = expired.filter((id) => !gone.includes(id));
       if (kept.length > 0) {
-        fail(row.id, `mail server kept ${kept.length} ended session(s): ${res.notDestroyed?.[kept[0]]?.type ?? 'unknown'}`);
+        fail(row.id, `mail server kept ${kept.length} expired login password(s): ${res.notDestroyed?.[kept[0]]?.type ?? 'unknown'}`);
       }
     } catch (err) {
       fail(row.id, err instanceof Error ? err.message : String(err));
@@ -97,7 +99,7 @@ export async function reapEndedWebmailSessions(
 
   return {
     mailboxesChecked,
-    sessionsDeleted,
+    passwordsDeleted,
     failures,
     abandoned: consecutive >= MAX_CONSECUTIVE_FAILURES,
     firstError,
@@ -105,23 +107,23 @@ export async function reapEndedWebmailSessions(
 }
 
 /** Hourly reaper tick. Returns a stop function for `app.addHook('onClose', …)`. */
-export function startWebmailSessionReaper(db: Database): { stop: () => void } {
-  const log = mailLogger().child({ module: 'webmail-session-reaper' });
+export function startLoginPasswordReaper(db: Database): { stop: () => void } {
+  const log = mailLogger().child({ module: 'login-password-reaper' });
   let timer: NodeJS.Timeout | null = null;
   const run = () => {
-    void withSchedulerLease(db, 'webmail-session-reaper', REAPER_TICK_MS * 1.5, async () => {
-      const r = await reapEndedWebmailSessions(db);
+    void withSchedulerLease(db, 'login-password-reaper', REAPER_TICK_MS * 1.5, async () => {
+      const r = await reapExpiredLoginPasswords(db);
       // One line per run, never one per mailbox: a mail-server outage must not
       // turn into a log line for every mailbox on the platform.
       if (r.failures > 0) {
         log.warn(r, r.abandoned
-          ? 'webmail-session-reaper: mail server unreachable, run abandoned'
-          : 'webmail-session-reaper: some mailboxes could not be checked');
-      } else if (r.sessionsDeleted > 0) {
-        log.info(r, 'webmail-session-reaper: ended webmail sessions deleted');
+          ? 'login-password-reaper: mail server unreachable, run abandoned'
+          : 'login-password-reaper: some mailboxes could not be checked');
+      } else if (r.passwordsDeleted > 0) {
+        log.info(r, 'login-password-reaper: expired login passwords deleted');
       }
     }).catch((err) => {
-      log.warn({ err: err instanceof Error ? err.message : String(err) }, 'webmail-session-reaper: tick failed');
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, 'login-password-reaper: tick failed');
     });
   };
   const initial = setTimeout(() => {

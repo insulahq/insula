@@ -102,16 +102,16 @@ export function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
 }
 
 /**
- * True for the app password of an "Open webmail" session that has ended
- * `graceMs` or longer ago. Stalwart refuses an expired app password but never
- * deletes it, and Bulwark deletes its own only when the user clicks Sign out —
- * so a session left to run out stays on the mailbox until
- * webmail-session-reaper.ts removes it.
+ * True for a login password that expired `graceMs` or longer ago — one a user
+ * gave an expiry date, or the app password of an "Open webmail" session.
+ * Stalwart refuses an expired app password but never deletes it, and Bulwark
+ * deletes a session's only when the user clicks Sign out, so an expired one
+ * stays on the mailbox until login-password-reaper.ts removes it.
  */
-export function isEndedWebmailSession(row: StalwartAppPasswordRow, now: Date, graceMs = 0): boolean {
-  if (!WEBMAIL_SESSION_LABEL_PATTERN.test(row.description ?? '') || !row.expiresAt) return false;
-  const endsAt = Date.parse(row.expiresAt);
-  return Number.isFinite(endsAt) && endsAt + graceMs <= now.getTime();
+export function isExpiredLoginPassword(row: StalwartAppPasswordRow, now: Date, graceMs = 0): boolean {
+  if (!row.expiresAt) return false;
+  const expiresAt = Date.parse(row.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt + graceMs <= now.getTime();
 }
 
 export async function listLoginPasswords(
@@ -124,10 +124,10 @@ export async function listLoginPasswords(
     accountId: mb.stalwartPrincipalId,
     baseUrl: process.env.STALWART_MGMT_URL,
   });
-  // An ended session can no longer sign in, and the reaper deletes it within
-  // the hour: don't list it as if it were still open.
+  // An expired login password can no longer sign in, and the reaper deletes it
+  // within the hour: don't list it as if it still worked.
   const now = new Date();
-  return rows.filter((row) => !isEndedWebmailSession(row, now)).map(toLoginPassword);
+  return rows.filter((row) => !isExpiredLoginPassword(row, now)).map(toLoginPassword);
 }
 
 export async function createLoginPassword(
@@ -136,6 +136,11 @@ export async function createLoginPassword(
   mailboxId: string,
   input: CreateLoginPasswordInput,
 ): Promise<CreateLoginPasswordResult> {
+  // An expired login password is deleted: one created already expired would
+  // show its secret once and be gone within the hour, never having worked.
+  if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now()) {
+    throw new LoginPasswordError('The expiry date must be in the future', 'INVALID_FIELD_VALUE', 400);
+  }
   const mb = await resolveMailbox(db, tenantId, mailboxId);
   return issueLoginPasswordForPrincipal(mb.stalwartPrincipalId, input);
 }

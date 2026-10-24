@@ -1,7 +1,8 @@
 /**
- * The reaper deletes the app passwords of "Open webmail" sessions that have
- * ended — Bulwark deletes one only on Sign out, Stalwart never — and nothing
- * else. The JMAP wire is mocked; the live run is the DEV E2E.
+ * The reaper deletes every login password (app password) that has expired —
+ * Stalwart never does, and Bulwark deletes an "Open webmail" session's only on
+ * Sign out — and nothing else. The JMAP wire is mocked; the live run is the
+ * DEV E2E.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -14,7 +15,7 @@ const jmap = vi.hoisted(() => ({
 }));
 vi.mock('../stalwart-jmap/client.js', () => jmap);
 
-import { reapEndedWebmailSessions, GRACE_MS, MAX_CONSECUTIVE_FAILURES } from './webmail-session-reaper.js';
+import { reapExpiredLoginPasswords, GRACE_MS, MAX_CONSECUTIVE_FAILURES } from './login-password-reaper.js';
 
 const NOW = new Date('2026-10-24T12:00:00Z');
 const SESSION = (uuid: string) => `Support session ${uuid}`;
@@ -34,51 +35,55 @@ beforeEach(() => {
   jmap.appPasswordSet.mockImplementation(async ({ destroy }: { destroy: string[] }) => ({ destroyed: destroy }));
 });
 
-describe('reapEndedWebmailSessions', () => {
-  it('deletes only webmail sessions that ended more than the grace ago', async () => {
+describe('reapExpiredLoginPasswords', () => {
+  it('deletes every login password that expired more than the grace ago', async () => {
     jmap.appPasswordGet.mockResolvedValue([
       { id: 'ended', description: SESSION(U1), expiresAt: '2026-10-16T03:22:51Z' },
-      { id: 'just-ended', description: SESSION(U2), expiresAt: new Date(NOW.getTime() - GRACE_MS + 1000).toISOString() },
-      { id: 'open', description: SESSION(U3), expiresAt: '2026-10-24T18:00:00Z' },
-      // Someone's own login password with an expiry date is theirs to remove.
       { id: 'expired-login', description: 'Old laptop', expiresAt: '2026-10-01T00:00:00Z' },
-      { id: 'look-alike', description: `Support session ${U1} (old)`, expiresAt: '2026-10-01T00:00:00Z' },
-      { id: 'no-expiry', description: SESSION(U1), expiresAt: null },
+      { id: 'expired-unlabelled', expiresAt: '2026-10-20T00:00:00Z' },
+      { id: 'just-ended', description: SESSION(U2), expiresAt: new Date(NOW.getTime() - GRACE_MS + 1000).toISOString() },
+      { id: 'just-expired', description: 'Tablet', expiresAt: new Date(NOW.getTime() - GRACE_MS + 1000).toISOString() },
+      { id: 'open', description: SESSION(U3), expiresAt: '2026-10-24T18:00:00Z' },
+      { id: 'later', description: 'Phone', expiresAt: '2027-01-01T00:00:00Z' },
+      { id: 'no-expiry', description: 'Initial', expiresAt: null },
+      { id: 'no-expiry-field', description: 'Desktop' },
     ]);
 
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
 
     expect(jmap.appPasswordSet).toHaveBeenCalledTimes(1);
-    expect(jmap.appPasswordSet).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'b', destroy: ['ended'] }));
-    expect(r).toEqual({ mailboxesChecked: 1, sessionsDeleted: 1, failures: 0, abandoned: false, firstError: null });
+    expect(jmap.appPasswordSet).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'b', destroy: ['ended', 'expired-login', 'expired-unlabelled'],
+    }));
+    expect(r).toEqual({ mailboxesChecked: 1, passwordsDeleted: 3, failures: 0, abandoned: false, firstError: null });
   });
 
-  it('writes nothing to a mailbox with no ended session', async () => {
+  it('writes nothing to a mailbox with no expired login password', async () => {
     jmap.appPasswordGet.mockResolvedValue([{ id: 'open', description: SESSION(U3), expiresAt: '2026-10-24T18:00:00Z' }]);
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }, { id: 'mb2', principalId: 'c' }]), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }, { id: 'mb2', principalId: 'c' }]), NOW);
     expect(jmap.appPasswordSet).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ mailboxesChecked: 2, sessionsDeleted: 0 });
+    expect(r).toMatchObject({ mailboxesChecked: 2, passwordsDeleted: 0 });
   });
 
-  it('leaves a session whose end it cannot read', async () => {
+  it('leaves a login password whose expiry it cannot read', async () => {
     jmap.appPasswordGet.mockResolvedValue([{ id: 'odd', description: SESSION(U1), expiresAt: 'not a date' }]);
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
     expect(jmap.appPasswordSet).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ sessionsDeleted: 0, failures: 0 });
+    expect(r).toMatchObject({ passwordsDeleted: 0, failures: 0 });
   });
 
-  it('counts a session already gone as deleted', async () => {
+  it('counts a login password already gone as deleted', async () => {
     jmap.appPasswordGet.mockResolvedValue([{ id: 'ended', description: SESSION(U1), expiresAt: '2026-10-16T03:22:51Z' }]);
     jmap.appPasswordSet.mockResolvedValue({ destroyed: [], notDestroyed: { ended: { type: 'notFound' } } });
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
-    expect(r).toMatchObject({ sessionsDeleted: 1, failures: 0 });
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
+    expect(r).toMatchObject({ passwordsDeleted: 1, failures: 0 });
   });
 
-  it('reports a session the mail server refused to delete', async () => {
+  it('reports a login password the mail server refused to delete', async () => {
     jmap.appPasswordGet.mockResolvedValue([{ id: 'ended', description: SESSION(U1), expiresAt: '2026-10-16T03:22:51Z' }]);
     jmap.appPasswordSet.mockResolvedValue({ destroyed: [], notDestroyed: { ended: { type: 'forbidden' } } });
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
-    expect(r).toMatchObject({ sessionsDeleted: 0, failures: 1 });
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
+    expect(r).toMatchObject({ passwordsDeleted: 0, failures: 1 });
     expect(r.firstError).toMatch(/^mb1: .*forbidden/);
   });
 
@@ -88,18 +93,18 @@ describe('reapEndedWebmailSessions', () => {
       { id: 'b', description: SESSION(U2), expiresAt: '2026-10-16T03:22:51Z' },
     ]);
     jmap.appPasswordSet.mockResolvedValue({ destroyed: ['a'], notDestroyed: { b: { type: 'forbidden' } } });
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
-    expect(r).toMatchObject({ sessionsDeleted: 1, failures: 1, abandoned: false });
-    expect(r.firstError).toBe('mb1: mail server kept 1 ended session(s): forbidden');
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }]), NOW);
+    expect(r).toMatchObject({ passwordsDeleted: 1, failures: 1, abandoned: false });
+    expect(r.firstError).toBe('mb1: mail server kept 1 expired login password(s): forbidden');
   });
 
   it('goes on past a mailbox that fails', async () => {
     jmap.appPasswordGet
       .mockRejectedValueOnce(new jmap.JmapError('JMAP error: Account not found.', 'forbidden'))
       .mockResolvedValueOnce([{ id: 'ended', description: SESSION(U1), expiresAt: '2026-10-16T03:22:51Z' }]);
-    const r = await reapEndedWebmailSessions(dbWith([{ id: 'mb1', principalId: 'b' }, { id: 'mb2', principalId: 'c' }]), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith([{ id: 'mb1', principalId: 'b' }, { id: 'mb2', principalId: 'c' }]), NOW);
     expect(jmap.appPasswordSet).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'c', destroy: ['ended'] }));
-    expect(r).toEqual({ mailboxesChecked: 1, sessionsDeleted: 1, failures: 1, abandoned: false, firstError: 'mb1: JMAP error: Account not found.' });
+    expect(r).toEqual({ mailboxesChecked: 1, passwordsDeleted: 1, failures: 1, abandoned: false, firstError: 'mb1: JMAP error: Account not found.' });
   });
 
   it('does not mistake failures spread among answering mailboxes for an outage', async () => {
@@ -111,7 +116,7 @@ describe('reapEndedWebmailSessions', () => {
       return [];
     });
     const many = Array.from({ length: total }, (_, i) => ({ id: `mb${i}`, principalId: `p${i}` }));
-    const r = await reapEndedWebmailSessions(dbWith(many), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith(many), NOW);
     expect(jmap.appPasswordGet).toHaveBeenCalledTimes(total);
     expect(r).toMatchObject({ mailboxesChecked: total / 2, failures: total / 2, abandoned: false });
   });
@@ -127,8 +132,8 @@ describe('reapEndedWebmailSessions', () => {
       return [{ id: 'ended', description: SESSION(U1), expiresAt: '2026-10-16T03:22:51Z' }];
     });
     const rows = Array.from({ length: stale + 1 }, (_, i) => ({ id: `mb${i}`, principalId: `p${i}` }));
-    const r = await reapEndedWebmailSessions(dbWith(rows), NOW);
-    expect(r).toMatchObject({ mailboxesChecked: 1, sessionsDeleted: 1, failures: stale, abandoned: false });
+    const r = await reapExpiredLoginPasswords(dbWith(rows), NOW);
+    expect(r).toMatchObject({ mailboxesChecked: 1, passwordsDeleted: 1, failures: stale, abandoned: false });
   });
 
   it.each([
@@ -138,7 +143,7 @@ describe('reapEndedWebmailSessions', () => {
   ])('stops when the mail server %s instead of asking every mailbox', async (_why, err) => {
     jmap.appPasswordGet.mockRejectedValue(err);
     const many = Array.from({ length: 50 }, (_, i) => ({ id: `mb${i}`, principalId: `p${i}` }));
-    const r = await reapEndedWebmailSessions(dbWith(many), NOW);
+    const r = await reapExpiredLoginPasswords(dbWith(many), NOW);
     expect(jmap.appPasswordGet).toHaveBeenCalledTimes(MAX_CONSECUTIVE_FAILURES);
     expect(r).toMatchObject({ mailboxesChecked: 0, failures: MAX_CONSECUTIVE_FAILURES, abandoned: true });
   });

@@ -122,8 +122,11 @@ entry too. A session that simply runs out leaves the list when it ends and is
 deleted from the mailbox within the hour. No password of yours is involved —
 the session cannot be used for anything but that one webmail tab.
 
-A login password you created with an expiry date stops working on that date
-and is marked **Expired** in the list. It stays there until you revoke it.
+A login password you create with an expiry date stops working when that day
+starts in your browser's time zone, leaves the list, and is deleted from the
+mailbox within the hour. The same goes for an app password with an expiry date
+created in the webmail's own settings. The earliest expiry date is tomorrow; leave it empty
+for a password that never expires.
 
 ## Mailing lists
 

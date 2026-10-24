@@ -95,7 +95,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'app.ts', job: 'mail-convergence-sweep' },
   // Sweeps that start Jobs or pods, exec into one, or delete volumes.
   { file: 'modules/mail-admin/mail-pvc-reaper.ts', job: 'mail-pvc-reaper' },
-  { file: 'modules/login-passwords/webmail-session-reaper.ts', job: 'webmail-session-reaper' },
+  { file: 'modules/login-passwords/login-password-reaper.ts', job: 'login-password-reaper' },
   { file: 'modules/file-manager/trash-reconciler.ts', job: 'file-trash-reconcile' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-snapshot-expiry' },
   { file: 'modules/storage-lifecycle/scheduler.ts', job: 'storage-audit' },

@@ -11,13 +11,13 @@ import type { LoginPassword } from '@insula/api-contracts';
 const rows: LoginPassword[] = [
   { id: 'p1', label: 'iPhone', kind: 'login', createdAt: '2026-09-01T00:00:00Z', expiresAt: null, allowedIps: [] },
   { id: 'w1', label: 'Webmail session', kind: 'webmail_session', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [] },
-  { id: 'old', label: 'Old laptop', kind: 'login', createdAt: '2026-01-01T00:00:00Z', expiresAt: '2026-02-01T00:00:00Z', allowedIps: [] },
-  { id: 'later', label: 'Tablet', kind: 'login', createdAt: '2026-01-01T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z', allowedIps: [] },
 ];
+
+const createMutate = vi.fn(async () => ({ data: { id: 'n', label: 'Laptop', secret: 's', expiresAt: null, allowedIps: [] } }));
 
 vi.mock('../hooks/use-email', () => ({
   useLoginPasswords: vi.fn(() => ({ data: { data: rows }, isLoading: false })),
-  useCreateLoginPassword: vi.fn(() => ({ mutate: vi.fn(), isPending: false, error: null })),
+  useCreateLoginPassword: vi.fn(() => ({ mutateAsync: createMutate, isPending: false, error: null })),
   useRevokeLoginPassword: vi.fn(() => ({ mutate: vi.fn(), isPending: false, error: null })),
 }));
 
@@ -44,14 +44,27 @@ describe('MailboxLoginPasswordsModal — webmail sessions', () => {
     expect(screen.getByTestId('login-password-revoke-p1')).toHaveTextContent('Revoke');
   });
 
-  // The mail server keeps a login password past its date (it only refuses it),
-  // so the list must say it no longer works.
-  it('marks a login password past its expiry date as expired', () => {
-    render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+  // An expired login password is deleted and the server refuses an expiry that
+  // is not in the future, so the first date offered is tomorrow — the viewer's
+  // tomorrow, since the date means the start of that day in their zone.
+  it('offers expiry dates from tomorrow and sends the start of the picked day in the viewer\'s zone', () => {
+    vi.useFakeTimers({ now: new Date(2026, 9, 24, 23, 30), toFake: ['Date'] });
+    try {
+      render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+      fireEvent.click(screen.getByTestId('new-login-password'));
 
-    expect(screen.getByTestId('login-password-expired-old')).toHaveTextContent('Expired');
-    expect(screen.queryByTestId('login-password-expired-later')).toBeNull();
-    expect(screen.queryByTestId('login-password-expired-p1')).toBeNull();
-    expect(screen.queryByTestId('login-password-expired-w1')).toBeNull();
+      const expires = screen.getByTestId('login-password-expires');
+      expect(expires).toHaveAttribute('min', '2026-10-25');
+      expect(screen.getByTestId('new-login-password-form')).toHaveTextContent('deleted when it expires');
+
+      fireEvent.change(screen.getByTestId('login-password-label'), { target: { value: 'Laptop' } });
+      fireEvent.change(expires, { target: { value: '2026-10-30' } });
+      fireEvent.submit(screen.getByTestId('new-login-password-form'));
+      expect(createMutate).toHaveBeenCalledWith(
+        expect.objectContaining({ label: 'Laptop', expiresAt: new Date(2026, 9, 30).toISOString() }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
