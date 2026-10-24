@@ -164,6 +164,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   day in the browser's time zone, like every other time in the panels: the password stops
   working when that day starts. It was sent as midnight UTC, so west of UTC the list showed it,
   and the password stopped working, a day before the date picked.
+- **A platform database restart no longer holds every new connection for 3 minutes, and the
+  Upgrades page no longer suggests a rollback while the database restarts as planned.** Before
+  stopping, Postgres refuses new connections and waits for open sessions to end, for up to CNPG's
+  default of 180 seconds. platform-api's sessions never end on their own, so every planned
+  restart (an operator update, a spec change, Apply HA) waited the full 3 minutes. During that
+  wait no new API pod, Roundcube or CrowdSec connection could open. Measured on staging, upgrading
+  v2026.10.16 → v2026.10.17-rc.1: the database restarted twice, 3 minutes each. The new API pod
+  waited for the second restart, and the Upgrades page said "Not converging after 3 checks —
+  consider rolling back" although nothing was wrong. The wait is now 15 seconds, enough for
+  in-flight transactions to commit. Host-migration 2026.10.17/0003 sets it before updating the
+  operator, so both restarts of this upgrade use it. Measured on DEV: the database was back in
+  46 seconds instead of about 3.5 minutes. From this release on, the upgrade's progress check
+  also waits out a planned database restart instead of counting it as a failed check, for up to
+  about 6 minutes per upgrade. A restart that takes longer, or a failover, is still reported.
+  The upgrade to this release is still judged by the release it starts from, so a slow database
+  roll can still bring up the warning once. If it appears while the database restarts, wait for
+  the run to finish instead of rolling back.
 - **No server holds two replicas of the same service any more.** Replicas that started while
   only one server was up stayed on it for good: on a fresh multi-server install, after a
   full-cluster restart, or after a server was replaced. The scheduler never moves a running
@@ -177,11 +194,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     replacement for a down or cordoned server waits for it instead of doubling up.
   - **The platform database restarts twice during this upgrade:** once for the CloudNativePG
     operator update (host-migration 2026.10.17/0003) and once for the new rule, the primary last
-    each time. Each restart first waits up to 3 minutes for open connections to close, and new
-    API pods cannot start during that wait. On a one-instance cluster the API then answers with
-    errors for about 30 seconds, twice. During the second restart the Upgrades page may show
-    "Not converging … consider rolling back" for about half a minute; do not roll back, the
-    upgrade finishes by itself (11 minutes from v2026.10.16 on a 3-server cluster).
+    each time. On a one-instance cluster the API answers with errors for about 30 seconds each
+    time.
   - **HA sizing:** HA never asks for more database instances or panel/API replicas than there
     are servers. It used to ask for at least two, even with one server left.
   - **Longhorn global manager:** it is leader-elected. It now starts at one replica, scales

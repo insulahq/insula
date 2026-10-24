@@ -660,6 +660,7 @@ interface CnpgCluster {
       readonly recovery?: unknown;
     };
     readonly affinity?: unknown;
+    readonly smartShutdownTimeout?: number;
     readonly inheritedMetadata?: unknown;
     readonly resources?: unknown;
     readonly postgresql?: unknown;
@@ -1575,6 +1576,9 @@ export function buildRecoveryCluster(
       inheritedMetadata: src.spec?.inheritedMetadata,
       storage: src.spec?.storage,
       affinity: src.spec?.affinity,
+      // The short smart-shutdown window (k8s/base/database.yaml): a restored
+      // database must not go back to refusing new connections for 180 s.
+      smartShutdownTimeout: src.spec?.smartShutdownTimeout,
       // Propagate resources so CNPG injects them into all spawned pods
       // (postgres instance + bootstrap-controller + snapshot-recovery
       // Job). The platform namespace has a ResourceQuota that requires

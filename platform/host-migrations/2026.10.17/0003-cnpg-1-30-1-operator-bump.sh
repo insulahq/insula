@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# description: The CloudNativePG operator moves to v1.30.1 (chart 0.29.1): a webhook path-traversal validation fix and a gRPC security update; the operator rolls, Postgres keeps running.
-# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the cnpg release is `deployed` at chart 0.29.1 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
-# allow-paths: none — operates solely on the cluster via helm + the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
+# description: The CloudNativePG operator moves to v1.30.1 (chart 0.29.1), a webhook validation and gRPC security fix. Each Postgres instance restarts once; the platform database waits 15 s, not 180 s, to stop.
+# idempotent: the guard reads the deployed chart version with `helm list` and exits 0 when the cnpg release is `deployed` at chart 0.29.1 or newer (a floor, never a ceiling); `helm upgrade` onto an at-version release would itself be a no-op. The smart-shutdown step only lowers a value above 15 s, so a re-run leaves it alone. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig; workers hold only the least-privilege host-config kubeconfig and exit 0 without acting). A release not installed here is skipped.
+# allow-paths: none — operates solely on the cluster via helm, kubectl and the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
 # blocks-on-failure: no    # ADR-056: --atomic rolls a failed upgrade back, so on failure the previous CloudNativePG operator keeps running and the next converge retries; no later migration depends on this one.
 # phase: before-services    # ADR-064: a chart-version swap under the release's own values; needs nothing from the new release's manifests
 set -euo pipefail
@@ -23,8 +23,10 @@ set -euo pipefail
 # OLD chart's defaults, so a key the new chart added has no value — the 0.29.1 chart fails on that with
 # "nil pointer … scratchData.emptyDir".
 #
-# Blast radius (by design): the operator Deployment rolls; Postgres instances keep running (the
-# operator is not in the data path). On HA clusters helm resets the operator to
+# Blast radius (by design): the operator Deployment rolls, and then restarts every
+# Postgres instance once to give it the new instance manager (CNPG's default when the
+# operator changes; measured on staging: the platform database restarted, ~30 s of API
+# errors on a one-instance cluster). On HA clusters helm resets the operator to
 # one replica; the storage-policy reconciler restores the count within minutes.
 
 MIG="cnpg-1-30-1-operator-bump"
@@ -111,6 +113,40 @@ if [ "$status" = "deployed" ] && chart_ver_ge "$cur" "$TARGET_CHART"; then
   echo "${MIG}: cnpg already at chart ${cur} (>= ${TARGET_CHART}) — nothing to do."
   exit 0
 fi
+
+# Each of those restarts first runs a SMART shutdown for smartShutdownTimeout:
+# open sessions may continue, every new connection is refused. platform-api's
+# pool never closes its sessions, so CNPG's default of 180 s ran in full on
+# staging. k8s/base/database.yaml sets 15 s, but it arrives with the services,
+# after this before-services step, so lower it here first. Changing the field
+# restarts nothing (the instance manager reads it when the stop signal comes).
+# Only ever lowers it, and a failure here does not stop the operator upgrade.
+SHORT_SMART_SHUTDOWN=15
+lower_smart_shutdown() {
+  local kubectl="" k out sst
+  for k in kubectl /usr/local/bin/kubectl; do
+    if command -v "$k" >/dev/null 2>&1; then kubectl="$k"; break; fi
+  done
+  [ -n "$kubectl" ] || { echo "${MIG}: kubectl not found on PATH — not lowering the smart-shutdown window." >&2; return 0; }
+  if ! out="$(timeout 30 "$kubectl" -n platform get clusters.postgresql.cnpg.io system-db -o name 2>&1)"; then
+    case "$out" in
+      *NotFound*|*"not found"*|*"doesn't have a resource type"*)
+        echo "${MIG}: no platform database Cluster here — nothing to lower."; return 0 ;;
+    esac
+    return 1
+  fi
+  sst="$(timeout 30 "$kubectl" -n platform get clusters.postgresql.cnpg.io system-db \
+    -o jsonpath='{.spec.smartShutdownTimeout}' 2>/dev/null)" || return 1
+  case "$sst" in
+    '') sst=180 ;;           # unset = CNPG's default
+    *[!0-9]*) return 1 ;;
+  esac
+  [ "$sst" -gt "$SHORT_SMART_SHUTDOWN" ] || return 0
+  timeout 30 "$kubectl" -n platform patch clusters.postgresql.cnpg.io system-db --type merge \
+    -p "{\"spec\":{\"smartShutdownTimeout\":${SHORT_SMART_SHUTDOWN}}}" >/dev/null || return 1
+  echo "${MIG}: platform database smart-shutdown window ${sst}s -> ${SHORT_SMART_SHUTDOWN}s before the operator restarts it."
+}
+lower_smart_shutdown || echo "${MIG}: could not lower the platform database's smart-shutdown window — its restart waits up to the old window; continuing." >&2
 
 "$HELM" repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
 timeout 60 "$HELM" repo update cnpg >/dev/null 2>&1 || timeout 90 "$HELM" repo update >/dev/null 2>&1 || true

@@ -24,7 +24,7 @@ const CNPG_CLUSTER = (() => {
 })();
 
 /** CNPG primary health, shared by pre-flight + post-flight. Env-validated cluster name. */
-export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; detail: string }> {
+export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; detail: string; phase?: string }> {
   try {
     const cr = (await k8s.custom.getNamespacedCustomObject({
       group: 'postgresql.cnpg.io', version: 'v1', namespace: CNPG_NS, plural: 'clusters', name: CNPG_CLUSTER,
@@ -33,7 +33,8 @@ export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; deta
     };
     const ready = cr.status?.readyInstances ?? 0;
     const total = cr.status?.instances ?? 0;
-    return { ready: ready >= 1, detail: `${ready}/${total} instances ready${cr.status?.phase ? ` (${cr.status.phase})` : ''}` };
+    const phase = typeof cr.status?.phase === 'string' ? cr.status.phase : undefined;
+    return { ready: ready >= 1, detail: `${ready}/${total} instances ready${phase ? ` (${phase})` : ''}`, phase };
   } catch {
     return { ready: false, detail: 'CNPG Cluster status unreadable' };
   }

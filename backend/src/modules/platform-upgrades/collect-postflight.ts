@@ -43,6 +43,8 @@ const normalizePending = (v: string | null): string | null => {
 
 // platform_settings keys for the persisted post-flight state.
 const KEY_STREAK = 'postflight_consecutive_failures';
+// Streak checks spent holding for a planned database restart (postflight.ts).
+const KEY_DB_HOLDS = 'postflight_database_restart_holds';
 const KEY_STATE = 'postflight_state'; // compact JSON the GET route reads
 const KEY_PENDING = 'pending_update_version';
 
@@ -160,6 +162,7 @@ export async function collectPostflightFacts(
     runningVersion: RUNNING_VERSION,
     cnpgReady: cnpg.ready,
     cnpgDetail: clip(cnpg.detail),
+    cnpgPhase: cnpg.phase,
     deploymentsTotal: deploys.total,
     deploymentsAvailable: deploys.available,
     deploymentsReadable: deploys.readable,
@@ -182,14 +185,17 @@ async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, adva
 
   const prevRaw = await settings.get(KEY_STREAK);
   const prev = prevRaw !== null ? Number.parseInt(prevRaw, 10) : 0;
+  const holdsRaw = await settings.get(KEY_DB_HOLDS);
+  const prevHolds = holdsRaw !== null ? Number.parseInt(holdsRaw, 10) : 0;
   // The abort streak advances ONLY on the slow cadence (`advance`). The fast
   // convergence pass evaluates + clears pending on a healthy roll WITHOUT
   // inflating the streak — otherwise the busy tick rate would trip
   // `abort-recommended` during a perfectly normal ~30–90s roll.
   let consecutiveFailures: number;
   let verdict: PostflightVerdict;
+  let databaseRestartHolds = prevHolds;
   if (advance) {
-    ({ consecutiveFailures, verdict } = advanceStreak(prev, result));
+    ({ consecutiveFailures, verdict, databaseRestartHolds } = advanceStreak(prev, result, prevHolds));
   } else if (result.phase === 'healthy') {
     consecutiveFailures = 0;
     verdict = 'healthy';
@@ -219,8 +225,13 @@ async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, adva
   // Persist the streak only when advancing; the fast pass still resets it to 0 on
   // a healthy/idle observation (so convergence clears it) and leaves it untouched
   // while reconciling.
-  if (advance) await settings.set(KEY_STREAK, String(consecutiveFailures));
-  else if (result.phase === 'healthy' || result.phase === 'idle') await settings.set(KEY_STREAK, '0');
+  if (advance) {
+    await settings.set(KEY_STREAK, String(consecutiveFailures));
+    await settings.set(KEY_DB_HOLDS, String(databaseRestartHolds));
+  } else if (result.phase === 'healthy' || result.phase === 'idle') {
+    await settings.set(KEY_STREAK, '0');
+    await settings.set(KEY_DB_HOLDS, '0');
+  }
   await settings.set(KEY_STATE, JSON.stringify(state));
   // A confirmed healthy convergence ends the upgrade: clear the in-flight marker
   // so the UI/poller stop showing "upgrading → X" and the streak rests at idle.

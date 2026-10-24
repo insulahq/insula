@@ -18,6 +18,32 @@ export type PostflightGateStatus = 'pass' | 'warn' | 'fail';
 /** consecutiveFailures at/above this flips the verdict to abort-recommended. */
 export const ABORT_THRESHOLD = 3;
 
+/**
+ * CloudNativePG phases (api/v1 cluster_types.go) in which the operator restarts or
+ * rolls instances on purpose: an operator upgrade, a spec change, a switchover.
+ * While the platform database is in one of them, new connections are refused for
+ * a while and a new API pod cannot start, so the services look stuck though
+ * nothing is wrong (measured on staging: the third check fell in a database roll
+ * and told the operator to consider rolling back). Failing over, a supervised
+ * upgrade waiting for the operator and every error phase are deliberately absent.
+ */
+export const PLANNED_DATABASE_RESTART_PHASES: ReadonlySet<string> = new Set([
+  'Upgrading cluster',
+  'Waiting for the instances to become active',
+  'Primary instance is being restarted in-place',
+  'Primary instance is being restarted without a switchover',
+  'Switchover in progress',
+  'Online upgrade in progress',
+  'Applying configuration',
+]);
+
+/**
+ * Streak checks a planned database restart may hold per upgrade — about six
+ * minutes at the slow cadence. Bounded, so a restart that never finishes (an
+ * instance that cannot be scheduled) still escalates.
+ */
+export const MAX_DATABASE_RESTART_HOLDS = 3;
+
 export interface PostflightGate {
   readonly id: string;
   readonly label: string;
@@ -58,6 +84,8 @@ export interface PostflightResult {
   readonly failures: number;
   readonly warnings: number;
   readonly phase: PostflightPhase;
+  /** Still reconciling while the platform database restarts on purpose. */
+  readonly databaseRestarting?: boolean;
 }
 
 export interface PostflightFacts extends PostflightMigrationFacts {
@@ -68,6 +96,8 @@ export interface PostflightFacts extends PostflightMigrationFacts {
   /** CNPG primary reachable + a primary elected. */
   readonly cnpgReady: boolean;
   readonly cnpgDetail: string;
+  /** The CNPG Cluster's status.phase; undefined when it could not be read. */
+  readonly cnpgPhase?: string;
   /** Platform-namespace Deployments: total and those reporting fully available. */
   readonly deploymentsTotal: number;
   readonly deploymentsAvailable: number;
@@ -196,25 +226,41 @@ export function evaluatePostflight(facts: PostflightFacts): PostflightResult {
   // Healthy requires BOTH a clean run AND version convergence — a clean run on the
   // OLD version (Flux hasn't rolled yet) is still `reconciling`, not done.
   const phase: PostflightPhase = ok && converged ? 'healthy' : 'reconciling';
-  return { gates, ok, failures, warnings, phase };
+  const databaseRestarting = phase === 'reconciling' && PLANNED_DATABASE_RESTART_PHASES.has(facts.cnpgPhase ?? '');
+  return { gates, ok, failures, warnings, phase, databaseRestarting };
 }
 
 export interface StreakAssessment {
   readonly consecutiveFailures: number;
   readonly verdict: PostflightVerdict;
+  /** Holds spent on planned database restarts during this upgrade. */
+  readonly databaseRestartHolds: number;
 }
+
+const nonNegativeCount = (n: number): number => (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
+const verdictFor = (consecutiveFailures: number): PostflightVerdict =>
+  consecutiveFailures >= ABORT_THRESHOLD ? 'abort-recommended' : 'reconciling';
 
 /**
  * Advance the consecutive-failure streak given the prior count and this
- * observation. `healthy`/`idle` reset the streak to 0; a non-healthy observation
- * increments it, and once it reaches ABORT_THRESHOLD the verdict escalates to
- * `abort-recommended`. Pure — the observer persists the returned count.
+ * observation. `healthy`/`idle` reset the streak (and the holds) to 0; a
+ * non-healthy observation increments it, and once it reaches ABORT_THRESHOLD the
+ * verdict escalates to `abort-recommended`. A planned database restart holds the
+ * streak where it is instead, at most MAX_DATABASE_RESTART_HOLDS times per
+ * upgrade. Pure — the observer persists the returned counts.
  */
-export function advanceStreak(prevConsecutiveFailures: number, result: PostflightResult): StreakAssessment {
-  const prev = Number.isFinite(prevConsecutiveFailures) && prevConsecutiveFailures > 0 ? Math.floor(prevConsecutiveFailures) : 0;
-  if (result.phase === 'idle') return { consecutiveFailures: 0, verdict: 'idle' };
-  if (result.phase === 'healthy') return { consecutiveFailures: 0, verdict: 'healthy' };
+export function advanceStreak(
+  prevConsecutiveFailures: number,
+  result: PostflightResult,
+  prevDatabaseRestartHolds: number,
+): StreakAssessment {
+  const prev = nonNegativeCount(prevConsecutiveFailures);
+  const holds = nonNegativeCount(prevDatabaseRestartHolds);
+  if (result.phase === 'idle') return { consecutiveFailures: 0, verdict: 'idle', databaseRestartHolds: 0 };
+  if (result.phase === 'healthy') return { consecutiveFailures: 0, verdict: 'healthy', databaseRestartHolds: 0 };
+  if (result.databaseRestarting && holds < MAX_DATABASE_RESTART_HOLDS) {
+    return { consecutiveFailures: prev, verdict: verdictFor(prev), databaseRestartHolds: holds + 1 };
+  }
   const consecutiveFailures = prev + 1;
-  const verdict: PostflightVerdict = consecutiveFailures >= ABORT_THRESHOLD ? 'abort-recommended' : 'reconciling';
-  return { consecutiveFailures, verdict };
+  return { consecutiveFailures, verdict: verdictFor(consecutiveFailures), databaseRestartHolds: holds };
 }

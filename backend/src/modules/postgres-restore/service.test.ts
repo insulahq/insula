@@ -308,6 +308,33 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(noPluginRebuild.spec.plugins).toBeUndefined();
   });
 
+  it('buildRecoveryCluster keeps the source\'s short smart-shutdown window', async () => {
+    // k8s/base/database.yaml sets 15 s so a restart does not refuse new
+    // connections for CNPG's default 180 s. A restored database must keep it,
+    // the way it keeps the source's affinity; absent stays absent (CNPG default).
+    const { buildRecoveryCluster } = await import('./service.js');
+    const src = {
+      metadata: { name: 'system-db', namespace: 'platform' },
+      spec: {
+        instances: 1,
+        storage: { size: '10Gi' },
+        smartShutdownTimeout: 15,
+        affinity: { podAntiAffinityType: 'required', topologyKey: 'kubernetes.io/hostname' },
+      } as never,
+    };
+    for (const isTemp of [false, true]) {
+      const body = buildRecoveryCluster(src as never, 'system-db', 'platform', 'vs-snap', null, 1, isTemp) as {
+        spec: { smartShutdownTimeout?: number; affinity?: unknown };
+      };
+      expect(body.spec.smartShutdownTimeout).toBe(15);
+      expect(body.spec.affinity).toEqual({ podAntiAffinityType: 'required', topologyKey: 'kubernetes.io/hostname' });
+    }
+    const without = buildRecoveryCluster(
+      { metadata: { name: 'system-db' }, spec: { instances: 1 } } as never, 'system-db', 'platform', 'vs-snap', null, 1, false,
+    ) as { spec: Record<string, unknown> };
+    expect(without.spec.smartShutdownTimeout).toBeUndefined();
+  });
+
   it('specHasBarmanPlugin detects an enabled barman WAL archiver, ignores disabled/other/none', async () => {
     // Gate for the post-restore wait-barman-sidecar step: the wait only
     // runs when the source actually archives via the barman plugin.
