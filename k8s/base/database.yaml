@@ -238,6 +238,20 @@ spec:
     readiness:
       periodSeconds: 60
 
+  # Every planned restart (an operator update, a spec change, Apply HA) stops
+  # Postgres with a CHECKPOINT and a SMART shutdown first: open sessions may keep
+  # committing, every NEW connection is refused. platform-api's pool never closes
+  # its idle sessions, so the smart phase always ran CNPG's full default of 180 s
+  # (measured on staging during an upgrade): no new API pod could start, nor any
+  # new Roundcube or CrowdSec LAPI connection, and the fast shutdown came anyway.
+  # 15 s is room for the platform's request-sized transactions; the fast shutdown
+  # then ends the idle sessions and rolls back anything longer, which its caller
+  # retries (every SQL migration is one transaction; none uses CONCURRENTLY). Changing it restarts nothing, and the instance manager reads it when
+  # the stop signal arrives, so it applies to the restart it ships with (both
+  # measured on DEV). Host-migration 2026.10.17/0003 sets it on existing clusters
+  # before the operator update restarts them.
+  smartShutdownTimeout: 15
+
   # Bind to the system-only nodes via the same toleration the
   # rest of the platform Deployments use. Without it, CNPG pods
   # would land on tenant-tainted server nodes too.

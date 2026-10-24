@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { evaluatePostflight, advanceStreak, ABORT_THRESHOLD, type PostflightFacts, type PostflightResult } from './postflight.js';
+import {
+  evaluatePostflight,
+  advanceStreak,
+  ABORT_THRESHOLD,
+  MAX_DATABASE_RESTART_HOLDS,
+  type PostflightFacts,
+  type PostflightResult,
+} from './postflight.js';
 
 const converged: PostflightFacts = {
   pendingVersion: '2026.6.3',
@@ -68,33 +75,92 @@ describe('advanceStreak', () => {
   const reconciling: PostflightResult = { gates: [], ok: false, failures: 1, warnings: 0, phase: 'reconciling' };
   const healthy: PostflightResult = { gates: [], ok: true, failures: 0, warnings: 0, phase: 'healthy' };
   const idle: PostflightResult = { gates: [], ok: true, failures: 0, warnings: 0, phase: 'idle' };
+  const dbRestarting: PostflightResult = { ...reconciling, databaseRestarting: true };
 
   it('idle → reset to 0, verdict idle', () => {
-    expect(advanceStreak(2, idle)).toEqual({ consecutiveFailures: 0, verdict: 'idle' });
+    expect(advanceStreak(2, idle, 1)).toEqual({ consecutiveFailures: 0, verdict: 'idle', databaseRestartHolds: 0 });
   });
 
   it('healthy → reset to 0, verdict healthy (even after prior failures)', () => {
-    expect(advanceStreak(2, healthy)).toEqual({ consecutiveFailures: 0, verdict: 'healthy' });
+    expect(advanceStreak(2, healthy, 2)).toEqual({ consecutiveFailures: 0, verdict: 'healthy', databaseRestartHolds: 0 });
   });
 
   it('reconciling increments; stays "reconciling" below the threshold', () => {
-    expect(advanceStreak(0, reconciling)).toEqual({ consecutiveFailures: 1, verdict: 'reconciling' });
-    expect(advanceStreak(1, reconciling)).toEqual({ consecutiveFailures: 2, verdict: 'reconciling' });
+    expect(advanceStreak(0, reconciling, 0)).toEqual({ consecutiveFailures: 1, verdict: 'reconciling', databaseRestartHolds: 0 });
+    expect(advanceStreak(1, reconciling, 0)).toEqual({ consecutiveFailures: 2, verdict: 'reconciling', databaseRestartHolds: 0 });
   });
 
   it(`reaches abort-recommended at ${ABORT_THRESHOLD} consecutive failures`, () => {
-    const a = advanceStreak(ABORT_THRESHOLD - 1, reconciling);
+    const a = advanceStreak(ABORT_THRESHOLD - 1, reconciling, 0);
     expect(a.consecutiveFailures).toBe(ABORT_THRESHOLD);
     expect(a.verdict).toBe('abort-recommended');
   });
 
   it('a healthy observation clears an abort streak', () => {
-    expect(advanceStreak(ABORT_THRESHOLD + 5, healthy)).toEqual({ consecutiveFailures: 0, verdict: 'healthy' });
+    expect(advanceStreak(ABORT_THRESHOLD + 5, healthy, 0)).toEqual({ consecutiveFailures: 0, verdict: 'healthy', databaseRestartHolds: 0 });
   });
 
   it('sanitises a garbage prior count (NaN/negative → 0)', () => {
-    expect(advanceStreak(Number.NaN, reconciling).consecutiveFailures).toBe(1);
-    expect(advanceStreak(-5, reconciling).consecutiveFailures).toBe(1);
+    expect(advanceStreak(Number.NaN, reconciling, 0).consecutiveFailures).toBe(1);
+    expect(advanceStreak(-5, reconciling, 0).consecutiveFailures).toBe(1);
+    expect(advanceStreak(0, dbRestarting, Number.NaN).databaseRestartHolds).toBe(1);
+  });
+
+  it('a planned database restart holds the streak instead of advancing it', () => {
+    // The staging case: two checks already failed while the services rolled, then
+    // the database restarted for its new spec. That check must not be the third.
+    expect(advanceStreak(ABORT_THRESHOLD - 1, dbRestarting, 0))
+      .toEqual({ consecutiveFailures: ABORT_THRESHOLD - 1, verdict: 'reconciling', databaseRestartHolds: 1 });
+  });
+
+  it(`holds for at most ${MAX_DATABASE_RESTART_HOLDS} checks per upgrade, then counts again`, () => {
+    // A restart that never finishes (an instance that cannot be scheduled) must still escalate.
+    const a = advanceStreak(ABORT_THRESHOLD - 1, dbRestarting, MAX_DATABASE_RESTART_HOLDS);
+    expect(a).toEqual({ consecutiveFailures: ABORT_THRESHOLD, verdict: 'abort-recommended', databaseRestartHolds: MAX_DATABASE_RESTART_HOLDS });
+  });
+
+  it('a hold keeps an abort that was already recommended', () => {
+    expect(advanceStreak(ABORT_THRESHOLD, dbRestarting, 0).verdict).toBe('abort-recommended');
+  });
+
+  it('holds left unused carry through ordinary failures until the upgrade ends', () => {
+    expect(advanceStreak(1, reconciling, 2)).toEqual({ consecutiveFailures: 2, verdict: 'reconciling', databaseRestartHolds: 2 });
+  });
+});
+
+describe('evaluatePostflight — a planned database restart', () => {
+  const rolling: PostflightFacts = { ...converged, runningVersion: '2026.6.2', cnpgReady: false, cnpgDetail: '0/1 instances ready' };
+
+  it.each([
+    'Upgrading cluster',
+    'Waiting for the instances to become active',
+    'Primary instance is being restarted in-place',
+    'Primary instance is being restarted without a switchover',
+    'Switchover in progress',
+    'Online upgrade in progress',
+    'Applying configuration',
+  ])('"%s" while reconciling is a planned restart', (cnpgPhase) => {
+    expect(evaluatePostflight({ ...rolling, cnpgPhase }).databaseRestarting).toBe(true);
+  });
+
+  it.each([
+    'Failing over',
+    'Cluster upgrade delayed',
+    'Waiting for user action',
+    'Cluster is unrecoverable and needs manual intervention',
+    'Cluster in healthy state',
+  ])('"%s" is not', (cnpgPhase) => {
+    expect(evaluatePostflight({ ...rolling, cnpgPhase }).databaseRestarting).toBe(false);
+  });
+
+  it('is not a restart when the phase was not read', () => {
+    expect(evaluatePostflight(rolling).databaseRestarting).toBe(false);
+  });
+
+  it('a healthy upgrade is healthy even while CNPG still rolls a replica', () => {
+    const r = evaluatePostflight({ ...converged, cnpgPhase: 'Upgrading cluster' });
+    expect(r.phase).toBe('healthy');
+    expect(r.databaseRestarting).toBe(false);
   });
 });
 

@@ -14,11 +14,11 @@ function fakeSettings(initial: Record<string, string> = {}): { io: SettingsIO; s
 }
 
 /** Minimal k8s fake: CNPG CR ready, N deployments available, M crashloops. */
-function fakeK8s(opts: { cnpgReady?: number; cnpgTotal?: number; deployTotal?: number; deployAvail?: number; crashloops?: number } = {}): K8sClients {
-  const { cnpgReady = 1, cnpgTotal = 1, deployTotal = 3, deployAvail = 3, crashloops = 0 } = opts;
+function fakeK8s(opts: { cnpgReady?: number; cnpgTotal?: number; cnpgPhase?: string; deployTotal?: number; deployAvail?: number; crashloops?: number } = {}): K8sClients {
+  const { cnpgReady = 1, cnpgTotal = 1, cnpgPhase = 'Cluster in healthy state', deployTotal = 3, deployAvail = 3, crashloops = 0 } = opts;
   return {
     custom: {
-      getNamespacedCustomObject: async () => ({ status: { readyInstances: cnpgReady, instances: cnpgTotal, phase: 'Cluster in healthy state' } }),
+      getNamespacedCustomObject: async () => ({ status: { readyInstances: cnpgReady, instances: cnpgTotal, phase: cnpgPhase } }),
     },
     apps: {
       listNamespacedDeployment: async () => ({
@@ -106,6 +106,56 @@ describe('runPostflight (observer)', () => {
     const s = await runPostflight(io, k8s, 8_000);
     expect(s.ok).toBe(false);
     expect(s.gates.find((g) => g.id === 'deployments-available')!.detail).toMatch(/unreadable/);
+  });
+});
+
+describe('runPostflight — a planned database restart does not count as "not converging"', () => {
+  // Staging, v2026.10.16 → v2026.10.17-rc.1: the platform database rolled for its new
+  // spec during the services step, the new API pod could not connect until it was
+  // back, and the third check told the operator to consider rolling back.
+  const restarting = { cnpgReady: 0, cnpgTotal: 1, cnpgPhase: 'Upgrading cluster' };
+
+  it('holds the streak and records the hold', async () => {
+    const { io, store } = fakeSettings({ pending_update_version: '2026.6.9', postflight_consecutive_failures: '2' });
+    const s = await runPostflight(io, fakeK8s(restarting), 1_000);
+    expect(s.consecutiveFailures).toBe(2);
+    expect(s.verdict).toBe('reconciling');
+    expect(store.get('postflight_consecutive_failures')).toBe('2');
+    expect(store.get('postflight_database_restart_holds')).toBe('1');
+  });
+
+  it('escalates once the holds are used up', async () => {
+    const { io, store } = fakeSettings({
+      pending_update_version: '2026.6.9', postflight_consecutive_failures: '2', postflight_database_restart_holds: '3',
+    });
+    const s = await runPostflight(io, fakeK8s(restarting), 2_000);
+    expect(s.consecutiveFailures).toBe(3);
+    expect(s.verdict).toBe('abort-recommended');
+    expect(store.get('postflight_database_restart_holds')).toBe('3');
+  });
+
+  it('a failover is not a planned restart', async () => {
+    const { io } = fakeSettings({ pending_update_version: '2026.6.9', postflight_consecutive_failures: '2' });
+    const s = await runPostflight(io, fakeK8s({ ...restarting, cnpgPhase: 'Failing over' }), 3_000);
+    expect(s.verdict).toBe('abort-recommended');
+  });
+
+  it('a healthy end resets the holds for the next upgrade, on either pass', async () => {
+    const running = (process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown').trim();
+    for (const pass of [runPostflight, checkConvergence]) {
+      const { io, store } = fakeSettings({ pending_update_version: running, postflight_database_restart_holds: '2' });
+      await pass(io, fakeK8s(), 4_000);
+      expect(store.get('postflight_database_restart_holds')).toBe('0');
+    }
+  });
+
+  it('the fast pass never spends a hold', async () => {
+    const { io, store } = fakeSettings({
+      pending_update_version: '2026.6.9', postflight_consecutive_failures: '2', postflight_database_restart_holds: '1',
+    });
+    await checkConvergence(io, fakeK8s(restarting), 5_000);
+    expect(store.get('postflight_database_restart_holds')).toBe('1');
+    expect(store.get('postflight_consecutive_failures')).toBe('2');
   });
 });
 
