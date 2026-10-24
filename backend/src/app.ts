@@ -1864,6 +1864,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => { principalsSyncHandle.stop(); });
       }
 
+      // Bulwark leaves the app password of an "Open webmail" session on the
+      // mailbox unless the user signs out; Stalwart never deletes an expired
+      // one. Hourly, one replica. No mailboxes, no calls.
+      const { startWebmailSessionReaper } = await import('./modules/login-passwords/webmail-session-reaper.js');
+      const webmailSessionReaperHandle = startWebmailSessionReaper(app.db);
+      app.addHook('onClose', () => webmailSessionReaperHandle.stop());
+
       // Multi-host isolation remediation (ADR-059 amendment).
       //
       // Instances deployed before per-folder mounts keep the whole tenant

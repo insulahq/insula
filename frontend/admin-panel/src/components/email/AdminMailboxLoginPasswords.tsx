@@ -148,6 +148,9 @@ export function AdminMailboxLoginPasswordsModal({
                       {r.expiresAt
                         ? (r.kind === 'webmail_session' ? new Date(r.expiresAt).toLocaleString() : new Date(r.expiresAt).toLocaleDateString())
                         : 'never'}
+                      {r.kind === 'login' && r.expiresAt && new Date(r.expiresAt) <= new Date() && (
+                        <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`admin-login-password-expired-${r.id}`}>Expired</span>
+                      )}
                     </td>
                     <td className="py-2.5 text-xs text-gray-500 dark:text-gray-400">{r.allowedIps.length > 0 ? r.allowedIps.join(', ') : '—'}</td>
                     <td className="py-2.5 text-right">

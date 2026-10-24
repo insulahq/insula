@@ -101,6 +101,19 @@ export function toLoginPassword(row: StalwartAppPasswordRow): LoginPassword {
   };
 }
 
+/**
+ * True for the app password of an "Open webmail" session that has ended
+ * `graceMs` or longer ago. Stalwart refuses an expired app password but never
+ * deletes it, and Bulwark deletes its own only when the user clicks Sign out —
+ * so a session left to run out stays on the mailbox until
+ * webmail-session-reaper.ts removes it.
+ */
+export function isEndedWebmailSession(row: StalwartAppPasswordRow, now: Date, graceMs = 0): boolean {
+  if (!WEBMAIL_SESSION_LABEL_PATTERN.test(row.description ?? '') || !row.expiresAt) return false;
+  const endsAt = Date.parse(row.expiresAt);
+  return Number.isFinite(endsAt) && endsAt + graceMs <= now.getTime();
+}
+
 export async function listLoginPasswords(
   db: Database,
   tenantId: string,
@@ -111,7 +124,10 @@ export async function listLoginPasswords(
     accountId: mb.stalwartPrincipalId,
     baseUrl: process.env.STALWART_MGMT_URL,
   });
-  return rows.map(toLoginPassword);
+  // An ended session can no longer sign in, and the reaper deletes it within
+  // the hour: don't list it as if it were still open.
+  const now = new Date();
+  return rows.filter((row) => !isEndedWebmailSession(row, now)).map(toLoginPassword);
 }
 
 export async function createLoginPassword(

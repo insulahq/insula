@@ -11,6 +11,8 @@ import type { LoginPassword } from '@insula/api-contracts';
 const rows: LoginPassword[] = [
   { id: 'p1', label: 'iPhone', kind: 'login', createdAt: '2026-09-01T00:00:00Z', expiresAt: null, allowedIps: [] },
   { id: 'w1', label: 'Webmail session', kind: 'webmail_session', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [] },
+  { id: 'old', label: 'Old laptop', kind: 'login', createdAt: '2026-01-01T00:00:00Z', expiresAt: '2026-02-01T00:00:00Z', allowedIps: [] },
+  { id: 'later', label: 'Tablet', kind: 'login', createdAt: '2026-01-01T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z', allowedIps: [] },
 ];
 
 vi.mock('../hooks/use-email', () => ({
@@ -40,5 +42,16 @@ describe('MailboxLoginPasswordsModal — webmail sessions', () => {
     const login = screen.getByTestId('login-password-row-p1');
     expect(login).not.toHaveTextContent('ends by itself');
     expect(screen.getByTestId('login-password-revoke-p1')).toHaveTextContent('Revoke');
+  });
+
+  // The mail server keeps a login password past its date (it only refuses it),
+  // so the list must say it no longer works.
+  it('marks a login password past its expiry date as expired', () => {
+    render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+
+    expect(screen.getByTestId('login-password-expired-old')).toHaveTextContent('Expired');
+    expect(screen.queryByTestId('login-password-expired-later')).toBeNull();
+    expect(screen.queryByTestId('login-password-expired-p1')).toBeNull();
+    expect(screen.queryByTestId('login-password-expired-w1')).toBeNull();
   });
 });

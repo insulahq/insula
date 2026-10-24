@@ -58,6 +58,14 @@ holds that. Consequences for the platform:
   `jti`, so a session in the list can be traced to whoever opened it.
 - Revoking a login password, or `x:AppPassword/set` destroy, ends that webmail
   session; changing the mailbox password does not touch app passwords.
+- Bulwark deletes the app password only when the user clicks **Sign out**, and
+  Stalwart refuses an expired app password but never deletes it. A session
+  closed or left to run out therefore stayed on the mailbox, in the panels and
+  in Bulwark's own Settings → App passwords. The list now leaves out an ended
+  session, and `login-passwords/webmail-session-reaper.ts` (hourly, leased)
+  deletes ended `Support session <uuid>` rows 5 minutes after they end. It
+  touches nothing else: an expired login password a user created stays until
+  they revoke it.
 - A used impersonation link is refused after a Bulwark restart (the replay
   store is in memory) — harmless, the link lives 30 s.
 

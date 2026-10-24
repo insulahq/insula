@@ -138,6 +138,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   rotation, a tenant gets a plain sentence; its raw error, which names internal hosts, goes to
   the log and to platform staff only. The unused Activate button and the admin panel's dead DKIM
   key hooks are gone.
+- **Ended webmail sessions leave the mailbox's login passwords.** "Open webmail" signs in with
+  an 8-hour app password that Bulwark deletes only when the user clicks Sign out, and the mail
+  server never deletes an expired one. Every session that was closed or left to run out stayed
+  for good: in both panels' Login passwords list, still labelled "ends by itself", and in
+  Bulwark's own Settings → App passwords as "Support session …". The list now leaves out an
+  ended session, and an hourly sweep deletes it from the mailbox 5 minutes after it ends. The
+  first sweep, 10 minutes after the upgrade, clears the ones already there. A login password
+  someone created with an expiry date is kept, and is now marked **Expired** once past it.
 - **No server holds two replicas of the same service any more.** Replicas that started while
   only one server was up stayed on it for good: on a fresh multi-server install, after a
   full-cluster restart, or after a server was replaced. The scheduler never moves a running

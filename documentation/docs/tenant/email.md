@@ -118,8 +118,12 @@ A webmail session opened this way lasts up to **8 hours**, then asks you to
 open it again from the panel. While it is open it appears in the mailbox's
 **Login passwords** list as **Webmail session**, with the time it ends.
 **Sign out** there ends that session; signing out in the webmail removes the
-entry too. No password of yours is involved — the session cannot be used for
-anything but that one webmail tab.
+entry too. A session that simply runs out leaves the list when it ends and is
+deleted from the mailbox within the hour. No password of yours is involved —
+the session cannot be used for anything but that one webmail tab.
+
+A login password you created with an expiry date stops working on that date
+and is marked **Expired** in the list. It stays there until you revoke it.
 
 ## Mailing lists
 

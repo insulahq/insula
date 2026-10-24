@@ -80,14 +80,36 @@ describe('login-passwords/service: listLoginPasswords', () => {
   // creates on the mailbox, named after the token's jti. Shown raw, a tenant
   // reads "Support session 3f2a…" as someone from support having opened it.
   it('labels a webmail session created by "Open webmail"', async () => {
-    jmap.appPasswordGet.mockResolvedValue([
-      { id: 'w1', description: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: {} },
-    ]);
-    const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
-    expect(out[0]).toEqual({
-      id: 'w1', label: 'Webmail session', kind: 'webmail_session',
-      createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [],
-    });
+    vi.useFakeTimers({ now: new Date('2026-10-04T12:00:00Z'), toFake: ['Date'] });
+    try {
+      jmap.appPasswordGet.mockResolvedValue([
+        { id: 'w1', description: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: {} },
+      ]);
+      const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
+      expect(out[0]).toEqual({
+        id: 'w1', label: 'Webmail session', kind: 'webmail_session',
+        createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Stalwart keeps an expired app password, and Bulwark deletes its own only
+  // on Sign out: an ended session stayed in the list as if still open.
+  it('leaves out a webmail session that has ended, but not an expired login password', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-24T12:00:00Z'), toFake: ['Date'] });
+    try {
+      jmap.appPasswordGet.mockResolvedValue([
+        { id: 'ended', description: 'Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a7c', expiresAt: '2026-10-16T03:22:51Z' },
+        { id: 'open', description: 'Support session 1c9e5d3f-8b2e-4f6c-8d4b-3a7e9f2c5b8d', expiresAt: '2026-10-24T18:00:00Z' },
+        { id: 'login', description: 'Old laptop', expiresAt: '2026-10-01T00:00:00Z' },
+      ]);
+      const out = await listLoginPasswords(dbWith([MB]), 't1', 'mb1');
+      expect(out.map((r) => r.id)).toEqual(['open', 'login']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses to create a login password named like a webmail session', async () => {
