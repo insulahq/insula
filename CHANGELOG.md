@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.17-rc.2] - 2026-10-24
+
 ### Added
 
 - **Tenants can connect AI agents (MCP) to the tenant panel.** Each tenant panel has its own MCP
