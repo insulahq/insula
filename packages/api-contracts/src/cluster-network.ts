@@ -178,6 +178,33 @@ export const joinTokenInfoSchema = z.object({
 });
 export type JoinTokenInfo = z.infer<typeof joinTokenInfoSchema>;
 
+/** A server a join can go through (`--server`). Any one works: every server
+ *  holds the same server token and the cluster forwards the etcd member-add to
+ *  its leader; the new node admits every peer the target reports. */
+export const joinServerCandidateSchema = z.object({
+  /** Kubernetes node name. */
+  name: z.string(),
+  /** IPv4 InternalIP — what `--server` takes. */
+  ip: z.string(),
+  /** Node Ready condition. */
+  ready: z.boolean(),
+  /** Cordoned (spec.unschedulable) — usually mid-drain or maintenance. */
+  cordoned: z.boolean(),
+  /** Its API port answered the platform-api just now; null = not checked. */
+  answering: z.boolean().nullable(),
+});
+export type JoinServerCandidate = z.infer<typeof joinServerCandidateSchema>;
+
+/** Optional body of POST /admin/cluster/bootstrap-command/:name. */
+export const bootstrapCommandRequestSchema = z
+  .object({
+    /** Join through this server (one of the response's `servers`, by IPv4).
+     *  Omitted → the platform picks a Ready, uncordoned server that answers. */
+    server: z.ipv4().optional(),
+  })
+  .strict();
+export type BootstrapCommandRequest = z.infer<typeof bootstrapCommandRequestSchema>;
+
 /** Returned by POST /admin/cluster/bootstrap-command/:name (POST: it may
  *  mint a join token). The steps run ON THE NEW NODE as root: download the
  *  `insula` CLI for the cluster's own release, verify its signature against
@@ -195,6 +222,9 @@ export const bootstrapCommandResponseSchema = z.object({
   bootstrapCommand: z.string(),
   /** The existing server the join targets (`--server`, an IPv4 InternalIP). */
   serverIp: z.string(),
+  /** Every server the join could go through, `serverIp` among them. Optional
+   *  so an older platform-api that omits it still satisfies the type. */
+  servers: z.array(joinServerCandidateSchema).optional(),
   /** Role hint from spec.role. */
   role: z.enum(['server', 'worker']),
   /** The new node's IP from spec.ip. */

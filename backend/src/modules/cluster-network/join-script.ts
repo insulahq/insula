@@ -112,6 +112,8 @@ export interface JoinScriptInput {
   readonly role: 'server' | 'worker';
   /** IPv4 InternalIP of an existing server (bootstrap.sh's --server is IPv4-only). */
   readonly serverIp: string;
+  /** That server's node name, for the operator. */
+  readonly serverName?: string;
   readonly release: JoinRelease;
   /** PEM of the cluster's release key, or null to fetch it from the release tag. */
   readonly releaseKeyPem: string | null;
@@ -215,12 +217,13 @@ export function renderJoin(input: JoinScriptInput): RenderedJoin {
   if (input.token.kind === 'node-token') {
     steps.push({
       id: 'server-token',
-      title: `Read the server join token on an existing server (${input.serverIp})`,
+      title: `Read the server join token on any existing server, e.g. ${input.serverName ? `${input.serverName} (${input.serverIp})` : input.serverIp}`,
       runOn: 'existing-server',
       command: `cat ${SERVER_TOKEN_PATH}`,
       note:
-        "As root. It prints one line, K10…::server:…. That is the cluster's root credential — paste it only " +
-        'into the prompt of the join step, never into chat, tickets or a file.',
+        "As root. Every server holds the same token. It prints one line, K10…::server:…. That is the cluster's root " +
+        'credential — paste it only into the prompt of the join step, never into chat, tickets or a file. ' +
+        'The join checks it before installing anything.',
     });
   }
   steps.push({ id: 'download', ...downloadStep(input.release, input.releaseKeyPem) });

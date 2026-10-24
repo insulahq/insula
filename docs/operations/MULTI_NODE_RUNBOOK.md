@@ -73,6 +73,12 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   ConfigMap, falling back to the Nodes' `podCIDRs`. A private-underlay cluster
   (server ExternalIP ≠ InternalIP) gets a marked comment instead of a guessed
   `--cluster-network-cidr` — the cluster does not record that CIDR.
+  - **Which server it joins through:** any Ready server works — every server
+    holds the same server token, and the cluster forwards the new etcd member
+    to its leader. The panel defaults to a Ready, uncordoned server whose API
+    port answered just now (a server that just went down still reads Ready for
+    about a minute), lists every server under *Joins via*, and re-renders the
+    steps for the one you pick (request body `{"server": "<ipv4>"}`).
   - **Worker:** the platform mints a k3s **agent bootstrap token**
     (`kube-system/bootstrap-token-<id>`, exactly what `k3s token create`
     writes, TTL 2 h, owned by the `ClusterPendingPeer` so it dies with the
@@ -88,8 +94,32 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 - **A join checks the cluster before touching the host.** It fails up front —
   with nothing on the new node changed — when `https://<server>:6443/cacerts`
   is unreachable (usually: the node was not pre-enrolled, so the firewall drops
-  it) or when the token's `K10<hash>` prefix does not match that cluster's CA
-  (a token from a different cluster).
+  it), when the token's `K10<hash>` prefix does not match that cluster's CA
+  (a token from a different cluster), or when the server does not accept the
+  token's secret — a wrong or stale token, the worker (agent) token on a server
+  join, or an expired panel token. It asks the same endpoint k3s asks next:
+  `/db/info` for a server (the etcd member list, server token only),
+  `/v1-k3s/apiservers` for a worker. The token travels on stdin, never on a
+  command line.
+- **The new node admits every peer before k3s starts.** The answer above
+  lists the cluster's etcd members (servers) or API servers (workers), and
+  bootstrap adds them to the new node's own `cluster_peers` set next to the
+  join target. Earlier releases admitted only the `--server` node, so a server
+  join hung at `systemd: Starting k3s` whenever the etcd leader was another
+  server: the leader could not reach the newcomer's `:2380` to replicate to
+  it. The workaround then was `peer-firewall-add <other-server-ip>` on the NEW
+  node (safe there: its firewall reconciler starts only after the join).
+- **A failed join cleans up after itself.** When the join times out, bootstrap
+  shows k3s's last errors and removes the k3s it installed in that run, so
+  re-running the same command starts clean (a leftover install would keep its
+  old token and flags: a re-run skips the install when the version matches). A
+  run that is interrupted (Ctrl-C, dropped SSH) leaves a marker, and the next
+  run removes the unfinished install first. One exception, on purpose: once
+  the new server's etcd has started, the cluster may list it as a member, and
+  removing k3s would leave that member behind — see
+  [A server join that did not finish](#a-server-join-that-did-not-finish). The
+  same holds for a worker whose kubelet has already run pods: it is a
+  registered node, so bootstrap leaves its k3s-agent in place.
 
 > **Dual-stack clusters: `--dual-stack` goes on EVERY node, not just the first.**
 > A node that registers only IPv4 cannot join a cluster whose `--cluster-cidr`
@@ -126,7 +156,8 @@ keeps quorum when any one server fails.**
 # 0. Pre-enroll each new node's IP (admin UI → Security → Network Trust → Pre-Enroll Node).
 #    Its "Get bootstrap command" renders steps 1–2 to run on the node itself.
 
-# 1. On the existing 1st server — the cluster's release and the join token:
+# 1. On any existing server — the cluster's release and the join token
+#    (every server holds the same token):
 ssh root@<server-1> insula version
 # → insula <version>   (use exactly this release's binary below)
 ssh root@<server-1> cat /var/lib/rancher/k3s/server/node-token
@@ -324,6 +355,35 @@ ETCDCTL_API=3 etcdctl member remove <unhealthy-member-id>
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
 replace the VPS, pre-enroll its IP, and run `insula bootstrap --join-as
 server --server <healthy-server-ip> --token …` to join a fresh etcd member.
+
+### A server join that did not finish
+
+Bootstrap stops instead of cleaning up when a server join got far enough to
+start etcd on the new node, or when the preflight finds that the cluster
+already lists a started etcd member under the new node's name or one of its
+addresses while the node itself has no etcd data (an earlier attempt that was
+wiped, or the old member of a replaced VPS). k3s would refuse that join with
+`duplicate node name found`. The member must go first.
+
+**First make sure it is not a healthy server's member.** On the new node,
+`systemctl is-active k3s` must not say `active`, and the node must not be
+`Ready` in `kubectl get nodes`. A re-run on a joined server is never refused
+this way — that host has its own etcd data — so if the node is up, stop: you
+would be removing a live member.
+
+```bash
+# On a healthy existing server (k3s ships no etcdctl; etcd's HTTP gateway does the same):
+cd /var/lib/rancher/k3s/server/tls/etcd
+ETCD=(curl -sS --cacert server-ca.crt --cert server-client.crt --key server-client.key -X POST)
+"${ETCD[@]}" https://127.0.0.1:2379/v3/cluster/member/list -d '{}'
+# → find the member whose peerURLs carry the new node's IP; note its "ID".
+"${ETCD[@]}" https://127.0.0.1:2379/v3/cluster/member/remove -d '{"ID":"<member-id>"}'
+kubectl get node <new-node>        # registered? then also: kubectl delete node <new-node>
+```
+
+Then, on the new node, `/usr/local/bin/k3s-uninstall.sh` and re-run the same
+join command. A member that never started (no name in the list) needs none of
+this: k3s takes it over on the next attempt.
 
 ### A 2-server cluster lost one server for good
 

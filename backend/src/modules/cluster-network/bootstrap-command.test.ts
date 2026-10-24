@@ -58,19 +58,22 @@ function cpp(name: string, ip: string, role: 'server' | 'worker', family?: 'v4' 
 
 function node(opts: {
   ip: string;
+  name?: string;
   server?: boolean;
   ready?: boolean;
+  cordoned?: boolean;
   externalIp?: string;
   podCIDRs?: string[];
   extraAddresses?: Array<{ type: string; address: string }>;
 }): unknown {
   return {
     metadata: {
+      ...(opts.name ? { name: opts.name } : {}),
       labels: opts.server
         ? { 'node-role.kubernetes.io/control-plane': 'true', 'node-role.kubernetes.io/etcd': 'true' }
         : {},
     },
-    spec: { podCIDRs: opts.podCIDRs ?? ['10.42.0.0/24'] },
+    spec: { podCIDRs: opts.podCIDRs ?? ['10.42.0.0/24'], ...(opts.cordoned ? { unschedulable: true } : {}) },
     status: {
       addresses: [
         ...(opts.extraAddresses ?? []),
@@ -91,6 +94,9 @@ function deps(c: ClusterNetworkClients, extra: Partial<BootstrapCommandDeps> = {
     generateToken: () => ({ id: 'abcdef', secret: '0123456789abcdef' }),
     releaseKeyPem: TEST_KEY_PEM,
     log: vi.fn(),
+    // Every server's API port answers unless a test says otherwise — and no
+    // test ever opens a real connection.
+    probeServer: vi.fn().mockResolvedValue(true),
     ...extra,
   };
 }
@@ -205,6 +211,8 @@ describe('generateBootstrapCommand — server (cluster server token, never serve
     ]);
     expect(r.steps[0]?.command).toBe('cat /var/lib/rancher/k3s/server/node-token');
     expect(r.steps[0]?.title).toContain('198.51.100.10');
+    expect(r.steps[0]?.title).toContain('any existing server');
+    expect(r.steps[0]?.note).toContain('Every server holds the same token');
     expect(r.bootstrapCommand).toContain("read -rsp 'Paste the server join token from step 1");
     expect(r.bootstrapCommand).toContain(
       `insula bootstrap --join-as server --server '198.51.100.10' --token "$INSULA_JOIN_TOKEN"`,
@@ -375,6 +383,103 @@ describe('generateBootstrapCommand — join target and cluster facts', () => {
       code: 'PENDING_PEER_NOT_FOUND',
       status: 404,
     });
+  });
+});
+
+describe('generateBootstrapCommand — choosing the server to join through', () => {
+  const S1 = node({ ip: '198.51.100.10', name: 'sv1', server: true });
+  const S2 = node({ ip: '198.51.100.11', name: 'sv2', server: true });
+  const S3 = node({ ip: '198.51.100.12', name: 'sv3', server: true });
+  const answers = (live: Record<string, boolean | null>) =>
+    vi.fn(async (ip: string) => (ip in live ? (live[ip] ?? null) : true));
+
+  it('lists every server by name, with readiness, cordon and a live API-port check', async () => {
+    const probe = answers({ '198.51.100.10': false });
+    const c = fakeClients({
+      cpp: cpp('s4', '198.51.100.20', 'server'),
+      nodes: [S3, node({ ip: '198.51.100.11', name: 'sv2', server: true, ready: false }), S1],
+    });
+    const r = await generateBootstrapCommand('s4', {}, deps(c, { probeServer: probe }));
+    expect(r.servers).toEqual([
+      { name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: false },
+      { name: 'sv2', ip: '198.51.100.11', ready: false, cordoned: false, answering: null },
+      { name: 'sv3', ip: '198.51.100.12', ready: true, cordoned: false, answering: true },
+    ]);
+    // A NotReady server is never probed.
+    expect(probe.mock.calls.map((a) => a[0]).sort()).toEqual(['198.51.100.10', '198.51.100.12']);
+  });
+
+  it('defaults to a server that answers — not simply the first one (sv1 down but still Ready)', async () => {
+    const c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [S1, S2, S3] });
+    const r = await generateBootstrapCommand('s4', {}, deps(c, { probeServer: answers({ '198.51.100.10': false }) }));
+    expect(r.serverIp).toBe('198.51.100.11');
+    expect(r.bootstrapCommand).toContain("--server '198.51.100.11'");
+    expect(r.steps[0]?.title).toContain('sv2 (198.51.100.11)');
+    expect(r.notes.join(' ')).not.toContain('did not answer');
+  });
+
+  it('prefers an uncordoned server, but an answering cordoned one over a silent one', async () => {
+    const cordoned = node({ ip: '198.51.100.10', name: 'sv1', server: true, cordoned: true });
+    let c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [cordoned, S2] });
+    let r = await generateBootstrapCommand('s4', {}, deps(c));
+    expect(r.serverIp).toBe('198.51.100.11');
+    c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [cordoned, S2] });
+    r = await generateBootstrapCommand('s4', {}, deps(c, { probeServer: answers({ '198.51.100.11': false }) }));
+    expect(r.serverIp).toBe('198.51.100.10');
+    expect(r.notes.join(' ')).toContain('is cordoned');
+  });
+
+  it('when no server answers, still renders the command and says so', async () => {
+    const c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [S1, S2] });
+    const r = await generateBootstrapCommand('s4', {}, deps(c, { probeServer: vi.fn().mockResolvedValue(false) }));
+    expect(r.serverIp).toBe('198.51.100.10');
+    expect(r.notes.join(' ')).toContain('did not answer on its API port just now, and no other server did either');
+  });
+
+  it('without the cluster CA nothing is checked, and the first Ready server by name is used', async () => {
+    const c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [S2, S1] });
+    const d = deps(c, { fetchCaBundle: vi.fn().mockRejectedValue(new Error('no CA')) });
+    const { probeServer: _unused, ...withoutProbe } = d;
+    const r = await generateBootstrapCommand('s4', {}, withoutProbe);
+    expect(r.serverIp).toBe('198.51.100.10');
+    expect(r.servers?.every((s) => s.answering === null)).toBe(true);
+  });
+
+  it('joins through the server the operator picked', async () => {
+    const c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [S1, S2, S3] });
+    const r = await generateBootstrapCommand('s4', {}, deps(c), { server: '198.51.100.12' });
+    expect(r.serverIp).toBe('198.51.100.12');
+    expect(r.bootstrapCommand).toContain("--server '198.51.100.12'");
+  });
+
+  it('a picked server that does not answer: rendered, with a warning to pick another', async () => {
+    const c = fakeClients({ cpp: cpp('s4', '198.51.100.20', 'server'), nodes: [S1, S2] });
+    const r = await generateBootstrapCommand('s4', {}, deps(c, { probeServer: answers({ '198.51.100.10': false }) }), {
+      server: '198.51.100.10',
+    });
+    expect(r.serverIp).toBe('198.51.100.10');
+    expect(r.notes.join(' ')).toContain('Pick another server');
+  });
+
+  it('refuses a pick that is not a server of this cluster — before minting anything', async () => {
+    const c = fakeClients({
+      cpp: cpp('w5', '198.51.100.50', 'worker'),
+      nodes: [S1, node({ ip: '198.51.100.40', name: 'w1' })],
+    });
+    await expect(
+      generateBootstrapCommand('w5', {}, deps(c), { server: '198.51.100.40' }),
+    ).rejects.toMatchObject({ code: 'JOIN_TARGET_UNKNOWN', status: 400 });
+    expect(c.createSecret).not.toHaveBeenCalled();
+  });
+
+  it('refuses a pick that is not Ready', async () => {
+    const c = fakeClients({
+      cpp: cpp('s4', '198.51.100.20', 'server'),
+      nodes: [S1, node({ ip: '198.51.100.11', name: 'sv2', server: true, ready: false })],
+    });
+    await expect(
+      generateBootstrapCommand('s4', {}, deps(c), { server: '198.51.100.11' }),
+    ).rejects.toMatchObject({ code: 'JOIN_TARGET_NOT_READY', status: 409 });
   });
 });
 

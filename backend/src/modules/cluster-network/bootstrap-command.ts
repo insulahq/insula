@@ -17,8 +17,10 @@
  *            for it (hidden input, out of shell history).
  *
  * Cluster facts are read, never guessed:
- *   --server     an IPv4 InternalIP of a Ready control-plane node
- *                (bootstrap.sh's --server is IPv4-only; workers serve no :6443)
+ *   --server     an IPv4 InternalIP of a Ready control-plane node — the
+ *                operator's pick, else one whose API port answers right now
+ *                (join-target.ts; bootstrap.sh's --server is IPv4-only, and
+ *                workers serve no :6443)
  *   dual-stack   the platform-cluster-cidrs ConfigMap (bootstrap writes it),
  *                else any Node spec.podCIDRs entry that is IPv6
  *   private net  a server whose ExternalIP differs from its InternalIP was
@@ -32,6 +34,16 @@
 
 import { ApiError } from '../../shared/errors.js';
 import { type BootstrapCommandResponse } from '@insula/api-contracts';
+import {
+  defaultJoinTarget,
+  isControlPlane,
+  probeApiPort,
+  probeCandidates,
+  requestedJoinTarget,
+  serverCandidates,
+  type JoinNodeShape,
+  type ServerCandidate,
+} from './join-target.js';
 import { getPendingPeerRecord } from './cluster-pending-peers.js';
 import {
   loadClusterNetworkClients,
@@ -61,29 +73,13 @@ const CLUSTER_CIDRS_CM = { name: 'platform-cluster-cidrs', namespace: 'platform'
 const DEFAULT_POD_CIDR_V6 = 'fd42:42::/56';
 const DEFAULT_SVC_CIDR_V6 = 'fd42:43::/112';
 const V6_CIDR_RE = /^[0-9a-fA-F:]+\/\d{1,3}$/;
-const V4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
-
-interface NodeAddress {
-  readonly type?: string;
-  readonly address?: string;
-}
-
-interface NodeShape {
-  readonly metadata?: { readonly labels?: Readonly<Record<string, string>> };
-  readonly spec?: { readonly podCIDRs?: readonly string[] };
-  readonly status?: {
-    readonly addresses?: readonly NodeAddress[];
-    readonly conditions?: ReadonlyArray<{ type?: string; status?: string }>;
-  };
-}
-
 interface NodeListShape {
-  readonly items?: readonly NodeShape[];
+  readonly items?: readonly JoinNodeShape[];
 }
 
 interface NodeSummary {
-  /** The node a join targets (`--server`). Null when none qualifies. */
-  readonly target: { readonly internalIp: string; readonly privateUnderlay: boolean } | null;
+  /** Every server a join could go through, by name. */
+  readonly servers: ServerCandidate[];
   /** Nodes (ready or not) carrying the k3s control-plane label — the
    *  current etcd member count, since every server runs embedded etcd. */
   readonly serverCount: number;
@@ -91,38 +87,10 @@ interface NodeSummary {
   readonly anyV6PodCidr: boolean;
 }
 
-function isControlPlane(n: NodeShape): boolean {
-  const labels = n.metadata?.labels ?? {};
-  return (
-    labels['node-role.kubernetes.io/control-plane'] !== undefined ||
-    labels['node-role.kubernetes.io/master'] !== undefined
-  );
-}
-
-function addressOf(n: NodeShape, type: 'InternalIP' | 'ExternalIP'): string | undefined {
-  return (n.status?.addresses ?? []).find((a) => a.type === type && a.address && V4_RE.test(a.address))
-    ?.address;
-}
-
-function isReady(n: NodeShape): boolean {
-  return (n.status?.conditions ?? []).find((c) => c.type === 'Ready')?.status === 'True';
-}
-
-/** Pick the join target: the first Ready control-plane node with an IPv4
- *  InternalIP. Only when NO node carries a control-plane label (unlabelled
- *  legacy nodes) does any Ready node qualify — never a known worker. */
-export function summariseNodes(items: readonly NodeShape[]): NodeSummary {
-  const serverCount = items.filter(isControlPlane).length;
-  const eligible = items.filter((n) => isReady(n) && addressOf(n, 'InternalIP'));
-  const pick = eligible.find(isControlPlane) ?? (serverCount === 0 ? eligible[0] : undefined);
-  const internalIp = pick ? addressOf(pick, 'InternalIP') : undefined;
-  const externalIp = pick ? addressOf(pick, 'ExternalIP') : undefined;
+export function summariseNodes(items: readonly JoinNodeShape[]): NodeSummary {
   return {
-    target:
-      pick && internalIp
-        ? { internalIp, privateUnderlay: externalIp !== undefined && externalIp !== internalIp }
-        : null,
-    serverCount,
+    servers: serverCandidates(items),
+    serverCount: items.filter(isControlPlane).length,
     anyV6PodCidr: items.some((n) => (n.spec?.podCIDRs ?? []).some((c) => c.includes(':'))),
   };
 }
@@ -208,6 +176,14 @@ export interface BootstrapCommandDeps {
   readonly releaseKeyPem?: string | null;
   /** Receives a minting failure (never the token). */
   readonly log?: (msg: string, err: unknown) => void;
+  /** Does <ip>:6443 answer right now? null = could not check. Default:
+   *  probeApiPort against the cluster CA. */
+  readonly probeServer?: (ip: string) => Promise<boolean | null>;
+}
+
+/** The request: which server to join through (validated), else the default. */
+export interface BootstrapCommandRequestOptions {
+  readonly server?: string;
 }
 
 interface MintResult {
@@ -258,10 +234,27 @@ async function mintWorkerToken(
   }
 }
 
+/** The live-API-port check: the cluster CA once, then one /ping per server.
+ *  No CA (fetch failed) → nothing is checked, every answer stays null. */
+async function apiPortProbe(
+  opts: BootstrapCommandOptions,
+  deps: BootstrapCommandDeps,
+): Promise<((ip: string) => Promise<boolean | null>) | null> {
+  if (deps.probeServer) return deps.probeServer;
+  try {
+    const ca = await (deps.fetchCaBundle ?? (() => fetchClusterCaBundle(opts)))();
+    return (ip) => probeApiPort(ip, ca);
+  } catch (err) {
+    deps.log?.('cluster-network: cluster CA unavailable — join targets not checked for a live API port', err);
+    return null;
+  }
+}
+
 export async function generateBootstrapCommand(
   cppName: string,
   opts: BootstrapCommandOptions = {},
   deps: BootstrapCommandDeps = {},
+  request: BootstrapCommandRequestOptions = {},
 ): Promise<BootstrapCommandResponse> {
   const env = deps.env ?? process.env;
   // Fail before any write: an unknown cluster version has no CLI to pin.
@@ -269,7 +262,11 @@ export async function generateBootstrapCommand(
   const c = deps.clients ?? (await loadClusterNetworkClients(opts));
   const { peer: cpp, uid } = await getPendingPeerRecord(cppName, opts, c);
   const nodes = summariseNodes(((await c.core.listNode()) as NodeListShape).items ?? []);
-  if (!nodes.target) {
+  // Validate an explicit pick before any probe or write.
+  if (request.server) requestedJoinTarget(nodes.servers, request.server);
+  const servers = await probeCandidates(nodes.servers, await apiPortProbe(opts, deps));
+  const target = request.server ? requestedJoinTarget(servers, request.server) : defaultJoinTarget(servers);
+  if (!target) {
     throw new ApiError(
       'NO_READY_PEERS',
       'No Ready control-plane Node with an IPv4 InternalIP found — the cluster has no server to join. ' +
@@ -277,7 +274,7 @@ export async function generateBootstrapCommand(
       503,
     );
   }
-  const serverIp = nodes.target.internalIp;
+  const serverIp = target.ip;
   const cidrs = clusterCidrFacts(await readClusterCidrs(c), nodes.anyV6PodCidr);
 
   const minted =
@@ -293,7 +290,17 @@ export async function generateBootstrapCommand(
         "Pre-enrol the node's IPv4 address too, or the cluster firewall drops the join.",
     );
   }
-  if (nodes.target.privateUnderlay) {
+  if (target.answering === false) {
+    notes.push(
+      `Server ${target.name} (${serverIp}) did not answer on its API port just now` +
+        (request.server
+          ? ' — the join will fail unless it is back by then. Pick another server if it stays down.'
+          : ', and no other server did either. Check the servers before running the join.'),
+    );
+  } else if (target.cordoned) {
+    notes.push(`Server ${target.name} (${serverIp}) is cordoned — joining through it works, but another server is a safer pick.`);
+  }
+  if (target.privateUnderlay) {
     notes.push(
       `The existing servers are pinned to a private network (--cluster-network-cidr). Add the same ` +
         `--cluster-network-cidr <cidr> to the join line (marked in the join step), and pre-enrol the node by ` +
@@ -311,7 +318,8 @@ export async function generateBootstrapCommand(
     token: minted.token,
     dualStack: cidrs.dualStack,
     extraFlags: cidrs.extraFlags,
-    privateUnderlay: nodes.target.privateUnderlay,
+    privateUnderlay: target.privateUnderlay,
+    serverName: target.name,
   });
 
   return {
@@ -319,6 +327,7 @@ export async function generateBootstrapCommand(
     script: rendered.script,
     bootstrapCommand: rendered.bootstrapCommand,
     serverIp,
+    servers: servers.map(({ name, ip, ready, cordoned, answering }) => ({ name, ip, ready, cordoned, answering })),
     role: cpp.role,
     nodeIp: cpp.ip,
     platformVersion: release.tag,

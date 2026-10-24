@@ -295,6 +295,16 @@ PLATFORM_DOMAIN=""
 STALWART_MASTER_DOMAIN="local.host"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
+# The cluster's peers as the join target reports them (verify_join_credentials):
+# every etcd member for a server join, every API server for a worker join.
+# seed_firewall_sets admits them on THIS node before k3s starts — the etcd leader
+# replicates to a joining server's :2380 from wherever it runs, not only from the
+# --server node.
+JOIN_PEERS_V4=()
+JOIN_PEERS_V6=()
+# When this run started installing k3s for a join: k3s_journal_errors shows only
+# that attempt's lines, not an earlier one's.
+JOIN_STARTED_AT=""
 # --node-name, and the name resolve_k8s_node_name settles on. Every step uses
 # K8S_NODE_NAME, never $(hostname) — see "Node identity" below.
 NODE_NAME_FLAG=""
@@ -1181,6 +1191,7 @@ error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
 
 marker_exists() { [[ -f "${MARKER_DIR}/.${1}" ]]; }
 marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
+marker_clear()  { rm -f "${MARKER_DIR}/.${1}"; }
 
 # ADR-055: the canonical on-disk roots are branded /var/lib/insula + /etc/insula.
 # The historical generic roots become back-compat SYMLINKS into the branded ones,
@@ -3155,6 +3166,23 @@ seed_firewall_sets() {
     fi
     log ""
   fi
+  # Every other peer the join target reported (verify_join_credentials). Only the
+  # --server node used to be admitted, so a server join hung whenever the etcd
+  # leader was another server: the leader could not reach this node's :2380.
+  for entry in "${JOIN_PEERS_V4[@]+"${JOIN_PEERS_V4[@]}"}"; do
+    if nft add element inet filter cluster_peers_v4 "{ ${entry} }" 2>/dev/null; then
+      log "  + cluster_peers_v4 ${entry} (cluster peer, reported by the join target)"
+    else
+      warn "  failed to seed cluster_peers_v4 ${entry}; check nft set declaration"
+    fi
+  done
+  for entry in "${JOIN_PEERS_V6[@]+"${JOIN_PEERS_V6[@]}"}"; do
+    if nft add element inet filter cluster_peers_v6 "{ ${entry} }" 2>/dev/null; then
+      log "  + cluster_peers_v6 ${entry} (cluster peer, reported by the join target)"
+    else
+      warn "  failed to seed cluster_peers_v6 ${entry}; check nft set declaration"
+    fi
+  done
   # Pre-enroll peers from --pre-enroll-peer flag (first-server bootstrap
   # path — operator passes joining-node IPs ahead of time so the
   # cluster_peers_v{4,6} sets are populated before the joining bootstraps
@@ -4015,6 +4043,7 @@ EOF
 }
 
 install_k3s() {
+  [[ "$BOOTSTRAP_MODE" == "join" ]] && clear_unfinished_join
   if command -v k3s &>/dev/null; then
     local installed
     # k3s --version output is two lines:
@@ -4050,11 +4079,16 @@ install_k3s() {
 
   # Reached only when k3s is absent or being upgraded; absent = a fresh node.
   command -v k3s &>/dev/null || K3S_FRESH_INSTALL=true
+  # Until the join finishes, a re-run must know this install is unfinished
+  # (clear_unfinished_join) — whatever stops this run: a failure, Ctrl-C, SSH.
+  [[ "$BOOTSTRAP_MODE" == "join" && "$K3S_FRESH_INSTALL" == true ]] && marker_set join-in-progress
+  JOIN_STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
   if [[ "$NODE_ROLE" == "server" ]]; then
     install_k3s_server
   else
     install_k3s_worker
   fi
+  marker_clear join-in-progress
 }
 
 # Resolve the host's IP that falls inside CLUSTER_NETWORK_CIDR. Used to
@@ -4813,15 +4847,13 @@ install_k3s_server() {
     install_rc=$?
     set -e
     if [[ $install_rc -ne 0 ]]; then
-      log "  k3s installer first-start failed (rc=${install_rc}). This is expected when joining a"
-      log "  cluster whose existing peers have not yet pre-enrolled this node's IP. systemd will"
-      log "  auto-retry k3s.service every ~5s; if peer-firewall is the cause, run on an existing"
-      log "  cluster peer:"
-      local self_v4
-      self_v4=$(detect_local_ipv4 || true)
-      [[ -n "$self_v4" ]] && log "    /usr/local/bin/peer-firewall-add ${self_v4}"
-      log "  Polling for k3s API readiness up to 600 seconds (10 min) — bootstrap will resume"
-      log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
+      # The preflight already proved the target answers and accepts the token, so
+      # this is not "peers have not pre-enrolled you" — show what k3s says.
+      log "  k3s has not finished starting yet (rc=${install_rc}); systemd retries every ~5 s."
+      log "  Latest k3s errors on this host:"
+      k3s_journal_errors k3s 5 | sed 's/^/    /'
+      log "  Waiting up to 600 seconds (10 min). Ctrl-C is safe: re-running the same command"
+      log "  first cleans up this unfinished join."
     fi
   else
     assert_k3s_installer_pin
@@ -4862,9 +4894,100 @@ install_k3s_server() {
       log "k3s API server is ready."
       return 0
     fi
+    # Every minute of a join wait, say what k3s is stuck on instead of going quiet.
+    if [[ "$is_joining_server" == true ]] && (( _attempt % 30 == 0 )); then
+      log "  still waiting ($((_attempt * 2))s) — latest k3s error: $(k3s_journal_errors k3s 1 | tail -1)"
+    fi
     sleep 2
   done
-  error "k3s API server did not become ready within $((poll_attempts * 2)) seconds. If joining, ensure /usr/local/bin/peer-firewall-add <THIS_NODE_IP> ran on an existing cluster peer. journalctl -u k3s -n 50 for details."
+  if [[ "$is_joining_server" == true ]]; then
+    fail_join "k3s did not join the cluster within $((poll_attempts * 2)) seconds"
+  fi
+  error "k3s API server did not become ready within $((poll_attempts * 2)) seconds. journalctl -u k3s -n 50 for details."
+}
+
+# k3s_journal_errors <unit> <n> — the last <n> warning/error lines of a k3s unit,
+# message text only (k3s logs never carry the token). Prints nothing on a host
+# without journald.
+k3s_journal_errors() {
+  local since=()
+  # Only this attempt's lines: a host that failed before still has the old ones.
+  [[ -n "${JOIN_STARTED_AT:-}" ]] && since=(--since "$JOIN_STARTED_AT")
+  journalctl -u "$1" --no-pager -n 400 ${since[@]+"${since[@]}"} 2>/dev/null \
+    | grep -E 'level=(error|fatal|warning)|Error|failed' \
+    | sed -E 's/^.*level=[a-z]+ msg="?//; s/"$//' \
+    | tail -n "$2" || true
+}
+
+# fail_join <reason> — a join that installed k3s but did not finish. Shows what
+# k3s said and, when it is safe, removes the k3s THIS run installed so re-running
+# the same command starts clean (a leftover install would keep its old token and
+# flags: a re-run skips the install when the version already matches). Never
+# removes an install this run did not make, nor a server whose etcd already
+# started — the cluster may list it as a member, and uninstalling would leave
+# that member behind and block every later join of this node.
+fail_join() {
+  local reason="$1" unit=k3s uninstall="${K3S_BIN_DIR:-/usr/local/bin}/k3s-uninstall.sh"
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    unit=k3s-agent; uninstall="${K3S_BIN_DIR:-/usr/local/bin}/k3s-agent-uninstall.sh"
+  fi
+  log "Last k3s errors on this host:"
+  k3s_journal_errors "$unit" 15 | sed 's/^/    /'
+  if [[ "$K3S_FRESH_INSTALL" != true ]]; then
+    error "${reason}. k3s was installed before this run, so it is left in place. journalctl -u ${unit} -n 100 for details."
+  fi
+  if [[ "$NODE_ROLE" == "worker" ]] && kubelet_ran_pods; then
+    error "${reason}. This worker's kubelet already ran pods, so it is a registered node — k3s-agent is left in place. Fix the cause above, or delete the node on a server (kubectl delete node ${K8S_NODE_NAME:-<this node>}) and then run ${uninstall} here."
+  fi
+  if [[ "$NODE_ROLE" == "server" && -d "${K3S_DATA_DIR:-/var/lib/rancher/k3s}/server/db/etcd/member" ]]; then
+    error "${reason}. This server's etcd has already started, so the cluster may list it as an etcd member — k3s is left in place (systemd keeps retrying). Fix the cause above, or remove this node's etcd member on an existing server and then run ${uninstall} here: docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\"."
+  fi
+  log "Removing the k3s this run installed, so the next attempt starts clean..."
+  if ! "$uninstall" >/dev/null 2>&1; then
+    error "${reason}. Removing k3s again failed — run ${uninstall} by hand before re-running."
+  fi
+  marker_clear join-in-progress
+  error "${reason}. k3s was removed again, so re-running the same command starts clean. Fix the cause above first."
+}
+
+# kubelet_ran_pods — the kubelet on this host has run pods: the node registered
+# and became Ready at some point, so it may carry workloads.
+kubelet_ran_pods() {
+  [[ -n "$(ls -A "${KUBELET_DIR:-/var/lib/kubelet}/pods" 2>/dev/null)" ]]
+}
+
+# clear_unfinished_join — runs before install_k3s on a join. A previous join on
+# this host that never finished (Ctrl-C, a dropped SSH session, or a failure that
+# could not be undone) left k3s installed with ITS token and flags, and the
+# version check below would skip the install and keep them. Undo it when nothing
+# of it can be in the cluster yet.
+clear_unfinished_join() {
+  local unit=k3s uninstall="${K3S_BIN_DIR:-/usr/local/bin}/k3s-uninstall.sh" state
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    unit=k3s-agent; uninstall="${K3S_BIN_DIR:-/usr/local/bin}/k3s-agent-uninstall.sh"
+  fi
+  [[ -x "$uninstall" ]] || { marker_clear join-in-progress; return 0; }
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  # Running: either a finished join (re-converge it) or not ours to judge.
+  [[ "$state" == "active" ]] && { marker_clear join-in-progress; return 0; }
+  if ! marker_exists join-in-progress; then
+    # Installed but not running, and no record of a join this tool started: a
+    # leftover from an older CLI, or a joined node whose k3s is down. Neither is
+    # safe to remove blindly — and silently keeping it would re-use its old token.
+    marker_exists bootstrap-complete && return 0
+    error "k3s is installed on this host but ${unit} is not running (${state:-unknown}), and nothing records a finished join.
+If this host never joined the cluster (an earlier attempt failed), remove it — ${uninstall} — and re-run.
+If it did join, start ${unit} and check journalctl -u ${unit} instead."
+  fi
+  if [[ "$NODE_ROLE" == "worker" ]] && kubelet_ran_pods; then
+    error "An earlier join on this host did not finish, but its kubelet ran pods afterwards — it is a registered node whose k3s-agent is now ${state:-down}. Start k3s-agent and check journalctl -u k3s-agent, or delete the node on a server (kubectl delete node ${K8S_NODE_NAME:-<this node>}) and then run ${uninstall} here."
+  fi
+  if [[ "$NODE_ROLE" == "server" && -d "${K3S_DATA_DIR:-/var/lib/rancher/k3s}/server/db/etcd/member" ]]; then
+    error "An earlier join on this host did not finish, and its etcd had already started, so the cluster may list this node as an etcd member. Remove that member on an existing server first, then run ${uninstall} here and re-run: docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\"."
+  fi
+  log "An earlier join on this host did not finish — removing its k3s so this run installs with the current token and flags..."
+  "$uninstall" >/dev/null 2>&1 || error "Removing the unfinished k3s install failed — run ${uninstall} by hand, then re-run."
+  marker_clear join-in-progress
 }
 
 install_k3s_worker() {
@@ -4954,13 +5077,12 @@ install_k3s_worker() {
   install_rc=$?
   set -e
   if [[ $install_rc -ne 0 ]]; then
-    log "  k3s-agent installer first-start failed (rc=${install_rc}). This is expected when joining"
-    log "  a cluster whose existing peers have not yet pre-enrolled this worker's IP. systemd"
-    log "  will auto-retry k3s-agent.service every ~5s. To unblock, run on an existing cluster peer:"
-    local self_v4
-    self_v4=$(detect_local_ipv4 || true)
-    [[ -n "$self_v4" ]] && log "    /usr/local/bin/peer-firewall-add ${self_v4}"
-    log "  Polling for k3s-agent up to 600 seconds (10 min)..."
+    # The preflight already proved the target answers and accepts the token.
+    log "  k3s-agent has not finished starting yet (rc=${install_rc}); systemd retries every ~5 s."
+    log "  Latest k3s-agent errors on this host:"
+    k3s_journal_errors k3s-agent 5 | sed 's/^/    /'
+    log "  Waiting up to 600 seconds (10 min). Ctrl-C is safe: re-running the same command"
+    log "  first cleans up this unfinished join."
   fi
 
   log "Waiting for k3s agent to register (up to 600s)..."
@@ -4970,9 +5092,12 @@ install_k3s_worker() {
       log "k3s agent is running."
       return 0
     fi
+    if (( _attempt % 30 == 0 )); then
+      log "  still waiting ($((_attempt * 2))s) — latest k3s-agent error: $(k3s_journal_errors k3s-agent 1 | tail -1)"
+    fi
     sleep 2
   done
-  error "k3s agent did not start within 600 seconds. If joining, ensure /usr/local/bin/peer-firewall-add <THIS_NODE_IP> ran on an existing cluster peer. journalctl -u k3s-agent -n 50 for details."
+  fail_join "k3s-agent did not join the cluster within 600 seconds"
 }
 
 # detect_calico_mtu — pick the right Calico pod-network MTU.
@@ -11453,6 +11578,138 @@ Copy the token from /var/lib/rancher/k3s/server/node-token on a server of the cl
   else
     ui_warn "--token is not in the K10<ca-hash>:: format — cannot verify before joining that it belongs to ${K3S_SERVER_IP}'s cluster"
   fi
+  verify_join_credentials "$ca_file"
+}
+
+# join_auth_header — the Authorization header k3s itself sends for K3S_TOKEN: a
+# kubeadm-style bootstrap token <id>.<secret> goes as Bearer; anything else is
+# basic auth with the token's password and a user k3s FORCES by role, whatever
+# the token says (clientaccess.WithUser — "server" in cluster/bootstrap.go,
+# "node" in agent/run.go). So a worker joining with the server token
+# (K10…::server:<pw>) authenticates as node:<pw>, accepted while the agent
+# token equals the server token (k3s's default). Printed on stdout only, for
+# `curl -H @-`, so the secret never reaches a command line.
+join_auth_header() {
+  local creds="$K3S_TOKEN" user pass
+  [[ "$creds" =~ ^K10[0-9a-f]*:: ]] && creds="${creds#*::}"
+  if [[ "$creds" =~ ^[a-z0-9]{6}\.[a-z0-9]{16}$ ]]; then
+    printf 'Authorization: Bearer %s\n' "$creds"
+    return 0
+  fi
+  if [[ "$creds" == *:* ]]; then pass="${creds#*:}"; else pass="$creds"; fi
+  if [[ "$NODE_ROLE" == "server" ]]; then user=server; else user=node; fi
+  printf 'Authorization: Basic %s\n' "$(printf '%s:%s' "$user" "$pass" | base64 | tr -d '\n')"
+}
+
+# verify_join_credentials <ca_file> — the CA hash only proves the token names
+# THIS cluster; its secret is checked here, on the endpoint k3s itself calls next,
+# so a wrong, stale or wrong-role token stops the run before anything changes
+# (before, it surfaced only as a k3s retry loop after the install). The answer
+# also lists the peers seed_firewall_sets must admit:
+#   server  GET /db/info — the etcd members (k3s:server role only)
+#   worker  GET /v1-k3s/apiservers — every API server (agent/bootstrap roles)
+# On a host with no etcd data of its own it also refuses a server join that k3s
+# would refuse after installing ("duplicate node name"): a member that already
+# STARTED under this node's name or one of its addresses — an earlier attempt
+# that got that far before this host was wiped, or the old member of a replaced
+# VPS. A member that never started is fine: k3s takes it over. A host that has
+# its own etcd data is that member (a re-run on a joined server) and is left to
+# install_k3s.
+verify_join_credentials() {
+  local ca_file="$1" path resp code body self_v4 self_v6 local_addrs fresh=true
+  local host learner name id prefix
+  if [[ "$NODE_ROLE" == "server" ]]; then path="/db/info"; else path="/v1-k3s/apiservers"; fi
+  ensure_python3 || error "python3 is needed to read the cluster's peers from ${K3S_SERVER_IP}, and it could not be installed. Install python3, then re-run.
+Nothing on this host has been changed."
+  # Body and status in one capture, no temp file: the status is the last line.
+  resp="$(join_auth_header | curl -sS --max-time 10 --cacert "$ca_file" -H @- -w '\n%{http_code}' \
+            "https://${K3S_SERVER_IP}:6443${path}" 2>/dev/null)" || true
+  code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+  [[ "$resp" == *$'\n'* ]] || body=""
+  case "${code:-000}" in
+    200) ;;
+    401|403)
+      if [[ "$NODE_ROLE" == "server" ]]; then
+        error "${K3S_SERVER_IP} does not accept --token as a SERVER token (HTTP ${code}). It names the right cluster, but its secret is wrong, or it is the worker (agent) token.
+Copy it from /var/lib/rancher/k3s/server/token on any server of this cluster (every server holds the same one), then re-run.
+Nothing on this host has been changed."
+      fi
+      error "${K3S_SERVER_IP} does not accept --token (HTTP ${code}): it is wrong, expired or revoked. A token from the admin panel expires 2 h after the command was generated and is revoked with its pre-enrolment — generate a fresh join command, then re-run.
+Nothing on this host has been changed."
+      ;;
+    *)
+      error "Could not check --token with ${K3S_SERVER_IP} (HTTP ${code:-000}${body:+: ${body:0:200}}). The join target answers but cannot confirm the token now — check it (journalctl -u k3s on ${K3S_SERVER_IP}) or join through another server.
+Nothing on this host has been changed."
+      ;;
+  esac
+  ui_ok "join target ${K3S_SERVER_IP} accepts --token as a ${NODE_ROLE} token"
+
+  self_v4="$(detect_local_ipv4 2>/dev/null || true)"
+  self_v6="$(detect_local_ipv6 2>/dev/null || true)"
+  local_addrs=" $(hostname -I 2>/dev/null || true) ${self_v4} ${self_v6} "
+  [[ -d "${K3S_DATA_DIR:-/var/lib/rancher/k3s}/server/db/etcd/member" ]] && fresh=false
+  JOIN_PEERS_V4=(); JOIN_PEERS_V6=()
+  # One "host learner name id" line per peer. Hosts are validated as bare IPs
+  # before they reach nft; anything else from the wire is ignored.
+  while read -r host learner name id; do
+    [[ -n "$host" ]] || continue
+    prefix=""
+    [[ "$name" =~ ^(.+)-[0-9a-f]{8}$ ]] && prefix="${BASH_REMATCH[1]}"
+    if [[ "$NODE_ROLE" == "server" && "$fresh" == true && "$name" != "-" ]] \
+       && [[ "$local_addrs" == *" ${host} "* || ( -n "$prefix" && "$prefix" == "$K8S_NODE_NAME" ) ]]; then
+      error "The cluster already lists etcd member ${name} (${host})$([[ "$learner" == true ]] && printf ', a learner') for this node, from an earlier join that started etcd — but this host has no etcd data. k3s would refuse to join again (\"duplicate node name\").
+Remove that member on an existing server first (member ID ${id}): docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\". Then re-run.
+Nothing on this host has been changed."
+    fi
+    if [[ "$local_addrs" == *" ${host} "* ]]; then
+      [[ "$name" == "-" ]] && log "  the cluster lists this host as an etcd member that never started (an earlier attempt); k3s takes it over"
+      continue
+    fi
+    if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      JOIN_PEERS_V4+=("$host")
+    elif [[ "$host" =~ ^[0-9a-fA-F:]+$ && "$host" == *:* ]]; then
+      JOIN_PEERS_V6+=("$host")
+    fi
+  done < <(join_peers_from "$body")
+  local peers="${JOIN_PEERS_V4[*]} ${JOIN_PEERS_V6[*]}"
+  peers="$(xargs <<<"$peers")"
+  if [[ -n "$peers" ]]; then
+    ui_ok "cluster peers this node admits before k3s starts: ${peers}"
+  else
+    ui_warn "the join target listed no other peers to admit — only ${K3S_SERVER_IP} is admitted until this node's firewall reconciler runs"
+  fi
+}
+
+# join_peers_from <json> — "host learner name id" per peer from the preflight
+# answer: /db/info {"members":[{"ID":…,"name":…,"peerURLs":[…],"isLearner":…}]}
+# (an unstarted member has no name → "-") or /v1-k3s/apiservers ["ip:port",…].
+# Names are reduced to node-name characters: one line per peer, whatever the wire says.
+join_peers_from() {
+  python3 -c '
+import json, re, sys
+from urllib.parse import urlsplit
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict):
+    for m in d.get("members") or []:
+        for u in m.get("peerURLs") or []:
+            h = urlsplit(u).hostname
+            if h:
+                name = re.sub(r"[^a-z0-9.-]", "?", str(m.get("name") or "")) or "-"
+                try:
+                    mid = int(m.get("ID") or 0)
+                except (TypeError, ValueError):
+                    mid = 0
+                print(h, str(bool(m.get("isLearner"))).lower(), name, mid or "-")
+elif isinstance(d, list):
+    for a in d:
+        h = urlsplit("//" + str(a)).hostname
+        if h:
+            print(h, "false", "-", "-")
+' "$1" 2>/dev/null || true
 }
 
 # wait_for_local_node_ready — servers only (a worker has no kubeconfig).
@@ -11740,11 +11997,12 @@ main() {
   # Both checks run before ANYTHING on this host changes, so a wrong mode,
   # an unreachable join target or a token for another cluster costs nothing.
   guard_bootstrap_target
+  # This node's Kubernetes name — decided before anything that uses it (the
+  # join preflight compares it with the cluster's etcd members). Read-only.
+  resolve_k8s_node_name
   if [[ "$BOOTSTRAP_MODE" == "join" ]]; then
     run_join_preflight
   fi
-  # This node's Kubernetes name — decided before anything that uses it.
-  resolve_k8s_node_name
 
   # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
   # compat symlinks) BEFORE any phase writes markers/credentials into them.

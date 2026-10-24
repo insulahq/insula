@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **The join command lets you choose which server a new node joins through.** The panel used to
+  always target the first server by name. It now lists every server under **Joins via**, with
+  whether it is Ready, cordoned, and whether its API port answered just now, and defaults to one
+  that answered. So a server that just went down (it still reads Ready for about a minute) is no
+  longer the default. Pick another server and the steps are rendered for it. Any server works: they
+  all hold the same server token, and step 1 now says so.
+
+### Fixed
+
+- **A join checks the token before installing anything.** A token for the right cluster but with
+  the wrong secret, the worker token used for a server join, or an expired panel token passed the
+  old check, and then failed only as a k3s retry loop after k3s was installed. Bootstrap now asks
+  the join target to accept the token first, and stops with the reason and where the right token
+  is. Nothing on the host has changed at that point.
+- **A new server no longer hangs at `systemd: Starting k3s` when the etcd leader is another
+  server.** The joining node's firewall let in only the server it joined through, so the leader
+  could not reach the newcomer to bring its etcd up to date. Bootstrap now lets in every etcd member
+  (for a worker, every API server) that the join target lists, before k3s starts.
+- **A failed join no longer leaves k3s behind for you to uninstall.** When a join times out,
+  bootstrap shows k3s's last errors from that attempt and removes the k3s it installed in that run
+  (binary, service, config and data), so running the same command again starts clean. Before, a
+  re-run skipped the install and kept the old token. A join that was interrupted (Ctrl-C, a
+  dropped SSH session) is cleaned up by the next run. Two cases are left in place on purpose: a
+  server whose etcd already started, because the cluster may list it as a member, and a worker
+  whose kubelet already ran pods. Bootstrap then says so, and the multi-node runbook has the steps
+  to remove that member first.
+
 ## [2026.10.17] - 2026-10-24
 
 ### Added

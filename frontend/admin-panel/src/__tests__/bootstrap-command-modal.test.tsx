@@ -6,7 +6,8 @@ import { ApiError } from '../lib/api-client';
 const fetchBootstrapCommand = vi.fn();
 
 vi.mock('../hooks/use-cluster-network', () => ({
-  fetchBootstrapCommand: (name: string) => fetchBootstrapCommand(name),
+  fetchBootstrapCommand: (name: string, server?: string) =>
+    server === undefined ? fetchBootstrapCommand(name) : fetchBootstrapCommand(name, server),
 }));
 
 import BootstrapCommandModal from '../components/security/BootstrapCommandModal';
@@ -96,7 +97,7 @@ describe('BootstrapCommandModal', () => {
     expect(await screen.findByTestId('bootstrap-step-server-token')).toHaveTextContent(
       'cat /var/lib/rancher/k3s/server/node-token',
     );
-    expect(screen.getByText(/Step 1 — on an existing server \(198\.51\.100\.10\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Step 1 — on any existing server/)).toBeInTheDocument();
     expect(screen.getByText(/Steps 2–4 — on the new node/)).toBeInTheDocument();
     expect(screen.getByTestId('join-token-server')).toHaveTextContent('never shows that token');
     expect(screen.getByTestId('join-token-server')).toHaveTextContent('short-lived tokens can only join workers');
@@ -143,6 +144,71 @@ describe('BootstrapCommandModal', () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('one server: "Joins via" is a plain fact, no picker', async () => {
+    fetchBootstrapCommand.mockResolvedValue({
+      ...SERVER,
+      servers: [{ name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: true }],
+    });
+    render(<BootstrapCommandModal cppName="s2" onClose={vi.fn()} />);
+    await screen.findByTestId('bootstrap-step-server-token');
+    expect(screen.queryByTestId('join-target-select')).toBeNull();
+    expect(screen.getByText('198.51.100.10')).toBeInTheDocument();
+  });
+
+  it('several servers: pick another one and the steps are fetched for it', async () => {
+    const servers = [
+      { name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: false },
+      { name: 'sv2', ip: '198.51.100.11', ready: true, cordoned: false, answering: true },
+      { name: 'sv3', ip: '198.51.100.12', ready: false, cordoned: false, answering: null },
+    ];
+    fetchBootstrapCommand
+      .mockResolvedValueOnce({ ...SERVER, serverIp: '198.51.100.11', servers })
+      .mockResolvedValueOnce({
+        ...SERVER,
+        serverIp: '198.51.100.10',
+        servers,
+        bootstrapCommand: "insula bootstrap --join-as server --server '198.51.100.10'",
+        notes: ['Server sv1 (198.51.100.10) did not answer on its API port just now — … Pick another server …'],
+      });
+    render(<BootstrapCommandModal cppName="s4" onClose={vi.fn()} />);
+    const select = (await screen.findByTestId('join-target-select')) as HTMLSelectElement;
+    expect(fetchBootstrapCommand).toHaveBeenLastCalledWith('s4');
+    expect(select.value).toBe('198.51.100.11');
+    const options = Array.from(select.options);
+    expect(options.map((o) => o.textContent)).toEqual([
+      'sv1 (198.51.100.10) — not answering',
+      'sv2 (198.51.100.11)',
+      'sv3 (198.51.100.12) — not Ready',
+    ]);
+    expect(options[2]?.disabled).toBe(true);
+
+    fireEvent.change(select, { target: { value: '198.51.100.10' } });
+    await waitFor(() => expect(fetchBootstrapCommand).toHaveBeenLastCalledWith('s4', '198.51.100.10'));
+    await waitFor(() => expect((screen.getByTestId('join-target-select') as HTMLSelectElement).value).toBe('198.51.100.10'));
+    expect(screen.getByTestId('bootstrap-command-notes')).toHaveTextContent('Pick another server');
+  });
+
+  it('a refused pick shows the error, and picking the same server again retries', async () => {
+    const servers = [
+      { name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: true },
+      { name: 'sv2', ip: '198.51.100.11', ready: true, cordoned: false, answering: true },
+    ];
+    fetchBootstrapCommand
+      .mockResolvedValueOnce({ ...SERVER, servers })
+      .mockRejectedValueOnce(
+        new ApiError(409, 'JOIN_TARGET_NOT_READY', 'Server sv2 (198.51.100.11) is not Ready — pick another server.'),
+      )
+      .mockResolvedValueOnce({ ...SERVER, serverIp: '198.51.100.11', servers });
+    render(<BootstrapCommandModal cppName="s4" onClose={vi.fn()} />);
+    const select = await screen.findByTestId('join-target-select');
+    fireEvent.change(select, { target: { value: '198.51.100.11' } });
+    await waitFor(() => expect(screen.getByTestId('bootstrap-command-error')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('join-target-select'), { target: { value: '198.51.100.11' } });
+    await waitFor(() => expect(fetchBootstrapCommand).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByTestId('bootstrap-command-error')).toBeNull());
+    expect((screen.getByTestId('join-target-select') as HTMLSelectElement).value).toBe('198.51.100.11');
   });
 
   it('copies the whole script', async () => {
