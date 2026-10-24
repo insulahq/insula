@@ -6822,12 +6822,11 @@ install_longhorn() {
   helm_cmd repo add --force-update longhorn https://charts.longhorn.io 2>/dev/null || true
   helm_cmd repo update
 
-  # longhornUI.replicaCount=1 — the dashboard is operator-facing only
-  # and not on any client request path. The chart default is 2; on a
-  # 4-node staging cluster the second replica is ~30 MiB + scheduling
-  # overhead with no fault-tolerance benefit (no SLO on Longhorn UI
-  # uptime). Production overlays can override if dashboard HA is
-  # actually needed.
+  # longhornUI.replicas=1 and csi.*ReplicaCount=1 — the counts platform-api
+  # holds these at (system-pod-placement). The chart's defaults (UI 2, each
+  # CSI sidecar 3) all start on this server, the only one at install time,
+  # and sit there until platform-api's first pass. The dashboard is
+  # operator-facing only and on no client request path.
   #
   # guaranteedInstanceManagerCPU=8 (default 12) — each instance-manager
   # *reserves* this % of node CPU regardless of actual usage. At 12%,
@@ -6864,9 +6863,13 @@ install_longhorn() {
   #     combinations Longhorn has validated the policies on. Turning it on is
   #     a separate hardening step with additive policies for those callers.
   #   * longhornGlobalManager.tolerations — the new cluster-wide pod/PV
-  #     controller Deployment (three replicas, spread by preference) tolerates
-  #     the server-only taint like the rest of Longhorn, so it can run on a
-  #     server that opted out of tenant workloads.
+  #     controller Deployment tolerates the server-only taint like the rest of
+  #     Longhorn, so it can run on a server that opted out of tenant workloads.
+  #   * longhornGlobalManager.replicas=1 — it is leader-elected (one leader,
+  #     warm standbys). The chart's three replicas, spread only by preference,
+  #     all start on this server and never move when the others join.
+  #     platform-api scales it with the other leader-elect operators (two in
+  #     HA) and keeps one per server (system-pod-placement).
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -6880,7 +6883,11 @@ install_longhorn() {
     --set defaultSettings.guaranteedInstanceManagerCPU=8 \
     --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
     --set-string 'defaultSettings.taintToleration=insula.host/server-only=true:NoSchedule' \
-    --set longhornUI.replicaCount=1 \
+    --set longhornUI.replicas=1 \
+    --set csi.attacherReplicaCount=1 \
+    --set csi.provisionerReplicaCount=1 \
+    --set csi.resizerReplicaCount=1 \
+    --set csi.snapshotterReplicaCount=1 \
     --set 'longhornManager.resources.requests.cpu=50m' \
     --set 'longhornManager.resources.requests.memory=128Mi' \
     --set 'longhornDriver.resources.requests.cpu=50m' \
@@ -6888,6 +6895,7 @@ install_longhorn() {
     --set 'longhornUI.resources.requests.cpu=10m' \
     --set 'longhornUI.resources.requests.memory=64Mi' \
     --set networkPolicies.restrictInternalTraffic=false \
+    --set longhornGlobalManager.replicas=1 \
     --set 'longhornGlobalManager.tolerations[0].key=insula.host/server-only' \
     --set 'longhornGlobalManager.tolerations[0].operator=Exists' \
     --set 'longhornGlobalManager.tolerations[0].effect=NoSchedule' \

@@ -138,6 +138,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   rotation, a tenant gets a plain sentence; its raw error, which names internal hosts, goes to
   the log and to platform staff only. The unused Activate button and the admin panel's dead DKIM
   key hooks are gone.
+- **No server holds two replicas of the same service any more.** Replicas that started while
+  only one server was up stayed on it for good: on a fresh multi-server install, after a
+  full-cluster restart, or after a server was replaced. The scheduler never moves a running
+  pod, and several workloads had only a soft spread rule. Measured on a 3-server + worker lab
+  cluster: CrowdSec's 2 replicas, tenant-errors' 2 and all 3 of the Longhorn global manager's
+  sat on one server. On production, two of the three platform-database instances once shared
+  a server.
+  - **Hard one-per-server rules:** CrowdSec and tenant-errors now carry a hard (DoNotSchedule)
+    rule and run on servers, like the other system Deployments. A one-server cluster still runs
+    both copies there. The platform database's CNPG cluster uses `required` anti-affinity. This
+    rolls its instances once on upgrade, the primary last. A replacement for a down or cordoned
+    server waits for it instead of doubling up.
+  - **HA sizing:** HA never asks for more database instances or panel/API replicas than there
+    are servers. It used to ask for at least two, even with one server left.
+  - **Longhorn global manager:** it is leader-elected. It now starts at one replica, scales
+    with the other leader-elect operators (two in HA), runs on servers, and keeps one replica
+    per server. The Longhorn UI and CSI sidecars start at one replica, the count platform-api
+    already held them at. The UI key bootstrap set was never read.
+  - **Rebalance:** every 5 minutes platform-api moves one doubled-up replica of a platform
+    workload onto a node that holds none. It acts only when that workload is fully Ready, has a
+    hard rule, and mounts no PersistentVolumeClaim, and a Ready, schedulable node it fits on is
+    free. It leaves a moved workload alone for 30 minutes. It goes through the Eviction API, so
+    disruption budgets still apply. Tenant workloads are never touched.
+  - **Guard:** a test fails any multi-replica platform workload without a hard rule.
 
 ## [2026.10.16] - 2026-10-23
 

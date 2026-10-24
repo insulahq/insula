@@ -73,15 +73,23 @@ spec:
             items:
               - key: default.conf
                 path: default.conf
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: tenant-errors
+      # One replica per server, hard. Preferred anti-affinity put both on the
+      # first server back after a full-cluster restart and on the only server
+      # of a fresh install, and nothing moved them when the others came up.
+      # The system-node-affinity component pins it to servers, so only servers
+      # are spread domains: a one-server cluster still runs both (one domain,
+      # skew 0). Counted per rollout revision so a rolling update never waits
+      # on its own old pods. platform-api moves a doubled-up replica once a
+      # server has room (system-pod-placement).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: tenant-errors
 ---
 apiVersion: v1
 kind: Service

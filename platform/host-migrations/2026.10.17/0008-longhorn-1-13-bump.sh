@@ -14,9 +14,17 @@ set -euo pipefail
 #     one). V1 data engine only — nothing here uses dataEngine v2.
 #   - 1.13 moves the cluster-wide pod and PV controllers out of the
 #     longhorn-manager DaemonSet into a longhorn-global-manager Deployment
-#     (three replicas — about 22 MiB each — spread across nodes by
-#     preference). It gets the server-only toleration the rest of Longhorn
-#     has, so it can run on a server that opted out of tenant workloads.
+#     (one leader, the rest warm standbys; about 22 MiB each). It gets the
+#     server-only toleration the rest of Longhorn has, so it can run on a
+#     server that opted out of tenant workloads. The chart's three replicas,
+#     spread only by preference, stack on one server whenever they start
+#     before the others are up; it starts at one, and platform-api scales it
+#     with the other leader-elect operators (two in HA) and keeps one per
+#     server (system-pod-placement).
+#   - The Longhorn UI and the four CSI sidecars start at one replica, the
+#     count platform-api holds them at — the chart's two and three otherwise
+#     sit on one server until its next pass. (The UI key is `replicas`; the
+#     old `replicaCount` was never read.)
 #   - 1.13 turns on ingress NetworkPolicies for its internal endpoints by
 #     default; they would admit longhorn-manager :9500 only from
 #     longhorn-system, cutting off the VictoriaMetrics scrape and
@@ -228,9 +236,15 @@ echo "${MIG}: upgrading longhorn chart ${cur} (${status}) -> ${TARGET_CHART} (--
   --version "$TARGET_CHART" \
   --reset-then-reuse-values \
   --set networkPolicies.restrictInternalTraffic=false \
+  --set longhornGlobalManager.replicas=1 \
   --set 'longhornGlobalManager.tolerations[0].key=insula.host/server-only' \
   --set 'longhornGlobalManager.tolerations[0].operator=Exists' \
   --set 'longhornGlobalManager.tolerations[0].effect=NoSchedule' \
+  --set longhornUI.replicas=1 \
+  --set csi.attacherReplicaCount=1 \
+  --set csi.provisionerReplicaCount=1 \
+  --set csi.resizerReplicaCount=1 \
+  --set csi.snapshotterReplicaCount=1 \
   --timeout 180s
 
 confirm_rolled || exit 1
