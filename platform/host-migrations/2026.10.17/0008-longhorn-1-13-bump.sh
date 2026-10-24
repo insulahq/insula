@@ -156,8 +156,10 @@ esac
 # --- enough of this converge's 600s left? ---------------------------------------
 # Inside the host-config unit (its cgroup), measure how long this converge
 # has run; started late, a kill would land mid-roll. A manual run is not bounded.
+# Measured from the unit leaving `inactive` — where TimeoutStartSec starts
+# counting, before any ExecStartPre — not from the main process's start.
 if grep -q 'platform-ops-host-config.service' /proc/self/cgroup 2>/dev/null; then
-  start_us="$(systemctl show -p ExecMainStartTimestampMonotonic --value platform-ops-host-config.service 2>/dev/null || echo 0)"
+  start_us="$(systemctl show -p InactiveExitTimestampMonotonic --value platform-ops-host-config.service 2>/dev/null || echo 0)"
   now_s="$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)"
   case "$start_us" in ''|*[!0-9]*) start_us=0 ;; esac
   if [ "$start_us" -gt 0 ]; then
