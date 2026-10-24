@@ -2725,6 +2725,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const dnsResolverStop = startDnsResolverReconciler();
         app.addHook('onClose', () => dnsResolverStop());
 
+        // App-password limit reconciler: keeps Stalwart's per-account limit at
+        // 11 or more — 10 login passwords plus one "Open webmail" session.
+        // Stalwart's default of 5 (expired ones counted) left mailboxes unable
+        // to open webmail or take a new login password.
+        // See backend/src/modules/mail-admin/app-password-limit-reconciler.ts.
+        const { startAppPasswordLimitReconciler } = await import(
+          './modules/mail-admin/app-password-limit-reconciler.js'
+        );
+        const appPasswordLimitStop = startAppPasswordLimitReconciler();
+        app.addHook('onClose', () => appPasswordLimitStop());
+
         // Mail-task orphan reaper: mark stale 'running'
         // mail.migration / mail.port-exposure tasks as 'failed' on boot.
         // Without this, an orphaned task from a previous pod's

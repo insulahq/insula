@@ -138,6 +138,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   rotation, a tenant gets a plain sentence; its raw error, which names internal hosts, goes to
   the log and to platform staff only. The unused Activate button and the admin panel's dead DKIM
   key hooks are gone.
+- **A mailbox can have 10 login passwords, and "Open webmail" always has room.** The mail
+  server allowed 5 app passwords per mailbox, expired ones included, and every "Open webmail"
+  session is one: a mailbox with "Initial" and a few sessions could not open webmail or take a
+  new login password ("Mail server rejected the login password (overQuota)"). platform-api now
+  keeps the mail server's limit at 11 (it only raises it; a higher limit or none set by the
+  operator stays), and a mailbox may hold 10 login passwords, "Initial" included, so one webmail
+  session always fits. The list shows "N of 10 login passwords" and the New button stops at
+  ten. Creating one deletes the mailbox's expired passwords first, and the mail server's own
+  limit now reads as a sentence instead of "overQuota". Applied to existing installations by
+  platform-api within 10 minutes of the upgrade, no restart.
 - **Expired login passwords and ended webmail sessions are deleted.** The mail server refuses
   an expired login password but never deletes it, and "Open webmail" signs in with an 8-hour
   one that Bulwark deletes only when the user clicks Sign out. So every session that was closed

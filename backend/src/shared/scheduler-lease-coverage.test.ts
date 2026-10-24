@@ -203,6 +203,7 @@ const EVERY_REPLICA: Readonly<Record<string, readonly string[]>> = {
   'modules/ingress-nodes/reconciler.ts': ['writes only when the discovered address set changed, from the node list every replica reads'],
   'modules/mail-admin/imap-concurrency.ts': ['sets a fixed value, and only when the live one differs'],
   'modules/mail-admin/dns-resolver-reconciler.ts': ['sets a fixed value, and only when the live one differs; the settings reload it triggers is idempotent'],
+  'modules/mail-admin/app-password-limit-reconciler.ts': ['raises a fixed minimum, and only when the live value is lower; the settings reload it triggers is idempotent'],
   'modules/pod-prune/scheduler.ts': ['recomputes the prunable set each tick and deletes pods by name; notifies nobody'],
   'modules/tenant-snapshots/scheduler.ts': ['both deletes are idempotent — a snapshot already gone is tolerated'],
   'modules/metrics/usage-reaper-scheduler.ts': ['the fold replaces the daily row and commits together with the delete of its source rows'],

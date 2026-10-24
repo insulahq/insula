@@ -128,6 +128,13 @@ mailbox within the hour. The same goes for an app password with an expiry date
 created in the webmail's own settings. The earliest expiry date is tomorrow; leave it empty
 for a password that never expires.
 
+A mailbox can have up to **10** login passwords, the **Initial** one included;
+the list shows how many it has. Webmail sessions do not count: the mail server
+keeps room for one on top of the ten, so **Webmail** still opens on a mailbox
+whose login passwords are all used. A password made in the webmail's own
+settings takes that room, and a second webmail session opened while the ten
+are used waits until another one ends or is signed out.
+
 ## Mailing lists
 
 A **mailing list** (previously called "Aliases & Forwarding") is an address

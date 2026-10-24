@@ -136,7 +136,10 @@ describe('login-passwords/service: listLoginPasswords', () => {
 });
 
 describe('login-passwords/service: createLoginPassword', () => {
-  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-10-24T12:00:00Z'), toFake: ['Date'] }); });
+  beforeEach(() => {
+    vi.useFakeTimers({ now: new Date('2026-10-24T12:00:00Z'), toFake: ['Date'] });
+    jmap.appPasswordGet.mockResolvedValue([]);
+  });
   afterEach(() => { vi.useRealTimers(); });
 
   it('submits description/expiresAt/allowedIps-map and returns the one-time secret', async () => {
@@ -181,8 +184,82 @@ describe('login-passwords/service: createLoginPassword', () => {
     expect(jmap.appPasswordSet).toHaveBeenCalledTimes(1);
   });
 
-  it('502 when Stalwart returns no created entry / no secret', async () => {
+  const login = (id: string, expiresAt: string | null = null) => ({ id, description: `Device ${id}`, expiresAt });
+  const session = (id: string, expiresAt: string) => ({ id, description: `Support session 0b8f4c2e-7a1d-4e5b-9c3a-2f6d8e1b4a${id.padStart(2, '0')}`, expiresAt });
+  const created = { created: { n1: { id: 'new1', secret: 's' } } };
+  const destroyCalls = () => jmap.appPasswordSet.mock.calls.map((c) => c[0]).filter((a) => a.destroy);
+  const createCalls = () => jmap.appPasswordSet.mock.calls.map((c) => c[0]).filter((a) => a.create);
+
+  // The mail server keeps one app password free on top of the ten for an
+  // "Open webmail" session (mail-admin/app-password-limit-reconciler.ts).
+  it('refuses an eleventh login password', async () => {
+    jmap.appPasswordGet.mockResolvedValue(Array.from({ length: 10 }, (_, i) => login(`p${i}`)));
+    await expect(createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'One more' }))
+      .rejects.toMatchObject({ code: 'LOGIN_PASSWORD_LIMIT', status: 409, message: expect.stringMatching(/already has 10 login passwords/) });
+    expect(createCalls()).toEqual([]);
+  });
+
+  it('creates the tenth', async () => {
+    jmap.appPasswordGet.mockResolvedValue(Array.from({ length: 9 }, (_, i) => login(`p${i}`)));
+    jmap.appPasswordSet.mockResolvedValue(created);
+    await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Tenth' });
+    expect(createCalls()).toHaveLength(1);
+  });
+
+  it('does not count open webmail sessions', async () => {
+    jmap.appPasswordGet.mockResolvedValue([
+      ...Array.from({ length: 9 }, (_, i) => login(`p${i}`)),
+      session('1', '2026-10-24T18:00:00Z'),
+      session('2', '2026-10-24T19:00:00Z'),
+    ]);
+    jmap.appPasswordSet.mockResolvedValue(created);
+    await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Tenth' });
+    expect(createCalls()).toHaveLength(1);
+    expect(destroyCalls()).toEqual([]);
+  });
+
+  // An expired one no longer works and the reaper would delete it within the
+  // hour, but the mail server still counts it.
+  it('deletes expired passwords first and does not count them', async () => {
+    jmap.appPasswordGet.mockResolvedValue([
+      ...Array.from({ length: 8 }, (_, i) => login(`p${i}`)),
+      login('old1', '2026-10-01T00:00:00Z'),
+      login('old2', '2026-10-24T11:59:59Z'),
+      session('3', '2026-10-24T11:00:00Z'),
+      // Ended inside the grace: left to the reaper, as an open session might be.
+      session('4', '2026-10-24T11:58:00Z'),
+    ]);
+    jmap.appPasswordSet.mockImplementation(async (a: { create?: unknown; destroy?: string[] }) => (a.create ? created : { destroyed: a.destroy }));
+    await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Ninth' });
+    expect(destroyCalls()).toEqual([expect.objectContaining({ accountId: 'b', destroy: ['old1', 'old2', '3'] })]);
+    expect(createCalls()).toHaveLength(1);
+  });
+
+  // Best effort: an expired password is no login password any more, deleted
+  // or not, and the reaper retries the delete.
+  it('goes on when deleting the expired ones fails', async () => {
+    jmap.appPasswordGet.mockResolvedValue([
+      ...Array.from({ length: 9 }, (_, i) => login(`p${i}`)),
+      login('old1', '2026-10-01T00:00:00Z'),
+    ]);
+    jmap.appPasswordSet.mockImplementation(async (a: { create?: unknown }) => {
+      if (a.create) return created;
+      throw new Error('mail server busy');
+    });
+    await createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'Tenth' });
+    expect(createCalls()).toHaveLength(1);
+  });
+
+  // The mail server's own limit also counts open sessions and app passwords
+  // made in the webmail's settings: say so instead of "overQuota".
+  it('explains the mail server\'s own limit', async () => {
     jmap.appPasswordSet.mockResolvedValue({ created: {}, notCreated: { n1: { type: 'overQuota' } } });
+    await expect(createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'x' }))
+      .rejects.toMatchObject({ code: 'LOGIN_PASSWORD_LIMIT', status: 409, message: expect.stringMatching(/open webmail sessions count too/) });
+  });
+
+  it('502 when Stalwart returns no created entry / no secret', async () => {
+    jmap.appPasswordSet.mockResolvedValue({ created: {}, notCreated: { n1: { type: 'invalidProperties' } } });
     await expect(createLoginPassword(dbWith([MB]), 't1', 'mb1', { label: 'x' }))
       .rejects.toMatchObject({ code: 'STALWART_API_ERROR', status: 502 });
   });

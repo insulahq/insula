@@ -23,11 +23,11 @@ import { mailboxes } from '../../db/schema.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { appPasswordGet, appPasswordSet, JmapError } from '../stalwart-jmap/client.js';
-import { isExpiredLoginPassword } from './service.js';
+import { isExpiredLoginPassword, SESSION_EXPIRY_GRACE_MS } from './service.js';
 
 export const REAPER_TICK_MS = 60 * 60 * 1000;
 const REAPER_INITIAL_DELAY_MS = 10 * 60 * 1000;
-export const GRACE_MS = 5 * 60 * 1000;
+export const GRACE_MS = SESSION_EXPIRY_GRACE_MS;
 /**
  * This many mailboxes in a row with no answer from the mail server means it is
  * down: stop instead of asking every other mailbox. An error the server

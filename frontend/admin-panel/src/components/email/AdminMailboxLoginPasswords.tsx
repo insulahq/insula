@@ -6,6 +6,7 @@ import {
   useAdminRevokeLoginPassword,
   type AdminCreateLoginPasswordResult,
 } from '@/hooks/use-email';
+import { MAX_LOGIN_PASSWORDS_PER_MAILBOX } from '@insula/api-contracts';
 import { formatTimestamp } from '@/lib/format-timestamp';
 
 const INPUT =
@@ -58,6 +59,9 @@ export function AdminMailboxLoginPasswordsModal({
   const [copied, setCopied] = useState(false);
 
   const rows = data?.data ?? [];
+  // Webmail sessions have room of their own on the mail server and do not count.
+  const loginCount = rows.filter((r) => r.kind === 'login').length;
+  const atLimit = loginCount >= MAX_LOGIN_PASSWORDS_PER_MAILBOX;
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -110,9 +114,17 @@ export function AdminMailboxLoginPasswordsModal({
           </p>
 
           {!showForm ? (
-            <button type="button" onClick={() => setShowForm(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600" data-testid="admin-new-login-password">
-              <Plus size={14} /> New login password
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="button" onClick={() => setShowForm(true)} disabled={atLimit} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50" data-testid="admin-new-login-password">
+                <Plus size={14} /> New login password
+              </button>
+              {!isLoading && (
+                <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="admin-login-password-count">
+                  {loginCount} of {MAX_LOGIN_PASSWORDS_PER_MAILBOX} login passwords
+                  {atLimit && ' — the most a mailbox can have. Revoke one to create another.'}
+                </span>
+              )}
+            </div>
           ) : (
             <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
               <div>

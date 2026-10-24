@@ -12,6 +12,8 @@ const rows: LoginPassword[] = [
   { id: 'p1', label: 'iPhone', kind: 'login', createdAt: '2026-09-01T00:00:00Z', expiresAt: null, allowedIps: [] },
   { id: 'w1', label: 'Webmail session', kind: 'webmail_session', createdAt: '2026-10-04T08:00:00Z', expiresAt: '2026-10-04T16:00:00Z', allowedIps: [] },
 ];
+const loginRow = (i: number): LoginPassword => ({ id: `l${i}`, label: `Device ${i}`, kind: 'login', createdAt: '2026-09-01T00:00:00Z', expiresAt: null, allowedIps: [] });
+const sessionRow = (i: number): LoginPassword => ({ id: `s${i}`, label: 'Webmail session', kind: 'webmail_session', createdAt: '2026-10-24T08:00:00Z', expiresAt: '2026-10-24T16:00:00Z', allowedIps: [] });
 
 const createMutate = vi.fn(async () => ({ data: { id: 'n', label: 'Laptop', secret: 's', expiresAt: null, allowedIps: [] } }));
 
@@ -22,6 +24,7 @@ vi.mock('../hooks/use-email', () => ({
 }));
 
 const { MailboxLoginPasswordsModal } = await import('../components/MailboxLoginPasswords');
+const { useLoginPasswords } = await import('../hooks/use-email');
 
 describe('MailboxLoginPasswordsModal — webmail sessions', () => {
   it('explains a webmail session and offers to sign it out', () => {
@@ -66,5 +69,28 @@ describe('MailboxLoginPasswordsModal — webmail sessions', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// A mailbox holds at most 10 login passwords; the mail server keeps one more
+// app password free for an "Open webmail" session, which does not count.
+describe('MailboxLoginPasswordsModal — limit', () => {
+  const withRows = (list: LoginPassword[]) =>
+    vi.mocked(useLoginPasswords).mockReturnValue({ data: { data: list }, isLoading: false } as never);
+
+  it('counts login passwords but not webmail sessions', () => {
+    withRows([...Array.from({ length: 9 }, (_, i) => loginRow(i)), sessionRow(1), sessionRow(2)]);
+    render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+
+    expect(screen.getByTestId('login-password-count')).toHaveTextContent('9 of 10 login passwords');
+    expect(screen.getByTestId('new-login-password')).toBeEnabled();
+  });
+
+  it('stops at ten and says what to do', () => {
+    withRows([...Array.from({ length: 10 }, (_, i) => loginRow(i)), sessionRow(1)]);
+    render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+
+    expect(screen.getByTestId('login-password-count')).toHaveTextContent('10 of 10 login passwords — the most a mailbox can have. Revoke one to create another.');
+    expect(screen.getByTestId('new-login-password')).toBeDisabled();
   });
 });

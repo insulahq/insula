@@ -66,6 +66,12 @@ holds that. Consequences for the platform:
   leased) deletes them 5 minutes after they expire: ended sessions and login
   passwords a user gave an expiry date alike. One with no expiry is never
   touched.
+- Each session takes one of the mailbox's app passwords, and Stalwart caps
+  them per account (5 by default). platform-api keeps the cap at 11 or more
+  (`mail-admin/app-password-limit-reconciler.ts`) and lets a mailbox hold at
+  most 10 login passwords, so one session always fits. Concurrent sessions
+  beyond the free room fail with "Could not open the mailbox" until one ends
+  or is signed out. See ADR-049.
 - A used impersonation link is refused after a Bulwark restart (the replay
   store is in memory) — harmless, the link lives 30 s.
 

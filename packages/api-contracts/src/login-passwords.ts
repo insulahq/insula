@@ -23,6 +23,19 @@ import { z } from 'zod';
 export const WEBMAIL_SESSION_LABEL_PATTERN =
   /^Support session [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * How many login passwords a mailbox may hold: the ones a tenant or an admin
+ * creates (the mailbox's "Initial" one included). The mail server allows
+ * MAIL_SERVER_APP_PASSWORD_LIMIT — this plus WEBMAIL_SESSION_SLOTS — so an
+ * "Open webmail" session, which signs in with an app password of its own,
+ * still fits on a mailbox whose login passwords are all used.
+ */
+export const MAX_LOGIN_PASSWORDS_PER_MAILBOX = 10;
+/** App passwords kept free on every mailbox for "Open webmail" sessions. */
+export const WEBMAIL_SESSION_SLOTS = 1;
+/** Stalwart's `maxAppPasswords`, which platform-api keeps at least this high. */
+export const MAIL_SERVER_APP_PASSWORD_LIMIT = MAX_LOGIN_PASSWORDS_PER_MAILBOX + WEBMAIL_SESSION_SLOTS;
+
 // A label is required: it's the only way an operator can tell which
 // credential to revoke later (the secret is never shown again).
 export const createLoginPasswordSchema = z.object({
