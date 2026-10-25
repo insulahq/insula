@@ -79,8 +79,8 @@ gets through the host firewall.
 2. Paste the new node's public IP, pick its role (server/worker), and set a TTL.
    This creates a `ClusterPendingPeer` and opens the control-plane ports to
    that IP across every existing node within ~30 s.
-3. Click **Get bootstrap command** and run the rendered `insula bootstrap`
-   command on your workstation. You supply the join token from an existing server:
+3. Click **Get bootstrap command** and run the one line it renders on the new
+   node, as root. A server join asks for the join token from an existing server:
    ```bash
    cat /var/lib/rancher/k3s/server/node-token
    ```

@@ -144,6 +144,11 @@ COPY backend/docker-entrypoint.sh ./
 # from the committed key so it's always in lockstep with the image's release;
 # no ConfigMap to drift. Verification is pure Node crypto — no cosign binary.
 COPY platform/cosign.pub ./platform/cosign.pub
+# The node-join script the admin panel's join line fetches from GitHub and
+# pins by the SHA-256 of THIS copy (cluster-network/join-script.ts): the image
+# vouches for the script, the script carries the key above. build-deploy's
+# backend path filter lists both files, so a change rebuilds this image.
+COPY scripts/join-node.sh ./scripts/join-node.sh
 
 USER node
 EXPOSE 3000

@@ -12,8 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **`insula etcd members` and `insula etcd remove-learner`.** On any server, `insula etcd
+  members` lists the cluster's etcd members: ID, name, peer address, and whether each votes or is
+  still a learner. `insula etcd remove-learner <id>` removes a learner, which is what a server join
+  that never finished leaves behind. It refuses a voting member. Neither needs `etcdctl`, which k3s
+  does not ship.
+
 ### Changed
 
+- **The join command is one line.** The panel used to render a block of about twenty lines to
+  paste on the new node. It now renders one line. That line downloads `scripts/join-node.sh` from
+  GitHub, at the release (or, on DEV, the commit) the platform runs, and checks it against the
+  SHA-256 of the platform's own copy. Only then does it run the script, which downloads the CLI,
+  checks its signature against the cluster's release key and joins. As before, nothing GitHub
+  serves runs unverified. A server join still reads the token on an existing server first. The
+  line asks for it, hidden.
 - **The join command lets you choose which server a new node joins through.** The panel used to
   always target the first server by name. It now lists every server under **Joins via**, with
   whether it is Ready, cordoned, and whether its API port answered just now, and defaults to one
@@ -36,13 +51,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   bootstrap shows k3s's last errors from that attempt and removes the k3s it installed in that run
   (binary, service, config and data), so running the same command again starts clean. Before, a
   re-run skipped the install and kept the old token. A join that was interrupted (Ctrl-C, a
-  dropped SSH session) is cleaned up by the next run. Two cases are left in place on purpose: a
-  server whose etcd already started, because the cluster may list it as a member, and a worker
-  whose kubelet already ran pods. Bootstrap then says so, and the multi-node runbook has the steps
-  to remove that member first (with `etcdctl`: k3s's etcd has no HTTP API, and its leader does not
-  reliably evict a stalled member by itself). When a join hangs, bootstrap now shows the distinct
-  problems k3s reported in that attempt instead of raw etcd lines. When a joining server's etcd
-  cannot catch up, it also says why: the etcd leader cannot reach the node on port 2380.
+  dropped SSH session) is cleaned up by the next run. That includes a server whose etcd had
+  already started. The cluster lists such a server as an etcd learner, and k3s's leader never
+  removes it, so bootstrap removes it through an existing server first. A learner has no vote, so
+  this cannot affect quorum. Two cases are left in place on purpose: a server whose etcd member
+  already votes, and a worker whose kubelet already ran pods. Bootstrap also leaves the host in
+  place when no server's etcd answers, and says what to run. When a join hangs, bootstrap now shows
+  the distinct problems k3s reported in that attempt instead of raw etcd lines. When a joining
+  server's etcd cannot catch up, it also says why: the etcd leader cannot reach the node on port
+  2380.
+- **A server join is refused up front while another host's join is unfinished.** etcd admits one
+  learner at a time, so a second join used to fail only after k3s was installed. The preflight now
+  names that learner and gives the command that removes it. It also tests every etcd member's port
+  2380 and warns about any server that does not admit the new node yet.
 - **Removing a node now also removes its saved list of cluster peers.** The node-removal steps in
   the multi-node runbook left `/etc/nftables.d/10-cluster-peers.conf` on the host. Bootstrap loads
   that file again, so a reused host kept trusting its old cluster's servers on the etcd and API

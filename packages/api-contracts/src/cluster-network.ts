@@ -214,12 +214,17 @@ export type BootstrapCommandRequest = z.infer<typeof bootstrapCommandRequestSche
 export const bootstrapCommandResponseSchema = z.object({
   /** Ordered steps. `runOn: existing-server` steps come first. */
   steps: z.array(bootstrapStepSchema).min(1),
-  /** Every `new-node` step as ONE paste-safe block: a bash subshell that
-   *  stops at the first failure, so an unverified binary is never run. */
+  /** The one line to run on the new node: fetch scripts/join-node.sh, check
+   *  its SHA-256 (`joinScript`), run it — it verifies and installs the CLI,
+   *  then joins. Stops at the first failure. */
   script: z.string(),
-  /** The join step's command: the `insula bootstrap --join-as …` line (for
-   *  a node-token join, preceded by the hidden `read` of the token). */
+  /** The `insula bootstrap --join-as …` line join-node.sh runs, for a node
+   *  that already has this release's CLI (`<token>` for a server join). */
   bootstrapCommand: z.string(),
+  /** The script the line fetches: its URL (GitHub, at the commit or tag the
+   *  platform-api was built from) and the SHA-256 of the platform-api's own
+   *  copy. Optional so an older platform-api that omits it still satisfies the type. */
+  joinScript: z.object({ url: z.string().url(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
   /** The existing server the join targets (`--server`, an IPv4 InternalIP). */
   serverIp: z.string(),
   /** Every server the join could go through, `serverIp` among them. Optional

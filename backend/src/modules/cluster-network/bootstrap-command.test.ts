@@ -1,4 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   generateBootstrapCommand,
   serverJoinWarning,
@@ -15,8 +20,12 @@ const CA_BODY = Buffer.from(
     '-----END CERTIFICATE-----\n',
 );
 const CA_SHA256 = '6628fcd12aa9b89e8ca455d3dd92a0f5a00fb63cda48d708909fcefaeb07fa6c';
-const TEST_KEY_PEM =
-  '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdGVzdGtleXRlc3RrZXl0ZXN0a2V5\n-----END PUBLIC KEY-----\n';
+// The real script and key, as the Dockerfile bakes them into the image.
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const JOIN_NODE = join(REPO, 'scripts/join-node.sh');
+const COSIGN_PUB = join(REPO, 'platform/cosign.pub');
+const JOIN_NODE_SHA256 = createHash('sha256').update(readFileSync(JOIN_NODE)).digest('hex');
+const BASE_ENV = { PLATFORM_VERSION: '2026.10.2', JOIN_NODE_SCRIPT_PATH: JOIN_NODE, PLATFORM_COSIGN_PUB_PATH: COSIGN_PUB };
 const NOW = new Date('2026-10-01T12:00:00.000Z');
 
 interface FakeOpts {
@@ -88,11 +97,10 @@ function node(opts: {
 function deps(c: ClusterNetworkClients, extra: Partial<BootstrapCommandDeps> = {}): BootstrapCommandDeps {
   return {
     clients: c,
-    env: { PLATFORM_VERSION: '2026.10.2' },
+    env: BASE_ENV,
     now: () => NOW,
     fetchCaBundle: vi.fn().mockResolvedValue(CA_BODY),
     generateToken: () => ({ id: 'abcdef', secret: '0123456789abcdef' }),
-    releaseKeyPem: TEST_KEY_PEM,
     log: vi.fn(),
     // Every server's API port answers unless a test says otherwise — and no
     // test ever opens a real connection.
@@ -134,27 +142,64 @@ describe('generateBootstrapCommand — worker (minted bootstrap token)', () => {
     expect(r.notes).toEqual([]);
   });
 
-  it('runs every step on the NEW node: download → verify+install → join', async () => {
+  it('is ONE line on the new node: fetch join-node.sh, check its hash, run it for this release', async () => {
     const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
     const r = await generateBootstrapCommand('w3', {}, deps(c));
-    expect(r.steps.map((s) => s.id)).toEqual(['download', 'verify-install', 'join']);
-    expect(r.steps.every((s) => s.runOn === 'new-node')).toBe(true);
+    expect(r.steps.map((s) => [s.id, s.runOn])).toEqual([['join', 'new-node']]);
+    expect(r.script).toBe(r.steps[0]?.command);
+    expect(r.script).not.toContain('\n');
+    const url = 'https://raw.githubusercontent.com/insulahq/insula/v2026.10.2/scripts/join-node.sh';
+    expect(r.joinScript).toEqual({ url, sha256: JOIN_NODE_SHA256 });
+    expect(r.script).toBe(
+      `curl -fsSL --proto '=https' --proto-redir '=https' -o join-node.sh '${url}' ` +
+        `&& echo '${JOIN_NODE_SHA256}  join-node.sh' | sha256sum -c - ` +
+        `&& bash join-node.sh --release '2026.10.2' --join-as worker --server '198.51.100.10' ` +
+        `--token 'K10${CA_SHA256}::abcdef.0123456789abcdef'`,
+    );
     // Pinned to the cluster's release, never `latest`.
     expect(r.platformVersion).toBe('2026.10.2');
-    expect(r.script).toContain(
-      'https://github.com/insulahq/insula/releases/download/v2026.10.2/insula-linux-${INSULA_ARCH}"',
-    );
-    expect(r.script).toContain('insula-linux-${INSULA_ARCH}.sig"');
-    // The trust anchor is the cluster's pinned key, written inline.
-    expect(r.script).toContain(
-      "printf '%s\\n' '-----BEGIN PUBLIC KEY-----' 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdGVzdGtleXRlc3RrZXl0ZXN0a2V5' '-----END PUBLIC KEY-----' > cosign.pub",
-    );
-    expect(r.script).toContain('openssl dgst -sha256 -verify cosign.pub -signature insula.sig.der insula');
-    expect(r.script).toContain('install -m 0755 insula /usr/local/bin/insula');
-    // One paste-safe block: a subshell that stops on the first failure.
-    expect(r.script).toMatch(/\n\(\nset -eu\n/);
-    expect(r.script.trimEnd().endsWith(')')).toBe(true);
-    expect(r.script).toContain(r.bootstrapCommand);
+    expect(r.steps[0]?.note).toContain('join-node.sh: OK');
+  });
+
+  it("refuses to render without the image's own join-node.sh, before minting anything", async () => {
+    const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
+    const env = { ...BASE_ENV, JOIN_NODE_SCRIPT_PATH: '/nonexistent/join-node.sh' };
+    await expect(generateBootstrapCommand('w3', {}, deps(c, { env }))).rejects.toMatchObject({
+      code: 'JOIN_SCRIPT_UNAVAILABLE',
+      status: 503,
+    });
+    expect(c.createSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['verifies with another key', (src: string) => src.replace(/MFkw[^\n]*/, 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdGVzdGtleQ==')],
+    [
+      'carries the pinned key only in a comment, verifying with another',
+      (src: string) => {
+        const key = /RELEASE_KEY='([^']+)'/.exec(src)?.[1] ?? '';
+        const forged = src.replace(/MFkw[^\n]*/, 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdGVzdGtleQ==');
+        return forged.replace('set -euo pipefail', `set -euo pipefail\n: '\n${key}\n'`);
+      },
+    ],
+    ['assigns RELEASE_KEY twice', (src: string) => src.replace("BIN_DIR=", "RELEASE_KEY='x'\nBIN_DIR=")],
+  ])('refuses a join-node.sh that %s', async (_what, forge) => {
+    const dir = mkdtempSync(join(tmpdir(), 'join-node-'));
+    try {
+      const forged = join(dir, 'join-node.sh');
+      writeFileSync(forged, forge(readFileSync(JOIN_NODE, 'utf8')));
+      const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
+      await expect(
+        generateBootstrapCommand('w3', {}, deps(c, { env: { ...BASE_ENV, JOIN_NODE_SCRIPT_PATH: forged } })),
+      ).rejects.toMatchObject({ code: 'JOIN_SCRIPT_UNAVAILABLE' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses when the pinned release key itself is not readable', async () => {
+    const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
+    const env = { ...BASE_ENV, PLATFORM_COSIGN_PUB_PATH: '/nonexistent/cosign.pub' };
+    await expect(generateBootstrapCommand('w3', {}, deps(c, { env }))).rejects.toMatchObject({ code: 'JOIN_SCRIPT_UNAVAILABLE' });
   });
 
   it('falls back to the node-token flow when the cluster CA cannot be fetched (and mints nothing)', async () => {
@@ -188,8 +233,9 @@ describe('generateBootstrapCommand — worker (minted bootstrap token)', () => {
     });
     const r = await generateBootstrapCommand('w3', {}, deps(c));
     expect(r.joinToken.kind).toBe('node-token');
-    expect(r.bootstrapCommand).toContain('--token "$INSULA_JOIN_TOKEN"');
-    expect(r.bootstrapCommand).not.toContain('K10');
+    expect(r.bootstrapCommand).toContain('--token <token>');
+    expect(r.script).not.toContain('--token'); // join-node.sh asks for it
+    expect(r.script).not.toContain('K10');
   });
 });
 
@@ -205,22 +251,16 @@ describe('generateBootstrapCommand — server (cluster server token, never serve
     expect(r.joinToken).toEqual({ kind: 'node-token', tokenId: null, expiresAt: null });
     expect(r.steps.map((s) => [s.id, s.runOn])).toEqual([
       ['server-token', 'existing-server'],
-      ['download', 'new-node'],
-      ['verify-install', 'new-node'],
       ['join', 'new-node'],
     ]);
     expect(r.steps[0]?.command).toBe('cat /var/lib/rancher/k3s/server/node-token');
     expect(r.steps[0]?.title).toContain('198.51.100.10');
     expect(r.steps[0]?.title).toContain('any existing server');
     expect(r.steps[0]?.note).toContain('Every server holds the same token');
-    expect(r.bootstrapCommand).toContain("read -rsp 'Paste the server join token from step 1");
-    expect(r.bootstrapCommand).toContain(
-      `insula bootstrap --join-as server --server '198.51.100.10' --token "$INSULA_JOIN_TOKEN"`,
-    );
-    // The script holds only the NEW-node steps, numbered as in the UI.
-    expect(r.script).not.toContain('/var/lib/rancher/k3s/server/node-token');
-    expect(r.script).toContain('# Step 2/4');
-    expect(r.script).toContain('# Step 4/4');
+    expect(r.bootstrapCommand).toBe("insula bootstrap --join-as server --server '198.51.100.10' --token <token>");
+    // The line asks for the token instead of carrying it.
+    expect(r.script.endsWith("bash join-node.sh --release '2026.10.2' --join-as server --server '198.51.100.10'")).toBe(true);
+    expect(r.steps[1]?.note).toContain('asks for the token from step 1');
     expect(r.warning).toBeNull(); // 2 → 3 servers
   });
 
@@ -259,7 +299,8 @@ describe('generateBootstrapCommand — dual-stack detection', () => {
     });
     const r = await generateBootstrapCommand('w3', {}, deps(c));
     expect(r.dualStack).toBe(true);
-    expect(r.bootstrapCommand.endsWith(' --dual-stack')).toBe(true);
+    expect(r.bootstrapCommand).toContain(' --dual-stack --token ');
+    expect(r.script).toContain(' --dual-stack --token ');
     // Default v6 ranges are bootstrap.sh's own defaults: nothing extra to pass.
     expect(r.bootstrapCommand).not.toContain('--pod-cidr-v6');
     expect(r.bootstrapCommand).not.toContain('--service-cidr-v6');
@@ -334,20 +375,18 @@ describe('generateBootstrapCommand — join target and cluster facts', () => {
     expect(r.notes.join(' ')).toContain('pre-enrolled by an IPv6 address');
   });
 
-  it('marks a private-underlay cluster (ExternalIP ≠ InternalIP) with a comment, never a guessed CIDR', async () => {
+  it('tells a private-underlay cluster (ExternalIP ≠ InternalIP) to append the flag, never guessing the CIDR', async () => {
     const c = fakeClients({
       cpp: cpp('w3', '10.0.0.50', 'worker'),
       nodes: [node({ ip: '10.0.0.1', server: true, externalIp: '203.0.113.10' })],
     });
     const r = await generateBootstrapCommand('w3', {}, deps(c));
-    const join = r.steps.find((s) => s.id === 'join');
-    expect(join?.command).toContain('# to the insula bootstrap line below before running it.');
-    expect(join?.command).toContain('--cluster-network-cidr <cidr>');
+    const joinStep = r.steps.find((s) => s.id === 'join');
+    expect(joinStep?.note).toContain('Append the same --cluster-network-cidr <cidr>');
     // The flag itself is never emitted on the command line (its CIDR is unknown).
-    expect(r.bootstrapCommand.split('\n').filter((l) => !l.startsWith('#')).join('\n')).not.toContain(
-      '--cluster-network-cidr',
-    );
-    expect(r.notes.join(' ')).toContain('private network');
+    expect(r.script).not.toContain('--cluster-network-cidr');
+    expect(r.bootstrapCommand).not.toContain('--cluster-network-cidr');
+    expect(r.notes.join(' ')).toContain('to the end of the join line');
   });
 
   it('a public-underlay dual-stack server (ExternalIP = InternalIP) is not "private"', async () => {
@@ -487,35 +526,28 @@ describe('generateBootstrapCommand — release pinning', () => {
   it('refuses (before any write) when the cluster version is unknown', async () => {
     const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
     await expect(
-      generateBootstrapCommand('w3', {}, deps(c, { env: { PLATFORM_VERSION: 'unknown' } })),
+      generateBootstrapCommand('w3', {}, deps(c, { env: { ...BASE_ENV, PLATFORM_VERSION: 'unknown' } })),
     ).rejects.toMatchObject({ code: 'PLATFORM_VERSION_UNKNOWN', status: 503 });
     expect(c.createSecret).not.toHaveBeenCalled();
   });
 
-  it('maps a DEV build stamp to its release tag, honours a fork repo', async () => {
+  it("a DEV build: the script from the commit it was built from, the CLI of its release; honours a fork", async () => {
     const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
     const r = await generateBootstrapCommand(
       'w3',
       {},
-      deps(c, { env: { PLATFORM_VERSION: '2026.10.2-d847808', PLATFORM_RELEASES_REPO: 'example/fork' } }),
+      deps(c, { env: { ...BASE_ENV, PLATFORM_VERSION: '2026.10.2-d847808', PLATFORM_RELEASES_REPO: 'example/fork' } }),
     );
     expect(r.platformVersion).toBe('2026.10.2');
-    expect(r.script).toContain('https://github.com/example/fork/releases/download/v2026.10.2/');
+    expect(r.joinScript?.url).toBe('https://raw.githubusercontent.com/example/fork/d847808/scripts/join-node.sh');
+    expect(r.script).toContain("bash join-node.sh --release '2026.10.2' --repo 'example/fork' --join-as worker");
   });
 
   it('keeps an rc tag verbatim', async () => {
     const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
-    const r = await generateBootstrapCommand('w3', {}, deps(c, { env: { PLATFORM_VERSION: '2026.11.0-rc.2' } }));
-    expect(r.script).toContain('/releases/download/v2026.11.0-rc.2/');
-  });
-
-  it('without a pinned key, fetches cosign.pub from the SAME release tag', async () => {
-    const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
-    const r = await generateBootstrapCommand('w3', {}, deps(c, { releaseKeyPem: null }));
-    expect(r.script).toContain(
-      'curl -fsSL --proto-redir =https -o cosign.pub "https://raw.githubusercontent.com/insulahq/insula/v2026.10.2/platform/cosign.pub"',
-    );
-    expect(r.steps.find((s) => s.id === 'download')?.note).toContain('/etc/platform/cosign.pub');
+    const r = await generateBootstrapCommand('w3', {}, deps(c, { env: { ...BASE_ENV, PLATFORM_VERSION: '2026.11.0-rc.2' } }));
+    expect(r.joinScript?.url).toBe('https://raw.githubusercontent.com/insulahq/insula/v2026.11.0-rc.2/scripts/join-node.sh');
+    expect(r.script).toContain("--release '2026.11.0-rc.2'");
   });
 });
 

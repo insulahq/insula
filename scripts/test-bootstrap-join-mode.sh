@@ -38,6 +38,7 @@ for fn in resolve_bootstrap_mode k3s_unit_has guard_bootstrap_target run_join_pr
           join_auth_header verify_join_credentials join_peers_from ensure_python3 \
           k3s_journal_errors fail_join clear_unfinished_join kubelet_ran_pods seed_firewall_sets \
           remove_k3s_keeping_operator_files join_stuck_hint \
+          check_join_peer_ports join_peer_ports_closed insula_cli remove_own_etcd_learner \
           drop_existing_seed_once_objects stamp_host_migration_baseline kctl \
           warn_on_even_etcd_members; do
   fn_body "$fn" >> "$WORK/helpers.sh"
@@ -60,10 +61,11 @@ sleep()     { :; }
 detect_local_ipv4() { printf '%s\n' "${FAKE_SELF_V4:-192.0.2.9}"; }
 detect_local_ipv6() { printf '%s\n' "${FAKE_SELF_V6:-}"; }
 journalctl() { if [[ -n "${FAKE_JOURNAL:-}" ]]; then cat "$FAKE_JOURNAL"; else printf '%s\n' 'time="x" level=error msg="etcd: learner never caught up"'; fi; }
-systemctl() { [[ "$1" == is-active ]] && { echo "${FAKE_UNIT_STATE:-failed}"; [[ "${FAKE_UNIT_STATE:-failed}" == active ]]; return; }; return 0; }
+systemctl() { [[ "$1" == is-active ]] && { echo "${FAKE_UNIT_STATE:-failed}"; [[ "${FAKE_UNIT_STATE:-failed}" == active ]]; return; }; printf '%s\n' "$*" >> "${FAKE_SYSTEMCTL_LOG:-/dev/null}"; return 0; }
 hostname()  { [[ "${1:-}" == -I ]] && echo "${FAKE_HOST_ADDRS:-192.0.2.9 10.0.0.9}"; return 0; }
 nft()       { printf '%s\n' "$*" >> "${FAKE_NFT_LOG:-/dev/null}"; }
-timeout()   { return 0; }
+# A port probe "fails" for every address in FAKE_CLOSED_PEERS; all else succeeds.
+timeout()   { local p; for p in ${FAKE_CLOSED_PEERS:-}; do [[ "$*" == *"/dev/tcp/${p}/2380"* ]] && return 1; done; return 0; }
 STUB
 
 # run_mode <args…> — evaluate resolve_bootstrap_mode for a flag set.
@@ -266,7 +268,7 @@ JSON
 out=$(FAKE_BODY_FILE="$WORK/dbinfo-stale.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
 check "a started etcd member under this host's address, on a wiped host: refused up front" 1 "$rc"
 has "$out" "etcd member new-cccc (192.0.2.9), a learner" "…naming the member"
-has "$out" "member ID 4d" "…with the ID to remove, in hex as etcdctl lists it"
+has "$out" "insula etcd remove-learner 4d" "…with the command that removes it, ID in hex"
 out=$(FAKE_LOCAL_ETCD=1 FAKE_BODY_FILE="$WORK/dbinfo-stale.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
 check "re-running the join on a joined server (its own etcd data here): not refused" 0 "$rc"
 hasnt "$out" "Remove that member" "…and never told to remove its own healthy member"
@@ -276,7 +278,8 @@ cat > "$WORK/dbinfo-renamed.json" <<'JSON'
 JSON
 out=$(FAKE_BODY_FILE="$WORK/dbinfo-renamed.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
 check "a started member under this node's NAME at another address (replaced VPS): refused" 1 "$rc"
-has "$out" "etcd member newnode-0a1b2c3d (192.0.2.77)" "…naming it (k3s matches by name, not address)"
+has "$out" "etcd member newnode-0a1b2c3d (192.0.2.77), a VOTING member" "…naming it (k3s matches by name, not address)"
+has "$out" "Remove a node permanently" "…a voter is removed as a server, not as a learner"
 cat > "$WORK/dbinfo-private.json" <<'JSON'
 {"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://10.0.0.4:2380"]},{"ID":79,"name":"other-0a1b2c3d","peerURLs":["https://10.0.0.9:2380"]}]}
 JSON
@@ -298,6 +301,22 @@ out=$(FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" 
 check "worker bootstrap token accepted" 0 "$rc"
 check "bootstrap token goes as Bearer, like k3s" "Authorization: Bearer abcdef.0123456789abcdef" "$(cat "$WORK/auth.log")"
 has "$out" "PREFLIGHT_OK v4=[192.0.2.4 192.0.2.5] v6=[2001:db8::6]" "…learning every API server to admit"
+cat > "$WORK/dbinfo-other-learner.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://192.0.2.4:2380"]},{"ID":153,"peerURLs":["https://192.0.2.6:2380"],"isLearner":true}]}
+JSON
+out=$(FAKE_BODY_FILE="$WORK/dbinfo-other-learner.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "another host's unfinished server join (a learner) in the cluster: refused up front" 1 "$rc"
+has "$out" "etcd member 99 (never started, 192.0.2.6) is still a learner" "…naming it"
+has "$out" "insula etcd remove-learner 99" "…with the command that removes it"
+has "$out" "Nothing on this host has been changed" "…before anything changed"
+out=$(run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+has "$out" "every etcd member accepts this node on port 2380" "every member's :2380 answers: said so"
+out=$(FAKE_CLOSED_PEERS="192.0.2.5" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a member whose :2380 does not answer: the join goes on (it may be down)" 0 "$rc"
+has "$out" "UIWARN: etcd member(s) 192.0.2.5 do not accept a connection from this node on port 2380" "…with a warning naming it"
+has "$out" "firewall-reconciler" "…and what to check"
+out=$(FAKE_CLOSED_PEERS="192.0.2.4 192.0.2.5" FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::abcdef.0123456789abcdef" worker); rc=$?
+hasnt "$out" "2380" "a worker joins no etcd: no :2380 probe"
 out=$(FAKE_CODE=401 FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::abcdef.0123456789abcdef" worker); rc=$?
 check "expired worker token refused before anything is installed" 1 "$rc"
 has "$out" "expired or revoked" "…saying why"
@@ -364,6 +383,8 @@ run_cleanup() {
   done
   (
     NODE_ROLE="$role"; BOOTSTRAP_MODE=join; K3S_FRESH_INSTALL=false
+    K3S_SERVER_IP=192.0.2.4; JOIN_PEERS_V4=(192.0.2.5); JOIN_PEERS_V6=(2001:db8::5)
+    PLATFORM_OPS_SELF_BIN=""
     MARKER_DIR="$WORK/host/markers"; K3S_BIN_DIR="$WORK/host/bin"; K3S_DATA_DIR="$WORK/host/data"
     KUBELET_DIR="$WORK/host/kubelet"; K3S_CONFIG_DIR="$WORK/host/etc-k3s"
     for a in "$@"; do
@@ -373,6 +394,9 @@ run_cleanup() {
         pods-ran) mkdir -p "$KUBELET_DIR/pods/0f0e-pod" ;;
         mirrors) mkdir -p "$K3S_CONFIG_DIR"; printf 'mirrors:\n  docker.io:\n    endpoint: ["http://192.0.2.50:4000"]\n' > "$K3S_CONFIG_DIR/registries.yaml" ;;
         no-k3s) rm -f "$K3S_BIN_DIR"/*.sh ;;
+        etcd-certs) mkdir -p "$K3S_DATA_DIR/server/tls/etcd"; touch "$K3S_DATA_DIR/server/tls/etcd/server-client.key" ;;
+        cli) PLATFORM_OPS_SELF_BIN="$WORK/fake-insula/insula" ;;
+        node-cli) PLATFORM_OPS_SELF_BIN="$WORK/fake-node/node" ;;
         *=*) eval "${a%%=*}=\"\${a#*=}\""; export "${a%%=*}" ;;
       esac
     done
@@ -396,7 +420,7 @@ check "…and clearing the marker" "" "$(ls -A "$WORK/host/markers")"
 out=$(run_cleanup clear_unfinished_join worker marker:join-in-progress); rc=$?
 check "unfinished worker join: cleared with the agent uninstaller" "k3s-agent-uninstall.sh" "$(uninstalled)"
 out=$(run_cleanup clear_unfinished_join server marker:join-in-progress etcd-started); rc=$?
-check "unfinished join whose etcd started: refused" 1 "$rc"
+check "unfinished join whose etcd started, no insula CLI: refused" 1 "$rc"
 check "…never uninstalling (the cluster may list it as a member)" "" "$(uninstalled)"
 has "$out" "A server join that did not finish" "…pointing at the runbook"
 out=$(run_cleanup clear_unfinished_join server); rc=$?
@@ -414,8 +438,9 @@ has "$out" "removed again" "…saying a re-run starts clean"
 has "$out" "learner never caught up" "…after showing what k3s said"
 check "…marker cleared" "" "$(ls -A "$WORK/host/markers")"
 out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=true etcd-started); rc=$?
-check "failed join whose etcd started: k3s left in place" "" "$(uninstalled)"
-has "$out" "the cluster lists it as an etcd member" "…saying why"
+check "failed join whose etcd started, no insula CLI to ask etcd with: k3s left in place" "" "$(uninstalled)"
+has "$out" "could not be asked whether it still lists it" "…saying why"
+has "$out" "insula etcd remove-learner <ID>" "…and how to finish by hand"
 out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=true marker:join-in-progress no-k3s); rc=$?
 check "failed join that never got k3s installed: fatal" 1 "$rc"
 has "$out" "nothing to remove" "…saying so instead of 'removing k3s failed'"
@@ -429,6 +454,82 @@ check "unfinished worker join whose kubelet later ran pods: refused" 1 "$rc"
 check "…never uninstalling a node that may carry workloads" "" "$(uninstalled)"
 out=$(run_cleanup fail_join worker K3S_FRESH_INSTALL=true pods-ran); rc=$?
 check "failed worker join whose kubelet ran pods: the agent is left in place" "" "$(uninstalled)"
+# A fake insula CLI: logs its arguments, answers per endpoint (FAKE_CLI_RCS
+# "<endpoint>=<rc> …", else FAKE_CLI_RC) like `insula etcd remove-learner`.
+mkdir -p "$WORK/fake-insula" "$WORK/fake-node"
+cat > "$WORK/fake-insula/insula" <<'CLI'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CLI_LOG"
+ep=""; prev=""
+for a in "$@"; do [[ "$prev" == --endpoint ]] && ep="$a"; prev="$a"; done
+rc="${FAKE_CLI_RC:-0}"
+for kv in ${FAKE_CLI_RCS:-}; do [[ "${kv%=*}" == "$ep" ]] && rc="${kv##*=}"; done
+case "$rc" in
+  0) echo "removed etcd learner 4d (never started, https://192.0.2.9:2380)" ;;
+  3) echo "not removed: 4d (newnode-0a1b2c3d, https://192.0.2.9:2380) is a voting member — its etcd finished joining" ;;
+  4) echo "the cluster lists no etcd member at 192.0.2.9 — nothing to remove" ;;
+  *) echo "etcd remove-learner: connect ECONNREFUSED ${ep#https://}" >&2 ;;
+esac
+exit "$rc"
+CLI
+printf '#!/usr/bin/env bash\necho node-called >> "$FAKE_CLI_LOG"\nexit 9\n' > "$WORK/fake-node/node"
+chmod +x "$WORK/fake-insula/insula" "$WORK/fake-node/node"
+export FAKE_CLI_LOG="$WORK/cli.log"
+cli_calls() { cat "$FAKE_CLI_LOG" 2>/dev/null; }
+run_member() { rm -f "$FAKE_CLI_LOG"; run_cleanup "$@"; }
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true marker:join-in-progress etcd-started etcd-certs cli mirrors); rc=$?
+check "failed join whose etcd started: still fatal" 1 "$rc"
+has "$out" "removed etcd learner 4d" "…after removing this node's etcd learner"
+check "…through the join target's etcd, by this host's addresses, with the local client certificate" \
+  "etcd remove-learner --address 192.0.2.9 --address 10.0.0.9 --address 192.0.2.9 --endpoint https://192.0.2.4:2379 --tls-dir $WORK/host/data/server/tls/etcd" "$(cli_calls)"
+check "…then removes k3s, so a re-run starts clean" "k3s-uninstall.sh" "$(uninstalled)"
+has "$(cat "$WORK/host/etc-k3s/registries.yaml" 2>/dev/null)" 'http://192.0.2.50:4000' "…keeping registries.yaml"
+has "$out" "removed again" "…and says so"
+check "…marker cleared" "" "$(ls -A "$WORK/host/markers")"
+export FAKE_SYSTEMCTL_LOG="$WORK/systemctl.log"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active K8S_NODE_NAME=newnode run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "a still-running k3s is stopped before its learner is removed (no promotion mid-removal)" "stop k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+has "$(cli_calls)" "--name newnode" "…and the learner is also matched by this node's name"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active FAKE_CLI_RC=3 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "…and started again when the member turns out to vote" "stop k3s
+start --no-block k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active FAKE_CLI_RC=1 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "…or when no etcd could be asked (left as it was)" "stop k3s
+start --no-block k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+out=$(FAKE_CLI_RC=4 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "etcd started but the cluster never listed this node: k3s removed" "k3s-uninstall.sh" "$(uninstalled)"
+out=$(FAKE_CLI_RC=3 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "this node is a VOTING member (its etcd join finished): k3s left in place" "" "$(uninstalled)"
+has "$out" "did finish joining — it is a voting member" "…saying why"
+out=$(FAKE_CLI_RCS="https://192.0.2.4:2379=1" run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "the join target's etcd does not answer: asked through the next member" 2 "$(cli_calls | wc -l | tr -d ' ')"
+has "$(cli_calls | tail -1)" "--endpoint https://192.0.2.5:2379" "…the other server"
+check "…and k3s removed once that one answered" "k3s-uninstall.sh" "$(uninstalled)"
+out=$(FAKE_CLI_RC=1 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "no member's etcd answers: k3s left in place" "" "$(uninstalled)"
+has "$(cli_calls | tail -1)" "--endpoint https://[2001:db8::5]:2379" "…after trying every member, an IPv6 one bracketed"
+has "$out" "could not check: etcd remove-learner: connect ECONNREFUSED" "…showing why"
+has "$out" "insula etcd remove-learner <ID>" "…and how to finish by hand"
+out=$(FAKE_CLI_RC=2 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "a CLI without the etcd command: asked once, not per member" 1 "$(cli_calls | wc -l | tr -d ' ')"
+check "…k3s left in place" "" "$(uninstalled)"
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true etcd-started cli); rc=$?
+check "no etcd client certificate on the host: nothing asked" "" "$(cli_calls)"
+has "$out" "no insula CLI or etcd client certificate" "…saying so"
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs node-cli); rc=$?
+check "bootstrap run from a checkout (PLATFORM_OPS_SELF_BIN is node): node is never called" "" "$(cli_calls)"
+out=$(run_member clear_unfinished_join server marker:join-in-progress etcd-started etcd-certs cli); rc=$?
+check "re-run after a join that stopped once its etcd started: cleared" 0 "$rc"
+has "$out" "removed etcd learner 4d" "…removing the learner first"
+check "…then k3s" "k3s-uninstall.sh" "$(uninstalled)"
+check "…and the marker" "" "$(ls -A "$WORK/host/markers")"
+out=$(FAKE_CLI_RC=3 run_member clear_unfinished_join server marker:join-in-progress etcd-started etcd-certs cli); rc=$?
+check "re-run where this node already votes: refused" 1 "$rc"
+check "…never uninstalling" "" "$(uninstalled)"
+has "$out" "voting etcd member" "…saying why"
 
 echo "── drop_existing_seed_once_objects ──"
 if command -v yq >/dev/null 2>&1 && yq --version 2>/dev/null | grep -q mikefarah; then

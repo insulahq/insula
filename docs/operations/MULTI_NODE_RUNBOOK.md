@@ -63,16 +63,29 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   opens the firewall.
 - **Admin panel → *Get bootstrap command*** (`POST
   /api/v1/admin/cluster/bootstrap-command/<peer>`, super_admin, audited as
-  `cluster.bootstrap_command.generate`) renders the steps to run **on the new
-  node as root**, as one fail-closed paste block plus per-step copies:
-  download the cluster's own release of `insula`, verify it with `openssl`
-  against the cluster's pinned release key (embedded inline — not fetched from
-  GitHub), install it, then `insula bootstrap --join-as <role> --server
-  '<server-ipv4>' --token … [--dual-stack]`. `--dual-stack` (and any non-default
-  `--pod-cidr-v6`/`--service-cidr-v6`) comes from the `platform-cluster-cidrs`
-  ConfigMap, falling back to the Nodes' `podCIDRs`. A private-underlay cluster
-  (server ExternalIP ≠ InternalIP) gets a marked comment instead of a guessed
-  `--cluster-network-cidr` — the cluster does not record that CIDR.
+  `cluster.bootstrap_command.generate`) renders ONE line to run **on the new
+  node as root**:
+
+  ```bash
+  curl -fsSL --proto '=https' --proto-redir '=https' -o join-node.sh 'https://raw.githubusercontent.com/<repo>/<ref>/scripts/join-node.sh' \
+    && echo '<sha256>  join-node.sh' | sha256sum -c - \
+    && bash join-node.sh --release '<version>' --join-as <role> --server '<server-ipv4>' [--dual-stack] [--token '<worker token>']
+  ```
+
+  `<ref>` is the tag (or, on DEV, the commit) the platform-api was built from,
+  and `<sha256>` is the hash of the platform-api's own copy of
+  [`scripts/join-node.sh`](../../scripts/join-node.sh), baked into its image —
+  so GitHub cannot hand out a different script. The script downloads the
+  cluster's own release of `insula`, verifies it with `openssl` against the
+  release key written into the script (the key the cluster pins,
+  `platform/cosign.pub`), installs it, and runs `insula bootstrap --join-as
+  <role> --server '<server-ipv4>' --token …`. Without `--token` it asks for the
+  token (hidden input). Further flags go through to `insula bootstrap`.
+  `--dual-stack` (and any non-default `--pod-cidr-v6`/`--service-cidr-v6`) comes
+  from the `platform-cluster-cidrs` ConfigMap, falling back to the Nodes'
+  `podCIDRs`. On a private-underlay cluster (server ExternalIP ≠ InternalIP) the
+  panel tells you to append `--cluster-network-cidr <cidr>` instead of guessing
+  it — the cluster does not record that CIDR.
   - **Which server it joins through:** any Ready server works — every server
     holds the same server token, and the cluster forwards the new etcd member
     to its leader. The panel defaults to a Ready, uncordoned server whose API
@@ -100,7 +113,15 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   join, or an expired panel token. It asks the same endpoint k3s asks next:
   `/db/info` for a server (the etcd member list, server token only),
   `/v1-k3s/apiservers` for a worker. The token travels on stdin, never on a
-  command line.
+  command line. A server join is also refused while the cluster holds another
+  host's unfinished join (an etcd **learner**): etcd admits one learner at a
+  time, so the join would fail after installing k3s. Remove it with
+  `insula etcd remove-learner <id>` on an existing server, or wait if that
+  server is joining right now.
+- **A server join probes every etcd member's `:2380` first.** A member that
+  does not answer is a warning, not a stop — a server that is down is fine to
+  join around — but one that is up and still drops the new node has not applied
+  its pre-enrolment yet, and if it leads etcd, the join stalls.
 - **The new node admits every peer before k3s starts.** The answer above
   lists the cluster's etcd members (servers) or API servers (workers), and
   bootstrap adds them to the new node's own `cluster_peers` set next to the
@@ -114,12 +135,16 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   re-running the same command starts clean (a leftover install would keep its
   old token and flags: a re-run skips the install when the version matches). A
   run that is interrupted (Ctrl-C, dropped SSH) leaves a marker, and the next
-  run removes the unfinished install first. One exception, on purpose: once
-  the new server's etcd has started, the cluster may list it as a member, and
-  removing k3s would leave that member behind — see
-  [A server join that did not finish](#a-server-join-that-did-not-finish). The
-  same holds for a worker whose kubelet has already run pods: it is a
-  registered node, so bootstrap leaves its k3s-agent in place.
+  run removes the unfinished install first. When the new server's etcd had
+  already started, the cluster lists it as an etcd learner; bootstrap removes
+  that learner first (`insula etcd remove-learner --address <this host>`,
+  through an existing server's etcd, with the client certificate k3s wrote on
+  the new node), then k3s. A learner has no vote, so this cannot touch quorum.
+  Two cases stay in place on purpose: a server whose etcd member already votes
+  (its etcd join finished — fix what k3s reports), and a worker whose kubelet
+  has already run pods (a registered node). If no server's etcd can be asked,
+  bootstrap says so and leaves k3s in place — see
+  [A server join that did not finish](#a-server-join-that-did-not-finish).
 
 > **Dual-stack clusters: `--dual-stack` goes on EVERY node, not just the first.**
 > A node that registers only IPv4 cannot join a cluster whose `--cluster-cidr`
@@ -347,7 +372,7 @@ When an etcd quorum is at risk (2 of 3 servers healthy):
 3. If unrecoverable: remove the unhealthy member from etcd first:
 
 ```bash
-# On a healthy server:
+# On a healthy server (`insula etcd members` lists them too, no etcdctl needed):
 E=(etcdctl --endpoints=https://127.0.0.1:2379
    --cert=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt
    --key=/var/lib/rancher/k3s/server/tls/etcd/server-client.key
@@ -356,46 +381,50 @@ ETCDCTL_API=3 "${E[@]}" member list -w table
 ETCDCTL_API=3 "${E[@]}" member remove <unhealthy-member-id>   # the hex ID from the list
 ```
 
+`insula etcd` removes learners only, so removing a voting member stays
+etcdctl's job: k3s ships none, but any etcdctl 3.4+ works with k3s's etcd 3.6
+(Debian/Ubuntu `apt-get install etcd-client`; elsewhere the binary from an
+[etcd release](https://github.com/etcd-io/etcd/releases) tarball). k3s's etcd
+serves gRPC only — its HTTP gateway answers 415.
+
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
 replace the VPS, pre-enroll its IP, and run `insula bootstrap --join-as
 server --server <healthy-server-ip> --token …` to join a fresh etcd member.
 
 ### A server join that did not finish
 
-Bootstrap stops instead of cleaning up when a server join got far enough to
-start etcd on the new node, or when the preflight finds that the cluster
-already lists a started etcd member under the new node's name or one of its
-addresses while the node itself has no etcd data (an earlier attempt that was
-wiped, or the old member of a replaced VPS). k3s would refuse that join with
-`duplicate node name found`. The member must go first.
+A server join whose etcd started but never caught up leaves the new node in
+the cluster as an etcd **learner**. Bootstrap normally removes it itself (see
+*A failed join cleans up after itself* above). It cannot when no existing
+server's etcd answered, when the host has no `insula` CLI to ask with (a bare
+`scripts/bootstrap.sh` run), or when the host was wiped before a re-run (its
+etcd client certificate is gone). The preflight then refuses the next attempt
+— naming the member and its ID — because k3s would refuse it with
+`duplicate node name found`, and etcd admits only one learner at a time. Do not
+wait for k3s to evict the learner by itself: measured on lab staging, its
+leader kept retrying the promotion ("learner is not ready") for 30 minutes and
+never removed it. Deleting the Node does not help either when the learner never
+registered one.
 
 **First make sure it is not a healthy server's member.** On the new node,
 `systemctl is-active k3s` must not say `active`, and the node must not be
 `Ready` in `kubectl get nodes`. A re-run on a joined server is never refused
-this way — that host has its own etcd data — so if the node is up, stop: you
-would be removing a live member.
-
-k3s's embedded etcd serves gRPC only (its HTTP gateway answers 415), and k3s
-ships no `etcdctl`. Any etcdctl 3.4+ works with k3s's etcd 3.6: Debian/Ubuntu
-`apt-get install etcd-client`; elsewhere the `etcdctl` binary from an
-[etcd release](https://github.com/etcd-io/etcd/releases) tarball.
+this way — that host has its own etcd data — so if the node is up, stop.
 
 ```bash
-# On a healthy existing server:
-cd /var/lib/rancher/k3s/server/tls/etcd
-E=(etcdctl --endpoints=https://127.0.0.1:2379 --cacert=server-ca.crt --cert=server-client.crt --key=server-client.key)
-ETCDCTL_API=3 "${E[@]}" member list -w table
-# → the row whose PEER ADDRS carry the new node's IP; its ID is hex (bootstrap prints the same)
-ETCDCTL_API=3 "${E[@]}" member remove <member-id>
+# On a healthy existing server, as root:
+insula etcd members
+# → the row whose PEER ADDRESS carries the new node's IP; ROLE learner
+insula etcd remove-learner <ID>
 kubectl get node <new-node>        # registered? then also: kubectl delete node <new-node>
 ```
 
-Then, on the new node, `/usr/local/bin/k3s-uninstall.sh` and re-run the same
-join command. A member that never started (no name in the list) needs none of
-this: k3s takes it over on the next attempt. Do not wait for k3s to evict a
-stalled learner by itself: measured on lab staging, its leader kept retrying
-the promotion ("learner is not ready") for 30 minutes and never removed it.
-Deleting the Node does not help either when the learner never registered one.
+`remove-learner` refuses a voting member (exit 3) — that is a server whose etcd
+join finished; remove it as in *Remove a node permanently* instead. Then, on the
+new node, `/usr/local/bin/k3s-uninstall.sh` (if k3s is still installed) and
+re-run the same join command. A member that never started (`(never started)` in
+the list) at the new node's own address needs none of this: k3s takes it over
+on the next attempt.
 
 ### A 2-server cluster lost one server for good
 
@@ -426,8 +455,9 @@ A real **server → worker demotion** is a remove-and-rejoin:
    demoting one of 3 servers leaves a 2-member etcd (see the warning above).
 2. `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`.
 3. `kubectl delete node <node>` — k3s removes the node's etcd member on
-   delete; confirm with `etcdctl member list` on a remaining server (and
-   `etcdctl member remove <id>` if it is still listed).
+   delete; confirm with `insula etcd members` on a remaining server (and
+   etcdctl `member remove <id>` if it is still listed, as in *Handle an
+   unhealthy server*).
 4. `ssh root@<node> /usr/local/bin/k3s-uninstall.sh`.
 5. Pre-enroll the node's IP again and re-join it with
    `insula bootstrap --join-as worker --server <server-ip> --token …`.

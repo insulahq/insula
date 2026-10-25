@@ -62,9 +62,10 @@ import {
   type BootstrapTokenParts,
 } from './join-token.js';
 import {
-  loadPinnedReleaseKey,
+  loadJoinNodeScript,
   renderJoin,
   resolveJoinRelease,
+  type JoinNodeScript,
   type JoinTokenInput,
 } from './join-script.js';
 
@@ -172,8 +173,8 @@ export interface BootstrapCommandDeps {
   readonly now?: () => Date;
   readonly fetchCaBundle?: () => Promise<Buffer>;
   readonly generateToken?: () => BootstrapTokenParts;
-  /** PEM of the cluster's release key; undefined → read the pinned file. */
-  readonly releaseKeyPem?: string | null;
+  /** join-node.sh's URL + hash; undefined → hash this image's copy. */
+  readonly joinNodeScript?: JoinNodeScript;
   /** Receives a minting failure (never the token). */
   readonly log?: (msg: string, err: unknown) => void;
   /** Does <ip>:6443 answer right now? null = could not check. Default:
@@ -259,6 +260,7 @@ export async function generateBootstrapCommand(
   const env = deps.env ?? process.env;
   // Fail before any write: an unknown cluster version has no CLI to pin.
   const release = resolveJoinRelease(env);
+  const joinScript = deps.joinNodeScript ?? loadJoinNodeScript(release, env);
   const c = deps.clients ?? (await loadClusterNetworkClients(opts));
   const { peer: cpp, uid } = await getPendingPeerRecord(cppName, opts, c);
   const nodes = summariseNodes(((await c.core.listNode()) as NodeListShape).items ?? []);
@@ -303,7 +305,7 @@ export async function generateBootstrapCommand(
   if (target.privateUnderlay) {
     notes.push(
       `The existing servers are pinned to a private network (--cluster-network-cidr). Add the same ` +
-        `--cluster-network-cidr <cidr> to the join line (marked in the join step), and pre-enrol the node by ` +
+        `--cluster-network-cidr <cidr> to the end of the join line, and pre-enrol the node by ` +
         'its private IP.',
     );
   }
@@ -314,7 +316,7 @@ export async function generateBootstrapCommand(
     role: cpp.role,
     serverIp,
     release,
-    releaseKeyPem: deps.releaseKeyPem !== undefined ? deps.releaseKeyPem : loadPinnedReleaseKey(env),
+    joinScript,
     token: minted.token,
     dualStack: cidrs.dualStack,
     extraFlags: cidrs.extraFlags,
@@ -326,6 +328,7 @@ export async function generateBootstrapCommand(
     steps: rendered.steps,
     script: rendered.script,
     bootstrapCommand: rendered.bootstrapCommand,
+    joinScript,
     serverIp,
     servers: servers.map(({ name, ip, ready, cordoned, answering }) => ({ name, ip, ready, cordoned, answering })),
     role: cpp.role,

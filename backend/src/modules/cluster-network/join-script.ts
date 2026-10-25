@@ -1,23 +1,20 @@
 /**
- * Renders the admin panel's node-join procedure: shell steps the operator
- * pastes ON THE NEW NODE as root (plus, for a server, one read on an existing
- * server). Pure string building — every cluster fact is resolved by the
+ * Renders the admin panel's node-join procedure: ONE line the operator runs on
+ * the NEW node as root (plus, for a server, one read of the token on an
+ * existing server). Pure string building — every cluster fact is resolved by the
  * caller (bootstrap-command.ts) and passed in.
  *
- * The CLI install reproduces the documented procedure
- * (documentation/docs/getting-started/install.md, "Verify the download") and
- * the node-side self-upgrade (scripts/lib/bootstrap-phases.sh
- * platform_ops_fetch / platform_ops_verify_blob):
- *   asset   https://github.com/<repo>/releases/download/v<tag>/insula-linux-<arch>
- *   verify  openssl dgst -sha256 -verify cosign.pub -signature <der> <asset>
- * with two deliberate tightenings:
- *   - the release is the CLUSTER'S version, never `latest` — bootstrap pins
- *     k3s per release, so a newer CLI would install a different k3s;
- *   - the trust anchor is the key the cluster already pins (baked into the
- *     platform-api image from platform/cosign.pub) written inline, so GitHub
- *     alone cannot swap both the binary and the key that verifies it.
+ * The line fetches scripts/join-node.sh from GitHub at the commit or tag this
+ * platform-api was built from, checks it against the SHA-256 of the copy baked
+ * into this image, and only then runs it. The script downloads the insula CLI of
+ * the CLUSTER'S release (never `latest` — bootstrap pins k3s per release),
+ * verifies its signature against the release key written into the script — the
+ * key this cluster pins, platform/cosign.pub — installs it and runs
+ * `insula bootstrap --join-as …`. So GitHub alone can swap neither the script
+ * nor the binary: the hash comes from the cluster, and it covers the key.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { BootstrapStep } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
@@ -29,6 +26,10 @@ const DEFAULT_RELEASES_REPO = 'insulahq/insula';
 const VALID_REPO_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.\.?$)[A-Za-z0-9_.-]+$/;
 /** Same default + override the in-cluster version poller uses. */
 const DEFAULT_COSIGN_PUB_PATH = '/app/platform/cosign.pub';
+/** scripts/join-node.sh as baked into the platform-api image (Dockerfile). */
+const DEFAULT_JOIN_NODE_SCRIPT_PATH = '/app/scripts/join-node.sh';
+/** A git sha suffix on a DEV build stamp — release-tag.ts's rule. */
+const GIT_SHA_RE = /^[0-9a-f]{7,40}$/;
 const PEM_PUBLIC_KEY_RE =
   /^-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]{1,76}\r?\n)+-----END PUBLIC KEY-----\s*$/;
 const SERVER_TOKEN_PATH = '/var/lib/rancher/k3s/server/node-token';
@@ -89,6 +90,69 @@ export function loadPinnedReleaseKey(env: NodeJS.ProcessEnv = process.env): stri
   }
 }
 
+/** scripts/join-node.sh, fetched by the join line and pinned by its hash. */
+export interface JoinNodeScript {
+  /** Raw GitHub URL at the commit or tag this platform-api was built from. */
+  readonly url: string;
+  readonly sha256: string;
+}
+
+/**
+ * The git ref whose scripts/join-node.sh is byte-identical to this image's
+ * copy: a DEV build stamp (`2026.10.2-<sha>`) names the commit it was built
+ * from; anything else is a release, built from the tree its tag carries.
+ */
+export function joinNodeScriptRef(version: string): string {
+  const parsed = parseVersion(version);
+  const only = parsed?.prerelease.length === 1 ? (parsed.prerelease[0] ?? '') : '';
+  return GIT_SHA_RE.test(only) ? only : `v${version}`;
+}
+
+function joinScriptUnavailable(detail: string): ApiError {
+  return new ApiError('JOIN_SCRIPT_UNAVAILABLE', `The platform-api cannot vouch for the join script: ${detail}`, 503, {
+    operatorError: {
+      code: 'JOIN_SCRIPT_UNAVAILABLE',
+      title: 'Join script unavailable',
+      detail:
+        'The join command pins scripts/join-node.sh by the SHA-256 of the copy in the platform-api image, so it ' +
+        `cannot be rendered without that copy. ${detail}`,
+      remediation: [
+        'Check that the running platform-api image is a complete build (it carries /app/scripts/join-node.sh).',
+        'Or join by hand: docs/operations/MULTI_NODE_RUNBOOK.md, "Add servers" / "Add a worker".',
+      ],
+      retryable: false,
+    },
+  });
+}
+
+/** join-node.sh's one `RELEASE_KEY='…'` assignment — the key it verifies with. */
+const RELEASE_KEY_ASSIGNMENT_RE = /^RELEASE_KEY='([^']*)'$/gm;
+
+/**
+ * Hash this image's join-node.sh and refuse it unless the key it verifies the
+ * CLI with is exactly the release key the cluster pins: a script checking
+ * against any other key must never be handed out.
+ */
+export function loadJoinNodeScript(release: JoinRelease, env: NodeJS.ProcessEnv = process.env): JoinNodeScript {
+  const path = (env.JOIN_NODE_SCRIPT_PATH ?? DEFAULT_JOIN_NODE_SCRIPT_PATH).trim();
+  let body: Buffer;
+  try {
+    body = readFileSync(path);
+  } catch {
+    throw joinScriptUnavailable(`${path} is not readable.`);
+  }
+  const pinned = loadPinnedReleaseKey(env);
+  if (!pinned) throw joinScriptUnavailable('the release key this cluster pins is not readable here.');
+  const keys = [...body.toString('utf8').matchAll(RELEASE_KEY_ASSIGNMENT_RE)].map((m) => (m[1] ?? '').trim());
+  if (keys.length !== 1 || keys[0] !== pinned.trim()) {
+    throw joinScriptUnavailable(`${path} does not verify with the release key this cluster pins.`);
+  }
+  return {
+    url: `https://raw.githubusercontent.com/${release.repo}/${joinNodeScriptRef(release.version)}/scripts/join-node.sh`,
+    sha256: createHash('sha256').update(body).digest('hex'),
+  };
+}
+
 /** Single-quote a value for shell embedding. Refuses a single quote inside
  *  — defence in depth; every caller passes a validated IP/CIDR/token. */
 export function shellQuote(s: string): string {
@@ -115,8 +179,7 @@ export interface JoinScriptInput {
   /** That server's node name, for the operator. */
   readonly serverName?: string;
   readonly release: JoinRelease;
-  /** PEM of the cluster's release key, or null to fetch it from the release tag. */
-  readonly releaseKeyPem: string | null;
+  readonly joinScript: JoinNodeScript;
   readonly token: JoinTokenInput;
   readonly dualStack: boolean;
   /** Extra node-scoped flags as [flag, value] (e.g. a custom --pod-cidr-v6). */
@@ -132,39 +195,10 @@ export interface RenderedJoin {
   readonly bootstrapCommand: string;
 }
 
-function downloadStep(release: JoinRelease, releaseKeyPem: string | null): Omit<BootstrapStep, 'id'> {
-  const base = `https://github.com/${release.repo}/releases/download/v${release.tag}`;
-  const anchor = releaseKeyPem
-    ? `printf '%s\\n' ${releaseKeyPem.trim().split(/\r?\n/).map(shellQuote).join(' ')} > cosign.pub`
-    : `curl -fsSL --proto-redir =https -o cosign.pub "https://raw.githubusercontent.com/${release.repo}/v${release.tag}/platform/cosign.pub"`;
-  return {
-    title: `Download the insula CLI ${release.tag} (this cluster's release) and its signature`,
-    runOn: 'new-node',
-    command: [
-      'INSULA_ARCH="$(uname -m)"; case "$INSULA_ARCH" in x86_64) INSULA_ARCH=amd64 ;; aarch64) INSULA_ARCH=arm64 ;; esac',
-      `curl -fsSL --proto-redir =https -o insula "${base}/insula-linux-\${INSULA_ARCH}"`,
-      `curl -fsSL --proto-redir =https -o insula.sig "${base}/insula-linux-\${INSULA_ARCH}.sig"`,
-      anchor,
-    ].join('\n'),
-    note: releaseKeyPem
-      ? 'cosign.pub is the release key this cluster already trusts, written inline — not fetched from GitHub. Needs curl + openssl on the node.'
-      : 'This platform-api has no pinned release key, so cosign.pub is fetched from the release tag. Compare it with /etc/platform/cosign.pub on an existing server first.',
-  };
-}
-
-const VERIFY_INSTALL_COMMAND = [
-  'if base64 -d insula.sig > insula.sig.der && openssl dgst -sha256 -verify cosign.pub -signature insula.sig.der insula; then',
-  '  install -m 0755 insula /usr/local/bin/insula',
-  '  rm -f insula insula.sig insula.sig.der cosign.pub',
-  'else',
-  "  echo 'Signature verification FAILED: not installing. Delete the download and stop.' >&2; false",
-  'fi',
-].join('\n');
-
 /**
- * Defence in depth for values that reach the script outside single quotes
- * (comment lines, the role word). Today they are DNS-1123 names, CRD-pattern
- * IPs and a CRD enum — safe only because a schema in another file says so.
+ * Defence in depth for a value shown outside single quotes (the release tag in
+ * a note). Today it is a validated CalVer — safe only because another file says
+ * so.
  * Never let a newline or shell metacharacter through regardless of source.
  */
 function commentSafe(s: string): string {
@@ -177,41 +211,33 @@ function joinRole(role: string): 'server' | 'worker' {
   return role;
 }
 
-function joinStep(input: JoinScriptInput): Omit<BootstrapStep, 'id'> {
-  const tokenArg = input.token.kind === 'bootstrap' ? shellQuote(input.token.value) : '"$INSULA_JOIN_TOKEN"';
-  const flags = [
-    'insula bootstrap',
+/** insula bootstrap's join flags, as join-node.sh passes them on. */
+function bootstrapFlags(input: JoinScriptInput): string[] {
+  return [
     '--join-as', joinRole(input.role),
     '--server', shellQuote(input.serverIp),
-    '--token', tokenArg,
     ...input.extraFlags.flatMap(([flag, value]) => [flag, shellQuote(value)]),
     ...(input.dualStack ? ['--dual-stack'] : []),
-  ].join(' ');
-  const lines: string[] = [];
-  if (input.privateUnderlay) {
-    lines.push(
-      "# This cluster's servers are pinned to a private network (bootstrapped with",
-      '# --cluster-network-cidr; their InternalIP differs from their ExternalIP). The',
-      '# cluster does not record that CIDR: append the SAME --cluster-network-cidr <cidr>',
-      '# to the insula bootstrap line below before running it.',
-    );
-  }
-  if (input.token.kind === 'node-token') {
-    lines.push("read -rsp 'Paste the server join token from step 1, then press Enter: ' INSULA_JOIN_TOKEN; echo");
-  }
-  lines.push(flags);
-  return {
-    title: `Join the cluster as a ${input.role}`,
-    runOn: 'new-node',
-    command: lines.join('\n'),
-    note:
-      input.token.kind === 'bootstrap'
-        ? `The embedded join token works for this worker only until ${input.token.expiresAt}, and is revoked as soon as this pre-enrolment is removed.`
-        : 'Prompts for the token from step 1 — the input is hidden and stays out of shell history.',
-  };
+  ];
 }
 
-/** Render the ordered steps + the one-paste script. Pure. */
+const HEX64_RE = /^[0-9a-f]{64}$/;
+
+function joinLine(input: JoinScriptInput): string {
+  if (!HEX64_RE.test(input.joinScript.sha256)) throw new Error('refusing to render a join with a malformed script hash');
+  const tokenArgs = input.token.kind === 'bootstrap' ? ['--token', shellQuote(input.token.value)] : [];
+  const repoArgs = input.release.repo === DEFAULT_RELEASES_REPO ? [] : ['--repo', shellQuote(input.release.repo)];
+  return [
+    `curl -fsSL --proto '=https' --proto-redir '=https' -o join-node.sh ${shellQuote(input.joinScript.url)}`,
+    `&& echo '${input.joinScript.sha256}  join-node.sh' | sha256sum -c -`,
+    `&& bash join-node.sh --release ${shellQuote(input.release.tag)}`,
+    ...repoArgs,
+    ...bootstrapFlags(input),
+    ...tokenArgs,
+  ].join(' ');
+}
+
+/** Render the steps + the one line to run on the new node. Pure. */
 export function renderJoin(input: JoinScriptInput): RenderedJoin {
   const steps: BootstrapStep[] = [];
   if (input.token.kind === 'node-token') {
@@ -226,30 +252,26 @@ export function renderJoin(input: JoinScriptInput): RenderedJoin {
         'The join checks it before installing anything.',
     });
   }
-  steps.push({ id: 'download', ...downloadStep(input.release, input.releaseKeyPem) });
+  const line = joinLine(input);
+  const tokenNote =
+    input.token.kind === 'bootstrap'
+      ? `The embedded join token works for this worker only until ${input.token.expiresAt}, and is revoked as soon as this pre-enrolment is removed.`
+      : 'It asks for the token from step 1 — the input is hidden and stays out of shell history.';
   steps.push({
-    id: 'verify-install',
-    title: "Verify the signature against the cluster's release key, then install",
+    id: 'join',
+    title: `Join the cluster as a ${joinRole(input.role)}`,
     runOn: 'new-node',
-    command: VERIFY_INSTALL_COMMAND,
-    note: 'openssl must print "Verified OK". Anything else means the download is not what was released: delete it and stop.',
+    command: line,
+    note:
+      'sha256sum must print "join-node.sh: OK": the script is checked against this cluster\'s own copy before it runs. ' +
+      `It then downloads the insula CLI ${commentSafe(input.release.tag)}, installs it only if its signature matches the ` +
+      `cluster's release key, and joins. ${tokenNote}` +
+      (input.privateUnderlay ? ' Append the same --cluster-network-cidr <cidr> the existing servers use to the end of the line.' : ''),
   });
-  steps.push({ id: 'join', ...joinStep(input) });
-
-  const script = [
-    `# Join '${commentSafe(input.cppName)}' (${commentSafe(input.nodeIp)}) to the cluster as a ${joinRole(input.role)}.`,
-    '# Paste into a root bash shell (sudo -i) on the NEW node. Its pre-enrolment must exist first.',
-    '# Stops at the first failure — an unverified binary is never installed or run.',
-    '(',
-    'set -eu',
-    "[ \"$(id -u)\" -eq 0 ] || { echo 'Run this as root (sudo -i), then paste it again.' >&2; exit 1; }",
-    'INSULA_TMP="$(mktemp -d)"; trap \'rm -rf "$INSULA_TMP"\' EXIT; cd "$INSULA_TMP"',
-    ...steps.flatMap((s, i) =>
-      s.runOn === 'new-node' ? ['', `# Step ${i + 1}/${steps.length} — ${s.title}`, s.command] : [],
-    ),
-    ')',
-  ].join('\n');
-
-  const join = steps[steps.length - 1];
-  return { steps, script, bootstrapCommand: join ? join.command : '' };
+  const token = input.token.kind === 'bootstrap' ? shellQuote(input.token.value) : '<token>';
+  return {
+    steps,
+    script: line,
+    bootstrapCommand: ['insula bootstrap', ...bootstrapFlags(input), '--token', token].join(' '),
+  };
 }

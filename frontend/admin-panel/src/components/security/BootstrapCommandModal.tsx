@@ -1,9 +1,9 @@
 /**
  * "Get bootstrap command" for a pre-enrolled node (Security → Network Trust
- * → Pending Peers). Renders the join steps the operator runs ON THE NEW
- * NODE as root: download + verify + install the cluster's own `insula`
- * release, then `insula bootstrap --join-as …`. One paste-safe block, plus
- * each step on its own.
+ * → Pending Peers). Renders the ONE line the operator runs ON THE NEW NODE as
+ * root: it fetches scripts/join-node.sh, checks it against the hash of the
+ * platform's own copy, and runs it — the script verifies and installs the
+ * cluster's own `insula` release, then runs `insula bootstrap --join-as …`.
  *
  * Opening it POSTs: for a worker the platform mints a short-lived join
  * token (shown with its expiry). A server join needs the cluster's server
@@ -114,13 +114,13 @@ function JoinSteps({ data, cppName, loading, onPickServer }: JoinStepsProps) {
   const onNode = data.steps.filter((s) => s.runOn === 'new-node');
   const numberOf = (s: BootstrapStep): number => data.steps.indexOf(s) + 1;
   const firstOnNode = onNode[0];
-  const nodeRange =
-    onServer.length > 0 && firstOnNode ? `Steps ${numberOf(firstOnNode)}–${data.steps.length}` : 'All steps';
+  const nodeHeading =
+    onServer.length > 0 && firstOnNode ? `Step ${numberOf(firstOnNode)} — on the new node` : 'On the new node';
 
   return (
     <div className="space-y-4">
       <p className="text-sm font-medium text-gray-900 dark:text-gray-100" data-testid="bootstrap-command-heading">
-        Run these on the new node <Code>{data.nodeIp}</Code> as root (<Code>sudo -i</Code>).
+        Run the join on the new node <Code>{data.nodeIp}</Code> as root (<Code>sudo -i</Code>).
       </p>
       <p className="text-xs text-gray-600 dark:text-gray-400">
         The pre-enrolment <Code>{cppName}</Code> must exist while the node joins — it is what lets{' '}
@@ -173,31 +173,32 @@ function JoinSteps({ data, cppName, loading, onPickServer }: JoinStepsProps) {
 
         <section>
           <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {nodeRange} — on the new node ({data.nodeIp}), pasted as one block
+            {nodeHeading} ({data.nodeIp})
           </h3>
-          <CodeBlock text={data.script} copyLabel="Copy all" testId="bootstrap-script" />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            The block stops at the first failure: if the signature check does not print{' '}
-            <Code>Verified OK</Code>, nothing is installed or run.
-          </p>
-        </section>
-
-        <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
-          <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
-            Copy the new-node steps one at a time
-          </summary>
-          <ol className="mt-3 space-y-3">
-            {onNode.map((s) => (
-              <li key={s.id}>
-                <p className="mb-1 text-xs font-medium text-gray-800 dark:text-gray-200">
-                  Step {numberOf(s)} — {s.title}
+          <CodeBlock text={data.script} testId="bootstrap-script" />
+          {onNode.map(
+            (s) =>
+              s.note && (
+                <p key={s.id} className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid={`bootstrap-note-${s.id}`}>
+                  {s.note}
                 </p>
-                <CodeBlock text={s.command} testId={`bootstrap-step-${s.id}`} />
-                {s.note && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{s.note}</p>}
-              </li>
-            ))}
-          </ol>
-        </details>
+              ),
+          )}
+          {data.joinScript && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <a
+                href={data.joinScript.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-blue-700 dark:text-blue-400 underline hover:text-blue-900 dark:hover:text-blue-300"
+                data-testid="join-script-link"
+              >
+                Read join-node.sh
+              </a>{' '}
+              — the exact file the line runs (SHA-256 <Code>{data.joinScript.sha256.slice(0, 12)}…</Code>).
+            </p>
+          )}
+        </section>
       </div>
     </div>
   );
