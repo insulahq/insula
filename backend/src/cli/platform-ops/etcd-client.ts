@@ -163,6 +163,16 @@ function grpcText(raw: unknown): string {
   }
 }
 
+/** A refused connection or a rejected certificate reaches the stream as
+ *  "The pending stream has been canceled" with the real reason as its cause. */
+function streamError(endpoint: string, e: Error): Error {
+  const code = (e as NodeJS.ErrnoException).code;
+  if (code === 'ERR_HTTP2_STREAM_CANCEL' && e.cause instanceof Error) {
+    return new Error(`${endpoint}: ${e.cause.message}`);
+  }
+  return e;
+}
+
 /**
  * One unary call to etcd's Cluster service. `tls` null only for a cleartext
  * endpoint (tests); k3s's etcd always requires its client certificate.
@@ -189,7 +199,8 @@ export function grpcUnary(
       () => finish(new Error(`${endpoint} did not answer within ${Math.round(timeoutMs / 1000)} s`)),
       timeoutMs,
     );
-    session.on('error', (e: Error) => finish(e));
+    // Usually the stream reports this first (streamError); either way the operator learns which endpoint.
+    session.on('error', (e: Error) => finish(new Error(`${endpoint}: ${e.message}`)));
     // A GOAWAY or a reset ends the stream without 'end': fail now, not at the timeout.
     session.on('close', () => finish(new Error(`${endpoint} closed the connection without an answer`)));
 
@@ -220,7 +231,7 @@ export function grpcUnary(
     });
     req.on('trailers', (h) => takeStatus(h));
     req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('error', (e: Error) => finish(e));
+    req.on('error', (e: Error) => finish(streamError(endpoint, e)));
     req.on('close', () => finish(new Error(`${endpoint} closed the request without an answer`)));
     req.on('end', () => {
       if (status !== 200) {

@@ -351,6 +351,19 @@ out=$(
   FAKE_JOURNAL="$WORK/journal.txt" join_stuck_hint k3s
 )
 has "$out" "the etcd leader must be able to" "a stuck etcd gets the one-sentence cause (leader cannot reach :2380)"
+# A real host's journal: the match early, far more than a pipe buffer after it, under
+# bootstrap's pipefail (grep -q there let journalctl die of SIGPIPE and hid the hint).
+{ sed -n '5p' "$WORK/journal.txt"
+  for _i in $(seq 1 3000); do echo "time=\"2026-10-25T00:16:00Z\" level=info msg=\"filler line ${_i} of a busy k3s start, long enough to matter\""; done
+} > "$WORK/journal-big.txt"
+out=$(
+  set -o pipefail
+  FAKE_NFT_LOG=/dev/null
+  # shellcheck disable=SC1091
+  source "$WORK/helpers.sh"
+  FAKE_JOURNAL="$WORK/journal-big.txt" join_stuck_hint k3s
+)
+has "$out" "the etcd leader must be able to" "…also from a journal larger than a pipe buffer, under pipefail"
 printf '%s\n' 'time="x" level=error msg="unrelated"' > "$WORK/journal2.txt"
 out=$(source "$WORK/helpers.sh"; FAKE_JOURNAL="$WORK/journal2.txt" join_stuck_hint k3s)
 check "…and nothing when etcd is not the problem" "" "$out"

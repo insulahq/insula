@@ -5,9 +5,10 @@
 #   join   pre-enrol the node (admin: Cluster network → pre-enrol, POST
 #          /admin/cluster/pending-peers) → the admin panel's join script (POST
 #          /admin/cluster/bootstrap-command/<name>: the signed insula CLI of the cluster's
-#          release, `insula bootstrap --join-as worker` with a short-lived token) → run on
-#          the node as root, as pasted. The only edit is the one the script's own note
-#          asks for (the cluster's private network CIDR).
+#          release, `insula bootstrap --join-as worker` with a short-lived token — one
+#          `join-node.sh` line since the one-line join) → run on the node as root, as
+#          pasted. The only edit is the one the answer's own note asks for (the cluster's
+#          private network CIDR).
 #   leave  drain (admin: Drain, POST /admin/nodes/<name>/drain) → delete (POST
 #          …/delete; the host stays running) → the runbook's host step
 #          (k3s-agent-uninstall.sh, then the platform firewall and timers). The VM keeps its
@@ -72,18 +73,28 @@ _lab_worker_script() {
   [[ -s "$file" ]] || { echo "lab: the bootstrap-command answer has no script" >&2; return 1; }
   jq -r '.data | "  release \(.platformVersion), --server \(.serverIp), token: \(.joinToken.kind) (expires \(.joinToken.expiresAt // "-"))",
                  (.warning // empty | "  warning: " + .), (.notes[]? | "  note: " + .)' <<<"$resp" >&2
-  lab_join_script_cidr "$file" "${CL_PREFIX}.0/24"
+  lab_join_script_cidr "$file" "${CL_PREFIX}.0/24" \
+    "$(jq -r '[.data.notes[]?, .data.steps[]?.note] | map(select(. != null and contains("--cluster-network-cidr <cidr>"))) | if length > 0 then 1 else 0 end' <<<"$resp")"
 }
 
-# lab_join_script_cidr <script> <cidr> — the one edit a join script asks the operator for:
-# when the servers are pinned to a private network, its note asks for the same
-# --cluster-network-cidr on the join line. Nothing else is touched.
+# lab_join_script_cidr <script> <cidr> [asked] — the one edit a join script asks the operator
+# for: when the servers are pinned to a private network, the same --cluster-network-cidr on
+# the join line. A multi-line script (releases before the one-line join) asks in a comment
+# above `insula bootstrap`; the one-line join asks in the answer's notes (asked=1) and takes
+# it at the end of the line. Nothing else is touched.
 lab_join_script_cidr() {
-  local file="$1" cidr="$2"
-  grep -q -- '--cluster-network-cidr <cidr>' "$file" || return 0
-  sed -i "s|^insula bootstrap --join-as [a-z]* .*|& --cluster-network-cidr ${cidr}|" "$file"
-  grep -q -- "^insula bootstrap --join-as .* --cluster-network-cidr ${cidr}\$" "$file" \
-    || { echo "lab: could not add the cluster CIDR the join script asks for" >&2; return 1; }
+  local file="$1" cidr="$2" asked="${3:-0}"
+  if grep -q -- '--cluster-network-cidr <cidr>' "$file"; then
+    sed -i "s|^insula bootstrap --join-as [a-z]* .*|& --cluster-network-cidr ${cidr}|" "$file"
+    grep -q -- "^insula bootstrap --join-as .* --cluster-network-cidr ${cidr}\$" "$file" \
+      || { echo "lab: could not add the cluster CIDR the join script asks for" >&2; return 1; }
+  elif [[ "$asked" == 1 ]]; then
+    sed -i "/ && bash join-node\.sh /s|\$| --cluster-network-cidr ${cidr}|" "$file"
+    [[ "$(grep -c -- " && bash join-node\.sh .* --cluster-network-cidr ${cidr}\$" "$file")" == 1 ]] \
+      || { echo "lab: could not add the cluster CIDR the join line's note asks for" >&2; return 1; }
+  else
+    return 0
+  fi
   echo "  appended --cluster-network-cidr ${cidr} to the join line, as its note asks" >&2
 }
 

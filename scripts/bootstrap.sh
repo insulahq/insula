@@ -4960,8 +4960,10 @@ for text in order[-int(sys.argv[1]):]:
 # wherever it runs, not from the --server node.
 join_stuck_hint() {
   [[ "$1" == "k3s" ]] || return 0
+  # Not grep -q: it exits at the first match, journalctl dies of SIGPIPE on its next
+  # write, and under pipefail the pipeline fails — the hint never showed on a real host.
   journalctl -u k3s --no-pager -o cat -n 3000 ${JOIN_STARTED_AT:+--since "$JOIN_STARTED_AT"} 2>/dev/null \
-    | grep -q -E 'not yet been promoted from learner|failed to publish local member to cluster through raft' || return 0
+    | grep -E 'not yet been promoted from learner|failed to publish local member to cluster through raft' >/dev/null || return 0
   log "  → this node's etcd has not caught up with the cluster: the etcd leader must be able to"
   log "    connect to this node on port 2380 to send it the data. This node's firewall admits:"
   log "    $(nft list set inet filter cluster_peers_v4 2>/dev/null | tr -d '\n\t ' | grep -o 'elements={[^}]*}' | sed 's/elements=//' || echo '?')"
@@ -6423,7 +6425,7 @@ ensure_traefik_plugins_loaded() {
       return 0
     fi
 
-    if ! printf '%s' "$logs" | grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER"; then
+    if ! grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER" <<<"$logs"; then
       log "  traefik plugins loaded OK (${phase})."
       return 0
     fi
@@ -10740,14 +10742,14 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     # its discovery/openapi document under load — kubectl's client-side validation then
     # fails the whole apply. It clears within seconds, so it belongs with the other
     # transients(observed on the VM tier's constrained first-server bootstrap).
-    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first|failed to download openapi|the server is currently unable to handle the request|the server could not find the requested resource|etcdserver: request timed out|connection refused'; then
+    if ! grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first|failed to download openapi|the server is currently unable to handle the request|the server could not find the requested resource|etcdserver: request timed out|connection refused' <<<"$apply_err"; then
       echo "$apply_err" >&2
       error "kubectl apply -k failed with non-retriable error"
     fi
     local race_kind="transient webhook error"
-    if echo "$apply_err" | grep -qE 'no matches for kind|ensure CRDs are installed first'; then
+    if grep -qE 'no matches for kind|ensure CRDs are installed first' <<<"$apply_err"; then
       race_kind="CRD-discovery race (CRD applied but not yet in REST mapper)"
-    elif echo "$apply_err" | grep -qE 'failed to download openapi|the server is currently unable to handle the request|etcdserver: request timed out|connection refused'; then
+    elif grep -qE 'failed to download openapi|the server is currently unable to handle the request|etcdserver: request timed out|connection refused' <<<"$apply_err"; then
       race_kind="apiserver transient (discovery/openapi unavailable under load)"
     fi
     log "  apply attempt ${apply_attempt}/6 hit ${race_kind} — retrying in 10s..."

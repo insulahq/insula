@@ -161,6 +161,7 @@ describe('grpcUnary', () => {
     const s = server;
     server = null;
     await new Promise<void>((r) => s?.close(() => r()));
-    await expect(listMembers(url, null)).rejects.toThrow(/ECONNREFUSED/);
+    // node wraps the cause in "The pending stream has been canceled"; the operator sees only the cause.
+    await expect(listMembers(url, null)).rejects.toThrow(new RegExp(`^${url.replace(/[.[\]]/g, '\\$&')}: connect ECONNREFUSED `));
   });
 });
