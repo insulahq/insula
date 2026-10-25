@@ -899,19 +899,34 @@ export async function migrateDomainDns(
     throw new ApiError('NO_TARGET_SERVERS', 'Target group has no primary servers', 400);
   }
 
-  // Step 1: Create zone on target group's servers
+  // A zone is created with its group's nameservers or not at all (providers
+  // refuse placeholder NS). Say so before anything moves.
+  const targetGroup = await getProviderGroupById(db, targetGroupId);
+  if (!targetGroup.nsHostnames || targetGroup.nsHostnames.length === 0) {
+    throw new ApiError(
+      'TARGET_GROUP_NO_NAMESERVERS',
+      `DNS provider group '${targetGroup.name}' has no nameservers configured, so the zone cannot be created there. Add its NS hostnames first.`,
+      400,
+    );
+  }
+
+  // Step 1: Create zone on target group's servers. This used to pass no
+  // nameservers: the provider refused, the empty catch swallowed it, and
+  // every record was then pushed into a zone that did not exist — the move
+  // aborted with "all record pushes failed" every time. An existing zone is
+  // returned as is, so a failure here is real; it is logged, and the push
+  // count below decides whether the move goes ahead.
   for (const server of targetServers) {
     try {
       const provider = getProviderForServer(server, encryptionKey);
       const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
-      await provider.createZone(domainRow.domainName, zoneKind);
-    } catch {
-      // Zone may already exist — continue
+      await provider.createZone(domainRow.domainName, zoneKind, targetGroup.nsHostnames);
+    } catch (err) {
+      console.warn(`[dns-migrate] Creating zone ${domainRow.domainName} on ${server.displayName} failed:`, err instanceof Error ? err.message : String(err));
     }
   }
 
   // Replace auto-created NS records with target group's configured nameservers
-  const targetGroup = await getProviderGroupById(db, targetGroupId);
   if (targetGroup.nsHostnames && targetGroup.nsHostnames.length > 0) {
     for (const server of targetServers) {
       try {
