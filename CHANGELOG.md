@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.18] - 2026-10-25
+
 ### Added
 
 - **An all-clear email when a node comes back without a reboot.** A node that dropped out for a
