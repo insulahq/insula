@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { runAndRecord, isJobDue, claimStaleBefore, resolveTimeZone, flushPendingFailureChecks } from './scheduler.js';
 import { resetPlatformFaultNotices } from './platform-fault.js';
 import type { CronJobRow } from './executor.js';
@@ -62,7 +64,13 @@ interface DbSpy {
   readonly updates: Record<string, unknown>[];
 }
 
-function mockDb(deploymentRows: unknown[], refreshedRow: unknown): DbSpy {
+/**
+ * `streak` is the failure count the run's UPDATE … RETURNING hands back (a
+ * success always returns 0). The default 2 is a job's second failure in a row —
+ * reportable on any schedule — so the tests below that are about something
+ * else see the notice they expect; the streak itself has its own block.
+ */
+function mockDb(deploymentRows: unknown[], refreshedRow: unknown, streak = 2): DbSpy {
   const updates: Record<string, unknown>[] = [];
 
   // resolveDeployment(): select().from().innerJoin().leftJoin().where()
@@ -82,7 +90,12 @@ function mockDb(deploymentRows: unknown[], refreshedRow: unknown): DbSpy {
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
         updates.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
+        const returned = [{ consecutiveFailures: values.consecutiveFailures === 0 ? 0 : streak }];
+        return {
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue(returned),
+          })),
+        };
       }),
     }),
   } as unknown as Database;
@@ -436,6 +449,88 @@ describe('runAndRecord', () => {
 
     await expect(runAndRecord(db, makeJob(), {})).resolves.toBeDefined();
     expect(updates[0].lastRunStatus).toBe('failed');
+  });
+
+  // Production, four weeks: nearly every notice was one failed run followed by
+  // one that worked — a pod restart under Moodle, a storage failover, one slow
+  // Nextcloud request.
+  describe('the failure streak', () => {
+    const sqlOf = (v: unknown) => new PgDialect().sqlToQuery(v as SQL).sql;
+    const failing = () => ({
+      listPods: vi.fn().mockResolvedValue([
+        { name: 'moodle-site-x', phase: 'Running', component: 'apache-php-office', containers: ['apache-php-office'], nodeName: 's1' },
+      ]),
+      exec: vi.fn().mockResolvedValue({ stdout: '', stderr: 'Database connection failed', exitCode: 1 }),
+      podDisruption: vi.fn().mockResolvedValue(null),
+    });
+
+    it('counts a failure in the UPDATE itself, so two runs finishing together cannot both write 1', async () => {
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob(), 1);
+      await runAndRecord(db, makeJob(), { transport: failing(), interruptionCheckDelayMs: 0 });
+      expect(sqlOf(updates[0].consecutiveFailures)).toMatch(/"consecutive_failures" \+ 1$/);
+    });
+
+    it('a job that runs every minute is not reported on its first failure', async () => {
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob(), 1);
+      await runAndRecord(db, makeJob(), { transport: failing(), interruptionCheckDelayMs: 0 });
+      expect(updates[0].lastRunStatus).toBe('failed');
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      // Nor is today's email slot spent on it.
+      expect(resolveFailureEmailRecipients).not.toHaveBeenCalled();
+    });
+
+    it('is reported on the second failure in a row, and the notice says so', async () => {
+      const { db } = mockDb([RUNNING_DEPLOYMENT], makeJob(), 2);
+      await runAndRecord(db, makeJob(), { transport: failing(), interruptionCheckDelayMs: 0 });
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+      expect(notifyTenantScheduledTaskFailure.mock.calls[0][2]).toMatchObject({ failedRuns: '2' });
+    });
+
+    it('a webcron every five minutes waits for its second failure too', async () => {
+      // No URL: a failure without a network request.
+      const job = makeJob({ type: 'webcron', schedule: '*/5 * * * *', url: null, deploymentId: null, command: null });
+      const { db } = mockDb([], job, 1);
+      await runAndRecord(db, job, {}, {});
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+    });
+
+    it('a nightly job is reported on its first failure — a second would be a day late', async () => {
+      const job = makeJob({ schedule: '0 3 * * *' });
+      const { db } = mockDb([RUNNING_DEPLOYMENT], job, 1);
+      await runAndRecord(db, job, { transport: failing(), interruptionCheckDelayMs: 0 });
+      expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
+      // "failed on 1 runs in a row" says nothing — but the variable is there, or
+      // the renderer's placeholder would make {{#if failedRuns}} true.
+      expect(notifyTenantScheduledTaskFailure.mock.calls[0][2]).toMatchObject({ failedRuns: null });
+    });
+
+    it('a success clears it', async () => {
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob({ lastRunStatus: 'success' }));
+      await runAndRecord(db, makeJob(), {
+        transport: { ...failing(), exec: vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '', exitCode: 0 }) },
+      });
+      expect(updates[0].consecutiveFailures).toBe(0);
+    });
+
+    it('a run the platform interrupted is taken back off it — that failure was not the tenant\'s', async () => {
+      const t = { ...failing(), podDisruption: vi.fn().mockResolvedValue('the pod it ran in was being replaced') };
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob(), 2);
+      await runAndRecord(db, makeJob(), { transport: t, interruptionCheckDelayMs: 0 });
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+      expect(sqlOf(updates[1].consecutiveFailures)).toMatch(/^GREATEST\(.*"consecutive_failures" - 1, 0\)$/);
+    });
+
+    it('a run the platform could not start leaves it as it was', async () => {
+      const unreachable = Object.assign(new Error('connect ETIMEDOUT 10.43.0.1:443'), { code: 'ETIMEDOUT', syscall: 'connect' });
+      const t = { ...failing(), listPods: vi.fn().mockRejectedValue(unreachable) };
+      const { db, updates } = mockDb([RUNNING_DEPLOYMENT], makeJob(), 1);
+      await runAndRecord(db, makeJob(), {
+        transport: t, platformFaultRetryDelayMs: 0, outageEvidenceDelayMs: 0, explainingOutage: async () => null,
+      });
+      expect(updates[0].lastRunStatus).toBe('failed');
+      expect(sqlOf(updates[0].consecutiveFailures)).toMatch(/"consecutive_failures"$/);
+      expect(notifyTenantScheduledTaskFailure).not.toHaveBeenCalled();
+    });
   });
 });
 

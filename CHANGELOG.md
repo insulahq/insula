@@ -54,8 +54,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   that answered. So a server that just went down (it still reads Ready for about a minute) is no
   longer the default. Pick another server and the steps are rendered for it. Any server works: they
   all hold the same server token, and step 1 now says so.
+- **A cron task whose next run is due within the hour is reported when two runs in a row fail.**
+  On production, almost every failure notice in four weeks was one failed run followed by one that
+  worked. The causes were a pod restarting under a Moodle cron, a storage failover, and one slow
+  Nextcloud request. A task whose next run is more than an hour away (nightly, weekly, or the last
+  run of a working day) is still reported on its first failure. A run the platform could not
+  start, or stopped, does not count. The notice says how many runs in a row failed. Both panels
+  explain the rule next to the notification settings, and the tenant API returns the count as
+  `consecutiveFailures`. Migration 0164 adds `cron_jobs.consecutive_failures`; a task whose last
+  run failed starts at 1.
 
 ### Fixed
+
+- **A cron failure notice shows the end of the output.** It showed the first 200 characters of
+  the last 2000 the platform keeps. For a long command that is a fragment from the middle, cut off
+  before the lines that say why it failed: production's Moodle notices ended in "Cron run completed
+  correctly / Cron c". It now shows the last 300 characters, starting on a whole line.
 
 - **`http://webmail.<domain>` redirects instead of answering 404.** A tenant's webmail address
   forwarded to the platform webmail only over https; plain http matched nothing. It now forwards

@@ -1550,6 +1550,12 @@ export interface ScheduledTaskFailurePayload {
   readonly errorMessage: string;
   /** The cron expression and the clock it is read on, e.g. `0 3 * * * (UTC)`. */
   readonly schedule: string;
+  /**
+   * Failed runs in a row, e.g. `2`; null for a single failure. Always present:
+   * a variable left out is filled with a placeholder, which `{{#if}}` reads
+   * as set — "failed on — runs in a row".
+   */
+  readonly failedRuns: string | null;
 }
 /**
  * A tenant's scheduled task (web cron) run failed.
