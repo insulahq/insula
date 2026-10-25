@@ -113,12 +113,16 @@ describe.skipIf(!dbAvailable)('cron failure email (integration)', () => {
 
   it('mails nobody beyond the tenant admins while switched off', async () => {
     const job = await insertFailingJob({ notifyOnFailure: false, notifyEmail: 'ops@example.test' });
+    // Twice: a minutely job's first failure is reported to nobody anyway
+    // (failure-streak.ts), so one run would pass with the switch ignored.
+    await runAndRecord(getTestDb(), job);
     await runAndRecord(getTestDb(), job);
     expect(await externalEmails()).toEqual([]);
   });
 
   it('a manual run never emails', async () => {
     const job = await insertFailingJob({ notifyOnFailure: true });
+    await runAndRecord(getTestDb(), job, {}, { notify: false });
     await runAndRecord(getTestDb(), job, {}, { notify: false });
     expect(await externalEmails()).toEqual([]);
   });

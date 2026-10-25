@@ -38,6 +38,7 @@ import {
   createTrustedRangeRequestSchema,
   updateTrustedRangeRequestSchema,
   createPendingPeerRequestSchema,
+  bootstrapCommandRequestSchema,
 } from '@insula/api-contracts';
 import {
   listTrustedRanges,
@@ -56,6 +57,7 @@ import {
   deletePendingPeer,
 } from './cluster-pending-peers.js';
 import { generateBootstrapCommand } from './bootstrap-command.js';
+import { listDnsApiEndpoints } from '../dns-servers/endpoints.js';
 import { setNodeExposure, setNodeExposureRequestSchema } from './node-exposure.js';
 
 interface AuthedRequest {
@@ -268,13 +270,22 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
     async (req: AuthedRequest) => {
       const name = paramName(req);
       const userId = userOf(req);
-      const cmd = await generateBootstrapCommand(name, k8sOpts, {
-        log: (msg, err) => app.log.warn({ name, err: String((err as Error)?.message ?? err).slice(0, 300) }, msg),
-      });
+      // Optional body: { server } picks the server to join through.
+      const body = parseOrThrow(bootstrapCommandRequestSchema, req.body ?? {});
+      const cmd = await generateBootstrapCommand(
+        name,
+        k8sOpts,
+        {
+          log: (msg, err) => app.log.warn({ name, err: String((err as Error)?.message ?? err).slice(0, 300) }, msg),
+          dnsEndpoints: () => listDnsApiEndpoints(app.db),
+        },
+        { server: body.server },
+      );
       const audit = {
         role: cmd.role,
         nodeIp: cmd.nodeIp,
         serverIp: cmd.serverIp,
+        serverPicked: body.server !== undefined,
         platformVersion: cmd.platformVersion,
         dualStack: cmd.dualStack,
         joinTokenKind: cmd.joinToken.kind,

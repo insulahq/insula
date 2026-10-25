@@ -54,19 +54,6 @@ export function useDeleteDnsRecord(tenantId: string | undefined, domainId: strin
   });
 }
 
-export function useSyncDnsRecords(tenantId: string | undefined, domainId: string | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      apiFetch<{ data: readonly DnsRecordResponse[] }>(`${basePath(tenantId!, domainId!)}/sync`, {
-        method: 'POST',
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
-    },
-  });
-}
-
 export interface DnsRecordDiffEntry {
   readonly type: string;
   readonly name: string;
@@ -110,8 +97,41 @@ export function usePullDnsRecord(tenantId: string | undefined, domainId: string 
 export function usePushDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { type: string; name: string; value: string; ttl?: number; priority?: number; weight?: number; port?: number }) =>
+    mutationFn: (input: {
+      type: string; name: string; value: string; ttl?: number; priority?: number; weight?: number; port?: number;
+      /** The server's value this push replaces (a conflict). */
+      replaces?: string;
+    }) =>
       apiFetch(`${basePath(tenantId!, domainId!)}/push`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dns-record-diff'] });
+    },
+  });
+}
+
+/** Sync Records: drop a local row only; the DNS server is not touched. */
+export function useRemoveLocalDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (localId: string) =>
+      apiFetch(`${basePath(tenantId!, domainId!)}/remove-local`, {
+        method: 'POST', body: JSON.stringify({ local_id: localId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
+      qc.invalidateQueries({ queryKey: ['dns-record-diff'] });
+    },
+  });
+}
+
+/** Sync Records: withdraw one value from the DNS server only. */
+export function useRemoveRemoteDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { type: string; name: string; value: string }) =>
+      apiFetch(`${basePath(tenantId!, domainId!)}/remove-remote`, {
         method: 'POST', body: JSON.stringify(input),
       }),
     onSuccess: () => {

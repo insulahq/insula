@@ -223,13 +223,38 @@ export function runTimeoutMs(
   return byType * 1000;
 }
 
+/** What clip() puts in front of output it shortened. */
+const TRUNCATED_PREFIX = '…(truncated)\n';
+
 export function clip(text: string): string | null {
   const trimmed = text.trim();
   if (trimmed === '') return null;
   if (trimmed.length <= MAX_OUTPUT_CHARS) return trimmed;
   // Keep the TAIL: a failing command says why on its last lines, and a
   // head-truncated log of a chatty cron is the part nobody needs.
-  return `…(truncated)\n${trimmed.slice(-MAX_OUTPUT_CHARS)}`;
+  return `${TRUNCATED_PREFIX}${trimmed.slice(-MAX_OUTPUT_CHARS)}`;
+}
+
+/** How much of a run's output a failure notice carries. */
+const NOTICE_OUTPUT_CHARS = 300;
+
+/**
+ * The end of a run's output, short enough for a notice. Pure.
+ *
+ * The notice used to take the first 200 characters of what clip() had kept —
+ * the START of the last 2000 — so a long Moodle run was reported as
+ * "exit 1: …Cron run completed correctly / Cron c", cut off before the lines
+ * that said why it failed. Starts on a whole line when one begins in the
+ * first half of the tail.
+ */
+export function outputTail(output: string): string {
+  const shortened = output.startsWith(TRUNCATED_PREFIX);
+  const text = (shortened ? output.slice(TRUNCATED_PREFIX.length) : output).trim();
+  if (!shortened && text.length <= NOTICE_OUTPUT_CHARS) return text;
+  const tail = text.slice(-NOTICE_OUTPUT_CHARS);
+  const lineBreak = tail.indexOf('\n');
+  const fromLine = lineBreak >= 0 && lineBreak < NOTICE_OUTPUT_CHARS / 2 ? tail.slice(lineBreak + 1) : tail;
+  return `…${fromLine}`;
 }
 
 // ─── Kubernetes transport ────────────────────────────────────────────────────
@@ -600,6 +625,6 @@ export function describeFailure(result: CronRunResult, type: string): string {
   const prefix = type === 'deployment'
     ? (result.responseCode !== null ? `exit ${result.responseCode}` : 'did not run')
     : (result.responseCode !== null ? `HTTP ${result.responseCode}` : 'request failed');
-  const detail = result.output ? `: ${result.output.slice(0, 200)}` : '';
+  const detail = result.output ? `: ${outputTail(result.output)}` : '';
   return `${prefix}${detail}`;
 }

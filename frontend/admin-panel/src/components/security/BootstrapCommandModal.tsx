@@ -1,19 +1,28 @@
 /**
  * "Get bootstrap command" for a pre-enrolled node (Security → Network Trust
- * → Pending Peers). Renders the join steps the operator runs ON THE NEW
- * NODE as root: download + verify + install the cluster's own `insula`
- * release, then `insula bootstrap --join-as …`. One paste-safe block, plus
- * each step on its own.
+ * → Pending Peers). Renders the ONE line the operator runs ON THE NEW NODE as
+ * root: it fetches scripts/join-node.sh, checks it against the hash of the
+ * platform's own copy, and runs it — the script verifies and installs the
+ * cluster's own `insula` release, then runs `insula bootstrap --join-as …`.
  *
  * Opening it POSTs: for a worker the platform mints a short-lived join
  * token (shown with its expiry). A server join needs the cluster's server
  * token, which the platform never serves — step 1 reads it on an existing
  * server instead.
+ *
+ * The join goes through one existing server (`--server`). The platform picks a
+ * Ready one whose API port answers; the operator can pick any other Ready one —
+ * every server holds the same token, so any of them works.
  */
 
 import { useEffect, useState } from 'react';
 import { AlertCircle, Copy, Info, KeyRound, Loader2, X } from 'lucide-react';
-import type { BootstrapCommandResponse, BootstrapStep, OperatorError } from '@insula/api-contracts';
+import type {
+  BootstrapCommandResponse,
+  BootstrapStep,
+  JoinServerCandidate,
+  OperatorError,
+} from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { fetchBootstrapCommand } from '@/hooks/use-cluster-network';
 import { extractOperatorError } from '@/lib/extract-operator-error';
@@ -26,6 +35,10 @@ interface BootstrapCommandModalProps {
 export default function BootstrapCommandModal({ cppName, onClose }: BootstrapCommandModalProps) {
   const [data, setData] = useState<BootstrapCommandResponse | null>(null);
   const [error, setError] = useState<OperatorError | null>(null);
+  // ip undefined = the platform's pick. `n` makes a repeated pick (say, a retry
+  // after a refused one) fetch again.
+  const [pick, setPick] = useState<{ ip?: string; n: number }>({ n: 0 });
+  const [loading, setLoading] = useState(true);
 
   // Escape closes, like every other admin modal (found by driving it in a real browser).
   useEffect(() => {
@@ -36,17 +49,22 @@ export default function BootstrapCommandModal({ cppName, onClose }: BootstrapCom
 
   useEffect(() => {
     let cancelled = false;
-    fetchBootstrapCommand(cppName)
+    setLoading(true);
+    setError(null);
+    fetchBootstrapCommand(cppName, pick.ip)
       .then((d) => {
         if (!cancelled) setData(d);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(extractOperatorError(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [cppName]);
+  }, [cppName, pick]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/60 p-4" role="dialog" aria-modal="true">
@@ -70,25 +88,39 @@ export default function BootstrapCommandModal({ cppName, onClose }: BootstrapCom
             </div>
           )}
           {error && <ErrorPanel error={error} testId="bootstrap-command-error" />}
-          {data && <JoinSteps data={data} cppName={cppName} />}
+          {data && (
+            <JoinSteps
+              data={data}
+              cppName={cppName}
+              loading={loading}
+              onPickServer={(ip) => setPick((p) => ({ ip, n: p.n + 1 }))}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function JoinSteps({ data, cppName }: { data: BootstrapCommandResponse; cppName: string }) {
+interface JoinStepsProps {
+  readonly data: BootstrapCommandResponse;
+  readonly cppName: string;
+  readonly loading: boolean;
+  readonly onPickServer: (ip: string) => void;
+}
+
+function JoinSteps({ data, cppName, loading, onPickServer }: JoinStepsProps) {
   const onServer = data.steps.filter((s) => s.runOn === 'existing-server');
   const onNode = data.steps.filter((s) => s.runOn === 'new-node');
   const numberOf = (s: BootstrapStep): number => data.steps.indexOf(s) + 1;
   const firstOnNode = onNode[0];
-  const nodeRange =
-    onServer.length > 0 && firstOnNode ? `Steps ${numberOf(firstOnNode)}–${data.steps.length}` : 'All steps';
+  const nodeHeading =
+    onServer.length > 0 && firstOnNode ? `Step ${numberOf(firstOnNode)} — on the new node` : 'On the new node';
 
   return (
     <div className="space-y-4">
       <p className="text-sm font-medium text-gray-900 dark:text-gray-100" data-testid="bootstrap-command-heading">
-        Run these on the new node <Code>{data.nodeIp}</Code> as root (<Code>sudo -i</Code>).
+        Run the join on the new node <Code>{data.nodeIp}</Code> as root (<Code>sudo -i</Code>).
       </p>
       <p className="text-xs text-gray-600 dark:text-gray-400">
         The pre-enrolment <Code>{cppName}</Code> must exist while the node joins — it is what lets{' '}
@@ -101,6 +133,8 @@ function JoinSteps({ data, cppName }: { data: BootstrapCommandResponse; cppName:
         <Fact label="Release" value={data.platformVersion} mono />
         <Fact label="Network" value={data.dualStack ? 'Dual-stack (IPv4 + IPv6)' : 'IPv4'} />
       </dl>
+
+      <JoinTargetPicker data={data} loading={loading} onPick={onPickServer} />
 
       <TokenPanel data={data} />
 
@@ -125,46 +159,106 @@ function JoinSteps({ data, cppName }: { data: BootstrapCommandResponse; cppName:
         </ul>
       )}
 
-      {onServer.map((s) => (
-        <section key={s.id}>
+      <div aria-busy={loading} className={`space-y-4 ${loading ? 'opacity-60' : ''}`}>
+        {onServer.map((s) => (
+          <section key={s.id}>
+            <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Step {numberOf(s)} — on any existing server
+            </h3>
+            <p className="mb-2 text-xs text-gray-600 dark:text-gray-400">{s.title}</p>
+            <CodeBlock text={s.command} testId={`bootstrap-step-${s.id}`} />
+            {s.note && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{s.note}</p>}
+          </section>
+        ))}
+
+        <section>
           <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Step {numberOf(s)} — on an existing server ({data.serverIp})
+            {nodeHeading} ({data.nodeIp})
           </h3>
-          <p className="mb-2 text-xs text-gray-600 dark:text-gray-400">{s.title}</p>
-          <CodeBlock text={s.command} testId={`bootstrap-step-${s.id}`} />
-          {s.note && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{s.note}</p>}
+          <CodeBlock text={data.script} testId="bootstrap-script" />
+          {onNode.map(
+            (s) =>
+              s.note && (
+                <p key={s.id} className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid={`bootstrap-note-${s.id}`}>
+                  {s.note}
+                </p>
+              ),
+          )}
+          {data.joinScript && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <a
+                href={data.joinScript.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-blue-700 dark:text-blue-400 underline hover:text-blue-900 dark:hover:text-blue-300"
+                data-testid="join-script-link"
+              >
+                Read join-node.sh
+              </a>{' '}
+              — the exact file the line runs (SHA-256 <Code>{data.joinScript.sha256.slice(0, 12)}…</Code>).
+            </p>
+          )}
         </section>
-      ))}
-
-      <section>
-        <h3 className="mb-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-          {nodeRange} — on the new node ({data.nodeIp}), pasted as one block
-        </h3>
-        <CodeBlock text={data.script} copyLabel="Copy all" testId="bootstrap-script" />
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          The block stops at the first failure: if the signature check does not print{' '}
-          <Code>Verified OK</Code>, nothing is installed or run.
-        </p>
-      </section>
-
-      <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
-        <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
-          Copy the new-node steps one at a time
-        </summary>
-        <ol className="mt-3 space-y-3">
-          {onNode.map((s) => (
-            <li key={s.id}>
-              <p className="mb-1 text-xs font-medium text-gray-800 dark:text-gray-200">
-                Step {numberOf(s)} — {s.title}
-              </p>
-              <CodeBlock text={s.command} testId={`bootstrap-step-${s.id}`} />
-              {s.note && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{s.note}</p>}
-            </li>
-          ))}
-        </ol>
-      </details>
+      </div>
     </div>
   );
+}
+
+/** Which server the steps join through, when the cluster has more than one.
+ *  A server that is not Ready cannot be picked; one whose API port did not
+ *  answer just now is marked so. Picking one re-renders the steps for it. */
+function JoinTargetPicker({
+  data,
+  loading,
+  onPick,
+}: {
+  data: BootstrapCommandResponse;
+  loading: boolean;
+  onPick: (ip: string) => void;
+}) {
+  const servers = data.servers ?? [];
+  if (servers.length < 2) return null;
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
+      <label htmlFor="join-target-select" className="block text-xs font-medium text-gray-800 dark:text-gray-200">
+        Join through
+      </label>
+      <div className="mt-1 flex items-center gap-2">
+        <select
+          id="join-target-select"
+          data-testid="join-target-select"
+          value={data.serverIp}
+          disabled={loading}
+          aria-describedby="join-target-help"
+          onChange={(e) => onPick(e.target.value)}
+          className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 disabled:opacity-60"
+        >
+          {servers.map((s) => (
+            <option key={s.ip} value={s.ip} disabled={!s.ready}>
+              {s.name} ({s.ip}){serverState(s)}
+            </option>
+          ))}
+        </select>
+        {loading && (
+          <span role="status" className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+            <Loader2 size={12} className="animate-spin" />
+            Updating…
+          </span>
+        )}
+      </div>
+      <p id="join-target-help" className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        Any Ready server works — they all hold the same server token. The default is one whose API port answered
+        just now.
+      </p>
+    </div>
+  );
+}
+
+function serverState(s: JoinServerCandidate): string {
+  if (!s.ready) return ' — not Ready';
+  if (s.answering === false) return ' — not answering';
+  if (s.cordoned) return ' — cordoned';
+  return '';
 }
 
 function TokenPanel({ data }: { data: BootstrapCommandResponse }) {
@@ -194,8 +288,9 @@ function TokenPanel({ data }: { data: BootstrapCommandResponse }) {
         {data.role === 'server'
           ? 'A server join needs the cluster’s server token — short-lived tokens can only join workers. '
           : 'No short-lived token could be minted (see the note below), so this worker joins with the cluster’s server token. '}
-        The platform never shows that token: step 1 reads it on an existing server, and the join step asks for it
-        (hidden input, kept out of shell history).
+        The platform never shows that token: step 1 reads it on any existing server (every server holds the same
+        one), and the join step asks for it (hidden input, kept out of shell history) and checks it before
+        installing anything.
       </span>
     </div>
   );

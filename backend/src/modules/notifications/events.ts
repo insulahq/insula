@@ -973,6 +973,30 @@ export async function notifyAdminNodeStartupComplete(
   await dispatchSafe(db, 'admin.node_startup_complete', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminNodeBackOnlinePayload {
+  readonly nodeName: string;
+  /** Pre-rendered ("1m 10s"): from leaving Ready to Ready again. */
+  readonly downtimeText: string;
+  /** "11:59 UTC" */
+  readonly downAtText: string;
+  /** "12:00 UTC" */
+  readonly backAtText: string;
+  /** Whether it rebooted, as far as is known — a sentence. */
+  readonly bootNote: string;
+}
+/**
+ * The all-clear for a "down" notice: the node is Ready again on the SAME boot
+ * (node-health/back-online.ts). A return on a new boot is the startup notice
+ * instead. dedupeKey is per (node × boot × day the outage began).
+ */
+export async function notifyAdminNodeBackOnline(
+  db: Database,
+  payload: AdminNodeBackOnlinePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_back_online', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeJoinedPayload {
   readonly nodeName: string;
   /** "server" or "worker". */
@@ -1526,6 +1550,12 @@ export interface ScheduledTaskFailurePayload {
   readonly errorMessage: string;
   /** The cron expression and the clock it is read on, e.g. `0 3 * * * (UTC)`. */
   readonly schedule: string;
+  /**
+   * Failed runs in a row, e.g. `2`; null for a single failure. Always present:
+   * a variable left out is filled with a placeholder, which `{{#if}}` reads
+   * as set — "failed on — runs in a row".
+   */
+  readonly failedRuns: string | null;
 }
 /**
  * A tenant's scheduled task (web cron) run failed.

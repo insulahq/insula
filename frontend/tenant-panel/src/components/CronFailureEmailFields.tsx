@@ -79,6 +79,10 @@ export default function CronFailureEmailFields({ value, onChange, tenantEmail, m
             In the panel, and by email as each admin&apos;s notification settings say. Off: they are not
             told at all — no panel notice, no email. The task list still shows the last run.
           </span>
+          <span className="mt-1 block text-[11px] text-gray-500 dark:text-gray-400" data-testid="cron-notify-streak-rule">
+            When its next run is due within the hour, a task is reported only once two runs in a row have
+            failed, so a single interrupted run alerts nobody. Otherwise its first failure is reported.
+          </span>
         </span>
       </label>
 

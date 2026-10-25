@@ -7,12 +7,13 @@
  * deployment cron never fired.
  */
 
-import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { clip, executeCronJob, describeFailure, platformInterruption, runTimeoutMs, type ClusterTransport, type CronRunResult } from './executor.js';
 import { getNextRunTime } from './cron-expression.js';
 import { resolveFailureEmailRecipients } from './failure-email.js';
+import { failureIsReportable } from './failure-streak.js';
 import {
   OUTAGE_EVIDENCE_DELAY_MS,
   PLATFORM_FAULT_RETRY_DELAY_MS,
@@ -261,7 +262,10 @@ export async function runAndRecord(
   }
 
   const recordedAt = new Date();
-  await db
+  const fault = result.platformFault;
+  // Counted in the UPDATE itself: a manual run and a scheduled one finishing
+  // together must not both read 1 and both write 2.
+  const [recorded] = await db
     .update(cronJobs)
     .set({
       lastRunAt: recordedAt,
@@ -269,16 +273,20 @@ export async function runAndRecord(
       lastRunDurationMs: result.durationMs,
       lastRunResponseCode: result.responseCode,
       lastRunOutput: result.output,
+      consecutiveFailures: streakAfter(result.status, fault),
     })
-    .where(eq(cronJobs.id, job.id));
+    .where(eq(cronJobs.id, job.id))
+    .returning({ consecutiveFailures: cronJobs.consecutiveFailures });
+  const streak = recorded?.consecutiveFailures ?? 1;
 
   // Tell the tenant. Until the notification was added, a failed run recorded
   // itself and notified nobody — a nightly job could fail every night and the
   // only evidence was a column in a panel somebody had to think to open.
   //
   // Dedupe per (job, UTC day): a broken job on a 5-minute schedule would
-  // otherwise send 288 notifications before breakfast.
-  const fault = result.platformFault;
+  // otherwise send 288 notifications before breakfast. And a job that runs
+  // again within the hour is reported on its second failure in a row, not its
+  // first (failure-streak.ts).
   if (fault) {
     // The platform could not reach its own cluster: not the tenant's failure,
     // and they are not told it is. The run record says what happened; the
@@ -296,14 +304,49 @@ export async function runAndRecord(
     const canCheck = !deps.transport || typeof deps.transport.podDisruption === 'function';
     if (job.type === 'deployment' && result.ranIn && canCheck) {
       await deferCheck(deps.interruptionCheckDelayMs ?? INTERRUPTION_CHECK_DELAY_MS,
-        () => notifyUnlessInterrupted(db, job, result, recordedAt, deps));
+        () => notifyUnlessInterrupted(db, job, result, recordedAt, streak, deps));
     } else {
-      await notifyFailure(db, job, describeFailure(result, job.type));
+      await notifyIfReportable(db, job, result, recordedAt, streak);
     }
   }
 
   const [updated] = await db.select().from(cronJobs).where(eq(cronJobs.id, job.id));
   return updated;
+}
+
+/**
+ * The failure streak after this run: cleared by a success, one longer after
+ * the tenant's own failure, and untouched by a run the platform could not
+ * start — that says nothing about whether their command works.
+ */
+function streakAfter(status: CronRunResult['status'], platformFault: string | undefined): SQL | number {
+  if (status === 'success') return 0;
+  if (platformFault) return sql`${cronJobs.consecutiveFailures}`;
+  return sql`${cronJobs.consecutiveFailures} + 1`;
+}
+
+/**
+ * Tell the tenant about this failure once the streak is long enough for the
+ * job's schedule (failure-streak.ts); before that the run record is all there
+ * is. Never throws.
+ */
+async function notifyIfReportable(
+  db: Database,
+  job: typeof cronJobs.$inferSelect,
+  result: CronRunResult,
+  recordedAt: Date,
+  streak: number,
+): Promise<void> {
+  try {
+    const zone = resolveTimeZone(job, await getPlatformTimeZone(db));
+    if (!failureIsReportable(streak, job.schedule, recordedAt, zone)) {
+      console.warn(`[cron-scheduler] job ${job.id} failed (${streak} in a row) — reported if its next run fails too`);
+      return;
+    }
+    await notifyFailure(db, job, describeFailure(result, job.type), streak);
+  } catch (err) {
+    console.warn('[cron-scheduler] failure notification failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 /**
@@ -318,18 +361,25 @@ async function notifyUnlessInterrupted(
   job: typeof cronJobs.$inferSelect,
   result: CronRunResult,
   recordedAt: Date,
+  streak: number,
   deps: CronSchedulerDeps,
 ): Promise<void> {
   try {
     const why = result.ranIn ? await platformInterruption(result.ranIn, deps) : null;
     if (!why) {
-      await notifyFailure(db, job, describeFailure(result, job.type));
+      await notifyIfReportable(db, job, result, recordedAt, streak);
       return;
     }
     console.warn(`[cron-scheduler] job ${job.id} was interrupted by the platform (${why}) — not reported as a failure`);
     await db
       .update(cronJobs)
-      .set({ lastRunOutput: clip(`Interrupted by the platform: ${why}. The command itself did not fail.\n${result.output ?? ''}`) })
+      .set({
+        lastRunOutput: clip(`Interrupted by the platform: ${why}. The command itself did not fail.\n${result.output ?? ''}`),
+        // Counted as the tenant's failure when it was recorded; it was not. When
+        // a later run has already been recorded the guard below skips this, and
+        // the streak stays one too high: that errs towards telling the tenant.
+        consecutiveFailures: sql`GREATEST(${cronJobs.consecutiveFailures} - 1, 0)`,
+      })
       // Only this run's record: a later run has already said something newer.
       .where(and(eq(cronJobs.id, job.id), eq(cronJobs.lastRunAt, recordedAt)));
   } catch (err) {
@@ -346,6 +396,7 @@ async function notifyFailure(
   db: Database,
   job: typeof cronJobs.$inferSelect,
   errorMessage: string,
+  streak: number,
 ): Promise<void> {
   const now = new Date();
   const zone = resolveTimeZone(job, await getPlatformTimeZone(db));
@@ -354,7 +405,13 @@ async function notifyFailure(
   await notifyTenantScheduledTaskFailure(
     db,
     job.tenantId,
-    { taskName: job.name, errorMessage, schedule: `${job.schedule} (${zone})` },
+    {
+      taskName: job.name,
+      errorMessage,
+      schedule: `${job.schedule} (${zone})`,
+      // Only when it says something: "failed on 1 runs in a row" does not.
+      failedRuns: streak > 1 ? String(streak) : null,
+    },
     {
       dedupeKey: `scheduled-task-failure:${job.id}:${now.toISOString().slice(0, 10)}`,
       externalRecipients: email.recipients,

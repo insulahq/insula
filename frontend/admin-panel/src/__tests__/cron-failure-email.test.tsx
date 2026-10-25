@@ -111,6 +111,8 @@ describe('CronJobModal failure email — create', () => {
     render(<CronJobModal open onClose={() => {}} tenantId="tenant-9" />, { wrapper: wrapper() });
     await fillRequired(user);
     expect(screen.getByTestId('cron-notify-tenant-email')).toBeChecked();
+    // When a failure is reported at all (cron-jobs/failure-streak.ts).
+    expect(screen.getByTestId('cron-notify-streak-rule')).toHaveTextContent(/next run is due within the hour, a task is reported only once two runs in a row have\s+failed/);
     await user.click(screen.getByTestId('cron-notify-tenant-email'));
     await user.click(screen.getByTestId('cron-notify-toggle'));
     await user.type(screen.getByTestId('cron-notify-email-input'), 'ops@example.test');

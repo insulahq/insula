@@ -19,6 +19,8 @@ import { realSelfUpgradeOps } from './self-upgrade/index.js';
 import { realHostConfigOps, type HostConfigOps } from './host-config/index.js';
 import { realClusterUpgradeOps } from './cluster-upgrade-ops.js';
 import { realNodeOps } from './node-ops.js';
+import { listMembers, readEtcdTls, removeMember } from './etcd-client.js';
+import type { EtcdOps } from './etcd-ops.js';
 import { realUpgradeOps } from './upgrade-ops.js';
 import { realRollbackOps } from './rollback-ops.js';
 import { scrubCreds } from './redact.js';
@@ -489,6 +491,8 @@ export interface Deps {
   clusterUpgrade: ClusterUpgradeOps;
   /** Node operations: cordon/uncordon (W12). */
   node: NodeOps;
+  /** etcd membership (`insula etcd`): k3s's embedded etcd, over gRPC. */
+  etcd: EtcdOps;
   /** Platform upgrade: host-side Flux re-pin (W13). */
   upgrade: UpgradeOps;
   /** Platform rollback: undo the most recent upgrade (W16). */
@@ -1077,6 +1081,10 @@ export function realDeps(): Deps {
     hostConfig: realHostConfigOps(env),
     clusterUpgrade: realClusterUpgradeOps(env),
     node: realNodeOps(env),
+    etcd: {
+      listMembers: (endpoint, tlsDir) => listMembers(endpoint, readEtcdTls(tlsDir)),
+      removeMember: (endpoint, tlsDir, id) => removeMember(endpoint, readEtcdTls(tlsDir), id),
+    },
     upgrade: realUpgradeOps(env),
     rollback: realRollbackOps(env),
     resetAdminPassword: (opts) => realResetAdminPassword(env, opts),

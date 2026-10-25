@@ -133,10 +133,12 @@ export function useDeletePendingPeer() {
 /** One-shot POST — not a useQuery: the operator triggers it from a button
  *  click, and for a WORKER each call mints a fresh short-lived join token
  *  (a write), so it must never be refetched or cached. */
-export async function fetchBootstrapCommand(cppName: string): Promise<BootstrapCommandResponse> {
+export async function fetchBootstrapCommand(cppName: string, server?: string): Promise<BootstrapCommandResponse> {
+  // `server` picks the existing server to join through; omitted, the platform
+  // picks a Ready one whose API port answers.
   const env = await apiFetch<Envelope<BootstrapCommandResponse>>(
     `/api/v1/admin/cluster/bootstrap-command/${encodeURIComponent(cppName)}`,
-    { method: 'POST' },
+    server ? { method: 'POST', body: JSON.stringify({ server }) } : { method: 'POST' },
   );
   return env.data;
 }

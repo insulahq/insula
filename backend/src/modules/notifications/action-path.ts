@@ -55,6 +55,7 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.tenant_misplaced': '/tenants/list',
   'admin.node_rebooting': '/cluster/nodes',
   'admin.node_startup_complete': '/cluster/nodes',
+  'admin.node_back_online': '/cluster/nodes',
   'admin.node_joined': '/cluster/nodes',
   'admin.node_removed': '/cluster/nodes',
   'admin.node_memory_event_warning': '/cluster/nodes',

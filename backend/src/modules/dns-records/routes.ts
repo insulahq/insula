@@ -1,5 +1,10 @@
 import { eq, and } from 'drizzle-orm';
-import { pullDnsRecordSchema, pushDnsRecordSchema } from '@insula/api-contracts';
+import {
+  pullDnsRecordSchema,
+  pushDnsRecordSchema,
+  removeLocalDnsRecordSchema,
+  removeRemoteDnsRecordSchema,
+} from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { domains } from '../../db/schema.js';
@@ -84,10 +89,32 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/tenants/:tenantId/domains/:domainId/dns-records/sync
+  // Imports the records only the DNS server has; local rows are kept
+  // (service.importRemoteOnlyRecords). It used to replace them all.
   app.post('/tenants/:tenantId/domains/:domainId/dns-records/sync', async (request) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
-    const records = await service.syncRecordsFromProvider(app.db, tenantId, domainId);
+    await assertNotSecondaryDns(app, tenantId, domainId);
+    const records = await service.importRemoteOnlyRecords(app.db, tenantId, domainId);
     return success(records);
+  });
+
+  // POST …/dns-records/remove-local — Sync Records: drop a local row only.
+  app.post('/tenants/:tenantId/domains/:domainId/dns-records/remove-local', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    await assertNotSecondaryDns(app, tenantId, domainId);
+    const body = parseBody(removeLocalDnsRecordSchema, request.body);
+    await service.removeLocalDnsRecord(app.db, tenantId, domainId, body.local_id);
+    return success({ removed: body.local_id });
+  });
+
+  // POST …/dns-records/remove-remote — Sync Records: withdraw one value from
+  // the DNS server only.
+  app.post('/tenants/:tenantId/domains/:domainId/dns-records/remove-remote', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    await assertNotSecondaryDns(app, tenantId, domainId);
+    const body = parseBody(removeRemoteDnsRecordSchema, request.body);
+    await service.removeRemoteDnsRecord(app.db, tenantId, domainId, body);
+    return success({ removed: { type: body.type, name: body.name, value: body.value } });
   });
 
   // GET /api/v1/tenants/:tenantId/domains/:domainId/dns-records/diff
@@ -139,10 +166,18 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
     if (!domain) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
 
-    const outcome = await service.syncRecordToProviders(app.db, domain.domainName, 'create', {
+    const record = {
       type: body.type, name: body.name, content: body.value, ttl: body.ttl ?? 3600,
       priority: body.priority, weight: body.weight, port: body.port,
-    }, domainId);
+    };
+    // A conflict's Push REPLACES the server's value. Publishing alongside it
+    // left both values live — and for a CNAME the server refused the second.
+    const outcome = body.replaces !== undefined
+      ? await service.syncRecordToProviders(app.db, domain.domainName, 'update', record, domainId, {
+        previous: { type: body.type, name: body.name, content: body.replaces },
+        withdrawOnFailure: true,
+      })
+      : await service.syncRecordToProviders(app.db, domain.domainName, 'create', record, domainId);
 
     // This used to answer `{ message: 'Record pushed to DNS server' }`
     // unconditionally — including when the provider had just rejected the

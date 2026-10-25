@@ -93,6 +93,7 @@ export async function listAllCronJobs(
       lastRunDurationMs: cronJobs.lastRunDurationMs,
       lastRunResponseCode: cronJobs.lastRunResponseCode,
       lastRunOutput: cronJobs.lastRunOutput,
+      consecutiveFailures: cronJobs.consecutiveFailures,
       notifyOnFailure: cronJobs.notifyOnFailure,
       notifyTenantEmail: cronJobs.notifyTenantEmail,
       notifyEmail: cronJobs.notifyEmail,

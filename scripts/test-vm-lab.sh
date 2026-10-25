@@ -119,6 +119,16 @@ check "the private-network note gets the cluster CIDR on the join line" \
 check "the CIDR edit touches only the join line" '[[ $(grep -c -- "--cluster-network-cidr 10.98.120.0/24" "$T/join-private.sh") == 1 ]]'
 lab_join_script_cidr "$T/join-public.sh" 10.98.120.0/24 2>/dev/null
 check "no note, no edit" 'cmp -s "$T/join-public.sh" "$T/join-public.orig"'
+# The one-line join asks in the answer's notes; the CIDR goes at the end of the line.
+cat > "$T/join-line.sh" <<'JOIN'
+curl -fsSL -o join-node.sh 'https://raw.githubusercontent.com/insulahq/insula/v9.9.9/scripts/join-node.sh' && echo 'abc  join-node.sh' | sha256sum -c - && bash join-node.sh --release '9.9.9' --join-as worker --server '10.98.120.11' --token 'K10abc::tok'
+JOIN
+cp "$T/join-line.sh" "$T/join-line.orig"
+lab_join_script_cidr "$T/join-line.sh" 10.98.120.0/24 0 2>/dev/null
+check "one-line join, no note: no edit" 'cmp -s "$T/join-line.sh" "$T/join-line.orig"'
+lab_join_script_cidr "$T/join-line.sh" 10.98.120.0/24 1 2>/dev/null
+printf '%s --cluster-network-cidr 10.98.120.0/24\n' "$(cat "$T/join-line.orig")" > "$T/join-line.want"
+check "one-line join, the note asks: the CIDR ends the line" 'cmp -s "$T/join-line.sh" "$T/join-line.want"'
 
 # ── release checkouts (cached tree; a tree that is not the tag is refused) ──
 LAB_CACHE_DIR="$T/cache"; mkdir -p "$LAB_CACHE_DIR/rel-v9.9.9/scripts" "$LAB_CACHE_DIR/rel-v9.9.9/platform"

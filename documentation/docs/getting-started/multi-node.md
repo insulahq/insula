@@ -67,16 +67,24 @@ node's IP has to be authorised first. Two ways:
 ### The easy way: Get bootstrap command
 
 After pre-enrolling the node, click **Get bootstrap command** on its row in
-**Security → Network Trust → Pending Peers**. The panel shows the steps to run
-**on the new node, as root** (`sudo -i`) — one block you paste in a single go,
-or each step on its own:
+**Security → Network Trust → Pending Peers**. The panel shows **one line** to
+run **on the new node, as root** (`sudo -i`). It downloads
+[`scripts/join-node.sh`](https://github.com/insulahq/insula/blob/main/scripts/join-node.sh)
+and checks it against the SHA-256 of the cluster's own copy —
+`sha256sum` must print `join-node.sh: OK`, or nothing runs. The script then:
 
-1. download the signed `insula` CLI of the **release the cluster runs** (never
+1. downloads the signed `insula` CLI of the **release the cluster runs** (never
    `latest`),
-2. verify its signature against the cluster's own release key, then install it —
-   the block stops right there unless `openssl` prints `Verified OK`,
-3. join: `insula bootstrap --join-as <role> --server '<existing-server-ip>'
+2. verifies its signature against the cluster's release key, and installs it
+   only if it matches,
+3. joins: `insula bootstrap --join-as <role> --server '<existing-server-ip>'
    --token … [--dual-stack]`.
+
+A join that fails cleans up after itself, so you can fix the cause and run the
+same line again. That includes a server whose etcd had already started: the
+cluster lists it as an etcd learner until bootstrap removes it. If bootstrap
+cannot reach any server's etcd to do that, it says so; `insula etcd members`
+and `insula etcd remove-learner <id>` on an existing server finish the job.
 
 The token depends on the role:
 
@@ -87,7 +95,7 @@ The token depends on the role:
   node has joined.
 - **Server** — a server needs the cluster's **server token**, the cluster's
   root credential, which the panel never displays. The first step reads it on
-  an existing server; the join step then asks for it (hidden input, kept out of
+  an existing server; the join line then asks for it (hidden input, kept out of
   shell history).
 
 The node's Kubernetes name is the machine's hostname at join time unless you
@@ -99,8 +107,9 @@ affect the cluster; an existing node keeps its name. See
 
 `--dual-stack` is added for you when the cluster runs IPv4 + IPv6. If the
 cluster's servers are pinned to a private network (`--cluster-network-cidr`),
-the join step says so in a comment: add the same `--cluster-network-cidr
-<cidr>` to the join line yourself — the cluster does not record that range.
+the panel says so: append the same `--cluster-network-cidr <cidr>` to the end of
+the join line yourself — the cluster does not record that range. Any other
+`insula bootstrap` flag, such as `--node-name`, goes at the end the same way.
 
 ### By hand
 
@@ -147,7 +156,8 @@ Run everything as root (`sudo -i`).
 
     Stronger: instead of downloading `cosign.pub`, copy
     `/etc/platform/cosign.pub` from an existing server — the key the cluster
-    already trusts (the admin panel's command embeds exactly that key).
+    already trusts (the admin panel's join line verifies against exactly that
+    key).
 
 4. **Join.** Add a server (control plane) — and then a third right after it
     (see *Never stop at two servers* above):

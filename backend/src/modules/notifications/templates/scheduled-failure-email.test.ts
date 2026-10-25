@@ -32,6 +32,7 @@ const VARS = {
   taskName: 'Nightly import',
   schedule: '0 3 * * * (Europe/Berlin)',
   errorMessage: 'HTTP 500: upstream exploded',
+  failedRuns: null,
 };
 
 describe('tasks.scheduled_failure email', () => {
@@ -73,6 +74,31 @@ describe('tasks.scheduled_failure email', () => {
     expect(r.fallbackUsed).toBe(false);
     expect(r.body).not.toContain('Schedule:');
     expect(r.body).toContain('HTTP 500');
+  });
+
+  // A job that runs at least hourly is reported on its second failure in a
+  // row (cron-jobs/failure-streak.ts): the email says how many, and the rule.
+  it('says how many runs in a row failed, and why a single failure sent nothing', async () => {
+    const r = await renderForDelivery(emailTemplate(), { ...VARS, failedRuns: '2' }, { skipMjml: true });
+    expect(r.fallbackUsed).toBe(false);
+    expect(r.degradedVars).toEqual([]);
+    expect(r.body).toContain('failed on 2 runs in a row.');
+    expect(r.body).toMatch(/reported only once two runs in a row have failed/);
+  });
+
+  it('a single failure (a daily job) reads as before: no count, and no rule that is not its own', async () => {
+    const r = await renderForDelivery(emailTemplate(), VARS, { skipMjml: true });
+    expect(r.body).toContain('of Example Ltd failed.');
+    expect(r.body).not.toContain('in a row');
+  });
+
+  it('the panel notice says it too', async () => {
+    const t = ALL_SEED_TEMPLATES.find(
+      (x) => x.categoryId === 'tasks.scheduled_failure' && x.channel === 'in_app' && x.locale === 'en',
+    );
+    const tpl = { ...t, id: 'test-scheduled-failure-inapp', version: 1, isActive: true } as unknown as NotificationTemplateResponse;
+    const r = await renderForDelivery(tpl, { ...VARS, failedRuns: '3' }, { skipMjml: true });
+    expect(r.body).toBe('The scheduled task "Nightly import" failed on 3 runs in a row. HTTP 500: upstream exploded');
   });
 
   it('compiles to HTML through MJML', async () => {
