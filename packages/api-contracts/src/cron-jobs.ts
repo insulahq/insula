@@ -191,6 +191,13 @@ export const cronJobResponseSchema = z.object({
   lastRunDurationMs: z.number().nullable(),
   lastRunResponseCode: z.number().nullable(),
   lastRunOutput: z.string().nullable(),
+  /**
+   * The tenant's own failed runs in a row; 0 after a success. A job whose next
+   * run is within the hour is reported once this reaches 2 (backend
+   * cron-jobs/failure-streak.ts). Optional: an API from before migration 0164
+   * does not send it.
+   */
+  consecutiveFailures: z.number().int().min(0).optional(),
   notifyOnFailure: z.boolean(),
   notifyTenantEmail: z.boolean(),
   notifyEmail: z.string().nullable(),

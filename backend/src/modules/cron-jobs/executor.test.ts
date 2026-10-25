@@ -5,6 +5,8 @@ import {
   selectPod,
   selectContainer,
   describeFailure,
+  clip,
+  outputTail,
   type ClusterTransport,
   type CronJobRow,
   type PodSummary,
@@ -364,6 +366,39 @@ describe('describeFailure', () => {
   it('names the HTTP status for a webcron job', () => {
     expect(describeFailure({ status: 'failed', responseCode: 503, output: null, durationMs: 1 }, 'webcron'))
       .toBe('HTTP 503');
+  });
+
+  // Production: a long Moodle run was reported as "exit 1: …(truncated) …Cron
+  // run completed correctly / Cron c" — the start of the kept tail, cut off
+  // before the lines that said why it failed.
+  it('carries the LAST lines of a long output, where a failing command says why', () => {
+    const chatter = Array.from({ length: 80 }, (_, i) => `Cron run completed correctly (pass ${i})`).join('\n');
+    const output = clip(`${chatter}\n!!! Error: Database connection failed !!!`) as string;
+    expect(output.startsWith('…(truncated)\n')).toBe(true);
+
+    const text = describeFailure({ status: 'failed', responseCode: 1, output, durationMs: 1 }, 'deployment');
+    expect(text.endsWith('!!! Error: Database connection failed !!!')).toBe(true);
+    expect(text).not.toContain('(truncated)');
+    // Shortened, said so, and starting on a whole line.
+    expect(text).toMatch(/^exit 1: …Cron run completed correctly \(pass \d+\)\n/);
+    expect(text.length).toBeLessThan(330);
+  });
+});
+
+describe('outputTail', () => {
+  it('leaves a short output as it is', () => {
+    expect(outputTail('HTTP 503: no available server')).toBe('HTTP 503: no available server');
+  });
+
+  it('marks an output clip() shortened even when what is left is short', () => {
+    expect(outputTail('…(truncated)\nthe last line')).toBe('…the last line');
+  });
+
+  it('keeps the end of one long line rather than nothing', () => {
+    const tail = outputTail('x'.repeat(500) + 'END');
+    expect(tail.startsWith('…')).toBe(true);
+    expect(tail.endsWith('END')).toBe(true);
+    expect(tail.length).toBe(301);
   });
 });
 

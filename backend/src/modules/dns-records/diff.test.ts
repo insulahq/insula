@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeRecordDiff, recordKey, type LocalRecord, type RemoteRecord } from './diff.js';
+import { computeRecordDiff, recordKey, remoteRecordsToImport, type LocalRecord, type RemoteRecord } from './diff.js';
 
 const ZONE = 'example.test';
 
@@ -201,5 +201,73 @@ describe('recordKey — one identity per published record', () => {
     const local: LocalRecord[] = [{ id: 'r1', recordType: 'AAAA', recordName: '@', recordValue: '2001:DB8:0::1', ttl: 3600 }];
     const remote: RemoteRecord[] = [{ type: 'AAAA', name: `${ZONE}.`, content: '2001:db8::1', ttl: 3600 }];
     expect(computeRecordDiff(ZONE, local, remote).map((e) => e.status)).toEqual(['in_sync']);
+  });
+});
+
+describe('computeRecordDiff — pairing takes exact matches first', () => {
+  it('a missing local value never steals a remote value another local row matches exactly', () => {
+    // local {1, 2}, remote {2, 3}: 2 is in sync, 1 vs 3 is the conflict.
+    const diff = computeRecordDiff(
+      ZONE,
+      [
+        { ...local({ recordType: 'A', recordValue: '203.0.113.1' }), id: 'l1' },
+        { ...local({ recordType: 'A', recordValue: '203.0.113.2' }), id: 'l2' },
+      ],
+      [
+        remote({ type: 'A', content: '203.0.113.2' }),
+        remote({ type: 'A', content: '203.0.113.3' }),
+      ],
+    );
+    expect(diff).toHaveLength(2);
+    const conflict = diff.find((e) => e.status === 'conflict');
+    expect(conflict?.local?.value).toBe('203.0.113.1');
+    expect(conflict?.remote?.value).toBe('203.0.113.3');
+    expect(diff.find((e) => e.status === 'in_sync')?.local?.value).toBe('203.0.113.2');
+    expect(diff.some((e) => e.status === 'remote_only')).toBe(false);
+  });
+
+  it('more remote values than local ones: the extra stays remote_only', () => {
+    const diff = computeRecordDiff(
+      ZONE,
+      [local({ recordType: 'A', recordValue: '203.0.113.1' })],
+      [remote({ type: 'A', content: '203.0.113.1' }), remote({ type: 'A', content: '203.0.113.9' })],
+    );
+    expect(diff.map((e) => e.status).sort()).toEqual(['in_sync', 'remote_only']);
+  });
+});
+
+describe('remoteRecordsToImport — what an import adds, and only that', () => {
+  it('imports records only the server has, and never a conflict partner', () => {
+    const toImport = remoteRecordsToImport(
+      ZONE,
+      [local({ recordType: 'CNAME', recordName: 'webmail', recordValue: 'webmail.platform.test.' })],
+      [
+        remote({ type: 'CNAME', name: 'webmail.example.test.', content: 'old.platform.test.' }),
+        remote({ type: 'TXT', name: 'extra.example.test.', content: '"hello"' }),
+      ],
+    );
+    // The CNAME conflict stays local's: importing it would make two CNAMEs.
+    expect(toImport.map((r) => r.type)).toEqual(['TXT']);
+  });
+
+  it('imports nothing for a record that is local only — and drops no local row', () => {
+    expect(remoteRecordsToImport(
+      ZONE,
+      [local({ recordType: 'CNAME', recordName: 'webmail', recordValue: 'webmail.platform.test.' })],
+      [],
+    )).toEqual([]);
+  });
+
+  it('imports the SOA once, when there is no local one at that name', () => {
+    const soa = remote({ type: 'SOA', content: 'ns1.platform.test. hostmaster.platform.test. 2026102517 10800 3600 1209600 3600' });
+    expect(remoteRecordsToImport(ZONE, [], [soa]).map((r) => r.type)).toEqual(['SOA']);
+    const localSoa = local({ recordType: 'SOA', recordName: `${ZONE}.`, recordValue: 'ns1.platform.test. hostmaster.platform.test. 2026102302 10800 3600 1209600 3600' });
+    // A new serial is not a new SOA.
+    expect(remoteRecordsToImport(ZONE, [localSoa], [soa])).toEqual([]);
+  });
+
+  it('keeps the provider\'s own spelling of the imported record', () => {
+    const extra = remote({ type: 'MX', name: 'example.test.', content: '10 mx.other.test.' });
+    expect(remoteRecordsToImport(ZONE, [], [extra])[0]).toBe(extra);
   });
 });

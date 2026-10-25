@@ -177,5 +177,26 @@ export const pushDnsRecordSchema = z.object({
   priority: z.number().int().min(0).max(65535).optional(),
   weight: z.number().int().min(0).max(65535).optional(),
   port: z.number().int().min(0).max(65535).optional(),
+  /** The server's value this push REPLACES (a Sync Records conflict), as the
+   *  server lists it. Absent: the value is published alongside the others. */
+  replaces: z.string().min(1).max(65535).optional(),
 }).strict();
 export type PushDnsRecord = z.infer<typeof pushDnsRecordSchema>;
+
+/** Sync Records "Remove local": drop one local row, leave the DNS server alone. */
+export const removeLocalDnsRecordSchema = z.object({
+  local_id: z.string().min(1).max(36),
+}).strict();
+export type RemoveLocalDnsRecord = z.infer<typeof removeLocalDnsRecordSchema>;
+
+/** Sync Records "Remove on server": withdraw one value from the DNS server only. */
+export const removeRemoteDnsRecordSchema = z.object({
+  type: z.string().min(1).max(16),
+  name: z.string().max(253),
+  /** Full wire content as the server lists it ('10 mail.example.test.' for MX). */
+  value: z.string().min(1).max(65535),
+  priority: z.number().int().min(0).max(65535).optional(),
+  weight: z.number().int().min(0).max(65535).optional(),
+  port: z.number().int().min(0).max(65535).optional(),
+}).strict();
+export type RemoveRemoteDnsRecord = z.infer<typeof removeRemoteDnsRecordSchema>;

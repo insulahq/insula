@@ -28,6 +28,9 @@
  *     reconciler for the same shutdown, four minutes later.
  *   - both notices share the reconciler's dedupeKey (nodeDownDedupeKey), so
  *     whichever detector fires first wins and the other is suppressed
+ *   - it sends the all-clear when an announced node is Ready again on the same
+ *     boot (back-online.ts). Only the reconciler sent one before, and an
+ *     outage shorter than its 5-minute tick got a "down" and nothing after.
  *   - it never announces a node inside its join grace window (join-grace.ts).
  *     A bootstrapping node is NotReady by definition; it was announced as
  *     "down" on its very first sighting. The node is kept OUT of the
@@ -41,6 +44,13 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { safeTick } from '../../shared/safe-tick.js';
 import { notifyAdminNodeDown, notifyAdminNodeShuttingDown } from '../notifications/events.js';
 import { kubeletReportsShutdown, wentDownAt } from './boot-events.js';
+import {
+  announceSameBootReturn,
+  endedOnSameBoot,
+  readOpenOutages,
+  type LiveNodeState,
+  type SameBootReturn,
+} from './back-online.js';
 import {
   describeSuppression,
   joinGraceIndex,
@@ -209,6 +219,60 @@ export async function recordWentDown(db: Database, nodeName: string, downAt: Dat
     .where(eq(nodeHealthState.nodeName, nodeName));
 }
 
+/** Ready/boot facts per node, for closing outages on record (back-online.ts). */
+export function liveNodeStates(items: ReadonlyArray<RawNode>): Map<string, LiveNodeState> {
+  const out = new Map<string, LiveNodeState>();
+  for (const n of items) {
+    const name = n.metadata?.name;
+    if (!name) continue;
+    const ready = (n.status?.conditions ?? []).find((c) => c.type === 'Ready');
+    const at = ready?.lastTransitionTime ? new Date(ready.lastTransitionTime) : null;
+    out.set(name, {
+      ready: ready?.status === 'True',
+      readySince: at && !Number.isNaN(at.getTime()) ? at : null,
+      bootId: n.status?.nodeInfo?.bootID || null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Send the all-clear for every outage on record that has ended on its own
+ * boot. The reconciler does the same on its tick; whichever sees the return
+ * first claims it (back-online.ts claimOutageEnd), so a one-minute outage that
+ * falls between two reconciler ticks still gets its "back" notice.
+ */
+async function announceReturns(
+  deps: FastDownWatchDeps,
+  items: ReadonlyArray<RawNode>,
+  now: Date,
+  log: NonNullable<FastDownWatchDeps['logger']> | Console,
+): Promise<void> {
+  const open = await readOpenOutages(deps.db);
+  if (open.length === 0) return;
+  const live = liveNodeStates(items);
+  const returns = open
+    .map((o) => endedOnSameBoot(o, live.get(o.nodeName)))
+    .filter((r): r is SameBootReturn => r !== null);
+  if (returns.length === 0) return;
+
+  // A node inside its join window was never announced down, so it gets no
+  // all-clear either. The reconciler clears such a row on its next tick.
+  let pending: Awaited<ReturnType<typeof listPendingPeerWindows>> = [];
+  try {
+    pending = await listPendingPeerWindows(deps.k8s);
+  } catch (err) {
+    log.warn('[node-down-watch] pending peers unreadable — join grace by node age only:', (err as Error).message);
+  }
+  const joining = joinGraceIndex(items, pending, now, nodeJoinGraceMs());
+  for (const r of returns) {
+    if (joining.has(r.nodeName)) continue;
+    if (await announceSameBootReturn(deps.db, r)) {
+      log.info(`[node-down-watch] ${r.nodeName} is Ready again on the same boot — all-clear sent`);
+    }
+  }
+}
+
 export interface FastDownWatchDeps {
   readonly db: Database;
   readonly k8s: K8sClients;
@@ -257,6 +321,9 @@ export function startFastNodeDownWatch(deps: FastDownWatchDeps): { stop: () => v
           .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
       }
     }
+
+    await announceReturns(deps, items, now, log)
+      .catch((err) => log.warn('[node-down-watch] all-clear check failed:', (err as Error).message));
   };
 
   const initial = setTimeout(() => {

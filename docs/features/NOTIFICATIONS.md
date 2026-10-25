@@ -209,7 +209,7 @@ operator can still re-route them via per-Source provider override.
 | `subscription.renewed` | info | | `subscription_expires_at` advances past its previous value |
 | `subscription.changed` | info | | `plan_id` changes on a tenant |
 | `account.sub_account_added` | info | | (Wiring pending — Phase 6E candidate.) |
-| `tasks.scheduled_failure` | warning | (rate-limit 3/h) | A tenant cron run failed (once per job per day). Not sent when the platform stopped the pod it ran in, or could not reach its own cluster API to start it — the operator gets `admin.platform_event` "Scheduled tasks" for the latter, once a day, unless a node outage explains it. |
+| `tasks.scheduled_failure` | warning | (rate-limit 3/h) | A tenant cron run failed (once per job per day). A job whose next run is within the hour is reported on its second failure in a row (`cron_jobs.consecutive_failures`, `cron-jobs/failure-streak.ts`); a less frequent one on its first. Not sent when the platform stopped the pod it ran in, or could not reach its own cluster API to start it — the operator gets `admin.platform_event` "Scheduled tasks" for the latter, once a day, unless a node outage explains it. |
 | `tenant.suspended` | error | ★ | ADR-033 transition `active → suspended` |
 | `tenant.restored` | success | | ADR-033 transition `suspended → active` |
 | `tenant.archived` | error | ★ | ADR-033 transition `* → archived` |

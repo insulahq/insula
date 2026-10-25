@@ -24,6 +24,7 @@ import { useCatalog } from '@/hooks/use-catalog';
 import {
   useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord,
   useDnsRecordDiff, usePullDnsRecord, usePushDnsRecord,
+  useRemoveLocalDnsRecord, useRemoveRemoteDnsRecord,
   type DnsRecordDiffEntry,
 } from '@/hooks/use-dns-records';
 import { useSortable } from '@/hooks/use-sortable';
@@ -1794,12 +1795,20 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
   readonly domainId: string;
   readonly onClose: () => void;
 }) {
-  const { data: diffData, isLoading, isFetching, isError, refetch } = useDnsRecordDiff(tenantId, domainId, true);
+  const { data: diffData, isLoading, isFetching, isError, error: diffError, refetch } = useDnsRecordDiff(tenantId, domainId, true);
   const pullRecord = usePullDnsRecord(tenantId, domainId);
   const pushRecord = usePushDnsRecord(tenantId, domainId);
+  const removeLocal = useRemoveLocalDnsRecord(tenantId, domainId);
+  const removeRemote = useRemoveRemoteDnsRecord(tenantId, domainId);
   const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
+  // `${entryKey}|local` or `${entryKey}|remote` while that removal awaits a second click.
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  // The last failed action. Failures used to be unhandled promise rejections:
+  // the button just stopped spinning and nothing said why.
+  const [actionError, setActionError] = useState<unknown>(null);
 
   const diff = diffData?.data ?? [];
+  const busy = pullRecord.isPending || pushRecord.isPending || removeLocal.isPending || removeRemote.isPending;
 
   const markCompleted = (key: string) => {
     setCompletedActions((prev) => new Set([...prev, key]));
@@ -1807,67 +1816,73 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
 
   const entryKey = (entry: DnsRecordDiffEntry) => `${entry.type}|${entry.name}|${entry.local?.value ?? ''}|${entry.remote?.value ?? ''}`;
 
-  const handlePull = async (entry: DnsRecordDiffEntry) => {
-    if (!entry.remote) return;
-    await pullRecord.mutateAsync({
-      type: entry.type,
-      name: entry.name,
-      value: entry.remote.value,
-      ttl: entry.remote.ttl,
-      local_id: entry.local?.id,
-    });
-    markCompleted(entryKey(entry));
+  /** Run one row's action; a failure is shown, never thrown into the void. */
+  const run = async (entry: DnsRecordDiffEntry, action: () => Promise<unknown>): Promise<boolean> => {
+    setActionError(null);
+    try {
+      await action();
+      markCompleted(entryKey(entry));
+      return true;
+    } catch (err) {
+      setActionError(err);
+      return false;
+    }
   };
 
-  const handlePush = async (entry: DnsRecordDiffEntry) => {
-    if (!entry.local) return;
-    await pushRecord.mutateAsync({
-      type: entry.type,
-      name: entry.name,
-      value: entry.local.value,
-      ttl: entry.local.ttl,
-      priority: entry.local.priority ?? undefined,
-      weight: entry.local.weight ?? undefined,
-      port: entry.local.port ?? undefined,
-    });
-    markCompleted(entryKey(entry));
+  const pullInput = (entry: DnsRecordDiffEntry) => ({
+    type: entry.type,
+    name: entry.name,
+    value: entry.remote!.value,
+    ttl: entry.remote!.ttl,
+    local_id: entry.local?.id,
+  });
+
+  const pushInput = (entry: DnsRecordDiffEntry) => ({
+    type: entry.type,
+    name: entry.name,
+    value: entry.local!.value,
+    ttl: entry.local!.ttl,
+    priority: entry.local!.priority ?? undefined,
+    weight: entry.local!.weight ?? undefined,
+    port: entry.local!.port ?? undefined,
+    // A conflict's Push REPLACES the server's value instead of adding a second one.
+    ...(entry.status === 'conflict' && entry.remote ? { replaces: entry.remote.value } : {}),
+  });
+
+  const handlePull = (entry: DnsRecordDiffEntry) =>
+    entry.remote ? run(entry, () => pullRecord.mutateAsync(pullInput(entry))) : Promise.resolve(false);
+
+  const handlePush = (entry: DnsRecordDiffEntry) =>
+    entry.local ? run(entry, () => pushRecord.mutateAsync(pushInput(entry))) : Promise.resolve(false);
+
+  const handleRemoveLocal = (entry: DnsRecordDiffEntry) => {
+    setConfirmRemove(null);
+    return entry.local ? run(entry, () => removeLocal.mutateAsync(entry.local!.id)) : Promise.resolve(false);
+  };
+
+  const handleRemoveRemote = (entry: DnsRecordDiffEntry) => {
+    setConfirmRemove(null);
+    return entry.remote
+      ? run(entry, () => removeRemote.mutateAsync({ type: entry.type, name: entry.name, value: entry.remote!.value }))
+      : Promise.resolve(false);
   };
 
   const handlePullAllMissing = async () => {
-    const remoteOnly = diff.filter((e) => e.status === 'remote_only' && !completedActions.has(entryKey(e)));
-    for (const entry of remoteOnly) {
-      if (entry.remote) {
-        await pullRecord.mutateAsync({
-          type: entry.type,
-          name: entry.name,
-          value: entry.remote.value,
-          ttl: entry.remote.ttl,
-        });
-        markCompleted(entryKey(entry));
-      }
+    for (const entry of diff.filter((e) => e.status === 'remote_only' && !completedActions.has(entryKey(e)))) {
+      if (!(await handlePull(entry))) return;
     }
   };
 
   const handlePushAllMissing = async () => {
-    const localOnly = diff.filter((e) => e.status === 'local_only' && !completedActions.has(entryKey(e)));
-    for (const entry of localOnly) {
-      if (entry.local) {
-        await pushRecord.mutateAsync({
-          type: entry.type,
-          name: entry.name,
-          value: entry.local.value,
-          ttl: entry.local.ttl,
-          priority: entry.local.priority ?? undefined,
-          weight: entry.local.weight ?? undefined,
-          port: entry.local.port ?? undefined,
-        });
-        markCompleted(entryKey(entry));
-      }
+    for (const entry of diff.filter((e) => e.status === 'local_only' && !completedActions.has(entryKey(e)))) {
+      if (!(await handlePush(entry))) return;
     }
   };
 
   const handleRefresh = () => {
     setCompletedActions(new Set());
+    setConfirmRemove(null);
+    setActionError(null);
     refetch();
   };
 
@@ -1895,13 +1910,89 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
 
   const remoteOnlyCount = diff.filter((e) => e.status === 'remote_only' && !completedActions.has(entryKey(e))).length;
   const localOnlyCount = diff.filter((e) => e.status === 'local_only' && !completedActions.has(entryKey(e))).length;
+  const conflictCount = diff.filter((e) => e.status === 'conflict' && !completedActions.has(entryKey(e))).length;
+
+  const pullButton = (entry: DnsRecordDiffEntry, key: string) => (
+    <button
+      type="button"
+      onClick={() => handlePull(entry)}
+      disabled={busy}
+      title={entry.status === 'conflict' ? "Replace the local value with the DNS server's" : 'Add the DNS server\'s record to the local list'}
+      className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+      data-testid={`pull-${key}`}
+    >
+      <ArrowDownToLine size={10} /> Pull
+    </button>
+  );
+
+  const pushButton = (entry: DnsRecordDiffEntry, key: string) => (
+    <button
+      type="button"
+      onClick={() => handlePush(entry)}
+      disabled={busy}
+      title={entry.status === 'conflict' ? "Replace the DNS server's value with the local one" : 'Publish the local record to the DNS server'}
+      className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+      data-testid={`push-${key}`}
+    >
+      Push <ArrowUpFromLine size={10} />
+    </button>
+  );
+
+  const removeButton = (entry: DnsRecordDiffEntry, key: string, side: 'local' | 'remote') => {
+    const confirmKey = `${key}|${side}`;
+    const label = side === 'local' ? 'Remove local' : 'Remove on server';
+    if (confirmRemove === confirmKey) {
+      return (
+        <span className="inline-flex items-center gap-1" data-testid={`confirm-remove-${side}-${key}`}>
+          <span className="text-xs text-red-700 dark:text-red-300">
+            {side === 'local' ? 'Remove from this list only?' : 'Remove from the DNS server only?'}
+          </span>
+          <button
+            type="button"
+            onClick={() => (side === 'local' ? handleRemoveLocal(entry) : handleRemoveRemote(entry))}
+            disabled={busy}
+            className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            data-testid={`confirm-remove-${side}-yes-${key}`}
+          >
+            Remove
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmRemove(null)}
+            className="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirmRemove(confirmKey)}
+        disabled={busy}
+        title={side === 'local'
+          ? 'Delete the local row and leave the DNS server as it is'
+          : 'Withdraw this value from the DNS server and leave the local list as it is'}
+        className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-white dark:bg-gray-800 px-2 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50"
+        data-testid={`remove-${side}-${key}`}
+      >
+        <Trash2 size={10} /> {label}
+      </button>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="sync-records-modal">
-      <div className="mx-4 w-full max-w-4xl max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-gray-800 shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync Records</h3>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Consolidate DNS records between local DB and remote DNS server.</p>
+      <div className="mx-4 w-full max-w-5xl max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-gray-800 shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync Records</h3>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              Compares this domain&apos;s records here (local) with the DNS server (remote). Nothing changes until you
+              pick an action: Push and Pull copy one side to the other, Remove deletes from one side only.
+            </p>
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1933,9 +2024,22 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
           )}
 
           {isError && (
-            <div className="flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
-              <AlertCircle size={16} />
-              Failed to fetch record diff from DNS server.
+            <ErrorPanel
+              error={extractOperatorError(diffError)}
+              severity="error"
+              compact
+              testId="sync-diff-error"
+            />
+          )}
+
+          {actionError !== null && (
+            <div className="mb-3">
+              <ErrorPanel
+                error={extractOperatorError(actionError)}
+                severity="error"
+                compact
+                testId="sync-action-error"
+              />
             </div>
           )}
 
@@ -1956,7 +2060,7 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
                     <th className="px-3 py-2.5 w-32">Name</th>
                     <th className="px-3 py-2.5">Local Value</th>
                     <th className="px-3 py-2.5">Remote Value</th>
-                    <th className="px-3 py-2.5 w-40 text-right">Action</th>
+                    <th className="px-3 py-2.5 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -1964,7 +2068,7 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
                     const key = entryKey(entry);
                     const done = completedActions.has(key);
                     return (
-                      <tr key={key} className={statusBg(entry)}>
+                      <tr key={key} className={statusBg(entry)} data-testid={`sync-row-${entry.status}`}>
                         <td className="px-3 py-2.5">{statusIcon(entry)}</td>
                         <td className="px-3 py-2.5">
                           <span className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs font-medium dark:text-gray-300">{entry.type}</span>
@@ -1989,48 +2093,14 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
                             <span className="text-xs text-green-600 dark:text-green-400 font-medium">Done</span>
                           ) : entry.status === 'in_sync' ? (
                             <span className="text-xs text-green-600 dark:text-green-400 font-medium">In Sync</span>
-                          ) : entry.status === 'conflict' ? (
-                            <div className="inline-flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => handlePull(entry)}
-                                disabled={pullRecord.isPending}
-                                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                                data-testid={`pull-${key}`}
-                              >
-                                <ArrowDownToLine size={10} /> Pull
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handlePush(entry)}
-                                disabled={pushRecord.isPending}
-                                className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
-                                data-testid={`push-${key}`}
-                              >
-                                Push <ArrowUpFromLine size={10} />
-                              </button>
+                          ) : (
+                            <div className="inline-flex flex-wrap items-center justify-end gap-1">
+                              {entry.remote && pullButton(entry, key)}
+                              {entry.local && pushButton(entry, key)}
+                              {entry.local && removeButton(entry, key, 'local')}
+                              {entry.remote && removeButton(entry, key, 'remote')}
                             </div>
-                          ) : entry.status === 'remote_only' ? (
-                            <button
-                              type="button"
-                              onClick={() => handlePull(entry)}
-                              disabled={pullRecord.isPending}
-                              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                              data-testid={`pull-${key}`}
-                            >
-                              <ArrowDownToLine size={10} /> Pull
-                            </button>
-                          ) : entry.status === 'local_only' ? (
-                            <button
-                              type="button"
-                              onClick={() => handlePush(entry)}
-                              disabled={pushRecord.isPending}
-                              className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
-                              data-testid={`push-${key}`}
-                            >
-                              Push <ArrowUpFromLine size={10} />
-                            </button>
-                          ) : null}
+                          )}
                         </td>
                       </tr>
                     );
@@ -2041,11 +2111,11 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
           )}
         </div>
 
-        {!isLoading && !isError && (remoteOnlyCount > 0 || localOnlyCount > 0) && (
+        {!isLoading && !isError && (remoteOnlyCount > 0 || localOnlyCount > 0 || conflictCount > 0) && (
           <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 px-6 py-4">
             <div className="text-xs text-gray-500 dark:text-gray-400">
-              {diff.filter((e) => e.status === 'conflict').length > 0 && (
-                <span className="mr-3 text-red-600 dark:text-red-400 font-medium">{diff.filter((e) => e.status === 'conflict').length} conflicts</span>
+              {conflictCount > 0 && (
+                <span className="mr-3 text-red-600 dark:text-red-400 font-medium">{conflictCount} conflicts</span>
               )}
               {remoteOnlyCount > 0 && <span className="mr-3">{remoteOnlyCount} remote only</span>}
               {localOnlyCount > 0 && <span>{localOnlyCount} local only</span>}
@@ -2055,7 +2125,7 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
                 <button
                   type="button"
                   onClick={handlePullAllMissing}
-                  disabled={pullRecord.isPending}
+                  disabled={busy}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                   data-testid="pull-all-missing"
                 >
@@ -2068,7 +2138,7 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
                 <button
                   type="button"
                   onClick={handlePushAllMissing}
-                  disabled={pushRecord.isPending}
+                  disabled={busy}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                   data-testid="push-all-missing"
                 >

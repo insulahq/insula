@@ -1316,10 +1316,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyTemplate: emailMjml(
       'Scheduled task failed',
       'The scheduled task <strong>{{taskName}}</strong>'
-      + '{{#if tenantName}} of {{tenantName}}{{/if}} failed.<br /><br />'
+      + '{{#if tenantName}} of {{tenantName}}{{/if}} failed'
+      + '{{#if failedRuns}} on {{failedRuns}} runs in a row{{/if}}.<br /><br />'
       + '{{#if schedule}}<strong>Schedule:</strong> {{schedule}}<br />{{/if}}'
       + '{{#if errorMessage}}<strong>Reason:</strong> {{errorMessage}}<br />{{/if}}'
-      + '<br />While the task keeps failing you get at most one email about it per day. '
+      + '<br />{{#if failedRuns}}It runs again within the hour, so it is reported only once two runs '
+      + 'in a row have failed: a single interrupted run sends nothing. {{/if}}'
+      + 'While the task keeps failing you get at most one email about it per day. '
       + 'Who is emailed is set on the task under Cron Jobs in the control panel.',
     ),
     bodyFormat: 'mjml',
@@ -1328,6 +1331,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'taskName', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
       { name: 'schedule', type: 'string', required: false },
+      { name: 'failedRuns', type: 'string', required: false },
     ],
   },
   {
@@ -1335,12 +1339,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Scheduled task failed: {{taskName}}',
-    bodyTemplate: 'The scheduled task "{{taskName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
+    bodyTemplate: 'The scheduled task "{{taskName}}" failed{{#if failedRuns}} on {{failedRuns}} runs in a row{{/if}}.'
+      + '{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       { name: 'errorMessage', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'taskName', type: 'string', required: true },
+      { name: 'failedRuns', type: 'string', required: false },
     ],
   },
 
@@ -2733,6 +2739,42 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
         bodyTemplate: '{{nodeName}} has started again and is Ready{{bootedAtText}}. Approximate downtime: {{downtimeText}}. {{announcementNote}}',
         bodyFormat: 'plaintext',
         variablesSchema: startupVars,
+      },
+    ];
+  })(),
+
+  // ── Node back online: the all-clear for a "down" that ended without a reboot ──
+  ...((): SeedTemplate[] => {
+    const backVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'downtimeText', type: 'string', required: true },
+      { name: 'downAtText', type: 'string', required: true },
+      { name: 'backAtText', type: 'string', required: true },
+      { name: 'bootNote', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.node_back_online',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is back ({{downtimeText}} down)',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} is back',
+          'Cluster node {{nodeName}} is Ready again. It was NotReady for about {{downtimeText}}, '
+          + 'from {{downAtText}} to {{backAtText}}. {{bootNote}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: backVars,
+      },
+      {
+        categoryId: 'admin.node_back_online',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is back',
+        bodyTemplate: '{{nodeName}} is Ready again after about {{downtimeText}} NotReady ({{downAtText}} to {{backAtText}}). {{bootNote}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: backVars,
       },
     ];
   })(),

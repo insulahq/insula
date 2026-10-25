@@ -1127,9 +1127,10 @@ export async function ensureWebmailIngress(
   const namespace = tenant.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
 
-  // Route name: stable per hostname, sanitized for DNS-1123.
-  const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
-  const ingressName = `${safeName}-ingress`;
+  // Route names: stable per hostname, sanitized for DNS-1123 — one helper, so
+  // the plain-HTTP route (webmail-http-route.ts) names the same Middleware.
+  const { webmailRouteNames, webmailRouteLabels, applyWebmailHttpRoute } = await import('./webmail-http-route.js');
+  const { ingressName, middlewareName } = webmailRouteNames(hostname);
 
   // The tenant hostname REDIRECTS to the platform webmail origin; it is not
   // reverse-proxied.
@@ -1191,12 +1192,7 @@ export async function ensureWebmailIngress(
   const { ensureRedirectSinkService, REDIRECT_SINK_SERVICE_NAME, REDIRECT_SINK_PORT } =
     await import('../domains/redirect-sink.js');
 
-  const middlewareName = `${safeName}-redirect`;
-  const routeLabels = {
-    'app.kubernetes.io/component': 'webmail',
-    'app.kubernetes.io/managed-by': 'insula',
-    'insula.host/webmail-domain': row.domainName.slice(0, 63),
-  };
+  const routeLabels = webmailRouteLabels(row.domainName);
 
   try {
     // The sink is the route's backend and is never reached: the middleware
@@ -1233,10 +1229,21 @@ export async function ensureWebmailIngress(
       ...(tls ? { tls } : {}),
       labels: routeLabels,
     }));
+
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await setWebmailStatus(db, row.emailDomainId, 'failed', `webmail redirect route failed: ${msg}`);
     throw err;
+  }
+
+  // The same redirect on plain HTTP — without it http://webmail.<domain>/
+  // matched no router and answered 404 (webmail-http-route.ts). Not part of
+  // the status: the https redirect works without it, and the webmail
+  // reconciler applies a missing one on its next cycle.
+  try {
+    await applyWebmailHttpRoute(k8s, { namespace, domainName: row.domainName });
+  } catch (err) {
+    log.warn({ hostname, err: err instanceof Error ? err.message : String(err) }, 'webmail HTTP redirect route failed — the reconciler retries it');
   }
 
   // Final status: ready (with TLS) or ready_no_tls (cert pending/failed).
@@ -1276,19 +1283,19 @@ export async function removeWebmailIngress(
   if (!tenant) return;
   const namespace = tenant.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
-  const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
-  const ingressName = `${safeName}-ingress`;
-  const middlewareName = `${safeName}-redirect`;
-  const externalSvcName = `${safeName}-upstream`;
+  const { webmailRouteNames, deleteWebmailHttpRoute } = await import('./webmail-http-route.js');
+  const { ingressName, middlewareName } = webmailRouteNames(hostname);
+  const externalSvcName = `${hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50)}-upstream`;
 
   const { deleteIngressRoute, deleteMiddleware } =
     await import('../ingress-routes/traefik-apply.js');
 
-  // Current shape: a Traefik IngressRoute plus its redirect Middleware. The
-  // route goes first — a Middleware removed while a route still references it
-  // makes Traefik drop the WHOLE router, which is a 404 for the hostname
-  // rather than the clean removal this function promises.
+  // Current shape: two Traefik IngressRoutes (https and http) plus their
+  // redirect Middleware. The routes go first — a Middleware removed while a
+  // route still references it makes Traefik drop the WHOLE router, which is a
+  // 404 for the hostname rather than the clean removal this function promises.
   await deleteIngressRoute(k8s.custom, namespace, ingressName);
+  await deleteWebmailHttpRoute(k8s, namespace, row.domainName);
   await deleteMiddleware(k8s.custom, namespace, middlewareName);
 
   // Legacy shape, for clusters provisioned before the redirect: a

@@ -35,12 +35,19 @@ fn_body() { sed -n "/^$1() {/,/^}/p" "$BOOTSTRAP"; }
 # ── Extract the shipped helpers ─────────────────────────────────────────────
 sed -n '/^JOIN_REJECTED_FLAGS=(/,/^)/p' "$BOOTSTRAP" > "$WORK/helpers.sh"
 for fn in resolve_bootstrap_mode k3s_unit_has guard_bootstrap_target run_join_preflight \
+          join_auth_header verify_join_credentials join_peers_from ensure_python3 \
+          k3s_journal_errors fail_join clear_unfinished_join kubelet_ran_pods seed_firewall_sets \
+          remove_k3s_keeping_operator_files join_stuck_hint \
+          check_join_peer_ports join_peer_ports_closed insula_cli remove_own_etcd_learner \
           drop_existing_seed_once_objects stamp_host_migration_baseline kctl \
           warn_on_even_etcd_members; do
   fn_body "$fn" >> "$WORK/helpers.sh"
   grep -q "^${fn}() {" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 grep -q '^JOIN_REJECTED_FLAGS=(' "$WORK/helpers.sh" || { echo "FAIL: JOIN_REJECTED_FLAGS not found" >&2; exit 1; }
+# The marker helpers are one-liners (fn_body matches multi-line bodies only).
+grep -E '^marker_(exists|set|clear)\(\)' "$BOOTSTRAP" >> "$WORK/helpers.sh"
+[[ "$(grep -cE '^marker_(exists|set|clear)\(\)' "$WORK/helpers.sh")" == 3 ]] || { echo "FAIL: marker helpers not found" >&2; exit 1; }
 # error() is FATAL in bootstrap.sh and the guards rely on that — model it
 # exactly, or a guard that falls through its own refusal would "pass" here.
 cat >> "$WORK/helpers.sh" <<'STUB'
@@ -51,6 +58,14 @@ ui_ok()     { echo "OK: $*"; }
 ui_warn()   { echo "UIWARN: $*"; }
 ui_record() { printf '%s\n' "$*" >> "$UI_RECORD_FILE"; }
 sleep()     { :; }
+detect_local_ipv4() { printf '%s\n' "${FAKE_SELF_V4:-192.0.2.9}"; }
+detect_local_ipv6() { printf '%s\n' "${FAKE_SELF_V6:-}"; }
+journalctl() { if [[ -n "${FAKE_JOURNAL:-}" ]]; then cat "$FAKE_JOURNAL"; else printf '%s\n' 'time="x" level=error msg="etcd: learner never caught up"'; fi; }
+systemctl() { [[ "$1" == is-active ]] && { echo "${FAKE_UNIT_STATE:-failed}"; [[ "${FAKE_UNIT_STATE:-failed}" == active ]]; return; }; printf '%s\n' "$*" >> "${FAKE_SYSTEMCTL_LOG:-/dev/null}"; return 0; }
+hostname()  { [[ "${1:-}" == -I ]] && echo "${FAKE_HOST_ADDRS:-192.0.2.9 10.0.0.9}"; return 0; }
+nft()       { printf '%s\n' "$*" >> "${FAKE_NFT_LOG:-/dev/null}"; }
+# A port probe "fails" for every address in FAKE_CLOSED_PEERS; all else succeeds.
+timeout()   { local p; for p in ${FAKE_CLOSED_PEERS:-}; do [[ "$*" == *"/dev/tcp/${p}/2380"* ]] && return 1; done; return 0; }
 STUB
 
 # run_mode <args…> — evaluate resolve_bootstrap_mode for a flag set.
@@ -173,22 +188,63 @@ echo "── run_join_preflight ──"
 CA_PEM=$'-----BEGIN CERTIFICATE-----\nMIIBfakefakefake\n-----END CERTIFICATE-----\n'
 CA_HASH=$(printf '%s' "$CA_PEM" | sha256sum | awk '{print $1}')
 mkdir -p "$WORK/curl-ok" "$WORK/curl-down"
-# Fake curl honours `-o FILE` like the real one (the CA must be hashed raw).
-printf '#!/usr/bin/env bash\nout=/dev/stdout\nwhile [[ $# -gt 0 ]]; do [[ "$1" == -o ]] && { out="$2"; shift; }; shift; done\nprintf %%s %q > "$out"\n' "$CA_PEM" > "$WORK/curl-ok/curl"
+printf '%s' "$CA_PEM" > "$WORK/ca.pem"
+# Fake curl: honours -o FILE and -w (the CA must be hashed raw). /cacerts serves
+# the CA; the credential endpoints record the Authorization header curl read from
+# stdin (-H @-) and answer FAKE_CODE with the body in FAKE_BODY_FILE.
+cat > "$WORK/curl-ok/curl" <<'CURL'
+#!/usr/bin/env bash
+out=/dev/stdout; wfmt=""; url=""; hdr_stdin=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -w) wfmt="$2"; shift ;;
+    -H) [[ "$2" == @- ]] && hdr_stdin=true; shift ;;
+    https://*) url="$1" ;;
+  esac
+  shift
+done
+case "$url" in
+  */cacerts) cat "$FAKE_CA_FILE" > "$out" ;;
+  *)
+    $hdr_stdin && cat > "$FAKE_AUTH_LOG"
+    [[ -n "${FAKE_BODY_FILE:-}" ]] && cat "$FAKE_BODY_FILE" > "$out"
+    [[ -n "$wfmt" ]] && printf '%b' "${wfmt//%\{http_code\}/${FAKE_CODE:-200}}"
+    ;;
+esac
+exit 0
+CURL
 printf '#!/usr/bin/env bash\nexit 7\n' > "$WORK/curl-down/curl"
 chmod +x "$WORK/curl-ok/curl" "$WORK/curl-down/curl"
+printf '["192.0.2.4:6443","192.0.2.5:6443","[2001:db8::6]:6443"]' > "$WORK/apiservers.json"
+# The /db/info answer of a 3-member cluster: the target, another server (v4 + v6
+# peer URLs), and a member that never started under THIS host's address.
+cat > "$WORK/dbinfo.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://192.0.2.4:2380"],"clientURLs":["https://192.0.2.4:2379"]},{"ID":12,"name":"s2-bbbb","peerURLs":["https://192.0.2.5:2380","https://[2001:db8::5]:2380"]},{"ID":13,"peerURLs":["https://192.0.2.9:2380"],"isLearner":true},{"ID":14,"name":"evil","peerURLs":["https://1.2.3.4;reboot:2380"]}]}
+JSON
 run_preflight_with() {
-  local curl_dir="$1" token="$2"
+  local curl_dir="$1" token="$2" role="${3:-server}"
+  rm -f "$WORK/auth.log"; rm -rf "$WORK/k3sdata"; mkdir -p "$WORK/k3sdata"
+  [[ "${FAKE_LOCAL_ETCD:-}" == 1 ]] && mkdir -p "$WORK/k3sdata/server/db/etcd/member"
   (
-    PATH="$curl_dir:$PATH"; K3S_SERVER_IP=192.0.2.4; K3S_TOKEN="$token"
+    PATH="$curl_dir:$PATH"; K3S_SERVER_IP=192.0.2.4; K3S_TOKEN="$token"; NODE_ROLE="$role"
+    K8S_NODE_NAME=newnode; K3S_DATA_DIR="$WORK/k3sdata"
+    export FAKE_CA_FILE="$WORK/ca.pem" FAKE_AUTH_LOG="$WORK/auth.log"
+    export FAKE_CODE="${FAKE_CODE:-200}" FAKE_BODY_FILE="${FAKE_BODY_FILE-$WORK/dbinfo.json}"
     # shellcheck disable=SC1091
     source "$WORK/helpers.sh"
-    run_join_preflight && echo PREFLIGHT_OK
+    run_join_preflight && echo "PREFLIGHT_OK v4=[${JOIN_PEERS_V4[*]}] v6=[${JOIN_PEERS_V6[*]}]"
   ) 2>&1
 }
 out=$(run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
 check "token for THIS cluster passes" 0 "$rc"
 has "$out" "matches its cluster CA" "…and says it verified the CA"
+has "$out" "accepts --token as a server token" "…and that the target accepted the secret"
+has "$out" "PREFLIGHT_OK v4=[192.0.2.4 192.0.2.5] v6=[2001:db8::5]" "…learning every etcd member's address (v4 + v6) to admit"
+hasnt "$out" "1.2.3.4" "…ignoring a peer host that is not a bare IP"
+has "$out" "never started" "…and taking over its own never-started member"
+check "server token goes as basic auth server:<secret>, via stdin" \
+  "Authorization: Basic $(printf 'server:secret' | base64)" "$(cat "$WORK/auth.log")"
 other=$(printf 'other' | sha256sum | awk '{print $1}')
 out=$(run_preflight_with "$WORK/curl-ok" "K10${other}::server:secret"); rc=$?
 check "token for ANOTHER cluster refused" 1 "$rc"
@@ -196,9 +252,297 @@ has "$out" "DIFFERENT cluster" "…with the reason"
 out=$(run_preflight_with "$WORK/curl-down" "K10${CA_HASH}::server:secret"); rc=$?
 check "unreachable join target refused before touching the host" 1 "$rc"
 has "$out" "Pre-enrol THIS host" "…and points at pre-enrolment"
-out=$(run_preflight_with "$WORK/curl-ok" "legacy-short-token"); rc=$?
+out=$(FAKE_CODE=401 run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:wrong"); rc=$?
+check "right cluster, wrong secret: refused before anything is installed" 1 "$rc"
+has "$out" "does not accept --token as a SERVER token (HTTP 401)" "…naming the cause"
+has "$out" "/var/lib/rancher/k3s/server/token on any server" "…and where the right one is"
+out=$(FAKE_CODE=403 run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::node:agentsecret"); rc=$?
+check "the worker (agent) token on a server join: refused" 1 "$rc"
+has "$out" "or it is the worker (agent) token" "…saying so"
+out=$(FAKE_CODE=500 run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a target that cannot confirm the token: refused" 1 "$rc"
+has "$out" "join through another server" "…pointing at another server"
+cat > "$WORK/dbinfo-stale.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://192.0.2.4:2380"]},{"ID":77,"name":"new-cccc","peerURLs":["https://192.0.2.9:2380"],"isLearner":true}]}
+JSON
+out=$(FAKE_BODY_FILE="$WORK/dbinfo-stale.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a started etcd member under this host's address, on a wiped host: refused up front" 1 "$rc"
+has "$out" "etcd member new-cccc (192.0.2.9), a learner" "…naming the member"
+has "$out" "insula etcd remove-learner 4d" "…with the command that removes it, ID in hex"
+out=$(FAKE_LOCAL_ETCD=1 FAKE_BODY_FILE="$WORK/dbinfo-stale.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "re-running the join on a joined server (its own etcd data here): not refused" 0 "$rc"
+hasnt "$out" "Remove that member" "…and never told to remove its own healthy member"
+has "$out" "v4=[192.0.2.4]" "…and its own address is not admitted as a peer"
+cat > "$WORK/dbinfo-renamed.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://192.0.2.4:2380"]},{"ID":78,"name":"newnode-0a1b2c3d","peerURLs":["https://192.0.2.77:2380"]}]}
+JSON
+out=$(FAKE_BODY_FILE="$WORK/dbinfo-renamed.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a started member under this node's NAME at another address (replaced VPS): refused" 1 "$rc"
+has "$out" "etcd member newnode-0a1b2c3d (192.0.2.77), a VOTING member" "…naming it (k3s matches by name, not address)"
+has "$out" "Remove a node permanently" "…a voter is removed as a server, not as a learner"
+cat > "$WORK/dbinfo-private.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://10.0.0.4:2380"]},{"ID":79,"name":"other-0a1b2c3d","peerURLs":["https://10.0.0.9:2380"]}]}
+JSON
+out=$(FAKE_BODY_FILE="$WORK/dbinfo-private.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a started member at this host's PRIVATE-underlay address: refused (not just the default-route IP)" 1 "$rc"
+out=$(FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret" worker); rc=$?
+check "a worker joining with the SERVER token: accepted" 0 "$rc"
+check "…sent as node:<secret>, the user k3s's agent forces" \
+  "Authorization: Basic $(printf 'node:secret' | base64)" "$(cat "$WORK/auth.log")"
+out=$(run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::node:same"); rc=$?
+check "a server join with a node: token is sent as server:<secret>, as k3s does" \
+  "Authorization: Basic $(printf 'server:same' | base64)" "$(cat "$WORK/auth.log")"
+out=$(run_preflight_with "$WORK/curl-ok" "barepassword"); rc=$?
 check "non-K10 token: allowed" 0 "$rc"
-has "$out" "cannot verify" "…but warns it could not be verified"
+has "$out" "cannot verify" "…but warns it could not check the CA"
+check "bare password: basic auth as user server, like k3s" \
+  "Authorization: Basic $(printf 'server:barepassword' | base64)" "$(cat "$WORK/auth.log")"
+out=$(FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::abcdef.0123456789abcdef" worker); rc=$?
+check "worker bootstrap token accepted" 0 "$rc"
+check "bootstrap token goes as Bearer, like k3s" "Authorization: Bearer abcdef.0123456789abcdef" "$(cat "$WORK/auth.log")"
+has "$out" "PREFLIGHT_OK v4=[192.0.2.4 192.0.2.5] v6=[2001:db8::6]" "…learning every API server to admit"
+cat > "$WORK/dbinfo-other-learner.json" <<'JSON'
+{"members":[{"ID":11,"name":"s1-aaaa","peerURLs":["https://192.0.2.4:2380"]},{"ID":153,"peerURLs":["https://192.0.2.6:2380"],"isLearner":true}]}
+JSON
+out=$(FAKE_BODY_FILE="$WORK/dbinfo-other-learner.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "another host's unfinished server join (a learner) in the cluster: refused up front" 1 "$rc"
+has "$out" "etcd member 99 (never started, 192.0.2.6) is still a learner" "…naming it"
+has "$out" "insula etcd remove-learner 99" "…with the command that removes it"
+has "$out" "Nothing on this host has been changed" "…before anything changed"
+out=$(run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+has "$out" "every etcd member accepts this node on port 2380" "every member's :2380 answers: said so"
+out=$(FAKE_CLOSED_PEERS="192.0.2.5" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::server:secret"); rc=$?
+check "a member whose :2380 does not answer: the join goes on (it may be down)" 0 "$rc"
+has "$out" "UIWARN: etcd member(s) 192.0.2.5 do not accept a connection from this node on port 2380" "…with a warning naming it"
+has "$out" "firewall-reconciler" "…and what to check"
+out=$(FAKE_CLOSED_PEERS="192.0.2.4 192.0.2.5" FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::abcdef.0123456789abcdef" worker); rc=$?
+hasnt "$out" "2380" "a worker joins no etcd: no :2380 probe"
+out=$(FAKE_CODE=401 FAKE_BODY_FILE="$WORK/apiservers.json" run_preflight_with "$WORK/curl-ok" "K10${CA_HASH}::abcdef.0123456789abcdef" worker); rc=$?
+check "expired worker token refused before anything is installed" 1 "$rc"
+has "$out" "expired or revoked" "…saying why"
+
+echo "── k3s_journal_errors / join_stuck_hint ──"
+cat > "$WORK/journal.txt" <<'JOURNAL'
+time="2026-10-25T00:15:08Z" level=info msg="Starting k3s v1.36.5+k3s1"
+time="2026-10-25T00:15:08Z" level=error msg="Failed to check local etcd status for learner management: context deadline exceeded"
+{"level":"warn","ts":"2026-10-25T00:15:09Z","caller":"rafthttp/http.go:424","msg":"failed to find remote peer in cluster","local-member-id":"a8b6"}
+{"level":"warn","ts":"2026-10-25T00:15:09Z","caller":"rafthttp/http.go:424","msg":"failed to find remote peer in cluster","local-member-id":"a8b6"}
+{"level":"warn","ts":"2026-10-25T00:15:10Z","caller":"etcdserver/server.go:1846","msg":"failed to publish local member to cluster through raft","error":"context deadline exceeded"}
+time="2026-10-25T00:15:11Z" level=info msg="Failed to test etcd connection: failed to get etcd status: context deadline exceeded"
+{"level":"info","msg":"serving peer traffic"}
+E1025 00:15:12.000000    7438 controller.go:42] "lease renew failed"
+JOURNAL
+out=$(
+  # shellcheck disable=SC1091
+  source "$WORK/helpers.sh"
+  FAKE_JOURNAL="$WORK/journal.txt" k3s_journal_errors k3s 10
+)
+has "$out" "failed to find remote peer in cluster  (x2)" "repeats are folded into one line with a count"
+has "$out" "failed to publish local member to cluster through raft: context deadline exceeded" "etcd JSON lines read as message: error"
+has "$out" "Failed to test etcd connection" "k3s's info-level 'Failed …' lines are kept"
+has "$out" '"lease renew failed"' "klog error lines are kept"
+hasnt "$out" "serving peer traffic" "plain info lines are dropped"
+hasnt "$out" '"caller"' "no raw JSON reaches the operator"
+check "only the last <n> distinct problems" 2 "$(source "$WORK/helpers.sh"; FAKE_JOURNAL="$WORK/journal.txt" k3s_journal_errors k3s 2 | wc -l)"
+out=$(
+  FAKE_NFT_LOG=/dev/null
+  # shellcheck disable=SC1091
+  source "$WORK/helpers.sh"
+  FAKE_JOURNAL="$WORK/journal.txt" join_stuck_hint k3s
+)
+has "$out" "the etcd leader must be able to" "a stuck etcd gets the one-sentence cause (leader cannot reach :2380)"
+# A real host's journal: the match early, far more than a pipe buffer after it, under
+# bootstrap's pipefail (grep -q there let journalctl die of SIGPIPE and hid the hint).
+{ sed -n '5p' "$WORK/journal.txt"
+  for _i in $(seq 1 3000); do echo "time=\"2026-10-25T00:16:00Z\" level=info msg=\"filler line ${_i} of a busy k3s start, long enough to matter\""; done
+} > "$WORK/journal-big.txt"
+out=$(
+  set -o pipefail
+  FAKE_NFT_LOG=/dev/null
+  # shellcheck disable=SC1091
+  source "$WORK/helpers.sh"
+  FAKE_JOURNAL="$WORK/journal-big.txt" join_stuck_hint k3s
+)
+has "$out" "the etcd leader must be able to" "…also from a journal larger than a pipe buffer, under pipefail"
+printf '%s\n' 'time="x" level=error msg="unrelated"' > "$WORK/journal2.txt"
+out=$(source "$WORK/helpers.sh"; FAKE_JOURNAL="$WORK/journal2.txt" join_stuck_hint k3s)
+check "…and nothing when etcd is not the problem" "" "$out"
+
+echo "── seed_firewall_sets admits the reported peers ──"
+out=$(
+  FAKE_NFT_LOG="$WORK/nft.log"; rm -f "$FAKE_NFT_LOG"
+  K3S_SERVER_IP=192.0.2.4; JOIN_PEERS_V4=(192.0.2.5 192.0.2.6); JOIN_PEERS_V6=(2001:db8::5)
+  PRE_ENROLL_PEERS_V4=(); PRE_ENROLL_PEERS_V6=(); ALLOW_SOURCE_LIST_V4=(); ALLOW_SOURCE_LIST_V6=()
+  # shellcheck disable=SC1091
+  source "$WORK/helpers.sh"
+  seed_firewall_sets >/dev/null 2>&1
+  cat "$FAKE_NFT_LOG"
+)
+has "$out" "add element inet filter cluster_peers_v4 { 192.0.2.4 }" "the join target is admitted"
+has "$out" "add element inet filter cluster_peers_v4 { 192.0.2.5 }" "…and every other v4 peer"
+has "$out" "add element inet filter cluster_peers_v4 { 192.0.2.6 }" "…all of them"
+has "$out" "add element inet filter cluster_peers_v6 { 2001:db8::5 }" "…and the v6 peers"
+
+echo "── clear_unfinished_join / fail_join ──"
+# run_cleanup <fn> <role> NAME=VALUE… — a fake host: markers, an etcd data dir
+# and uninstall scripts that record they ran.
+run_cleanup() {
+  local fn="$1" role="$2"; shift 2
+  rm -rf "$WORK/host"; mkdir -p "$WORK/host/markers" "$WORK/host/bin" "$WORK/host/data"
+  # The fake uninstallers wipe the k3s config dir, like the real ones.
+  for s in k3s-uninstall.sh k3s-agent-uninstall.sh; do
+    printf '#!/usr/bin/env bash\necho %s >> %q\nrm -rf %q\n' "$s" "$WORK/host/uninstalled" "$WORK/host/etc-k3s" > "$WORK/host/bin/$s"
+    chmod +x "$WORK/host/bin/$s"
+  done
+  (
+    NODE_ROLE="$role"; BOOTSTRAP_MODE=join; K3S_FRESH_INSTALL=false
+    K3S_SERVER_IP=192.0.2.4; JOIN_PEERS_V4=(192.0.2.5); JOIN_PEERS_V6=(2001:db8::5)
+    PLATFORM_OPS_SELF_BIN=""
+    MARKER_DIR="$WORK/host/markers"; K3S_BIN_DIR="$WORK/host/bin"; K3S_DATA_DIR="$WORK/host/data"
+    KUBELET_DIR="$WORK/host/kubelet"; K3S_CONFIG_DIR="$WORK/host/etc-k3s"
+    for a in "$@"; do
+      case "$a" in
+        marker:*) touch "$MARKER_DIR/.${a#marker:}" ;;
+        etcd-started) mkdir -p "$K3S_DATA_DIR/server/db/etcd/member" ;;
+        pods-ran) mkdir -p "$KUBELET_DIR/pods/0f0e-pod" ;;
+        mirrors) mkdir -p "$K3S_CONFIG_DIR"; printf 'mirrors:\n  docker.io:\n    endpoint: ["http://192.0.2.50:4000"]\n' > "$K3S_CONFIG_DIR/registries.yaml" ;;
+        no-k3s) rm -f "$K3S_BIN_DIR"/*.sh ;;
+        etcd-certs) mkdir -p "$K3S_DATA_DIR/server/tls/etcd"; touch "$K3S_DATA_DIR/server/tls/etcd/server-client.key" ;;
+        cli) PLATFORM_OPS_SELF_BIN="$WORK/fake-insula/insula" ;;
+        node-cli) PLATFORM_OPS_SELF_BIN="$WORK/fake-node/node" ;;
+        *=*) eval "${a%%=*}=\"\${a#*=}\""; export "${a%%=*}" ;;
+      esac
+    done
+    # shellcheck disable=SC1091
+    source "$WORK/helpers.sh"
+    if [[ "$fn" == fail_join ]]; then fail_join "k3s did not join"; else "$fn" && echo CLEANUP_OK; fi
+  ) 2>&1
+}
+uninstalled() { cat "$WORK/host/uninstalled" 2>/dev/null; }
+out=$(run_cleanup clear_unfinished_join server no-k3s); rc=$?
+check "no k3s on the host: nothing to clear" 0 "$rc"
+out=$(run_cleanup clear_unfinished_join server marker:join-in-progress FAKE_UNIT_STATE=active); rc=$?
+check "unfinished marker but k3s is running (the join finished): continue" 0 "$rc"
+check "…without uninstalling" "" "$(uninstalled)"
+check "…and the marker is cleared" "" "$(ls -A "$WORK/host/markers")"
+out=$(run_cleanup clear_unfinished_join server marker:join-in-progress mirrors); rc=$?
+check "unfinished join, etcd never started: cleared" 0 "$rc"
+has "$(cat "$WORK/host/etc-k3s/registries.yaml" 2>/dev/null)" 'http://192.0.2.50:4000' "…keeping the operator's registries.yaml"
+check "…by uninstalling k3s" "k3s-uninstall.sh" "$(uninstalled)"
+check "…and clearing the marker" "" "$(ls -A "$WORK/host/markers")"
+out=$(run_cleanup clear_unfinished_join worker marker:join-in-progress); rc=$?
+check "unfinished worker join: cleared with the agent uninstaller" "k3s-agent-uninstall.sh" "$(uninstalled)"
+out=$(run_cleanup clear_unfinished_join server marker:join-in-progress etcd-started); rc=$?
+check "unfinished join whose etcd started, no insula CLI: refused" 1 "$rc"
+check "…never uninstalling (the cluster may list it as a member)" "" "$(uninstalled)"
+has "$out" "A server join that did not finish" "…pointing at the runbook"
+out=$(run_cleanup clear_unfinished_join server); rc=$?
+check "k3s installed but down, no record of any join (older CLI leftover): refused" 1 "$rc"
+check "…without uninstalling" "" "$(uninstalled)"
+has "$out" "never joined the cluster" "…explaining both cases"
+out=$(run_cleanup clear_unfinished_join server marker:bootstrap-complete); rc=$?
+check "k3s down on a node that finished its join before: left to re-converge" 0 "$rc"
+check "…untouched" "" "$(uninstalled)"
+out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=true marker:join-in-progress mirrors); rc=$?
+check "failed fresh join: fatal" 1 "$rc"
+has "$(cat "$WORK/host/etc-k3s/registries.yaml" 2>/dev/null)" 'http://192.0.2.50:4000' "…and the operator's registries.yaml survives the uninstall"
+check "…and k3s is removed again" "k3s-uninstall.sh" "$(uninstalled)"
+has "$out" "removed again" "…saying a re-run starts clean"
+has "$out" "learner never caught up" "…after showing what k3s said"
+check "…marker cleared" "" "$(ls -A "$WORK/host/markers")"
+out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=true etcd-started); rc=$?
+check "failed join whose etcd started, no insula CLI to ask etcd with: k3s left in place" "" "$(uninstalled)"
+has "$out" "could not be asked whether it still lists it" "…saying why"
+has "$out" "insula etcd remove-learner <ID>" "…and how to finish by hand"
+out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=true marker:join-in-progress no-k3s); rc=$?
+check "failed join that never got k3s installed: fatal" 1 "$rc"
+has "$out" "nothing to remove" "…saying so instead of 'removing k3s failed'"
+check "…marker cleared" "" "$(ls -A "$WORK/host/markers")"
+out=$(run_cleanup fail_join server K3S_FRESH_INSTALL=false); rc=$?
+check "k3s installed before this run: never removed" "" "$(uninstalled)"
+out=$(run_cleanup fail_join worker K3S_FRESH_INSTALL=true); rc=$?
+check "failed fresh worker join: the agent is removed again" "k3s-agent-uninstall.sh" "$(uninstalled)"
+out=$(run_cleanup clear_unfinished_join worker marker:join-in-progress pods-ran); rc=$?
+check "unfinished worker join whose kubelet later ran pods: refused" 1 "$rc"
+check "…never uninstalling a node that may carry workloads" "" "$(uninstalled)"
+out=$(run_cleanup fail_join worker K3S_FRESH_INSTALL=true pods-ran); rc=$?
+check "failed worker join whose kubelet ran pods: the agent is left in place" "" "$(uninstalled)"
+# A fake insula CLI: logs its arguments, answers per endpoint (FAKE_CLI_RCS
+# "<endpoint>=<rc> …", else FAKE_CLI_RC) like `insula etcd remove-learner`.
+mkdir -p "$WORK/fake-insula" "$WORK/fake-node"
+cat > "$WORK/fake-insula/insula" <<'CLI'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CLI_LOG"
+ep=""; prev=""
+for a in "$@"; do [[ "$prev" == --endpoint ]] && ep="$a"; prev="$a"; done
+rc="${FAKE_CLI_RC:-0}"
+for kv in ${FAKE_CLI_RCS:-}; do [[ "${kv%=*}" == "$ep" ]] && rc="${kv##*=}"; done
+case "$rc" in
+  0) echo "removed etcd learner 4d (never started, https://192.0.2.9:2380)" ;;
+  3) echo "not removed: 4d (newnode-0a1b2c3d, https://192.0.2.9:2380) is a voting member — its etcd finished joining" ;;
+  4) echo "the cluster lists no etcd member at 192.0.2.9 — nothing to remove" ;;
+  *) echo "etcd remove-learner: connect ECONNREFUSED ${ep#https://}" >&2 ;;
+esac
+exit "$rc"
+CLI
+printf '#!/usr/bin/env bash\necho node-called >> "$FAKE_CLI_LOG"\nexit 9\n' > "$WORK/fake-node/node"
+chmod +x "$WORK/fake-insula/insula" "$WORK/fake-node/node"
+export FAKE_CLI_LOG="$WORK/cli.log"
+cli_calls() { cat "$FAKE_CLI_LOG" 2>/dev/null; }
+run_member() { rm -f "$FAKE_CLI_LOG"; run_cleanup "$@"; }
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true marker:join-in-progress etcd-started etcd-certs cli mirrors); rc=$?
+check "failed join whose etcd started: still fatal" 1 "$rc"
+has "$out" "removed etcd learner 4d" "…after removing this node's etcd learner"
+check "…through the join target's etcd, by this host's addresses, with the local client certificate" \
+  "etcd remove-learner --address 192.0.2.9 --address 10.0.0.9 --address 192.0.2.9 --endpoint https://192.0.2.4:2379 --tls-dir $WORK/host/data/server/tls/etcd" "$(cli_calls)"
+check "…then removes k3s, so a re-run starts clean" "k3s-uninstall.sh" "$(uninstalled)"
+has "$(cat "$WORK/host/etc-k3s/registries.yaml" 2>/dev/null)" 'http://192.0.2.50:4000' "…keeping registries.yaml"
+has "$out" "removed again" "…and says so"
+check "…marker cleared" "" "$(ls -A "$WORK/host/markers")"
+export FAKE_SYSTEMCTL_LOG="$WORK/systemctl.log"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active K8S_NODE_NAME=newnode run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "a still-running k3s is stopped before its learner is removed (no promotion mid-removal)" "stop k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+has "$(cli_calls)" "--name newnode" "…and the learner is also matched by this node's name"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active FAKE_CLI_RC=3 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "…and started again when the member turns out to vote" "stop k3s
+start --no-block k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+rm -f "$FAKE_SYSTEMCTL_LOG"
+out=$(FAKE_UNIT_STATE=active FAKE_CLI_RC=1 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "…or when no etcd could be asked (left as it was)" "stop k3s
+start --no-block k3s" "$(cat "$FAKE_SYSTEMCTL_LOG")"
+out=$(FAKE_CLI_RC=4 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "etcd started but the cluster never listed this node: k3s removed" "k3s-uninstall.sh" "$(uninstalled)"
+out=$(FAKE_CLI_RC=3 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "this node is a VOTING member (its etcd join finished): k3s left in place" "" "$(uninstalled)"
+has "$out" "did finish joining — it is a voting member" "…saying why"
+out=$(FAKE_CLI_RCS="https://192.0.2.4:2379=1" run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "the join target's etcd does not answer: asked through the next member" 2 "$(cli_calls | wc -l | tr -d ' ')"
+has "$(cli_calls | tail -1)" "--endpoint https://192.0.2.5:2379" "…the other server"
+check "…and k3s removed once that one answered" "k3s-uninstall.sh" "$(uninstalled)"
+out=$(FAKE_CLI_RC=1 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "no member's etcd answers: k3s left in place" "" "$(uninstalled)"
+has "$(cli_calls | tail -1)" "--endpoint https://[2001:db8::5]:2379" "…after trying every member, an IPv6 one bracketed"
+has "$out" "could not check: etcd remove-learner: connect ECONNREFUSED" "…showing why"
+has "$out" "insula etcd remove-learner <ID>" "…and how to finish by hand"
+out=$(FAKE_CLI_RC=2 run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs cli); rc=$?
+check "a CLI without the etcd command: asked once, not per member" 1 "$(cli_calls | wc -l | tr -d ' ')"
+check "…k3s left in place" "" "$(uninstalled)"
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true etcd-started cli); rc=$?
+check "no etcd client certificate on the host: nothing asked" "" "$(cli_calls)"
+has "$out" "no insula CLI or etcd client certificate" "…saying so"
+out=$(run_member fail_join server K3S_FRESH_INSTALL=true etcd-started etcd-certs node-cli); rc=$?
+check "bootstrap run from a checkout (PLATFORM_OPS_SELF_BIN is node): node is never called" "" "$(cli_calls)"
+out=$(run_member clear_unfinished_join server marker:join-in-progress etcd-started etcd-certs cli); rc=$?
+check "re-run after a join that stopped once its etcd started: cleared" 0 "$rc"
+has "$out" "removed etcd learner 4d" "…removing the learner first"
+check "…then k3s" "k3s-uninstall.sh" "$(uninstalled)"
+check "…and the marker" "" "$(ls -A "$WORK/host/markers")"
+out=$(FAKE_CLI_RC=3 run_member clear_unfinished_join server marker:join-in-progress etcd-started etcd-certs cli); rc=$?
+check "re-run where this node already votes: refused" 1 "$rc"
+check "…never uninstalling" "" "$(uninstalled)"
+has "$out" "voting etcd member" "…saying why"
 
 echo "── drop_existing_seed_once_objects ──"
 if command -v yq >/dev/null 2>&1 && yq --version 2>/dev/null | grep -q mikefarah; then
@@ -357,6 +701,26 @@ hasnt "$seed_block" '--from-literal=' "admin seed password never on a command li
 hasnt "$seed_block" 'Login: $admin_email / $admin_password' "admin seed password never printed to the transcript"
 pin="$(fn_body pin_system_components_to_servers)"
 hasnt "$pin" 'topologySpreadConstraints' "bootstrap no longer patches Flux-owned topology spread"
+
+echo "── failed / unfinished joins (structural) ──"
+ik="$(fn_body install_k3s)"
+has "$ik" '"$BOOTSTRAP_MODE" == "join" ]] && clear_unfinished_join' "a join clears an unfinished earlier join before the version check"
+[[ "$(grep -n 'clear_unfinished_join' <<<"$ik" | head -1 | cut -d: -f1)" -lt "$(grep -n 'Correct version, skipping' <<<"$ik" | cut -d: -f1)" ]] \
+  && ok "…BEFORE 'Correct version, skipping' can keep the old token" || bad "clear_unfinished_join must run before the skip"
+has "$ik" 'marker_set join-in-progress' "a fresh join is marked unfinished until it finishes"
+has "$ik" 'marker_clear join-in-progress' "…and unmarked after"
+has "$(fn_body install_k3s_server)" 'fail_join "k3s did not join the cluster' "a server join that times out goes through fail_join"
+has "$(fn_body install_k3s_worker)" 'fail_join "k3s-agent did not join the cluster' "a worker join that times out goes through fail_join"
+has "$(fn_body install_k3s_server)" 'command -v k3s &>/dev/null || fail_join "the k3s installer stopped before k3s was installed' "an installer that never installed k3s stops at once (no 600 s wait)"
+has "$(fn_body install_k3s_worker)" 'command -v k3s &>/dev/null || fail_join "the k3s installer stopped before k3s was installed' "…for a worker too"
+hasnt "$(fn_body install_k3s_server)" 'This is expected when joining' "no more 'expected, peers have not pre-enrolled you' after a passed preflight"
+sfs="$(fn_body seed_firewall_sets)"
+has "$sfs" 'JOIN_PEERS_V4[@]' "the new node admits every v4 peer the target reported"
+has "$sfs" 'JOIN_PEERS_V6[@]' "…and every v6 peer"
+has "$(fn_body run_join_preflight)" 'verify_join_credentials "$ca_file"' "the preflight checks the token's secret"
+vjc="$(fn_body verify_join_credentials)"
+has "$vjc" 'join_auth_header | curl' "…with the credentials on stdin"
+hasnt "$(grep -A1 'curl -sS' <<<"$vjc")" ' -u ' "…never as curl -u (a command line every ps shows)"
 
 echo "── Flux-equivalence assumption behind the \$\$ unescape ──"
 KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"

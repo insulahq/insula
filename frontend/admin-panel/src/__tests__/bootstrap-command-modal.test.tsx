@@ -6,32 +6,30 @@ import { ApiError } from '../lib/api-client';
 const fetchBootstrapCommand = vi.fn();
 
 vi.mock('../hooks/use-cluster-network', () => ({
-  fetchBootstrapCommand: (name: string) => fetchBootstrapCommand(name),
+  fetchBootstrapCommand: (name: string, server?: string) =>
+    server === undefined ? fetchBootstrapCommand(name) : fetchBootstrapCommand(name, server),
 }));
 
 import BootstrapCommandModal from '../components/security/BootstrapCommandModal';
 
+const SCRIPT_URL = 'https://raw.githubusercontent.com/insulahq/insula/v2026.10.2/scripts/join-node.sh';
+const LINE =
+  `curl -fsSL --proto '=https' --proto-redir '=https' -o join-node.sh '${SCRIPT_URL}' && echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  join-node.sh' | sha256sum -c - ` +
+  "&& bash join-node.sh --release '2026.10.2' --join-as worker --server '198.51.100.10' --dual-stack --token 'K10aa::abcdef.0123456789abcdef'";
 const WORKER: BootstrapCommandResponse = {
   steps: [
-    { id: 'download', title: 'Download the insula CLI 2026.10.2', runOn: 'new-node', command: 'curl … -o insula', note: null },
-    {
-      id: 'verify-install',
-      title: 'Verify the signature, then install',
-      runOn: 'new-node',
-      command: 'if … openssl dgst …; then install …; fi',
-      note: 'openssl must print "Verified OK".',
-    },
     {
       id: 'join',
       title: 'Join the cluster as a worker',
       runOn: 'new-node',
-      command: "insula bootstrap --join-as worker --server '198.51.100.10' --token 'K10aa::abcdef.0123456789abcdef' --dual-stack",
-      note: null,
+      command: LINE,
+      note: 'sha256sum must print "join-node.sh: OK".',
     },
   ],
-  script: "(\nset -eu\ninsula bootstrap --join-as worker --server '198.51.100.10' --token 'K10aa::abcdef.0123456789abcdef' --dual-stack\n)",
+  script: LINE,
   bootstrapCommand:
-    "insula bootstrap --join-as worker --server '198.51.100.10' --token 'K10aa::abcdef.0123456789abcdef' --dual-stack",
+    "insula bootstrap --join-as worker --server '198.51.100.10' --dual-stack --token 'K10aa::abcdef.0123456789abcdef'",
+  joinScript: { url: SCRIPT_URL, sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
   serverIp: '198.51.100.10',
   role: 'worker',
   nodeIp: '198.51.100.50',
@@ -42,6 +40,7 @@ const WORKER: BootstrapCommandResponse = {
   notes: [],
 };
 
+const SERVER_LINE = LINE.replace(/ --dual-stack --token .*$/, '').replace('--join-as worker', '--join-as server');
 const SERVER: BootstrapCommandResponse = {
   ...WORKER,
   role: 'server',
@@ -53,15 +52,15 @@ const SERVER: BootstrapCommandResponse = {
       command: 'cat /var/lib/rancher/k3s/server/node-token',
       note: null,
     },
-    ...WORKER.steps.slice(0, 2),
     {
       id: 'join',
       title: 'Join the cluster as a server',
       runOn: 'new-node',
-      command: "read -rsp '…' INSULA_JOIN_TOKEN; echo\ninsula bootstrap --join-as server --server '198.51.100.10' --token \"$INSULA_JOIN_TOKEN\"",
-      note: null,
+      command: SERVER_LINE,
+      note: 'It asks for the token from step 1.',
     },
   ],
+  script: SERVER_LINE,
   joinToken: { kind: 'node-token', tokenId: null, expiresAt: null },
   warning: 'Joining a second server gives a 2-member etcd …',
   notes: ['This node was pre-enrolled by an IPv6 address …'],
@@ -72,18 +71,21 @@ beforeEach(() => {
 });
 
 describe('BootstrapCommandModal', () => {
-  it('worker: new-node heading, one copyable script, token expiry, no workstation/pre-auth', async () => {
+  it('worker: the one line on the new node, the script it runs, token expiry, no workstation/pre-auth', async () => {
     fetchBootstrapCommand.mockResolvedValue(WORKER);
     render(<BootstrapCommandModal cppName="w3" onClose={vi.fn()} />);
 
     expect(await screen.findByTestId('bootstrap-command-heading')).toHaveTextContent(
-      'Run these on the new node 198.51.100.50 as root',
+      'Run the join on the new node 198.51.100.50 as root',
     );
     expect(fetchBootstrapCommand).toHaveBeenCalledWith('w3');
-    expect(screen.getByTestId('bootstrap-script')).toHaveTextContent('--token');
+    expect(screen.getByText('On the new node (198.51.100.50)')).toBeInTheDocument();
+    expect(screen.getByTestId('bootstrap-script').textContent).toBe(LINE);
+    expect(screen.getByTestId('bootstrap-note-join')).toHaveTextContent('join-node.sh: OK');
+    expect(screen.getByTestId('join-script-link')).toHaveAttribute('href', SCRIPT_URL);
     expect(screen.getByTestId('join-token-expiry')).toHaveTextContent('valid until');
     expect(screen.getByTestId('join-token-expiry')).toHaveTextContent(/in about 2 h/);
-    expect(screen.getByText('Copy all')).toBeInTheDocument();
+    expect(screen.getByText('Copy')).toBeInTheDocument();
     expect(screen.getByText('Dual-stack (IPv4 + IPv6)')).toBeInTheDocument();
     expect(screen.queryByTestId('bootstrap-step-server-token')).toBeNull();
     expect(document.body.textContent).not.toMatch(/workstation|peer-firewall-add|pre-authorise/i);
@@ -96,8 +98,9 @@ describe('BootstrapCommandModal', () => {
     expect(await screen.findByTestId('bootstrap-step-server-token')).toHaveTextContent(
       'cat /var/lib/rancher/k3s/server/node-token',
     );
-    expect(screen.getByText(/Step 1 — on an existing server \(198\.51\.100\.10\)/)).toBeInTheDocument();
-    expect(screen.getByText(/Steps 2–4 — on the new node/)).toBeInTheDocument();
+    expect(screen.getByText(/Step 1 — on any existing server/)).toBeInTheDocument();
+    expect(screen.getByText('Step 2 — on the new node (198.51.100.50)')).toBeInTheDocument();
+    expect(screen.getByTestId('bootstrap-script')).not.toHaveTextContent('--token');
     expect(screen.getByTestId('join-token-server')).toHaveTextContent('never shows that token');
     expect(screen.getByTestId('join-token-server')).toHaveTextContent('short-lived tokens can only join workers');
     expect(screen.queryByTestId('join-token-expiry')).toBeNull();
@@ -138,19 +141,84 @@ describe('BootstrapCommandModal', () => {
     fetchBootstrapCommand.mockResolvedValue(WORKER);
     const onClose = vi.fn();
     render(<BootstrapCommandModal cppName="w3" onClose={onClose} />);
-    await screen.findByText('Copy all');
+    await screen.findByTestId('bootstrap-script');
     fireEvent.keyDown(window, { key: 'Enter' });
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('copies the whole script', async () => {
+  it('one server: "Joins via" is a plain fact, no picker', async () => {
+    fetchBootstrapCommand.mockResolvedValue({
+      ...SERVER,
+      servers: [{ name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: true }],
+    });
+    render(<BootstrapCommandModal cppName="s2" onClose={vi.fn()} />);
+    await screen.findByTestId('bootstrap-step-server-token');
+    expect(screen.queryByTestId('join-target-select')).toBeNull();
+    expect(screen.getByText('198.51.100.10')).toBeInTheDocument();
+  });
+
+  it('several servers: pick another one and the steps are fetched for it', async () => {
+    const servers = [
+      { name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: false },
+      { name: 'sv2', ip: '198.51.100.11', ready: true, cordoned: false, answering: true },
+      { name: 'sv3', ip: '198.51.100.12', ready: false, cordoned: false, answering: null },
+    ];
+    fetchBootstrapCommand
+      .mockResolvedValueOnce({ ...SERVER, serverIp: '198.51.100.11', servers })
+      .mockResolvedValueOnce({
+        ...SERVER,
+        serverIp: '198.51.100.10',
+        servers,
+        bootstrapCommand: "insula bootstrap --join-as server --server '198.51.100.10'",
+        notes: ['Server sv1 (198.51.100.10) did not answer on its API port just now — … Pick another server …'],
+      });
+    render(<BootstrapCommandModal cppName="s4" onClose={vi.fn()} />);
+    const select = (await screen.findByTestId('join-target-select')) as HTMLSelectElement;
+    expect(fetchBootstrapCommand).toHaveBeenLastCalledWith('s4');
+    expect(select.value).toBe('198.51.100.11');
+    const options = Array.from(select.options);
+    expect(options.map((o) => o.textContent)).toEqual([
+      'sv1 (198.51.100.10) — not answering',
+      'sv2 (198.51.100.11)',
+      'sv3 (198.51.100.12) — not Ready',
+    ]);
+    expect(options[2]?.disabled).toBe(true);
+
+    fireEvent.change(select, { target: { value: '198.51.100.10' } });
+    await waitFor(() => expect(fetchBootstrapCommand).toHaveBeenLastCalledWith('s4', '198.51.100.10'));
+    await waitFor(() => expect((screen.getByTestId('join-target-select') as HTMLSelectElement).value).toBe('198.51.100.10'));
+    expect(screen.getByTestId('bootstrap-command-notes')).toHaveTextContent('Pick another server');
+  });
+
+  it('a refused pick shows the error, and picking the same server again retries', async () => {
+    const servers = [
+      { name: 'sv1', ip: '198.51.100.10', ready: true, cordoned: false, answering: true },
+      { name: 'sv2', ip: '198.51.100.11', ready: true, cordoned: false, answering: true },
+    ];
+    fetchBootstrapCommand
+      .mockResolvedValueOnce({ ...SERVER, servers })
+      .mockRejectedValueOnce(
+        new ApiError(409, 'JOIN_TARGET_NOT_READY', 'Server sv2 (198.51.100.11) is not Ready — pick another server.'),
+      )
+      .mockResolvedValueOnce({ ...SERVER, serverIp: '198.51.100.11', servers });
+    render(<BootstrapCommandModal cppName="s4" onClose={vi.fn()} />);
+    const select = await screen.findByTestId('join-target-select');
+    fireEvent.change(select, { target: { value: '198.51.100.11' } });
+    await waitFor(() => expect(screen.getByTestId('bootstrap-command-error')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('join-target-select'), { target: { value: '198.51.100.11' } });
+    await waitFor(() => expect(fetchBootstrapCommand).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByTestId('bootstrap-command-error')).toBeNull());
+    expect((screen.getByTestId('join-target-select') as HTMLSelectElement).value).toBe('198.51.100.11');
+  });
+
+  it('copies the join line', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     fetchBootstrapCommand.mockResolvedValue(WORKER);
     render(<BootstrapCommandModal cppName="w3" onClose={vi.fn()} />);
-    fireEvent.click(await screen.findByText('Copy all'));
+    fireEvent.click(await screen.findByText('Copy'));
     expect(writeText).toHaveBeenCalledWith(WORKER.script);
     expect(await screen.findByText('Copied')).toBeInTheDocument();
   });

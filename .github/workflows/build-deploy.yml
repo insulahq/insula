@@ -23,6 +23,8 @@ on:
       # the development branch.
       - 'k8s/**'
       - 'scripts/**'
+      # The release key is baked into the backend image (backend/Dockerfile).
+      - 'platform/cosign.pub'
       # Exclude the files that update-development-version itself rewrites.
       # Without these `!` patterns the auto-pin commit (which only touches
       # these three files) could re-trigger build-deploy → rebuild → new
@@ -69,6 +71,10 @@ jobs:
             backend:
               - 'backend/**'
               - 'packages/api-contracts/**'
+              # Baked into the image (backend/Dockerfile): the join line pins
+              # join-node.sh by its hash, and the script carries the key.
+              - 'scripts/join-node.sh'
+              - 'platform/cosign.pub'
             admin_panel:
               - 'frontend/admin-panel/**'
               - 'packages/api-contracts/**'

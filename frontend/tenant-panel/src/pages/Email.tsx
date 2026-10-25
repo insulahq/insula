@@ -1673,12 +1673,27 @@ function SettingsTab({
 // 'failed' = red (Ingress could not be created at all)
 // undefined = no badge (legacy rows or non-webmail-enabled domains)
 function WebmailStatusBadge({
+  enabled,
   status,
   message,
 }: {
+  /** The SAVED setting. `webmail_status` keeps its column default (`pending`)
+   *  while webmail is off, so without this the pill read "Provisioning…" for
+   *  every domain that never had webmail. */
+  readonly enabled: boolean;
   readonly status: 'pending' | 'ready' | 'ready_no_tls' | 'failed' | undefined;
   readonly message: string | null;
 }) {
+  if (!enabled) {
+    return (
+      <span
+        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+        data-testid="webmail-status-disabled"
+      >
+        Disabled
+      </span>
+    );
+  }
   if (!status) return null;
   const meta: Record<string, { label: string; cls: string }> = {
     pending: {
@@ -1721,8 +1736,11 @@ function DomainSettingsCard({
   const [catchAll, setCatchAll] = useState(domain.catchAllAddress ?? '');
   const [spamJunk, setSpamJunk] = useState(domain.spamThresholdJunk ?? '5.0');
   const [spamReject, setSpamReject] = useState(domain.spamThresholdReject ?? '10.0');
+  // One reading of the saved setting for the checkbox AND the pill: they
+  // disagreed on a row with no webmailEnabled (checked box, "Disabled" pill).
+  const savedWebmail = domain.webmailEnabled === undefined ? true : domain.webmailEnabled === 1;
   const [webmailEnabled, setWebmailEnabled] = useState(
-    domain.webmailEnabled === undefined ? true : domain.webmailEnabled === 1,
+    savedWebmail,
   );
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -1738,8 +1756,7 @@ function DomainSettingsCard({
     if (spamReject !== (domain.spamThresholdReject ?? '10.0')) {
       input.spam_threshold_reject = spamReject;
     }
-    const currentWebmail = domain.webmailEnabled === undefined ? true : domain.webmailEnabled === 1;
-    if (webmailEnabled !== currentWebmail) {
+    if (webmailEnabled !== savedWebmail) {
       input.webmail_enabled = webmailEnabled;
     }
     if (Object.keys(input).length === 0) {
@@ -1800,6 +1817,7 @@ function DomainSettingsCard({
               </span>
             </label>
             <WebmailStatusBadge
+              enabled={savedWebmail}
               status={domain.webmailStatus}
               message={domain.webmailStatusMessage ?? null}
             />

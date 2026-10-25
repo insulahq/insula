@@ -441,6 +441,7 @@ The 5-minute reconciler tracks each node's kernel **bootID**
 | `admin.node_rebooting` (shown as *Node shutting down*) | the kubelet reports a **graceful shutdown**: `Ready=False` with "node is shutting down" in the message | warning |
 | `admin.node_down` | the node leaves `Ready` **without** that report — a crash, a power cut, a lost network | critical |
 | `admin.node_startup_complete` | bootID **changed** and the node is `Ready` | info |
+| `admin.node_back_online` (shown as *Node back online*) | the node is `Ready` again on the **same** boot after an outage that was announced | info |
 
 The going-down notice is worded by what the kubelet said, and sent once: the
 30-second fast down-watch usually sends it (the shutdown report lasts one grace
@@ -449,9 +450,20 @@ dedupe key per node, boot and day, so whichever speaks first wins. A shutdown is
 not called a reboot: whether the server comes back is only known when it does.
 On its return, *startup complete* is the back notice — the reconciler's "Node
 health: recovered to normal" for the same minute is not sent. A node back on the
-**same** boot (a lost network, a kubelet restart) still gets "recovered to
-normal", the only back notice it has. Meanwhile, alerts about the node itself
-are held — see [the outage hold](#nodes-that-are-down--the-outage-hold).
+**same** boot (a lost network, a kubelet restart) gets *Node back online*, with
+how long it was NotReady and from when to when. Meanwhile, alerts about the node
+itself are held — see [the outage hold](#nodes-that-are-down--the-outage-hold).
+
+`node_health_state.down_since` is the outage on record: the fast down-watch
+writes it when it announces the node, the reconciler when it sees the node
+NotReady outside its join window. Whichever detector first sees the node Ready
+again on the same boot clears it with a compare-and-clear UPDATE and sends
+*Node back online*; the other finds nothing to clear. So an outage shorter than
+the reconciler's 5-minute tick — which used to get a "down" email and nothing
+after it — gets its all-clear from the fast watch within 30 seconds. The
+reconciler's "recovered to normal" is not sent for that return either; it is
+still sent when the node comes back with something else wrong (a missing CSI
+driver, disk pressure) and that later clears.
 
 ### Why bootID and not the Ready condition
 

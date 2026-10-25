@@ -21,6 +21,7 @@ import {
 } from './commands.js';
 import { clusterDoctor } from './doctor.js';
 import { bootstrapCommand } from './bootstrap.js';
+import { etcdCommand } from './etcd-ops.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
@@ -57,6 +58,10 @@ Commands:
   cluster upgrade-cnpg   Bump the CloudNativePG operator
   node cordon|uncordon <name>
                          Cordon / uncordon a node (operator maintenance)
+  etcd members [--json]  List the etcd members (server, root; no etcdctl needed)
+  etcd remove-learner <id> | --address <ip>
+                         Remove an etcd LEARNER — a server join that never
+                         finished; a voting member is refused
   upgrade [--version X.Y.Z] [--apply] [--exclude-node N]... [--direct]
                          Plan/start a platform upgrade (dry-run prints the plan
                          and pre-flight; --apply starts the run: nodes first,
@@ -221,6 +226,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return shellCommand(rest, deps);
     case 'bootstrap':
       return bootstrapCommand(rest, deps);
+    case 'etcd':
+      return etcdCommand(rest, deps);
     default:
       deps.err(`unknown command: ${cmd}`);
       printHelp(deps);

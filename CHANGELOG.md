@@ -12,6 +12,120 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **An all-clear email when a node comes back without a reboot.** A node that dropped out for a
+  minute got a "Cluster node down" email and nothing after it: only the 5-minute health check
+  sent a back notice, and an outage between two of its checks never reached it. The 30-second
+  down-check now sends *Node back online* when the node is Ready again on the same boot, with how
+  long it was NotReady and from when to when. Exactly one of the two checks sends it, and "Node
+  health: recovered to normal" is no longer sent as a second back notice for the same return. A
+  reboot still gets *startup complete* instead.
+- **The join command checks that the new host can reach the DNS server API.** The platform makes
+  DNS changes from whichever server runs its API, so a server that cannot reach the DNS server
+  makes those changes fail. That is how a webmail record on production never reached the
+  nameservers: the new server was on the VPN mesh in front of the DNS API, but not connected to
+  it. The panel's join line now lists each DNS server's API address (host and port only), and
+  `join-node.sh` connects to each before installing anything. If one does not answer, it says
+  what to check and asks whether to join anyway.
+- **Sync Records can remove a record from one side.** Each record that differs now offers *Remove
+  local* (delete it from the platform's list, leave the DNS server alone) and *Remove on server*
+  (withdraw that one value from the DNS server, leave the list alone), next to Push and Pull. Both
+  ask for a second click. A failed action now shows its error in the dialog; before, the button
+  just stopped spinning.
+- **`insula etcd members` and `insula etcd remove-learner`.** On any server, `insula etcd
+  members` lists the cluster's etcd members: ID, name, peer address, and whether each votes or is
+  still a learner. `insula etcd remove-learner <id>` removes a learner, which is what a server join
+  that never finished leaves behind. It refuses a voting member. Neither needs `etcdctl`, which k3s
+  does not ship.
+
+### Changed
+
+- **The join command is one line.** The panel used to render a block of about twenty lines to
+  paste on the new node. It now renders one line. That line downloads `scripts/join-node.sh` from
+  GitHub, at the release (or, on DEV, the commit) the platform runs, and checks it against the
+  SHA-256 of the platform's own copy. Only then does it run the script, which downloads the CLI,
+  checks its signature against the cluster's release key and joins. As before, nothing GitHub
+  serves runs unverified. A server join still reads the token on an existing server first. The
+  line asks for it, hidden.
+- **The join command lets you choose which server a new node joins through.** The panel used to
+  always target the first server by name. It now lists every server under **Joins via**, with
+  whether it is Ready, cordoned, and whether its API port answered just now, and defaults to one
+  that answered. So a server that just went down (it still reads Ready for about a minute) is no
+  longer the default. Pick another server and the steps are rendered for it. Any server works: they
+  all hold the same server token, and step 1 now says so.
+- **A cron task whose next run is due within the hour is reported when two runs in a row fail.**
+  On production, almost every failure notice in four weeks was one failed run followed by one that
+  worked. The causes were a pod restarting under a Moodle cron, a storage failover, and one slow
+  Nextcloud request. A task whose next run is more than an hour away (nightly, weekly, or the last
+  run of a working day) is still reported on its first failure. A run the platform could not
+  start, or stopped, does not count. The notice says how many runs in a row failed. Both panels
+  explain the rule next to the notification settings, and the tenant API returns the count as
+  `consecutiveFailures`. Migration 0164 adds `cron_jobs.consecutive_failures`; a task whose last
+  run failed starts at 1.
+
+### Fixed
+
+- **A cron failure notice shows the end of the output.** It showed the first 200 characters of
+  the last 2000 the platform keeps. For a long command that is a fragment from the middle, cut off
+  before the lines that say why it failed: production's Moodle notices ended in "Cron run completed
+  correctly / Cron c". It now shows the last 300 characters, starting on a whole line.
+
+- **`http://webmail.<domain>` redirects instead of answering 404.** A tenant's webmail address
+  forwarded to the platform webmail only over https; plain http matched nothing. It now forwards
+  to the platform webmail's https address in one step. Existing webmail domains get the HTTP
+  route when the API starts; there is nothing to toggle.
+- **The tenant panel's email settings say *Disabled* for a domain without webmail.** The status
+  pill read *Provisioning…* for every domain that never had webmail turned on.
+- **Changing a domain's DNS provider group no longer drops records.** The move first copied the
+  old server's records into the platform's list by deleting every row and re-inserting what the
+  server listed. A record the server did not have was lost, such as one whose publish had failed.
+  So was which part of the platform owned each record, which ingress routes and mail need to
+  update or remove their records later. It now adds only the records the server has and the list
+  lacks, and keeps every existing row. The same applies to domain creation and the API's `sync`
+  endpoint. SRV records are also pushed to the new group with their weight and port, without which
+  they could not be written.
+- **Push on a Sync Records conflict replaces the server's value.** It used to publish the local
+  value next to the server's, leaving both live. For a CNAME the DNS server refused a second value,
+  so the push failed. Editing a CNAME's target failed for the same reason; the old target now goes
+  first, and comes back if the new one is refused.
+- **Sync Records no longer pairs a value with the wrong counterpart.** With two values on each side
+  of which one matched, a missing local value could be shown as conflicting with the server value
+  that matched the other row, hiding the real difference.
+- **A failed record comparison is logged with its cause.** "Failed to fetch records from DNS
+  server" was all anyone could find; the provider's error now goes to the API log (not to the
+  panel, which tenants see).
+- **A join checks the token before installing anything.** A token for the right cluster but with
+  the wrong secret, the worker token used for a server join, or an expired panel token passed the
+  old check, and then failed only as a k3s retry loop after k3s was installed. Bootstrap now asks
+  the join target to accept the token first, and stops with the reason and where the right token
+  is. Nothing on the host has changed at that point.
+- **A new server no longer hangs at `systemd: Starting k3s` when the etcd leader is another
+  server.** The joining node's firewall let in only the server it joined through, so the leader
+  could not reach the newcomer to bring its etcd up to date. Bootstrap now lets in every etcd member
+  (for a worker, every API server) that the join target lists, before k3s starts.
+- **A failed join no longer leaves k3s behind for you to uninstall.** When a join times out,
+  bootstrap shows k3s's last errors from that attempt and removes the k3s it installed in that run
+  (binary, service, config and data), so running the same command again starts clean. Before, a
+  re-run skipped the install and kept the old token. A join that was interrupted (Ctrl-C, a
+  dropped SSH session) is cleaned up by the next run. That includes a server whose etcd had
+  already started. The cluster lists such a server as an etcd learner, and k3s's leader never
+  removes it, so bootstrap removes it through an existing server first. A learner has no vote, so
+  this cannot affect quorum. Two cases are left in place on purpose: a server whose etcd member
+  already votes, and a worker whose kubelet already ran pods. Bootstrap also leaves the host in
+  place when no server's etcd answers, and says what to run. When a join hangs, bootstrap now shows
+  the distinct problems k3s reported in that attempt instead of raw etcd lines. When a joining
+  server's etcd cannot catch up, it also says why: the etcd leader cannot reach the node on port
+  2380.
+- **A server join is refused up front while another host's join is unfinished.** etcd admits one
+  learner at a time, so a second join used to fail only after k3s was installed. The preflight now
+  names that learner and gives the command that removes it. It also tests every etcd member's port
+  2380 and warns about any server that does not admit the new node yet.
+- **Removing a node now also removes its saved list of cluster peers.** The node-removal steps in
+  the multi-node runbook left `/etc/nftables.d/10-cluster-peers.conf` on the host. Bootstrap loads
+  that file again, so a reused host kept trusting its old cluster's servers on the etcd and API
+  ports until its firewall reconciler ran.
+
 ## [2026.10.17] - 2026-10-24
 
 ### Added

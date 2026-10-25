@@ -12,11 +12,23 @@ const events = vi.hoisted(() => ({
   notifyAdminNodeDown: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeShuttingDown: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeStartupComplete: vi.fn().mockResolvedValue(undefined),
+  notifyAdminNodeBackOnline: vi.fn().mockResolvedValue(undefined),
   notifyAdminOperationalEvent: vi.fn().mockResolvedValue(undefined),
   notifyAdminNodeMemoryEvents: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../notifications/events.js', () => events);
 vi.mock('./kubelet-disk.js', () => ({ readNodeDiskStats: vi.fn().mockResolvedValue(new Map()) }));
+// The compare-and-clear is one SQL UPDATE; against the fake table it is this.
+const fakeTable = vi.hoisted(() => ({ rows: new Map<string, Record<string, unknown>>() }));
+vi.mock('./back-online.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./back-online.js')>()),
+  claimOutageEnd: vi.fn(async (_db: unknown, nodeName: string, downSince: Date) => {
+    const row = fakeTable.rows.get(nodeName);
+    if (!(row?.downSince instanceof Date) || row.downSince.getTime() !== downSince.getTime()) return false;
+    row.downSince = null;
+    return true;
+  }),
+}));
 
 import { reconcileNodeHealth, startupAnnouncementNote } from './scheduler.js';
 import { nodeDownDedupeKey } from './fast-down-watch.js';
@@ -33,6 +45,7 @@ type Row = Record<string, unknown> & { nodeName: string };
 
 function fakeDb(): { db: Database; rows: Map<string, Row> } {
   const rows = new Map<string, Row>();
+  fakeTable.rows = rows;
   const thenable = <T>(value: T) => {
     const p = Promise.resolve(value);
     return Object.assign(p, { where: () => p });
@@ -159,16 +172,49 @@ describe('reconcileNodeHealth — one outage, one going-down notice and one back
     expect(healthNotices()).toEqual([]);
   });
 
-  it('keeps "recovered to normal" for a node back WITHOUT a reboot — it is the only back notice then', async () => {
-    const { node2, db, k8s } = cluster();
+  it('a node back WITHOUT a reboot gets one all-clear — "back online", not also "recovered to normal"', async () => {
+    const { node2, db, rows, k8s } = cluster();
     await reconcileNodeHealth(db, k8s, at(0));
-    node2.status = 'Unknown';
+    Object.assign(node2, { status: 'Unknown', readySince: at(3) });
     await reconcileNodeHealth(db, k8s, at(5));
     Object.assign(node2, { status: 'True', readySince: at(9) }); // same boot: a lost network, not a restart
     await reconcileNodeHealth(db, k8s, at(10));
     expect(events.notifyAdminNodeStartupComplete).not.toHaveBeenCalled();
-    expect(healthNotices()).toHaveLength(1);
-    expect(healthNotices()[0][2]).toMatchObject({ severityLabel: 'normal' });
+    expect(events.notifyAdminNodeBackOnline).toHaveBeenCalledTimes(1);
+    expect(events.notifyAdminNodeBackOnline.mock.calls[0].slice(1)).toEqual([
+      { nodeName: 'node-2', downtimeText: '6m 00s', downAtText: '12:03 UTC', backAtText: '12:09 UTC', bootNote: expect.stringContaining('did not reboot') },
+      'node-back:node-2:b1:2026-10-01',
+    ]);
+    expect(healthNotices()).toEqual([]);
+    expect(rows.get('node-2')?.downSince).toBeNull();
+  });
+
+  // Production: NotReady for ~70 s between two ticks — a "down" email from the
+  // fast watch and no all-clear, ever.
+  it('sends the all-clear for an outage only the fast down-watch saw', async () => {
+    const { node2, db, rows, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    // The 30-second watch announced it and recorded the outage; it is over by this tick.
+    rows.set('node-2', { ...rows.get('node-2')!, downSince: at(1) });
+    Object.assign(node2, { readySince: at(2) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    expect(events.notifyAdminNodeBackOnline).toHaveBeenCalledTimes(1);
+    expect(events.notifyAdminNodeBackOnline.mock.calls[0][1]).toMatchObject({ nodeName: 'node-2', downtimeText: '1m 00s' });
+    expect(healthNotices()).toEqual([]);
+  });
+
+  it('sends nothing when the fast down-watch already closed the outage', async () => {
+    const { node2, db, k8s } = cluster();
+    await reconcileNodeHealth(db, k8s, at(0));
+    Object.assign(node2, { status: 'Unknown', readySince: at(3) });
+    await reconcileNodeHealth(db, k8s, at(5));
+    // The watch saw it Ready first and cleared the record (its own claim).
+    fakeTable.rows.get('node-2')!.downSince = null;
+    Object.assign(node2, { status: 'True', readySince: at(9) });
+    await reconcileNodeHealth(db, k8s, at(10));
+    expect(events.notifyAdminNodeBackOnline).not.toHaveBeenCalled();
+    // …and no "recovered to normal" either: the watch's notice was the all-clear.
+    expect(healthNotices()).toEqual([]);
   });
 
   it('shares its going-down key with the fast down-watch, so whichever spoke first wins', async () => {
@@ -232,16 +278,17 @@ describe('reconcileNodeHealth — a node still settling after it is back', () =>
     expect(healthNotices()).toEqual([]);
   });
 
-  it('holds nothing for a node back on the SAME boot — its "recovered" is the only back notice it gets', async () => {
+  it('a node back on the SAME boot with something still wrong: the all-clear, then "recovered" when that clears', async () => {
     const { node2, db, k8s } = cluster();
     await reconcileNodeHealth(db, k8s, at(0));
-    node2.status = 'Unknown';
+    Object.assign(node2, { status: 'Unknown', readySince: at(3) });
     await reconcileNodeHealth(db, k8s, at(5));
     Object.assign(node2, { status: 'True', readySince: at(9), csi: [] });
     await reconcileNodeHealth(db, k8s, at(10)); // still critical, and the operator knows
     node2.csi = ['driver.longhorn.io'];
     await reconcileNodeHealth(db, k8s, at(15));
     expect(events.notifyAdminNodeStartupComplete).not.toHaveBeenCalled();
+    expect(events.notifyAdminNodeBackOnline).toHaveBeenCalledTimes(1);
     expect(healthNotices()).toHaveLength(1);
     expect(healthNotices()[0][2]).toMatchObject({ severityLabel: 'normal' });
   });

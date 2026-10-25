@@ -130,6 +130,8 @@ describe('cron failure email — create', () => {
     // The volume promise, with the server's cap rather than a number baked into the panel.
     expect(screen.getByTestId('cron-failure-email')).toHaveTextContent(/one email per task per day/);
     expect(screen.getByTestId('cron-failure-email')).toHaveTextContent(/20/);
+    // When a failure is reported at all (cron-jobs/failure-streak.ts).
+    expect(screen.getByTestId('cron-notify-streak-rule')).toHaveTextContent(/next run is due within the hour, a task is reported only once two runs in a row have\s+failed/);
   });
 
   it('sends nothing about failure email when left off', async () => {
