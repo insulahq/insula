@@ -973,6 +973,30 @@ export async function notifyAdminNodeStartupComplete(
   await dispatchSafe(db, 'admin.node_startup_complete', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminNodeBackOnlinePayload {
+  readonly nodeName: string;
+  /** Pre-rendered ("1m 10s"): from leaving Ready to Ready again. */
+  readonly downtimeText: string;
+  /** "11:59 UTC" */
+  readonly downAtText: string;
+  /** "12:00 UTC" */
+  readonly backAtText: string;
+  /** Whether it rebooted, as far as is known — a sentence. */
+  readonly bootNote: string;
+}
+/**
+ * The all-clear for a "down" notice: the node is Ready again on the SAME boot
+ * (node-health/back-online.ts). A return on a new boot is the startup notice
+ * instead. dedupeKey is per (node × boot × day the outage began).
+ */
+export async function notifyAdminNodeBackOnline(
+  db: Database,
+  payload: AdminNodeBackOnlinePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.node_back_online', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminNodeJoinedPayload {
   readonly nodeName: string;
   /** "server" or "worker". */

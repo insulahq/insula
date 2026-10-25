@@ -98,6 +98,72 @@ export function recordKey(
   return [r.type.toUpperCase(), qualifyName(zone, r.name), value].join('|');
 }
 
+/** Local and remote records paired by identity — the diff's one decision. */
+export interface RecordPairing<R extends RemoteRecord = RemoteRecord> {
+  readonly inSync: ReadonlyArray<readonly [LocalRecord, R]>;
+  /** Same (type, name), different value: an edit, not two records. */
+  readonly conflicts: ReadonlyArray<readonly [LocalRecord, R]>;
+  readonly localOnly: readonly LocalRecord[];
+  readonly remoteOnly: readonly R[];
+}
+
+/**
+ * Pair local rows with provider records. SOA is left out (server-owned).
+ *
+ * Exact matches are taken FIRST, across the whole zone, and only the leftovers
+ * are paired as conflicts. Pairing in one pass let a local value with no exact
+ * match claim a remote value that a LATER local row matched exactly: with local
+ * A @ {1.1.1.1, 2.2.2.2} and remote {2.2.2.2, 3.3.3.3}, 1.1.1.1 "conflicted"
+ * with 2.2.2.2, 2.2.2.2 was also "in sync", and 3.3.3.3 showed as remote-only.
+ * Harmless while the dialog could only push and pull; a "remove on server"
+ * button on that row would withdraw the wrong value.
+ */
+export function pairRecords<R extends RemoteRecord>(
+  zone: string,
+  localRecords: readonly LocalRecord[],
+  remoteRecords: readonly R[],
+): RecordPairing<R> {
+  const comparable = (type: string) => !SERVER_OWNED_TYPES.has(type.toUpperCase());
+
+  const localMap = new Map<string, LocalRecord>();
+  for (const r of localRecords) {
+    if (!comparable(r.recordType)) continue;
+    const key = recordKey(zone, { type: r.recordType, name: r.recordName, content: r.recordValue ?? '', priority: r.priority, weight: r.weight, port: r.port });
+    localMap.set(key, r);
+  }
+
+  const remoteMap = new Map<string, R>();
+  for (const r of remoteRecords) {
+    if (!comparable(r.type)) continue;
+    const key = recordKey(zone, { type: r.type, name: r.name, content: r.content });
+    remoteMap.set(key, r);
+  }
+
+  const inSync: Array<readonly [LocalRecord, R]> = [];
+  const unmatchedLocal: Array<[string, LocalRecord]> = [];
+  for (const [key, local] of localMap) {
+    const remote = remoteMap.get(key);
+    if (remote) inSync.push([local, remote]);
+    else unmatchedLocal.push([key, local]);
+  }
+  const unmatchedRemote = new Map([...remoteMap].filter(([key]) => !localMap.has(key)));
+
+  const conflicts: Array<readonly [LocalRecord, R]> = [];
+  const localOnly: LocalRecord[] = [];
+  for (const [key, local] of unmatchedLocal) {
+    const typeNamePrefix = key.split('|').slice(0, 2).join('|');
+    const partner = [...unmatchedRemote].find(([k]) => k.startsWith(`${typeNamePrefix}|`));
+    if (partner) {
+      unmatchedRemote.delete(partner[0]);
+      conflicts.push([local, partner[1]]);
+    } else {
+      localOnly.push(local);
+    }
+  }
+
+  return { inSync, conflicts, localOnly, remoteOnly: [...unmatchedRemote.values()] };
+}
+
 export function computeRecordDiff(
   zone: string,
   localRecords: readonly LocalRecord[],
@@ -111,74 +177,29 @@ export function computeRecordDiff(
     if (abs === zoneFqdn) return '@';
     return abs.endsWith(`.${zoneFqdn}`) ? abs.slice(0, -(zoneFqdn.length + 1)) : abs.replace(/\.$/, '');
   };
+  const localSide = (l: LocalRecord) => ({
+    value: l.recordValue ?? '', ttl: l.ttl, id: l.id, priority: l.priority, weight: l.weight, port: l.port,
+  });
 
-  const comparable = (type: string) => !SERVER_OWNED_TYPES.has(type.toUpperCase());
-
-  const localMap = new Map<string, LocalRecord>();
-  for (const r of localRecords) {
-    if (!comparable(r.recordType)) continue;
-    const key = recordKey(zone, { type: r.recordType, name: r.recordName, content: r.recordValue ?? '', priority: r.priority, weight: r.weight, port: r.port });
-    localMap.set(key, r);
-  }
-
-  const remoteMap = new Map<string, RemoteRecord>();
-  for (const r of remoteRecords) {
-    if (!comparable(r.type)) continue;
-    const key = recordKey(zone, { type: r.type, name: r.name, content: r.content });
-    remoteMap.set(key, r);
-  }
-
-  const diff: DnsRecordDiffEntry[] = [];
-  const seen = new Set<string>();
-
-  for (const [key, local] of localMap) {
-    seen.add(key);
-    const remote = remoteMap.get(key);
-    if (remote) {
-      diff.push({
-        type: local.recordType,
-        name: displayName(local.recordName),
-        local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id, priority: local.priority, weight: local.weight, port: local.port },
-        remote: { value: remote.content, ttl: remote.ttl },
-        status: 'in_sync',
-      });
-      continue;
-    }
-
-    // Same (type, name) with a different value = an edit, not two records.
-    const typeNamePrefix = key.split('|').slice(0, 2).join('|');
-    const conflicting = Array.from(remoteMap.entries())
-      .find(([k]) => k.startsWith(`${typeNamePrefix}|`) && !seen.has(k));
-    if (conflicting) {
-      seen.add(conflicting[0]);
-      diff.push({
-        type: local.recordType,
-        name: displayName(local.recordName),
-        local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id, priority: local.priority, weight: local.weight, port: local.port },
-        remote: { value: conflicting[1].content, ttl: conflicting[1].ttl },
-        status: 'conflict',
-      });
-    } else {
-      diff.push({
-        type: local.recordType,
-        name: displayName(local.recordName),
-        local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id, priority: local.priority, weight: local.weight, port: local.port },
-        remote: null,
-        status: 'local_only',
-      });
-    }
-  }
-
-  for (const [key, remote] of remoteMap) {
-    if (seen.has(key)) continue;
-    diff.push({
-      type: remote.type,
-      name: displayName(remote.name),
-      local: null,
-      remote: { value: remote.content, ttl: remote.ttl },
-      status: 'remote_only',
-    });
-  }
+  const pairing = pairRecords(zone, localRecords, remoteRecords);
+  const diff: DnsRecordDiffEntry[] = [
+    ...pairing.inSync.map(([l, r]): DnsRecordDiffEntry => ({
+      type: l.recordType, name: displayName(l.recordName),
+      local: localSide(l), remote: { value: r.content, ttl: r.ttl }, status: 'in_sync',
+    })),
+    ...pairing.conflicts.map(([l, r]): DnsRecordDiffEntry => ({
+      type: l.recordType, name: displayName(l.recordName),
+      local: localSide(l), remote: { value: r.content, ttl: r.ttl }, status: 'conflict',
+    })),
+    ...pairing.localOnly.map((l): DnsRecordDiffEntry => ({
+      type: l.recordType, name: displayName(l.recordName),
+      local: localSide(l), remote: null, status: 'local_only',
+    })),
+    ...pairing.remoteOnly.map((r): DnsRecordDiffEntry => ({
+      type: r.type, name: displayName(r.name),
+      local: null, remote: { value: r.content, ttl: r.ttl }, status: 'remote_only',
+    })),
+  ];
 
   // Conflicts first, then remote_only, then local_only, then in_sync.
   const statusOrder = { conflict: 0, remote_only: 1, local_only: 2, in_sync: 3 };
@@ -187,4 +208,24 @@ export function computeRecordDiff(
       || a.type.localeCompare(b.type)
       || a.name.localeCompare(b.name),
   );
+}
+
+/**
+ * What an import from the provider adds to the local table: the records that
+ * exist ONLY there. A conflict is not imported — the local row is the
+ * platform's record of what it published, and adding the server's value next
+ * to it would turn one CNAME into two. The SOA comes over only when there is
+ * no local one at that name; its serial changes on every write, so comparing
+ * it by value would import a new SOA row on every call.
+ */
+export function remoteRecordsToImport<R extends RemoteRecord>(
+  zone: string,
+  localRecords: readonly LocalRecord[],
+  remoteRecords: readonly R[],
+): R[] {
+  const localSoaNames = new Set(localRecords
+    .filter((l) => l.recordType.toUpperCase() === 'SOA')
+    .map((l) => qualifyName(zone, l.recordName)));
+  const soa = remoteRecords.filter((r) => r.type.toUpperCase() === 'SOA' && !localSoaNames.has(qualifyName(zone, r.name)));
+  return [...soa, ...pairRecords(zone, localRecords, remoteRecords).remoteOnly];
 }

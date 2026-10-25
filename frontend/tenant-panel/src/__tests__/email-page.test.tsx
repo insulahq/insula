@@ -292,6 +292,37 @@ describe('Email Page', () => {
     expect(screen.getByTestId('dns-records-table')).toBeInTheDocument();
   });
 
+  it.each([
+    // webmail_status keeps its column default while webmail is off — the pill
+    // used to read "Provisioning…" for every such domain.
+    [0, 'pending', 'webmail-status-disabled', 'Disabled'],
+    [1, 'pending', 'webmail-status-pending', 'Provisioning…'],
+    [1, 'ready', 'webmail-status-ready', 'Ready'],
+  ])('webmail pill: enabled=%i status=%s → %s', async (webmailEnabled, webmailStatus, testId, label) => {
+    const { fireEvent } = await import('@testing-library/react');
+    mockedUseEmailDomains.mockReturnValue({
+      data: {
+        data: [{
+          id: 'd1', domainId: 'd1', domainName: 'example.com', enabled: 1,
+          webmailEnabled, webmailStatus, maxMailboxes: 50, maxQuotaMb: 10240,
+          catchAllAddress: null, spamThresholdJunk: '5.0', spamThresholdReject: '10.0', dnsMode: 'primary',
+        }],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseEmailDomainDnsRecords.mockReturnValue({
+      data: { data: { dnsMode: 'primary', manualRequired: false, mailServerHostname: 'mail.platform.test', records: [] } },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useEmailDomainDnsRecords>);
+
+    renderWithProviders(<Email />);
+    fireEvent.click(screen.getByTestId('tab-settings'));
+
+    expect(screen.getByTestId(testId)).toHaveTextContent(label);
+    expect(screen.getByTestId('settings-webmail-enabled')).toHaveProperty('checked', webmailEnabled === 1);
+  });
+
   it('submits only the changed fields to useUpdateMailbox', async () => {
     const { fireEvent } = await import('@testing-library/react');
     const mutateAsync = vi.fn().mockResolvedValue({ data: { id: 'mb-1' } });

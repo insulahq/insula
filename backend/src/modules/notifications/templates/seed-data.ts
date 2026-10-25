@@ -2737,6 +2737,42 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   })(),
 
+  // ── Node back online: the all-clear for a "down" that ended without a reboot ──
+  ...((): SeedTemplate[] => {
+    const backVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'downtimeText', type: 'string', required: true },
+      { name: 'downAtText', type: 'string', required: true },
+      { name: 'backAtText', type: 'string', required: true },
+      { name: 'bootNote', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.node_back_online',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is back ({{downtimeText}} down)',
+        bodyTemplate: emailMjml(
+          'Node {{nodeName}} is back',
+          'Cluster node {{nodeName}} is Ready again. It was NotReady for about {{downtimeText}}, '
+          + 'from {{downAtText}} to {{backAtText}}. {{bootNote}}',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: backVars,
+      },
+      {
+        categoryId: 'admin.node_back_online',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[NODE] {{nodeName}} is back',
+        bodyTemplate: '{{nodeName}} is Ready again after about {{downtimeText}} NotReady ({{downAtText}} to {{backAtText}}). {{bootNote}}',
+        bodyFormat: 'plaintext',
+        variablesSchema: backVars,
+      },
+    ];
+  })(),
+
   // ── Node membership: joined / removed ──
   ...((): SeedTemplate[] => {
     const joinedVars: readonly NotificationTemplateVariable[] = [

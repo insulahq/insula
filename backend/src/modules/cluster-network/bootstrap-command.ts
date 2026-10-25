@@ -32,6 +32,7 @@
  * worker's bootstrap-token Secret.
  */
 
+import type { DnsApiEndpointList } from '../dns-servers/endpoints.js';
 import { ApiError } from '../../shared/errors.js';
 import { type BootstrapCommandResponse } from '@insula/api-contracts';
 import {
@@ -180,6 +181,9 @@ export interface BootstrapCommandDeps {
   /** Does <ip>:6443 answer right now? null = could not check. Default:
    *  probeApiPort against the cluster CA. */
   readonly probeServer?: (ip: string) => Promise<boolean | null>;
+  /** The DNS server APIs a new node must reach (dns-servers/endpoints.ts).
+   *  Omitted → none are checked. */
+  readonly dnsEndpoints?: () => Promise<DnsApiEndpointList>;
 }
 
 /** The request: which server to join through (validated), else the default. */
@@ -310,6 +314,29 @@ export async function generateBootstrapCommand(
     );
   }
 
+  // Best-effort: an unreadable DNS config must not stop a join command.
+  let dns: DnsApiEndpointList = { endpoints: [], notChecked: [] };
+  try {
+    if (deps.dnsEndpoints) dns = await deps.dnsEndpoints();
+  } catch (err) {
+    deps.log?.('cluster-network: DNS server endpoints unreadable — the join line will not check them', err);
+    notes.push('The DNS server settings could not be read, so the join line does not check that this host can reach the DNS server API.');
+  }
+  const dnsEndpoints = dns.endpoints;
+  if (dnsEndpoints.length > 0) {
+    notes.push(
+      'Before installing anything, the join line checks that this host can reach the DNS server API ' +
+        `(${dnsEndpoints.map((e) => `${e.name} at ${e.host}:${e.port}`).join(', ')}) and asks before going on if it cannot. ` +
+        'The platform makes DNS changes from whichever server runs its API, so a server that cannot reach it makes them fail — ' +
+        'typically a mesh VPN that is installed but not connected.',
+    );
+  }
+  if (dns.notChecked.length > 0) {
+    notes.push(
+      `Not checked from the new host: ${dns.notChecked.map((n) => `${n.name} (${n.reason})`).join('; ')}.`,
+    );
+  }
+
   const rendered = renderJoin({
     cppName: cpp.name,
     nodeIp: cpp.ip,
@@ -322,6 +349,7 @@ export async function generateBootstrapCommand(
     extraFlags: cidrs.extraFlags,
     privateUnderlay: target.privateUnderlay,
     serverName: target.name,
+    checkDns: dnsEndpoints.map((e) => `${e.host}:${e.port}`),
   });
 
   return {

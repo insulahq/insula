@@ -185,6 +185,18 @@ export function startWebmailReconciler(
 
   const runCycle = async () => {
     if (state.stopped) return;
+    // Every published redirect also needs its plain-HTTP router — including
+    // the domains published before that router existed (webmail-http-route.ts).
+    // One LIST when nothing is missing.
+    try {
+      const { reconcileWebmailHttpRoutes } = await import('./webmail-http-route.js');
+      const r = await reconcileWebmailHttpRoutes(db, k8s);
+      if (r.applied > 0 || r.failed > 0) {
+        console.log(`[webmail-reconciler] HTTP redirect routes: applied=${r.applied} failed=${r.failed}`);
+      }
+    } catch (err) {
+      console.warn('[webmail-reconciler] HTTP redirect routes:', err instanceof Error ? err.message : String(err));
+    }
     try {
       const result = await reconcileWebmailCertificates(db, k8s);
       if (result.promoted > 0 || result.errors > 0) {

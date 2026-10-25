@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createServer, type Server } from 'node:net';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -211,6 +212,70 @@ describe.skipIf(!HAS_TOOLS)('the rendered join line — executed', () => {
     expect(r.status).toBe(1);
     expect(r.out).toContain('no token given');
   });
+
+  describe('--check-dns', () => {
+    let server: Server | null = null;
+    const listen = async (): Promise<number> => {
+      server = createServer();
+      await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+      return (server!.address() as { port: number }).port;
+    };
+    const closedPort = async (): Promise<number> => {
+      const port = await listen();
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = null;
+      return port;
+    };
+    afterEach(async () => {
+      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = null;
+    });
+
+    // The kernel completes the TCP handshake from the listen backlog, so the
+    // check succeeds although spawnSync blocks this process's event loop.
+    it('a reachable DNS API: no warning, and the flag is not passed on to bootstrap', async () => {
+      const port = await listen();
+      const r = run(renderJoin(input({ checkDns: [`127.0.0.1:${port}`] })).script);
+      expect(r.status, r.out).toBe(0);
+      expect(r.out).toContain(`Checking that this host reaches the DNS server API at 127.0.0.1:${port}`);
+      expect(r.out).not.toContain('WARNING');
+      expect(r.calls.at(-1)).toBe(`insula bootstrap --join-as worker --server 198.51.100.10 --token ${WORKER_TOKEN}`);
+    });
+
+    it('an unreachable one, no terminal: warns with what to check, then joins', async () => {
+      const port = await closedPort();
+      const r = run(renderJoin(input({ checkDns: [`127.0.0.1:${port}`] })).script);
+      expect(r.status, r.out).toBe(0);
+      expect(r.out).toContain(`WARNING: this host cannot reach the DNS server API at: 127.0.0.1:${port}`);
+      expect(r.out).toContain("'netbird status'");
+      expect(r.out).toContain('no terminal to ask');
+      expect(r.calls.at(-1)).toMatch(/^insula bootstrap --join-as worker /);
+    });
+
+    // A real terminal (script(1) gives the script one), so it asks.
+    const HAS_SCRIPT = spawnSync('bash', ['-c', 'command -v script']).status === 0;
+    it.skipIf(!HAS_SCRIPT).each([
+      ['n', 1, 'stopped before installing anything'],
+      ['y', 0, 'insula bootstrap --join-as worker'],
+    ])('on a terminal it asks: %s → exit %i', async (answer, status, expected) => {
+      const port = await closedPort();
+      writeFileSync(join(dir, 'line.sh'), renderJoin(input({ checkDns: [`127.0.0.1:${port}`] })).script);
+      const r = run("script -qec 'bash line.sh' /dev/null", {}, `${answer}\n`);
+      expect(r.status, r.out).toBe(status);
+      expect(r.out).toContain('Join anyway? [y/N]');
+      expect(`${r.out}\n${r.calls.join('\n')}`).toContain(expected);
+      if (answer === 'n') expect(r.calls).toHaveLength(1); // the script fetch, nothing installed
+    });
+
+    it('warns before the token prompt and before any download', async () => {
+      const port = await closedPort();
+      const { script } = renderJoin(input({ role: 'server', token: { kind: 'node-token' }, checkDns: [`127.0.0.1:${port}`] }));
+      const r = run(script, {}, 'K10bbbb::server:pw\n');
+      expect(r.status, r.out).toBe(0);
+      expect(r.out.indexOf('WARNING')).toBeLessThan(r.out.indexOf('node-token on any existing server'));
+      expect(r.out.indexOf('WARNING')).toBeLessThan(r.out.indexOf('Downloading the insula CLI'));
+    });
+  });
 });
 
 describe.skipIf(!HAS_TOOLS)('join-node.sh — argument checks', () => {
@@ -221,6 +286,9 @@ describe.skipIf(!HAS_TOOLS)('join-node.sh — argument checks', () => {
     [['--release', '2026.10.2;id', '--join-as', 'worker', '--server', '198.51.100.10'], '--release <version> is required'],
     [['--release', '2026.10.2', '--join-as', 'worker', '--server', '198.51.100.10', '--repo', 'a/..'], '--repo must be'],
     [['--release', '2026.10.2', '--join-as', 'worker', '--server'], '--server needs a value'],
+    [['--release', '2026.10.2', '--join-as', 'worker', '--server', '198.51.100.10', '--token', 't', '--check-dns', 'host'], '--check-dns must be <host>:<port>'],
+    [['--release', '2026.10.2', '--join-as', 'worker', '--server', '198.51.100.10', '--token', 't', '--check-dns', 'a;id:80'], '--check-dns must be <host>:<port>'],
+    [['--release', '2026.10.2', '--join-as', 'worker', '--server', '198.51.100.10', '--token', 't', '--check-dns', 'h:70000'], '--check-dns must be <host>:<port>'],
   ])('%j → %s, nothing downloaded', (args, message) => {
     const r = run(`bash ${shellQuote(JOIN_NODE)} ${args.map(shellQuote).join(' ')}`);
     expect(r.status).toBe(1);
@@ -254,6 +322,14 @@ describe('renderJoin', () => {
     expect(() => shellQuote("a'b")).toThrow();
     expect(() => renderJoin(input({ joinScript: { url: SCRIPT_URL, sha256: "abc'; id" } }))).toThrow(/malformed script hash/);
     expect(() => renderJoin(input({ role: 'worker; rm -rf /' as never }))).toThrow(/refusing to render a join/);
+  });
+
+  it('--check-dns goes on the join line only, never into the plain bootstrap command', () => {
+    const r = renderJoin(input({ checkDns: ['100.64.0.10:8081', '[2001:db8::53]:8081', 'dns.example.test:443'] }));
+    expect(r.script).toContain("--check-dns '100.64.0.10:8081' --check-dns '[2001:db8::53]:8081' --check-dns 'dns.example.test:443'");
+    expect(r.bootstrapCommand).not.toContain('--check-dns');
+    expect(() => renderJoin(input({ checkDns: ["h:1'; id"] }))).toThrow(/malformed --check-dns/);
+    expect(() => renderJoin(input({ checkDns: ['no-port'] }))).toThrow(/malformed --check-dns/);
   });
 
   it('neutralises shell metacharacters in the release tag shown in the note', () => {

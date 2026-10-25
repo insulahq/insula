@@ -580,3 +580,28 @@ describe('serverJoinWarning', () => {
     expect(w).toContain('reach 5');
   });
 });
+
+describe('generateBootstrapCommand — DNS server API reachability', () => {
+  it('puts each DNS API endpoint on the join line (never in the bootstrap command) and says so', async () => {
+    const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
+    const r = await generateBootstrapCommand('w3', {}, deps(c, {
+      dnsEndpoints: async () => ({
+        endpoints: [{ name: 'PowerDNS', host: '100.64.0.10', port: 8081 }],
+        notChecked: [{ name: 'Lab DNS', reason: 'pdns.dns.svc.cluster.local is reachable from inside the cluster only' }],
+      }),
+    }));
+    expect(r.script).toContain("--check-dns '100.64.0.10:8081'");
+    expect(r.bootstrapCommand).not.toContain('--check-dns');
+    expect(r.notes.join('\n')).toContain('PowerDNS at 100.64.0.10:8081');
+    expect(r.notes.join('\n')).toContain('Not checked from the new host: Lab DNS (pdns.dns.svc.cluster.local is reachable from inside the cluster only)');
+  });
+
+  it('an unreadable DNS config never stops the join command — the note says it was not checked', async () => {
+    const c = fakeClients({ cpp: cpp('w3', '198.51.100.50', 'worker'), nodes: [SERVER] });
+    const r = await generateBootstrapCommand('w3', {}, deps(c, {
+      dnsEndpoints: async () => { throw new Error('PLATFORM_ENCRYPTION_KEY is required'); },
+    }));
+    expect(r.script).not.toContain('--check-dns');
+    expect(r.notes.join('\n')).toContain('could not be read');
+  });
+});

@@ -14,7 +14,7 @@ interface RRset { name: string; type: string; ttl: number; records: Array<{ cont
 const ZONE = 'example.test';
 const APEX = 'example.test.';
 
-function fakePowerDns(initial: RRset[], opts: { failPatchNumber?: number } = {}) {
+function fakePowerDns(initial: RRset[], opts: { failPatchNumber?: number; failPatchNumbers?: number[] } = {}) {
   const rrsets: RRset[] = structuredClone(initial);
   let patches = 0;
   globalThis.fetch = vi.fn(async (_url: string | URL | Request, init: RequestInit = {}) => {
@@ -22,10 +22,14 @@ function fakePowerDns(initial: RRset[], opts: { failPatchNumber?: number } = {})
       return new Response(JSON.stringify({ name: APEX, rrsets }), { status: 200 });
     }
     patches++;
-    if (patches === opts.failPatchNumber) {
+    if (patches === opts.failPatchNumber || opts.failPatchNumbers?.includes(patches)) {
       return new Response('{"error":"backend unavailable"}', { status: 500 });
     }
     for (const rr of JSON.parse(String(init.body)).rrsets as Array<RRset & { changetype: string }>) {
+      // As the real server: a name holds one CNAME, never two.
+      if (rr.changetype !== 'DELETE' && rr.type === 'CNAME' && rr.records.length > 1) {
+        return new Response(`{"error":"RRset ${rr.name} IN CNAME: only one such record is allowed"}`, { status: 422 });
+      }
       const at = rrsets.findIndex((x) => x.name === rr.name && x.type === rr.type);
       if (rr.changetype === 'DELETE') {
         if (at >= 0) rrsets.splice(at, 1);
@@ -146,5 +150,58 @@ describe('applyRecordChange — update', () => {
     await expect(applyRecordChange(provider(), ZONE, edit('203.0.113.1', false))).rejects.toThrow(/500/);
 
     expect(dns.values(APEX, 'A')).toEqual(['203.0.113.1', '203.0.113.2', '203.0.113.9']);
+  });
+});
+
+describe('applyRecordChange — update of a single-value type (CNAME)', () => {
+  const cname = (target: string): RRset[] => [
+    { name: `webmail.${APEX}`, type: 'CNAME', ttl: 3600, records: [{ content: target, disabled: false }] },
+  ];
+
+  it('replaces the target — the server refuses a second CNAME, so the old one goes first', async () => {
+    const dns = fakePowerDns(cname('old.platform.test.'));
+
+    await applyRecordChange(provider(), ZONE, {
+      action: 'update',
+      record: { type: 'CNAME', name: 'webmail', content: 'webmail.platform.test.' },
+      previous: { type: 'CNAME', name: 'webmail', content: 'old.platform.test.' },
+    });
+
+    expect(dns.values(`webmail.${APEX}`, 'CNAME')).toEqual(['webmail.platform.test.']);
+  });
+
+  it('a refused new target puts the old one back and reports the failure', async () => {
+    // PATCH 1 removes the old value, PATCH 2 (the new one) fails, PATCH 3 restores.
+    const dns = fakePowerDns(cname('old.platform.test.'), { failPatchNumber: 2 });
+
+    await expect(applyRecordChange(provider(), ZONE, {
+      action: 'update',
+      record: { type: 'CNAME', name: 'webmail', content: 'webmail.platform.test.' },
+      previous: { type: 'CNAME', name: 'webmail', content: 'old.platform.test.' },
+    })).rejects.toThrow();
+
+    expect(dns.values(`webmail.${APEX}`, 'CNAME')).toEqual(['old.platform.test.']);
+  });
+
+  it('says so when the old target cannot be restored either', async () => {
+    fakePowerDns(cname('old.platform.test.'), { failPatchNumbers: [2, 3] });
+
+    await expect(applyRecordChange(provider(), ZONE, {
+      action: 'update',
+      record: { type: 'CNAME', name: 'webmail', content: 'webmail.platform.test.' },
+      previous: { type: 'CNAME', name: 'webmail', content: 'old.platform.test.' },
+    })).rejects.toThrow(/could not be restored either/);
+  });
+
+  it('a multi-value type still publishes before it withdraws', async () => {
+    const dns = fakePowerDns(twoApexAddresses());
+
+    await applyRecordChange(provider(), ZONE, {
+      action: 'update',
+      record: { type: 'A', name: '@', content: '203.0.113.3' },
+      previous: { type: 'A', name: '@', content: '203.0.113.1' },
+    });
+
+    expect(dns.values(APEX, 'A')).toEqual(['203.0.113.2', '203.0.113.3']);
   });
 });

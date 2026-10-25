@@ -8,7 +8,9 @@
  *   - update only ADDED the new value, so editing 203.0.113.1 → .2 left .1
  *     answering alongside .2, indefinitely.
  * Here a delete withdraws exactly its value, and an update publishes the new
- * value before withdrawing the old one, so the name never stops resolving.
+ * value before withdrawing the old one, so the name never stops resolving —
+ * except for a type that holds one value only (CNAME), where that order is
+ * invalid and the old value goes first (replaceSingleValue).
  */
 
 import type { DnsProviderAdapter, DnsRecordInput } from '../dns-servers/providers/types.js';
@@ -39,6 +41,12 @@ export async function applyRecordChange(
     return;
   }
 
+  if (change.action === 'update' && change.previous && !sameValue(change.previous, change.record)
+    && SINGLE_VALUE_TYPES.has(change.record.type.toUpperCase())) {
+    await replaceSingleValue(provider, zone, change.previous, change.record);
+    return;
+  }
+
   await provider.createRecord(zone, change.record);
   if (change.action !== 'update' || !change.previous) return;
   if (sameValue(change.previous, change.record)) return; // TTL-only edit
@@ -56,6 +64,41 @@ export async function applyRecordChange(
         `${message} — and the new value could not be withdrawn either (${detail}); `
         + `both values are published until one is removed`,
       );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Types a name can carry only ONE value of. Providers merge a written value
+ * into the existing set (PowerDNS createRecord keeps the set's other values),
+ * so publishing the new CNAME before withdrawing the old one asked for a
+ * two-value CNAME set — which the server refuses, and the edit failed.
+ */
+const SINGLE_VALUE_TYPES = new Set(['CNAME', 'DNAME']);
+
+/**
+ * Old value out, new value in — the other order is invalid for these types.
+ * The name stops resolving for the moment between the two calls. When the new
+ * value is refused the old one is put back, so a failed edit leaves the server
+ * as it was.
+ */
+async function replaceSingleValue(
+  provider: DnsProviderAdapter,
+  zone: string,
+  previous: DnsRecordInput,
+  next: DnsRecordInput,
+): Promise<void> {
+  await removeRecordValue(provider, zone, previous);
+  try {
+    await provider.createRecord(zone, next);
+  } catch (err) {
+    try {
+      await provider.createRecord(zone, previous);
+    } catch (restoreErr) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+      throw new Error(`${message} — and the previous value could not be restored either (${detail}); the name has no ${next.type} record until one is published`);
     }
     throw err;
   }

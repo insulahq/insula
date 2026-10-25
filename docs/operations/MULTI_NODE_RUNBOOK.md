@@ -69,7 +69,7 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   ```bash
   curl -fsSL --proto '=https' --proto-redir '=https' -o join-node.sh 'https://raw.githubusercontent.com/<repo>/<ref>/scripts/join-node.sh' \
     && echo '<sha256>  join-node.sh' | sha256sum -c - \
-    && bash join-node.sh --release '<version>' --join-as <role> --server '<server-ipv4>' [--dual-stack] [--token '<worker token>']
+    && bash join-node.sh --release '<version>' --join-as <role> --server '<server-ipv4>' [--dual-stack] [--check-dns '<host:port>']... [--token '<worker token>']
   ```
 
   `<ref>` is the tag (or, on DEV, the commit) the platform-api was built from,
@@ -86,6 +86,21 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
   `podCIDRs`. On a private-underlay cluster (server ExternalIP ≠ InternalIP) the
   panel tells you to append `--cluster-network-cidr <cidr>` instead of guessing
   it — the cluster does not record that CIDR.
+  - **DNS server API reachability (`--check-dns`):** the line carries the
+    host:port of every enabled DNS server's management API (never a
+    credential). Before installing anything, `join-node.sh` opens a TCP
+    connection to each from the new host; if one does not answer it warns and
+    asks *Join anyway? [y/N]* (without a terminal it warns and goes on). The
+    platform writes DNS from whichever server runs a platform-api pod, so a
+    server that cannot reach the DNS API makes those writes fail. Production
+    case: a new server was on the NetBird mesh the PowerDNS API sits behind,
+    but its peers never connected — NetBird's *lazy connections* never woke
+    up on that host. `netbird status` showed every peer `Idle` with no
+    handshake. Fix: `netbird service reconfigure --service-env
+    NB_LAZY_CONN=off` on the server (overrides the account setting for that
+    host only); keep it off on every cluster server — a server's mesh link
+    carries the platform's DNS writes, and a connection that fails to wake
+    fails them without a trace.
   - **Which server it joins through:** any Ready server works — every server
     holds the same server token, and the cluster forwards the new etcd member
     to its leader. The panel defaults to a Ready, uncordoned server whose API

@@ -510,6 +510,18 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.node_back_online',
+    cls: 'availability',
+    reportsOn: 'platform',
+    displayName: 'Node back online',
+    description: 'A cluster node that was reported down is Ready again without having rebooted, with the downtime.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.node_joined',
     cls: 'record',
     reportsOn: null,

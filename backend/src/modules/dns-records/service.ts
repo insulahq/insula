@@ -5,7 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
-import { computeRecordDiff, recordKey, type DnsRecordDiffEntry } from './diff.js';
+import { computeRecordDiff, recordKey, remoteRecordsToImport, type DnsRecordDiffEntry } from './diff.js';
 import { applyRecordChange, type RecordChange } from './publish.js';
 import type { Database } from '../../db/index.js';
 import type { DnsRecordInput } from '../dns-servers/providers/types.js';
@@ -568,7 +568,14 @@ export async function diffRecordsWithProvider(
   let remoteRecords: Awaited<ReturnType<typeof provider.listRecords>>;
   try {
     remoteRecords = await provider.listRecords(domainRow.domainName);
-  } catch {
+  } catch (err) {
+    // The cause stays in the log: this answer reaches tenant users, and the
+    // provider's error names internal addresses. It used to be dropped
+    // entirely, so "Failed to fetch" was all anyone could find.
+    console.warn(
+      `[dns-records] listRecords for '${domainRow.domainName}' on ${servers[0].displayName} failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
     throw new ApiError('DNS_PROVIDER_ERROR', 'Failed to fetch records from DNS server', 503);
   }
 
@@ -632,7 +639,34 @@ export async function createDnsRecordLocalOnly(db: Database, tenantId: string, d
   return created;
 }
 
-export async function syncRecordsFromProvider(
+/** The domain's servers, else every active server (pre-group installs). */
+async function serversForDomain(db: Database, domainId: string) {
+  const servers = await getActiveServersForDomain(db, domainId);
+  if (servers.length > 0) return servers;
+  const allServers = await getActiveServers(db);
+  if (allServers.length === 0) {
+    throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+  }
+  return allServers;
+}
+
+/**
+ * Bring the records that exist ONLY on the DNS server into the local table,
+ * and leave every local row alone.
+ *
+ * This replaced a "sync" that deleted every local row of the domain and
+ * re-inserted whatever the server listed. That lost two things for good: a
+ * record the server did not have — exactly the one a failed push leaves
+ * behind, like a webmail CNAME written while the server was unreachable — and
+ * `managed_by` on every row, so the subsystem that owned a record (ingress
+ * routes, mail, DKIM) could no longer find it to update or remove it. It ran on
+ * every DNS-provider-group change, right before those rows were pushed to the
+ * new group.
+ *
+ * Conflicts stay as they are (diff.ts remoteRecordsToImport): the panel's Sync
+ * Records dialog shows them with Push / Pull / Remove for the operator to settle.
+ */
+export async function importRemoteOnlyRecords(
   db: Database,
   tenantId: string,
   domainId: string,
@@ -644,38 +678,121 @@ export async function syncRecordsFromProvider(
     throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
   }
 
-  // Use domain-scoped servers
-  const servers = await getActiveServersForDomain(db, domainId);
-  if (servers.length === 0) {
-    // Fall back to all active servers for backward compat
-    const allServers = await getActiveServers(db);
-    if (allServers.length === 0) {
-      throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+  const server = (await serversForDomain(db, domainId))[0];
+  let remoteRecords: Awaited<ReturnType<ReturnType<typeof getProviderForServer>['listRecords']>>;
+  try {
+    remoteRecords = await getProviderForServer(server, encryptionKey()).listRecords(domainRow.domainName);
+  } catch (err) {
+    // Same as the diff: the cause to the log, a generic answer to the caller
+    // (this route is tenant-callable, and the provider's error names internal addresses).
+    console.warn(
+      `[dns-records] listRecords for '${domainRow.domainName}' on ${server.displayName} failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    throw new ApiError('DNS_PROVIDER_ERROR', 'Failed to fetch records from DNS server', 503);
+  }
+
+  return withDomainRecordLock(db, domainId, async (tx) => {
+    const localRecords = await tx.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+    for (const r of remoteRecordsToImport(domainRow.domainName, localRecords, remoteRecords)) {
+      await tx.insert(dnsRecords).values({
+        id: crypto.randomUUID(),
+        domainId,
+        recordType: r.type as typeof dnsRecords.$inferInsert['recordType'],
+        recordName: r.name,
+        recordValue: r.content,
+        ttl: r.ttl ?? 3600,
+        priority: r.priority ?? null,
+      });
     }
-    servers.push(...allServers);
-  }
+    return tx.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+  });
+}
 
-  const provider = getProviderForServer(servers[0], encryptionKey());
-  const remoteRecords = await provider.listRecords(domainRow.domainName);
+/**
+ * Sync Records "Remove local": drop one local row and leave the DNS server
+ * as it is — for a row the server never had (a failed push) or one whose
+ * server value should win. Local-only by design; the record's owner, if the
+ * platform made it, publishes it again the next time it provisions.
+ */
+export async function removeLocalDnsRecord(
+  db: Database,
+  tenantId: string,
+  domainId: string,
+  recordId: string,
+): Promise<void> {
+  await verifyDomainOwnership(db, tenantId, domainId);
+  await withDomainRecordLock(db, domainId, async (tx) => {
+    const deleted = await tx
+      .delete(dnsRecords)
+      .where(and(eq(dnsRecords.id, recordId), eq(dnsRecords.domainId, domainId)))
+      .returning({ id: dnsRecords.id });
+    if (deleted.length === 0) {
+      throw new ApiError('DNS_RECORD_NOT_FOUND', `DNS record '${recordId}' not found`, 404);
+    }
+  });
+}
 
-  // Delete all existing local records for this domain
-  await db.delete(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+export interface RemoteRecordValue {
+  readonly type: string;
+  readonly name: string;
+  /** Full wire content as the server lists it ('10 mail.example.test.' for MX). */
+  readonly value: string;
+  readonly priority?: number;
+  readonly weight?: number;
+  readonly port?: number;
+}
 
-  // Insert remote records
-  for (const r of remoteRecords) {
-    await db.insert(dnsRecords).values({
-      id: crypto.randomUUID(),
-      domainId,
-      recordType: r.type as typeof dnsRecords.$inferInsert['recordType'],
-      recordName: r.name,
-      recordValue: r.content,
-      ttl: r.ttl ?? 3600,
-      priority: r.priority ?? null,
+/**
+ * Sync Records "Remove on server": withdraw ONE value from the DNS server,
+ * touching no local row. Refused while a local row publishes that same value:
+ * the platform would then list a record that no longer resolves — delete the
+ * record itself for that.
+ */
+export async function removeRemoteDnsRecord(
+  db: Database,
+  tenantId: string,
+  domainId: string,
+  record: RemoteRecordValue,
+): Promise<void> {
+  await verifyDomainOwnership(db, tenantId, domainId);
+  const [domainRow] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domainRow) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
+
+  await withDomainRecordLock(db, domainId, async (tx) => {
+    const target = recordKey(domainRow.domainName, {
+      type: record.type, name: record.name, content: record.value,
+      priority: record.priority, weight: record.weight, port: record.port,
     });
-  }
+    const localRecords = await tx.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+    const publishedLocally = localRecords.some((r) => recordKey(domainRow.domainName, {
+      type: r.recordType, name: r.recordName, content: r.recordValue ?? '',
+      priority: r.priority, weight: r.weight, port: r.port,
+    }) === target);
+    if (publishedLocally) {
+      throw new ApiError(
+        'DNS_RECORD_STILL_LOCAL',
+        'A record in this list publishes that value. Delete the record instead, or it would stay listed while no longer resolving.',
+        409,
+      );
+    }
 
-  // Return updated list
-  return db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+    const outcome = await syncRecordToProviders(tx, domainRow.domainName, 'delete', {
+      type: record.type, name: record.name, content: record.value,
+      priority: record.priority, weight: record.weight, port: record.port,
+    }, domainId);
+    if (outcome.status === 'failed') {
+      throw new ApiError(
+        'DNS_PUBLISH_FAILED',
+        `The DNS server rejected this deletion: ${describeSyncFailure(outcome)}`,
+        502,
+        { recordType: record.type, recordName: record.name, errors: outcome.errors },
+      );
+    }
+    if (outcome.status === 'skipped') {
+      throw new ApiError('DNS_NOT_AUTHORITATIVE', `Cannot remove this record — ${outcome.reason}.`, 409, { reason: outcome.reason });
+    }
+  });
 }
 
 // ─── Platform-provisioned records ───────────────────────────────────────────

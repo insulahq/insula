@@ -28,6 +28,7 @@ import { nodeHealthState, notifications, users } from '../../db/schema.js';
 import {
   notifyAdminNodeDown,
   notifyAdminNodeShuttingDown,
+  notifyAdminNodeBackOnline,
   notifyAdminNodeStartupComplete,
 } from '../notifications/events.js';
 import {
@@ -39,6 +40,7 @@ import {
   type PrevBootState,
 } from './boot-events.js';
 import { nodeDownDedupeKey } from './fast-down-watch.js';
+import { backOnlinePayload, claimOutageEnd, endedOnSameBoot, nodeBackDedupeKey, type SameBootReturn } from './back-online.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readOomWitnesses } from './oom-witness.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
@@ -238,6 +240,8 @@ export async function reconcileNodeHealth(
 
   const adminUserIds = await getAdminUserIds(db);
   const notified: string[] = [];
+  // Same-boot returns this tick claimed (back-online.ts), announced after the writes.
+  const backOnline: SameBootReturn[] = [];
 
   for (const entry of entries) {
     const prev = prevByName.get(entry.name);
@@ -284,6 +288,25 @@ export async function reconcileNodeHealth(
       ? false
       : shutdownNoticeNow ? true : (prev?.rebootAnnounced ?? false);
 
+    // Back on the same boot: claim the outage on record before the upsert below
+    // clears it, so this tick or the fast down-watch — never both — sends the
+    // all-clear. Claimed before, not after, the write: the claim IS the clear.
+    const sameBootReturn = prev?.downSince && !joining
+      ? endedOnSameBoot(
+        { nodeName: entry.name, downSince: prev.downSince, bootId: prev.bootId ?? null },
+        { ready: entry.ready, readySince: bootFact?.readySince ?? null, bootId: liveBootId },
+      )
+      : null;
+    if (sameBootReturn && await claimOutageEnd(db, entry.name, sameBootReturn.downSince)) {
+      backOnline.push(sameBootReturn);
+    }
+    // That notice is the outage's all-clear. "Recovered to normal" for the same
+    // return — the reconciler's own, when it had seen the node NotReady — would
+    // be a second one. It stays for a node that comes back with something else
+    // still wrong: that is news the all-clear does not carry.
+    const allClearCovers = prev?.ready === false && entry.ready && !bootRolled && !joining
+      && entry.severity === 'normal';
+
     if (joining && (entry.severity !== 'normal' || transition)) {
       console.log(`[node-health-monitor] ${describeSuppression(
         entry.name, joining, `${entry.severity} health alert${transition ? ` and ${transition.kind} notice` : ''}`,
@@ -305,7 +328,9 @@ export async function reconcileNodeHealth(
         severity: entry.severity,
         lastNotifiedAt: notifiedAt,
         observedAt: now,
-        downSince: entry.ready ? null : (prev?.downSince ?? downAt),
+        // Not for a node inside its join window: it is NotReady by definition and
+        // was never announced, so there is no outage to close (back-online.ts).
+        downSince: entry.ready || joining ? null : (prev?.downSince ?? downAt),
       })
       .onConflictDoUpdate({
         target: nodeHealthState.nodeName,
@@ -330,14 +355,22 @@ export async function reconcileNodeHealth(
           // The fast down-watch records the moment too (fast-down-watch.ts
           // recordWentDown), and one already recorded is kept. A node that
           // went down after this tick listed it reads Ready here: its moment
-          // is later than the tick, and is not this tick's to clear.
+          // is later than the tick, and is not this tick's to clear. Nor is
+          // one written after this tick READ the row: the fast watch can
+          // announce an outage that began before the tick, between the read
+          // and this write, and nulling it then lost that outage's all-clear
+          // (back-online.ts) — the watch closes it on its next pass instead.
           downSince: entry.ready
-            ? sql`CASE WHEN ${nodeHealthState.downSince} > ${now.toISOString()}::timestamptz THEN ${nodeHealthState.downSince} END`
-            : sql`COALESCE(${nodeHealthState.downSince}, ${downAt.toISOString()}::timestamptz)`,
+            ? sql`CASE WHEN ${nodeHealthState.downSince} > ${now.toISOString()}::timestamptz
+                OR ${nodeHealthState.downSince} IS DISTINCT FROM ${prev?.downSince ? prev.downSince.toISOString() : null}::timestamptz
+              THEN ${nodeHealthState.downSince} END`
+            : joining
+              ? sql`${nodeHealthState.downSince}`
+              : sql`COALESCE(${nodeHealthState.downSince}, ${downAt.toISOString()}::timestamptz)`,
         },
       });
 
-    if (willNotify) {
+    if (willNotify && !allClearCovers) {
       await fanoutNotification(db, adminUserIds, entry, decision.prevSeverityForCopy, {
         // Exactly what the fast down-watch reads (the Node's own bootID, no
         // fallback), or the two would announce one outage twice.
@@ -346,6 +379,11 @@ export async function reconcileNodeHealth(
       });
       notified.push(entry.name);
     }
+  }
+
+  // ── 5a'. All-clear for same-boot returns this tick claimed ──
+  for (const r of backOnline) {
+    await notifyAdminNodeBackOnline(db, backOnlinePayload(r), nodeBackDedupeKey(r.nodeName, r.bootId, r.downSince));
   }
 
   // ── 5b. Dispatch the shutdown / startup lifecycle notifications ──

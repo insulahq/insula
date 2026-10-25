@@ -187,6 +187,9 @@ export interface JoinScriptInput {
   /** The cluster's servers are pinned to a private underlay
    *  (--cluster-network-cidr), whose CIDR the cluster does not record. */
   readonly privateUnderlay: boolean;
+  /** DNS server APIs the new host must reach, as host:port — checked by
+   *  join-node.sh itself, never passed on to bootstrap. */
+  readonly checkDns?: readonly string[];
 }
 
 export interface RenderedJoin {
@@ -233,8 +236,17 @@ function joinLine(input: JoinScriptInput): string {
     `&& bash join-node.sh --release ${shellQuote(input.release.tag)}`,
     ...repoArgs,
     ...bootstrapFlags(input),
+    ...(input.checkDns ?? []).flatMap((ep) => ['--check-dns', shellQuote(checkDnsTarget(ep))]),
     ...tokenArgs,
   ].join(' ');
+}
+
+const CHECK_DNS_RE = /^(?:[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]):[0-9]{1,5}$/;
+
+/** host:port in exactly the shape join-node.sh accepts; refuse anything else. */
+function checkDnsTarget(ep: string): string {
+  if (!CHECK_DNS_RE.test(ep)) throw new Error(`refusing to render a join with a malformed --check-dns target ${JSON.stringify(ep)}`);
+  return ep;
 }
 
 /** Render the steps + the one line to run on the new node. Pure. */

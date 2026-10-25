@@ -14,6 +14,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **An all-clear email when a node comes back without a reboot.** A node that dropped out for a
+  minute got a "Cluster node down" email and nothing after it: only the 5-minute health check
+  sent a back notice, and an outage between two of its checks never reached it. The 30-second
+  down-check now sends *Node back online* when the node is Ready again on the same boot, with how
+  long it was NotReady and from when to when. Exactly one of the two checks sends it, and "Node
+  health: recovered to normal" is no longer sent as a second back notice for the same return. A
+  reboot still gets *startup complete* instead.
+- **The join command checks that the new host can reach the DNS server API.** The platform makes
+  DNS changes from whichever server runs its API, so a server that cannot reach the DNS server
+  makes those changes fail. That is how a webmail record on production never reached the
+  nameservers: the new server was on the VPN mesh in front of the DNS API, but not connected to
+  it. The panel's join line now lists each DNS server's API address (host and port only), and
+  `join-node.sh` connects to each before installing anything. If one does not answer, it says
+  what to check and asks whether to join anyway.
+- **Sync Records can remove a record from one side.** Each record that differs now offers *Remove
+  local* (delete it from the platform's list, leave the DNS server alone) and *Remove on server*
+  (withdraw that one value from the DNS server, leave the list alone), next to Push and Pull. Both
+  ask for a second click. A failed action now shows its error in the dialog; before, the button
+  just stopped spinning.
 - **`insula etcd members` and `insula etcd remove-learner`.** On any server, `insula etcd
   members` lists the cluster's etcd members: ID, name, peer address, and whether each votes or is
   still a learner. `insula etcd remove-learner <id>` removes a learner, which is what a server join
@@ -38,6 +57,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **`http://webmail.<domain>` redirects instead of answering 404.** A tenant's webmail address
+  forwarded to the platform webmail only over https; plain http matched nothing. It now forwards
+  to the platform webmail's https address in one step. Existing webmail domains get the HTTP
+  route when the API starts; there is nothing to toggle.
+- **The tenant panel's email settings say *Disabled* for a domain without webmail.** The status
+  pill read *Provisioning…* for every domain that never had webmail turned on.
+- **Changing a domain's DNS provider group no longer drops records.** The move first copied the
+  old server's records into the platform's list by deleting every row and re-inserting what the
+  server listed. A record the server did not have was lost, such as one whose publish had failed.
+  So was which part of the platform owned each record, which ingress routes and mail need to
+  update or remove their records later. It now adds only the records the server has and the list
+  lacks, and keeps every existing row. The same applies to domain creation and the API's `sync`
+  endpoint. SRV records are also pushed to the new group with their weight and port, without which
+  they could not be written.
+- **Push on a Sync Records conflict replaces the server's value.** It used to publish the local
+  value next to the server's, leaving both live. For a CNAME the DNS server refused a second value,
+  so the push failed. Editing a CNAME's target failed for the same reason; the old target now goes
+  first, and comes back if the new one is refused.
+- **Sync Records no longer pairs a value with the wrong counterpart.** With two values on each side
+  of which one matched, a missing local value could be shown as conflicting with the server value
+  that matched the other row, hiding the real difference.
+- **A failed record comparison is logged with its cause.** "Failed to fetch records from DNS
+  server" was all anyone could find; the provider's error now goes to the API log (not to the
+  panel, which tenants see).
 - **A join checks the token before installing anything.** A token for the right cluster but with
   the wrong secret, the worker token used for a server join, or an expired panel token passed the
   old check, and then failed only as a k3s retry loop after k3s was installed. Bootstrap now asks

@@ -366,11 +366,11 @@ export async function createDomain(db: Database, tenantId: string, input: Create
       }
     }
 
-    // Pull all records from DNS server into local DB (captures SOA, NS, etc.)
+    // Import the records the new zone already has (SOA, NS, …) into the local table.
     if (created) {
       try {
-        const { syncRecordsFromProvider } = await import('../dns-records/service.js');
-        await syncRecordsFromProvider(db, tenantId, created.id);
+        const { importRemoteOnlyRecords } = await import('../dns-records/service.js');
+        await importRemoteOnlyRecords(db, tenantId, created.id);
       } catch (err) {
         console.warn(
           `[dns] Initial record sync failed for '${input.domain_name}':`,
@@ -871,10 +871,12 @@ export async function migrateDomainDns(
   // Validate target group exists
   await getProviderGroupById(db, targetGroupId);
 
-  // Sync records from old provider into local DB first (captures NS, SOA, etc.)
+  // Import the records only the old provider has (NS, SOA, hand-made ones) into
+  // the local table first. Additive: the local rows are what gets pushed to the
+  // target, and the old replace-everything sync lost any the old server lacked.
   try {
-    const { syncRecordsFromProvider } = await import('../dns-records/service.js');
-    await syncRecordsFromProvider(db, tenantId, domainId);
+    const { importRemoteOnlyRecords } = await import('../dns-records/service.js');
+    await importRemoteOnlyRecords(db, tenantId, domainId);
     const synced = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
     console.log(`[dns-migrate] Synced ${synced.length} records from source provider for ${domainRow.domainName}`);
   } catch (err) {
@@ -935,6 +937,9 @@ export async function migrateDomainDns(
           content: record.recordValue ?? '',
           ttl: record.ttl ?? 3600,
           priority: record.priority ?? undefined,
+          // An SRV row without these cannot be written at all.
+          weight: record.weight ?? undefined,
+          port: record.port ?? undefined,
         });
       } catch (err) {
         pushFailures++;

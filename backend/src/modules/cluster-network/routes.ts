@@ -57,6 +57,7 @@ import {
   deletePendingPeer,
 } from './cluster-pending-peers.js';
 import { generateBootstrapCommand } from './bootstrap-command.js';
+import { listDnsApiEndpoints } from '../dns-servers/endpoints.js';
 import { setNodeExposure, setNodeExposureRequestSchema } from './node-exposure.js';
 
 interface AuthedRequest {
@@ -274,7 +275,10 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
       const cmd = await generateBootstrapCommand(
         name,
         k8sOpts,
-        { log: (msg, err) => app.log.warn({ name, err: String((err as Error)?.message ?? err).slice(0, 300) }, msg) },
+        {
+          log: (msg, err) => app.log.warn({ name, err: String((err as Error)?.message ?? err).slice(0, 300) }, msg),
+          dnsEndpoints: () => listDnsApiEndpoints(app.db),
+        },
         { server: body.server },
       );
       const audit = {
