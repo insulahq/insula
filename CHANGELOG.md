@@ -39,7 +39,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   dropped SSH session) is cleaned up by the next run. Two cases are left in place on purpose: a
   server whose etcd already started, because the cluster may list it as a member, and a worker
   whose kubelet already ran pods. Bootstrap then says so, and the multi-node runbook has the steps
-  to remove that member first.
+  to remove that member first (with `etcdctl`: k3s's etcd has no HTTP API, and its leader does not
+  reliably evict a stalled member by itself). When a join hangs, bootstrap now shows the distinct
+  problems k3s reported in that attempt instead of raw etcd lines. When a joining server's etcd
+  cannot catch up, it also says why: the etcd leader cannot reach the node on port 2380.
+- **Removing a node now also removes its saved list of cluster peers.** The node-removal steps in
+  the multi-node runbook left `/etc/nftables.d/10-cluster-peers.conf` on the host. Bootstrap loads
+  that file again, so a reused host kept trusting its old cluster's servers on the etcd and API
+  ports until its firewall reconciler ran.
 
 ## [2026.10.17] - 2026-10-24
 

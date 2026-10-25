@@ -194,6 +194,7 @@ lab_worker_leave() {
     _vssh "$W_IP" '
       systemctl disable --now platform-ops-update.timer platform-ops-host-config.timer 2>/dev/null
       nft delete table inet filter 2>/dev/null
+      rm -f /etc/nftables.d/10-cluster-peers.conf
       mv /etc/nftables.conf /etc/nftables.conf.insula-removed
       printf "#!/usr/sbin/nft -f\nflush ruleset\n" > /etc/nftables.conf
       [ -f /etc/sysconfig/nftables.conf ] && sed -i "/^# Insula platform firewall/d; /^include \"\/etc\/nftables.conf\"$/d" /etc/sysconfig/nftables.conf

@@ -304,13 +304,18 @@ kubectl uncordon <nodename>
    membership (and, on releases before 2026.10.10, one that drops DHCPv6
    replies — a DHCPv6-addressed host then loses its IPv6), reloaded at every
    boot, and `platform-ops` keeps converging host config for a cluster it has
-   left. Skip this only if the host is re-bootstrapped right away (bootstrap
-   rewrites both).
+   left. The firewall reconciler's saved peer list
+   (`/etc/nftables.d/10-cluster-peers.conf`) stays too, and bootstrap does NOT
+   rewrite it — it loads it, so a re-used host keeps trusting its old
+   cluster's peers on etcd/API ports until its reconciler runs again. Remove it
+   even when the host is re-bootstrapped right away (bootstrap rewrites the
+   ruleset and the timers, not that list).
 
    ```bash
    ssh root@<node> '
      systemctl disable --now platform-ops-update.timer platform-ops-host-config.timer 2>/dev/null
      nft delete table inet filter 2>/dev/null
+     rm -f /etc/nftables.d/10-cluster-peers.conf
      mv /etc/nftables.conf /etc/nftables.conf.insula-removed
      printf "#!/usr/sbin/nft -f\nflush ruleset\n" > /etc/nftables.conf
      # RHEL family: drop the boot-time include of the old ruleset.
@@ -343,13 +348,12 @@ When an etcd quorum is at risk (2 of 3 servers healthy):
 
 ```bash
 # On a healthy server:
-ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
-  --cert=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt \
-  --key=/var/lib/rancher/k3s/server/tls/etcd/server-client.key \
-  --cacert=/var/lib/rancher/k3s/server/tls/etcd/server-ca.crt \
-  member list
-
-ETCDCTL_API=3 etcdctl member remove <unhealthy-member-id>
+E=(etcdctl --endpoints=https://127.0.0.1:2379
+   --cert=/var/lib/rancher/k3s/server/tls/etcd/server-client.crt
+   --key=/var/lib/rancher/k3s/server/tls/etcd/server-client.key
+   --cacert=/var/lib/rancher/k3s/server/tls/etcd/server-ca.crt)
+ETCDCTL_API=3 "${E[@]}" member list -w table
+ETCDCTL_API=3 "${E[@]}" member remove <unhealthy-member-id>   # the hex ID from the list
 ```
 
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
@@ -371,19 +375,27 @@ wiped, or the old member of a replaced VPS). k3s would refuse that join with
 this way — that host has its own etcd data — so if the node is up, stop: you
 would be removing a live member.
 
+k3s's embedded etcd serves gRPC only (its HTTP gateway answers 415), and k3s
+ships no `etcdctl`. Any etcdctl 3.4+ works with k3s's etcd 3.6: Debian/Ubuntu
+`apt-get install etcd-client`; elsewhere the `etcdctl` binary from an
+[etcd release](https://github.com/etcd-io/etcd/releases) tarball.
+
 ```bash
-# On a healthy existing server (k3s ships no etcdctl; etcd's HTTP gateway does the same):
+# On a healthy existing server:
 cd /var/lib/rancher/k3s/server/tls/etcd
-ETCD=(curl -sS --cacert server-ca.crt --cert server-client.crt --key server-client.key -X POST)
-"${ETCD[@]}" https://127.0.0.1:2379/v3/cluster/member/list -d '{}'
-# → find the member whose peerURLs carry the new node's IP; note its "ID".
-"${ETCD[@]}" https://127.0.0.1:2379/v3/cluster/member/remove -d '{"ID":"<member-id>"}'
+E=(etcdctl --endpoints=https://127.0.0.1:2379 --cacert=server-ca.crt --cert=server-client.crt --key=server-client.key)
+ETCDCTL_API=3 "${E[@]}" member list -w table
+# → the row whose PEER ADDRS carry the new node's IP; its ID is hex (bootstrap prints the same)
+ETCDCTL_API=3 "${E[@]}" member remove <member-id>
 kubectl get node <new-node>        # registered? then also: kubectl delete node <new-node>
 ```
 
 Then, on the new node, `/usr/local/bin/k3s-uninstall.sh` and re-run the same
 join command. A member that never started (no name in the list) needs none of
-this: k3s takes it over on the next attempt.
+this: k3s takes it over on the next attempt. Do not wait for k3s to evict a
+stalled learner by itself: measured on lab staging, its leader kept retrying
+the promotion ("learner is not ready") for 30 minutes and never removed it.
+Deleting the Node does not help either when the learner never registered one.
 
 ### A 2-server cluster lost one server for good
 

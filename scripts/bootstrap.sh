@@ -4847,6 +4847,9 @@ install_k3s_server() {
     install_rc=$?
     set -e
     if [[ $install_rc -ne 0 ]]; then
+      # Nothing to wait for when the installer never got k3s onto the host (a
+      # download failure, or Ctrl-C — the installer catches the first one).
+      command -v k3s &>/dev/null || fail_join "the k3s installer stopped before k3s was installed (rc=${install_rc})"
       # The preflight already proved the target answers and accepts the token, so
       # this is not "peers have not pre-enrolled you" — show what k3s says.
       log "  k3s has not finished starting yet (rc=${install_rc}); systemd retries every ~5 s."
@@ -4896,7 +4899,8 @@ install_k3s_server() {
     fi
     # Every minute of a join wait, say what k3s is stuck on instead of going quiet.
     if [[ "$is_joining_server" == true ]] && (( _attempt % 30 == 0 )); then
-      log "  still waiting ($((_attempt * 2))s) — latest k3s error: $(k3s_journal_errors k3s 1 | tail -1)"
+      log "  still waiting ($((_attempt * 2))s) — latest k3s problem: $(k3s_journal_errors k3s 1 | tail -1)"
+      (( _attempt % 150 == 0 )) && join_stuck_hint k3s
     fi
     sleep 2
   done
@@ -4906,17 +4910,61 @@ install_k3s_server() {
   error "k3s API server did not become ready within $((poll_attempts * 2)) seconds. journalctl -u k3s -n 50 for details."
 }
 
-# k3s_journal_errors <unit> <n> — the last <n> warning/error lines of a k3s unit,
-# message text only (k3s logs never carry the token). Prints nothing on a host
-# without journald.
+# k3s_journal_errors <unit> <n> — the last <n> distinct problems a k3s unit
+# logged during this attempt, one short line each ("message: error (×count)"):
+# warnings and errors from k3s's logfmt, etcd's JSON and klog lines, plus k3s's
+# "Failed …" messages, which it logs at info level. k3s logs never carry the
+# token. Prints nothing on a host without journald.
 k3s_journal_errors() {
   local since=()
   # Only this attempt's lines: a host that failed before still has the old ones.
   [[ -n "${JOIN_STARTED_AT:-}" ]] && since=(--since "$JOIN_STARTED_AT")
-  journalctl -u "$1" --no-pager -n 400 ${since[@]+"${since[@]}"} 2>/dev/null \
-    | grep -E 'level=(error|fatal|warning)|Error|failed' \
-    | sed -E 's/^.*level=[a-z]+ msg="?//; s/"$//' \
-    | tail -n "$2" || true
+  journalctl -u "$1" --no-pager -o cat -n 3000 ${since[@]+"${since[@]}"} 2>/dev/null \
+    | python3 -c '
+import json, re, sys
+seen, order = {}, []
+for raw in sys.stdin:
+    line = raw.strip()
+    lvl = msg = err = ""
+    if line.startswith("{"):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        lvl, msg, err = str(d.get("level", "")), str(d.get("msg", "")), str(d.get("error", ""))
+    else:
+        m = re.search(r"level=(\w+)", line)
+        lvl = m.group(1) if m else ""
+        m = re.search(r"msg=\"((?:[^\"\\]|\\.)*)\"", line)
+        msg = m.group(1) if m else ""
+        if not msg:
+            m = re.match(r"^([EWF])\d{4} [0-9:.]+ +\d+ \S+\] (.*)", line)
+            if m:
+                lvl, msg = {"E": "error", "W": "warning", "F": "fatal"}[m.group(1)], m.group(2)
+    if not msg or (lvl not in ("warn", "warning", "error", "fatal", "panic") and not msg.lower().startswith("failed")):
+        continue
+    text = (msg + (": " + err if err and err not in msg else ""))[:200]
+    seen[text] = seen.get(text, 0) + 1
+    if text in order:
+        order.remove(text)
+    order.append(text)
+for text in order[-int(sys.argv[1]):]:
+    print(text + ("  (x%d)" % seen[text] if seen[text] > 1 else ""))
+' "$2" 2>/dev/null || true
+}
+
+# join_stuck_hint <unit> — one sentence for the failure an operator cannot read
+# out of etcd's own lines: a joining server's etcd never caught up (it cannot
+# publish itself, or stays a learner), because the etcd leader cannot open a
+# connection to this node on :2380 — the leader sends a newcomer its data from
+# wherever it runs, not from the --server node.
+join_stuck_hint() {
+  [[ "$1" == "k3s" ]] || return 0
+  journalctl -u k3s --no-pager -o cat -n 3000 ${JOIN_STARTED_AT:+--since "$JOIN_STARTED_AT"} 2>/dev/null \
+    | grep -q -E 'not yet been promoted from learner|failed to publish local member to cluster through raft' || return 0
+  log "  → this node's etcd has not caught up with the cluster: the etcd leader must be able to"
+  log "    connect to this node on port 2380 to send it the data. This node's firewall admits:"
+  log "    $(nft list set inet filter cluster_peers_v4 2>/dev/null | tr -d '\n\t ' | grep -o 'elements={[^}]*}' | sed 's/elements=//' || echo '?')"
 }
 
 # fail_join <reason> — a join that installed k3s but did not finish. Shows what
@@ -4931,8 +4979,9 @@ fail_join() {
   if [[ "$NODE_ROLE" == "worker" ]]; then
     unit=k3s-agent; uninstall="${K3S_BIN_DIR:-/usr/local/bin}/k3s-agent-uninstall.sh"
   fi
-  log "Last k3s errors on this host:"
-  k3s_journal_errors "$unit" 15 | sed 's/^/    /'
+  log "Last problems k3s reported on this host (this attempt):"
+  k3s_journal_errors "$unit" 8 | sed 's/^/    /'
+  join_stuck_hint "$unit"
   if [[ "$K3S_FRESH_INSTALL" != true ]]; then
     error "${reason}. k3s was installed before this run, so it is left in place. journalctl -u ${unit} -n 100 for details."
   fi
@@ -4940,14 +4989,33 @@ fail_join() {
     error "${reason}. This worker's kubelet already ran pods, so it is a registered node — k3s-agent is left in place. Fix the cause above, or delete the node on a server (kubectl delete node ${K8S_NODE_NAME:-<this node>}) and then run ${uninstall} here."
   fi
   if [[ "$NODE_ROLE" == "server" && -d "${K3S_DATA_DIR:-/var/lib/rancher/k3s}/server/db/etcd/member" ]]; then
-    error "${reason}. This server's etcd has already started, so the cluster may list it as an etcd member — k3s is left in place (systemd keeps retrying). Fix the cause above, or remove this node's etcd member on an existing server and then run ${uninstall} here: docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\"."
+    error "${reason}. This server's etcd has already started, so the cluster lists it as an etcd member — k3s is left in place. If the cause above is fixed while k3s's first start is still waiting, the join finishes by itself. k3s gives up after about 10 minutes, though, and once systemd has restarted it, an etcd that never received the cluster's data does not recover: remove this node's member (${K8S_NODE_NAME:-this node}, $(detect_local_ipv4 2>/dev/null || echo 'its IP'):2380) on an existing server, then run ${uninstall} here and re-run — docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\"."
+  fi
+  if [[ ! -x "$uninstall" ]] && ! command -v k3s &>/dev/null; then
+    marker_clear join-in-progress
+    error "${reason}. k3s is not on this host, so there is nothing to remove — re-running the same command starts clean."
   fi
   log "Removing the k3s this run installed, so the next attempt starts clean..."
-  if ! "$uninstall" >/dev/null 2>&1; then
+  if ! remove_k3s_keeping_operator_files "$uninstall"; then
     error "${reason}. Removing k3s again failed — run ${uninstall} by hand before re-running."
   fi
   marker_clear join-in-progress
   error "${reason}. k3s was removed again, so re-running the same command starts clean. Fix the cause above first."
+}
+
+# remove_k3s_keeping_operator_files <uninstall-script> — k3s's uninstaller deletes
+# all of /etc/rancher/k3s, including registries.yaml: the file an operator puts
+# there BEFORE a join for registry mirrors or a private registry (bootstrap never
+# writes it). Keep it, so the next attempt pulls the way the first one did.
+# bootstrap rewrites its own config.yaml.d drop-ins on every run.
+remove_k3s_keeping_operator_files() {
+  local uninstall="$1" reg="${K3S_CONFIG_DIR:-/etc/rancher/k3s}/registries.yaml" keep="" had=false
+  if [[ -f "$reg" ]]; then keep="$(cat "$reg")"; had=true; fi
+  "$uninstall" >/dev/null 2>&1 || return 1
+  if [[ "$had" == true ]]; then
+    mkdir -p "$(dirname "$reg")"
+    (umask 077; printf '%s\n' "$keep" > "$reg")
+  fi
 }
 
 # kubelet_ran_pods — the kubelet on this host has run pods: the node registered
@@ -4986,7 +5054,7 @@ If it did join, start ${unit} and check journalctl -u ${unit} instead."
     error "An earlier join on this host did not finish, and its etcd had already started, so the cluster may list this node as an etcd member. Remove that member on an existing server first, then run ${uninstall} here and re-run: docs/operations/MULTI_NODE_RUNBOOK.md, \"A server join that did not finish\"."
   fi
   log "An earlier join on this host did not finish — removing its k3s so this run installs with the current token and flags..."
-  "$uninstall" >/dev/null 2>&1 || error "Removing the unfinished k3s install failed — run ${uninstall} by hand, then re-run."
+  remove_k3s_keeping_operator_files "$uninstall" || error "Removing the unfinished k3s install failed — run ${uninstall} by hand, then re-run."
   marker_clear join-in-progress
 }
 
@@ -5077,6 +5145,7 @@ install_k3s_worker() {
   install_rc=$?
   set -e
   if [[ $install_rc -ne 0 ]]; then
+    command -v k3s &>/dev/null || fail_join "the k3s installer stopped before k3s was installed (rc=${install_rc})"
     # The preflight already proved the target answers and accepts the token.
     log "  k3s-agent has not finished starting yet (rc=${install_rc}); systemd retries every ~5 s."
     log "  Latest k3s-agent errors on this host:"
@@ -5093,7 +5162,7 @@ install_k3s_worker() {
       return 0
     fi
     if (( _attempt % 30 == 0 )); then
-      log "  still waiting ($((_attempt * 2))s) — latest k3s-agent error: $(k3s_journal_errors k3s-agent 1 | tail -1)"
+      log "  still waiting ($((_attempt * 2))s) — latest k3s-agent problem: $(k3s_journal_errors k3s-agent 1 | tail -1)"
     fi
     sleep 2
   done
@@ -11703,7 +11772,8 @@ if isinstance(d, dict):
                     mid = int(m.get("ID") or 0)
                 except (TypeError, ValueError):
                     mid = 0
-                print(h, str(bool(m.get("isLearner"))).lower(), name, mid or "-")
+                # hex, as etcdctl member list shows it
+                print(h, str(bool(m.get("isLearner"))).lower(), name, ("%x" % mid) if mid else "-")
 elif isinstance(d, list):
     for a in d:
         h = urlsplit("//" + str(a)).hostname
