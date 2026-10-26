@@ -1636,8 +1636,7 @@ function EditAliasModal({
 
 // ─── Settings & DNS tab ────────────────────────────────────────────────────
 //
-// Shows per-domain settings (spam thresholds, catch-all, webmail
-// toggle) AND the DNS records the operator must publish in cname /
+// Shows per-domain settings (catch-all, webmail toggle) AND the DNS records the operator must publish in cname /
 // secondary mode. Primary-mode domains see the same records with a
 // "DNS managed by platform" banner for reference.
 
@@ -1734,8 +1733,6 @@ function DomainSettingsCard({
 }) {
   const updateDomain = useUpdateEmailDomain(tenantId);
   const [catchAll, setCatchAll] = useState(domain.catchAllAddress ?? '');
-  const [spamJunk, setSpamJunk] = useState(domain.spamThresholdJunk ?? '5.0');
-  const [spamReject, setSpamReject] = useState(domain.spamThresholdReject ?? '10.0');
   // One reading of the saved setting for the checkbox AND the pill: they
   // disagreed on a row with no webmailEnabled (checked box, "Disabled" pill).
   const savedWebmail = domain.webmailEnabled === undefined ? true : domain.webmailEnabled === 1;
@@ -1749,12 +1746,6 @@ function DomainSettingsCard({
     const input: Record<string, unknown> = {};
     if (catchAll !== (domain.catchAllAddress ?? '')) {
       input.catch_all_address = catchAll.trim() === '' ? null : catchAll.trim();
-    }
-    if (spamJunk !== (domain.spamThresholdJunk ?? '5.0')) {
-      input.spam_threshold_junk = spamJunk;
-    }
-    if (spamReject !== (domain.spamThresholdReject ?? '10.0')) {
-      input.spam_threshold_reject = spamReject;
     }
     if (webmailEnabled !== savedWebmail) {
       input.webmail_enabled = webmailEnabled;
@@ -1822,42 +1813,6 @@ function DomainSettingsCard({
               message={domain.webmailStatusMessage ?? null}
             />
           </div>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Spam threshold — Junk folder
-          </label>
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
-            Score at or above this moves mail to Junk. Default 5.0.
-          </p>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="20"
-            className={INPUT_CLASS}
-            value={spamJunk}
-            onChange={(e) => setSpamJunk(e.target.value)}
-            data-testid="settings-spam-junk"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Spam threshold — Reject
-          </label>
-          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
-            Score at or above this is rejected at SMTP time. Default 10.0.
-          </p>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="20"
-            className={INPUT_CLASS}
-            value={spamReject}
-            onChange={(e) => setSpamReject(e.target.value)}
-            data-testid="settings-spam-reject"
-          />
         </div>
       </div>
 

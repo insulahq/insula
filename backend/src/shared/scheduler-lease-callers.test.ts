@@ -126,6 +126,8 @@ const BESIDE_ANY_CALLER: Readonly<Record<string, string>> = {
     'takes a run lock of its own (stalwart-send-limits) inside, whoever calls it — see its header for what two at once did',
   'modules/mail-admin/mail-ban-expiry.ts#ensureMailBanExpiry':
     'applies under a database advisory lock of its own',
+  'modules/mail-admin/spam-policy.ts#ensureSpamPolicy':
+    'applies under a database advisory lock of its own and re-reads the thresholds under it',
   'modules/mail-events/dmarc-report-sender.ts#ensureDmarcReportSender':
     'writes the whole settings group it owns from the stored sender; two at once write the same group',
   'modules/mail-admin/reconcile-master-credential.ts#reconcileStalwartMasterCredential':

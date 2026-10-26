@@ -87,7 +87,6 @@ interface EmailDomainRow {
   readonly spfProvisioned: number;
   readonly dkimProvisioned: number;
   readonly dmarcProvisioned: number;
-  readonly spamThresholdJunk: string;
   readonly enabled: number;
   readonly webmailEnabled?: number;
 }
@@ -117,7 +116,6 @@ function EmailDomainsTable({
             <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3">DNS Status</th>
-            <SortableHeader label="Spam Filter" sortKey="spamThresholdJunk" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3">Webmail</th>
             <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3">DKIM</th>
@@ -129,7 +127,7 @@ function EmailDomainsTable({
           ))}
           {domains.length === 0 && (
             <tr>
-              <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+              <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                 No email-enabled domains yet.
               </td>
             </tr>
@@ -179,7 +177,6 @@ function EmailDomainRowView({
           })}
         </div>
       </td>
-      <td className="px-5 py-3.5 text-xs text-gray-500 dark:text-gray-400">Junk: {d.spamThresholdJunk}</td>
       <td className="px-5 py-3.5">
         <button
           type="button"

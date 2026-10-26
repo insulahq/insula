@@ -255,8 +255,6 @@ describe('Email Page', () => {
             maxMailboxes: 50,
             maxQuotaMb: 10240,
             catchAllAddress: null,
-            spamThresholdJunk: '5.0',
-            spamThresholdReject: '10.0',
             dnsMode: 'cname',
           },
         ],
@@ -285,6 +283,10 @@ describe('Email Page', () => {
 
     expect(screen.getByTestId('settings-tab')).toBeInTheDocument();
     expect(screen.getByTestId('domain-settings-form')).toBeInTheDocument();
+    // No per-domain spam thresholds: the mail server never applied them, and
+    // its one threshold is the operator's (admin Email → Settings → Server).
+    expect(screen.queryByTestId('settings-spam-junk')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-spam-reject')).not.toBeInTheDocument();
     expect(screen.getByTestId('dns-records-card')).toBeInTheDocument();
     // cname mode → should show the manual-publish banner
     expect(screen.getByText(/Manual DNS publishing required/i)).toBeInTheDocument();
@@ -305,7 +307,7 @@ describe('Email Page', () => {
         data: [{
           id: 'd1', domainId: 'd1', domainName: 'example.com', enabled: 1,
           webmailEnabled, webmailStatus, maxMailboxes: 50, maxQuotaMb: 10240,
-          catchAllAddress: null, spamThresholdJunk: '5.0', spamThresholdReject: '10.0', dnsMode: 'primary',
+          catchAllAddress: null, dnsMode: 'primary',
         }],
       },
       isLoading: false,

@@ -212,7 +212,11 @@ top of the page:
   failed the check.
 - **Current policy** — what your published record tells receivers to do with
   mail that fails: monitor only, quarantine, or reject. This record is
-  maintained for you; contact support if you want it changed.
+  maintained for you; contact support if you want it changed. It also protects
+  your own mailboxes: forged mail that claims to come from your domain — a
+  "your mailbox is full" message that seems to come from your own mail admin,
+  say — goes to Junk under quarantine and is refused under reject. Under
+  monitor only, it can still reach the inbox.
 - **Who sent as &lt;your domain&gt;** — every sending server the receivers saw,
   worst first. A server with failures is either one of yours that needs its SPF
   or DKIM fixed (a newsletter tool or CRM sending on your behalf is the usual

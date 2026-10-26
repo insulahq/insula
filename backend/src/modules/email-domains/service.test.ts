@@ -67,8 +67,6 @@ const EMAIL_DOMAIN = {
   spfProvisioned: 1,
   dkimProvisioned: 1,
   dmarcProvisioned: 1,
-  spamThresholdJunk: '5.0',
-  spamThresholdReject: '10.0',
   createdAt: new Date(),
   updatedAt: new Date(),
 };

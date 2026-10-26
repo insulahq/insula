@@ -25,8 +25,10 @@ export const updateEmailDomainSchema = z.object({
   // Phase 2c.5: toggle the derived webmail.<domain> Ingress
   webmail_enabled: z.boolean().optional(),
   catch_all_address: z.string().email().nullable().optional(),
-  spam_threshold_junk: z.number().min(1).max(20).optional(),
-  spam_threshold_reject: z.number().min(5).max(30).optional(),
+  // spam_threshold_junk / spam_threshold_reject were removed: the mail server
+  // never applied them, and Stalwart has ONE threshold for the whole server —
+  // now the operator's `spamJunkScore` / `spamRejectScore` mail setting. An
+  // older client still sending them is stripped by Zod, not refused.
 });
 
 export type UpdateEmailDomainInput = z.infer<typeof updateEmailDomainSchema>;
@@ -54,8 +56,6 @@ export const emailDomainResponseSchema = z.object({
   spfProvisioned: z.number(),
   dkimProvisioned: z.number(),
   dmarcProvisioned: z.number(),
-  spamThresholdJunk: z.string(),
-  spamThresholdReject: z.string(),
   mailboxCount: z.number().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),

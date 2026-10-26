@@ -148,7 +148,6 @@ describe('EmailManagement page', () => {
         spfProvisioned: 1,
         dkimProvisioned: 1,
         dmarcProvisioned: 0,
-        spamThresholdJunk: '5.0',
         enabled: 1,
       },
     ]);
@@ -156,8 +155,10 @@ describe('EmailManagement page', () => {
     await waitFor(() => {
       expect(screen.getByText('example.com')).toBeInTheDocument();
     });
-    // mailboxCount 5 appears in both the table cell and stat card; just verify domain row rendered
-    expect(screen.getByText('Junk: 5.0')).toBeInTheDocument();
+    // The per-domain spam thresholds were never applied by the mail server and
+    // are gone; the threshold is server-wide (Email → Settings → Server).
+    expect(screen.queryByText(/Junk:/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: /Spam Filter/i })).not.toBeInTheDocument();
   });
 
   // ── Total Mailboxes tile ───────────────────────────────────────────────────
@@ -175,9 +176,9 @@ describe('EmailManagement page', () => {
     }
 
     const DOMAINS = [
-      { id: 'ed-1', domainName: 'one.example.test', mailboxCount: '3', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
-      { id: 'ed-2', domainName: 'two.example.test', mailboxCount: '2', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
-      { id: 'ed-3', domainName: 'three.example.test', mailboxCount: '4', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 0, dmarcProvisioned: 0, spamThresholdJunk: '5.0', enabled: 1 },
+      { id: 'ed-1', domainName: 'one.example.test', mailboxCount: '3', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, enabled: 1 },
+      { id: 'ed-2', domainName: 'two.example.test', mailboxCount: '2', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 1, dmarcProvisioned: 0, enabled: 1 },
+      { id: 'ed-3', domainName: 'three.example.test', mailboxCount: '4', mxProvisioned: 1, spfProvisioned: 1, dkimProvisioned: 0, dmarcProvisioned: 0, enabled: 1 },
     ];
 
     it('SUMS string counts arithmetically instead of concatenating them', async () => {

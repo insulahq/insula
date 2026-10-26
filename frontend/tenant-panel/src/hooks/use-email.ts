@@ -17,8 +17,6 @@ export interface EmailDomain {
   readonly maxQuotaMb: number;
   readonly mailboxCount?: number;
   readonly catchAllAddress?: string | null;
-  readonly spamThresholdJunk?: string;
-  readonly spamThresholdReject?: string;
   readonly dnsMode?: string;
 }
 

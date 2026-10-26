@@ -19,8 +19,6 @@ interface EmailDomain {
   readonly spfProvisioned: number;
   readonly dkimProvisioned: number;
   readonly dmarcProvisioned: number;
-  readonly spamThresholdJunk: string;
-  readonly spamThresholdReject: string;
   readonly mailboxCount?: number;
   readonly createdAt: string;
 }

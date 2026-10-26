@@ -12,6 +12,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Mail that fails the sender's DMARC policy is no longer delivered to the inbox.** The mail
+  server checked DMARC but acted on nothing: the result went into the headers, a failure under
+  `p=quarantine` added 1.5 to a spam score whose Junk line is 5, and even `p=reject` was
+  delivered. A phish forging a tenant's own domain (`p=quarantine`, "click here") failed SPF and
+  DMARC on production and still reached the inbox. Now mail that fails DMARC for a domain whose
+  policy is `p=reject` is refused during delivery (`550 5.7.1 Email rejected per DMARC policy`),
+  so the sending server holds the bounce. Mail failing under `p=quarantine` goes to Junk: it is
+  scored above the Junk line by more than the strongest "looks legitimate" signals can take off.
+  `p=none` domains are unaffected. It is kept set on every 5-minute mail tick, so a restored
+  mail store gets it back.
+
+  On DEV, a forged `p=quarantine` message moved from the inbox (score 3.8) to Junk (20.3), and a
+  forged `p=reject` one was refused. Forwarded mail that lost its DKIM signature on the way (a
+  list that edits the subject, say) is refused too if its sender publishes `p=reject`, as that
+  sender asked. Submission and IMAP are not affected.
+
+### Changed
+
+- **The spam thresholds are one server-wide setting: Email → Settings → Server → Spam Filter.**
+  *Move to Junk* (default 5) and *Refuse* (off by default) are the mail server's own thresholds;
+  Stalwart has one pair, not one per domain. These are the values it already used, so nothing
+  changes until you change them. With a refuse threshold set, a DMARC quarantine failure is
+  scored just under it: the DMARC failure alone never gets a message refused, but any further
+  spam signal will.
+
+### Removed
+
+- **The per-domain spam thresholds.** The tenant panel's *Spam threshold — Junk folder / Reject*
+  fields and the admin email domains' *Spam Filter* column were saved but never reached the mail
+  server. A change there did nothing. They are gone from both panels and from the email-domain
+  API: `spam_threshold_junk` / `spam_threshold_reject` on update are ignored, and
+  `spamThresholdJunk` / `spamThresholdReject` are no longer returned. No production domain had
+  changed them. The database columns go in a later release (ROADMAP R47), and tenant backups
+  restore without them.
+
 ## [2026.10.18] - 2026-10-25
 
 ### Added

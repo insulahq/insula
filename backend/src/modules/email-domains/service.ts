@@ -672,8 +672,6 @@ export async function getEmailDomain(
       spfProvisioned: emailDomains.spfProvisioned,
       dkimProvisioned: emailDomains.dkimProvisioned,
       dmarcProvisioned: emailDomains.dmarcProvisioned,
-      spamThresholdJunk: emailDomains.spamThresholdJunk,
-      spamThresholdReject: emailDomains.spamThresholdReject,
       createdAt: emailDomains.createdAt,
       updatedAt: emailDomains.updatedAt,
     })
@@ -822,8 +820,6 @@ export async function listEmailDomains(
       spfProvisioned: emailDomains.spfProvisioned,
       dkimProvisioned: emailDomains.dkimProvisioned,
       dmarcProvisioned: emailDomains.dmarcProvisioned,
-      spamThresholdJunk: emailDomains.spamThresholdJunk,
-      spamThresholdReject: emailDomains.spamThresholdReject,
       createdAt: emailDomains.createdAt,
       updatedAt: emailDomains.updatedAt,
       // `platform_managed = false` is not a filter, it is the definition.
@@ -866,8 +862,6 @@ export async function listAllEmailDomains(db: Database) {
       spfProvisioned: emailDomains.spfProvisioned,
       dkimProvisioned: emailDomains.dkimProvisioned,
       dmarcProvisioned: emailDomains.dmarcProvisioned,
-      spamThresholdJunk: emailDomains.spamThresholdJunk,
-      spamThresholdReject: emailDomains.spamThresholdReject,
       createdAt: emailDomains.createdAt,
       updatedAt: emailDomains.updatedAt,
       // `platform_managed = false` is not a filter, it is the definition.
@@ -948,8 +942,6 @@ export async function updateEmailDomain(
       }
     }
   }
-  if (input.spam_threshold_junk !== undefined) updateValues.spamThresholdJunk = String(input.spam_threshold_junk);
-  if (input.spam_threshold_reject !== undefined) updateValues.spamThresholdReject = String(input.spam_threshold_reject);
 
   if (Object.keys(updateValues).length > 0) {
     await db
