@@ -79,6 +79,9 @@ export async function readAndAuthorizeConfigDump(args: {
 export const RETIRED_BUNDLE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   // The per-user display zone; the panels show the browser's zone.
   users: ['timezone'],
+  // Per-domain spam thresholds the mail server never applied; its threshold
+  // is server-wide (mail-admin/spam-policy.ts).
+  email_domains: ['spam_threshold_junk', 'spam_threshold_reject'],
 };
 
 /**

@@ -210,6 +210,39 @@ further, which can stop the classifier retraining — is in
     [Mail Server Operations](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_SERVER_OPERATIONS.md),
     [Mail Port Exposure](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_PORT_EXPOSURE.md).
 
+## Spam filter and forged senders
+
+The mail server scores every message that arrives from the internet.
+**Email → Settings → Server → Spam Filter** holds two thresholds, and they apply
+to every domain the server hosts — the mail server has one pair, not one per
+domain:
+
+- **Move to Junk** at a score of 5 (the default).
+- **Refuse** at a score you choose — off by default. A refused message never
+  reaches a mailbox; the sending server gets the bounce. With it set, a
+  `p=quarantine` failure (below) is scored just under it: the DMARC failure
+  alone never gets a message refused, but any further spam signal will.
+
+**Sender authentication is enforced whatever the thresholds are.** A message
+that fails DMARC for a domain whose policy is `p=reject` is refused while it is
+being delivered (`550 5.7.1 Email rejected per DMARC policy`), and one whose
+policy is `p=quarantine` goes to Junk. That catches forged mail claiming to be
+from one of your own tenants' domains — the classic *your mailbox is full,
+click here* phish — as soon as the domain publishes `quarantine` or `reject`.
+At `p=none` a DMARC failure is only one small part of the score, so tightening
+a domain's policy (below) also protects its own mailboxes.
+
+A forwarded message can lose its DKIM signature on the way — a mailing list
+that edits the subject or adds a footer, for example. If its original sender
+publishes `p=reject` it is then refused, as that sender asked.
+
+!!! note "These settings belong to the platform"
+    The platform keeps DMARC verification, the two thresholds and the score of
+    a `p=quarantine` failure set on the mail server, and puts them back within
+    five minutes if they are changed in the Stalwart admin UI or come back with
+    a restored mail store. Everything else in the spam filter — its rules,
+    lists and classifier — is still configured in the Stalwart admin UI.
+
 ## DMARC reports — who is sending as you
 
 Receivers such as Gmail, Outlook and Yahoo send a daily summary of the mail they
@@ -248,6 +281,13 @@ yet — it collects the evidence that tells you when enforcing is safe.
 
 Domains that are already publishing `p=quarantine` or `p=reject` are left as
 they are; the platform will not loosen enforcement you already have.
+
+SPF records end in `~all` (soft fail) and stay that way. DMARC is what decides,
+and it treats a soft fail and a hard fail alike. A hard `-all` only adds the
+risk that a receiver refuses forwarded mail on SPF alone, before it looks at
+the DKIM signature that would have passed DMARC. Industry guidance (M3AAWG)
+recommends `~all` for domains that send mail and `-all` only for domains that
+never do.
 
 The platform will tell you when tightening looks safe, and deliberately holds
 back until it is: at least two weeks of reports, enough traffic to mean

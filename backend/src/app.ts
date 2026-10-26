@@ -1473,6 +1473,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
         const { ensureDmarcReportSender } = await import('./modules/mail-events/dmarc-report-sender.js');
         const { ensureMailBanExpiry } = await import('./modules/mail-admin/mail-ban-expiry.js');
+        const { ensureSpamPolicy } = await import('./modules/mail-admin/spam-policy.js');
         const { ensurePlatformHostnameIntake } = await import('./modules/mail-events/platform-hostname-intake.js');
         const { pollDmarcReports } = await import('./modules/mail-events/dmarc.js');
         const { pollAbuseReports } = await import('./modules/mail-events/abuse-reports.js');
@@ -1523,6 +1524,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           // Stalwart's own default, which is a ban that never expires.
           ensureMailBanExpiry(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'mail ban expiry ensure failed');
+          });
+          // DMARC enforced (p=reject refused, p=quarantine to Junk) and the
+          // operator's spam thresholds. Reconciled every tick for the same
+          // reason: a restored or failed-over store brings back Stalwart's
+          // own defaults, which deliver forged mail to the inbox.
+          ensureSpamPolicy(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'spam policy ensure failed');
           });
           pollDmarcReports(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'dmarc poll failed');

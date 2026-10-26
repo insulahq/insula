@@ -12,8 +12,6 @@ const DOMAIN = {
   spfProvisioned: 0,
   dkimProvisioned: 0,
   dmarcProvisioned: 0,
-  spamThresholdJunk: '5.0',
-  spamThresholdReject: '10.0',
   createdAt: new Date(),
   updatedAt: new Date(),
 };

@@ -8,6 +8,11 @@ import MailBanExpirySection, {
   settingFromDraft,
   type MailBanExpiryDraft,
 } from './MailBanExpirySection';
+import MailSpamFilterSection, {
+  spamDraftFromSettings,
+  spamThresholdsFromDraft,
+  type SpamFilterDraft,
+} from './MailSpamFilterSection';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -77,6 +82,7 @@ export default function MailSettingsTab() {
   // be savable. Collapsing the two would make disabling impossible.
   const [dmarcSender, setDmarcSender] = useState<string | null | undefined>(undefined);
   const [banDraft, setBanDraft] = useState<MailBanExpiryDraft>(() => draftFromSetting(undefined));
+  const [spamDraft, setSpamDraft] = useState<SpamFilterDraft>(() => spamDraftFromSettings(undefined, undefined));
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -86,6 +92,7 @@ export default function MailSettingsTab() {
       setEnforcementMode(settings.mailEnforcementMode ?? 'notify');
       setDmarcSender(undefined);
       setBanDraft(draftFromSetting(settings.mailBanExpiryHours));
+      setSpamDraft(spamDraftFromSettings(settings.spamJunkScore, settings.spamRejectScore));
     }
   }, [settings]);
 
@@ -110,6 +117,13 @@ export default function MailSettingsTab() {
   const banExpiry = settingFromDraft(banDraft);
   const banExpiryChanged =
     banExpiry !== undefined && settings !== undefined && banExpiry !== settings.mailBanExpiryHours;
+  // undefined = the typed scores are not valid. Compared with what the draft
+  // was built from, so an untouched control never writes.
+  const spamThresholds = spamThresholdsFromDraft(spamDraft);
+  const savedSpam = settings ? spamThresholdsFromDraft(spamDraftFromSettings(settings.spamJunkScore, settings.spamRejectScore)) : undefined;
+  const spamChanged =
+    spamThresholds !== undefined && savedSpam !== undefined
+    && (spamThresholds.junk !== savedSpam.junk || spamThresholds.reject !== savedSpam.reject);
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -124,6 +138,10 @@ export default function MailSettingsTab() {
     }
     if (banExpiry === undefined) {
       setSaveError('Automatic bans: enter a whole number of hours, or choose to never lift them.');
+      return;
+    }
+    if (spamThresholds === undefined) {
+      setSaveError('Spam filter: enter a Junk score, and a refuse score above it (or turn refusing off).');
       return;
     }
 
@@ -147,6 +165,13 @@ export default function MailSettingsTab() {
     if (banExpiryChanged) {
       tasks.push(
         updateWebmail.mutateAsync({ mailBanExpiryHours: banExpiry }),
+      );
+    }
+    if (spamChanged) {
+      // Both together: the server checks the refuse score against the Junk
+      // score, and two separate saves could each be checked against the other's old value.
+      tasks.push(
+        updateWebmail.mutateAsync({ spamJunkScore: spamThresholds.junk, spamRejectScore: spamThresholds.reject }),
       );
     }
     if (stalwartUrlChanged) {
@@ -284,6 +309,8 @@ export default function MailSettingsTab() {
       </fieldset>
 
       <MailBanExpirySection draft={banDraft} onChange={setBanDraft} disabled={saving} />
+
+      <MailSpamFilterSection draft={spamDraft} onChange={setSpamDraft} disabled={saving} />
 
       <div>
         <label

@@ -2322,3 +2322,24 @@ that entry for as long as such bundles can be restored.
 caveat as R43: a cluster jumping straight to it still runs the older pods
 during the rollout. `user_notification_settings.timezone` (quiet hours) and
 `tenants.timezone` (the TZ of a tenant's containers) are live and stay.
+
+## R47 — Drop the retired per-domain spam threshold columns
+
+The tenant panel's per-domain "Spam threshold — Junk folder / Reject" fields
+and the admin "Spam Filter" column were stored in
+`email_domains.spam_threshold_junk` / `spam_threshold_reject` but never sent to
+the mail server, and could not be: Stalwart's thresholds
+(`SpamSettings.scoreSpam` / `scoreReject`) are single numbers for the whole
+server, not expressions. The thresholds are now a server-wide Mail Settings
+value (`mail-admin/spam-policy.ts`). The fields left both panels, the
+email-domain contract and the Drizzle schema in one release; the columns stay
+in the database for now (expand/contract as R43 — the old pods select them by
+name on every email-domain read).
+
+`email_domains` is in the tenant bundle `config` dump, so the same release
+listed both columns in `RETIRED_BUNDLE_COLUMNS`; keep that entry for as long as
+bundles taken before the drop can be restored.
+
+**To do, in the release after:** a migration
+`ALTER TABLE "email_domains" DROP COLUMN IF EXISTS "spam_threshold_junk", DROP COLUMN IF EXISTS "spam_threshold_reject";`.
+Same skip-a-release caveat as R43.

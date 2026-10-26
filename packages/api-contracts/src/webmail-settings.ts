@@ -36,6 +36,16 @@ export const MAIL_BAN_EXPIRY_HOURS_MIN = 1;
 /** One year — beyond that, "never" says what is meant. */
 export const MAIL_BAN_EXPIRY_HOURS_MAX = 8760;
 
+/**
+ * The mail server's spam thresholds (see `spamJunkScore` / `spamRejectScore`).
+ * The defaults are Stalwart's own: Junk at a score of 5, nothing refused.
+ */
+export const MAIL_SPAM_JUNK_SCORE_DEFAULT = 5;
+export const MAIL_SPAM_JUNK_SCORE_MIN = 1;
+export const MAIL_SPAM_JUNK_SCORE_MAX = 20;
+/** Above this, "do not refuse" says what is meant. */
+export const MAIL_SPAM_REJECT_SCORE_MAX = 50;
+
 export const updateWebmailSettingsSchema = z.object({
   defaultWebmailUrl: webmailUrlSchema.optional(),
   // Phase 3.A.1: the platform-wide mail server hostname Stalwart
@@ -109,6 +119,28 @@ export const updateWebmailSettingsSchema = z.object({
     .max(MAIL_BAN_EXPIRY_HOURS_MAX)
     .nullable()
     .optional(),
+  /**
+   * Spam score at or above which the mail server files a message in Junk.
+   * ONE value for the whole server: Stalwart has a single threshold, not one
+   * per domain. Up to one decimal place; finer input is rounded.
+   */
+  spamJunkScore: z
+    .number()
+    .min(MAIL_SPAM_JUNK_SCORE_MIN)
+    .max(MAIL_SPAM_JUNK_SCORE_MAX)
+    .optional(),
+  /**
+   * Spam score at or above which the mail server refuses a message during the
+   * SMTP session (the sender gets the bounce), or `null` to refuse nothing on
+   * score — Stalwart's default. Must be above the Junk threshold; checked
+   * server-side against the stored value when only one of the two is sent.
+   */
+  spamRejectScore: z
+    .number()
+    .min(MAIL_SPAM_JUNK_SCORE_MIN)
+    .max(MAIL_SPAM_REJECT_SCORE_MAX)
+    .nullable()
+    .optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -167,6 +199,10 @@ export const webmailSettingsResponseSchema = z.object({
   dmarcReportSenderOptions: z.array(dmarcReportSenderOptionSchema),
   /** Automatic-ban lifetime in hours, or null = bans never expire. See the update schema. */
   mailBanExpiryHours: z.number().int().nullable(),
+  /** Junk threshold in effect (an unset setting reads as the default). See the update schema. */
+  spamJunkScore: z.number(),
+  /** Refuse threshold, or null = nothing is refused on score. See the update schema. */
+  spamRejectScore: z.number().nullable(),
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;
