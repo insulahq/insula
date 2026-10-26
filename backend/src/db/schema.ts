@@ -1906,8 +1906,12 @@ export const emailDomains = pgTable('email_domains', {
   spfProvisioned: integer('spf_provisioned').notNull().default(0),
   dkimProvisioned: integer('dkim_provisioned').notNull().default(0),
   dmarcProvisioned: integer('dmarc_provisioned').notNull().default(0),
-  spamThresholdJunk: numeric('spam_threshold_junk', { precision: 4, scale: 1 }).notNull().default('5.0'),
-  spamThresholdReject: numeric('spam_threshold_reject', { precision: 4, scale: 1 }).notNull().default('10.0'),
+  // spam_threshold_junk / spam_threshold_reject (numeric, defaults 5.0 / 10.0)
+  // are out of the schema but still in the table: the mail server never
+  // applied them (its threshold is server-wide — mail-admin/spam-policy.ts).
+  // The column drop follows in a later release (ROADMAP R47; expand/contract,
+  // see 0046): the previous release's pods SELECT them by name during the
+  // rollout. Bundle restores already skip them (RETIRED_BUNDLE_COLUMNS).
   // Stalwart 0.16: domain principal ID from Stalwart's JMAP store.
   // Null until provisioned via JMAP or backfilled by principals-sync.
   stalwartDomainId: text('stalwart_domain_id'),

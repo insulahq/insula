@@ -37,4 +37,14 @@ describe('upsertRow and retired columns', () => {
   it('lists users.timezone as retired', () => {
     expect(RETIRED_BUNDLE_COLUMNS.users).toContain('timezone');
   });
+
+  it('drops the per-domain spam thresholds from an email_domains row', async () => {
+    // The mail server never applied them; its threshold is server-wide.
+    const q = await render('email_domains', {
+      id: 'ed-1', tenant_id: 't-1', catch_all_address: null, spam_threshold_junk: '5.0', spam_threshold_reject: '10.0',
+    });
+    expect(q.sql).not.toContain('"spam_threshold_junk"');
+    expect(q.sql).not.toContain('"spam_threshold_reject"');
+    expect(q.sql).toContain('"catch_all_address"');
+  });
 });

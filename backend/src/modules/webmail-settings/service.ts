@@ -35,6 +35,13 @@ import {
   getMailBanExpiryHours,
   serializeMailBanExpiry,
 } from '../mail-admin/mail-ban-expiry.js';
+import {
+  SPAM_JUNK_SCORE_KEY,
+  SPAM_REJECT_SCORE_KEY,
+  ensureSpamPolicy,
+  getSpamThresholds,
+  serializeSpamScore,
+} from '../mail-admin/spam-policy.js';
 import { readStalwartCredentials } from '../mail-admin/credentials.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -286,6 +293,9 @@ export async function getWebmailSettings(db: Database) {
     // The EFFECTIVE lifetime: an unset row reads as the 24 h default, so the
     // panel shows what the mail server is actually told.
     mailBanExpiryHours: await getMailBanExpiryHours(db),
+    // The EFFECTIVE thresholds, like the ban lifetime: unset reads as the
+    // default, so the panel shows what the mail server is told.
+    ...(await spamThresholdsResponse(db)),
     ...visibility,
   };
 }
@@ -301,6 +311,10 @@ export async function updateWebmailSettings(
     dmarcReportSender?: string | null;
     /** Automatic-ban lifetime in whole hours, or null = bans never expire. */
     mailBanExpiryHours?: number | null;
+    /** Spam score that files a message in Junk (server-wide). */
+    spamJunkScore?: number;
+    /** Spam score that refuses a message, or null = nothing refused on score. */
+    spamRejectScore?: number | null;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;
     webmailShowFiles?: boolean;
@@ -312,6 +326,11 @@ export async function updateWebmailSettings(
    */
   logger?: OutboundReconcileLogger,
 ) {
+  // Checked before anything is written, so a refused pair does not leave the
+  // other settings of the same request half-saved.
+  const spamWrites = input.spamJunkScore !== undefined || input.spamRejectScore !== undefined
+    ? await planSpamThresholds(db, input.spamJunkScore, input.spamRejectScore)
+    : null;
   if (input.defaultWebmailUrl !== undefined) {
     await setSetting(db, 'default_webmail_url', input.defaultWebmailUrl);
   }
@@ -365,6 +384,12 @@ export async function updateWebmailSettings(
     // save need not wait for it.
     await ensureMailBanExpiry(db, logger ?? console, { detachBackfill: true });
   }
+  if (spamWrites) {
+    for (const [key, value] of spamWrites) await setSetting(db, key, value);
+    // Applied now, not on the next 5-minute tick — same reasoning as the
+    // ban lifetime above. Never throws; logs its own outcome.
+    await ensureSpamPolicy(db, logger ?? console);
+  }
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {
       throw new Error(`Invalid webmail engine: ${input.defaultWebmailEngine}`);
@@ -386,6 +411,44 @@ export async function updateWebmailSettings(
     await setSetting(db, WEBMAIL_SHOW_FILES_KEY, input.webmailShowFiles ? 'true' : 'false');
   }
   return getWebmailSettings(db);
+}
+
+async function spamThresholdsResponse(db: Database): Promise<{ spamJunkScore: number; spamRejectScore: number | null }> {
+  const { junk, reject } = await getSpamThresholds(db);
+  return { spamJunkScore: junk, spamRejectScore: reject };
+}
+
+/**
+ * The platform_settings writes for the spam thresholds, or a 400. Either may
+ * be sent alone, so the refuse threshold is checked against the Junk threshold
+ * that will be in effect: a refuse line at or below the Junk line would refuse
+ * mail that should have gone to Junk.
+ *
+ * Two saves at once can each pass against the other's old value and leave
+ * refuse ≤ Junk stored. parseSpamThresholds reads that pair as "refuse
+ * nothing", the safe side, and the panel shows it so.
+ */
+async function planSpamThresholds(
+  db: Database,
+  junkInput: number | undefined,
+  rejectInput: number | null | undefined,
+): Promise<Array<readonly [string, string]>> {
+  const stored = await getSpamThresholds(db);
+  const junk = Number(serializeSpamScore(junkInput ?? stored.junk));
+  const reject = rejectInput === undefined ? stored.reject : rejectInput;
+  if (reject !== null && Number(serializeSpamScore(reject)) <= junk) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      `The refuse threshold (${reject}) must be above the Junk threshold (${junk})`,
+      400,
+      { field: rejectInput === undefined ? 'spamJunkScore' : 'spamRejectScore', junk, reject },
+      'Raise the refuse threshold, lower the Junk threshold, or turn refusing off',
+    );
+  }
+  return [
+    ...(junkInput !== undefined ? [[SPAM_JUNK_SCORE_KEY, serializeSpamScore(junkInput)] as const] : []),
+    ...(rejectInput !== undefined ? [[SPAM_REJECT_SCORE_KEY, serializeSpamScore(rejectInput)] as const] : []),
+  ];
 }
 
 export async function getDefaultWebmailUrl(db: Database): Promise<string> {

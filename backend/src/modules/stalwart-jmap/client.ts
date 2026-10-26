@@ -1297,6 +1297,113 @@ export async function securityUpdate(params: {
   );
 }
 
+// ── Sender authentication + spam filter ─────────────────────────────────────
+//
+// `x:SenderAuth` (how SPF / DKIM / DMARC / ARC / reverse-IP are verified, each
+// an expression evaluated per session) and `x:SpamSettings` (the thresholds)
+// are singletons — read them BY ID. `/get` without ids lists stored objects
+// through an index, and a singleton first written over JMAP is not in it on
+// v0.16.27: the list stays empty although the value is stored, in effect and
+// survives a restart (measured on DEV). By id, Stalwart returns the stored
+// object, or its built-in defaults while the group has never been written.
+//
+// `x:SpamTag` rows are the filter's per-tag scores. Stalwart's upstream rule
+// updates never replace a tag that already exists, so a score set here stays.
+
+export interface StalwartSenderAuthRow {
+  readonly dmarcVerify?: StalwartExpression;
+  readonly [field: string]: unknown;
+}
+
+export interface StalwartSpamSettingsRow {
+  readonly scoreSpam?: number;
+  readonly scoreReject?: number;
+  readonly [field: string]: unknown;
+}
+
+export interface StalwartSpamTagRow {
+  readonly id: string;
+  readonly tag?: string;
+  /** `Score`, or `Reject` / `Discard` for a tag that refuses or drops the message outright. */
+  readonly '@type'?: string;
+  readonly score?: number;
+}
+
+async function singletonGet<T>(type: string, baseUrl?: string, env?: NodeJS.ProcessEnv): Promise<T | null> {
+  const res = await _xCall<{ list?: readonly T[] }>(
+    JMAP_STALWART, `x:${type}/get`, { ids: ['singleton'] }, baseUrl, env,
+  );
+  return res.list?.[0] ?? null;
+}
+
+async function singletonUpdate<T>(
+  type: string,
+  patch: Record<string, unknown>,
+  baseUrl?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<JmapSetResponse<T>> {
+  return _xCall<JmapSetResponse<T>>(
+    JMAP_STALWART, `x:${type}/set`, { update: { singleton: patch } }, baseUrl, env,
+  );
+}
+
+export async function senderAuthGet(params: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {}): Promise<StalwartSenderAuthRow | null> {
+  return singletonGet<StalwartSenderAuthRow>('SenderAuth', params.baseUrl, params.env);
+}
+
+export async function senderAuthUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartSenderAuthRow>> {
+  return singletonUpdate<StalwartSenderAuthRow>('SenderAuth', params.patch, params.baseUrl, params.env);
+}
+
+export async function spamSettingsGet(params: { baseUrl?: string; env?: NodeJS.ProcessEnv } = {}): Promise<StalwartSpamSettingsRow | null> {
+  return singletonGet<StalwartSpamSettingsRow>('SpamSettings', params.baseUrl, params.env);
+}
+
+export async function spamSettingsUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartSpamSettingsRow>> {
+  return singletonUpdate<StalwartSpamSettingsRow>('SpamSettings', params.patch, params.baseUrl, params.env);
+}
+
+/** The tag's row, or null when the server has no such tag (rules never downloaded). */
+export async function spamTagFind(params: {
+  tag: string;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<StalwartSpamTagRow | null> {
+  const { tag, baseUrl, env } = params;
+  const q = await _xCall<{ ids?: readonly string[] }>(
+    JMAP_STALWART, 'x:SpamTag/query', { filter: { tag } }, baseUrl, env,
+  );
+  const ids = q.ids ?? [];
+  if (ids.length === 0) return null;
+  // Every id the query returned, matched on the name: a filter the server
+  // did not honour must not make another tag look like this one.
+  const res = await _xCall<{ list?: readonly StalwartSpamTagRow[] }>(
+    JMAP_STALWART, 'x:SpamTag/get', { ids }, baseUrl, env,
+  );
+  return res.list?.find((row) => row.tag === tag) ?? null;
+}
+
+/** Create or update spam tags (`create` takes full rows, `update` patches by id). */
+export async function spamTagSet(params: {
+  create?: Record<string, Record<string, unknown>>;
+  update?: Record<string, Record<string, unknown>>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartSpamTagRow>> {
+  const { create, update, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartSpamTagRow>>(
+    JMAP_STALWART, 'x:SpamTag/set', { ...(create ? { create } : {}), ...(update ? { update } : {}) }, baseUrl, env,
+  );
+}
+
 // ── BlockedIp (the ban list) ────────────────────────────────────────────────
 //
 // One row per banned address. `reason` is camelCase (`portScanning`,
