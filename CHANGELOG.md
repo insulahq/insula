@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.19-rc.1] - 2026-10-26
+
 ### Security
 
 - **Mail that fails the sender's DMARC policy is no longer delivered to the inbox.** The mail
