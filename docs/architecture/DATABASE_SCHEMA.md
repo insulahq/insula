@@ -486,8 +486,6 @@ spec:
 │ spf_provisioned      │
 │ dkim_provisioned     │
 │ dmarc_provisioned    │
-│ spam_threshold_junk  │
-│ spam_threshold_reject│
 │ created_at           │
 │ updated_at           │
 └──────────┬───────────┘
@@ -1416,10 +1414,8 @@ CREATE TABLE email_domains (
   spf_provisioned INT NOT NULL DEFAULT 0,
   dkim_provisioned INT NOT NULL DEFAULT 0,
   dmarc_provisioned INT NOT NULL DEFAULT 0,
-  -- spam_threshold_junk / spam_threshold_reject: retired, never applied by the
-  -- mail server (its threshold is server-wide); dropped later (ROADMAP R47).
-  spam_threshold_junk DECIMAL(4,1) NOT NULL DEFAULT 5.0,
-  spam_threshold_reject DECIMAL(4,1) NOT NULL DEFAULT 10.0,
+  -- spam_threshold_junk / spam_threshold_reject: dropped by migration 0165
+  -- (never applied by the mail server; its threshold is server-wide).
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 

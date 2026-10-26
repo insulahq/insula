@@ -46,8 +46,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   server. A change there did nothing. They are gone from both panels and from the email-domain
   API: `spam_threshold_junk` / `spam_threshold_reject` on update are ignored, and
   `spamThresholdJunk` / `spamThresholdReject` are no longer returned. No production domain had
-  changed them. The database columns go in a later release (ROADMAP R47), and tenant backups
-  restore without them.
+  changed them. Migration 0165 drops the two database columns in this same release, and tenant
+  backups taken before it restore without them. **During the upgrade**, until the rollout has
+  replaced the last API pod of the previous release, those old pods' email pages and the
+  email-domain reads of their mail jobs fail with "column does not exist" — a few minutes, and
+  it clears by itself.
 
 ## [2026.10.18] - 2026-10-25
 
