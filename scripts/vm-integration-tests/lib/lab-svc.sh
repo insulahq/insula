@@ -110,11 +110,20 @@ chown 1001:100 "$D/sftp"
 # set, and every SFTP login failed. A container made under the old name is
 # replaced; the upload directory is the same bind mount.
 SFTP_USER=sftpbackup
-if have sftp && ! docker inspect sftp --format '{{range .Args}}{{.}}{{"\n"}}{{end}}' | grep -q "^${SFTP_USER}:"; then
+# A bounded open-files limit. Inherited from containerd (LimitNOFILE=infinity)
+# it is ~1e9, and the image's OpenSSH 8.4 closes every possible fd before a
+# chrooted internal-sftp session starts — there is no /proc in the chroot to
+# list the open ones — so each SFTP login spun a CPU for many minutes before
+# the server sent its SFTP version: the backup shim bound to this target never
+# listened. A container made under the old name or without the limit is
+# replaced; the upload directory is the same bind mount.
+SFTP_NOFILE=65536
+if have sftp && { ! docker inspect sftp --format '{{range .Args}}{{.}}{{"\n"}}{{end}}' | grep -q "^${SFTP_USER}:" \
+    || ! docker inspect sftp --format '{{range .HostConfig.Ulimits}}{{.Name}}={{.Hard}}{{"\n"}}{{end}}' | grep -qx "nofile=${SFTP_NOFILE}"; }; then
   docker rm -f sftp >/dev/null
 fi
-have sftp || docker run -d --name sftp --restart=always -p 2222:22 -v "$D/sftp:/home/${SFTP_USER}/upload" \
-  "$LAB_SFTP_IMAGE" "${SFTP_USER}:${SFTP_PW}:1001:100:upload"
+have sftp || docker run -d --name sftp --restart=always --ulimit "nofile=${SFTP_NOFILE}:${SFTP_NOFILE}" -p 2222:22 \
+  -v "$D/sftp:/home/${SFTP_USER}/upload" "$LAB_SFTP_IMAGE" "${SFTP_USER}:${SFTP_PW}:1001:100:upload"
 chmod 0777 "$D/smb"
 have samba || docker run -d --name samba --restart=always --network host -v "$D/smb:/share" "$LAB_SMB_IMAGE" \
   -p -u "backup;${SMB_PW}" -s "backups;/share;yes;no;no;backup;backup" -w WORKGROUP

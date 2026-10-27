@@ -605,14 +605,35 @@ const FAILING_WAIT_REASONS = new Set([
   'CrashLoopBackOff', 'CreateContainerConfigError', 'ImagePullBackOff', 'ErrImagePull', 'RunContainerError',
 ]);
 
+/**
+ * A container that runs but is not Ready and has already been restarted. The
+ * launcher marks the shim Ready only once rclone listens, and stops a launch
+ * that does not listen within its deadline — what an upstream that never
+ * answers looks like (it holds every class). Between two such launches the
+ * pod is Running, not crash-looping, so the waiting reasons above miss it.
+ */
+const NOT_SERVING = 'NotServing';
+
 interface ShimPodShape {
   readonly metadata?: { readonly name?: string; readonly annotations?: Record<string, string> };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
     readonly containerStatuses?: ReadonlyArray<{
-      readonly state?: { readonly waiting?: { readonly reason?: string } };
+      readonly ready?: boolean;
+      readonly restartCount?: number;
+      readonly state?: { readonly waiting?: { readonly reason?: string }; readonly running?: unknown };
     }>;
   };
+}
+
+function failingReason(pod: ShimPodShape): string | null {
+  const containers = pod.status?.containerStatuses ?? [];
+  const waiting = containers
+    .map((c) => c.state?.waiting?.reason)
+    .find((r): r is string => !!r && FAILING_WAIT_REASONS.has(r));
+  if (waiting) return waiting;
+  const notServing = containers.some((c) => c.state?.running !== undefined && c.ready === false && (c.restartCount ?? 0) > 0);
+  return notServing ? NOT_SERVING : null;
 }
 
 /** The config-hash the shim DaemonSet's pod template currently carries (null if unknown). */
@@ -648,11 +669,9 @@ export async function findFailingShimPods(
   const out: FailingShimPod[] = [];
   for (const pod of res.items ?? []) {
     if (pod.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] !== configHash) continue;
-    const waiting = (pod.status?.containerStatuses ?? [])
-      .map((c) => c.state?.waiting?.reason)
-      .find((r): r is string => !!r && FAILING_WAIT_REASONS.has(r));
-    if (waiting) {
-      out.push({ pod: pod.metadata?.name ?? '?', node: pod.spec?.nodeName ?? '?', reason: waiting });
+    const reason = failingReason(pod);
+    if (reason) {
+      out.push({ pod: pod.metadata?.name ?? '?', node: pod.spec?.nodeName ?? '?', reason });
     }
   }
   return out;
@@ -664,7 +683,11 @@ export function describeFailingShim(className: string, failing: readonly Failing
   const reasons = [...new Set(failing.map((f) => f.reason))].sort().join(', ');
   return `The new ${className} backup target did not come up: the backup shim is failing to start on ${nodes} (${reasons}). `
     + `Backups from ${failing.length === 1 ? 'that node' : 'those nodes'} are not running; nodes that have not rolled yet still use the previous target. `
-    + 'Usually the target is unreachable, or its endpoint, bucket or credentials are wrong — check the target and test it, or bind the previous target again.';
+    + 'Usually the target is unreachable, or its endpoint, bucket or credentials are wrong'
+    + (failing.some((f) => f.reason === NOT_SERVING)
+      ? ', or it accepts the connection and never answers (an SFTP server that does not start its SFTP session)'
+      : '')
+    + ' — check the target and test it, or bind the previous target again.';
 }
 
 /** What the pipeline reads off a reconcile: its state, and the error when it has one. */

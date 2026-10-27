@@ -135,8 +135,10 @@ runcmd:
   - "docker run -d --name s3 --restart=always --network host -v /var/lib/s3:/data -e ROOT_ACCESS_KEY_ID=${MINIO_USER} -e ROOT_SECRET_ACCESS_KEY=${MINIO_PW} versity/versitygw:v1.8.0 --port :9000 posix /data"
   - "for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.74.1 mkdir :s3:${MINIO_BUCKET} --s3-provider Other --s3-endpoint http://127.0.0.1:9000 --s3-access-key-id ${MINIO_USER} --s3-secret-access-key ${MINIO_PW} && break || sleep 2; done"
   # SFTP (atmoz/sftp) — user ${SFTP_USER}, share /upload. Bridge-mapped to :2222 so it does
-  # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password). ---
-  - "docker run -d --name sftp --restart=always -p 2222:22 atmoz/sftp:latest ${SFTP_USER}:${SFTP_PW}:::upload"
+  # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password).
+  # Bounded nofile: under containerd's ~1e9 default the chrooted internal-sftp closes
+  # every possible fd first and answers only minutes later (lib/lab-svc.sh). ---
+  - "docker run -d --name sftp --restart=always --ulimit nofile=65536:65536 -p 2222:22 atmoz/sftp:latest ${SFTP_USER}:${SFTP_PW}:::upload"
   # CIFS/SMB (dperson/samba) — user ${SMB_USER}, writable share 'backups' at /share on :445. ---
   - "mkdir -p /srv/smb && chmod 0777 /srv/smb"
   - "docker run -d --name samba --restart=always --network host -v /srv/smb:/share dperson/samba:latest -p -u '${SMB_USER};${SMB_PW}' -s 'backups;/share;yes;no;no;${SMB_USER};${SMB_USER}' -w WORKGROUP"

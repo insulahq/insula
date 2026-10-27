@@ -414,6 +414,39 @@ describe('failing shim pods after a target switch', () => {
     await expect(currentShimConfigHash(broken as never)).resolves.toBeNull();
   });
 
+  // An upstream that accepts the connection and never answers (lab SFTP: the
+  // login succeeds, the SFTP version never comes) keeps rclone from listening
+  // for EVERY class. The launcher stops that launch after its deadline, so the
+  // pod is Running-but-not-Ready after a restart — no waiting reason at all.
+  describe('a shim that runs but never serves', () => {
+    const live = (name: string, ready: boolean, restartCount: number, hash = HASH) => ({
+      metadata: { name, annotations: { 'insula.host/config-hash': hash } },
+      spec: { nodeName: 'node-1' },
+      status: { containerStatuses: [{ ready, restartCount, state: { running: { startedAt: '2026-10-27T09:45:06Z' } } }] },
+    });
+
+    it('a restarted pod that is still not Ready is failing (NotServing)', async () => {
+      await expect(findFailingShimPods(core([live('shim-a', false, 1)]) as never, HASH)).resolves.toEqual([
+        { pod: 'shim-a', node: 'node-1', reason: 'NotServing' },
+      ]);
+    });
+
+    it('a first launch still starting is not failing, nor is a restarted pod that serves again', async () => {
+      await expect(findFailingShimPods(core([live('shim-a', false, 0), live('shim-b', true, 2)]) as never, HASH)).resolves.toEqual([]);
+    });
+
+    it('an old-template pod that is not serving does not fail this switch', async () => {
+      await expect(findFailingShimPods(core([live('shim-old', false, 3, 'h-old')]) as never, HASH)).resolves.toEqual([]);
+    });
+
+    it('the description names the never-answering upstream only when that is what was seen', () => {
+      expect(describeFailingShim('tenant', [{ pod: 'shim-a', node: 'node-1', reason: 'NotServing' }]))
+        .toContain('accepts the connection and never answers');
+      expect(describeFailingShim('tenant', [{ pod: 'shim-a', node: 'node-1', reason: 'CrashLoopBackOff' }]))
+        .not.toContain('never answers');
+    });
+  });
+
   it('describes the failure with the class, the nodes and what to do', () => {
     const msg = describeFailingShim('system', [
       { pod: 'shim-b', node: 'node-2', reason: 'CrashLoopBackOff' },
