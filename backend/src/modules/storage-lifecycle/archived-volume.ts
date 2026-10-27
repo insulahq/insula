@@ -24,7 +24,8 @@
  *     first mount.
  *
  * Anything else — a volume from before the archive, one a pod has mounted,
- * one on another storage driver, one that cannot be read — is kept.
+ * one on another storage driver, one that cannot be read — is kept. A claim
+ * that is being deleted is neither: it is on its way out (claim-release.ts).
  */
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
@@ -36,6 +37,8 @@ import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
 export type ArchivedVolume =
   /** The tenant has no storage claim, as an archived tenant should. */
   | { readonly kind: 'absent' }
+  /** Being deleted: the archive's own claim, still held by a pod that names it (claim-release.ts). */
+  | { readonly kind: 'releasing' }
   /** Never written to: safe to remove. Its PersistentVolume and Longhorn volume, both null when the claim is unbound. */
   | { readonly kind: 'unused'; readonly pv: string | null; readonly longhornVolume: string | null }
   /** Left alone, and why. */
@@ -60,7 +63,7 @@ async function readOrNull<T>(call: () => Promise<T>): Promise<T | null> {
 }
 
 interface Claim {
-  readonly metadata?: { readonly creationTimestamp?: Date | string };
+  readonly metadata?: { readonly creationTimestamp?: Date | string; readonly deletionTimestamp?: Date | string };
   readonly spec?: { readonly volumeName?: string };
 }
 
@@ -84,6 +87,7 @@ export async function inspectArchivedVolume(
   const name = claimNameOf(namespace);
   const claim = await readOrNull(() => k8s.core.readNamespacedPersistentVolumeClaim({ name, namespace }) as Promise<Claim>);
   if (!claim) return { kind: 'absent' };
+  if (claim.metadata?.deletionTimestamp) return { kind: 'releasing' };
 
   if (!archivedAt) return { kind: 'kept', why: 'the tenant has no recorded archive date' };
   const created = claim.metadata?.creationTimestamp ? new Date(claim.metadata.creationTimestamp).getTime() : Number.NaN;

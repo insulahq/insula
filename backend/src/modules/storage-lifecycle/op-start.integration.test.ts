@@ -23,6 +23,8 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 const did: string[] = [];
 /** The size, in GiB, of every claim the restore asked for. */
 const claimsAskedGi: string[] = [];
+/** Run by the restore's look at the leftover volume, once: the claim starting to be deleted after the request. */
+let whenRestoreLooks: (() => void) | null = null;
 /** What asking for an operation's lock comes to: taken, held by another process, or the database not answering. */
 let claim: 'taken' | 'held elsewhere' | 'database down' = 'taken';
 
@@ -67,7 +69,11 @@ vi.mock('./fsck.js', async (orig) => ({
 }));
 vi.mock('./archived-volume.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  inspectArchivedVolume: async () => ({ kind: 'absent' }),
+  inspectArchivedVolume: async () => {
+    if (!whenRestoreLooks) return { kind: 'absent' };
+    whenRestoreLooks(); whenRestoreLooks = null;
+    return { kind: 'releasing' };
+  },
 }));
 vi.mock('../k8s-provisioner/service.js', () => ({
   applyPVC: async (_k8s: unknown, _ns: string, gi: string) => { did.push('apply claim'); claimsAskedGi.push(gi); },
@@ -92,6 +98,15 @@ vi.mock('../tenant-lifecycle/cascades.js', () => ({
     return 't-2';
   },
 }));
+// The waits for a claim to be gone, shortened: the logic is the module's own (claim-release.test.ts).
+vi.mock('./claim-release.js', async (orig) => {
+  const actual = await orig<typeof import('./claim-release.js')>();
+  return {
+    ...actual,
+    deleteClaimAndWait: (k: never, ns: string, name: string, timing: Record<string, unknown> = {}) =>
+      actual.deleteClaimAndWait(k, ns, name, { ...timing, timeoutMs: 50, pollMs: 5 }),
+  };
+});
 // The node the restore runs on: the pin (restore-placement.test.ts covers the choice).
 vi.mock('../tenant-archive/restore-placement.js', () => ({
   chooseRestoreNode: async (_db: unknown, _k8s: unknown, t: { nodeName: string | null }, requested: string | null | undefined) =>
@@ -141,21 +156,38 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
   const db = () => getTestDb() as unknown as Database;
   let tenantId = '';
   let claimGi = 20;
+  /** The claim was deleted and is still there: Kubernetes keeps it while a placed pod names it, finished or not. */
+  let claimDeleting = false;
+  /** Pods in the tenant namespace that name its claim. */
+  let holders: Array<{ name: string; phase: string }> = [];
   const notFound = (): never => { throw Object.assign(new Error('not found'), { statusCode: 404 }); };
+  const settleClaim = (): void => { if (claimDeleting && holders.length === 0) { claimDeleting = false; claimGi = 0; } };
   const k8s = {
     apps: { listNamespacedDeployment: async () => ({ items: [] }), readNamespacedDeployment: async () => notFound() },
     batch: { listNamespacedCronJob: async () => ({ items: [] }), deleteNamespacedJob: async () => undefined },
     core: {
       listNamespacedService: async () => ({ items: [] }),
-      listNamespacedPod: async () => ({ items: [] }),
-      readNamespacedPersistentVolumeClaim: async () => (claimGi > 0
+      listNamespacedPod: async ({ namespace }: { namespace: string }) => ({
+        items: holders.map((h) => ({
+          metadata: { name: h.name },
+          spec: { nodeName: 'node-a', volumes: [{ persistentVolumeClaim: { claimName: `${namespace}-storage` } }] },
+          status: { phase: h.phase },
+        })),
+      }),
+      deleteNamespacedPod: async ({ name }: { name: string }) => { did.push(`delete pod ${name}`); holders = holders.filter((h) => h.name !== name); },
+      readNamespacedPersistentVolumeClaim: async () => { settleClaim(); return (claimGi > 0
         ? {
-          metadata: {},
+          metadata: claimDeleting ? { deletionTimestamp: new Date() } : {},
           spec: { storageClassName: 'longhorn-tenant', volumeName: 'pv-1', resources: { requests: { storage: `${claimGi}Gi` } } },
           status: { phase: 'Bound', capacity: { storage: `${claimGi}Gi` } },
         }
-        : notFound()),
-      deleteNamespacedPersistentVolumeClaim: async () => { did.push('delete claim'); claimGi = 0; },
+        : notFound()); },
+      deleteNamespacedPersistentVolumeClaim: async () => {
+        if (claimGi === 0) notFound();
+        if (!claimDeleting) did.push('delete claim');
+        claimDeleting = true;
+        settleClaim();
+      },
       createNamespacedPersistentVolumeClaim: async () => { did.push('create claim'); claimGi = 10; },
       patchNamespacedPersistentVolumeClaim: async () => { did.push('grow claim'); claimGi = 30; },
       readPersistentVolume: async () => ({ spec: { csi: { volumeAttributes: { fsType: 'xfs' } } } }),
@@ -180,7 +212,7 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     const region = await seedRegion(db());
     const plan = await seedPlan(db());
     tenantId = (await seedTenant(db(), region.id, plan.id, { status: 'suspended', suspendedAt: new Date(Date.now() - 40 * 86_400_000) })).id;
-    did.length = 0; claimsAskedGi.length = 0; claim = 'taken'; claimGi = 20;
+    did.length = 0; claimsAskedGi.length = 0; claim = 'taken'; claimGi = 20; claimDeleting = false; holders = []; whenRestoreLooks = null;
   });
 
   const tenantRow = async () => (await db().select().from(tenants).where(eq(tenants.id, tenantId)))[0];
@@ -298,6 +330,56 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     // At a size that holds them, it goes ahead.
     await finished((await restoreArchivedTenant(ctx(), tenantId, { newGi: 2 })).operationId);
     expect(claimsAskedGi).toEqual(['2']);
+  });
+
+  // A backup's finished Job pod names the claim for the Job's TTL, and
+  // Kubernetes keeps a deleted claim while it does: a restore started then
+  // wrote into the archive's dying claim (measured on lab staging).
+  const archiveClaimStillDeleting = async (pod: { name: string; phase: string }) => {
+    await archived();
+    claimGi = 20; claimDeleting = true; holders = [pod];
+  };
+
+  it('a restore removes the backup\'s finished pod that holds the archive\'s old claim, waits for the claim to go, then makes its own', async () => {
+    await archiveClaimStillDeleting({ name: 'bk-files-bkp-1-abcde', phase: 'Succeeded' });
+    const row = await finished((await restoreArchivedTenant(ctx(), tenantId)).operationId);
+    expect(row.state).toBe('idle');
+    expect(did.slice(0, 2)).toEqual(['delete pod bk-files-bkp-1-abcde', 'apply claim']);
+    expect(claimDeleting).toBe(false);
+  });
+
+  it('refuses a restore while the archive\'s old claim is held by a pod that is still running — naming it, before anything is changed', async () => {
+    await archiveClaimStillDeleting({ name: 'debug-shell', phase: 'Running' });
+    await expect(restoreArchivedTenant(ctx(), tenantId)).rejects.toMatchObject({
+      code: 'ARCHIVE_VOLUME_RELEASING', status: 409, message: expect.stringContaining('still used by debug-shell'),
+    });
+    expect(await ops()).toEqual([]);
+    expect(await tenantRow()).toMatchObject({ status: 'archived', storageLifecycleState: 'idle' });
+    expect(did).toEqual([]);
+  });
+
+  it('a claim that starts being deleted after the request was taken: the restore waits for it there too, then makes its own', async () => {
+    await archived();
+    whenRestoreLooks = () => { claimGi = 20; claimDeleting = true; holders = [{ name: 'bk-files-bkp-2-late', phase: 'Succeeded' }]; };
+    const row = await finished((await restoreArchivedTenant(ctx(), tenantId)).operationId);
+    expect(row, row.lastError ?? '').toMatchObject({ state: 'idle' });
+    expect(did.slice(0, 2)).toEqual(['delete pod bk-files-bkp-2-late', 'apply claim']);
+  });
+
+  it('an archive waits for its claim to be gone, removing a backup\'s finished pod that holds it', async () => {
+    holders = [{ name: 'bk-files-bkp-0-nightly', phase: 'Succeeded' }];
+    const row = await finished((await archiveTenant(ctx(), tenantId)).operationId);
+    expect(row).toMatchObject({ state: 'idle', progressMessage: 'Archive complete' });
+    expect(did).toEqual(['quiesce', 'capture', 'delete pod bk-files-bkp-0-nightly', 'delete claim', 'cascade']);
+    expect(claimGi).toBe(0);
+  });
+
+  it('an archive whose claim a running pod keeps still ends, and says the old volume was not removed and why', async () => {
+    holders = [{ name: 'debug-shell', phase: 'Running' }];
+    const row = await finished((await archiveTenant(ctx(), tenantId)).operationId);
+    expect(row.state).toBe('idle');
+    expect(row.progressMessage).toBe('Archive complete. The old volume was not removed: it is still used by debug-shell.');
+    expect(await tenantRow()).toMatchObject({ status: 'archived' });
   });
 
   it('writes the node the restore runs on as the tenant\'s pin, before it starts', async () => {

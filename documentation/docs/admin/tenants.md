@@ -296,6 +296,14 @@ through a temporary, read-only copy of the backup shim for that target, which
 is removed once nothing has used it for 30 minutes. The archive's target can
 not be deleted while the tenant is archived.
 
+The archive waits until the tenant's old volume is gone before it finishes,
+and a restore never writes into one that is still being removed. A pod that
+still uses the volume keeps it: a backup's finished pod is removed for that,
+but one that is still running — a shell someone opened on the volume — is not.
+The archive then ends saying the old volume was not removed and which pod
+uses it, and a restore is refused (`ARCHIVE_VOLUME_RELEASING`) until that pod
+has stopped.
+
 A restore that fails leaves the tenant archived, with its storage state
 **failed**, and every later restore is refused until that is reset. The
 archived page then shows the failed operation's error and **Reset to idle**,
