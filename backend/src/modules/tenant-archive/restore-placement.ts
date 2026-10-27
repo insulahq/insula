@@ -102,6 +102,9 @@ export async function readRestorePlacement(
   const facts = await readNodeFacts(db, k8s);
   const nodes = [...facts.values()]
     .map((f) => ({ name: f.name, problem: restoreNodeProblem(f, tier) }))
+    // A pin to a node the cluster has forgotten altogether (deleted, its row
+    // gone) is listed too: the operator sees which node it was, and why not.
+    .concat(tenant.nodeName && !facts.has(tenant.nodeName) ? [{ name: tenant.nodeName, problem: restoreNodeProblem(undefined, tier) }] : [])
     .sort((a, b) => a.name.localeCompare(b.name));
   return {
     pinnedNode: tenant.nodeName,

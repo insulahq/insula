@@ -4,7 +4,7 @@ import type { RestoreNodeFacts } from './restore-placement.js';
 const { autoPick } = vi.hoisted(() => ({ autoPick: vi.fn(async (): Promise<string | null> => 'sv2') }));
 vi.mock('../tenants/auto-pick-node.js', () => ({ autoPickWorkerNode: autoPick }));
 
-const { restoreNodeProblem, chooseRestoreNode } = await import('./restore-placement.js');
+const { restoreNodeProblem, chooseRestoreNode, readRestorePlacement } = await import('./restore-placement.js');
 
 const ok: RestoreNodeFacts = { name: 'sv1', present: true, ready: true, cordoned: false, serverOnly: false, hosting: 'all' };
 
@@ -99,5 +99,23 @@ describe('chooseRestoreNode', () => {
     autoPick.mockResolvedValueOnce(null);
     const { db, k8s } = fakes([{ name: 'sv1', ready: false }]);
     await expect(chooseRestoreNode(db, k8s, { nodeName: 'sv1', storageTier: 'local' }, null)).rejects.toMatchObject({ code: 'NO_NODE_FOR_RESTORE' });
+  });
+});
+
+describe('readRestorePlacement', () => {
+  it('lists every node with whether it can take the restore', async () => {
+    const { db, k8s } = fakes([{ name: 'sv1' }, { name: 'sv2', cordoned: true }]);
+    const p = await readRestorePlacement(db, k8s, { nodeName: 'sv1', storageTier: 'local' });
+    expect(p).toEqual({
+      pinnedNode: 'sv1', storageTier: 'local', pinProblem: null,
+      nodes: [{ name: 'sv1', problem: null }, { name: 'sv2', problem: 'is cordoned' }],
+    });
+  });
+
+  it('lists a pin to a node the cluster has forgotten, with why', async () => {
+    const { db, k8s } = fakes([{ name: 'sv2' }]);
+    const p = await readRestorePlacement(db, k8s, { nodeName: 'gone-1', storageTier: 'local' });
+    expect(p.pinProblem).toBe('is no longer part of the cluster');
+    expect(p.nodes).toEqual([{ name: 'gone-1', problem: 'is no longer part of the cluster' }, { name: 'sv2', problem: null }]);
   });
 });
