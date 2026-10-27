@@ -495,9 +495,18 @@ describe('runAndRecord', () => {
     });
 
     it('a nightly job is reported on its first failure — a second would be a day late', async () => {
+      // At noon: within the hour before 03:00 its next run IS within the hour,
+      // and it waits for a second failure by design (failure-streak.ts). On the
+      // real clock this failed one hour a day.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-27T12:00:00Z'));
       const job = makeJob({ schedule: '0 3 * * *' });
       const { db } = mockDb([RUNNING_DEPLOYMENT], job, 1);
-      await runAndRecord(db, job, { transport: failing(), interruptionCheckDelayMs: 0 });
+      try {
+        await runAndRecord(db, job, { transport: failing(), interruptionCheckDelayMs: 0 });
+      } finally {
+        vi.useRealTimers();
+      }
       expect(notifyTenantScheduledTaskFailure).toHaveBeenCalledTimes(1);
       // "failed on 1 runs in a row" says nothing — but the variable is there, or
       // the renderer's placeholder would make {{#if failedRuns}} true.

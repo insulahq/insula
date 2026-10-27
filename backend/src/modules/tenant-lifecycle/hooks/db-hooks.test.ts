@@ -249,6 +249,23 @@ describe('tenants-status-stamp hook', () => {
     expect((last.patch as { suspendedAt: unknown }).suspendedAt).toBeInstanceOf(Date);
   });
 
+  it('a suspension that ends a restore from archive also clears archivedAt', async () => {
+    const c = { ...ctx('suspended'), db: fake.db as never, restoredFromArchive: true };
+    await clientsStatusStampHook.run(c);
+    const last = fake.calls.at(-1)!;
+    expect(last.table).toBe('tenants');
+    expect(last.patch).toMatchObject({ status: 'suspended', archivedAt: null });
+    // A fresh date, not the suspension before the archive: an automatic
+    // archive counts from it, and the old one would make the tenant due at once.
+    expect((last.patch as { suspendedAt: unknown }).suspendedAt).toBeInstanceOf(Date);
+  });
+
+  it('a plain suspension leaves archivedAt alone', async () => {
+    const c = { ...ctx('suspended'), db: fake.db as never };
+    await clientsStatusStampHook.run(c);
+    expect(fake.calls.at(-1)!.patch).not.toHaveProperty('archivedAt');
+  });
+
   it('sets status=archived + archivedAt on archived', async () => {
     const c = { ...ctx('archived'), db: fake.db as never };
     await clientsStatusStampHook.run(c);

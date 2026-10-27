@@ -23,7 +23,7 @@ import { and, eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { backupComponents, backupJobs } from '../../db/schema.js';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget } from '../backup-source-shim/service.js';
 import { resolveBundleRepoLayout } from '../tenant-bundles/repo-layout.js';
 import {
   runResticLs,
@@ -146,7 +146,7 @@ export async function filesSnapshotReachable(
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
       ?? process.env.KUBECONFIG_PATH;
     const k8s = sharedK8sClients(kubeconfigPath);
-    const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+    const { target } = await resolveTenantBundleReadTarget(app.db, k8s, await bundleTargetId(app, bundleId), app.log);
     const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
     const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
 
@@ -204,7 +204,7 @@ export async function browseFilesTree(
   const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG_PATH;
   const k8s = sharedK8sClients(kubeconfigPath);
-  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  const { target } = await resolveTenantBundleReadTarget(app.db, k8s, await bundleTargetId(app, bundleId), app.log);
   const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
   const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
 
@@ -259,4 +259,11 @@ export function directChildren(
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
   });
   return out;
+}
+
+/** The target a bundle was written to — where `resolveTenantBundleReadTarget` reads it from. */
+async function bundleTargetId(app: FastifyInstance, bundleId: string): Promise<string | null> {
+  const [row] = await app.db.select({ targetConfigId: backupJobs.targetConfigId }).from(backupJobs)
+    .where(eq(backupJobs.id, bundleId)).limit(1);
+  return row?.targetConfigId ?? null;
 }

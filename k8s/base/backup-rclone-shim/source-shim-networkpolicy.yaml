@@ -1,0 +1,49 @@
+# Who may reach a SOURCE SHIM — the temporary, read-only shim platform-api
+# starts for a restore of a bundle on a backup target tenant backups are no
+# longer bound to (backend/src/modules/backup-source-shim/). Same trust as the
+# real shim (same HKDF-derived credentials), but only the restore clients:
+#
+#   platform   — platform-api itself (bundle meta.json/config reads, browse,
+#                verify)
+#   mail       — the mailbox restore Jobs
+#   tenant namespaces labelled insula.host/tenant-backup-allowed — the files
+#                and database restore Jobs (their egress side is the
+#                allow-backup-jobs-egress policy, tenant-network-policies.ts)
+#
+# Egress is not restricted: the shim reads from an operator-chosen upstream.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backup-source-shim
+  namespace: platform
+  labels:
+    app: backup-source-shim
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: backup-source-shim
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+      ports:
+        - protocol: TCP
+          port: 9000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 9000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              insula.host/tenant-backup-allowed: "true"
+      ports:
+        - protocol: TCP
+          port: 9000

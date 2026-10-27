@@ -1,22 +1,29 @@
-import { describe, it, expect } from 'vitest';
-import { getTenantArchiveInfo } from './info.js';
+import { describe, it, expect, vi } from 'vitest';
+import { backupComponents, backupConfigurations, backupJobs, storageSnapshots, tenants } from '../../db/schema.js';
+
+vi.mock('../storage-lifecycle/service.js', () => ({
+  tenantStorageGi: async (_db: unknown, t: { storageLimitOverride: string | null }) => Number(t.storageLimitOverride ?? 0) || 5,
+}));
+
+const { getTenantArchiveInfo } = await import('./info.js');
 
 /** What an archived tenant's page shows: its bundle, its expiry, and the way back. */
 
-function db(tenant: unknown, snap: unknown, job: unknown, components: unknown[] = []) {
-  let call = 0;
-  const next = () => {
-    call += 1;
-    if (call === 1) return tenant ? [tenant] : [];
-    if (call === 2) return snap ? [snap] : [];
-    if (call === 3) return job ? [job] : [];
-    return components;
+/** A database that answers each read by the table it reads. */
+function db(tenant: unknown, snap: unknown, job: unknown, components: unknown[] = [], target: unknown = null) {
+  const rowsFor = (table: unknown): unknown[] => {
+    if (table === tenants) return tenant ? [tenant] : [];
+    if (table === storageSnapshots) return snap ? [snap] : [];
+    if (table === backupJobs) return job ? [job] : [];
+    if (table === backupComponents) return components;
+    if (table === backupConfigurations) return target ? [target] : [];
+    return [];
   };
   return {
     select: () => ({
-      from: () => ({
+      from: (table: unknown) => ({
         where: () => {
-          const rows = next();
+          const rows = rowsFor(table);
           return Object.assign(Promise.resolve(rows), { orderBy: () => ({ limit: async () => rows }) });
         },
       }),
@@ -30,14 +37,42 @@ const job = (over: Record<string, unknown> = {}) => ({ id: 'bkp-1', status: 'com
 
 describe('getTenantArchiveInfo', () => {
   it('a whole archive: date, size (all components), expiry, restorable', async () => {
-    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt }, snap(), job(), [{ sizeBytes: 100 }, { sizeBytes: 23 }]), 't1');
+    const info = await getTenantArchiveInfo(
+      db({ status: 'archived', archivedAt, storageLimitOverride: '0.5', subscriptionExpiresAt: null }, snap(), job(), [{ component: 'files', sizeBytes: 100 }, { component: 'mailboxes', sizeBytes: 23 }]),
+      't1',
+    );
     expect(info).toEqual({
       archivedAt: archivedAt.toISOString(),
       bundle: { id: 'bkp-1', createdAt: archivedAt.toISOString(), sizeBytes: 123, whole: true },
       expiresAt: '2027-01-18T10:00:00.000Z',
       restorable: true,
       notRestorableReason: null,
+      filesBytes: 100,
+      storageGi: 0.5,
+      target: null,
+      placement: null,
+      subscriptionExpiresAt: null,
     });
+  });
+
+  it('names the target the archive is on, and whether tenant backups are bound to it now', async () => {
+    const tgt = { id: 'tgt-old', name: 'Old S3' };
+    const onOld = await getTenantArchiveInfo(
+      db({ status: 'archived', archivedAt }, snap(), job({ targetConfigId: 'tgt-old' }), [], tgt),
+      't1', { boundTargetId: async () => 'tgt-new' },
+    );
+    expect(onOld.target).toEqual({ id: 'tgt-old', name: 'Old S3', bound: false });
+    const onBound = await getTenantArchiveInfo(
+      db({ status: 'archived', archivedAt }, snap(), job({ targetConfigId: 'tgt-old' }), [], tgt),
+      't1', { boundTargetId: async () => 'tgt-old' },
+    );
+    expect(onBound.target?.bound).toBe(true);
+  });
+
+  it('says the subscription end, for the restore dialog', async () => {
+    const end = new Date('2026-09-30T00:00:00Z');
+    const info = await getTenantArchiveInfo(db({ status: 'archived', archivedAt, subscriptionExpiresAt: end }, snap(), job()), 't1');
+    expect(info.subscriptionExpiresAt).toBe(end.toISOString());
   });
 
   it('kept with no end date', async () => {

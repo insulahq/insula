@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { eq, and, sql, desc, lte, inArray, notInArray } from 'drizzle-orm';
 import {
   backupJobs,
+  backupComponents,
+  domains,
   tenants,
   storageSnapshots,
   storageOperations,
@@ -668,7 +670,8 @@ export async function resizeDryRun(
  * use this same number, so a 0.5 GiB plan has a 512Mi quota, and a claim
  * rounded up to 1Gi is refused by it.
  */
-async function tenantStorageGi(
+/** The tenant's size in GiB: its override, else its plan's (10 when neither says). */
+export async function tenantStorageGi(
   db: Database,
   tenant: { storageLimitOverride: string | null; planId: string },
 ): Promise<number> {
@@ -1183,6 +1186,9 @@ async function runResizeDestructive(
         // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
         // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
         await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
+        // The new claim has the storage class's one copy; an HA tenant has two.
+        const replicas = await setTierReplicas(ctx, tenantIdForBundle, namespace);
+        if (replicas) await noteOnOp(ctx.db, opId, { replicaProblem: replicas });
       }
 
       await progress('restoring', 60, 'Restoring data from pre-resize bundle');
@@ -1229,8 +1235,11 @@ async function runResizeDestructive(
         .where(eq(storageSnapshots.id, snapId));
     }
 
+    const replicaProblem = (await notedOnOp(ctx.db, opId)).replicaProblem;
     await updateOp(ctx.db, opId, {
-      state: 'idle', progressPct: 100, progressMessage: 'Resize complete', completedAt: new Date(),
+      state: 'idle', progressPct: 100,
+      progressMessage: typeof replicaProblem === 'string' ? `Resize complete, but ${replicaProblem}` : 'Resize complete',
+      completedAt: new Date(),
     });
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'idle', null);
@@ -2238,6 +2247,20 @@ async function resumeTenantLocked(
   if (tenant.status !== 'suspended') {
     throw new ApiError('NOT_SUSPENDED', 'Tenant is not suspended', 409);
   }
+  // The hourly expiry check suspends every active tenant past its
+  // subscription end (subscriptions/expiry-checker.ts, the same `<`): a
+  // tenant reactivated past it was suspended again within the hour, and told
+  // so twice. A restored archive comes back suspended, and is the case this
+  // meets most.
+  if (tenant.subscriptionExpiresAt && tenant.subscriptionExpiresAt.getTime() < Date.now()) {
+    throw new ApiError(
+      'SUBSCRIPTION_EXPIRED',
+      `The tenant's subscription ended on ${tenant.subscriptionExpiresAt.toISOString().slice(0, 10)}; reactivated, it would be suspended again within the hour`,
+      409,
+      { subscriptionExpiresAt: tenant.subscriptionExpiresAt.toISOString() },
+      'Set a new expiry date under Limits → Subscription, then reactivate.',
+    );
+  }
 
   const opId = uuid();
   await ctx.db.transaction(async (tx) => {
@@ -2811,19 +2834,36 @@ async function deleteAllDeploymentsCronJobsServices(k8s: K8sClients, namespace: 
 }
 
 /**
- * Restore an archived tenant from their most recent pre-archive snapshot.
- * Creates a new PVC (default: the tenant's own size, as provisioning and its
- * storage quota have it; admin can override),
- * extracts the tarball, flips tenant.status back to 'active'. Deployments
- * are NOT automatically redeployed — the caller should trigger the normal
- * deployment reconciler after restore.
+ * Restore an archived tenant from its archive bundle (its newest pre-archive
+ * snapshot). The tenant comes back SUSPENDED (an operator decision):
+ * its data, applications (stopped), DNS zones, mail domains and mailboxes are
+ * back, its sites show the suspended page and its mail is shut until it is
+ * reactivated. See `runRestoreArchive` for the steps.
+ *
+ *   - `newGi`: the size of the new volume. Default: the tenant's own size, as
+ *     provisioning and its storage quota have it. Larger raises the tenant's
+ *     storage to it; smaller than the archive's files is refused.
+ *   - `nodeName`: the node it comes back on (tenant-archive/restore-placement.ts).
+ *     Undefined keeps the pin, null is Auto; a node the restore cannot use is
+ *     refused, saying why.
  */
 export async function restoreArchivedTenant(
   ctx: ServiceCtx,
   tenantId: string,
-  params: { newGi?: number; triggeredByUserId?: string | null } = {},
+  params: { newGi?: number; nodeName?: string | null; triggeredByUserId?: string | null } = {},
 ): Promise<{ operationId: string; snapshotId: string }> {
   return withTenantLock(ctx.db, tenantId, () => startRestoreArchived(ctx, tenantId, params));
+}
+
+const GIB = 1024 ** 3;
+
+/** The logical size of an archive bundle's files (restic `total_bytes_processed`); 0 when unknown. */
+async function archiveFilesBytes(db: Database, archivePath: string | null): Promise<number> {
+  const bundleId = archivePath?.startsWith('bundle:') ? archivePath.slice('bundle:'.length) : null;
+  if (!bundleId || bundleId === 'pending') return 0;
+  const [files] = await db.select({ sizeBytes: backupComponents.sizeBytes }).from(backupComponents)
+    .where(and(eq(backupComponents.backupJobId, bundleId), eq(backupComponents.component, 'files'))).limit(1);
+  return Number(files?.sizeBytes ?? 0);
 }
 
 async function startRestoreArchived(
@@ -2844,23 +2884,72 @@ async function startRestoreArchived(
     throw new ApiError('NO_ARCHIVE_SNAPSHOT', 'No ready pre-archive snapshot found — the archive window may have expired', 404);
   }
 
+  // The size, before anything is changed: a volume the files cannot fit in
+  // fails an hour into the restore, with the tenant's storage state failed.
+  // The bound is the files' logical size, with no margin for the filesystem:
+  // a volume of the tenant's own size held them before the archive, so the
+  // same size must be allowed. The dialog warns past 90% fill.
+  const ownGi = await tenantStorageGi(ctx.db, tenant);
+  const targetGi = params.newGi ?? ownGi;
+  const neededBytes = await archiveFilesBytes(ctx.db, snap.archivePath);
+  if (neededBytes > targetGi * GIB) {
+    throw new ApiError(
+      'RESTORE_VOLUME_TOO_SMALL',
+      `The archive holds ${(neededBytes / GIB).toFixed(2)} GiB of files; a ${targetGi} GiB volume cannot take them`,
+      409,
+      { neededBytes, targetGi },
+      'Restore with a larger volume size.',
+    );
+  }
+
+  // The node, before anything is changed: one that is down, gone or no longer
+  // takes tenants is refused here, not after the restore Job waited for it.
+  const { chooseRestoreNode } = await import('../tenant-archive/restore-placement.js');
+  const nodeName = await chooseRestoreNode(ctx.db, ctx.k8s, tenant, params.nodeName);
+
   const opId = uuid();
-  const targetGi = params.newGi ?? await tenantStorageGi(ctx.db, tenant);
   await ctx.db.transaction(async (tx) => {
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'restore',
       state: 'replacing', progressPct: 0, progressMessage: 'Recreating PVC',
       snapshotId: snap.id,
-      params: { fromSnapshot: snap.id, targetGi, [AWAITING_LOCK]: true },
+      params: { fromSnapshot: snap.id, targetGi, nodeName, setQuota: targetGi !== ownGi, [AWAITING_LOCK]: true },
       triggeredByUserId: params.triggeredByUserId ?? null,
     });
     await tx.update(tenants)
-      .set({ storageLifecycleState: 'replacing', activeStorageOpId: opId })
+      .set({
+        storageLifecycleState: 'replacing',
+        activeStorageOpId: opId,
+        // The restore Job and the applications run where the pin says.
+        nodeName,
+        // Another size is the tenant's size from now on — what its quota, a
+        // later resize and the next restore read.
+        ...(targetGi !== ownGi ? { storageLimitOverride: String(targetGi) } : {}),
+      })
       .where(eq(tenants.id, tenantId));
   });
 
   await beginOp(ctx.db, opId, tenantId, 'restore', () => runRestoreArchive(ctx, opId, snap.id, snap.archivePath, tenant.kubernetesNamespace, targetGi));
   return { operationId: opId, snapshotId: snap.id };
+}
+
+/**
+ * An HA-tier tenant's volume holds two copies. The tenant storage class makes
+ * one, and every path that re-creates the volume — a restore from archive, a
+ * destructive resize — left it at that: an HA tenant on one copy, still shown
+ * as HA. Provisioning sets the second; so does this. Returns what went wrong,
+ * for the operation's message; never throws.
+ */
+async function setTierReplicas(ctx: RunCtx, tenantId: string, namespace: string): Promise<string | null> {
+  const [t] = await ctx.db.select({ storageTier: tenants.storageTier }).from(tenants).where(eq(tenants.id, tenantId));
+  if (t?.storageTier !== 'ha') return null;
+  try {
+    const { patchTenantVolumeReplicas } = await import('../k8s-provisioner/service.js');
+    await patchTenantVolumeReplicas(ctx.k8s, namespace, 2);
+    return null;
+  } catch (err) {
+    return `the volume's second copy was not requested (${err instanceof Error ? err.message : String(err)}) — set the storage tier again from the tenant page`;
+  }
 }
 
 /**
@@ -2931,11 +3020,25 @@ async function resolveRestoreStore(
 }
 
 /**
- * Bring an archived tenant's files back. Can be run again from the top after
- * the process that ran it died (`resumed`): the claim is left alone when it is
- * there, the restore Job the dead process started is waited for rather than
- * started a second time, and a tenant that already reads restored is not put
- * through the restore again — its cascades are finished, not repeated.
+ * Bring an archived tenant back — suspended. Can be run again from the top
+ * after the process that ran it died (`resumed`): the claim is left alone when
+ * it is there, the restore Job the dead process started is waited for rather
+ * than started a second time, and a tenant that already reads suspended is not
+ * put through the restore again — its cascades are finished, not repeated.
+ *
+ *   1. the volume, at the size asked for (the storage quota raised first when
+ *      that is larger), on the tenant's storage tier (two copies for HA);
+ *   2. the files, from the archive bundle — read from the target it was
+ *      written to (a read-only source shim when that is not the one tenant
+ *      backups are bound to now);
+ *   3. for an archive taken whole: the DNS zones, the mail domains and the
+ *      mailboxes with their mail, and every application, deployed STOPPED;
+ *   4. the suspension's record — what Reactivate scales back to;
+ *   5. the tenant's ingress routes, rebuilt while it still reads archived
+ *      (a suspended tenant's are never rebuilt), so that
+ *   6. the `suspended` transition, from the archive (applySuspendedFromArchive),
+ *      puts every site on the suspended page, shuts its mail and stamps it
+ *      suspended — and the tenant is told its account was restored.
  */
 async function runRestoreArchive(
   ctx: RunCtx,
@@ -2970,8 +3073,10 @@ async function runRestoreArchive(
     const [tenant] = await ctx.db.select({ status: tenants.status, archivedAt: tenants.archivedAt }).from(tenants).where(eq(tenants.id, tenantId));
     // The files are back and the tenant has been told so: a run picked up
     // here has only the bookkeeping left. Restoring again would write the
-    // archive over whatever the tenant has done since.
-    if (!(resumed && tenant?.status !== 'archived')) {
+    // archive over whatever has been done since.
+    const restoredAlready = resumed && tenant?.status !== 'archived';
+    const problems: string[] = [];
+    if (!restoredAlready) {
       // A volume may be there all the same: the empty one an earlier release's
       // integrity sweep created for every archived tenant, of a size it picked.
       // `applyPVC` leaves an existing claim alone, so the restore would go into
@@ -2983,10 +3088,20 @@ async function runRestoreArchive(
       await guard.stillMine();
       if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
 
+      // A volume of another size than the tenant had (`setQuota`): the
+      // namespace's storage quota still holds the old one, and refuses a
+      // larger claim (PROVISION_QUOTA_EXCEEDED). The namespace holds no volume
+      // here, so a smaller quota is never below what is in use.
+      if ((await notedOnOp(ctx.db, opId)).setQuota === true) {
+        await setStorageQuota(ctx.k8s, namespace, newGi);
+      }
+
       const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
       const storageClass = selectTenantStorageClass(namespace);
       await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
       await guard.stillMine();
+      const replicas = await setTierReplicas(ctx, tenantId, namespace);
+      if (replicas) problems.push(`Storage: ${replicas}`);
       await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
       // The PVC was just recreated above; restore the bundle's files into it.
@@ -3007,8 +3122,7 @@ async function runRestoreArchive(
     // One from before — a files-only bundle, its mailboxes deleted with their
     // rows — brings back the files only, as it always did.
     const whole = await isWholeArchive(ctx.db, bundleId);
-    const problems: string[] = [];
-    if (whole && !(resumed && tenant?.status !== 'archived')) {
+    if (whole && !restoredAlready) {
       const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '';
       await guard.stillMine();
       await updateOp(ctx.db, opId, { progressPct: 55, progressMessage: 'Publishing the DNS zones again' });
@@ -3021,43 +3135,79 @@ async function runRestoreArchive(
       const { restoreTenantMail } = await import('../tenant-archive/restore-mail.js');
       const mail = await restoreTenantMail(ctx.db, tenantId, bundleId, encryptionKey);
       problems.push(...mail.failures.map((f) => `Mail: ${f}`));
-    }
 
-    // Phase A1: dispatch the explicit `restored` transition so the
-    // hook_runs audit trail records this as restore-from-archive
-    // rather than plain unsuspend. tenants-status-stamp hook writes
-    // status='active' + clears archivedAt; here we only clear the
-    // storage-lifecycle state. Before the operation reads complete: one
-    // that died between the two would otherwise be an ended operation on a
-    // tenant still archived, which nothing picks up.
-    await guard.stillMine();
-    const cascades = await import('../tenant-lifecycle/cascades.js');
-    if (resumed) {
-      // Also when the tenant already reads restored: its status is stamped by
-      // one hook, and the ones after it had not run if the process died there.
-      await cascades.applyOnceSince({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace, 'restored', await startOf(ctx.db, opId));
-    } else {
-      await cascades.applyRestored({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
-    }
-
-    if (whole) {
-      // After the tenant reads active again: a deploy refuses a tenant that
-      // is not.
+      // Every application, deployed stopped — the tenant comes back suspended.
       await guard.stillMine();
-      await updateOp(ctx.db, opId, { progressPct: 85, progressMessage: 'Deploying the applications again' });
+      await updateOp(ctx.db, opId, { progressPct: 80, progressMessage: 'Deploying the applications again, stopped' });
       const { redeployTenantWorkloads } = await import('../tenant-archive/restore-workloads.js');
       const apps = await redeployTenantWorkloads(ctx.db, ctx.k8s, tenantId, namespace);
       problems.push(...apps.failures.map((f) => `Application: ${f}`));
+      // The suspension's record: what Reactivate (runResume) scales back to.
+      // The tenant's newest `suspend` operation is where a resume reads it.
+      await ctx.db.insert(storageOperations).values({
+        id: uuid(), tenantId, opType: 'suspend', state: 'idle', progressPct: 100,
+        progressMessage: 'Suspended by the restore from archive',
+        params: { quiesceSnapshot: apps.resumeTo, restoredFromArchive: opId },
+        triggeredByUserId: null,
+        completedAt: new Date(),
+      });
+    }
+
+    if (!whole && !restoredAlready) {
+      // Nothing was deployed: the record says so, so Reactivate does not scale
+      // the workloads an older suspension wrote down, which are gone.
+      await ctx.db.insert(storageOperations).values({
+        id: uuid(), tenantId, opType: 'suspend', state: 'idle', progressPct: 100,
+        progressMessage: 'Suspended by the restore from archive',
+        params: { quiesceSnapshot: { deployments: [], cronJobs: [] }, restoredFromArchive: opId },
+        triggeredByUserId: null,
+        completedAt: new Date(),
+      });
+    }
+
+    if (!restoredAlready) {
+      // Rebuilt while the tenant still reads archived: a suspended tenant's
+      // routes are never rebuilt (domains/k8s-ingress.ts), and the suspend
+      // below only redirects routes that are there. Its domains active first,
+      // as the `active` hooks set them: the archive left them 'suspended', and
+      // a route's certificate is looked up only for an active domain — rebuilt
+      // without it, the suspended page was served on Traefik's default
+      // certificate (measured on DEV) until the tenant was reactivated. The
+      // `suspended` hooks below set them suspended again, as for any
+      // suspension; the routes keep their TLS.
+      try {
+        await ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.tenantId, tenantId));
+        const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+        await reconcileIngress(ctx.db, ctx.k8s, tenantId, namespace);
+      } catch (err) {
+        problems.push(`Sites: routes not rebuilt (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
+
+    // The `suspended` transition, from the archive: the stamp writes
+    // status='suspended' and clears archivedAt; here we only clear the
+    // storage-lifecycle state. Before the operation reads complete: one that
+    // died between the two would otherwise be an ended operation on a tenant
+    // still archived, which nothing picks up.
+    await guard.stillMine();
+    const cascades = await import('../tenant-lifecycle/cascades.js');
+    const { RESTORED_FROM_ARCHIVE } = await import('../tenant-lifecycle/registry/index.js');
+    if (resumed) {
+      // Also when the tenant already reads suspended: its status is stamped by
+      // one hook, and the ones after it had not run if the process died there.
+      await cascades.applyOnceSince({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace, 'suspended', await startOf(ctx.db, opId), { [RESTORED_FROM_ARCHIVE]: true });
+    } else {
+      await cascades.applySuspendedFromArchive({ db: ctx.db, k8s: ctx.k8s }, tenantId, namespace);
     }
 
     await guard.stillMine();
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
       progressMessage: !whole
-        ? 'Files restored. This archive is from before archives held everything: redeploy the applications and recreate the mailboxes from the tenant page.'
+        ? 'Files restored; the tenant is suspended. This archive is from before archives held everything: once it is reactivated, redeploy the applications and recreate the mailboxes from the tenant page.'
         : problems.length === 0
-          ? 'Restored: files, databases, applications, mailboxes with their mail, domains. Mailboxes need new passwords.'
-          : `Restored, with ${problems.length} problem(s): ${problems.slice(0, 5).join(' · ')}${problems.length > 5 ? ' …' : ''}`,
+          ? 'Restored and suspended until it is reactivated: files, databases, applications (stopped), mailboxes with their mail, domains. Mailboxes need new passwords.'
+          : `Restored and suspended, with ${problems.length} problem(s): ${problems.slice(0, 5).join(' · ')}${problems.length > 5 ? ' …' : ''}`,
       completedAt: new Date(),
     });
     await ctx.db.update(tenants).set({
@@ -3070,6 +3220,19 @@ async function runRestoreArchive(
     await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
+  }
+}
+
+/** Set the namespace's storage quota to `gi`. A namespace without one is left so. */
+async function setStorageQuota(k8s: K8sClients, namespace: string, gi: number): Promise<void> {
+  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+  try {
+    await k8s.core.patchNamespacedResourceQuota(
+      { name: `${namespace}-storage-quota`, namespace, body: { spec: { hard: { 'requests.storage': `${gi}Gi` } } } } as unknown as Parameters<typeof k8s.core.patchNamespacedResourceQuota>[0],
+      MERGE_PATCH,
+    );
+  } catch (err) {
+    if (!is404(err)) throw err;
   }
 }
 

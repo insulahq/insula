@@ -205,7 +205,7 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
     cls: 'record',
     reportsOn: 'billing',
     displayName: 'Account restored',
-    description: 'Your hosting account was reactivated.',
+    description: 'Your hosting account was restored from its archive.',
     audience: 'tenant',
     defaultSeverity: 'info',
     defaultChannels: ALL_NOTIFICATION_CHANNELS,

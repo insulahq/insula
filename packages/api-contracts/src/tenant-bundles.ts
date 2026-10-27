@@ -317,6 +317,15 @@ export const bundleSummarySchema = z.object({
   targetKind: backupTargetKindSchema,
   targetUri: z.string(),
   targetConfigId: uuidField.nullable(),
+  /**
+   * Admin views only: the target the bundle is stored on, and whether tenant
+   * backups are bound to it now. A bundle on a target they are no longer
+   * bound to still restores (read through a read-only source shim), but
+   * Insula never deletes it there — not on request, not on expiry — so it
+   * stays listed past its expiry date. Null when the bundle names no target
+   * or the bound target could not be told.
+   */
+  targetPlacement: z.object({ name: z.string(), bound: z.boolean() }).nullable().optional(),
   label: z.string().nullable(),
   description: z.string().nullable(),
   /**

@@ -26,7 +26,7 @@ import { backupComponents, backupJobs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { resolveTenantBundleReadTarget } from '../backup-source-shim/service.js';
 import { deriveResticPassword, runResticDump, type BackupTarget } from './restic-driver.js';
 import { resolveBundleRepoLayout } from './repo-layout.js';
 import { FILES_CAPTURE_ROOT } from './components/files.js';
@@ -178,7 +178,9 @@ export async function openResticExportSource(
 
   let target: BackupTarget;
   try {
-    target = await resolveShimBackupTarget(ctx.k8s.core, 'tenant');
+    // On the target the bundle was written to (a read-only source shim when
+    // tenant backups are bound elsewhere now).
+    target = (await resolveTenantBundleReadTarget(ctx.db, ctx.k8s, job.targetConfigId ?? null, console)).target;
   } catch (err) {
     throw new ApiError('CONFIG_INVALID', `Backup target unavailable: ${(err as Error).message}`, 500);
   }

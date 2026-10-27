@@ -475,6 +475,13 @@ export function buildTenantNetworkPolicies(
                   namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
                   podSelector: { matchLabels: { app: 'backup-rclone-shim' } },
                 },
+                // A restore of a bundle on a target tenant backups are no
+                // longer bound to reads through that target's read-only
+                // source shim (backup-source-shim/manifests.ts).
+                {
+                  namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
+                  podSelector: { matchLabels: { app: 'backup-source-shim' } },
+                },
               ],
               ports: [{ protocol: 'TCP', port: 9000 }],
             },

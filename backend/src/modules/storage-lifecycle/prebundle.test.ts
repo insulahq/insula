@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { buildResticRestoreJobSpec, reapPreResizeBundle, resolveTenantBundleTarget } from './prebundle.js';
+import { describe, it, expect, vi } from 'vitest';
+
+const boundTarget = vi.hoisted(() => ({ value: { known: true, id: 'tgt-1' } as { known: true; id: string | null } | { known: false; reason: 'unresolved' | 'switching' } }));
+// A store that finds nothing: a reap that reaches it deletes the row.
+vi.mock('../tenant-bundles/shim-backup-store.js', async (orig) => ({
+  ...(await orig<typeof import('../tenant-bundles/shim-backup-store.js')>()),
+  resolveShimBackupStore: vi.fn(async () => ({ kind: 's3', open: vi.fn(async () => null), delete: vi.fn() })),
+}));
+vi.mock('../tenant-bundles/unbound-target.js', async (orig) => ({
+  ...(await orig<typeof import('../tenant-bundles/unbound-target.js')>()),
+  resolveBoundTenantTarget: vi.fn(async () => boundTarget.value),
+}));
+
+const { buildResticRestoreJobSpec, reapPreResizeBundle, resolveTenantBundleTarget } = await import('./prebundle.js');
 import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -150,6 +162,38 @@ describe('reapPreResizeBundle — frozen-target DR guard', () => {
     // The throw aborts before resolveBundleStore/store.delete AND before
     // the backup_jobs row delete, so nothing is pruned.
     expect(deletes).not.toContain('backupJobs');
+  });
+
+  // Insula never writes to a target tenant backups are no longer bound to
+  // (unbound-target.ts): a pre-resize or archive bundle there is kept, and its
+  // row with it — not deleted off a target that may be a migration source.
+  it('control: on the bound target the same reap deletes the row', async () => {
+    const { db, deletes } = makeDb({
+      job: { id: 'bkp-bound', targetConfigId: 'tgt-1' },
+      cfg: { id: 'tgt-1', storageType: 's3', readOnly: false },
+      readOnly: false,
+    });
+    await expect(reapPreResizeBundle({ db, k8s, bundleId: 'bkp-bound' })).resolves.toBeUndefined();
+    expect(deletes).toContain('backupJobs');
+  });
+
+  it.each<[string, typeof boundTarget.value]>([
+    ['bound to another target', { known: true, id: 'tgt-now' }],
+    ['the binding unknown', { known: false, reason: 'unresolved' }],
+    ['the shim still switching', { known: false, reason: 'switching' }],
+  ])('keeps the bundle and its row on a writable target with %s', async (_what, bound) => {
+    boundTarget.value = bound;
+    try {
+      const { db, deletes } = makeDb({
+        job: { id: 'bkp-unbound', targetConfigId: 'tgt-1' },
+        cfg: { id: 'tgt-1', storageType: 's3', readOnly: false },
+        readOnly: false,
+      });
+      await expect(reapPreResizeBundle({ db, k8s, bundleId: 'bkp-unbound' })).resolves.toBeUndefined();
+      expect(deletes).not.toContain('backupJobs');
+    } finally {
+      boundTarget.value = { known: true, id: 'tgt-1' };
+    }
   });
 
   it('returns early (no target work) when the bundle row is gone', async () => {

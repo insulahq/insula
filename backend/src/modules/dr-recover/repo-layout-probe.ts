@@ -4,7 +4,9 @@
  *
  * Asked only when a bundle reaches this cluster without a `repoLayout` in its
  * meta.json (see `resolveForeignBundleRepoLayout`). It opens the repository
- * the restore will open — the tenant-class shim, the per-tenant password —
+ * the restore will open — on the bundle's own target (a read-only source shim
+ * when that is not the bound tenant target: a migration source), the
+ * per-tenant password —
  * and narrows `restic snapshots` to the bundle's own `bundle-id=` tag, so a
  * tenant that holds BOTH layouts (older bundles still in retention) resolves
  * per bundle, not per tenant.
@@ -13,7 +15,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import { ApiError } from '../../shared/errors.js';
-import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget } from '../backup-source-shim/service.js';
 import {
   buildResticRepoUri,
   deriveResticPassword,
@@ -25,6 +27,8 @@ export async function bundleHasPerTenantSnapshots(
   app: FastifyInstance,
   tenantId: string,
   bundleId: string,
+  /** The target the bundle is read from (the migration source); null = the bound one. */
+  targetConfigId: string | null = null,
 ): Promise<boolean> {
   const config = app.config as Record<string, unknown>;
   const secretsKeyHex = (config.PLATFORM_ENCRYPTION_KEY as string | undefined)
@@ -35,7 +39,7 @@ export async function bundleHasPerTenantSnapshots(
   const kubeconfigPath = (config.KUBECONFIG_PATH as string | undefined)
     ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
   const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-  const target = await resolveShimBackupTarget(createK8sClients(kubeconfigPath).core, 'tenant', app.log);
+  const { target } = await resolveTenantBundleReadTarget(app.db, createK8sClients(kubeconfigPath), targetConfigId, app.log);
   // The component argument is ignored by the per-tenant layout.
   const repoUri = buildResticRepoUri(target, tenantId, 'files', 'per-tenant');
 

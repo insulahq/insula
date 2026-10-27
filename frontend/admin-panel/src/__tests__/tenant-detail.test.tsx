@@ -648,6 +648,22 @@ describe('TenantDetail — archive', () => {
     expect(lastPatch()).not.toHaveProperty('archive_retention_days');
   });
 
+  it('Reactivate is off, saying why, while the subscription has ended — the hourly check would suspend it again', async () => {
+    setupMockApi({ ...suspended, subscriptionExpiresAt: '2026-01-31T00:00:00Z' });
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    const reactivate = await screen.findByTestId('reactivate-button');
+    expect(reactivate).toBeDisabled();
+    expect(reactivate).toHaveAttribute('title', expect.stringContaining('Limits → Subscription'));
+  });
+
+  it('Reactivate is on while the subscription runs, or has no end', async () => {
+    setupMockApi({ ...suspended, subscriptionExpiresAt: '2099-01-31T00:00:00Z' });
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('tenant-actions-button'));
+    expect(await screen.findByTestId('reactivate-button')).toBeEnabled();
+  });
+
   it('says what archiving removes before anyone confirms', async () => {
     setupMockApi(suspended);
     renderTenantDetail();
@@ -680,10 +696,28 @@ describe('TenantDetail — an archived tenant', () => {
       expiresAt: '2027-01-18T10:00:00Z',
       restorable: true,
       notRestorableReason: null,
+      filesBytes: 2 * 1024 * 1024 * 1024,
+      storageGi: 5,
+      target: null,
+      placement: {
+        pinnedNode: 'sv1', storageTier: 'local', pinProblem: null,
+        nodes: [{ name: 'sv1', problem: null }, { name: 'sv2', problem: null }, { name: 'sv3', problem: 'is cordoned' }],
+      },
+      subscriptionExpiresAt: null,
       ...over,
     },
   });
-  const withArchive = (body: unknown) => setupMockApi(archived, (path) => (path.endsWith('/archive') ? Promise.resolve(body) : undefined));
+  /** The restore the dialog sent, or an error the API answers it with. */
+  let restoreAnswer: () => Promise<unknown> = () => Promise.resolve({ data: { operationId: 'op-r', snapshotId: 's-1' } });
+  const withArchive = (body: unknown) => setupMockApi(archived, (path, init) => {
+    if (path.endsWith('/archive')) return Promise.resolve(body);
+    if (path.endsWith('/storage/restore') && init?.method === 'POST') return restoreAnswer();
+    return undefined;
+  });
+  const lastRestore = (): Record<string, unknown> | undefined => {
+    const call = mockApiFetch.mock.calls.filter(([path, init]) => String(path).endsWith('/storage/restore') && (init as { method?: string } | undefined)?.method === 'POST').pop();
+    return call ? JSON.parse((call[1] as { body?: string }).body ?? '{}') : undefined;
+  };
 
   it('shows nothing but the archive: the notice, the bundle\u2019s date and size, its expiry, and Restore', async () => {
     withArchive(info());
@@ -705,14 +739,89 @@ describe('TenantDetail — an archived tenant', () => {
     expect(await screen.findByTestId('archive-expiry')).toHaveTextContent('with no end date');
   });
 
-  it('restores after a confirmation that says mailboxes need new passwords', async () => {
+  it('restores from a dialog that says it comes back suspended and mailboxes need new passwords, on its own node', async () => {
+    restoreAnswer = () => Promise.resolve({ data: { operationId: 'op-r', snapshotId: 's-1' } });
     withArchive(info());
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderTenantDetail();
     fireEvent.click(await screen.findByTestId('restore-archived-button'));
-    expect(confirmSpy.mock.calls[0][0]).toContain('new passwords');
-    await waitFor(() => expect(lastPatch()).toMatchObject({ status: 'active' }));
-    confirmSpy.mockRestore();
+    const said = await screen.findByTestId('restore-what-comes-back');
+    expect(said).toHaveTextContent('It comes back suspended');
+    expect(said).toHaveTextContent('new passwords');
+    expect(screen.getByTestId('restore-node-select')).toHaveValue('sv1');
+    fireEvent.click(screen.getByTestId('restore-archive-confirm'));
+    await waitFor(() => expect(lastRestore()).toEqual({ nodeName: 'sv1' }));
+    expect(lastPatch()).toBeUndefined();
+  });
+
+  it('offers only the nodes that can take it, and Auto — a node that cannot says why', async () => {
+    withArchive(info());
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    const select = await screen.findByTestId('restore-node-select');
+    const options = within(select).getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
+      ['Auto — the node with the most free storage', false],
+      ['sv1 (its node)', false],
+      ['sv2', false],
+      ['sv3 — is cordoned', true],
+    ]);
+    fireEvent.change(select, { target: { value: '__auto__' } });
+    fireEvent.click(screen.getByTestId('restore-archive-confirm'));
+    await waitFor(() => expect(lastRestore()).toEqual({ nodeName: null }));
+  });
+
+  it('a pinned node that cannot take it says why, and starts on Auto', async () => {
+    withArchive(info({ placement: { pinnedNode: 'sv1', storageTier: 'local', pinProblem: 'is down (not Ready)', nodes: [{ name: 'sv1', problem: 'is down (not Ready)' }, { name: 'sv2', problem: null }] } }));
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    expect(await screen.findByTestId('restore-pin-problem')).toHaveTextContent('Its node sv1 is down (not Ready)');
+    expect(screen.getByTestId('restore-node-select')).toHaveValue('__auto__');
+  });
+
+  it('refuses a size the archive\'s files cannot fit in, and says a larger one becomes the tenant\'s size', async () => {
+    withArchive(info());
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    const sizeInput = await screen.findByTestId('restore-size-input');
+    expect(sizeInput).toHaveValue(5);
+    fireEvent.change(sizeInput, { target: { value: '1.5' } });
+    expect(screen.getByTestId('restore-size-invalid')).toHaveTextContent('Between 2 and 1000 GiB');
+    expect(screen.getByTestId('restore-archive-confirm')).toBeDisabled();
+    fireEvent.change(sizeInput, { target: { value: '2.1' } });
+    expect(screen.getByTestId('restore-size-tight')).toBeInTheDocument();
+    expect(screen.getByTestId('restore-size-changes')).toHaveTextContent('becomes 2.1 GiB');
+    fireEvent.change(sizeInput, { target: { value: '5' } });
+    expect(screen.queryByTestId('restore-size-changes')).toBeNull();
+    fireEvent.change(sizeInput, { target: { value: '8' } });
+    expect(screen.getByTestId('restore-size-changes')).toHaveTextContent('becomes 8 GiB');
+    fireEvent.click(screen.getByTestId('restore-archive-confirm'));
+    await waitFor(() => expect(lastRestore()).toEqual({ nodeName: 'sv1', newGi: 8 }));
+  });
+
+  it('says when the archive is on a target tenant backups no longer use', async () => {
+    withArchive(info({ target: { id: 'tgt-old', name: 'Old S3', bound: false } }));
+    renderTenantDetail();
+    expect(await screen.findByTestId('archive-target')).toHaveTextContent('Stored on Old S3 — not the target tenant backups use now');
+    fireEvent.click(screen.getByTestId('restore-archived-button'));
+    expect(await screen.findByTestId('restore-other-target')).toHaveTextContent('temporary, read-only connection');
+  });
+
+  it('warns that a subscription that has ended blocks the reactivation after', async () => {
+    withArchive(info({ subscriptionExpiresAt: '2026-01-31T00:00:00Z' }));
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    expect(await screen.findByTestId('restore-subscription-ended')).toHaveTextContent('reactivation is refused until then');
+  });
+
+  it('a restore the API refuses says why in the dialog, which stays open', async () => {
+    restoreAnswer = () => Promise.reject(Object.assign(new Error('The tenant\'s node sv1 is down (not Ready)'), { code: 'RESTORE_NODE_UNAVAILABLE', status: 409 }));
+    withArchive(info());
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('restore-archived-button'));
+    fireEvent.click(await screen.findByTestId('restore-archive-confirm'));
+    expect(await screen.findByTestId('restore-archive-error')).toHaveTextContent('down');
+    expect(screen.getByTestId('restore-archive-dialog')).toBeInTheDocument();
+    restoreAnswer = () => Promise.resolve({ data: { operationId: 'op-r', snapshotId: 's-1' } });
   });
 
   it('an archive from before archives held everything says restore brings back the files only', async () => {

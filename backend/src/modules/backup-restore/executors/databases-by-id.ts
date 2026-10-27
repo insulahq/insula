@@ -54,6 +54,7 @@ import {
   deployments,
   catalogEntries,
   backupComponents,
+  backupJobs,
   type RestoreItem,
 } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
@@ -68,7 +69,7 @@ import {
 import { withFileManagerLease } from '../../file-manager/lease.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
 import { buildFilesPathsJobSpec, resolveRestoreJobNode, waitForJob } from './files-paths.js';
-import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../../backup-source-shim/service.js';
 import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../../tenant-bundles/restic-driver.js';
 import {
   FILES_CAPTURE_ROOT,
@@ -630,7 +631,12 @@ async function fetchPredumpsFromSnapshot(args: {
     ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!secretsKeyHex) throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
 
-  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  // Read from the target the bundle was written to (a read-only source shim
+  // when tenant backups are bound elsewhere now).
+  const [bundleRow] = await app.db.select({ targetConfigId: backupJobs.targetConfigId }).from(backupJobs)
+    .where(eq(backupJobs.id, bundleId)).limit(1);
+  const read = await resolveTenantBundleReadTarget(app.db, k8s, bundleRow?.targetConfigId ?? null, app.log);
+  const { target } = read;
   const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
   const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(app.db, bundleId));
   const env = buildResticEnv(target);
@@ -659,6 +665,7 @@ async function fetchPredumpsFromSnapshot(args: {
       jobName, namespace, pvcName, tenantId, cartId: args.cartId, itemId: args.itemId,
       credsSecretName, snapshotId: comp.sha256, includePaths,
       jobImage: TOOLS_IMAGE_DEFAULT, pinToNode, activeDeadlineSeconds: 10 * 60,
+      extraLabels: sourceShimJobLabels(read),
     });
     const createdJob = await (k8s.batch as unknown as {
       createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;

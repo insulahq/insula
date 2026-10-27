@@ -15,7 +15,7 @@
 | Suspend                   | Status dropdown → suspended                                    | PATCH /tenants/:id { status: 'suspended' }                  |
 | Resume                    | Status dropdown → active                                       | PATCH /tenants/:id { status: 'active' }                     |
 | Archive (suspended only)  | Actions → Archive… (days, or Never expire)                     | PATCH /tenants/:id { status: 'archived', archive_retention_days \| archive_never_expires } |
-| Restore from archive      | Archived tenant page → Restore archived tenant                 | PATCH /tenants/:id { status: 'active' }                     |
+| Restore from archive      | Archived tenant page → Restore archived tenant… (node, size)   | POST /admin/tenants/:id/storage/restore { nodeName?, newGi? } (PATCH status 'suspended'/'active' too) |
 | Manual snapshot           | Storage / Snapshots → "Take snapshot"                          | POST /tenants/:id/snapshots (on-server Longhorn CSI)        |
 | Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/tenants/:id/storage/clear-failed                |
 | Hard delete               | Top-bar → Delete                                               | DELETE /tenants/:id                                         |
@@ -37,7 +37,7 @@ The flows are intentionally *not* symmetric:
 | Suspend           | Reversible    | Workloads scaled to 0; resume restores prior replica counts   |
 | Resume            | Reversible    | unquiesce reads QuiesceSnapshot from the suspend op row       |
 | Archive           | Destructive   | Suspended tenants only. Final full bundle kept off-site (default 90d, or no end date); then almost a delete — see *Archive and restore* |
-| Restore (archived → active) | Destructive | Everything back from the bundle; mailboxes need new passwords |
+| Restore (archived → suspended) | Destructive | Everything back from the bundle, suspended until reactivated; mailboxes need new passwords |
 | Hard delete       | Irreversible  | Drops namespace, snapshots, DB rows                           |
 
 ## Endpoint catalogue
@@ -55,8 +55,8 @@ are still called by:
 | POST /admin/tenants/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/resume             | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/archive            | PATCH /tenants status:archived (`retentionDays`, `neverExpires`) |
-| GET  /admin/tenants/:id/archive                    | The archived tenant page: bundle, size, expiry, restorable |
-| POST /admin/tenants/:id/storage/restore            | PATCH /tenants status:active (when archived)     |
+| GET  /admin/tenants/:id/archive                    | The archived tenant page + restore dialog: bundle, size, expiry, restorable, files size, storage size, target, nodes, subscription end |
+| POST /admin/tenants/:id/storage/restore            | The restore dialog (`nodeName`, `newGi`); PATCH /tenants status:suspended or active (when archived) |
 | POST /admin/tenants/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
 | GET  /admin/storage/operations/:opId               | OperationProgressModal poll                      |
 
@@ -104,17 +104,31 @@ never deleted automatically, and the automation card's delete step skips it. New
 (409 `TENANT_ARCHIVED`), so the archive bundle stays its newest; its older
 bundles expire as usual. Backups → Tenants keeps the tenant, marked Archived.
 
-**Restore** of a whole archive brings back, in order: a fresh volume with the
-bundle's files; the DNS zones and their records (SOA and apex NS come with
+**Restore** first checks, before anything changes, the node it runs on
+(`tenant-archive/restore-placement.ts`: the pin, another node, or Auto — never
+one that is gone, down, not hosting tenants, cordoned, server-only, or
+pinned-only for an HA tenant; the choice is written as the pin) and the size
+(never below the archive's files; a larger one becomes the tenant's override,
+and the namespace's storage quota is raised to it). It then brings back, in
+order: a fresh volume, with the HA tier's second copy, holding the bundle's
+files — read from the target the bundle was written to, through a read-only
+source shim when that is not the bound tenant target
+(`backup-source-shim/`); the DNS zones and their records (SOA and apex NS come with
 the zone; a rebuilt mail domain's MX, SPF, DKIM, DMARC, SRV and webmail
 records are left out, its rebuild writes them afresh); each mail domain (a
 new DKIM key, published); each mailbox, its mail imported from the bundle
 (a restore job of the tenant, in the restore history); the account of every
 mailbox the bundle does not hold, from its row — the platform's `postmaster@`
-intake, which `dmarc@` is an alias of, is never captured; the `restored`
-hooks (status active, aliases' lists, ingress); then
-every application deployed again and set back to the replica count it had
-before the suspension (0 included). Mailboxes get new random passwords — the
+intake, which `dmarc@` is an alias of, is never captured; every application
+deployed again at 0 replicas with its CronJobs paused; a `suspend` operation
+holding what Reactivate scales back to (the counts the suspension before the
+archive wrote down, 0 included, else what a deploy runs); the ingress routes,
+rebuilt while the tenant still reads archived and with its domains active (a
+route's certificate is looked up only for an active domain); then the `suspended` hooks with
+`restoredFromArchive` on the transition (`applySuspendedFromArchive`): status
+suspended with a fresh `suspendedAt` and `archivedAt` cleared, sites on the
+suspended page, mail shut — and the tenant told its account was restored
+(`tenant.restored`), not that it was suspended. Mailboxes get new random passwords — the
 mail server never returns a stored one, so no archive can hold it — and the
 restore notice tells the tenant to set new ones. An archive taken before
 archives were whole (`pre_resize`, files only) restores the files only, as it

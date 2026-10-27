@@ -83,6 +83,8 @@ export interface DeployCustomInput {
    *  tenant without anyone noticing. */
   readonly nodeName: string | null;
   readonly storageTier: 'local' | 'ha' | null;
+  /** Replicas of each Deployment; 1 unless deployed stopped (0). */
+  readonly replicas?: number;
 }
 
 const TENANT_DEFAULT_PRIORITY_CLASS = 'tenant-default';
@@ -338,7 +340,7 @@ async function applyDeployment(
   const body = {
     metadata: { name, namespace: input.namespace, labels },
     spec: {
-      replicas: 1,
+      replicas: input.replicas ?? 1,
       selector: { matchLabels: selectorLabels },
       // Recreate (not RollingUpdate). Tenant workloads pin a Longhorn
       // RWO PVC; RollingUpdate would deadlock at Multi-Attach.

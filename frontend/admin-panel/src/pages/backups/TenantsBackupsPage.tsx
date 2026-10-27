@@ -621,9 +621,26 @@ function TenantBundleTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-          {rows.map((r) => (
+          {rows.map((r) => {
+            // On a target tenant backups are no longer bound to: restorable,
+            // never deleted there (by an operator or by expiry), so it stays
+            // listed past its expiry date.
+            const unbound = r.targetPlacement && !r.targetPlacement.bound ? r.targetPlacement.name : null;
+            const pastExpiry = r.expiresAt !== null && new Date(r.expiresAt).getTime() < Date.now();
+            return (
             <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-              <td className="px-2 py-1 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
+              <td className="px-2 py-1 text-xs">
+                {r.label ?? <span className="text-gray-400">unlabeled</span>}
+                {unbound && (
+                  <span
+                    className="ml-1.5 rounded bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                    data-testid={`tenant-bundle-unbound-${r.id}`}
+                    title={`Stored on ${unbound}, which tenant backups are no longer bound to. It can be restored; Insula does not delete from that target${pastExpiry ? ', so it is kept past its expiry date' : ''}.`}
+                  >
+                    {pastExpiry ? `expired · kept on ${unbound}` : `on ${unbound}`}
+                  </span>
+                )}
+              </td>
               <td className="px-2 py-1"><StatusPill status={r.status} /></td>
               <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
               <td className="px-2 py-1 text-right tabular-nums text-xs">
@@ -695,10 +712,12 @@ function TenantBundleTable({
                       onError: (e) => setRowError(e instanceof Error ? e.message : 'Delete failed'),
                     });
                   }}
-                  disabled={deleteBundle.isPending && deleteBundle.variables === r.id}
+                  disabled={unbound !== null || (deleteBundle.isPending && deleteBundle.variables === r.id)}
                   className="inline-flex items-center gap-1 rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/30"
                   data-testid={`tenant-bundle-delete-${r.id}`}
-                  title="Delete this bundle and its stored data"
+                  title={unbound
+                    ? `Stored on ${unbound}, which tenant backups are no longer bound to — Insula does not delete from it. Bind tenant backups to ${unbound} again to delete this bundle.`
+                    : 'Delete this bundle and its stored data'}
                 >
                   {deleteBundle.isPending && deleteBundle.variables === r.id
                     ? <Loader2 size={11} className="animate-spin" />
@@ -707,7 +726,8 @@ function TenantBundleTable({
                 </button>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
       {rowError && (

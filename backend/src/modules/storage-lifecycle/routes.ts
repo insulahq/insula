@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { restoreArchivedTenantRequestSchema } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -28,9 +29,7 @@ const archiveSchema = z.object({
   /** Keep the archive bundle until deleted by hand; wins over retentionDays. */
   neverExpires: z.boolean().optional(),
 });
-const restoreSchema = z.object({
-  newGi: z.number().int().min(1).max(1000).optional(),
-});
+// The archive restore's body is the shared contract (api-contracts tenant-archive.ts).
 // Restore from a RETAINED (detached, Released) volume the tenant previously
 // used — identified by the PV name + the Longhorn snapshot to revert it to.
 const restoreRetainedSchema = z.object({
@@ -194,7 +193,8 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const { getTenantArchiveInfo } = await import('../tenant-archive/info.js');
-    return success(await getTenantArchiveInfo(app.db, tenantId));
+    const k8s = createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+    return success(await getTenantArchiveInfo(app.db, tenantId, { k8s }));
   });
 
   app.post('/admin/tenants/:tenantId/storage/restore', {
@@ -202,11 +202,12 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     schema: { tags: ['Storage Lifecycle'], summary: 'Restore an archived tenant from its pre-archive snapshot', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    const parsed = restoreSchema.safeParse(request.body ?? {});
+    const parsed = restoreArchivedTenantRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     return success(await service.restoreArchivedTenant(await ctx(), tenantId, {
-      newGi: parsed.data.newGi,
+      ...(parsed.data.newGi !== undefined ? { newGi: Math.round(parsed.data.newGi * 100) / 100 } : {}),
+      ...(parsed.data.nodeName !== undefined ? { nodeName: parsed.data.nodeName } : {}),
       triggeredByUserId: userId,
     }));
   });

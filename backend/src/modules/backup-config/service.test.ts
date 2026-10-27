@@ -88,7 +88,7 @@ const S3_ROW = {
   updatedAt: new Date('2025-01-01'),
 };
 
-function createMockDb(rows: unknown[] = []) {
+function createMockDb(rows: unknown[] = [], archivedOnTarget: unknown[] = []) {
   let selectCallCount = 0;
   const selectResults = Array.isArray(rows) ? rows : [rows];
 
@@ -125,9 +125,17 @@ function createMockDb(rows: unknown[] = []) {
     return cb({ update: updateFn });
   });
 
+  // archivedTenantsOnTarget: selectDistinct → from → innerJoin ×2 → where.
+  const joinChain: { innerJoin: () => typeof joinChain; where: () => Promise<unknown[]> } = {
+    innerJoin: () => joinChain,
+    where: () => Promise.resolve(archivedOnTarget),
+  };
+  const selectDistinctFn = vi.fn().mockReturnValue({ from: () => joinChain });
+
   return {
     db: {
       select: selectFn,
+      selectDistinct: selectDistinctFn,
       insert: insertFn,
       update: updateFn,
       delete: deleteFn,
@@ -288,6 +296,18 @@ describe('deleteBackupConfig', () => {
     await deleteBackupConfig(db, 'cfg-1');
 
     expect(mocks.deleteWhere).toHaveBeenCalledOnce();
+  });
+
+  // An archived tenant exists only as its archive bundle: deleting the target
+  // it sits on would leave nothing able to find it.
+  it('refuses with BACKUP_TARGET_HOLDS_ARCHIVES while an archived tenant\'s archive is on it', async () => {
+    const { db, mocks } = createMockDb([SSH_ROW], [{ name: 'acme' }, { name: 'beta' }]);
+    await expect(deleteBackupConfig(db, 'cfg-1')).rejects.toMatchObject({
+      code: 'BACKUP_TARGET_HOLDS_ARCHIVES',
+      status: 409,
+      message: expect.stringContaining('2 archived tenants (acme, beta)'),
+    });
+    expect(mocks.deleteWhere).not.toHaveBeenCalled();
   });
 
   it('should throw BACKUP_CONFIG_NOT_FOUND for missing id', async () => {

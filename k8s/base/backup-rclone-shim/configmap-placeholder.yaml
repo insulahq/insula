@@ -54,8 +54,8 @@ data:
   # rendered rclone.conf; if any is missing / empty it sleeps (does not
   # bind :9000), but STILL reports Ready via the readiness marker so a
   # DaemonSet RollingUpdate can complete on a target-less cluster. When a
-  # target is configured it serves :9000; an idle pod serves nothing and
-  # no client connects without a target.
+  # target is configured it serves :9000 and is Ready only once it does;
+  # an idle pod serves nothing and no client connects without a target.
   launcher.sh: |
     #!/bin/sh
     set -eu
@@ -73,7 +73,8 @@ data:
     # is ALIVE and must report Ready so a DaemonSet RollingUpdate (e.g. an
     # image-pin bump) completes instead of stalling forever on an idle node
     # (the :9000-gated probe made a target-less shim un-updatable). We mark
-    # ready in BOTH the idle (sleep) and serving branches; the Service only
+    # ready in BOTH the idle (sleep) branch and the serving one — there once
+    # rclone listens on :9000 (the watchdog below); the Service only
     # carries real backup traffic once a target is configured (all pods then
     # serve :9000), so an idle-but-Ready pod is harmless — it serves nothing
     # and no client runs without a target. The `rm` clears a stale marker
@@ -183,12 +184,39 @@ data:
     # that window well under any capture→restore gap; listings are small + rare
     # during a restore, so the extra re-list cost is negligible. (:
     # broke tenant DR restore on the staging SSH-storagebox tenant store.)
+    # ─── Ready once it serves, or stop it ────────────────────────────
+    # rclone opens EVERY upstream before it binds :9000, and one that never
+    # answers holds them all: an SFTP server that accepts the login but never
+    # sends its SFTP version (OpenSSH's chrooted internal-sftp closes every
+    # possible fd first — minutes under a container's ~1e9 open-files limit)
+    # left the shim serving nothing for any class. It used to mark Ready just
+    # before exec, so that shim read healthy and a target switch to it
+    # "succeeded". Now the serving branch is Ready only once :9000 listens, and
+    # a launch not listening after STARTUP_DEADLINE seconds is stopped: the
+    # container exits, kubelet restarts it with back-off (CrashLoopBackOff, which
+    # the switch reports), and a fresh attempt retries a connection that hung.
+    STARTUP_DEADLINE=60
+    # :9000 is 2328 in /proc/net's hex, 0A is LISTEN. rclone binds [::] (tcp6)
+    # or 0.0.0.0 (tcp) depending on whether the pod has IPv6.
+    listening() { cat /proc/net/tcp6 /proc/net/tcp 2>/dev/null | grep -qE '^ *[0-9]+: [0-9A-F]+:2328 [0-9A-F]+:0000 0A '; }
+    # This shell's pid, which is rclone's once it is exec'd ($$ is Flux's escape).
+    read -r SELF _ < /proc/self/stat
+    watchdog() {
+      for _ in $(seq 1 "$STARTUP_DEADLINE"); do
+        if listening; then ready; return 0; fi
+        sleep 1
+      done
+      # Once more: it may have bound during the last sleep.
+      if listening; then ready; return 0; fi
+      log "FATAL: rclone is not serving :9000 after $STARTUP_DEADLINE s — an upstream is not answering (a target that cannot be reached, or an SFTP server that accepts the login but never starts its SFTP session). Stopping it; the pod restarts."
+      kill -TERM "$SELF" 2>/dev/null || true
+      sleep 10
+      kill -KILL "$SELF" 2>/dev/null || true
+    }
+    # Double-forked, so the watchdog belongs to tini (PID 1), which reaps it —
+    # not to rclone, which would not.
+    ( watchdog & )
     log "launching rclone serve s3 combined:"
-    # Mark Ready just before exec. There's a sub-millisecond window where the
-    # pod is Ready but rclone hasn't bound :9000 yet; backup clients (barman /
-    # restic) retry, so a first-attempt connection-refused mid-rollout is
-    # absorbed — never silent data loss.
-    ready
     # --buffer-size 1M, NOT 2M: every ranged GET pulls the requested bytes
     # PLUS up to this much read-ahead from the upstream, and the read-ahead is
     # discarded when the range ends. restic reads data one blob at a time, so

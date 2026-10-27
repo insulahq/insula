@@ -40,6 +40,13 @@ describe('notify-tenant-on-transition hook', () => {
     expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({ categoryId: 'tenant.restored' }));
   });
 
+  it('a suspension that ends a restore from archive tells the tenant it was restored, not suspended', async () => {
+    const r = await notifyOnTransitionHook.run(ctx({ transition: 'suspended', restoredFromArchive: true }) as never);
+    expect(r.status).toBe('ok');
+    expect(emitEventMock).toHaveBeenCalledTimes(1);
+    expect(emitEventMock).toHaveBeenCalledWith({}, expect.objectContaining({ categoryId: 'tenant.restored' }));
+  });
+
   it('maps archived and deleted to their categories', async () => {
     await notifyOnTransitionHook.run(ctx({ transition: 'archived' }) as never);
     expect(emitEventMock.mock.calls[0][1]).toMatchObject({ categoryId: 'tenant.archived' });

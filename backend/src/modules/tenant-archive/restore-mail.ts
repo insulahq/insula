@@ -18,8 +18,9 @@
  *      of; the intake reconciler leaves an existing row alone) is never
  *      captured, and without its account both addresses bounce.
  *
- * The aliases' lists come back with the `restored` hooks, which run after this
- * and need the domains' ids. Mail passwords do not come back: the mail server
+ * The aliases' lists come back when the tenant is reactivated (the `active`
+ * hooks need the domains' ids): a restored tenant comes back suspended, and a
+ * suspended tenant's lists are not on the mail server. Mail passwords do not come back: the mail server
  * never returns a stored password, so the archive could not hold one, and
  * each restored mailbox gets a new random secret — the restore notice tells the
  * tenant to set new passwords.

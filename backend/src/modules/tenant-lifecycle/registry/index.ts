@@ -8,6 +8,7 @@ export {
   type BlockingPolicy,
   DEFAULT_BACKOFF_MS,
   DEFAULT_MAX_ATTEMPTS,
+  RESTORED_FROM_ARCHIVE,
 } from './types.js';
 
 export {

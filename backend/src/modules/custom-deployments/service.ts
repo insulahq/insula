@@ -778,6 +778,13 @@ export async function redeployCustomDeploymentRow(
   k8s: K8sClients,
   tenantId: string,
   row: typeof deployments.$inferSelect,
+  /**
+   * `stopped`: deploy it at 0 replicas, for a tenant that is not active — a
+   * restore from archive, which brings the tenant back suspended and its
+   * applications stopped until it is reactivated (tenant-archive/
+   * restore-workloads.ts). Without it a tenant that is not active is refused.
+   */
+  opts: { readonly stopped?: boolean } = {},
 ): Promise<void> {
   if (row.source !== 'custom' || !row.customSpec) {
     throw new ApiError(
@@ -788,14 +795,15 @@ export async function redeployCustomDeploymentRow(
     );
   }
   const spec = row.customSpec as unknown as CustomDeploymentSpec;
-  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId, { allowInactive: opts.stopped === true });
   await db.update(deployments)
-    .set({ status: 'deploying', statusMessage: null, lastError: null })
+    .set({ status: opts.stopped ? 'stopped' : 'deploying', statusMessage: null, lastError: null })
     .where(eq(deployments.id, row.id));
   await deployToCluster(
     db, k8s, row.id, namespace, row.name,
     row.storagePath ?? `custom-deployment/${row.name}`,
     spec, nodeName, storageTier,
+    opts.stopped ? 0 : undefined,
   );
 }
 
@@ -1112,6 +1120,8 @@ async function deployToCluster(
   spec: CustomDeploymentSpec,
   nodeName?: string | null,
   storageTier?: 'local' | 'ha' | null,
+  /** Each Deployment's replica count; 1 unless deployed stopped (0). */
+  replicas?: number,
 ): Promise<void> {
   const hasPullCredential = await getPullCredential(db, deploymentId);
   if (hasPullCredential) {
@@ -1156,6 +1166,7 @@ async function deployToCluster(
       hasPullCredential: !!hasPullCredential,
       nodeName: nodeName ?? null,
       storageTier: storageTier ?? null,
+      ...(replicas !== undefined ? { replicas } : {}),
     });
     // Optimistic: status flips to running on the next reconciler tick
     // when k8s reports ready replicas. Until then it stays 'deploying'.
@@ -1190,7 +1201,12 @@ interface TenantContext {
   readonly storageTier: 'local' | 'ha';
 }
 
-async function loadTenantContext(db: Database, tenantId: string): Promise<TenantContext> {
+async function loadTenantContext(
+  db: Database,
+  tenantId: string,
+  /** Only for a deploy at 0 replicas (`redeployCustomDeploymentRow` stopped). */
+  opts: { readonly allowInactive?: boolean } = {},
+): Promise<TenantContext> {
   const [tenant] = await db
     .select({
       kubernetesNamespace: tenants.kubernetesNamespace,
@@ -1204,7 +1220,7 @@ async function loadTenantContext(db: Database, tenantId: string): Promise<Tenant
     throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
   // Custom deployments create/update k8s resources — block non-active tenants.
-  assertTenantActive({ id: tenantId, status: tenant.status }, 'create custom deployments');
+  if (!opts.allowInactive) assertTenantActive({ id: tenantId, status: tenant.status }, 'create custom deployments');
   return {
     namespace: tenant.kubernetesNamespace,
     nodeName: tenant.nodeName ?? null,

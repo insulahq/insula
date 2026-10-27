@@ -1785,7 +1785,15 @@ export async function redeployWithCurrentConfig(
   db: Database,
   deployment: typeof deployments.$inferSelect,
   k8s: K8sClients,
-  opts: { armPasswordReset?: boolean } = {},
+  opts: {
+    armPasswordReset?: boolean;
+    /**
+     * Deploy at this replica count instead of the row's — 0 for a restore from
+     * archive, which brings the tenant back suspended with its applications
+     * stopped until it is reactivated (tenant-archive/restore-workloads.ts).
+     */
+    replicas?: number;
+  } = {},
 ): Promise<void> {
   // A redeploy supersedes whatever the last one failed with. Without this the
   // previous failure stays on the row and keeps being rendered — the panel
@@ -1850,7 +1858,7 @@ export async function redeployWithCurrentConfig(
     namespace,
     components: resolved.components,
     volumes: resolved.volumes,
-    replicaCount: deployment.replicaCount ?? 1,
+    replicaCount: opts.replicas ?? deployment.replicaCount ?? 1,
     cpuRequest: deployment.cpuRequest,
     memoryRequest: deployment.memoryRequest,
     storageRequest,

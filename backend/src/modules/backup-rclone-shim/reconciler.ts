@@ -470,7 +470,7 @@ async function mergePatchConfigMapData(
  * failure would flip the hash, restart the shim, then flip it back and
  * restart it again.
  */
-async function readLauncherScript(core: k8s.CoreV1Api): Promise<string> {
+export async function readLauncherScript(core: k8s.CoreV1Api): Promise<string> {
   try {
     const cm = (await core.readNamespacedConfigMap({
       name: SHIM_CONFIG_CM_NAME,
