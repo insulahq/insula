@@ -1,5 +1,5 @@
-import { eq, asc } from 'drizzle-orm';
-import { backupConfigurations } from '../../db/schema.js';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import { backupConfigurations, backupJobs, storageSnapshots, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
@@ -218,7 +218,35 @@ export async function deleteBackupConfig(db: Database, id: string) {
     const { TargetFrozenError } = await import('./writable-guard.js');
     throw new TargetFrozenError(id, row.name);
   }
+  // An archived tenant exists only as its archive bundle. Deleting the target
+  // it sits on clears the bundle's link to it (ON DELETE SET NULL), and
+  // nothing could find the archive again to restore it.
+  const archives = await archivedTenantsOnTarget(db, id);
+  if (archives.length > 0) {
+    throw new ApiError(
+      'BACKUP_TARGET_HOLDS_ARCHIVES',
+      `Cannot delete '${row.name}': it holds the archive of ${archives.length} archived tenant${archives.length === 1 ? '' : 's'} (${archives.slice(0, 5).join(', ')}${archives.length > 5 ? ', …' : ''})`,
+      409,
+      { tenants: archives },
+      'Restore or delete those tenants first, or keep the target.',
+    );
+  }
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
+}
+
+/** The archived tenants whose archive bundle (a ready pre-archive snapshot) is on `targetId`. */
+export async function archivedTenantsOnTarget(db: Database, targetId: string): Promise<string[]> {
+  const rows = await db.selectDistinct({ name: tenants.name })
+    .from(storageSnapshots)
+    .innerJoin(tenants, eq(tenants.id, storageSnapshots.tenantId))
+    .innerJoin(backupJobs, sql`${storageSnapshots.archivePath} = 'bundle:' || ${backupJobs.id}`)
+    .where(and(
+      eq(tenants.status, 'archived'),
+      eq(storageSnapshots.kind, 'pre-archive'),
+      eq(storageSnapshots.status, 'ready'),
+      eq(backupJobs.targetConfigId, targetId),
+    ));
+  return rows.map((r) => r.name).sort();
 }
 
 // activateBackupConfig / deactivateBackupConfig removed —

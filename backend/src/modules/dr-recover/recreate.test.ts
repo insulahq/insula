@@ -290,7 +290,8 @@ describe('recreateTenantFromBundle — restic repository layout (ADR-061)', () =
       resolveStore: inject(makeStore(makeMeta())),
       hasPerTenantSnapshots: probe,
     });
-    expect(probe).toHaveBeenCalledWith(app, TENANT_ID, BUNDLE_ID);
+    // On the target the bundle is opened from — a migration source is not the bound one.
+    expect(probe).toHaveBeenCalledWith(app, TENANT_ID, BUNDLE_ID, 'cfg-1');
     expect((inserts[0].values as Row).repoLayout).toBe('per-tenant');
   });
 

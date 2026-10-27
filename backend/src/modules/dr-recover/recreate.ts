@@ -91,7 +91,7 @@ export interface RecreateOptions {
    * meta.json predates `repoLayout`. Production callers omit it and get
    * {@link bundleHasPerTenantSnapshots}.
    */
-  readonly hasPerTenantSnapshots?: (app: FastifyInstance, tenantId: string, bundleId: string) => Promise<boolean>;
+  readonly hasPerTenantSnapshots?: (app: FastifyInstance, tenantId: string, bundleId: string, targetConfigId: string | null) => Promise<boolean>;
 }
 
 /**
@@ -228,7 +228,7 @@ export async function recreateTenantFromBundle(
   //        and every restore of a per-tenant bundle looked in
   //        `restic-files/<id>` — "repository does not exist". ──────────────
   const probe = opts.hasPerTenantSnapshots ?? bundleHasPerTenantSnapshots;
-  const repoLayout = await resolveForeignBundleRepoLayout(meta, () => probe(app, tenantId, bundleId));
+  const repoLayout = await resolveForeignBundleRepoLayout(meta, () => probe(app, tenantId, bundleId, targetConfigId));
 
   // ── 4. Re-create the tenant row, PRESERVING the original id + namespace ──
   const createInput: CreateTenantInput = {

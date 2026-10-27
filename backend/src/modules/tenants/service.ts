@@ -1063,24 +1063,26 @@ export async function updateTenant(
     }
   }
 
-  // Reject nonsensical archived → suspended/pending transitions early.
-  // Archived tenants have no PVC, no workloads, no mailboxes — going
-  // straight to "suspended" would leave the row in a degenerate state.
   // The valid exits from archived are:
-  //   archived → active   (restoreArchivedTenant orchestrator)
-  //   archived → deleted  (DELETE /tenants/:id, hard cascade)
+  //   archived → suspended | active   a restore (restoreArchivedTenant). Both
+  //                                   end SUSPENDED (an operator decision):
+  //                                   the tenant is reactivated after, on
+  //                                   purpose. `active` stays accepted for the
+  //                                   callers that send it.
+  //   archived → deleted              DELETE /tenants/:id, hard cascade
   if (
     input.status !== undefined
     && existing.status === 'archived'
     && input.status !== 'archived'
     && input.status !== 'active'
+    && input.status !== 'suspended'
   ) {
     throw new ApiError(
       'INVALID_LIFECYCLE_TRANSITION',
-      `Cannot transition archived tenant to '${input.status}' — only 'active' (restore) or 'archived' (no-op) are valid`,
+      `Cannot transition archived tenant to '${input.status}' — only 'suspended' or 'active' (restore) or 'archived' (no-op) are valid`,
       409,
       { from: 'archived', to: input.status },
-      'Restore the tenant first (PATCH status: active) and then suspend if needed',
+      'Restore the tenant (PATCH status: suspended); it comes back suspended',
     );
   }
 
@@ -1093,7 +1095,7 @@ export async function updateTenant(
   // the new status here.
   const statusOwnedByLifecycle = (
     (input.status === 'archived' && existing.status !== 'archived')
-    || (input.status === 'active' && existing.status === 'archived')
+    || ((input.status === 'active' || input.status === 'suspended') && existing.status === 'archived')
     || (input.status === 'suspended' && existing.status !== 'suspended')
     || (input.status === 'active' && existing.status === 'suspended')
   );
@@ -1322,7 +1324,7 @@ export async function updateTenant(
     }
     // PATCH status:archived on already-archived tenant is a no-op —
     // we already updated the DB row above. Don't re-archive.
-  } else if (input.status === 'active' && existing.status === 'archived') {
+  } else if ((input.status === 'active' || input.status === 'suspended') && existing.status === 'archived') {
     try {
       const { restoreArchivedTenant } = await import('../storage-lifecycle/service.js');
       const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');

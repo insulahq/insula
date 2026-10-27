@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { tenants, ingressMtlsConfigs, tenantMtlsProviders, tenantLifecycleTransitions } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { endTransition, runTransition, type DispatchResult, type Transition } from './registry/index.js';
+import { endTransition, runTransition, RESTORED_FROM_ARCHIVE, type DispatchResult, type Transition } from './registry/index.js';
 import { reapNamespaceVolumes, realReapDeps } from './reap-namespace-volumes.js';
 
 /**
@@ -122,13 +122,10 @@ export async function applyActive(
   return dispatchTransition(ctx, tenantId, namespace, 'active', null, 'active');
 }
 
-export async function applyRestored(
-  ctx: CascadeCtx,
-  tenantId: string,
-  namespace: string,
-): Promise<string | null> {
-  return dispatchTransition(ctx, tenantId, namespace, 'restored', null, 'active');
-}
+// No `applyRestored`: a restore from archive ends suspended
+// (`applySuspendedFromArchive`). The `restored` kind and its hook branches stay
+// for the transitions of that kind already recorded, which the retry scheduler
+// and the pick-up of cut-off transitions may still finish.
 
 export async function applySuspended(
   ctx: CascadeCtx,
@@ -136,6 +133,21 @@ export async function applySuspended(
   namespace: string,
 ): Promise<string | null> {
   return dispatchTransition(ctx, tenantId, namespace, 'suspended', null, 'suspended');
+}
+
+/**
+ * The end of a restore from archive: the tenant comes back SUSPENDED (an
+ * operator decision) — its sites on the suspended page, its mail shut, its
+ * applications stopped — until it is reactivated. The `suspended` hooks, with
+ * `restoredFromArchive` on the transition: the status stamp also clears
+ * `archivedAt`, and the tenant is told its account was restored.
+ */
+export async function applySuspendedFromArchive(
+  ctx: CascadeCtx,
+  tenantId: string,
+  namespace: string,
+): Promise<string | null> {
+  return dispatchTransition(ctx, tenantId, namespace, 'suspended', 'archived', 'suspended', { [RESTORED_FROM_ARCHIVE]: true });
 }
 
 export async function applyArchived(
@@ -174,6 +186,8 @@ export async function applyOnceSince(
   namespace: string,
   transition: Exclude<Transition, 'deleted'>,
   since: Date,
+  /** The `detail` a transition that never began is started with (`applySuspendedFromArchive`'s). */
+  detail?: Record<string, unknown>,
 ): Promise<string | null> {
   const toStatus = transition === 'restored' ? 'active' : transition;
   const [first] = await ctx.db
@@ -186,7 +200,7 @@ export async function applyOnceSince(
     ))
     .orderBy(desc(tenantLifecycleTransitions.startedAt))
     .limit(1);
-  if (!first) return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus);
+  if (!first) return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus, detail);
   if (first.state !== 'running') return first.id;
   return dispatchTransition(ctx, tenantId, namespace, transition, null, toStatus, undefined, first.id);
 }

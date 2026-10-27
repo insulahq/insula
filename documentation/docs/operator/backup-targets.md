@@ -103,6 +103,18 @@ phases (drain → write → reconcile → verify). If a backup is wedged and you
 switch anyway, a force option short-circuits the drain — any mid-upload over the
 old config aborts and retries on the next schedule.
 
+A switch copies nothing: the bundles already taken stay on the old target, and
+new ones go to the new one. Keep the old target configured (it does not have
+to be assigned to anything) — a restore of a tenant bundle reads it from the
+target it was written to. For a bundle on a target the `tenant` class is not
+bound to — the old one after a switch, a rebuilt cluster's previous target, a
+migration source — Insula starts a temporary, read-only copy of the shim bound
+to that target (`backup-source-<id>` in the `platform` namespace), reads
+through it, and removes it once no restore has used it for 30 minutes. This
+covers restore from archive, the restore cart (files, mailboxes, databases),
+browsing a bundle's files, and cross-cluster migration imports. A target that
+holds the archive of an archived tenant cannot be deleted.
+
 ??? info "Under the hood"
     The shim is one `rclone serve s3` process per node. Clients (CNPG
     barman-cloud, restic, the etcd-snapshot job) talk to it at

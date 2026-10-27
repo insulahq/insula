@@ -46,6 +46,16 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       .where(eq(tenants.id, ctx.tenantId));
     return { status: 'ok', detail: 'set status=active, cleared timestamps' };
   }
+  if (ctx.transition === 'suspended' && ctx.restoredFromArchive) {
+    // Restored from its archive, and suspended until reactivated: no longer
+    // archived. suspendedAt is now, not the suspension before the archive —
+    // an automatic archive counts from it, and the old date would make the
+    // tenant due again at once.
+    await ctx.db.update(tenants)
+      .set({ status: 'suspended', suspendedAt: new Date(), archivedAt: null })
+      .where(eq(tenants.id, ctx.tenantId));
+    return { status: 'ok', detail: 'restored from archive: set status=suspended, suspendedAt=now, cleared archivedAt' };
+  }
   if (ctx.transition === 'suspended') {
     await ctx.db.update(tenants)
       .set({ status: 'suspended', suspendedAt: new Date() })

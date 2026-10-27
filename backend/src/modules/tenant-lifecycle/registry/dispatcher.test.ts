@@ -117,6 +117,28 @@ describe('dispatcher.runTransition', () => {
     expect(seen).toEqual([true]);
   });
 
+  it('tells every hook a suspension ends a restore from archive, from the transition\'s detail', async () => {
+    // The restore lands suspended (applySuspendedFromArchive): the stamp and
+    // the tenant's notice read the flag, and it travels on `detail` so a
+    // resumed or retried hook sees it too.
+    const seen: Array<boolean | undefined> = [];
+    const h = hook({
+      name: 'sees-restored',
+      order: 100,
+      run: async (ctx) => { seen.push(ctx.restoredFromArchive); return { status: 'ok' }; },
+    });
+    await runTransition(fake.db as never, {} as never, {
+      tenantId: 'c1', namespace: 'ns', transition: 'suspended', toStatus: 'suspended',
+      detail: { restoredFromArchive: true },
+      hooksOverride: [h],
+    });
+    await runTransition(fake.db as never, {} as never, {
+      tenantId: 'c1', namespace: 'ns', transition: 'suspended', toStatus: 'suspended',
+      hooksOverride: [h],
+    });
+    expect(seen).toEqual([true, false]);
+  });
+
   it('defaults the notify choice to NOT suppressed when the caller omits it', async () => {
     // The positive control, and the safety default: an omitted flag must mean
     // "tell them", or a caller that has not been updated silently stops

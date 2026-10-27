@@ -73,7 +73,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
-import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
+import { restoreItems, restoreJobs, backupComponents, backupJobs, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
@@ -82,7 +82,7 @@ import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 import { assertMailboxDomainsOwnedByTenant } from '../mailbox-domain-ownership.js';
 import { MAILBOX_CAPTURE_ROOT, addressDirName } from '../../tenant-bundles/components/mailboxes-restic.js';
 import { listTenantMailboxAddresses } from '../../tenant-bundles/components/mailboxes.js';
-import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../../backup-source-shim/service.js';
 import {
   buildResticRepoUri,
   buildResticEnv,
@@ -330,7 +330,12 @@ export async function execMailboxesByAddressItem(args: {
   // The mailboxes component snapshot lives in the per-tenant restic repo
   // under the `tenant` shim bucket (same target the capture-side restic-
   // stream endpoint uses); the repo URI component is `mailboxes`.
-  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  // Read from the target the bundle was written to (a read-only source shim
+  // when tenant backups are bound elsewhere now).
+  const [bundleRow] = await app.db.select({ targetConfigId: backupJobs.targetConfigId }).from(backupJobs)
+    .where(eq(backupJobs.id, item.bundleId)).limit(1);
+  const read = await resolveTenantBundleReadTarget(app.db, k8s, bundleRow?.targetConfigId ?? null, app.log);
+  const { target } = read;
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
   const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
@@ -344,6 +349,7 @@ export async function execMailboxesByAddressItem(args: {
 
   const spec = buildMailboxesByAddressJobSpec({
     jobName,
+    extraLabels: sourceShimJobLabels(read),
     mailNamespace: MAIL_NAMESPACE,
     tenantId: job.tenantId,
     cartId: item.restoreJobId,
@@ -534,6 +540,8 @@ export function parseMailboxRestoreSummary(log: string): {
 
 export function buildMailboxesByAddressJobSpec(input: {
   jobName: string;
+  /** On the Job: the source shim it reads through (`sourceShimJobLabels`). */
+  extraLabels?: Readonly<Record<string, string>>;
   mailNamespace: string;
   tenantId: string;
   cartId: string;
@@ -766,6 +774,7 @@ export function buildMailboxesByAddressJobSpec(input: {
       name: input.jobName,
       namespace: input.mailNamespace,
       labels: {
+        ...(input.extraLabels ?? {}),
         // Reuse restore-files label so the existing NetworkPolicy
         // covers this Job too (it allows Job → shim S3 +
         // Job → in-cluster Stalwart svc).

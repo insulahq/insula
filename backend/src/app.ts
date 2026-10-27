@@ -2335,6 +2335,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // The read-only source shims a restore of a bundle on another backup
+        // target starts (backup-source-shim/): removed once idle.
+        try {
+          const { startSourceShimSweeper } = await import('./modules/backup-source-shim/scheduler.js');
+          const sweeper = startSourceShimSweeper(app.db, k8sForImapsync, app.log);
+          app.addHook('onClose', () => sweeper.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'backup-source-shim: sweeper start failed (non-blocking)');
+        }
+
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
         // 60s. Shares the same k8s tenant instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app

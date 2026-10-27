@@ -21,6 +21,17 @@ to A — the source is mounted **read-only**.
 The import reuses the DR recover engine (`recreateTenantFromBundle` + post-restore
 reconcile of ingress / DKIM / workloads), pointed at the migration source target.
 
+The restic parts of the restore — files, mailboxes, database dumps — are read
+through a **source shim**: a temporary, read-only copy of the backup shim that
+platform-api starts in `platform` (`backup-source-<id>`), bound to the source
+target, and removes once no restore has used it for 30 minutes
+(`backend/src/modules/backup-source-shim/`). Before it existed those Jobs went
+through B's own shim, which serves only the target B's `tenant` class is bound
+to — so they found the files and mail only when B's tenant backups were bound to
+A's target. Each bundle row names its target (`backup_jobs.target_config_id`),
+and any bundle on a target other than the bound one is read this way — an
+archive from before a target switch too.
+
 ## Prerequisites
 
 - **B can reach A's target.** A tenant bundle target (S3 or SFTP) that A wrote to,

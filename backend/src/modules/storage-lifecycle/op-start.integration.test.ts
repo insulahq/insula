@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
-import { hostingPlans, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
+import { backupComponents, backupJobs, hostingPlans, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -80,14 +80,27 @@ vi.mock('../tenant-lifecycle/cascades.js', () => ({
     await ctx.db.update(tenants).set({ status: 'archived', archivedAt: new Date() }).where(eq(tenants.id, tenantId));
     return 't-1';
   },
-  applyRestored: async (ctx: { db: Database }, tenantId: string) => {
+  applyActive: async (ctx: { db: Database }, tenantId: string) => {
+    did.push('cascade active');
+    await ctx.db.update(tenants).set({ status: 'active', suspendedAt: null }).where(eq(tenants.id, tenantId));
+    return 't-3';
+  },
+  // A restore from archive lands suspended.
+  applySuspendedFromArchive: async (ctx: { db: Database }, tenantId: string) => {
     did.push('cascade');
-    await ctx.db.update(tenants).set({ status: 'active', archivedAt: null }).where(eq(tenants.id, tenantId));
+    await ctx.db.update(tenants).set({ status: 'suspended', suspendedAt: new Date(), archivedAt: null }).where(eq(tenants.id, tenantId));
     return 't-2';
   },
 }));
+// The node the restore runs on: the pin (restore-placement.test.ts covers the choice).
+vi.mock('../tenant-archive/restore-placement.js', () => ({
+  chooseRestoreNode: async (_db: unknown, _k8s: unknown, t: { nodeName: string | null }, requested: string | null | undefined) =>
+    (requested === undefined ? t.nodeName ?? null : requested),
+}));
+// The routes a restored tenant's suspension redirects, rebuilt first.
+vi.mock('../domains/k8s-ingress.js', () => ({ reconcileIngress: async () => { did.push('routes'); } }));
 
-const { archiveTenant, resizeTenant, fsckCheckTenant, restoreArchivedTenant } = await import('./service.js');
+const { archiveTenant, resizeTenant, fsckCheckTenant, restoreArchivedTenant, resumeTenant } = await import('./service.js');
 const dbAvailable = await isDbAvailable();
 
 describe('how a detached operation is started', () => {
@@ -136,6 +149,9 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
       createNamespacedPersistentVolumeClaim: async () => { did.push('create claim'); claimGi = 10; },
       patchNamespacedPersistentVolumeClaim: async () => { did.push('grow claim'); claimGi = 30; },
       readPersistentVolume: async () => ({ spec: { csi: { volumeAttributes: { fsType: 'xfs' } } } }),
+      patchNamespacedResourceQuota: async ({ body }: { body: { spec: { hard: Record<string, string> } } }) => {
+        did.push(`quota ${body.spec.hard['requests.storage']}`);
+      },
     },
     custom: {
       getNamespacedCustomObject: async () => ({ status: { state: did.includes('attach') && !did.includes('detach') ? 'attached' : 'detached', currentNodeID: 'node-a', ownerID: 'node-a' } }),
@@ -195,7 +211,7 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
       does: ['quiesce', 'capture', 'delete claim', 'create claim', 'restore', 'unquiesce'], writesSnapshot: true,
     },
     { name: 'a filesystem check', start: () => fsckCheckTenant(ctx(), tenantId), does: ['quiesce', 'attach', 'fsck', 'detach', 'unquiesce'], writesSnapshot: false },
-    { name: 'a restore of an archived tenant', prepare: archived, start: () => restoreArchivedTenant(ctx(), tenantId), does: ['apply claim', 'restore', 'cascade'], writesSnapshot: false },
+    { name: 'a restore of an archived tenant', prepare: archived, start: () => restoreArchivedTenant(ctx(), tenantId), does: ['apply claim', 'restore', 'routes', 'cascade'], writesSnapshot: false },
   ];
 
   it.each(KINDS)('$name answers once it is running under its lock, and then runs to its end', async ({ prepare, start, does }) => {
@@ -224,6 +240,86 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     const { operationId } = await restoreArchivedTenant(ctx(), tenantId);
     await finished(operationId);
     expect(claimsAskedGi).toEqual([asks]);
+  });
+
+  /** The archive's files, as its capture recorded them. */
+  const archiveHolds = async (bytes: number) => {
+    await db().insert(backupJobs).values({
+      id: 'bkp-archive', tenantId, initiator: 'system', status: 'completed', systemTrigger: 'pre_archive',
+      targetKind: 's3', targetUri: 's3://example.test/b', retentionDays: 90,
+    });
+    await db().insert(backupComponents).values({ id: crypto.randomUUID(), backupJobId: 'bkp-archive', component: 'files', artifactName: 'files', status: 'completed', sizeBytes: bytes });
+  };
+
+  it('a restore larger than the tenant makes that its size: its override, its quota, then the claim', async () => {
+    const { planId } = await tenantRow();
+    await db().update(hostingPlans).set({ storageLimit: '1.00' }).where(eq(hostingPlans.id, planId));
+    await archived();
+    const { operationId } = await restoreArchivedTenant(ctx(), tenantId, { newGi: 3 });
+    const row = await finished(operationId);
+    expect(row.state).toBe('idle');
+    expect(did.slice(0, 2)).toEqual(['quota 3Gi', 'apply claim']);
+    expect(claimsAskedGi).toEqual(['3']);
+    expect((await tenantRow()).storageLimitOverride).toBe('3.00');
+  });
+
+  it('a restore smaller than the tenant makes that its size too: override, quota, claim agree', async () => {
+    await archived();
+    await finished((await restoreArchivedTenant(ctx(), tenantId, { newGi: 2.5 })).operationId);
+    expect(did.slice(0, 2)).toEqual(['quota 2.5Gi', 'apply claim']);
+    expect(claimsAskedGi).toEqual(['2.5']);
+    expect((await tenantRow()).storageLimitOverride).toBe('2.50');
+  });
+
+  it('a restore at the tenant\'s own size leaves its quota alone', async () => {
+    await archived();
+    await finished((await restoreArchivedTenant(ctx(), tenantId)).operationId);
+    expect(did.filter((d) => d.startsWith('quota'))).toEqual([]);
+  });
+
+  it('refuses a volume the archive\'s files cannot fit in, before anything is changed', async () => {
+    const { planId } = await tenantRow();
+    await db().update(hostingPlans).set({ storageLimit: '1.00' }).where(eq(hostingPlans.id, planId));
+    await archived();
+    await archiveHolds(Math.round(1.5 * 1024 ** 3));
+    await expect(restoreArchivedTenant(ctx(), tenantId)).rejects.toMatchObject({ code: 'RESTORE_VOLUME_TOO_SMALL', status: 409 });
+    expect(await ops()).toEqual([]);
+    expect(await tenantRow()).toMatchObject({ status: 'archived', storageLifecycleState: 'idle', storageLimitOverride: null });
+    // At a size that holds them, it goes ahead.
+    await finished((await restoreArchivedTenant(ctx(), tenantId, { newGi: 2 })).operationId);
+    expect(claimsAskedGi).toEqual(['2']);
+  });
+
+  it('writes the node the restore runs on as the tenant\'s pin, before it starts', async () => {
+    await db().update(tenants).set({ nodeName: 'sv-old' }).where(eq(tenants.id, tenantId));
+    await archived();
+    await finished((await restoreArchivedTenant(ctx(), tenantId, { nodeName: 'sv-new' })).operationId);
+    expect((await tenantRow()).nodeName).toBe('sv-new');
+  });
+
+  it('a restored tenant reads suspended, no longer archived', async () => {
+    await archived();
+    await finished((await restoreArchivedTenant(ctx(), tenantId)).operationId);
+    expect(await tenantRow()).toMatchObject({ status: 'suspended', archivedAt: null });
+  });
+
+  // The hourly expiry check suspends an active tenant past its subscription
+  // end: reactivated past it, it was suspended again within the hour.
+  it('refuses to reactivate a tenant whose subscription has ended, and changes nothing', async () => {
+    await db().update(tenants).set({ subscriptionExpiresAt: new Date(Date.now() - 86_400_000) }).where(eq(tenants.id, tenantId));
+    await expect(resumeTenant(ctx(), tenantId)).rejects.toMatchObject({ code: 'SUBSCRIPTION_EXPIRED', status: 409 });
+    expect(await tenantRow()).toMatchObject({ status: 'suspended', storageLifecycleState: 'idle' });
+    expect(await ops()).toEqual([]);
+    expect(did).toEqual([]);
+  });
+
+  it('reactivates once the subscription runs again, or has no end', async () => {
+    await db().update(tenants).set({ subscriptionExpiresAt: new Date(Date.now() + 30 * 86_400_000) }).where(eq(tenants.id, tenantId));
+    await resumeTenant(ctx(), tenantId);
+    expect((await tenantRow()).status).toBe('active');
+    await db().update(tenants).set({ status: 'suspended', subscriptionExpiresAt: null }).where(eq(tenants.id, tenantId));
+    await resumeTenant(ctx(), tenantId);
+    expect((await tenantRow()).status).toBe('active');
   });
 
   describe.each(KINDS)('$name whose lock cannot be taken', ({ prepare, start, writesSnapshot }) => {
