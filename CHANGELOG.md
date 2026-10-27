@@ -58,13 +58,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   before it serves, and one that accepts the connection and never answers held it for every class —
   system and mail backups stopped too — while the pod read Ready and a switch to that target said it
   succeeded. The shim is now Ready only once it serves, stops a start that has not served within 60
-  seconds (the pod restarts with back-off), and the switch fails, naming the node.
+  seconds (the pod restarts with back-off), and the switch fails, naming the node. The switch also
+  no longer reads the previous rollout's status as the new one's: it reported success the moment it
+  patched the shim, before a single new pod had started.
 - **Bundles on a target tenant backups are no longer bound to are kept, not lost.** Deleting one, its
   expiry, and the restic reclaimer all acted on the bound target: they found nothing there, dropped or
   purged the row, and left the data on the old target with nothing that knew of it. Insula now never
   writes to an unbound target: deleting such a bundle is refused (`BUNDLE_ON_UNBOUND_TARGET`), expiry
   leaves it listed as *kept on <target>*, and it expires as usual once that target is bound again.
-  The bundle list says where such a bundle is; it still restores.
+  The bundle list says where such a bundle is; it still restores, and verify, export and download
+  now read it from that target too. A capture or import naming a target other than the bound one is
+  refused (`BUNDLE_TARGET_NOT_BOUND`): it was written to the bound target while its row named the
+  other.
 
 ## [2026.10.19] - 2026-10-26
 

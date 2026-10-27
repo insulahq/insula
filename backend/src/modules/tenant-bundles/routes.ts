@@ -77,6 +77,19 @@ function appK8s(app: FastifyInstance) {
   return createK8sClients(kubeconfigPath);
 }
 
+/** requireWriteToBoundTarget; no cluster to ask (no shim either) lets the write through, as before it. */
+async function guardWriteToBoundTarget(app: FastifyInstance, targetConfigId: string): Promise<void> {
+  let k8s;
+  try {
+    k8s = appK8s(app);
+  } catch (err) {
+    app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'tenant-bundles: no Kubernetes client — not checking the bundle target against the binding');
+    return;
+  }
+  const { requireWriteToBoundTarget } = await import('./unbound-target.js');
+  await requireWriteToBoundTarget(app.db, k8s, targetConfigId, app.log);
+}
+
 /** Where each bundle is stored (unbound-target.ts); none at all when there is no cluster to ask. */
 async function bundlePlacements(app: FastifyInstance, bundleTargetIds: ReadonlyArray<string | null>) {
   const { targetPlacements } = await import('./unbound-target.js');
@@ -365,6 +378,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
         400);
     }
+    // The bundle is written through the shim, to the BOUND target, and the row
+    // records this id: they must be the same target (unbound-target.ts).
+    await guardWriteToBoundTarget(app, input.targetConfigId);
     // B9: bundle writes always go through the R-X20 shim
     // (live staging bench measured ~35% faster than restic native S3,
     // PLUS the shim supports CIFS/NFS upstreams natively while
@@ -603,7 +619,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // every row. Gating a DOWNLOAD on it made this endpoint unreachable on
     // every cluster: the only thing standing between an operator and their own
     // data export was a flag no code sets.
-    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const store = await bundleReadStore(app, job.targetConfigId);
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
     // exportArtifact is `components/<comp>/<name>` — split.
@@ -666,7 +682,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
     if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId; cannot read components', 400);
 
-    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const store = await bundleReadStore(app, job.targetConfigId);
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
 
@@ -722,7 +738,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
     if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId; cannot read components', 400);
 
-    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const store = await bundleReadStore(app, job.targetConfigId);
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
 
@@ -883,7 +899,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
       if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId', 400);
 
-      const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+      const store = await bundleReadStore(app, job.targetConfigId);
       const handle = await store.open(bundleId);
       if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
 
@@ -1091,6 +1107,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // skip the field. The format-detecting decoder enforces this.
     if (!tenantId) throw new ApiError('VALIDATION_ERROR', 'tenantId required', 400);
     if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
+    // The upload goes through the shim, to the BOUND target: refuse another
+    // up front, before anything is created (unbound-target.ts).
+    await guardWriteToBoundTarget(app, targetConfigId);
     if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
 
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
@@ -1269,6 +1288,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
     }
     if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
+    // The upload goes through the shim, to the BOUND target: refuse another
+    // up front, before anything is created (unbound-target.ts).
+    await guardWriteToBoundTarget(app, targetConfigId);
     if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
     if (!overridesJson) throw new ApiError('VALIDATION_ERROR', 'overrides JSON required', 400);
 
@@ -1496,7 +1518,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     if (!job.targetConfigId) {
       throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id (pre-D-redesign row); cannot verify.', 400);
     }
-    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const store = await bundleReadStore(app, job.targetConfigId);
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
 
@@ -1606,6 +1628,18 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       reason?: string;
       durationMs: number;
     }> = [];
+    // One store per target for the whole run: a target that is not the bound
+    // one is read through a source shim, started (and waited for) once, not
+    // once per bundle on it.
+    const readStores = new Map<string, Promise<BackupStore>>();
+    const readStoreFor = (targetConfigId: string): Promise<BackupStore> => {
+      let store = readStores.get(targetConfigId);
+      if (!store) {
+        store = bundleReadStore(app, targetConfigId);
+        readStores.set(targetConfigId, store);
+      }
+      return store;
+    };
 
     for (const row of rows) {
       const start = Date.now();
@@ -1614,7 +1648,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         continue;
       }
       try {
-        const store = await resolveStore(app, row.targetConfigId, { requireActive: false });
+        const store = await readStoreFor(row.targetConfigId);
         const handle = await store.open(row.id);
         if (!handle) {
           results.push({ bundleId: row.id, status: 'failed', reason: 'bundle artefacts not found on remote target', durationMs: Date.now() - start });
@@ -1809,6 +1843,25 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // with the tenant_backup_schedules table drop (migration
   // 0034). Use /admin/backups/schedules/tenant_bundle to manage the
   // platform-global schedule that drives ALL tenant bundles.
+}
+
+/**
+ * The store to READ a bundle from. On a target other than the bound one that
+ * is its read-only source shim (backup-source-shim/), the one a restore reads
+ * through too: the shim serves the bound target alone, where such a bundle is
+ * not. Never for a write — the source shim refuses them.
+ */
+async function bundleReadStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+  let k8s;
+  try {
+    k8s = appK8s(app);
+  } catch {
+    // No cluster: no shim either — the usual store, as before.
+    return resolveStore(app, targetConfigId, { requireActive: false });
+  }
+  const { sourceShimBundleStore } = await import('../backup-source-shim/service.js');
+  return (await sourceShimBundleStore(app.db, k8s, targetConfigId, app.log))
+    ?? resolveStore(app, targetConfigId, { requireActive: false });
 }
 
 async function resolveStore(

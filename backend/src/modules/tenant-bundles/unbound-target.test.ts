@@ -10,7 +10,7 @@ vi.mock('../backup-source-shim/service.js', async (orig) => ({
   }),
 }));
 
-const { onUnboundTarget, requireBundleOnBoundTarget, targetPlacements } = await import('./unbound-target.js');
+const { onUnboundTarget, requireBundleOnBoundTarget, requireWriteToBoundTarget, targetPlacements } = await import('./unbound-target.js');
 
 const BOUND = 'cfg-bound';
 const OLD = 'cfg-old';
@@ -77,6 +77,28 @@ describe('bundles on a target tenant backups are no longer bound to', () => {
     await expect(requireBundleOnBoundTarget(db([]), k8s, null, log)).resolves.toBeUndefined();
     const place = await targetPlacements(db([{ id: BOUND, name: 'now' }]), k8s, [BOUND], log);
     expect(place(BOUND)).toBeNull();
+  });
+
+  // Writes go through the shim, to the bound target: a row naming another one
+  // would say the data is somewhere it is not.
+  it('a write naming another target is refused, naming the bound one; the bound one goes through', async () => {
+    await expect(requireWriteToBoundTarget(db([]), k8s, BOUND, log)).resolves.toBeUndefined();
+    const err = await requireWriteToBoundTarget(db([{ id: OLD, name: 'old-sftp' }, { id: BOUND, name: 'now-s3' }]), k8s, OLD, log)
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'BUNDLE_TARGET_NOT_BOUND', status: 409, details: { targetName: 'old-sftp', boundTargetName: 'now-s3' } });
+    expect((err as Error).message).toContain("bound to ('now-s3'), not 'old-sftp'");
+  });
+
+  it('a write waits mid-switch, and goes through when the binding cannot be read', async () => {
+    bound.served = false;
+    await expect(requireWriteToBoundTarget(db([]), k8s, BOUND, log)).rejects.toMatchObject({ code: 'BOUND_TARGET_SWITCHING', status: 503 });
+    bound.served = true;
+    bound.fail = true;
+    await expect(requireWriteToBoundTarget(db([]), k8s, OLD, log)).resolves.toBeUndefined();
+    // No tenant binding: the legacy active-target fallback decides, as before.
+    bound.fail = false;
+    bound.id = null;
+    await expect(requireWriteToBoundTarget(db([]), k8s, OLD, log)).resolves.toBeUndefined();
   });
 
   it('placements: name and whether bound; none for no target, an unconfigured one, or an unknown binding', async () => {

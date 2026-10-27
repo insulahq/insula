@@ -85,7 +85,9 @@ export interface VerifyReadyResult {
 }
 
 interface DaemonSetStatusShape {
+  metadata?: { generation?: number };
   status?: {
+    observedGeneration?: number;
     desiredNumberScheduled?: number;
     currentNumberScheduled?: number;
     updatedNumberScheduled?: number;
@@ -159,7 +161,12 @@ export async function waitForShimReady(
         );
         return { ...last, ready: true };
       }
-      if (updated >= desired && available >= desired) {
+      // Counts of the template the controller has SEEN: right after the
+      // reconciler's patch they are still the previous rollout's — "1 of 1
+      // updated and available" — and a switch to a target the new pods cannot
+      // serve read as settled at once.
+      const observed = (live.status?.observedGeneration ?? 0) >= (live.metadata?.generation ?? 0);
+      if (observed && updated >= desired && available >= desired) {
         return { ...last, ready: true };
       }
     } catch (err) {

@@ -213,7 +213,14 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
     if (!job.targetConfigId) {
       throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
     }
-    const store = await resolveStore(app, job.targetConfigId);
+    // On a target tenant backups are no longer bound to: its read-only source
+    // shim — the shim serves the bound target alone.
+    const { sourceShimBundleStore } = await import('../backup-source-shim/service.js');
+    const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH;
+    const store = (await sourceShimBundleStore(app.db, createK8sClients(kubeconfigPath), job.targetConfigId, app.log))
+      ?? await resolveStore(app, job.targetConfigId);
     const handle = await store.open(id);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
     const m = job.exportArtifact.match(/^components\/(files|mailboxes|config|secrets)\/(.+)$/);

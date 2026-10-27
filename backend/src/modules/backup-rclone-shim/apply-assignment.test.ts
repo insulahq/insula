@@ -204,6 +204,28 @@ describe('waitForShimReady', () => {
     expect(r.available).toBe(4);
   });
 
+  // Right after the reconciler patches the template, the status still counts
+  // the PREVIOUS rollout ("1 of 1 updated and available"). Read as settled, a
+  // switch to a target the new pod could not serve reported success at once
+  // (DEV, a target that accepts the connection and never answers).
+  it('is not ready while the controller has not observed the new template', async () => {
+    let call = 0;
+    const apps = {
+      readNamespacedDaemonSet: vi.fn(async () => {
+        call += 1;
+        return call < 3
+          ? { metadata: { generation: 8 }, status: { observedGeneration: 7, desiredNumberScheduled: 1, updatedNumberScheduled: 1, numberAvailable: 1 } }
+          : { metadata: { generation: 8 }, status: { observedGeneration: 8, desiredNumberScheduled: 1, updatedNumberScheduled: 0, numberAvailable: 0 } };
+      }),
+    };
+    const clock = makeClock();
+    const r = await waitForShimReady(apps as never, { info: vi.fn(), warn: vi.fn() }, {
+      now: clock.now, sleep: clock.sleep, pollIntervalMs: 100, timeoutMs: 1_000,
+    });
+    expect(r.ready).toBe(false);
+    expect(call).toBeGreaterThan(3);
+  });
+
   it('treats 404 (fresh cluster) as ready=true', async () => {
     const apps = {
       readNamespacedDaemonSet: vi.fn().mockRejectedValue({ statusCode: 404 }),

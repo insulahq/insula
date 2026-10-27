@@ -123,7 +123,9 @@ expires and is deleted as usual. The reason: a bundle this cluster took and one 
 cross-cluster migration registered look the same, and deleting from a migration
 source would delete the other cluster's backups. If you remove the target
 instead, Insula stops tracking where those bundles are and their data stays on
-it.
+it. While a switch is rolling out, deletes and expiry wait for the shim to serve
+the new binding (`BOUND_TARGET_SWITCHING`). A new bundle or an import always
+goes to the bound target; naming another is refused (`BUNDLE_TARGET_NOT_BOUND`).
 
 A target that accepts a connection and never answers holds the shim for every
 class, since it opens all of its targets before it serves. The shim reports

@@ -124,6 +124,48 @@ export async function requireBundleOnBoundTarget(
   );
 }
 
+/**
+ * Refuse to write a bundle "to" a target other than the bound one. Writes go
+ * through the shim, which serves the bound target alone: the data would land
+ * there while the row named the other — and, unbound, that row would then be
+ * kept for good with its data somewhere it does not say. Mid-switch it waits.
+ * A binding that cannot be read lets the write through, as before this check:
+ * captures must not stop on it.
+ */
+export async function requireWriteToBoundTarget(
+  db: Database,
+  k8s: ServedShimClients,
+  targetConfigId: string,
+  log: WarnLog,
+): Promise<void> {
+  const bound = await resolveBoundTenantTarget(db, k8s, log);
+  if (!bound.known) {
+    if (bound.reason === 'switching') {
+      throw new ApiError(
+        'BOUND_TARGET_SWITCHING',
+        'Tenant backups are being switched to another backup target, so no bundle was written',
+        503,
+        undefined,
+        'Try again once the switch has finished (the backup shim has rolled onto the new target).',
+      );
+    }
+    return;
+  }
+  // No tenant binding at all: the shim has no tenant bucket, and the caller's
+  // own fallback (the legacy active target) decides, as before this check.
+  if (bound.id === null || !needsSourceShim(targetConfigId, bound.id)) return;
+  const names = await targetNames(db, [targetConfigId, bound.id]);
+  const name = names.get(targetConfigId) ?? targetConfigId;
+  const boundName = names.get(bound.id) ?? bound.id;
+  throw new ApiError(
+    'BUNDLE_TARGET_NOT_BOUND',
+    `Bundles are written to the target tenant backups are bound to ('${boundName}'), not '${name}'`,
+    409,
+    { targetConfigId, targetName: name, boundTargetId: bound.id, boundTargetName: boundName },
+    `Pick '${boundName}', or bind tenant backups to '${name}' first (Backups → Targets).`,
+  );
+}
+
 export interface TargetPlacement {
   readonly name: string;
   readonly bound: boolean;
