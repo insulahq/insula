@@ -116,7 +116,16 @@ describe.skipIf(!dbAvailable)('cron failure streak (integration)', () => {
 
   it('a nightly job is reported on its first failure', async () => {
     const jobId = await insertJob('0 3 * * *');
-    expect(await run(jobId, cluster([1]))).toBe(1);
+    // At noon: within the hour before 03:00 its next run IS within the hour,
+    // and it waits for a second failure by design (failure-streak.ts). On the
+    // real clock this failed one hour a day (CI at 02:15 UTC).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-27T12:00:00Z'));
+    try {
+      expect(await run(jobId, cluster([1]))).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
     const queued = await notices();
     expect(queued).toHaveLength(1);
     expect((queued[0].eventVariables as Record<string, unknown>).failedRuns).toBeNull();
