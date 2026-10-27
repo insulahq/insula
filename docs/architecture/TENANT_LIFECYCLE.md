@@ -123,7 +123,8 @@ intake, which `dmarc@` is an alias of, is never captured; every application
 deployed again at 0 replicas with its CronJobs paused; a `suspend` operation
 holding what Reactivate scales back to (the counts the suspension before the
 archive wrote down, 0 included, else what a deploy runs); the ingress routes,
-rebuilt while the tenant still reads archived; then the `suspended` hooks with
+rebuilt while the tenant still reads archived and with its domains active (a
+route's certificate is looked up only for an active domain); then the `suspended` hooks with
 `restoredFromArchive` on the transition (`applySuspendedFromArchive`): status
 suspended with a fresh `suspendedAt` and `archivedAt` cleared, sites on the
 suspended page, mail shut — and the tenant told its account was restored

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
-import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
+import { seedDomain, seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { backupComponents, backupJobs, hostingPlans, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -97,8 +97,18 @@ vi.mock('../tenant-archive/restore-placement.js', () => ({
   chooseRestoreNode: async (_db: unknown, _k8s: unknown, t: { nodeName: string | null }, requested: string | null | undefined) =>
     (requested === undefined ? t.nodeName ?? null : requested),
 }));
-// The routes a restored tenant's suspension redirects, rebuilt first.
-vi.mock('../domains/k8s-ingress.js', () => ({ reconcileIngress: async () => { did.push('routes'); } }));
+// The routes a restored tenant's suspension redirects, rebuilt first — with
+// the status its domains have at that moment (a certificate is looked up only
+// for an active domain).
+const domainsAtRoutes: string[] = [];
+vi.mock('../domains/k8s-ingress.js', () => ({
+  reconcileIngress: async (db: Database, _k8s: unknown, tenantId: string) => {
+    const { domains } = await import('../../db/schema.js');
+    const rows = await db.select({ status: domains.status }).from(domains).where(eq(domains.tenantId, tenantId));
+    domainsAtRoutes.push(...rows.map((r) => r.status));
+    did.push('routes');
+  },
+}));
 
 const { archiveTenant, resizeTenant, fsckCheckTenant, restoreArchivedTenant, resumeTenant } = await import('./service.js');
 const dbAvailable = await isDbAvailable();
@@ -295,6 +305,14 @@ describe.skipIf(!dbAvailable)('starting a storage operation (real Postgres)', ()
     await archived();
     await finished((await restoreArchivedTenant(ctx(), tenantId, { nodeName: 'sv-new' })).operationId);
     expect((await tenantRow()).nodeName).toBe('sv-new');
+  });
+
+  it('rebuilds the routes with the tenant\'s domains active, so they keep their certificate', async () => {
+    await seedDomain(db(), tenantId, { status: 'suspended' });
+    await archived();
+    domainsAtRoutes.length = 0;
+    await finished((await restoreArchivedTenant(ctx(), tenantId)).operationId);
+    expect(domainsAtRoutes).toEqual(['active']);
   });
 
   it('a restored tenant reads suspended, no longer archived', async () => {

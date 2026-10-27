@@ -3,6 +3,7 @@ import { eq, and, sql, desc, lte, inArray, notInArray } from 'drizzle-orm';
 import {
   backupJobs,
   backupComponents,
+  domains,
   tenants,
   storageSnapshots,
   storageOperations,
@@ -3167,8 +3168,15 @@ async function runRestoreArchive(
     if (!restoredAlready) {
       // Rebuilt while the tenant still reads archived: a suspended tenant's
       // routes are never rebuilt (domains/k8s-ingress.ts), and the suspend
-      // below only redirects routes that are there.
+      // below only redirects routes that are there. Its domains active first,
+      // as the `active` hooks set them: the archive left them 'suspended', and
+      // a route's certificate is looked up only for an active domain — rebuilt
+      // without it, the suspended page was served on Traefik's default
+      // certificate (measured on DEV) until the tenant was reactivated. The
+      // `suspended` hooks below set them suspended again, as for any
+      // suspension; the routes keep their TLS.
       try {
+        await ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.tenantId, tenantId));
         const { reconcileIngress } = await import('../domains/k8s-ingress.js');
         await reconcileIngress(ctx.db, ctx.k8s, tenantId, namespace);
       } catch (err) {
