@@ -57,7 +57,9 @@ MINIO_PW="$(printf '%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM
 MINIO_BUCKET="backups"
 # SFTP + CIFS backup-target creds — the rclone shim connects OUT to these external
 # endpoints (protocols ssh/cifs), same as it does to the S3 gateway for s3. Throwaway per-run.
-SFTP_USER="backup"; SFTP_PW="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
+# Not `backup` for SFTP: atmoz/sftp's Debian base has that system user (nologin,
+# no password), so the share user was never created and every login failed.
+SFTP_USER="sftpbackup"; SFTP_PW="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
 SMB_USER="backup";  SMB_PW="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
 cat > "${VMTEST_TMP_DIR}/ud-${RUN}-svc.yaml" <<UD
 #cloud-config

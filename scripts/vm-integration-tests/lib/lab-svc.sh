@@ -105,8 +105,16 @@ for bucket in dev-backups stg-backups; do
 done
 # Fixed uid/gid: the mounted upload directory must belong to the SFTP user.
 chown 1001:100 "$D/sftp"
-have sftp || docker run -d --name sftp --restart=always -p 2222:22 -v "$D/sftp:/home/backup/upload" \
-  "$LAB_SFTP_IMAGE" "backup:${SFTP_PW}:1001:100:upload"
+# Not `backup`: the image's Debian base has a system user of that name (uid 34,
+# nologin, no password), so the share user was never created, its password never
+# set, and every SFTP login failed. A container made under the old name is
+# replaced; the upload directory is the same bind mount.
+SFTP_USER=sftpbackup
+if have sftp && ! docker inspect sftp --format '{{range .Args}}{{.}}{{"\n"}}{{end}}' | grep -q "^${SFTP_USER}:"; then
+  docker rm -f sftp >/dev/null
+fi
+have sftp || docker run -d --name sftp --restart=always -p 2222:22 -v "$D/sftp:/home/${SFTP_USER}/upload" \
+  "$LAB_SFTP_IMAGE" "${SFTP_USER}:${SFTP_PW}:1001:100:upload"
 chmod 0777 "$D/smb"
 have samba || docker run -d --name samba --restart=always --network host -v "$D/smb:/share" "$LAB_SMB_IMAGE" \
   -p -u "backup;${SMB_PW}" -s "backups;/share;yes;no;no;backup;backup" -w WORKGROUP
