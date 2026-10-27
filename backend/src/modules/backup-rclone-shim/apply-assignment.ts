@@ -613,11 +613,13 @@ const FAILING_WAIT_REASONS = new Set([
 ]);
 
 /**
- * A container that runs but is not Ready and has already been restarted. The
- * launcher marks the shim Ready only once rclone listens, and stops a launch
- * that does not listen within its deadline — what an upstream that never
- * answers looks like (it holds every class). Between two such launches the
- * pod is Running, not crash-looping, so the waiting reasons above miss it.
+ * A container that is not Ready and has already been restarted, whatever it is
+ * doing this instant. The launcher marks the shim Ready only once rclone
+ * listens, and stops a launch that does not listen within its deadline — what
+ * an upstream that never answers looks like (it holds every class). Between
+ * two such launches the container is running or has just exited (terminated),
+ * not waiting in CrashLoopBackOff, so the waiting reasons above miss it; a
+ * crash loop sampled between its exit and its back-off did too.
  */
 const NOT_SERVING = 'NotServing';
 
@@ -628,7 +630,7 @@ interface ShimPodShape {
     readonly containerStatuses?: ReadonlyArray<{
       readonly ready?: boolean;
       readonly restartCount?: number;
-      readonly state?: { readonly waiting?: { readonly reason?: string }; readonly running?: unknown };
+      readonly state?: { readonly waiting?: { readonly reason?: string } };
     }>;
   };
 }
@@ -639,7 +641,7 @@ function failingReason(pod: ShimPodShape): string | null {
     .map((c) => c.state?.waiting?.reason)
     .find((r): r is string => !!r && FAILING_WAIT_REASONS.has(r));
   if (waiting) return waiting;
-  const notServing = containers.some((c) => c.state?.running !== undefined && c.ready === false && (c.restartCount ?? 0) > 0);
+  const notServing = containers.some((c) => c.ready === false && (c.restartCount ?? 0) > 0);
   return notServing ? NOT_SERVING : null;
 }
 

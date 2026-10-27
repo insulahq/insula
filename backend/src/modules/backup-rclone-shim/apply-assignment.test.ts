@@ -453,6 +453,19 @@ describe('failing shim pods after a target switch', () => {
       ]);
     });
 
+    // DEV: a crash loop sampled between an exit and its back-off reads
+    // `terminated`, with no waiting reason — and the switch said it succeeded.
+    it('a restarted container that has just exited is failing too', async () => {
+      const exited = {
+        metadata: { name: 'shim-a', annotations: { 'insula.host/config-hash': HASH } },
+        spec: { nodeName: 'node-1' },
+        status: { containerStatuses: [{ ready: false, restartCount: 2, state: { terminated: { exitCode: 1, reason: 'Error' } } }] },
+      };
+      await expect(findFailingShimPods(core([exited]) as never, HASH)).resolves.toEqual([
+        { pod: 'shim-a', node: 'node-1', reason: 'NotServing' },
+      ]);
+    });
+
     it('a first launch still starting is not failing, nor is a restarted pod that serves again', async () => {
       await expect(findFailingShimPods(core([live('shim-a', false, 0), live('shim-b', true, 2)]) as never, HASH)).resolves.toEqual([]);
     });
