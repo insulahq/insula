@@ -68,9 +68,24 @@ export function redactCredentialsForUi(message: string): string {
  * as the object store (ADR-061).
  */
 function exportCtx(app: FastifyInstance) {
+  return exportCtxFromApp(app, appK8s(app));
+}
+
+function appK8s(app: FastifyInstance) {
   const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG_PATH;
-  return exportCtxFromApp(app, createK8sClients(kubeconfigPath));
+  return createK8sClients(kubeconfigPath);
+}
+
+/** Where each bundle is stored (unbound-target.ts); none at all when there is no cluster to ask. */
+async function bundlePlacements(app: FastifyInstance, bundleTargetIds: ReadonlyArray<string | null>) {
+  const { targetPlacements } = await import('./unbound-target.js');
+  try {
+    return await targetPlacements(app.db, appK8s(app), bundleTargetIds, app.log);
+  } catch (err) {
+    app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'tenant-bundles: could not tell where bundles are stored');
+    return () => null;
+  }
 }
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
@@ -204,12 +219,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       tenantRows.map((c) => [c.id, { status: c.status as string, name: c.name }]),
     );
 
+    const placement = await bundlePlacements(app, visibleRows.map((r) => r.targetConfigId));
     const items: BundleSummary[] = visibleRows.map((row) => {
       const c = tenantById.get(row.tenantId);
       return toBundleSummary(row, {
         status: tenantRowToBundleStatus(c?.status),
         name: c?.name ?? null,
-      });
+      }, placement(row.targetConfigId));
     });
     const total = countRows[0]?.n ?? items.length;
     // `paginated()` returns the canonical `{data, pagination}` envelope.
@@ -320,11 +336,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       .select({ status: tenants.status, name: tenants.name })
       .from(tenants).where(eq(tenants.id, job.tenantId)).limit(1);
     const components = await app.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, id));
+    const placement = await bundlePlacements(app, [job.targetConfigId]);
     const detail: BundleDetail = {
       ...toBundleSummary(job, {
         status: tenantRowToBundleStatus(tenantRow?.status as string | undefined),
         name: tenantRow?.name ?? null,
-      }),
+      }, placement(job.targetConfigId)),
       components: components.map(toComponentInfo),
     };
     return success(detail);
@@ -1735,6 +1752,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       // bundle reference and orphan the remote object.
       const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
       await requireWritableTarget(app.db, job.targetConfigId);
+      // Everything below goes through the shim, which serves only the BOUND
+      // target: for a bundle on another one it would find nothing, drop the
+      // row and leave the data there untracked (unbound-target.ts).
+      const { requireBundleOnBoundTarget } = await import('./unbound-target.js');
+      await requireBundleOnBoundTarget(app.db, appK8s(app), job.targetConfigId, app.log);
       const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
       const handle = await store.open(id);
       if (handle) await store.delete(handle);
@@ -1902,6 +1924,7 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 function toBundleSummary(
   j: typeof backupJobs.$inferSelect,
   tenant: { status: import('@insula/api-contracts').BundleTenantStatus; name: string | null },
+  targetPlacement: import('./unbound-target.js').TargetPlacement | null,
 ): BundleSummary {
   return {
     id: j.id,
@@ -1914,6 +1937,7 @@ function toBundleSummary(
     targetKind: j.targetKind,
     targetUri: j.targetUri,
     targetConfigId: j.targetConfigId,
+    targetPlacement,
     label: j.label,
     description: j.description,
     sizeBytes: Number(j.sizeBytes),

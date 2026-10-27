@@ -729,6 +729,15 @@ export async function reapPreResizeBundle(args: {
         // try/catch swallows it, so the bundle is simply retained until its
         // 7-day expiry rather than deleted off a target we must not touch.
         await requireWritableTarget(db, job.targetConfigId);
+        // Nor one tenant backups are no longer bound to (unbound-target.ts):
+        // the bundle is kept and listed there, its row with it. Unknown
+        // binding: kept too — dropping the row would lose where it is.
+        const { resolveBoundTenantTarget, onUnboundTarget } = await import('../tenant-bundles/unbound-target.js');
+        const bound = await resolveBoundTenantTarget(db, k8s, { warn: (o, m) => console.warn(`[prebundle] ${m}`, o) });
+        if (onUnboundTarget(job.targetConfigId, bound) !== false) {
+          console.warn(`[prebundle] pre-resize bundle ${bundleId} is on a target tenant backups are not bound to (or the binding is unknown) — kept, not deleted`);
+          return;
+        }
         const store = await resolveBundleStore(k8s, cfg, secretsKey());
         const handle = await store.open(bundleId);
         if (handle) await store.delete(handle);

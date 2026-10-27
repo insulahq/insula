@@ -115,6 +115,25 @@ covers restore from archive, the restore cart (files, mailboxes, databases),
 browsing a bundle's files, and cross-cluster migration imports. A target that
 holds the archive of an archived tenant cannot be deleted.
 
+Insula never **writes** to a target the `tenant` class is not bound to. A bundle
+on one can be restored but not deleted (`BUNDLE_ON_UNBOUND_TARGET`), and expiry
+leaves it alone: it stays listed past its expiry date, marked *kept on
+&lt;target&gt;*, until you bind tenant backups to that target again — then it
+expires and is deleted as usual. The reason: a bundle this cluster took and one a
+cross-cluster migration registered look the same, and deleting from a migration
+source would delete the other cluster's backups. If you remove the target
+instead, Insula stops tracking where those bundles are and their data stays on
+it.
+
+A target that accepts a connection and never answers holds the shim for every
+class, since it opens all of its targets before it serves. The shim reports
+Ready only once it serves, stops a start that has not served within 60 seconds
+(the pod restarts with back-off), and a switch to such a target fails, saying so.
+One case seen in the lab: an OpenSSH `internal-sftp` server in a chroot under a
+container with an unbounded open-files limit (`ulimit -n` around 10⁹) spends
+minutes closing descriptors before every session — run it with
+`--ulimit nofile=65536:65536`.
+
 ??? info "Under the hood"
     The shim is one `rclone serve s3` process per node. Clients (CNPG
     barman-cloud, restic, the etcd-snapshot job) talk to it at

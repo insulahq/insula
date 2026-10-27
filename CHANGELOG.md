@@ -54,6 +54,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **A backup target that holds an archived tenant's archive can no longer be deleted**
   (`BACKUP_TARGET_HOLDS_ARCHIVES`): deleting it cleared the bundle's link to its target, and nothing
   could find the archive again.
+- **A backup shim that cannot reach a target no longer reads healthy.** The shim opens every target
+  before it serves, and one that accepts the connection and never answers held it for every class —
+  system and mail backups stopped too — while the pod read Ready and a switch to that target said it
+  succeeded. The shim is now Ready only once it serves, stops a start that has not served within 60
+  seconds (the pod restarts with back-off), and the switch fails, naming the node.
+- **Bundles on a target tenant backups are no longer bound to are kept, not lost.** Deleting one, its
+  expiry, and the restic reclaimer all acted on the bound target: they found nothing there, dropped or
+  purged the row, and left the data on the old target with nothing that knew of it. Insula now never
+  writes to an unbound target: deleting such a bundle is refused (`BUNDLE_ON_UNBOUND_TARGET`), expiry
+  leaves it listed as *kept on <target>*, and it expires as usual once that target is bound again.
+  The bundle list says where such a bundle is; it still restores.
 
 ## [2026.10.19] - 2026-10-26
 

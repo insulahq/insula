@@ -56,7 +56,9 @@ archive from before a target switch too.
 
 1. **Admin → Disaster Recovery → Migrate Tenants.**
 2. **Source target:** pick the backup config that points at A's target (or paste
-   its config id). It is used read-only — no writes to A.
+   its config id). It is used read-only — no writes to A. The bundles B registers
+   from it are never deleted there either: B does not write to a target its
+   tenant backups are not bound to.
 3. **List tenants:** B scans the target and lists every tenant it finds — name,
    primary email, newest bundle, size, components. A tenant that **already
    exists on B** is shown but not selectable (it would be skipped to avoid an
