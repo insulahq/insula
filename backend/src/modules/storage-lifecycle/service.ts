@@ -1173,15 +1173,10 @@ async function runResizeDestructive(
           || selectTenantStorageClass(namespace);
         await noteOnOp(ctx.db, opId, { storageClass });
         await guard.stillMine();
-        // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
-        // if a previous failed op's rollback dropped it).
-        try {
-          await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
-        } catch (err) {
-          if (!is404(err)) throw err;
-        }
-        // Poll until gone
-        await waitForPvcGone(ctx.k8s, namespace, pvcName);
+        // Delete the old PVC (it may already be gone, e.g. if a previous failed
+        // op's rollback dropped it) and wait until it is: a backup's finished
+        // Job pod still names it for the Job's TTL and holds it (claim-release.ts).
+        await deleteClaimOrThrow(ctx.k8s, namespace, pvcName);
         await guard.stillMine();
         // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
         // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
@@ -1363,19 +1358,36 @@ async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, 
   }
 }
 
-async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: string, timeoutMs = 60_000): Promise<void> {
-  const start = Date.now();
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
-    } catch (err) {
-      if (is404(err)) return;
-      throw err;
-    }
-    if (Date.now() - start > timeoutMs) throw new Error(`PVC ${pvcName} still exists after ${timeoutMs}ms`);
-    await new Promise((r) => setTimeout(r, 2000));
-  }
+/** Delete the claim and wait until it is gone; throws, naming what holds it, when it stays. */
+async function deleteClaimOrThrow(k8s: K8sClients, namespace: string, pvcName: string): Promise<void> {
+  const { deleteClaimAndWait, describeHolders } = await import('./claim-release.js');
+  const released = await deleteClaimAndWait(k8s, namespace, pvcName);
+  if (!released.gone) throw new Error(`PVC ${pvcName} was deleted and is ${describeHolders(released.live)}`);
+}
+
+/**
+ * A restore never writes into a claim that is being deleted — the archive's
+ * own, still held: the files would go with it, and the tenant would be
+ * reactivated onto an empty volume. Waits for it to go; refuses, saying what
+ * holds it, when it does not.
+ */
+async function awaitReleasingClaim(k8s: K8sClients, namespace: string, timeoutMs: number, during: 'request' | 'operation'): Promise<void> {
+  const { claimBeingDeleted, deleteClaimAndWait, describeHolders } = await import('./claim-release.js');
+  const pvcName = `${namespace}-storage`;
+  if (!(await claimBeingDeleted(k8s, namespace, pvcName))) return;
+  const released = await deleteClaimAndWait(k8s, namespace, pvcName, { timeoutMs });
+  if (released.gone) return;
+  throw new ApiError(
+    'ARCHIVE_VOLUME_RELEASING',
+    `The tenant's old volume is still being removed: it is ${describeHolders(released.live)}. ${during === 'request'
+      ? 'The restore was not started.'
+      : 'The restore stopped before writing anything.'}`,
+    409,
+    { live: released.live },
+    during === 'request'
+      ? 'Restore again once the pods named have stopped.'
+      : 'Once the pods named have stopped, reset the tenant\'s storage state to idle and restore again.',
+  );
 }
 
 // ─── Restore from a tenant VolumeSnapshot (on-server) ───────────────────────
@@ -1855,12 +1867,7 @@ async function rebindPvcToRetainedVolume(
   if (!capacity) throw new ApiError('RETAINED_PV_INVALID', `Retained PV ${retainedPvName} has no capacity`, 500);
 
   // 1 + 2. Delete the current PVC, wait until it's gone.
-  try {
-    await k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
-  } catch (err) {
-    if (!is404(err)) throw err;
-  }
-  await waitForPvcGone(k8s, namespace, pvcName);
+  await deleteClaimOrThrow(k8s, namespace, pvcName);
 
   // 3. Clear the stale claimRef so the retained PV becomes Available.
   const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
@@ -2649,18 +2656,25 @@ async function runArchive(
     // Delete PVC last so deployments releasing claims don't race.
     await deleteAllDeploymentsCronJobsServices(ctx.k8s, namespace);
     await stillMine();
-    try {
-      await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
-    } catch (err) {
-      if (!is404(err)) throw err;
-    }
+    // And wait until it is gone: a backup's finished Job pod still names it
+    // for the Job's TTL and holds it (claim-release.ts). The volume clean-up
+    // below gave up on it, and a restore started meanwhile went into it. The
+    // archive is taken and the workloads are gone, so one that stays does not
+    // stop the archive: it is said, and a restore waits for it.
+    const { deleteClaimAndWait, describeHolders } = await import('./claim-release.js');
+    const released = await deleteClaimAndWait(ctx.k8s, namespace, pvcName);
+    const volumeKept = released.gone ? null : `The old volume was not removed: it is ${describeHolders(released.live)}.`;
     // And the volume itself. The tenant storage class keeps a volume whose
     // claim is deleted (reclaimPolicy Retain), so the claim's delete used to
     // leave the PV Released and the Longhorn volume, with all the tenant's
     // data, in place until the tenant was deleted. The final bundle is the
     // restore source now (restore builds a fresh volume from it).
-    const { reapNamespaceVolumes, realReapDeps } = await import('../tenant-lifecycle/reap-namespace-volumes.js');
-    await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
+    // Not while the claim is there: its volume cannot be released, and the
+    // reap would only wait out its own timeout.
+    if (released.gone) {
+      const { reapNamespaceVolumes, realReapDeps } = await import('../tenant-lifecycle/reap-namespace-volumes.js');
+      await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
+    }
 
     // The tenant's own cascades: mail accounts, mail domains, DNS zones,
     // domains, deployments, the status and the tenant's notice.
@@ -2686,7 +2700,7 @@ async function runArchive(
 
     await stillMine();
     await updateOp(ctx.db, opId, {
-      state: 'idle', progressPct: 100, progressMessage: 'Archive complete', completedAt: new Date(),
+      state: 'idle', progressPct: 100, progressMessage: volumeKept ? `Archive complete. ${volumeKept}` : 'Archive complete', completedAt: new Date(),
     });
     await ctx.db.update(tenants).set({
       storageLifecycleState: 'idle',
@@ -2857,6 +2871,9 @@ export async function restoreArchivedTenant(
 
 const GIB = 1024 ** 3;
 
+/** How long a restore request waits for the archive's old volume to be removed before refusing. */
+const RESTORE_REQUEST_CLAIM_WAIT_MS = 20_000;
+
 /** The logical size of an archive bundle's files (restic `total_bytes_processed`); 0 when unknown. */
 async function archiveFilesBytes(db: Database, archivePath: string | null): Promise<number> {
   const bundleId = archivePath?.startsWith('bundle:') ? archivePath.slice('bundle:'.length) : null;
@@ -2906,6 +2923,10 @@ async function startRestoreArchived(
   // takes tenants is refused here, not after the restore Job waited for it.
   const { chooseRestoreNode } = await import('../tenant-archive/restore-placement.js');
   const nodeName = await chooseRestoreNode(ctx.db, ctx.k8s, tenant, params.nodeName);
+
+  // The archive's own volume, still being removed: waited for briefly, and
+  // refused here — before anything is changed — when it stays.
+  await awaitReleasingClaim(ctx.k8s, tenant.kubernetesNamespace, RESTORE_REQUEST_CLAIM_WAIT_MS, 'request');
 
   const opId = uuid();
   await ctx.db.transaction(async (tx) => {
@@ -3084,8 +3105,17 @@ async function runRestoreArchive(
       // is removed first, and the tenant gets the size asked for; one that holds
       // anything is used as it is.
       const { inspectArchivedVolume, removeUnusedVolume } = await import('./archived-volume.js');
-      const leftover = await inspectArchivedVolume(ctx.k8s, namespace, tenant?.archivedAt ?? null);
+      // One still being deleted — the archive's own — is waited for first: written into, it would
+      // go from under the tenant (claim-release.ts); then looked at again.
+      let leftover = await inspectArchivedVolume(ctx.k8s, namespace, tenant?.archivedAt ?? null);
       await guard.stillMine();
+      if (leftover.kind === 'releasing') {
+        await updateOp(ctx.db, opId, { progressMessage: 'Waiting for the old volume to be removed' });
+        const { CLAIM_RELEASE_TIMEOUT_MS } = await import('./claim-release.js');
+        await awaitReleasingClaim(ctx.k8s, namespace, CLAIM_RELEASE_TIMEOUT_MS, 'operation');
+        await guard.stillMine();
+        leftover = await inspectArchivedVolume(ctx.k8s, namespace, tenant?.archivedAt ?? null);
+      }
       if (leftover.kind === 'unused') await removeUnusedVolume(ctx.k8s, namespace, leftover);
 
       // A volume of another size than the tenant had (`setQuota`): the

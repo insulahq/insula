@@ -291,8 +291,9 @@ async function captureSystemBundle(args: {
   // CRITICAL for the destructive-shrink path: the files-capture Job's
   // Completed pod still holds the PVC RO mount, and the pvc-protection
   // finalizer blocks a PVC delete while ANY pod (even Completed) mounts
-  // it — so the resize's `waitForPvcGone` would time out (it leaves the
-  // Job for slow ttlSecondsAfterFinished GC). Explicitly delete the Job
+  // it — so the resize's claim delete would wait for it (it leaves the Job
+  // for slow ttlSecondsAfterFinished GC; claim-release.ts removes a finished
+  // pod it finds, but not this one's Job). Explicitly delete the Job
   // (+pod) now rather than waiting for GC — Background propagation so we
   // don't block; the PVC-delete poll absorbs the brief pod-termination lag.
   await deleteCaptureJob(db, k8s, tenantId, result.bundleId);

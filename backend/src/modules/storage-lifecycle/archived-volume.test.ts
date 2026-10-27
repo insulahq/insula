@@ -17,7 +17,7 @@ const notFound = (): Error => Object.assign(new Error('not found'), { code: 404 
 
 interface Cluster {
   /** null: no claim. */
-  claim: { created?: Date | string; volume?: string } | null;
+  claim: { created?: Date | string; volume?: string; deleting?: boolean } | null;
   pods: Array<{ claims: string[] }>;
   pv: { driver?: string; handle?: string } | null;
   longhorn: { state?: string; actualSize?: number | string; lastPodRefAt?: string } | null | 'unreadable';
@@ -49,7 +49,10 @@ function k8s(c: Cluster): K8sClients {
         if (claimGone) {
           if (lingering > 0) { lingering -= 1; } else { throw notFound(); }
         }
-        return { metadata: { creationTimestamp: c.claim.created }, spec: { volumeName: c.claim.volume } };
+        return {
+          metadata: { creationTimestamp: c.claim.created, ...(c.claim.deleting ? { deletionTimestamp: AFTER } : {}) },
+          spec: { volumeName: c.claim.volume },
+        };
       },
       listNamespacedPod: async () => {
         if (c.failOn === 'pods') throw new Error('the API server did not answer');
@@ -85,6 +88,12 @@ const inspect = (c: Cluster, archivedAt: Date | null = ARCHIVED_AT, nowMs: numbe
 describe('a storage volume on an archived tenant', () => {
   it('is absent when the tenant has no claim — the state an archive leaves', async () => {
     expect(await inspect(stray({ claim: null }))).toEqual({ kind: 'absent' });
+  });
+
+  it('is releasing when the claim is being deleted — the archive\'s own, older than the archive, still held by a pod that names it', async () => {
+    const c = stray({ claim: { created: new Date('2026-05-01T00:00:00.000Z'), volume: 'pvc-old', deleting: true }, pods: [{ claims: [CLAIM] }] });
+    expect(await inspect(c)).toEqual({ kind: 'releasing' });
+    expect(c.deleted).toEqual([]);
   });
 
   it('is unused when it was created after the archive, no pod uses it, and Longhorn holds zero bytes for it', async () => {

@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.20-rc.1] - 2026-10-27
-
 ### Changed
 
 - **A restored archive comes back suspended.** Restore archived tenant brings back the files and
@@ -56,6 +54,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **A backup target that holds an archived tenant's archive can no longer be deleted**
   (`BACKUP_TARGET_HOLDS_ARCHIVES`): deleting it cleared the bundle's link to its target, and nothing
   could find the archive again.
+- **An archive taken soon after a backup removes the tenant's volume, and a restore no longer
+  writes into it.** A backup's finished pod stays for ten minutes, and Kubernetes keeps a deleted
+  volume claim while a pod names it. So an archive within ten minutes of any backup of the tenant,
+  the nightly one included, left the old volume in place, still being deleted. A restore in that time
+  wrote the archive into it; once it went, the tenant was reactivated onto a new, empty volume
+  (measured on lab staging). The archive, a destructive resize and a restore onto a retained volume
+  now remove the finished pods that hold the claim and wait until it is gone. A restore never writes
+  into a claim that is being deleted: it waits, or is refused (`ARCHIVE_VOLUME_RELEASING`), naming
+  the pod that still uses it. A destructive resize within ten minutes of a backup failed after 60 s
+  for the same reason.
 - **A backup shim that cannot reach a target no longer reads healthy.** The shim opens every target
   before it serves, and one that accepts the connection and never answers held it for every class —
   system and mail backups stopped too — while the pod read Ready and a switch to that target said it
