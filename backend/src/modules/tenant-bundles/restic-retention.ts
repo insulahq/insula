@@ -88,6 +88,7 @@ import {
 import { anchorResticRepoTotal } from './repo-state.js';
 import { notifyResticFailure } from './restic-failure-notify.js';
 import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { resolveBoundTenantTarget, type BoundTenantTarget } from './unbound-target.js';
 import { ALL_REPO_LAYOUTS, layoutsHoldingSnapshots, repoLayoutForStateRow } from './repo-layout.js';
 import { bundleIsLive } from './bundle-hold.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -98,7 +99,8 @@ export type RepoSkipReason =
   | 'no-db-history'
   | 'unknown-component'
   | 'repo-missing'
-  | 'nothing-to-forget';
+  | 'nothing-to-forget'
+  | 'shim-switching';
 
 export interface ResticRepoResult {
   readonly tenantId: string;
@@ -338,6 +340,25 @@ export async function runResticRetentionSweep(
     };
   }
 
+  // The repositories looked into are the ones the shim serves, so only bundles
+  // on the bound target are judged by what they hold (stampReclaimedComponents).
+  // While the shim has not rolled onto the current binding it serves the
+  // previous target, which tenant backups are no longer bound to: no sweep then
+  // — it would forget there and declare the new target's bundles reclaimed
+  // (unbound-target.ts). The next one runs as usual.
+  const bound = await resolveBoundTenantTarget(db, k8s, logger);
+  if (!bound.known && bound.reason === 'switching') {
+    logger.info({}, 'restic retention: the backup shim is switching targets — sweep skipped');
+    return {
+      dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, reposAnchored: 0, bundlesPurged: 0, errors: 0,
+      repos: [{
+        tenantId: args.tenantId ?? '*', component: '*', repoUri: '', snapshotsInRepo: 0,
+        keptCount: 0, forgottenCount: 0, forgottenIds: [], prunedNow: false,
+        prunePending: false, skipped: 'shim-switching', error: null,
+      }],
+    };
+  }
+
   const minAgeCutoff = new Date(now().getTime() - minAgeHours * 60 * 60 * 1000);
   let snapshotsForgotten = 0;
   let reposSkipped = 0;
@@ -485,7 +506,7 @@ export async function runResticRetentionSweep(
         if (!dryRun) {
           try {
             await stampReclaimedComponents({
-              db, tenantId, component, layout, stillPresent: new Set(kept), at: now(),
+              db, tenantId, component, layout, bound, stillPresent: new Set(kept), at: now(),
             });
           } catch (err) {
             logger.warn({ err, tenantId, component }, 'restic retention: stamp reconcile failed (retried next sweep)');
@@ -539,7 +560,7 @@ export async function runResticRetentionSweep(
       try {
         const stillPresent = new Set(kept);
         await stampReclaimedComponents({
-          db, tenantId, component, layout, stillPresent, at: now(),
+          db, tenantId, component, layout, bound, stillPresent, at: now(),
         });
       } catch (err) {
         logger.warn({ err, tenantId, component }, 'restic retention: could not stamp reclaimed components (retried next sweep)');
@@ -930,10 +951,22 @@ export async function stampReclaimedComponents(args: {
    * of the sweep — with the snapshot still on the target.
    */
   layout: ResticRepoLayout;
+  /**
+   * The target the repository is on — the bound one, the only one the shim
+   * serves. The same rule as the layout: a bundle written to ANOTHER target is
+   * absent from this repository without being gone, and stamped it was purged
+   * with its data still on that target (unbound-target.ts). Not known: nothing
+   * is stamped, and the next sweep tries again.
+   */
+  bound: BoundTenantTarget;
   /** Snapshot ids still in the repository. */
   stillPresent: ReadonlySet<string>;
   at: Date;
 }): Promise<number> {
+  if (!args.bound.known) return 0;
+  const onBound = args.bound.id
+    ? sql`(bj.target_config_id IS NULL OR bj.target_config_id = ${args.bound.id})`
+    : sql`bj.target_config_id IS NULL`;
   const rows = await args.db.execute(sql`
     SELECT bc.id AS id, bc.sha256 AS sha256
     FROM backup_components bc
@@ -942,6 +975,7 @@ export async function stampReclaimedComponents(args: {
       AND bc.component::text = ${args.component}
       -- As normaliseRepoLayout reads it: anything but 'per-tenant' is the historical layout.
       AND (CASE WHEN bj.repo_layout = 'per-tenant' THEN 'per-tenant' ELSE 'per-component' END) = ${args.layout}
+      AND ${onBound}
       AND bc.sha256 IS NOT NULL
       AND bc.snapshot_reclaimed_at IS NULL
   `) as unknown as { rows: Array<{ id: string; sha256: string }> };

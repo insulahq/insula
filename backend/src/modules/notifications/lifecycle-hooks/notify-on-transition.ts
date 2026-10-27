@@ -44,7 +44,9 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       const { notifyTenantArchived } = await import('../events.js');
       const r = await notifyTenantArchived(ctx.db, ctx.tenantId, { keptUntil: vars.keptUntil ?? 'for a limited time' }, { suppressTenantNotification });
       if (!r.ok) throw new Error(r.error ?? 'dispatch failed');
-    } else if (ctx.transition === 'restored') {
+    } else if (ctx.transition === 'restored' || (ctx.transition === 'suspended' && ctx.restoredFromArchive)) {
+      // A restore from archive ends suspended (applySuspendedFromArchive): the
+      // tenant hears that its account is back, not that it was suspended.
       const { notifyTenantRestored } = await import('../events.js');
       const r = await notifyTenantRestored(ctx.db, ctx.tenantId, { mailboxNote: vars.mailboxNote }, { suppressTenantNotification });
       if (!r.ok) throw new Error(r.error ?? 'dispatch failed');
@@ -103,7 +105,7 @@ async function transitionVariables(ctx: HookCtx): Promise<Record<string, string>
         : 'with no end date',
     };
   }
-  if (ctx.transition === 'restored') {
+  if (ctx.transition === 'restored' || (ctx.transition === 'suspended' && ctx.restoredFromArchive)) {
     const [row] = await ctx.db.select({ n: sql<number>`count(*)` }).from(mailboxes).where(eq(mailboxes.tenantId, ctx.tenantId));
     return Number(row?.n ?? 0) > 0
       ? { mailboxNote: 'Your mailboxes are back with their mail, but each needs a new password: set one under Email in your control panel.' }

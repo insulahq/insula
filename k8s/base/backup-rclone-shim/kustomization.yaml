@@ -26,6 +26,8 @@ resources:
   - daemonset.yaml
   - service.yaml
   - networkpolicy.yaml
+  # Who may reach the temporary read-only source shims (backup-source-shim).
+  - source-shim-networkpolicy.yaml
   # NB: no PodDisruptionBudget. A PDB cannot protect DaemonSet pods — the
   # disruption controller resolves the owning controller's `scale`
   # subresource to compute "expected pods", and DaemonSets do not implement

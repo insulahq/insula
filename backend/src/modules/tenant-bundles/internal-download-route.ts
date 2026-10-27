@@ -31,7 +31,7 @@ import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { resolveShimFirstBackupStore } from './shim-backup-store.js';
-import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { resolveTenantBundleReadTarget } from '../backup-source-shim/service.js';
 import { runResticDump, deriveResticPassword } from './restic-driver.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { decrypt } from '../oidc/crypto.js';
@@ -189,7 +189,9 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
       ?? process.env.KUBECONFIG_PATH;
     const k8s = createK8sClients(kubeconfigPath);
-    const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+    // On the target the bundle was written to (a read-only source shim when
+    // tenant backups are bound elsewhere now).
+    const { target } = await resolveTenantBundleReadTarget(app.db, k8s, job.targetConfigId ?? null, app.log);
     const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
 
     const stream = await runResticDump({

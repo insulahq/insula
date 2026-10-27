@@ -50,7 +50,7 @@ import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
 import { requireWritableTarget } from '../backup-config/writable-guard.js';
-import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../backup-source-shim/service.js';
 import { buildResticRepoUri, buildResticEnv, deriveResticPassword, RESTIC_RESTORE_SKIP_SELINUX_LABEL } from '../tenant-bundles/restic-driver.js';
 import {
   FILES_CAPTURE_ROOT,
@@ -406,8 +406,13 @@ export async function restoreFilesBundleIntoPvc(args: {
   }
   const snapshotId = comp.sha256;
 
-  // Shim target + per-tenant restic password + repo (same as the capture).
-  const target = await resolveShimBackupTarget(k8s.core, 'tenant');
+  // The target the bundle was written to — through the real shim, or a
+  // read-only source shim when that is not the target tenant backups are
+  // bound to now — + per-tenant restic password + repo (same as the capture).
+  const [bundleRow] = await db.select({ targetConfigId: backupJobs.targetConfigId }).from(backupJobs)
+    .where(eq(backupJobs.id, bundleId)).limit(1);
+  const read = await resolveTenantBundleReadTarget(db, k8s, bundleRow?.targetConfigId ?? null, console);
+  const { target } = read;
   const passwordHex = deriveResticPassword(secretsKey(), tenantId);
   const repoUri = buildResticRepoUri(target, tenantId, 'files', await resolveBundleRepoLayout(db, bundleId));
   const env = buildResticEnv(target);
@@ -468,6 +473,7 @@ export async function restoreFilesBundleIntoPvc(args: {
 
     const spec = buildResticRestoreJobSpec({
       jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId, pinToNode,
+      extraLabels: sourceShimJobLabels(read),
       // Bound the Job's wall-clock in k8s so a platform-api restart mid-restore
       // doesn't leave it running forever with the PVC + creds mounted.
       activeDeadlineSeconds: Math.max(60, Math.ceil(timeoutMs / 1000) - 60),
@@ -512,6 +518,8 @@ export function buildResticRestoreJobSpec(input: {
   /** Node to run on (the tenant's primary node); null/absent leaves it to the scheduler. */
   pinToNode?: string | null;
   activeDeadlineSeconds?: number;
+  /** On the Job: the source shim it reads through (`sourceShimJobLabels`). */
+  extraLabels?: Readonly<Record<string, string>>;
 }): Record<string, unknown> {
   const script = [
     'set -e',
@@ -545,6 +553,7 @@ export function buildResticRestoreJobSpec(input: {
       name: input.jobName,
       namespace: input.namespace,
       labels: {
+        ...(input.extraLabels ?? {}),
         'platform.io/component': 'restore-files',
         'platform.io/tenant-id': input.tenantId,
         'platform.io/pre-resize-bundle': input.bundleId,
@@ -720,6 +729,15 @@ export async function reapPreResizeBundle(args: {
         // try/catch swallows it, so the bundle is simply retained until its
         // 7-day expiry rather than deleted off a target we must not touch.
         await requireWritableTarget(db, job.targetConfigId);
+        // Nor one tenant backups are no longer bound to (unbound-target.ts):
+        // the bundle is kept and listed there, its row with it. Unknown
+        // binding: kept too — dropping the row would lose where it is.
+        const { resolveBoundTenantTarget, onUnboundTarget } = await import('../tenant-bundles/unbound-target.js');
+        const bound = await resolveBoundTenantTarget(db, k8s, { warn: (o, m) => console.warn(`[prebundle] ${m}`, o) });
+        if (onUnboundTarget(job.targetConfigId, bound) !== false) {
+          console.warn(`[prebundle] pre-resize bundle ${bundleId} is on a target tenant backups are not bound to (or the binding is unknown) — kept, not deleted`);
+          return;
+        }
         const store = await resolveBundleStore(k8s, cfg, secretsKey());
         const handle = await store.open(bundleId);
         if (handle) await store.delete(handle);

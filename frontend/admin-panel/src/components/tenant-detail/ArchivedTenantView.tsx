@@ -30,7 +30,8 @@ export default function ArchivedTenantView({
   readonly restoring: boolean;
   /** Kept out of automatic archive and delete: an expired archive waits instead of deleting the tenant. */
   readonly keptOutOfAutomation?: boolean;
-  readonly onRestore: (whole: boolean) => void;
+  /** Opens the restore dialog (the node and the size it comes back with). */
+  readonly onRestore: () => void;
 }) {
   const { data, isLoading, isError } = useTenantArchive(tenantId);
   const info = data?.data;
@@ -102,6 +103,11 @@ export default function ArchivedTenantView({
               </dd>
             </div>
           </dl>
+          {info.target && (
+            <p className="mt-3 text-xs text-gray-500 dark:text-gray-400" data-testid="archive-target">
+              Stored on {info.target.name}{info.target.bound ? '' : ' — not the target tenant backups use now; a restore reads it through a temporary, read-only connection'}.
+            </p>
+          )}
           {info.bundle && !info.bundle.whole && (
             <p className="mt-3 text-xs text-amber-700 dark:text-amber-400" data-testid="archive-files-only">
               This archive is from before archives held everything: it holds the files only. Restoring brings the files
@@ -116,13 +122,13 @@ export default function ArchivedTenantView({
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
               type="button"
-              onClick={() => onRestore(info.bundle?.whole ?? false)}
+              onClick={onRestore}
               disabled={blockedBy !== null || restoring}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
               data-testid="restore-archived-button"
             >
               {restoring ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
-              Restore archived tenant
+              Restore archived tenant…
             </button>
             {blockedBy && (
               <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="archive-not-restorable">{blockedBy}</span>

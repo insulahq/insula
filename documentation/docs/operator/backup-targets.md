@@ -103,6 +103,39 @@ phases (drain → write → reconcile → verify). If a backup is wedged and you
 switch anyway, a force option short-circuits the drain — any mid-upload over the
 old config aborts and retries on the next schedule.
 
+A switch copies nothing: the bundles already taken stay on the old target, and
+new ones go to the new one. Keep the old target configured (it does not have
+to be assigned to anything) — a restore of a tenant bundle reads it from the
+target it was written to. For a bundle on a target the `tenant` class is not
+bound to — the old one after a switch, a rebuilt cluster's previous target, a
+migration source — Insula starts a temporary, read-only copy of the shim bound
+to that target (`backup-source-<id>` in the `platform` namespace), reads
+through it, and removes it once no restore has used it for 30 minutes. This
+covers restore from archive, the restore cart (files, mailboxes, databases),
+browsing a bundle's files, and cross-cluster migration imports. A target that
+holds the archive of an archived tenant cannot be deleted.
+
+Insula never **writes** to a target the `tenant` class is not bound to. A bundle
+on one can be restored but not deleted (`BUNDLE_ON_UNBOUND_TARGET`), and expiry
+leaves it alone: it stays listed past its expiry date, marked *kept on
+&lt;target&gt;*, until you bind tenant backups to that target again — then it
+expires and is deleted as usual. The reason: a bundle this cluster took and one a
+cross-cluster migration registered look the same, and deleting from a migration
+source would delete the other cluster's backups. If you remove the target
+instead, Insula stops tracking where those bundles are and their data stays on
+it. While a switch is rolling out, deletes and expiry wait for the shim to serve
+the new binding (`BOUND_TARGET_SWITCHING`). A new bundle or an import always
+goes to the bound target; naming another is refused (`BUNDLE_TARGET_NOT_BOUND`).
+
+A target that accepts a connection and never answers holds the shim for every
+class, since it opens all of its targets before it serves. The shim reports
+Ready only once it serves, stops a start that has not served within 60 seconds
+(the pod restarts with back-off), and a switch to such a target fails, saying so.
+One case seen in the lab: an OpenSSH `internal-sftp` server in a chroot under a
+container with an unbounded open-files limit (`ulimit -n` around 10⁹) spends
+minutes closing descriptors before every session — run it with
+`--ulimit nofile=65536:65536`.
+
 ??? info "Under the hood"
     The shim is one `rclone serve s3` process per node. Clients (CNPG
     barman-cloud, restic, the etcd-snapshot job) talk to it at

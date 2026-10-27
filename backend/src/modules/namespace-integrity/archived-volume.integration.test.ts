@@ -34,11 +34,16 @@ vi.mock('../storage-lifecycle/prebundle.js', async (orig) => ({
   restoreFilesBundleIntoPvc: async (args: { bundleId: string; pvcName: string }) => { restored.push(`files of ${args.bundleId} into ${args.pvcName}`); },
 }));
 vi.mock('../tenant-lifecycle/cascades.js', () => ({
-  applyRestored: async (ctx: { db: Database }, tenantId: string) => {
-    await ctx.db.update(tenants).set({ status: 'active', archivedAt: null }).where(eq(tenants.id, tenantId));
+  // A restore from archive lands suspended.
+  applySuspendedFromArchive: async (ctx: { db: Database }, tenantId: string) => {
+    await ctx.db.update(tenants).set({ status: 'suspended', archivedAt: null }).where(eq(tenants.id, tenantId));
     return 't-1';
   },
 }));
+vi.mock('../tenant-archive/restore-placement.js', () => ({
+  chooseRestoreNode: async (_db: unknown, _k8s: unknown, t: { nodeName: string | null }) => t.nodeName ?? null,
+}));
+vi.mock('../domains/k8s-ingress.js', () => ({ reconcileIngress: async () => undefined }));
 
 const { checkTenantNamespaceIntegrity, sweepFleetIntegrity } = await import('./service.js');
 const { restoreArchivedTenant } = await import('../storage-lifecycle/service.js');

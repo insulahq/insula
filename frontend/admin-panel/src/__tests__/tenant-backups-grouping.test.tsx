@@ -43,11 +43,13 @@ const TENANT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 // purpose: bundles captured before the column existed have no figure, and
 // that has to render as "unknown", not as 0.
 const BUNDLES_PAGE_1 = [
-  { id: 'b1', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'nightly', sizeBytes: 1_000_000, resticAddedBytes: 4_096, createdAt: '2026-08-29T00:00:00.000Z', initiator: 'system', lastError: null },
+  { id: 'b1', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'nightly', sizeBytes: 1_000_000, resticAddedBytes: 4_096, createdAt: '2026-08-29T00:00:00.000Z', initiator: 'system', lastError: null, expiresAt: '2999-01-01T00:00:00.000Z', targetPlacement: { name: 'now-s3', bound: true } },
   { id: 'b2', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'manual', sizeBytes: 2_000_000, resticAddedBytes: null, createdAt: '2026-08-30T00:00:00.000Z', initiator: 'tenant', lastError: null },
 ];
 const BUNDLES_PAGE_2 = [
-  { id: 'b4', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'older', sizeBytes: 1_500_000, resticAddedBytes: 2_048, createdAt: '2026-08-28T00:00:00.000Z', initiator: 'system', lastError: null },
+  // On the target tenant backups used before, past its expiry: Insula never
+  // deletes there, so it is kept and listed (unbound-target.ts).
+  { id: 'b4', tenantId: TENANT_A, tenantName: 'Acme', status: 'completed', label: 'older', sizeBytes: 1_500_000, resticAddedBytes: 2_048, createdAt: '2026-08-28T00:00:00.000Z', initiator: 'system', lastError: null, expiresAt: '2026-09-04T00:00:00.000Z', targetPlacement: { name: 'old-sftp', bound: false } },
 ];
 /** Total across ALL pages, as the server reports it in the envelope. */
 const BUNDLE_TOTAL = 27;
@@ -229,6 +231,22 @@ describe('tenant backup grouping', () => {
     const row = screen.getByTestId('tenant-bundle-restore-b2').closest('tr');
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain('—');
+  });
+
+  it('a bundle on a target backups are no longer bound to says so, and cannot be deleted', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId(`tenant-backup-group-${TENANT_A}`)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(`tenant-backup-group-toggle-${TENANT_A}`));
+    await waitFor(() => expect(screen.getByTestId('tenant-bundle-unbound-b4')).toBeInTheDocument());
+    expect(screen.getByTestId('tenant-bundle-unbound-b4')).toHaveTextContent('expired · kept on old-sftp');
+    const del = screen.getByTestId('tenant-bundle-delete-b4');
+    expect(del).toBeDisabled();
+    expect(del.getAttribute('title')).toContain('Bind tenant backups to old-sftp again');
+    // Still restorable: it is read through a read-only source shim.
+    expect(screen.getByTestId('tenant-bundle-restore-b4')).not.toBeDisabled();
+    // A bundle on the bound target is plain, and deletable.
+    expect(screen.queryByTestId('tenant-bundle-unbound-b1')).toBeNull();
+    expect(screen.getByTestId('tenant-bundle-delete-b1')).not.toBeDisabled();
   });
 
   it('measures the repo through the refresh endpoint', async () => {

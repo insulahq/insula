@@ -29,6 +29,7 @@ import {
 } from '../../db/schema.js';
 import {
   DEFAULT_BACKOFF_MS,
+  RESTORED_FROM_ARCHIVE,
   listHooks,
   type HookCtx,
   type HookErrorEnvelope,
@@ -89,6 +90,7 @@ interface TransitionLite {
   tenantId: string;
   transitionKind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted';
   namespace: string | null;
+  detail: Record<string, unknown> | null;
 }
 
 /**
@@ -152,6 +154,7 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
       tenantId: tenantLifecycleTransitions.tenantId,
       transitionKind: tenantLifecycleTransitions.transitionKind,
       namespace: tenantLifecycleTransitions.namespace,
+      detail: tenantLifecycleTransitions.detail,
     })
       .from(tenantLifecycleTransitions)
       .where(eq(tenantLifecycleTransitions.id, row.transitionId))
@@ -210,6 +213,7 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
       transitionId: parent.id,
       transition: parent.transitionKind,
       attempt,
+      restoredFromArchive: parent.detail?.[RESTORED_FROM_ARCHIVE] === true,
     };
 
     let result;

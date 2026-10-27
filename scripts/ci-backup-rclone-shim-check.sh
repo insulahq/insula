@@ -512,9 +512,27 @@ fi
 if ! grep -qE 'ready\(\) *\{' "$CONFIGMAP" || ! grep -qE 'idle\(\) *\{ *ready;' "$CONFIGMAP"; then
   fail "Invariant 24: launcher.sh must define ready()/idle() and mark Ready in the idle (sleep) branch so rollouts complete when target-less"
 fi
-if ! grep -qE '^\s*ready\s*$' "$CONFIGMAP"; then
-  fail "Invariant 24: launcher.sh must mark Ready immediately before exec'ing rclone serve s3 (serving branch)"
-fi
 pass "Invariant 24: readiness decoupled from :9000 via launcher marker (rollout-safe when target-less)"
 
-echo "[ci-backup-rclone-shim] All 24 invariants pass."
+# ─── 25. Serving branch is Ready only once :9000 listens ─────────────
+# rclone opens every upstream before it binds :9000, and one that never
+# answers (an SFTP server that accepts the login and never sends its SFTP
+# version) holds every class. Marking Ready just before exec made that shim
+# read healthy while it served nothing, and a switch to it "succeeded". The
+# serving branch must mark Ready from a watchdog that sees :9000 listening,
+# and stop a launch that is not listening by its deadline.
+if grep -qE '^\s*ready\s*$' "$CONFIGMAP"; then
+  fail "Invariant 25: launcher.sh marks Ready unconditionally before exec — Ready must wait for :9000 to listen"
+fi
+if ! grep -qE 'if listening; then ready;' "$CONFIGMAP" || ! grep -qF ':2328 ' "$CONFIGMAP"; then
+  fail "Invariant 25: launcher.sh's watchdog must mark Ready only once :9000 (hex 2328) is LISTEN"
+fi
+if ! grep -qE '^\s*STARTUP_DEADLINE=[0-9]+$' "$CONFIGMAP" || ! grep -qE 'kill -TERM "\$SELF"' "$CONFIGMAP"; then
+  fail "Invariant 25: launcher.sh's watchdog must stop a launch not listening by STARTUP_DEADLINE"
+fi
+if ! grep -qF '( watchdog & )' "$CONFIGMAP"; then
+  fail "Invariant 25: launcher.sh must double-fork the watchdog so tini reaps it (rclone would leave a zombie)"
+fi
+pass "Invariant 25: serving shim is Ready only once :9000 listens; a launch that never listens is stopped"
+
+echo "[ci-backup-rclone-shim] All 25 invariants pass."

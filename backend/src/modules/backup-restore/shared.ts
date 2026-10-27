@@ -38,6 +38,7 @@ import {
 } from '../backup-rclone-shim/rclone-config.js';
 import type { BackupStore, BundleHandle } from '../tenant-bundles/bundle-store.js';
 import { resolveShimFirstBackupStore } from '../tenant-bundles/shim-backup-store.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { execConfigTablesItem } from './executors/config-tables.js';
 import { execDatabasesByIdItem } from './executors/databases-by-id.js';
 import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
@@ -94,6 +95,13 @@ export async function loadBundle(app: FastifyInstance, bundleId: string) {
 
 export async function resolveStoreForBundle(app: FastifyInstance, bundleId: string): Promise<BackupStore> {
   const job = await loadBundle(app, bundleId);
+  // A bundle on a target tenant backups are no longer bound to (an archive
+  // from before a target switch, a migration source, an old target after a
+  // rebuild) is read through a read-only source shim for that target.
+  const { sourceShimBundleStore } = await import('../backup-source-shim/service.js');
+  const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+  const onSource = await sourceShimBundleStore(app.db, createK8sClients(kubeconfigPath), job.targetConfigId ?? null, app.log);
+  if (onSource) return onSource;
   // B9 routing parity: tenant bundles are WRITTEN through the
   // backup-rclone-shim regardless of upstream (S3/SFTP/CIFS/NFS).
   // The restore READ must therefore also go through the shim,

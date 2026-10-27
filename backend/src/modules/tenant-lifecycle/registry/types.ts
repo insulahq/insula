@@ -76,7 +76,18 @@ export interface HookCtx {
    * to false. ADR notification-system Phase 1.
    */
   readonly suppressTenantNotification?: boolean;
+  /**
+   * A `suspended` transition that ends a restore from archive: the tenant
+   * comes back from its archive suspended, not active. The status stamp also
+   * clears `archivedAt`, and the tenant is told its account was restored, not
+   * that it was suspended. Kept on the transition's `detail`
+   * (`RESTORED_FROM_ARCHIVE`), so a resumed or retried hook sees it too.
+   */
+  readonly restoredFromArchive?: boolean;
 }
+
+/** The `detail` key of a `suspended` transition that ends a restore from archive. */
+export const RESTORED_FROM_ARCHIVE = 'restoredFromArchive';
 
 export type BlockingPolicy = 'abort' | 'continue';
 

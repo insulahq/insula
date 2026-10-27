@@ -11,7 +11,7 @@
  * Needs a database — CI's integration job provides DATABASE_URL.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
 import { backupJobs, storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
@@ -103,9 +103,10 @@ vi.mock('../tenant-lifecycle/cascades.js', () => ({
     await ctx.db.update(tenants).set({ status: 'archived', archivedAt: new Date() }).where(eq(tenants.id, tenantId));
     return 'transition-1';
   },
-  applyRestored: async (ctx: { db: Database }, tenantId: string) => {
-    did.push('cascade restored');
-    await ctx.db.update(tenants).set({ status: 'active', archivedAt: null }).where(eq(tenants.id, tenantId));
+  // A restore from archive lands suspended.
+  applySuspendedFromArchive: async (ctx: { db: Database }, tenantId: string) => {
+    did.push('cascade suspended from the archive');
+    await ctx.db.update(tenants).set({ status: 'suspended', archivedAt: null }).where(eq(tenants.id, tenantId));
     return 'transition-2';
   },
   // What it does and does not run again is cascade-once.integration.test.ts's;
@@ -116,21 +117,27 @@ vi.mock('../tenant-lifecycle/cascades.js', () => ({
     _ns: string,
     transition: 'archived' | 'restored' | 'suspended' | 'active',
     since: Date,
+    detail?: Record<string, unknown>,
   ) => {
-    // The tenant's newest operation is the one being picked up.
+    // The tenant's newest operation still running is the one being picked up
+    // (a restore from archive writes a completed suspension record before it).
     const [op] = await ctx.db.select({ createdAt: storageOperations.createdAt }).from(storageOperations)
-      .where(eq(storageOperations.tenantId, tenantId)).orderBy(desc(storageOperations.createdAt)).limit(1);
+      .where(and(eq(storageOperations.tenantId, tenantId), isNull(storageOperations.completedAt)))
+      .orderBy(desc(storageOperations.createdAt)).limit(1);
     did.push(`cascade ${transition}, once${since.getTime() === op?.createdAt.getTime() ? ' since the operation began' : ' SINCE THE WRONG MOMENT'}`
+      + (detail?.restoredFromArchive === true ? ', from the archive' : '')
       + (ctx.suppressTenantNotification ? ', the tenant not told' : ''));
     await gate;
     failing('cascade');
     const status = { archived: 'archived', suspended: 'suspended', restored: 'active', active: 'active' } as const;
     await ctx.db.update(tenants)
-      .set({ status: status[transition], ...(transition === 'archived' ? { archivedAt: new Date() } : {}), ...(status[transition] === 'active' ? { archivedAt: null } : {}) })
+      .set({ status: status[transition], ...(transition === 'archived' ? { archivedAt: new Date() } : {}), ...(status[transition] === 'active' || detail?.restoredFromArchive === true ? { archivedAt: null } : {}) })
       .where(eq(tenants.id, tenantId));
     return 'transition-3';
   },
 }));
+// The routes a restored tenant's suspension redirects, rebuilt first.
+vi.mock('../domains/k8s-ingress.js', () => ({ reconcileIngress: async () => { did.push('routes rebuilt'); } }));
 vi.mock('../notifications/events.js', () => ({
   notifyAdminOperationalEvent: async (_db: unknown, subsystem: string, payload: Record<string, unknown>, dedupeKey?: string) => {
     told.push({ subsystem, payload, dedupeKey });
@@ -933,22 +940,25 @@ describe.skipIf(!dbAvailable)('storage operations interrupted by a restart (real
       return a;
     };
 
-    it('a restore of an archived tenant: leaves the claim, waits for the restore the dead process started, then tells the tenant it is back', async () => {
+    it('a restore of an archived tenant: leaves the claim, waits for the restore the dead process started, then brings it back suspended', async () => {
       const a = await unarchive();
       await lock(a.opId, DEAD);
       await pickUp();
       expect((await ended(a.opId)).state).toBe('idle');
-      expect(did).toEqual(['apply claim 15Gi longhorn-tenant', 'restore bkp-archive (looking for the Job left behind)', 'cascade restored, once since the operation began']);
-      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'active', storageLifecycleState: 'idle', activeStorageOpId: null });
+      expect(did).toEqual([
+        'apply claim 15Gi longhorn-tenant', 'restore bkp-archive (looking for the Job left behind)',
+        'routes rebuilt', 'cascade suspended, once since the operation began, from the archive',
+      ]);
+      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'suspended', archivedAt: null, storageLifecycleState: 'idle', activeStorageOpId: null });
     });
 
     it('a restore of an archived tenant cut off after its status was stamped: the archive is not written over what it has done since — and its cascades are finished', async () => {
-      const a = await unarchive({ tenantStatus: 'active' });
+      const a = await unarchive({ tenantStatus: 'suspended' });
       await lock(a.opId, DEAD);
       await pickUp();
       expect((await ended(a.opId)).state).toBe('idle');
-      expect(did).toEqual(['cascade restored, once since the operation began']);
-      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'active', storageLifecycleState: 'idle', activeStorageOpId: null });
+      expect(did).toEqual(['cascade suspended, once since the operation began, from the archive']);
+      expect(await tenantRow(a.tenantId)).toMatchObject({ status: 'suspended', storageLifecycleState: 'idle', activeStorageOpId: null });
     });
 
     const check = (over: Parameters<typeof inFlight>[1] = {}) => inFlight('fsck', {

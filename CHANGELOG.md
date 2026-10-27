@@ -12,6 +12,65 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **A restored archive comes back suspended.** Restore archived tenant brings back the files and
+  databases, applications, DNS zones, mail domains and mailboxes with their mail as before, but the
+  tenant is then suspended: its sites show the suspended page, its mail is shut and its applications
+  are stopped until you Reactivate it, which starts each application at the replica count it had
+  before the suspension. The tenant's notice says its account was restored and stays suspended until
+  it is reactivated. A restored tenant's automatic-archive clock starts at the restore.
+- **Restore archived tenant asks where and how big.** A dialog asks for the node (the tenant's own,
+  another, or Auto) and the volume size, and shows beforehand what the restore checks: nodes it cannot
+  use, with the reason (gone, down, not hosting tenants, cordoned, server-only, or pinned-only for an
+  HA tenant); the least size the archive's files need; where the archive is stored; and a
+  subscription that has ended. `POST /api/v1/admin/tenants/:id/storage/restore` takes
+  `{ nodeName?: string | null, newGi?: number }` (null = Auto; sizes to two decimals). PATCH
+  `status: suspended` on an archived tenant now starts a restore too; `status: active` still does.
+
+### Fixed
+
+- **Restoring an archived tenant whose node is down or gone no longer hangs for 6 hours.** The
+  restore Job and the applications were bound to the tenant's pinned node, and nothing moved that pin
+  when the node was drained, deleted or failed: an archived tenant has no Deployments or volume for
+  those to see. The restore now refuses a node it cannot use, saying why, and the dialog offers
+  another or Auto.
+- **A restore of a bundle on another backup target reads it from that target.** Every tenant bundle
+  was read through the shim, which serves only the target the `tenant` class is bound to now. An
+  archive from before a target switch, a migration source's bundles (R20), and a rebuilt cluster's
+  old bundles could not be read. A bundle on any other target is now read through a temporary,
+  read-only source shim bound to it, removed once unused for 30 minutes — for restore from archive,
+  the restore cart (files, mailboxes, databases), browsing a bundle and verifying it. Cross-cluster
+  migration imports now restore files and mail from the source target, not the destination's own.
+- **An HA tenant keeps its second copy after a restore from archive or a destructive resize.** Both
+  re-create the volume from the tenant storage class, which makes one copy; provisioning set the
+  second, these did not.
+- **A restore no longer fails an hour in on a volume too small for the archive.** The archive's files
+  are checked against the size before anything changes (`RESTORE_VOLUME_TOO_SMALL`); a larger size
+  becomes the tenant's storage size, quota included.
+- **Reactivating a tenant whose subscription has ended is refused** (`SUBSCRIPTION_EXPIRED`): the
+  hourly expiry check suspended it again within the hour, and the tenant was told twice. Set a new
+  date first.
+- **A backup target that holds an archived tenant's archive can no longer be deleted**
+  (`BACKUP_TARGET_HOLDS_ARCHIVES`): deleting it cleared the bundle's link to its target, and nothing
+  could find the archive again.
+- **A backup shim that cannot reach a target no longer reads healthy.** The shim opens every target
+  before it serves, and one that accepts the connection and never answers held it for every class —
+  system and mail backups stopped too — while the pod read Ready and a switch to that target said it
+  succeeded. The shim is now Ready only once it serves, stops a start that has not served within 60
+  seconds (the pod restarts with back-off), and the switch fails, naming the node. The switch also
+  no longer reads the previous rollout's status as the new one's: it reported success the moment it
+  patched the shim, before a single new pod had started.
+- **Bundles on a target tenant backups are no longer bound to are kept, not lost.** Deleting one, its
+  expiry, and the restic reclaimer all acted on the bound target: they found nothing there, dropped or
+  purged the row, and left the data on the old target with nothing that knew of it. Insula now never
+  writes to an unbound target: deleting such a bundle is refused (`BUNDLE_ON_UNBOUND_TARGET`), expiry
+  leaves it listed as *kept on <target>*, and it expires as usual once that target is bound again.
+  The bundle list says where such a bundle is; it still restores, and verify, export and download
+  now read it from that target too. A capture or import naming a target other than the bound one is
+  refused (`BUNDLE_TARGET_NOT_BOUND`): it was written to the bound target while its row named the
+  other.
+
 ## [2026.10.19] - 2026-10-26
 
 ### Security

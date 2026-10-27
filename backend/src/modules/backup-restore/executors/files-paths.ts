@@ -31,13 +31,13 @@ import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
-import { restoreItems, restoreJobs, tenants, backupComponents, deployments, catalogEntries, type RestoreItem } from '../../../db/schema.js';
+import { restoreItems, restoreJobs, tenants, backupComponents, backupJobs, deployments, catalogEntries, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
 import { scaleDeploymentReplicas } from '../../../shared/scale-deployment.js';
 import { readJobLogTail, tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { describeJobFailure, formatJobFailure } from '../../../shared/k8s-job-failure.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
-import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../../backup-source-shim/service.js';
 import {
   buildResticRepoUri,
   buildResticEnv,
@@ -115,7 +115,12 @@ export async function execFilesPathsItem(args: {
   const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
-  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  // Read from the target the bundle was written to: through the real shim, or
+  // a read-only source shim when tenant backups are bound elsewhere now.
+  const [bundleRow] = await app.db.select({ targetConfigId: backupJobs.targetConfigId }).from(backupJobs)
+    .where(eq(backupJobs.id, item.bundleId)).limit(1);
+  const read = await resolveTenantBundleReadTarget(app.db, k8s, bundleRow?.targetConfigId ?? null, app.log);
+  const { target } = read;
   const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
   const repoUri = buildResticRepoUri(target, job.tenantId, 'files', await resolveBundleRepoLayout(app.db, item.bundleId));
   const env = buildResticEnv(target);
@@ -178,6 +183,7 @@ export async function execFilesPathsItem(args: {
       jobImage: TOOLS_IMAGE_DEFAULT,
       pinToNode,
       activeDeadlineSeconds: Math.max(60, Math.ceil(DEFAULT_TIMEOUT_MS / 1000) - JOB_DEADLINE_BUFFER_SEC),
+      extraLabels: sourceShimJobLabels(read),
     });
 
     const createdJob = await (k8s.batch as unknown as {
@@ -291,6 +297,8 @@ export function buildFilesPathsJobSpec(input: {
   jobImage: string;
   pinToNode?: string | null;
   activeDeadlineSeconds?: number;
+  /** On the Job: the source shim it reads through (`sourceShimJobLabels`). */
+  extraLabels?: Readonly<Record<string, string>>;
 }): Record<string, unknown> {
   const script = buildScript({ snapshotId: input.snapshotId, includePaths: input.includePaths });
   const podSpec: Record<string, unknown> = {
@@ -352,6 +360,7 @@ export function buildFilesPathsJobSpec(input: {
       name: input.jobName,
       namespace: input.namespace,
       labels: {
+        ...(input.extraLabels ?? {}),
         // restore-files matches the (tightened) NetworkPolicy pod selector.
         'platform.io/component': 'restore-files',
         'platform.io/tenant-id': input.tenantId,

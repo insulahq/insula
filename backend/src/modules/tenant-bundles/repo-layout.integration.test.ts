@@ -15,7 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant } from '../../test-helpers/fixtures.js';
-import { backupComponents, backupJobs, resticRepoReclaimState, tenantResticRepoState, tenants } from '../../db/schema.js';
+import { backupComponents, backupConfigurations, backupJobs, resticRepoReclaimState, tenantResticRepoState, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { layoutsHoldingSnapshots } from './repo-layout.js';
 import { dropSpentReclaimState, stampReclaimedComponents } from './restic-retention.js';
@@ -46,6 +46,7 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
     component?: 'files' | 'mailboxes';
     reclaimed?: boolean;
     snapshot?: string | null;
+    targetConfigId?: string | null;
   } = {}) => {
     seq += 1;
     const id = `bkp-layout-${String(seq).padStart(4, '0')}`;
@@ -53,6 +54,7 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
     await db().insert(backupJobs).values({
       id, tenantId, initiator: 'system', status: over.status ?? 'completed', targetKind: 's3', targetUri: 's3://example.test/b',
       retentionDays: 7, repoLayout: over.layout === undefined ? 'per-tenant' : over.layout,
+      targetConfigId: over.targetConfigId ?? null,
       expiresAt: new Date(Date.now() + (over.status === 'expired' ? -1 : 1) * 86_400_000),
     } as typeof backupJobs.$inferInsert);
     const componentId = `bc-layout-${String(seq).padStart(4, '0')}`;
@@ -198,8 +200,44 @@ describe.skipIf(!dbAvailable)('which repositories a tenant\'s snapshots are in (
   });
 
   describe('declaring a snapshot reclaimed', () => {
-    const stamp = (layout: 'per-tenant' | 'per-component', stillPresent: string[]) => stampReclaimedComponents({
-      db: db(), tenantId, component: 'files', layout, stillPresent: new Set(stillPresent), at: new Date(),
+    const BOUND = '00000000-0000-4000-8000-0000000000b1';
+    const OLD = '00000000-0000-4000-8000-0000000000a1';
+    const stamp = (
+      layout: 'per-tenant' | 'per-component',
+      stillPresent: string[],
+      bound: Parameters<typeof stampReclaimedComponents>[0]['bound'] = { known: true, id: BOUND },
+    ) => stampReclaimedComponents({
+      db: db(), tenantId, component: 'files', layout, bound, stillPresent: new Set(stillPresent), at: new Date(),
+    });
+    beforeEach(async () => {
+      await db().execute(sql.raw('TRUNCATE TABLE backup_configurations CASCADE'));
+      await db().insert(backupConfigurations).values([
+        { id: BOUND, name: 'bound-target', storageType: 's3' },
+        { id: OLD, name: 'old-target', storageType: 's3' },
+      ] as Array<typeof backupConfigurations.$inferInsert>);
+    });
+
+    // The sweep looks into the BOUND target's repositories only. A bundle on the
+    // target tenant backups used before is absent there without being gone: it
+    // used to be stamped, its row purged, and its data left on the old target
+    // with nothing that knew of it.
+    it('a bundle on another target is not judged by the bound target\'s repository', async () => {
+      const old = await bundle({ status: 'expired', targetConfigId: OLD });
+      const onBound = await bundle({ status: 'expired', targetConfigId: BOUND });
+      const legacy = await bundle({ status: 'expired', targetConfigId: null });
+      expect(await stamp('per-tenant', [])).toBe(2);
+      expect(await reclaimedIds()).toEqual([onBound.componentId, legacy.componentId].sort());
+      expect((await reclaimedIds()).includes(old.componentId)).toBe(false);
+    });
+
+    it('nothing is stamped when the bound target cannot be told, nor anything but target-less rows when none is bound', async () => {
+      const onBound = await bundle({ status: 'expired', targetConfigId: BOUND });
+      const legacy = await bundle({ status: 'expired', targetConfigId: null });
+      expect(await stamp('per-tenant', [], { known: false })).toBe(0);
+      expect(await reclaimedIds()).toEqual([]);
+      expect(await stamp('per-tenant', [], { known: true, id: null })).toBe(1);
+      expect(await reclaimedIds()).toEqual([legacy.componentId]);
+      expect((await reclaimedIds()).includes(onBound.componentId)).toBe(false);
     });
 
     it('a snapshot gone from its own repository is stamped', async () => {

@@ -253,9 +253,9 @@ current status:
 | From status | Button | Effect |
 |-------------|--------|--------|
 | active | **Suspend** | Scales workloads to 0, swaps the website to a "suspended" page, disables cron, and shuts mail down completely: incoming mail (mailboxes, aliases, and mailing lists) is refused with a bounce, and mail accounts cannot sign in or send until re-activation. Backups pause too: no new bundles, and the existing ones are kept until re-activation ([details](backups-and-restore.md#tenant-backups)). Fully reversible — mail settings are preserved. |
-| suspended | **Reactivate** | Restores workloads to their pre-suspend replica counts, unpatches ingress, re-enables cron and the full mail configuration (mailboxes, aliases, forwarding, auto-reply). |
+| suspended | **Reactivate** | Restores workloads to their pre-suspend replica counts, unpatches ingress, re-enables cron and the full mail configuration (mailboxes, aliases, forwarding, auto-reply). Refused while the tenant's subscription has ended — the hourly expiry check would suspend it again within the hour; set a new date under **Plan & limits → Subscription** first. |
 | suspended | **Archive** | Takes a final backup bundle of everything — files and databases, mailboxes with their mail, configuration — and stores it off-site on the tenant backup target. Then the tenant is taken down almost as if deleted: nobody can sign in, and its applications, volume, mailboxes, DNS zones, mail domains and DKIM keys are removed. The tenant row and the bundle are kept — restorable. An active tenant has to be suspended first. |
-| archived | **Restore archived tenant** | Brings everything back from the bundle: files and databases, DNS zones, mail domains (with a new DKIM key), mailboxes with their mail, and every application at the replica count it had before the suspension. Mailboxes need new passwords; the restore notice tells the tenant. |
+| archived | **Restore archived tenant…** | Brings everything back from the bundle — files and databases, DNS zones, mail domains (with a new DKIM key), mailboxes with their mail, and every application — and the tenant comes back **suspended**: its sites show the suspended page, its mail is shut and its applications are stopped until you **Reactivate** it, which starts each application at the replica count it had before the suspension. Mailboxes need new passwords; the restore notice tells the tenant. |
 | any (except SYSTEM) | **Delete** | Hard delete — removes the tenant row, the namespace, and triggers every orphan-cleanup hook (DNS zones, mail, volumes, snapshots, cluster-scoped refs). Irreversible. Off-site backup bundles are **kept** for the deleted-tenant retention window (**Platform → Limits**, default 30 days) so the tenant can still be recovered — see [Recovering a deleted tenant](backups-and-restore.md#recovering-a-deleted-tenant) — then removed automatically. |
 
 **Archive…** asks how long to keep the archive (1 to 3650 days, the
@@ -266,10 +266,35 @@ hand, and so is the archive of a tenant kept out of automatic archive and
 delete.
 
 An archived tenant's page shows only that: **ARCHIVED**, the archive bundle's
-date and size, how long it is kept, and **Restore archived tenant**. Its
+date and size, how long it is kept, the backup target it is stored on, and
+**Restore archived tenant…**. Its
 earlier backup bundles expire as usual; the archive bundle stays its newest,
 since no new bundle is taken of an archived tenant. **Backups → Tenants**
 keeps listing it, marked *Archived*.
+
+**Restore archived tenant…** asks two things before it starts:
+
+- **Restore on node** — the tenant's node, another node, or **Auto** (on the
+  Local storage tier, the node with the most free storage among those that host
+  all tenants; on the HA tier, wherever the cluster places it). A node the
+  restore cannot use is listed but cannot be chosen, with the reason: it is no
+  longer part of the cluster, it is down, it does not host tenants, it is
+  cordoned, it takes no tenants (server only), or it takes pinned tenants only
+  and the tenant is on the HA tier. When the tenant's own node is one of those,
+  the dialog says so and starts on Auto. The node chosen becomes the tenant's
+  node.
+- **Volume size** — the tenant's storage size by default. It cannot be smaller
+  than the archive's files; a larger size becomes the tenant's storage size
+  (its override and its storage quota). The dialog warns when the files would
+  fill more than 90% of it.
+
+It also says when the tenant's subscription has ended (reactivating it is
+refused until there is a new date), and when the archive is stored on a
+backup target that tenant backups no longer use — after a switch of the tenant
+backup target, a rebuilt cluster, or a migration. Such an archive is read
+through a temporary, read-only copy of the backup shim for that target, which
+is removed once nothing has used it for 30 minutes. The archive's target can
+not be deleted while the tenant is archived.
 
 A restore that fails leaves the tenant archived, with its storage state
 **failed**, and every later restore is refused until that is reset. The

@@ -11,6 +11,7 @@ import { underTransitionLock } from './transition-lock.js';
 import {
   DEFAULT_BACKOFF_MS,
   DEFAULT_MAX_ATTEMPTS,
+  RESTORED_FROM_ARCHIVE,
   type HookCtx,
   type HookErrorEnvelope,
   type HookResult,
@@ -166,6 +167,7 @@ async function runLocked(
   // Written on the row because whoever finishes a transition cut off in the
   // middle is not the request that began it, and has no checkbox to read.
   let suppressTenantNotification = opts.suppressTenantNotification === true;
+  let restoredFromArchive = opts.detail?.[RESTORED_FROM_ARCHIVE] === true;
 
   // 1. Insert parent row.
   if (!resuming) {
@@ -190,6 +192,7 @@ async function runLocked(
       return { transitionId, state: (row?.state ?? 'completed') as DispatchResult['state'], hooksAttempted: 0, hooksOk: 0, hooksFailed: 0 };
     }
     suppressTenantNotification ||= row.detail?.[SUPPRESS_NOTIFICATION] === true;
+    restoredFromArchive ||= row.detail?.[RESTORED_FROM_ARCHIVE] === true;
     // Counted here — under the lock, before a hook runs — and nowhere else: a
     // pick-up that found the lock held, or the transition ended, has not run
     // it. A transition that takes the process down with it every time must
@@ -335,6 +338,7 @@ async function runLocked(
         // written, but it was never populated here — so the admin panel's
         // "Notify tenant" checkbox has never suppressed anything.
         suppressTenantNotification,
+        restoredFromArchive,
       };
       result = await hook.run(ctx);
     } catch (err) {

@@ -204,6 +204,28 @@ describe('waitForShimReady', () => {
     expect(r.available).toBe(4);
   });
 
+  // Right after the reconciler patches the template, the status still counts
+  // the PREVIOUS rollout ("1 of 1 updated and available"). Read as settled, a
+  // switch to a target the new pod could not serve reported success at once
+  // (DEV, a target that accepts the connection and never answers).
+  it('is not ready while the controller has not observed the new template', async () => {
+    let call = 0;
+    const apps = {
+      readNamespacedDaemonSet: vi.fn(async () => {
+        call += 1;
+        return call < 3
+          ? { metadata: { generation: 8 }, status: { observedGeneration: 7, desiredNumberScheduled: 1, updatedNumberScheduled: 1, numberAvailable: 1 } }
+          : { metadata: { generation: 8 }, status: { observedGeneration: 8, desiredNumberScheduled: 1, updatedNumberScheduled: 0, numberAvailable: 0 } };
+      }),
+    };
+    const clock = makeClock();
+    const r = await waitForShimReady(apps as never, { info: vi.fn(), warn: vi.fn() }, {
+      now: clock.now, sleep: clock.sleep, pollIntervalMs: 100, timeoutMs: 1_000,
+    });
+    expect(r.ready).toBe(false);
+    expect(call).toBeGreaterThan(3);
+  });
+
   it('treats 404 (fresh cluster) as ready=true', async () => {
     const apps = {
       readNamespacedDaemonSet: vi.fn().mockRejectedValue({ statusCode: 404 }),
@@ -412,6 +434,52 @@ describe('failing shim pods after a target switch', () => {
     await expect(currentShimConfigHash(apps as never)).resolves.toBe(HASH);
     const broken = { readNamespacedDaemonSet: vi.fn(async () => { throw new Error('boom'); }) };
     await expect(currentShimConfigHash(broken as never)).resolves.toBeNull();
+  });
+
+  // An upstream that accepts the connection and never answers (lab SFTP: the
+  // login succeeds, the SFTP version never comes) keeps rclone from listening
+  // for EVERY class. The launcher stops that launch after its deadline, so the
+  // pod is Running-but-not-Ready after a restart — no waiting reason at all.
+  describe('a shim that runs but never serves', () => {
+    const live = (name: string, ready: boolean, restartCount: number, hash = HASH) => ({
+      metadata: { name, annotations: { 'insula.host/config-hash': hash } },
+      spec: { nodeName: 'node-1' },
+      status: { containerStatuses: [{ ready, restartCount, state: { running: { startedAt: '2026-10-27T09:45:06Z' } } }] },
+    });
+
+    it('a restarted pod that is still not Ready is failing (NotServing)', async () => {
+      await expect(findFailingShimPods(core([live('shim-a', false, 1)]) as never, HASH)).resolves.toEqual([
+        { pod: 'shim-a', node: 'node-1', reason: 'NotServing' },
+      ]);
+    });
+
+    // DEV: a crash loop sampled between an exit and its back-off reads
+    // `terminated`, with no waiting reason — and the switch said it succeeded.
+    it('a restarted container that has just exited is failing too', async () => {
+      const exited = {
+        metadata: { name: 'shim-a', annotations: { 'insula.host/config-hash': HASH } },
+        spec: { nodeName: 'node-1' },
+        status: { containerStatuses: [{ ready: false, restartCount: 2, state: { terminated: { exitCode: 1, reason: 'Error' } } }] },
+      };
+      await expect(findFailingShimPods(core([exited]) as never, HASH)).resolves.toEqual([
+        { pod: 'shim-a', node: 'node-1', reason: 'NotServing' },
+      ]);
+    });
+
+    it('a first launch still starting is not failing, nor is a restarted pod that serves again', async () => {
+      await expect(findFailingShimPods(core([live('shim-a', false, 0), live('shim-b', true, 2)]) as never, HASH)).resolves.toEqual([]);
+    });
+
+    it('an old-template pod that is not serving does not fail this switch', async () => {
+      await expect(findFailingShimPods(core([live('shim-old', false, 3, 'h-old')]) as never, HASH)).resolves.toEqual([]);
+    });
+
+    it('the description names the never-answering upstream only when that is what was seen', () => {
+      expect(describeFailingShim('tenant', [{ pod: 'shim-a', node: 'node-1', reason: 'NotServing' }]))
+        .toContain('accepts the connection and never answers');
+      expect(describeFailingShim('tenant', [{ pod: 'shim-a', node: 'node-1', reason: 'CrashLoopBackOff' }]))
+        .not.toContain('never answers');
+    });
   });
 
   it('describes the failure with the class, the nodes and what to do', () => {

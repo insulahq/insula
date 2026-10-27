@@ -1378,10 +1378,10 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.restored',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Your account is active again',
+    subjectTemplate: 'Your account has been restored',
     bodyTemplate: emailMjml(
       'Account restored',
-      'Your account {{tenantName}} has been restored from its archive. You can sign in again, and its websites, applications and databases are back.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
+      'Your account {{tenantName}} has been restored from its archive: its websites, applications, databases, mailboxes and domains are back, and you can sign in again. It stays suspended until it is reactivated, so its websites and mail are offline until then. Contact support to have it reactivated.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
@@ -1394,7 +1394,7 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Account restored',
-    bodyTemplate: '{{tenantName}} was restored from its archive on {{occurredAt}}.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
+    bodyTemplate: '{{tenantName}} was restored from its archive on {{occurredAt}}. It stays suspended until it is reactivated.{{#if mailboxNote}} {{mailboxNote}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,

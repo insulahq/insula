@@ -14,7 +14,8 @@ import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 import ErrorPanel from '@/components/ErrorPanel';
 import ArchiveTenantDialog, { type ArchiveRetention } from '@/components/tenant-detail/ArchiveTenantDialog';
 import ArchivedTenantView from '@/components/tenant-detail/ArchivedTenantView';
-import { useTenantArchive } from '@/hooks/use-tenant-archive';
+import RestoreArchiveDialog from '@/components/tenant-detail/RestoreArchiveDialog';
+import { useRestoreArchivedTenant, useTenantArchive } from '@/hooks/use-tenant-archive';
 import { useStorageLifecycleSettings } from '@/hooks/use-storage-settings';
 import OverviewTab from '@/components/tenant-detail/OverviewTab';
 import TenantEmailTab from '@/components/tenant-detail/EmailTab';
@@ -35,7 +36,7 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
-import type { UpdateTenantInput } from '@insula/api-contracts';
+import type { RestoreArchivedTenantRequest, UpdateTenantInput } from '@insula/api-contracts';
 
 type TabKey = TabOf<'/tenants/:id'>;
 
@@ -105,6 +106,8 @@ export default function TenantDetail() {
   const impersonate = useLoginAsTenant();
   // The archive's bundle: what restore brings back (a whole archive, or files only).
   const archiveInfo = useTenantArchive(id, tenant?.status === 'archived');
+  const restoreArchived = useRestoreArchivedTenant(id);
+  const [restoreOpen, setRestoreOpen] = useState(false);
   // The platform's archive retention: the dialog's starting value.
   const storageSettings = useStorageLifecycleSettings();
   const provisioningStatus = tenant?.provisioningStatus as string | undefined;
@@ -161,21 +164,26 @@ export default function TenantDetail() {
       ? { status: 'archived', archive_never_expires: true }
       : { status: 'archived', archive_retention_days: retention });
   };
-  const handleRestoreArchived = async (whole: boolean) => {
-    const ok = confirm(whole
-      ? 'Restore this tenant from its archive?\n\n'
-        + 'Its files and databases, applications, DNS zones, mail domains and mailboxes with their mail come back, '
-        + 'and its users can sign in again. Mailboxes need new passwords: the mail server never kept a copy the '
-        + 'archive could hold. Estimated time: a few minutes per GiB of stored data.\n\nContinue?'
-      : 'Restore this tenant from its archive?\n\n'
-        + 'This archive is from before archives held everything: only the files come back. Applications have to be '
-        + 'redeployed and mailboxes set up again.\n\nContinue?');
-    if (!ok) return;
-    await runTransition('restored', { status: 'active' });
+  // The node and the size the dialog chose. The tenant comes back suspended;
+  // the operation's progress is followed in its modal.
+  const handleRestoreArchived = async (body: RestoreArchivedTenantRequest) => {
+    setLifecycleActionError(null);
+    try {
+      const res = await restoreArchived.mutateAsync(body);
+      setRestoreOpen(false);
+      setStatusOpId(res.data.operationId);
+    } catch { /* shown in the dialog, which stays open */ }
   };
+  const openRestore = () => {
+    restoreArchived.reset();
+    setRestoreOpen(true);
+  };
+  // Refused by the API too (SUBSCRIPTION_EXPIRED): the hourly expiry check
+  // would suspend it again within the hour.
+  const subscriptionEnded = tenant?.subscriptionExpiresAt != null && new Date(tenant.subscriptionExpiresAt).getTime() < Date.now();
   const handleReactivate = async () => {
     if (tenant?.status === 'archived') {
-      await handleRestoreArchived(archiveInfo.data?.data?.bundle?.whole ?? false);
+      openRestore();
       return;
     }
     await runTransition('active', { status: 'active' });
@@ -378,7 +386,15 @@ export default function TenantDetail() {
                   </ActionsMenuItem>
                 )}
                 {tenant.status === 'suspended' && !tenant.isSystem && (
-                  <ActionsMenuItem onClick={handleReactivate} disabled={updateTenant.isPending} icon={<Play size={14} />} title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron." testId="reactivate-button">
+                  <ActionsMenuItem
+                    onClick={handleReactivate}
+                    disabled={updateTenant.isPending || subscriptionEnded}
+                    icon={<Play size={14} />}
+                    title={subscriptionEnded
+                      ? `The subscription ended on ${new Date(tenant.subscriptionExpiresAt as string).toLocaleDateString()}: set a new date under Limits → Subscription first, or it is suspended again within the hour.`
+                      : 'Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron.'}
+                    testId="reactivate-button"
+                  >
                     Reactivate
                   </ActionsMenuItem>
                 )}
@@ -401,7 +417,7 @@ export default function TenantDetail() {
                     onClick={handleReactivate}
                     // As the archived page's own Restore: off while the archive
                     // cannot be restored, the storage state not idle among the reasons.
-                    disabled={updateTenant.isPending || archiveInfo.data?.data?.restorable === false || (tenant.storageLifecycleState ?? 'idle') !== 'idle'}
+                    disabled={restoreArchived.isPending || archiveInfo.data?.data?.restorable === false || (tenant.storageLifecycleState ?? 'idle') !== 'idle'}
                     icon={<Play size={14} />}
                     title={archiveInfo.data?.data?.notRestorableReason ?? 'Bring the tenant back from its archive bundle.'}
                     testId="restore-button"
@@ -514,9 +530,19 @@ export default function TenantDetail() {
         <ArchivedTenantView
           tenantId={id}
           storageState={tenant.storageLifecycleState ?? 'idle'}
-          restoring={updateTenant.isPending}
+          restoring={restoreArchived.isPending}
           keptOutOfAutomation={tenant.lifecycleAutomationExempt === true}
-          onRestore={handleRestoreArchived}
+          onRestore={openRestore}
+        />
+      )}
+      {restoreOpen && archiveInfo.data?.data && (
+        <RestoreArchiveDialog
+          tenantName={name}
+          info={archiveInfo.data.data}
+          busy={restoreArchived.isPending}
+          error={restoreArchived.error}
+          onConfirm={(body) => { void handleRestoreArchived(body); }}
+          onClose={() => setRestoreOpen(false)}
         />
       )}
       {tenant.status !== 'archived' && <Fragment key={id}>

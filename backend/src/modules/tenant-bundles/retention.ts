@@ -21,9 +21,11 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq, and, lte, inArray, notInArray } from 'drizzle-orm';
+import { eq, and, lte, inArray, notInArray, isNull, or } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { heldPastExpiry } from './bundle-hold.js';
+import { resolveBoundTenantTarget, type BoundTenantTarget } from './unbound-target.js';
+import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
@@ -239,6 +241,16 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
   // with the restic reconciler so the two never disagree about what is kept.
   const tried: string[] = [];
   const expiryStarted = Date.now();
+  // Only bundles on the target tenant backups are bound to: the store below is
+  // the shim, which serves that target alone. A bundle on another one is left
+  // as it is, past its expiry, listed — Insula does not write to a target it is
+  // not bound to (unbound-target.ts). Bound target unknown — or the shim not
+  // yet serving it, mid-switch: only bundles that name no target, which have
+  // always been treated as on the bound one.
+  const bound = await boundForExpiry(app);
+  const onBound = bound.known && bound.id
+    ? or(isNull(backupJobs.targetConfigId), eq(backupJobs.targetConfigId, bound.id))
+    : isNull(backupJobs.targetConfigId);
   for (let batch = 0; batch < EXPIRY_MAX_BATCHES; batch++) {
     const expiredCandidates = await app.db
       .select({ id: backupJobs.id, targetConfigId: backupJobs.targetConfigId })
@@ -248,6 +260,7 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
           lte(backupJobs.expiresAt, now),
           sql`${backupJobs.status} IN ('completed','partial','failed')`,
           sql`NOT ${heldPastExpiry('backup_jobs')}`,
+          onBound,
           tried.length > 0 ? notInArray(backupJobs.id, tried) : undefined,
         ),
       )
@@ -455,6 +468,20 @@ export function startRetentionScheduler(app: FastifyInstance, intervalMs = RETEN
  * side ("CIFS + NFS … blow up the restore cart with Store kind '<x>' not
  * supported"); retention was simply never migrated with it.
  */
+async function boundForExpiry(app: FastifyInstance): Promise<BoundTenantTarget> {
+  const kubeconfigPath = (app.config as Record<string, unknown> | undefined)?.KUBECONFIG_PATH as string | undefined
+    ?? process.env.KUBECONFIG_PATH;
+  let k8s: K8sClients;
+  try {
+    k8s = createK8sClients(kubeconfigPath);
+  } catch (err) {
+    // No cluster to ask whether the shim serves the binding: not known.
+    app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'tenant-backup retention: no Kubernetes client — bundles on a backup target are not expired this tick');
+    return { known: false, reason: 'unresolved' };
+  }
+  return resolveBoundTenantTarget(app.db, k8s, app.log);
+}
+
 async function resolveStoreForTarget(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   return resolveShimFirstBackupStore(
     app, 'tenant',
