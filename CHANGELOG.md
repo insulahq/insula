@@ -70,6 +70,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   automatic restart it now names the application that is down. After any other failed operation it
   names the operation and what is on hold. It shows nothing once all is well, and it stops polling
   every 3 seconds while in the failed state.
+- **A connected private worker shows as connected.** Nothing told the platform a worker had
+  connected: frps was never configured to report it, and the event endpoint would only have stamped a
+  time anyway. A worker whose client logged a successful login stayed *pending* with no last-seen
+  time. The platform now asks each tenant's frps once a minute. A worker with an online tunnel on its
+  port is active with a current last-seen time, and each new connection is in its audit log.
+- **A private worker can be chosen as a route's target.** The API always accepted one, but the
+  Routing tab's selector, in both panels, listed deployments only. Workers now appear there, a
+  pending one included.
+- **Adding a second private worker reaches the running frps.** frps reads its config once and
+  cannot reload it, and nothing restarted it on a change, so a new worker's port was refused until
+  something else restarted the pod. A config change now replaces it. Every API start also
+  re-applies each tenant's frps, so a release's changes reach existing workers.
 - **A deleted application can no longer be started, redeployed or upgraded back to life.** Those paths
   left it running with its deleted mark set and skipped the application limit; restore is now the one
   way back.

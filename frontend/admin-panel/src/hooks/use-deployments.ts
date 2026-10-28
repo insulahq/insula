@@ -276,3 +276,14 @@ export function useTenantApplicationUsage(tenantId: string | undefined) {
     enabled: !!tenantId,
   });
 }
+
+/** A tenant's private workers, for choosing a route target (they are one, like a deployment). */
+export function useTenantPrivateWorkers(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: ['private-workers', tenantId],
+    queryFn: () => apiFetch<{ data: { items: ReadonlyArray<{ id: string; name: string; status: string }> } }>(
+      `/api/v1/tenants/${tenantId}/private-workers`,
+    ),
+    enabled: !!tenantId,
+  });
+}

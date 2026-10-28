@@ -2483,6 +2483,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => backupHealthStop());
 
+        // Private workers: which are connected, from each tenant's frps status
+        // API (nothing else reports it), after a startup reconcile that brings
+        // existing frps pods onto this release's spec.
+        const { startPrivateWorkerConnectionPoller } = await import('./modules/private-workers/connection-poller.js');
+        const privateWorkerPollStop = startPrivateWorkerConnectionPoller({ db: app.db, k8s: k8sForImapsync, log: app.log });
+        app.addHook('onClose', () => privateWorkerPollStop());
+
         // Dead-pod sweep. Kubernetes garbage-collects terminal pods only past
         // --terminated-pod-gc-threshold (default 12500, unset here), so the
         // records accumulate monotonically: every node reboot adds a batch and
