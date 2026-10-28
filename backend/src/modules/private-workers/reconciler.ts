@@ -26,10 +26,13 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { createHash, createHmac } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { tenants, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { loadTenantPodPlacement, platformPodPlacement, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
+import { carryQuiesceHold } from '../../shared/scale-deployment.js';
 import {
   buildMiddleware,
   buildIngressRoute,
@@ -67,6 +70,10 @@ const INGRESS_CONTROLLER_NAMESPACE =
 const TUNNEL_ISSUER_SETTING_KEY = 'private_worker_tunnel_issuer';
 const DEFAULT_TUNNEL_ISSUER = 'letsencrypt-prod-http01';
 const FRPS_BIND_PORT = 7000;
+/** frps's status API — reached by the platform's connection poller only (connection-poller.ts). */
+export const FRPS_WEB_API_PORT = 7500;
+export const FRPS_WEB_API_USER = 'platform';
+const FRPS_CONFIG_HASH_ANNOTATION = 'insula.host/frps-config-sha256';
 const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.71.1';
 
 // ─── Public surface ─────────────────────────────────────────────────────────
@@ -150,6 +157,7 @@ async function apply(
   }
   const allowedPorts = workers.map((w) => w.exposedPort);
   const issuer = await loadTunnelIssuer(deps.db);
+  const frpsToml = buildFrpsToml(sharedSecret, allowedPorts, frpsWebApiPassword(tenantId, sharedSecret));
 
   // 1. ConfigMap — frps.toml with auth.token + allowPorts. The home
   //    agent's frpc dynamically registers proxies over the control
@@ -158,7 +166,7 @@ async function apply(
   await safe(
     errors,
     'configmap',
-    () => upsertFrpsConfigMap(deps.k8s.core, namespace, sharedSecret, allowedPorts),
+    () => upsertFrpsConfigMap(deps.k8s.core, namespace, frpsToml),
   );
 
   // 2a. frps control-plane Service (`private-worker-server`). The
@@ -191,11 +199,14 @@ async function apply(
     );
   }
 
-  // 3. frps Deployment. 1 replica per tenant.
+  // 3. frps Deployment. 1 replica per tenant, on the tenant's primary node
+  //    and outside the tenant's quota (tenant-placement/pod-placement.ts).
   await safe(
     errors,
     'frps-deployment',
-    () => upsertFrpsDeployment(deps.k8s.apps, namespace),
+    async () => upsertFrpsDeployment(
+      deps.k8s.apps, namespace, await loadTenantPodPlacement(deps.db, tenantId), frpsConfigHash(frpsToml),
+    ),
   );
 
   // 4. NetworkPolicy. Allow ingress from the Traefik controller
@@ -361,31 +372,35 @@ export async function loadTunnelIssuer(db: Database): Promise<string> {
 
 // ─── K8s upserts ────────────────────────────────────────────────────────────
 
-async function upsertFrpsConfigMap(
-  core: k8s.CoreV1Api,
-  namespace: string,
+/**
+ * frps config — token-authed + port-restricted, and its status API on
+ * FRPS_WEB_API_PORT for the platform's connection poller (connection-poller.ts).
+ *
+ *   auth.token        — per-tenant shared secret (tenants.private_worker_shared_secret).
+ *                       Without this, frps accepts any frpc with no token,
+ *                       which is a complete tunnel auth bypass.
+ *   allowPorts        — only the ports of currently-active workers. Revoked
+ *                       workers' ports drop out, so their frpc registrations
+ *                       are rejected.
+ *   webServer.*       — frps's own status API, behind basic auth with a
+ *                       password the tenant cannot derive (frpsWebApiPassword).
+ *                       Nothing else told the platform a worker had connected:
+ *                       every worker stayed "pending" with no last-seen time.
+ *
+ * TLS terminates at the ingress; this WebSocket leg is plaintext between the
+ * ingress and the frps pod inside the cluster. Pure.
+ */
+export function buildFrpsToml(
   authToken: string,
   allowedPorts: ReadonlyArray<number>,
-): Promise<void> {
-  // frps config — token-authed + port-restricted.
-  //
-  //   auth.token        — per-tenant shared secret (tenants.private_worker_shared_secret).
-  //                       Without this, frps 0.62 accepts any frpc with no token,
-  //                       which is a complete tunnel auth bypass.
-  //   allowPorts        — only the ports of currently-active workers. Revoked
-  //                       workers' ports drop out, so their frpc registrations
-  //                       are rejected — that's how per-worker revocation
-  //                       takes effect within the next reconcile tick.
-  //
-  // TLS terminates at NGINX-ingress; this WebSocket leg is plaintext between
-  // NGINX and the frps pod inside the cluster.
+  webApiPassword: string,
+): string {
   const allowPortsTable = allowedPorts.length === 0
     ? '# No active workers — placeholder allowPorts entry blocks all proxies.'
     : allowedPorts
       .map((p) => `[[allowPorts]]\nstart = ${p}\nend = ${p}`)
       .join('\n');
-
-  const frpsToml = [
+  return [
     '# Managed by platform-api private-worker reconciler.',
     'bindAddr = "0.0.0.0"',
     `bindPort = ${FRPS_BIND_PORT}`,
@@ -398,11 +413,43 @@ async function upsertFrpsConfigMap(
     'auth.method = "token"',
     `auth.token = "${authToken.replace(/"/g, '\\"')}"`,
     '',
+    '# Status API for the platform\'s connection poller only.',
+    'webServer.addr = "0.0.0.0"',
+    `webServer.port = ${FRPS_WEB_API_PORT}`,
+    `webServer.user = "${FRPS_WEB_API_USER}"`,
+    `webServer.password = "${webApiPassword}"`,
+    '',
     '# Port allowlist — ONLY active workers are accepted.',
     allowPortsTable,
     '',
   ].join('\n');
+}
 
+/**
+ * The status API's password: derived from the platform's own key, not from
+ * the shared secret the tenant holds (the frpc token), so a pod in the
+ * tenant's namespace cannot compute it. Stable across replicas and restarts.
+ */
+export function frpsWebApiPassword(tenantId: string, sharedSecret: string): string {
+  const key = process.env.PLATFORM_ENCRYPTION_KEY || sharedSecret;
+  return createHmac('sha256', key).update(`frps-web-api/${tenantId}`).digest('hex').slice(0, 40);
+}
+
+/**
+ * frps reads its config once at start and has no reload, so a config change
+ * must replace the pod: this hash goes on the pod template. Without it a
+ * second worker's port never reached a running frps, and its client was
+ * refused until something else restarted the pod.
+ */
+export function frpsConfigHash(frpsToml: string): string {
+  return createHash('sha256').update(frpsToml).digest('hex').slice(0, 16);
+}
+
+async function upsertFrpsConfigMap(
+  core: k8s.CoreV1Api,
+  namespace: string,
+  frpsToml: string,
+): Promise<void> {
   const body: k8s.V1ConfigMap = {
     apiVersion: 'v1',
     kind: 'ConfigMap',
@@ -528,6 +575,8 @@ async function upsertPerWorkerService(
 async function upsertFrpsDeployment(
   apps: k8s.AppsV1Api,
   namespace: string,
+  placement: TenantPodPlacement,
+  configHash: string,
 ): Promise<void> {
   const body: k8s.V1Deployment = {
     apiVersion: 'apps/v1',
@@ -546,8 +595,14 @@ async function upsertFrpsDeployment(
       template: {
         metadata: {
           labels: { 'app.kubernetes.io/name': FRPS_DEPLOYMENT_NAME },
+          // A config change replaces the pod: frps cannot reload.
+          annotations: { [FRPS_CONFIG_HASH_ANNOTATION]: configHash },
         },
         spec: {
+          // The tenant's pin, and the overhead class: frps is the platform's
+          // pod, so the tenant's quota never refuses it and the placement
+          // check never sees the tenant "drifted" because of it.
+          ...platformPodPlacement(placement),
           volumes: [
             {
               name: 'config',
@@ -567,6 +622,7 @@ async function upsertFrpsDeployment(
               command: ['/usr/bin/frps', '-c', '/etc/frp/frps.toml'],
               ports: [
                 { name: 'control', containerPort: FRPS_BIND_PORT, protocol: 'TCP' },
+                { name: 'status-api', containerPort: FRPS_WEB_API_PORT, protocol: 'TCP' },
               ],
               volumeMounts: [
                 { name: 'config', mountPath: '/etc/frp', readOnly: true },
@@ -596,7 +652,7 @@ async function upsertFrpsDeployment(
     await apps.replaceNamespacedDeployment({
       name: FRPS_DEPLOYMENT_NAME,
       namespace,
-      body,
+      body: carryQuiesceHold(existing as k8s.V1Deployment, body),
     } as never);
   } catch (err) {
     if (!isNotFound(err)) throw err;

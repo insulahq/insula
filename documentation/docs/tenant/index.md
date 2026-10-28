@@ -155,7 +155,7 @@ The **menu on the left** is how you move around. Here is what each item is for:
 |---|---|---|
 | **Dashboard** | The overview above. | — |
 | **Domains** | Add domains, manage DNS and certificates, set up websites. | [Domains & websites](domains-and-websites.md) |
-| **Applications** | Install apps and runtimes, run custom containers. | [Deployments & applications](deployments-and-applications.md) |
+| **Applications** | Install apps and runtimes, run custom containers, and reach services you run elsewhere through **Private Workers** (the last tab — there if your plan includes custom containers, or while you still have workers). The pill beside the title shows how many applications your subscription allows and how many you have. | [Deployments & applications](deployments-and-applications.md) |
 | **SQL Manager** | Create databases, browse tables, run SQL, import/export. | [Databases](databases.md) |
 | **Scheduled Tasks** | Run recurring jobs on a schedule. | [Cron jobs](cron-jobs.md) |
 | **File Manager** | Browse, upload, and edit your website files. | [Files & SFTP](files-and-sftp.md) |
@@ -164,7 +164,6 @@ The **menu on the left** is how you move around. Here is what each item is for:
 | **Users** | Invite teammates and set what they can do. | [Account & security](account-and-security.md) |
 | **SSH Keys** | Store public keys for secure file access. | [Files & SFTP](files-and-sftp.md) |
 | **SFTP Access** | File-transfer accounts for uploading. | [Files & SFTP](files-and-sftp.md) |
-| **Private Workers** | Reach a service you run outside the platform — at home, on a NAS, on a GPU box — through your domains. Shown if your plan includes custom containers, or while you still have workers. | — |
 | **Monitoring** | Your traffic, and detailed CPU/memory/storage figures — see below. | — |
 | **Notifications** | Your full message history and preferences. | [Account & security](account-and-security.md) |
 | **Settings** | Subscription details and account-wide settings. | [Account & security](account-and-security.md) |

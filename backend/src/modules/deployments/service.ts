@@ -64,6 +64,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDeploymentInput, UpdateDeploymentInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+import { assertApplicationRoom, refuseDeleted, withApplicationSlot } from './application-limit.js';
 
 // ─── Error Helpers ──────────────────────────────────────────────────────────
 
@@ -442,6 +443,9 @@ export async function createDeployment(
 ) {
   const tenant = await getTenantById(db, tenantId);
   assertTenantActive(tenant, 'deploy workloads');
+  // The subscription's application limit, first: nothing below is worth doing
+  // for a deploy that cannot fit. Re-checked under the lock at the insert.
+  await assertApplicationRoom(db, tenantId, 'deploy');
 
   // Look up catalog entry
   const [entry] = await db
@@ -589,7 +593,9 @@ export async function createDeployment(
   }
 
   try {
-    await db.insert(deployments).values({
+    // Under the per-tenant lock: two deploys racing for the last slot cannot
+    // both see it free.
+    await withApplicationSlot(db, tenantId, 'deploy', (tx) => tx.insert(deployments).values({
       id,
       tenantId,
       catalogEntryId: input.catalog_entry_id,
@@ -605,7 +611,7 @@ export async function createDeployment(
       installedVersion,
       targetVersion: installedVersion,
       status: 'pending',
-    });
+    }));
   } catch (err) {
     // Race-condition fallback — pre-flight passed but a concurrent insert
     // landed between the SELECT and INSERT. Translate the raw Postgres
@@ -867,6 +873,9 @@ export async function updateDeployment(
   k8s?: K8sClients,
 ) {
   const deployment = await getDeploymentById(db, tenantId, deploymentId);
+  // Every edit, not only a status change: a configuration or replica edit
+  // redeploys the Kubernetes objects of the row it changes.
+  refuseDeleted(deployment, input.status === 'stopped' ? 'stop' : input.status !== undefined ? 'start' : 'change');
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -1131,6 +1140,15 @@ export async function restoreDeployment(
     );
   }
 
+  // Back onto the Applications page FIRST, under the per-tenant lock, so the
+  // subscription's application limit is checked against the row it revives
+  // and two restores cannot share the last slot. `pending` until the scale-up
+  // below has been asked for; the status write at the end makes it `running`
+  // exactly as before.
+  await withApplicationSlot(db, tenantId, 'restore', (tx) => tx.update(deployments)
+    .set({ status: 'pending', deletedAt: null, lastError: null })
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.status, 'deleted'))));
+
   // Scale K8s resources back up
   if (k8s) {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
@@ -1380,6 +1398,7 @@ export async function updateDeploymentResources(
   k8s?: K8sClients,
 ) {
   const deployment = await getDeploymentById(db, tenantId, deploymentId);
+  refuseDeleted(deployment, 'resize');
   const { parseResourceValue } = await import('../../shared/resource-parser.js');
 
   // Validate against plan limits
@@ -2230,6 +2249,7 @@ export async function setMultihostEnabled(
     .from(deployments)
     .where(and(eq(deployments.id, deploymentId), eq(deployments.tenantId, tenantId)));
   if (!deployment) throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
+  refuseDeleted(deployment, 'change');
 
   const [entry] = await db
     .select()

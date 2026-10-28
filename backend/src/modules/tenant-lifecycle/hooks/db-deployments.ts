@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { deployments } from '../../../db/schema.js';
 import {
   registerLifecycleHook,
@@ -26,9 +26,13 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
   if (ctx.transition === 'active' || ctx.transition === 'restored' || ctx.transition === 'deleted') {
     return { status: 'noop', detail: 'storage-lifecycle owns deployment status on resume/restore' };
   }
+  // Deleted rows stay deleted. Stopping them too brought every Recently
+  // Deleted application back as a stopped one on suspend or archive — back on
+  // the Applications page, counted against the application limit, and
+  // redeployed by an archive restore.
   await ctx.db.update(deployments)
     .set({ status: 'stopped' })
-    .where(eq(deployments.tenantId, ctx.tenantId));
+    .where(and(eq(deployments.tenantId, ctx.tenantId), ne(deployments.status, 'deleted')));
   return { status: 'ok', detail: 'set status=stopped' };
 }
 

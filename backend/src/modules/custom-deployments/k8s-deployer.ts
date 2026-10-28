@@ -37,6 +37,7 @@ import type {
 } from './schema.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { boundTenantPodDisk } from '../tenant-disk/pod-bounds.js';
+import { TENANT_DEFAULT_PRIORITY_CLASS, tenantPodScheduling } from '../tenant-placement/pod-placement.js';
 
 const CLIENT_PVC_VOLUME_NAME = 'tenant-storage';
 
@@ -87,7 +88,6 @@ export interface DeployCustomInput {
   readonly replicas?: number;
 }
 
-const TENANT_DEFAULT_PRIORITY_CLASS = 'tenant-default';
 const INIT_DIRS_IMAGE = 'busybox:1.37-musl';
 
 // ─── Top-level deploy ───────────────────────────────────────────────────────
@@ -316,26 +316,9 @@ async function applyDeployment(
       : {}),
   };
 
-  if (input.nodeName) {
-    if (input.storageTier === 'ha') {
-      podSpec.affinity = {
-        nodeAffinity: {
-          preferredDuringSchedulingIgnoredDuringExecution: [{
-            weight: 100,
-            preference: {
-              matchExpressions: [{
-                key: 'kubernetes.io/hostname',
-                operator: 'In',
-                values: [input.nodeName],
-              }],
-            },
-          }],
-        },
-      };
-    } else {
-      podSpec.nodeSelector = { 'kubernetes.io/hostname': input.nodeName };
-    }
-  }
+  // The tenant's pin — one helper for every tenant pod creator
+  // (ci-tenant-pod-placement.sh).
+  Object.assign(podSpec, tenantPodScheduling({ nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null }));
 
   const body = {
     metadata: { name, namespace: input.namespace, labels },

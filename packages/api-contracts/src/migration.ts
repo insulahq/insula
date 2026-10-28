@@ -41,6 +41,7 @@ export const migrationTenantSchema = z.object({
     storageLimit: z.number(),
     maxSubUsers: z.number().int(),
     maxMailboxes: z.number().int(),
+    maxApplications: z.number().int().optional(),
     maxMailboxSizeMb: z.number().int(),
     emailHourlySendLimit: z.number().int(),
     emailDailySendLimit: z.number().int(),

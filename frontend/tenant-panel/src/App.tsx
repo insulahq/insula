@@ -28,7 +28,6 @@ const SubUsers = lazy(() => import('@/pages/SubUsers'));
 const DatabaseManager = lazy(() => import('@/pages/DatabaseManager'));
 const SshKeys = lazy(() => import('@/pages/SshKeys'));
 const SftpUsers = lazy(() => import('@/pages/SftpUsers'));
-const PrivateWorkers = lazy(() => import('@/pages/PrivateWorkers'));
 const Monitoring = lazy(() => import('@/pages/Monitoring'));
 const Notifications = lazy(() => import('@/pages/Notifications'));
 const NotificationPreferences = lazy(() => import('@/pages/NotificationPreferences'));
@@ -117,7 +116,9 @@ export default function App() {
             <Route path="users" element={<LifecycleGate><SubUsers /></LifecycleGate>} />
             <Route path="ssh-keys" element={<LifecycleGate><SshKeys /></LifecycleGate>} />
             <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
-            <Route path="private-workers" element={<LifecycleGate><PrivateWorkers /></LifecycleGate>} />
+            {/* Private Workers moved onto the Applications page, after Custom
+                Containers. Old links and bookmarks land on that tab. */}
+            <Route path="private-workers" element={<Navigate to="/applications/workers" replace />} />
             <Route path="database-manager" element={<LifecycleGate><DatabaseManager /></LifecycleGate>} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

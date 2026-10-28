@@ -20,7 +20,7 @@ vi.mock('@/hooks/use-system-info', () => ({
   useSystemInfo: () => ({ data: { platformName: 'Insula' } }),
 }));
 vi.mock('@/hooks/use-private-workers-access', () => ({
-  usePrivateWorkersAccess: () => ({ known: true, canCreate: true, listed: true }),
+  usePrivateWorkersAccess: () => ({ known: true, canCreate: true, listed: true, settled: true }),
 }));
 
 describe('tenant Sidebar — platform internals stay hidden', () => {

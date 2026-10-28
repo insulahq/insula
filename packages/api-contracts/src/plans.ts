@@ -21,6 +21,11 @@ export const createPlanSchema = z.object({
   monthly_price_usd: z.string().min(1).max(20),
   max_sub_users: z.number().int().min(0).max(100).optional(),
   max_mailboxes: z.number().int().min(0).max(10000).optional(),
+  // How many applications a tenant may have — catalog apps, custom containers
+  // and compose stacks, stopped ones included (application-limits.ts).
+  // Omitted on create -> DB default. Per-tenant override:
+  // tenants.max_applications_override.
+  max_applications: z.number().int().min(0).max(1000).optional(),
   // Per-plan ceiling on an INDIVIDUAL mailbox's size (MB). Defaults the
   // quota of new mailboxes and caps quota edits. Omitted on create -> DB
   // default 1024 (1 GiB). Per-tenant override:

@@ -17,6 +17,7 @@ import { buildTenantLimitRange, buildTieredQuotaHard, type PodCpuLimitFact } fro
 import type { WorkloadReadiness } from './health-gate.js';
 import * as taskService from '../tasks/service.js';
 import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { parseK8sQuantity } from '../../shared/k8s-quantity.js';
 
 const limitRangeName = (ns: string) => `${ns}-cpu`;
 const quotaName = (ns: string) => `${ns}-quota`;
@@ -47,13 +48,20 @@ export async function ensureLimitRange(
   }
 }
 
-/** Parse a Kubernetes CPU quantity ("2", "300m") into millicores. */
+/**
+ * Parse a Kubernetes CPU quantity ("2", "300m", "1k") into millicores.
+ *
+ * ★ Every suffix, not just `m`. The API server canonicalises what it stores:
+ * the 1000-core backstop written as "1000" reads back as "1k", which the old
+ * m-or-plain parser turned into 0 — and ensureTieredQuotaRoom then "widened"
+ * a 1000-core quota down to what the namespace used plus 100m, rebuilding
+ * the very wall the backstop removed. Found on DEV by the first deploy into a
+ * freshly provisioned tenant.
+ */
 export function quantityToMillis(v: string | undefined | null): number {
   if (!v) return 0;
-  const s = String(v).trim();
-  if (s.endsWith('m')) return Math.round(Number(s.slice(0, -1)) || 0);
-  const n = Number(s);
-  return Number.isFinite(n) ? Math.round(n * 1000) : 0;
+  const cores = parseK8sQuantity(String(v));
+  return cores === null ? 0 : Math.round(cores * 1000);
 }
 
 /** What a single in-scope POD requests at most — the surge allowance. */

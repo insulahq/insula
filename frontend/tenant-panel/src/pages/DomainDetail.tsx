@@ -19,6 +19,7 @@ import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, use
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useEmailDomains } from '@/hooks/use-email';
 import { useDeployments } from '@/hooks/use-deployments';
+import { usePrivateWorkers } from '@/hooks/use-private-workers';
 import { useCustomDeployments } from '@/hooks/use-custom-deployments';
 import { useCatalog } from '@/hooks/use-catalog';
 import {
@@ -747,6 +748,9 @@ function ManagedWebmailRow({ tenantId, domainId }: ManagedWebmailRowProps) {
 
 // ─── Routing Tab ─────────────────────────────────────────────────────────────
 
+/** Route-target option values for a private worker: `pw:<id>` (deployment ids are bare). */
+const WORKER_OPTION_PREFIX = 'pw:';
+
 function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   readonly tenantId: string;
   readonly domainId: string;
@@ -757,6 +761,11 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   const { data: routesData, isLoading } = useIngressRoutes(tenantId, domainId);
   const { data: deploymentsData } = useDeployments(tenantId);
   const { data: customDeploymentsData } = useCustomDeployments(tenantId);
+  // A private worker is a route target too (the API always took
+  // private_worker_id); the selector used to list deployments only, so a
+  // worker could not be put behind a domain from the panel at all.
+  const { data: privateWorkersData } = usePrivateWorkers(tenantId);
+  const routableWorkers = (privateWorkersData?.data?.items ?? []).filter((w) => w.status !== 'revoked');
   const { data: catalogData } = useCatalog();
   const { data: ingressBaseData } = useIngressBaseDomain();
   const ingressBaseDomain = ingressBaseData?.data?.ingressBaseDomain ?? '';
@@ -840,9 +849,12 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     ...deployments.map((d) => [d.id, d.name] as const),
     ...ingressableCustom.map((cd) => [cd.id, cd.name] as const),
   ]);
+  const workerNameById = new Map(routableWorkers.map((w) => [w.id, w.name] as const));
   const decoratedRoutes = rawRoutes.map((r) => ({
     ...r,
-    deploymentName: r.deploymentId ? deploymentNameById.get(r.deploymentId) ?? '' : '',
+    deploymentName: r.privateWorkerId
+      ? workerNameById.get(r.privateWorkerId) ?? ''
+      : r.deploymentId ? deploymentNameById.get(r.deploymentId) ?? '' : '',
   }));
 
   const query = routeQuery.trim().toLowerCase();
@@ -962,7 +974,14 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     setAssigningRouteId(routeId);
     try {
       if (!value) {
-        await updateRoute.mutateAsync({ routeId, deployment_id: null, service_port: null });
+        await updateRoute.mutateAsync({ routeId, deployment_id: null, private_worker_id: null, service_port: null });
+        return;
+      }
+      if (value.startsWith(WORKER_OPTION_PREFIX)) {
+        // The route carries one target: picking a worker clears the deployment.
+        await updateRoute.mutateAsync({
+          routeId, private_worker_id: value.slice(WORKER_OPTION_PREFIX.length), deployment_id: null, service_port: null,
+        });
         return;
       }
       // Value may be `deploymentId` (catalog) or `deploymentId:port` (custom multi-port).
@@ -1169,6 +1188,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         <div className="flex items-center gap-2">
                           <select
                             value={(() => {
+                              if (route.privateWorkerId) return `${WORKER_OPTION_PREFIX}${route.privateWorkerId}`;
                               if (!route.deploymentId) return '';
                               const isCustom = ingressableCustom.some(cd => cd.id === route.deploymentId);
                               return isCustom && route.servicePort ? `${route.deploymentId}:${route.servicePort}` : route.deploymentId;
@@ -1197,6 +1217,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                                 </option>
                               ));
                             })}
+                            {routableWorkers.length > 0 && (
+                              <optgroup label="Private workers">
+                                {routableWorkers.map((w) => (
+                                  <option key={w.id} value={`${WORKER_OPTION_PREFIX}${w.id}`} data-testid={`route-target-worker-${w.id}`}>
+                                    {w.name} (private worker{w.status === 'pending' ? ', not connected yet' : ''})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
                           </select>
                           {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
                         </div>

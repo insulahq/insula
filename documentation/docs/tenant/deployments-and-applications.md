@@ -21,6 +21,20 @@ Open **Applications** from the left menu. It has three tabs:
     generic engines (PHP, Node.js, a database) you build on top of with your
     own files. Both install the same way.
 
+## How many applications you can have
+
+Your subscription allows a number of applications. The pill beside the
+**Applications** title shows it — *3 / 5 applications deployed*. Catalog apps,
+custom containers and compose stacks all count, **stopped ones included**;
+deleted ones do not. The platform's own helpers (the file manager, a private
+worker's server) are not applications and never count.
+
+Once you are at the limit, **Deploy Application**, **New Container**, **New
+Stack** and **Restore** are disabled, and the page says so. Delete an
+application you no longer need (or ask for a bigger plan) to make room. If your
+plan was lowered below what you already have, everything keeps running — you
+only cannot add another until you are back under the limit.
+
 ## Deploy from the catalog
 
 1. Go to **Applications** → **Catalog** tab (or click **Deploy Application**,
@@ -351,7 +365,8 @@ You are asked to confirm first.
 ### Restoring a deleted app
 
 Deleted deployments move to a **Recently Deleted** section. Click **Restore** to
-bring one back, or use the trash button there to remove it permanently. When
+bring one back — it needs room under your application limit, like a new
+deployment — or use the trash button there to remove it permanently. When
 permanently deleting you can also choose to remove its data folder.
 
 That folder goes to the file manager's

@@ -22,6 +22,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
 import { deployCatalogEntry } from './k8s-deployer.js';
 import { getTenantDiskLimits } from '../tenant-disk/limits.js';
+import { refuseDeleted } from './application-limit.js';
 import {
   getTenantNamespace,
   tenantPlacementOf,
@@ -285,6 +286,7 @@ export async function upgradeDeploymentVersion(
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
   assertCatalogSourced(deployment);
+  refuseDeleted(deployment, 'upgrade');
 
   const [entry] = await db
     .select()

@@ -1441,6 +1441,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         memoryLimitOverride: null,
         maxSubUsersOverride: null,
         maxMailboxesOverride: null,
+        maxApplicationsOverride: null,
         monthlyPriceOverride: null,
         emailSendRateLimit: null,
         subscriptionExpiresAt: overrides.subscription_expires_at ?? null,

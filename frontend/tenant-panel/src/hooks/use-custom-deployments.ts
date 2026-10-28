@@ -99,6 +99,8 @@ export function useCreateCustomDeployment(tenantId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
+      // The Installed list and the application count (APPLICATION_USAGE_KEY).
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }
@@ -181,6 +183,7 @@ export function useDeleteCustomDeployment(tenantId: string | undefined) {
       apiFetch<unknown>(`${BASE(tenantId!)}/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });
 }

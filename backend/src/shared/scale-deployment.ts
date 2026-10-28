@@ -31,6 +31,32 @@ export const STORAGE_QUIESCED_ANNOTATION = 'insula.host/storage-quiesced';
  */
 export const STORAGE_PREQUIESCE_REPLICAS_ANNOTATION = 'insula.host/pre-quiesce-replicas';
 
+interface HoldShape {
+  metadata?: { annotations?: Record<string, string> };
+  spec?: { replicas?: number };
+}
+
+/**
+ * A reconciler that re-renders a Deployment wholesale (a full replace) must
+ * not undo a storage operation's hold on it: while the hold annotation is on
+ * the live object, the live replica count and the hold annotations are
+ * carried into the new body. Without this a private-worker, ingress-auth or
+ * network-access reconcile during a suspend, resize or auto-heal scaled its
+ * Deployment back to 1 and erased the mark the restore reads. Pure.
+ */
+export function carryQuiesceHold<T extends HoldShape>(existing: HoldShape | null | undefined, body: T): T {
+  const ann = existing?.metadata?.annotations;
+  if (ann?.[STORAGE_QUIESCED_ANNOTATION] !== 'true') return body;
+  const carried: Record<string, string> = { [STORAGE_QUIESCED_ANNOTATION]: 'true' };
+  const pre = ann[STORAGE_PREQUIESCE_REPLICAS_ANNOTATION];
+  if (pre !== undefined) carried[STORAGE_PREQUIESCE_REPLICAS_ANNOTATION] = pre;
+  return {
+    ...body,
+    metadata: { ...body.metadata, annotations: { ...(body.metadata?.annotations ?? {}), ...carried } },
+    spec: { ...body.spec, replicas: existing?.spec?.replicas ?? 0 },
+  };
+}
+
 /**
  * Reliable Deployment scaling — scale-to-0 was a silent no-op via the SDK.
  *

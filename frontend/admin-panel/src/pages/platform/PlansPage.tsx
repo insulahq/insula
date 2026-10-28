@@ -46,6 +46,7 @@ interface PlanRow {
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;
+  readonly maxApplications: number;
   readonly maxMailboxSizeMb: number;
   readonly emailHourlySendLimit: number;
   readonly emailDailySendLimit: number;
@@ -108,6 +109,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     bandwidth_gb_limit: String(initial?.bandwidthGbLimit ?? 100),
     max_sub_users: String(initial?.maxSubUsers ?? 3),
     max_mailboxes: String(initial?.maxMailboxes ?? 50),
+    max_applications: String(initial?.maxApplications ?? 5),
     max_mailbox_size_mb: String(initial?.maxMailboxSizeMb ?? 1024),
     email_hourly_send_limit: String(initial?.emailHourlySendLimit ?? 50),
     email_daily_send_limit: String(initial?.emailDailySendLimit ?? 100),
@@ -121,6 +123,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       bandwidth_gb_limit: Number(form.bandwidth_gb_limit),
       max_sub_users: Number(form.max_sub_users),
       max_mailboxes: Number(form.max_mailboxes),
+      max_applications: Number(form.max_applications),
       max_mailbox_size_mb: Number(form.max_mailbox_size_mb),
       email_hourly_send_limit: Number(form.email_hourly_send_limit),
       email_daily_send_limit: Number(form.email_daily_send_limit),
@@ -198,6 +201,24 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
           <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Egress the tenant serves. Backups the platform schedules are not counted.</p>
         </div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} min={0} max={100} required value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} data-testid="plan-max-sub-users-input" /></div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Applications</label>
+          {/* `required`: an empty box would submit Number('') === 0 and stop
+              every tenant on the plan from deploying anything. */}
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            min={0}
+            max={1000}
+            required
+            value={form.max_applications}
+            onChange={(e) => setForm({ ...form, max_applications: e.target.value })}
+            data-testid="plan-max-applications-input"
+          />
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+            Catalog apps, custom containers and stacks; stopped ones count. A tenant already above it keeps what it has.
+          </p>
+        </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <div>
@@ -314,6 +335,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.bandwidthGbLimit}GB/mo transfer</span>
           <span>{plan.maxSubUsers} users</span>
+          <span data-testid={`plan-apps-${plan.code}`}>{plan.maxApplications} applications</span>
           <span>{plan.maxMailboxes} mailboxes · {plan.maxMailboxSizeMb} MB each</span>
           <span>{plan.emailHourlySendLimit}/h · {plan.emailDailySendLimit}/d mail</span>
           <div className="flex items-center gap-1">

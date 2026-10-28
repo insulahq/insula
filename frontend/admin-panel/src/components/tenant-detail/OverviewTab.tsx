@@ -434,7 +434,7 @@ function AccountCard({ tenant }: { readonly tenant: Tenant }) {
 function PlanCard({ tenant, tenantId, planName, pendingCpu }: { readonly tenant: Tenant; readonly tenantId: string; readonly planName: string | null; readonly pendingCpu: boolean }) {
   const overrides = [
     tenant.cpuTierOverride, tenant.cpuBurstCoresOverride, tenant.memoryLimitOverride,
-    tenant.storageLimitOverride, tenant.bandwidthLimitOverride, tenant.maxSubUsersOverride, tenant.maxMailboxesOverride,
+    tenant.storageLimitOverride, tenant.bandwidthLimitOverride, tenant.maxSubUsersOverride, tenant.maxMailboxesOverride, tenant.maxApplicationsOverride,
     tenant.maxMailboxSizeMbOverride, tenant.monthlyPriceOverride, tenant.emailSendRateLimit, tenant.emailSendRateLimitDaily,
     tenant.allowCustomContainersOverride,
   ].filter((v) => v != null).length;

@@ -12,6 +12,80 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+- **Subscriptions now limit how many applications a tenant may have.** A new plan field, **Max
+  Applications**, counts catalog apps, custom containers and compose stacks, stopped ones included,
+  deleted ones and the platform's own helpers not. The upgrade gives Starter 2, Premium 5 and
+  Ultimate 20, and any plan you made yourself 20. A tenant already above its limit keeps everything it
+  runs, but cannot deploy, create or restore another until it is back under it. Check your
+  tenants' counts on their **Plan & limits** tab before upgrading; a per-tenant override is there.
+
+### Added
+
+- **The Applications page shows how many applications the subscription allows.** A pill beside the
+  title reads *3 / 5 applications deployed*. At the limit, Deploy, New Container, New Stack and Restore
+  are disabled and the page says what to do. The API refuses with `APPLICATION_LIMIT_REACHED`, and the
+  message names the limit and the count. Restoring a deleted application through a tenant's own
+  restore cart is held to the same limit; an operator's cart is not. Settings shows the effective
+  limit, and the operator's plan editor and Limits tab have the field.
+
+### Changed
+
+- **Private Workers moved onto the Applications page**, as the tab after Custom Containers. It is
+  there while the subscription allows custom containers, or while the tenant still has workers to
+  delete. Old links land on the tab.
+- **A tenant's CPU request quota no longer refuses applications.** It was sized from what the tenant
+  ran when it was last measured, plus one spare container, and only a catalog deploy ever raised it;
+  a custom container or a private worker could be refused by a limit nobody had sold. On production an
+  Ultimate tenant at 530m of 530m added a 25m private worker and lost its main site. The quota is now
+  a fixed backstop (1000 cores) that no tenant reaches. This over-commits nothing: every container
+  still requests exactly its tier share, and the scheduler never places more on a node than it holds.
+  What a tenant may run is bounded by its application limit, its memory and each container's burst
+  ceiling. Every boot raises existing tenants to it.
+- **Platform pods in a tenant's namespace follow the tenant's node and stay out of its quota.** The
+  private-worker server, oauth2-proxy and the Ziti and zrok proxies carried no node pin and no
+  priority class: they ran on any server (the tenant was reported "drifted from its primary node")
+  and were charged to the tenant's own quota. They now take the tenant's pin and the platform
+  overhead class, which restarts each once at upgrade. Catalog cron jobs and one-off jobs are pinned
+  too, and a bundle import runs where the tenant's volume is. CI guard
+  `ci-tenant-pod-placement.sh` fails any new pod creator that does not go through the shared placement.
+
+### Fixed
+
+- **Auto-heal no longer restarts a tenant over a quota that is simply full.** It treated every quota
+  refusal as a pod still shutting down, scaled every workload to zero and back, and the newest pod won
+  the room. On production that moved the outage from a new private worker onto the tenant's
+  established site, three times. A refusal now gets a restart only when terminating pods explain it.
+  Otherwise the operator is alerted at once, with the resource and the figures (*requests.cpu: 525m
+  of 530m in use, 30m more needed*), not "raise the plan limits or free memory".
+- **Auto-heal's restart budget is the tenant's, not each workload's.** Each restart takes the whole
+  tenant down, but two workloads that knocked each other out each had a budget of their own: two full
+  restarts 3½ minutes apart.
+- **A tenant whose application came back by itself after a failed auto-heal is cleared at once.**
+  The hold the heal left on that application kept the tenant's storage state at failed until a
+  15-minute watchdog pass.
+- **The tenant panel's storage banner says what is actually happening.** It read "A storage
+  operation failed … until the operation completes" while nothing was running. After a failed
+  automatic restart it now names the application that is down. After any other failed operation it
+  names the operation and what is on hold. It shows nothing once all is well, and it stops polling
+  every 3 seconds while in the failed state.
+- **A connected private worker shows as connected.** Nothing told the platform a worker had
+  connected: frps was never configured to report it, and the event endpoint would only have stamped a
+  time anyway. A worker whose client logged a successful login stayed *pending* with no last-seen
+  time. The platform now asks each tenant's frps once a minute. A worker with an online tunnel on its
+  port is active with a current last-seen time, and each new connection is in its audit log.
+- **A private worker can be chosen as a route's target.** The API always accepted one, but the
+  Routing tab's selector, in both panels, listed deployments only. Workers now appear there, a
+  pending one included.
+- **Adding a second private worker reaches the running frps.** frps reads its config once and
+  cannot reload it, and nothing restarted it on a change, so a new worker's port was refused until
+  something else restarted the pod. A config change now replaces it. Every API start also
+  re-applies each tenant's frps, so a release's changes reach existing workers.
+- **A deleted application can no longer be started, redeployed or upgraded back to life.** Those paths
+  left it running with its deleted mark set and skipped the application limit; restore is now the one
+  way back.
+
 ## [2026.10.21] - 2026-10-28
 
 ### Changed

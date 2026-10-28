@@ -7,6 +7,8 @@ import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { users } from '../../db/schema.js';
+import type { StorageOperationType, TenantStorageNotice } from '@insula/api-contracts';
+import { loadStorageNotice } from './storage-notice-load.js';
 import {
   extractPlatformSessionCookie,
   PLATFORM_SESSION_COOKIE,
@@ -261,6 +263,10 @@ export async function authRoutes(app: FastifyInstance) {
     // The op behind a non-idle state, so the Snapshots page can re-open the
     // progress of a restore the tenant started before a reload / navigation.
     let activeStorageOperation: { id: string; isSnapshotRestore: boolean } | null = null;
+    // What the account banner says about storage — see tenantStorageNoticeSchema.
+    // undefined (not null) when it could not be read: the banner then falls
+    // back to the bare state instead of saying nothing.
+    let storageNotice: TenantStorageNotice | null | undefined = null;
     if (user.tenantId) {
       const { tenants, storageOperations } = await import('../../db/schema.js');
       const [c] = await app.db
@@ -271,6 +277,7 @@ export async function authRoutes(app: FastifyInstance) {
       if (c) {
         tenantStatus = c.status;
         storageLifecycleState = c.state;
+        let activeOpType: StorageOperationType | null = null;
         if (c.opId) {
           const [op] = await app.db
             .select({ opType: storageOperations.opType, params: storageOperations.params })
@@ -278,6 +285,7 @@ export async function authRoutes(app: FastifyInstance) {
             .where(eq(storageOperations.id, c.opId))
             .limit(1);
           if (op) {
+            activeOpType = op.opType;
             activeStorageOperation = {
               id: c.opId,
               isSnapshotRestore: op.opType === 'restore'
@@ -285,6 +293,12 @@ export async function authRoutes(app: FastifyInstance) {
             };
           }
         }
+        // The banner is a nicety: a failed read must not take /auth/me — and
+        // with it the whole panel — down. The bare state still reaches the UI.
+        storageNotice = await loadStorageNotice(app.db, user.tenantId, c.state, activeOpType).catch((err: unknown) => {
+          request.log.warn({ err }, 'storage notice could not be read');
+          return undefined;
+        });
       }
     }
 
@@ -299,6 +313,7 @@ export async function authRoutes(app: FastifyInstance) {
         tenantStatus,
         storageLifecycleState,
         activeStorageOperation,
+        storageNotice,
       },
     };
   });

@@ -21,7 +21,7 @@ import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import { useTenantBandwidth, useTenantMailUsage, useTenantSendLimitsLive } from '@/hooks/use-tenant-insights';
 import { useMailboxes } from '@/hooks/use-email';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
-import { useDeployments } from '@/hooks/use-deployments';
+import { useDeployments, useTenantApplicationUsage } from '@/hooks/use-deployments';
 import { useCpuMigrationPreview } from '@/hooks/use-cpu-migration';
 import ApplyCpuLimitsPanel from '@/components/ApplyCpuLimitsPanel';
 import NamespaceIntegrityBanner from '@/components/NamespaceIntegrityBanner';
@@ -57,6 +57,7 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
   const { data: mailboxesRes } = useMailboxes(tenantId);
   const { data: subUsersRes } = useAdminSubUsers(tenantId);
   const { data: deploymentsRes } = useDeployments(tenantId);
+  const { data: appUsageRes } = useTenantApplicationUsage(tenantId);
   const { data: cpuPreview } = useCpuMigrationPreview();
   const { data: liveRes } = useTenantSendLimitsLive(tenantId);
   const subscriptionQuery = useSubscription(tenantId);
@@ -87,6 +88,8 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
     const custom = deploymentsRes.data.filter((d) => d.source === 'custom' && d.status !== 'deleted').length;
     usage.customContainers = { value: custom, text: `${custom} deployed` };
   }
+  // What the application limit counts, from the server that enforces it.
+  if (appUsageRes?.data) usage.applications = { value: appUsageRes.data.current, text: `${appUsageRes.data.current} deployed` };
   const inUse = Object.fromEntries(Object.entries(usage).map(([k, v]) => [k, v!.value])) as Partial<Record<LimitId, number>>;
 
   const [editing, setEditing] = useState(false);
@@ -504,6 +507,7 @@ function PlanCompare({ tenant, tenantId, plans, current, usage, currency }: {
     { label: 'Storage', id: 'storage', override: tenant.storageLimitOverride, value: (p) => `${p.storageLimit} GB`, num: (p) => Number(p.storageLimit) },
     { label: 'Bandwidth', id: 'bandwidth', override: tenant.bandwidthLimitOverride, value: (p) => `${p.bandwidthGbLimit} GB / month`, num: (p) => p.bandwidthGbLimit },
     { label: 'Mailboxes', id: 'mailboxes', override: tenant.maxMailboxesOverride, value: (p) => String(p.maxMailboxes), num: (p) => p.maxMailboxes },
+    { label: 'Applications', id: 'applications', override: tenant.maxApplicationsOverride, value: (p) => String(p.maxApplications), num: (p) => p.maxApplications },
     { label: 'Sends per day', id: 'sendsDay', override: tenant.emailSendRateLimitDaily, value: (p) => String(p.emailDailySendLimit) },
     { label: 'Sub-users', id: 'subUsers', override: tenant.maxSubUsersOverride, value: (p) => String(p.maxSubUsers), num: (p) => p.maxSubUsers },
   ];

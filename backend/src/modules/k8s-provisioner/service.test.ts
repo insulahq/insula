@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { K8sClients } from './k8s-client.js';
 import * as schema from '../../db/schema.js';
+import { TIERED_REQUEST_CPU_BACKSTOP_CORES } from '../cpu-migration/tiered-namespace.js';
+
+/** A tiered namespace's request quota: the backstop, never the plan's retired cores. */
+const BACKSTOP = String(TIERED_REQUEST_CPU_BACKSTOP_CORES);
 
 // The file-manager lifecycle is unit-tested on its own
 // (file-manager/k8s-lifecycle.test.ts); here we only assert which node the
@@ -231,7 +235,7 @@ describe('K8s Provisioner Service', () => {
      * nothing had touched their quota yet — the next API restart would have
      * taken all thirty, since the boot reconciler sweeps every tenant.
      */
-    it('drops the CPU ceiling but keeps the tiered request of a migrated namespace', async () => {
+    it('drops the CPU ceiling and sets the tiered request to the backstop', async () => {
       (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { hard: { 'requests.cpu': '110m', 'limits.cpu': '4', 'requests.memory': '1Gi', 'limits.memory': '1Gi' } },
       });
@@ -247,10 +251,10 @@ describe('K8s Provisioner Service', () => {
       // production. `upsertQuota` replaces the object, so omitting it here
       // is what takes it off an upgraded namespace.
       expect(hard['limits.cpu']).toBeUndefined();
-      // requests.cpu stays the TIERED figure — under tiering the plan's
-      // cpu_limit does not govern requests at all, and writing the plan's
-      // value over it would land below `used` and freeze the namespace.
-      expect(hard['requests.cpu']).toBe('110m');
+      // requests.cpu is the BACKSTOP — under tiering the plan's cpu_limit
+      // does not govern requests at all, and the old snapshot-sized figure
+      // (110m here) walled tenants one workload later.
+      expect(hard['requests.cpu']).toBe(BACKSTOP);
       // Memory still follows the plan; the tier model changes nothing there.
       expect(hard['requests.memory']).toBe('4Gi');
       expect(hard['limits.memory']).toBe('4Gi');
@@ -275,15 +279,15 @@ describe('K8s Provisioner Service', () => {
       expect(hard['limits.cpu']).toBeUndefined();
     });
 
-    // Provisioning a brand-new tenant: nothing to read, plan values apply.
-    it('writes the plan CPU when the quota does not exist yet', async () => {
+    // Provisioning a brand-new (tiered) tenant: nothing to read, the backstop applies.
+    it('writes the backstop when a tiered quota does not exist yet', async () => {
       (mockK8s.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('HTTP-Code: 404'));
       const { applyResourceQuota } = await import('./service.js');
       await applyResourceQuota(mockK8s, 'test-ns', { cpu: '0.25', memory: '4', storage: '50' });
       const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
       const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
       const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
-      expect(hard['requests.cpu']).toBe('0.25');
+      expect(hard['requests.cpu']).toBe(BACKSTOP);
       expect(hard['limits.cpu']).toBeUndefined();
     });
 
@@ -306,9 +310,9 @@ describe('K8s Provisioner Service', () => {
       const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
       const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
       expect(hard['limits.cpu']).toBeUndefined();
-      // Left where it is. Only the migration can size this from live pods,
-      // and the plan value it currently holds is a cap, not a reservation.
-      expect(hard['requests.cpu']).toBe('0.25');
+      // Raised to the backstop: the plan value it held was a cap nobody
+      // bought, and a cap is what refused the production tenant's pods.
+      expect(hard['requests.cpu']).toBe(BACKSTOP);
     });
 
     it('takes an existing ceiling off a tiered namespace', async () => {
@@ -321,8 +325,8 @@ describe('K8s Provisioner Service', () => {
       const pod = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
       const hard = (pod![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard;
       expect(hard['limits.cpu']).toBeUndefined();
-      // and the tiered request budget is still not clobbered by the plan
-      expect(hard['requests.cpu']).toBe('110m');
+      // and the tiered request is the backstop, not the plan's figure
+      expect(hard['requests.cpu']).toBe(BACKSTOP);
     });
 
     it('does not invent a ceiling for a namespace being provisioned', async () => {
@@ -417,7 +421,7 @@ describe('K8s Provisioner Service', () => {
       expect(hard['limits.cpu']).toBeUndefined();
       // Nothing live to preserve, so requests.cpu falls back to the plan —
       // a cap above the tier sum, which the next migration step resizes.
-      expect(hard['requests.cpu']).toBe('0.25');
+      expect(hard['requests.cpu']).toBe(BACKSTOP);
     });
 
     it('should create TWO ResourceQuotas: a Pod-scoped one (CPU/memory) + an unscoped storage one', async () => {
@@ -438,7 +442,8 @@ describe('K8s Provisioner Service', () => {
       const podSpec = (podCall![0] as { body: { spec: { hard: Record<string, string>; scopeSelector: object } } }).body.spec;
       expect(podSpec).toMatchObject({
         hard: {
-          'requests.cpu': '2',
+          // A tiered namespace (the LimitRange read succeeds here): the backstop.
+          'requests.cpu': BACKSTOP,
           'requests.memory': '4Gi',
           'limits.memory': '4Gi',
         },

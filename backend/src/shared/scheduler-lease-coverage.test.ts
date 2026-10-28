@@ -76,6 +76,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   // not a constraint, so replicas ticking together each send it.
   { file: 'modules/backup-health/freshness-sweep.ts', job: 'backup-freshness' },
   { file: 'modules/backup-health/scheduler.ts', job: 'backup-job-health' },
+  { file: 'modules/private-workers/connection-poller.ts', job: 'private-worker-connections' },
   { file: 'modules/cnpg-backup-health/scheduler.ts', job: 'cnpg-backup-health' },
   { file: 'modules/wal-archive-health/scheduler.ts', job: 'wal-archive-health' },
   { file: 'modules/mail-admin/blocklist-scheduler.ts', job: 'mail-blocklist-watch' },
