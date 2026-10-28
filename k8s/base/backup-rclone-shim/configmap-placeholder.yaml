@@ -195,7 +195,12 @@ data:
     # a launch not listening after STARTUP_DEADLINE seconds is stopped: the
     # container exits, kubelet restarts it with back-off (CrashLoopBackOff, which
     # the switch reports), and a fresh attempt retries a connection that hung.
-    STARTUP_DEADLINE=60
+    # 120, not 60: after a cold boot of every node a healthy upstream took up
+    # to 46 s to open (lab), and a stop costs a restart with back-off. A target
+    # switch waits longer than this for the rollout (apply-assignment.ts
+    # DEFAULT_VERIFY_READY_TIMEOUT_MS) so it sees the restart; a CI guard checks
+    # that it does.
+    STARTUP_DEADLINE=120
     # :9000 is 2328 in /proc/net's hex, 0A is LISTEN. rclone binds [::] (tcp6)
     # or 0.0.0.0 (tcp) depending on whether the pod has IPv6.
     listening() { cat /proc/net/tcp6 /proc/net/tcp 2>/dev/null | grep -qE '^ *[0-9]+: [0-9A-F]+:2328 [0-9A-F]+:0000 0A '; }

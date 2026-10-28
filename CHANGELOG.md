@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **The backup shim gives a target two minutes to answer at start, up from 60 seconds.** After every
+  node of a lab cluster booted at once, healthy targets took up to 46 seconds to open, close to
+  the old limit, and going over it costs a restart with back-off. A target switch now waits up to four
+  minutes for the shim to roll (was two). That is long enough to see a shim that never serves stopped
+  and restarted, so a switch to a target that never answers is still reported as failed.
+- **The operator manual says what an SMB share's recycle bin does to bundles.** Deleted and expired
+  bundles keep their space until the recycle bin is emptied; turn it off for the backup share.
+
+### Fixed
+
+- **The manual-capture error no longer says bundles go to "S3 or SSH".** `POST
+  /api/v1/admin/tenant-bundles` without a `targetConfigId` now asks for the target tenant backups are
+  bound to; SMB targets work too.
+
 ## [2026.10.20] - 2026-10-27
 
 ### Changed

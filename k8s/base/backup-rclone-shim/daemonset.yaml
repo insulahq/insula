@@ -231,7 +231,7 @@ spec:
           # split serving/idle except briefly mid-rollout). A serving pod is
           # Ready only once rclone listens on :9000 — the launcher's watchdog
           # writes the marker then, and stops a launch still not listening
-          # after 60 s (an upstream that never answers holds every class), so
+          # after 120 s (an upstream that never answers holds every class), so
           # it restarts with back-off instead of reading Ready while serving
           # nothing. A serving pod whose rclone dies exits the container
           # (exec'd PID) → kubelet restarts it → the marker is rm'd at

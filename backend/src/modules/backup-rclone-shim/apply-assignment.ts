@@ -73,7 +73,14 @@ import { CONFIG_HASH_ANNOTATION, SHIM_DAEMONSET_NAME, SHIM_NAMESPACE } from './s
 // Verify-ready
 // ---------------------------------------------------------------------------
 
-const DEFAULT_VERIFY_READY_TIMEOUT_MS = 120_000;
+/**
+ * Longer than the old pod's termination grace (30 s), the launcher's
+ * STARTUP_DEADLINE (120 s), its stop (10 s) and the restart: a new pod that
+ * never serves is only told apart from a slow one once it has been restarted,
+ * and a switch that stopped waiting before then reported success for a target
+ * that serves nothing. ci-backup-rclone-shim-check.sh invariant 26 holds it.
+ */
+const DEFAULT_VERIFY_READY_TIMEOUT_MS = 240_000;
 const DEFAULT_VERIFY_READY_POLL_MS = 2000;
 
 export interface VerifyReadyResult {

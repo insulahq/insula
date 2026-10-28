@@ -535,4 +535,24 @@ if ! grep -qF '( watchdog & )' "$CONFIGMAP"; then
 fi
 pass "Invariant 25: serving shim is Ready only once :9000 listens; a launch that never listens is stopped"
 
-echo "[ci-backup-rclone-shim] All 25 invariants pass."
+# ─── 26. A target switch outwaits the launcher's deadline ────────────
+# A new shim pod that never serves is told apart from a slow one only once
+# the watchdog has stopped it and kubelet has restarted it. The switch's
+# rollout wait must outlast all of that, or a switch to a target that serves
+# nothing reads as succeeded: the old pod's termination grace, the new pod's
+# start, the deadline, the watchdog's stop (TERM, then KILL after 10 s), the
+# first restart back-off (10 s), the status lag and the 2 s poll. The start,
+# lag and poll get 30 s between them.
+DS_GRACE_S="$(grep -oE '^\s*terminationGracePeriodSeconds:\s*[0-9]+' "$DS_MANIFEST" | grep -oE '[0-9]+$' || true)"
+deadline_s="$(grep -oE '^\s*STARTUP_DEADLINE=[0-9]+$' "$CONFIGMAP" | grep -oE '[0-9]+$' || true)"
+verify_ms="$(grep -oE '^const DEFAULT_VERIFY_READY_TIMEOUT_MS = [0-9_]+;' "$APPLY" | grep -oE '[0-9_]+;$' | tr -d '_;' || true)"
+if [ -z "$DS_GRACE_S" ] || [ -z "$deadline_s" ] || [ -z "$verify_ms" ]; then
+  fail "Invariant 26: could not read terminationGracePeriodSeconds ($DS_MANIFEST), STARTUP_DEADLINE ($CONFIGMAP) or DEFAULT_VERIFY_READY_TIMEOUT_MS ($APPLY)"
+fi
+need_s=$(( DS_GRACE_S + deadline_s + 10 + 10 + 30 ))
+if [ "$verify_ms" -lt $(( need_s * 1000 )) ]; then
+  fail "Invariant 26: DEFAULT_VERIFY_READY_TIMEOUT_MS ${verify_ms} ms must be at least ${need_s} s (grace ${DS_GRACE_S} + STARTUP_DEADLINE ${deadline_s} + stop 10 + back-off 10 + 30) — a switch would stop waiting before a never-serving pod restarts"
+fi
+pass "Invariant 26: a target switch waits past the shim's startup deadline (${verify_ms} ms ≥ ${need_s} s)"
+
+echo "[ci-backup-rclone-shim] All 26 invariants pass."
