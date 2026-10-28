@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildTieredQuotaHard, buildTenantLimitRange, assessLimitsCpuReadiness,
   podsWithStaleCeiling, type PodCpuLimitFact, MIN_QUOTA_REQUEST_MILLIS,
+  TIERED_REQUEST_CPU_BACKSTOP_CORES, TIERED_REQUEST_CPU_BACKSTOP_MILLIS, tieredRequestCpuHard,
 } from './tiered-namespace.js';
 
 const quota = (o: Partial<Parameters<typeof buildTieredQuotaHard>[0]> = {}) =>
@@ -11,36 +12,40 @@ const quota = (o: Partial<Parameters<typeof buildTieredQuotaHard>[0]> = {}) =>
   });
 
 describe('buildTieredQuotaHard', () => {
-  it('sums the tiers into requests.cpu, plus surge room', () => {
-    // 5+5+30 = 40, plus a 100m surge floor.
-    const h = quota({ tiers: ['normal', 'normal', 'high'] });
-    expect(h['requests.cpu']).toBe('140m');
-  });
+  const millis = (h: Record<string, string>) => Number(h['requests.cpu'].replace('m', ''));
 
   /**
-   * ★ MEASURED on a live cluster, and the reason liveUsedMillis exists.
+   * ★ The request quota is a backstop no tenant reaches, not a budget.
    *
-   * Kubernetes ACCEPTS a ResourceQuota whose hard is below current used — it
-   * does not reject the update — and then refuses EVERY subsequent pod:
-   *   "exceeded quota … requested: requests.cpu=5m, used: 300m, limited: 30m"
-   * even for a 5m pod. The tier sum covers only what the migration re-tiered,
-   * so a tenant with a CPU-pinning container or a compose stack would have
-   * had its namespace frozen by its own migration.
+   * Sized from the tiers plus one surge pod, it walled every tenant one or two
+   * workloads later: only catalog deploys widened it. Production — an
+   * Ultimate tenant at 530m of 530m added a 25m private worker, and the
+   * refusal cost it its main site.
    */
-  it('never sets requests.cpu below what the namespace already holds', () => {
-    const h = quota({ tiers: ['normal'], liveUsedMillis: 2000, largestPodMillis: 500 });
-    // 2000 held + 500 surge, not the 5m the tier sum alone would give.
-    expect(Number(h['requests.cpu'].replace('m', ''))).toBe(2500);
+  it('is the backstop for any ordinary tenant, whatever it runs today', () => {
+    expect(millis(quota({ tiers: ['normal', 'normal', 'high'] }))).toBe(TIERED_REQUEST_CPU_BACKSTOP_MILLIS);
+    expect(millis(quota({ tiers: Array(16).fill('normal'), burstCores: 1, liveUsedMillis: 80 })))
+      .toBe(TIERED_REQUEST_CPU_BACKSTOP_MILLIS);
+    // The production tenant: 525m held, a 30m and a 25m pod to admit.
+    expect(millis(quota({ tiers: Array(5).fill('highest'), liveUsedMillis: 525, largestPodMillis: 100 })))
+      .toBeGreaterThan(525 + 30 + 25);
   });
 
   /**
-   * Steady state exactly equal to the quota is not enough: a rolling update
-   * runs the old and the new pod together. Without surge the namespace is
-   * not frozen but nothing can ever roll.
+   * ★ MEASURED on a live cluster: Kubernetes ACCEPTS a quota whose hard is
+   * below current used, then refuses every later pod. Moot below the
+   * backstop, kept for the namespace that somehow holds more.
    */
-  it('leaves room for one more copy of the biggest workload', () => {
-    const h = quota({ tiers: ['high'], liveUsedMillis: 30, largestPodMillis: 800 });
-    expect(Number(h['requests.cpu'].replace('m', ''))).toBe(830);
+  it('never sets requests.cpu below what the namespace already holds, plus surge', () => {
+    const held = TIERED_REQUEST_CPU_BACKSTOP_MILLIS + 2000;
+    expect(millis(quota({ tiers: ['normal'], liveUsedMillis: held, largestPodMillis: 500 }))).toBe(held + 500);
+  });
+
+  it('keeps a live figure above the backstop and raises anything below it', () => {
+    expect(tieredRequestCpuHard('530m')).toBe(String(TIERED_REQUEST_CPU_BACKSTOP_CORES));
+    expect(tieredRequestCpuHard(undefined)).toBe(String(TIERED_REQUEST_CPU_BACKSTOP_CORES));
+    expect(tieredRequestCpuHard('2')).toBe(String(TIERED_REQUEST_CPU_BACKSTOP_CORES));
+    expect(tieredRequestCpuHard('2000')).toBe('2000');
   });
 
   /**
@@ -84,12 +89,6 @@ describe('buildTieredQuotaHard', () => {
     expect(Object.keys(h)).toEqual(['requests.cpu']);
   });
 
-  // 16 idle static sites: 1600m before, 80m here. The ADR's headline number.
-  it('collapses a fleet of idle static sites', () => {
-    const h = quota({ tiers: Array(16).fill('normal'), burstCores: 1, liveUsedMillis: 80 });
-    // 80m of tiers + the 100m surge floor — against 1600m before.
-    expect(Number(h['requests.cpu'].replace('m', ''))).toBe(180);
-  });
 });
 
 describe('buildTenantLimitRange', () => {

@@ -16,7 +16,7 @@ import type { Plan } from '@/hooks/use-plans';
 
 export type LimitId =
   | 'tier' | 'burst' | 'memory' | 'storage' | 'bandwidth'
-  | 'mailboxes' | 'mailboxSize' | 'sendsHour' | 'sendsDay' | 'subUsers' | 'customContainers' | 'price';
+  | 'mailboxes' | 'mailboxSize' | 'sendsHour' | 'sendsDay' | 'subUsers' | 'applications' | 'customContainers' | 'price';
 
 export type LimitGroup = 'Compute' | 'Storage and traffic' | 'Email' | 'Users and features' | 'Billing';
 
@@ -87,6 +87,7 @@ export function buildLimitRows(tenant: Tenant, plan: Plan | undefined, currency:
     { id: 'sendsHour', group: 'Email', label: 'Sends per hour', kind: 'number', unit: 'messages', step: '1', field: 'email_send_rate_limit', override: num(tenant.emailSendRateLimit), planValue: num(plan?.emailHourlySendLimit), hint: 'Per mail domain. 0 blocks all outbound mail.' },
     { id: 'sendsDay', group: 'Email', label: 'Sends per day', kind: 'number', unit: 'messages', step: '1', field: 'email_send_rate_limit_daily', override: num(tenant.emailSendRateLimitDaily), planValue: num(plan?.emailDailySendLimit), hint: 'Per mail domain, resets at 00:00 UTC. 0 blocks all outbound mail.' },
     { id: 'subUsers', group: 'Users and features', label: 'Sub-users', kind: 'number', unit: '', step: '1', field: 'max_sub_users_override', override: num(tenant.maxSubUsersOverride), planValue: num(plan?.maxSubUsers), hint: '0 prevents new sub-users. Existing sub-users keep their access.' },
+    { id: 'applications', group: 'Users and features', label: 'Applications', kind: 'number', unit: '', step: '1', field: 'max_applications_override', override: num(tenant.maxApplicationsOverride), planValue: num(plan?.maxApplications), hint: 'Catalog apps, custom containers and stacks; stopped ones count. 0 prevents any new application. Existing ones keep running.' },
     { id: 'customContainers', group: 'Users and features', label: 'Custom containers', kind: 'bool', unit: '', step: '', field: 'allow_custom_containers_override', override: str(tenant.allowCustomContainersOverride), planValue: str(plan?.allowCustomContainers ?? false) },
     { id: 'price', group: 'Billing', label: 'Monthly price', kind: 'number', unit: currency, step: '0.01', field: 'monthly_price_override', override: num(tenant.monthlyPriceOverride), planValue: num(plan?.monthlyPriceUsd) },
   ];
@@ -155,6 +156,10 @@ export function effectOf(row: LimitRow, from: string | null, to: string | null, 
     case 'mailboxes':
       if (n === 0) return { effect: '0 disables email for this tenant: no new mailbox, and email cannot be enabled on a new domain. Existing mailboxes keep working.', tone: 'warn' };
       if (used !== undefined && n < used) return { effect: `Below the ${used} mailboxes in use. They keep working; no new ones can be added.`, tone: 'warn' };
+      return { effect: 'Takes effect on save.', tone: 'ok' };
+    case 'applications':
+      if (n === 0) return { effect: '0 prevents this tenant from deploying or restoring any application. Existing ones keep running.', tone: 'warn' };
+      if (used !== undefined && n < used) return { effect: `Below the ${used} applications deployed. They keep running; no new one can be deployed or restored until enough are deleted.`, tone: 'warn' };
       return { effect: 'Takes effect on save.', tone: 'ok' };
     case 'subUsers':
       if (n === 0) return { effect: '0 prevents this tenant from creating any sub-user. Existing sub-users keep their access.', tone: 'warn' };

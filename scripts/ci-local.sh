@@ -111,7 +111,8 @@ fi
 echo "backend CI guards"
 for g in ci-route-body-validation-check ci-mail-sdk-shape ci-no-longhorn-in-mail \
          ci-mail-arch-regressions ci-tenant-bundles-schema-audit \
-         ci-tenant-bundles-resource-audit ci-config-dump-restore-parity; do
+         ci-tenant-bundles-resource-audit ci-config-dump-restore-parity \
+         ci-tenant-pod-placement; do
   if [[ -x "scripts/$g.sh" ]]; then run_guard "$g"; fi
 done
 echo

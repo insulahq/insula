@@ -6,7 +6,7 @@ import { buildLimitRows, diffDrafts, draftValue, effectOf, formatLimit, initialD
 const PLAN = {
   id: 'p1', code: 'starter', name: 'Starter', description: null, status: 'active',
   cpuLimit: '1', cpuTier: null, cpuBurstCores: '2', memoryLimit: '2', storageLimit: '10',
-  bandwidthGbLimit: 100, monthlyPriceUsd: '9.99', maxSubUsers: 3, maxMailboxes: 5, maxMailboxSizeMb: 500,
+  bandwidthGbLimit: 100, monthlyPriceUsd: '9.99', maxSubUsers: 3, maxMailboxes: 5, maxApplications: 2, maxMailboxSizeMb: 500,
   emailHourlySendLimit: 50, emailDailySendLimit: 500, allowCustomContainers: false,
 } as unknown as Plan;
 
@@ -106,5 +106,20 @@ describe('effectOf', () => {
   });
   it('warns when a mailbox limit drops below the mailboxes in use', () => {
     expect(effectOf(row(rows, 'mailboxes'), '5', '2', { inUse: { mailboxes: 4 }, cpuTiered: false })).toMatchObject({ tone: 'warn', effect: expect.stringContaining('4 mailboxes in use') });
+  });
+});
+
+describe('the application limit', () => {
+  it('reads the plan, and an override of 0 as a value', () => {
+    expect(row(buildLimitRows(tenant(), PLAN, 'USD'), 'applications')).toMatchObject({ override: null, planValue: '2', field: 'max_applications_override' });
+    expect(row(buildLimitRows(tenant({ maxApplicationsOverride: 0 }), PLAN, 'USD'), 'applications').override).toBe('0');
+  });
+
+  it('says what a lower limit does: nothing is stopped, nothing new is added', () => {
+    const r = row(buildLimitRows(tenant(), PLAN, 'USD'), 'applications');
+    expect(effectOf(r, '5', '0', ctx)).toMatchObject({ tone: 'warn', effect: expect.stringContaining('Existing ones keep running') });
+    expect(effectOf(r, '5', '2', { ...ctx, inUse: { applications: 4 } }))
+      .toMatchObject({ tone: 'warn', effect: expect.stringContaining('Below the 4 applications deployed') });
+    expect(effectOf(r, '2', '5', { ...ctx, inUse: { applications: 4 } })).toMatchObject({ tone: 'ok' });
   });
 });

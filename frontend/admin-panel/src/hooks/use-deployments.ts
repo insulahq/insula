@@ -1,3 +1,4 @@
+import type { ApplicationUsage } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { CreateDeploymentRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
@@ -260,5 +261,18 @@ export function useSetCustomDeploymentAllowRoot(tenantId: string | undefined) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
+  });
+}
+
+/**
+ * The tenant's application limit and its use, counted by the server exactly
+ * as the limit is enforced (every application not deleted). The deployment
+ * list is paginated, so counting its first page would undercount.
+ */
+export function useTenantApplicationUsage(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: ['deployments', tenantId, 'application-usage'],
+    queryFn: () => apiFetch<{ data: ApplicationUsage }>(`/api/v1/tenants/${tenantId}/applications/usage`),
+    enabled: !!tenantId,
   });
 }

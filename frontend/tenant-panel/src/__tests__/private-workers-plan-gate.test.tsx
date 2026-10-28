@@ -36,6 +36,7 @@ vi.mock('@/hooks/use-system-info', () => ({
 
 const { default: Sidebar } = await import('../components/layout/Sidebar');
 const { default: PrivateWorkers } = await import('../pages/PrivateWorkers');
+const { usePrivateWorkersAccess } = await import('../hooks/use-private-workers-access');
 
 function wrap(node: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -58,42 +59,54 @@ beforeEach(() => {
   usePrivateWorkersMock.mockClear();
 });
 
-describe('Sidebar — Private Workers follows "Allow Custom Containers"', () => {
-  it('lists the page when the subscription allows custom containers', () => {
-    wrap(<Sidebar open onClose={() => {}} />);
-    expect(screen.getByRole('link', { name: /Private Workers/ })).toBeInTheDocument();
+function Listed() {
+  const access = usePrivateWorkersAccess('t1');
+  return <span data-testid="listed">{access.listed ? 'listed' : 'hidden'}</span>;
+}
+
+// The page is the Applications page's Private Workers tab now; whether the
+// tab shows is this hook's `listed` (applications-page.test.tsx renders it).
+describe('the Private Workers tab follows "Allow Custom Containers"', () => {
+  it('is listed when the subscription allows custom containers', () => {
+    wrap(<Listed />);
+    expect(screen.getByTestId('listed')).toHaveTextContent('listed');
   });
 
-  it('hides it when the subscription does not, and the tenant has no workers', () => {
+  it('is hidden when the subscription does not, and the tenant has no workers', () => {
     allowCustomContainers = false;
+    wrap(<Listed />);
+    expect(screen.getByTestId('listed')).toHaveTextContent('hidden');
+  });
+
+  it('stays while the tenant still has workers to manage', () => {
+    allowCustomContainers = false;
+    workerItems = [WORKER];
+    wrap(<Listed />);
+    expect(screen.getByTestId('listed')).toHaveTextContent('listed');
+  });
+
+  it('asks for the worker list only once the subscription has said no', () => {
+    wrap(<Listed />);
+    expect(usePrivateWorkersMock.mock.calls.every(([t]) => t === undefined)).toBe(true);
+
+    allowCustomContainers = undefined; // still loading
+    wrap(<Listed />);
+    expect(screen.getAllByTestId('listed').at(-1)).toHaveTextContent('hidden');
+    expect(usePrivateWorkersMock.mock.calls.every(([t]) => t === undefined)).toBe(true);
+  });
+
+  it('is no longer a sidebar entry of its own', () => {
     wrap(<Sidebar open onClose={() => {}} />);
     expect(screen.queryByRole('link', { name: /Private Workers/ })).toBeNull();
     expect(screen.getByRole('link', { name: /Applications/ })).toBeInTheDocument();
   });
-
-  it('keeps it while the tenant still has workers to manage', () => {
-    allowCustomContainers = false;
-    workerItems = [WORKER];
-    wrap(<Sidebar open onClose={() => {}} />);
-    expect(screen.getByRole('link', { name: /Private Workers/ })).toBeInTheDocument();
-  });
-
-  it('asks for the worker list only once the subscription has said no', () => {
-    wrap(<Sidebar open onClose={() => {}} />);
-    expect(usePrivateWorkersMock.mock.calls.every(([t]) => t === undefined)).toBe(true);
-
-    allowCustomContainers = undefined; // still loading
-    wrap(<Sidebar open onClose={() => {}} />);
-    expect(screen.getAllByTestId('sidebar').at(-1)?.textContent).not.toContain('Private Workers');
-    expect(usePrivateWorkersMock.mock.calls.every(([t]) => t === undefined)).toBe(true);
-  });
 });
 
 describe('a subscription that cannot be read opens the panel — the API still gates', () => {
-  it('keeps the page listed', () => {
+  it('keeps the tab listed', () => {
     subscriptionFailed = true;
-    wrap(<Sidebar open onClose={() => {}} />);
-    expect(screen.getByRole('link', { name: /Private Workers/ })).toBeInTheDocument();
+    wrap(<Listed />);
+    expect(screen.getByTestId('listed')).toHaveTextContent('listed');
   });
 
   it('offers Create on the page', () => {

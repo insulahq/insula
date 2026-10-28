@@ -14,7 +14,7 @@
  * Pure data, no imports: the guard reads this file as text.
  */
 export const TABBED_PAGES = {
-  '/applications': ['installed', 'catalog', 'custom'],
+  '/applications': ['installed', 'catalog', 'custom', 'workers'],
   '/monitoring': ['traffic', 'resource-usage'],
   '/email': ['mailboxes', 'aliases', 'settings', 'statistics', 'dmarc', 'abuse', 'tls'],
 } as const satisfies Record<string, readonly [string, ...string[]]>;

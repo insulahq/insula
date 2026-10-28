@@ -45,6 +45,8 @@ import { hostAndPathMatch } from '../ingress-routes/traefik-types.js';
 import type { Database } from '../../db/index.js';
 import type { IngressAuthConfig, IngressClaimRule } from '../../db/schema.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { loadTenantPodPlacement, platformPodPlacement, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
+import { carryQuiesceHold } from '../../shared/scale-deployment.js';
 
 const PROXY_NAME = 'oauth2-proxy';
 const PROXY_PORT = 4180;
@@ -292,7 +294,9 @@ async function ensureTenantProxy(
 
   // Deployment — main container oauth2-proxy; claim-validator sidecar
   // is added only when at least one route has claim rules.
-  const wasNew = await upsertDeployment(deps.k8s.apps, namespace, needsValidator);
+  const wasNew = await upsertDeployment(
+    deps.k8s.apps, namespace, needsValidator, await loadTenantPodPlacement(deps.db, tenantId),
+  );
 
   // Passthrough Ingress — exposes /oauth2/* on every protected host
   // without the auth_request gate, breaking the redirect loop where
@@ -466,6 +470,7 @@ async function upsertDeployment(
   apps: k8s.AppsV1Api,
   namespace: string,
   withClaimValidator: boolean,
+  placement: TenantPodPlacement,
 ): Promise<boolean> {
   const oauth2ProxyContainer: k8s.V1Container = {
     name: 'oauth2-proxy',
@@ -529,6 +534,10 @@ async function upsertDeployment(
       template: {
         metadata: { labels: { 'app.kubernetes.io/name': 'oauth2-proxy' } },
         spec: {
+          // The tenant's pin, and the overhead class — a platform pod is
+          // neither charged to the tenant's quota nor allowed to make the
+          // tenant look drifted (tenant-placement/pod-placement.ts).
+          ...platformPodPlacement(placement),
           // oauth2-proxy mounts the ConfigMap's `oauth2_proxy.cfg`
           // subPath; the claim-validator sidecar (when present) mounts
           // `rules.json` from the same ConfigMap.
@@ -546,7 +555,7 @@ async function upsertDeployment(
   try {
     const existing = await apps.readNamespacedDeployment({ name: PROXY_NAME, namespace } as never);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-    await apps.replaceNamespacedDeployment({ name: PROXY_NAME, namespace, body } as never);
+    await apps.replaceNamespacedDeployment({ name: PROXY_NAME, namespace, body: carryQuiesceHold(existing, body) } as never);
     return false; // existed
   } catch (err) {
     if (!isNotFound(err)) throw err;

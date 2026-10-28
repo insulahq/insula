@@ -30,6 +30,8 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { tenants, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { loadTenantPodPlacement, platformPodPlacement, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
+import { carryQuiesceHold } from '../../shared/scale-deployment.js';
 import {
   buildMiddleware,
   buildIngressRoute,
@@ -191,11 +193,12 @@ async function apply(
     );
   }
 
-  // 3. frps Deployment. 1 replica per tenant.
+  // 3. frps Deployment. 1 replica per tenant, on the tenant's primary node
+  //    and outside the tenant's quota (tenant-placement/pod-placement.ts).
   await safe(
     errors,
     'frps-deployment',
-    () => upsertFrpsDeployment(deps.k8s.apps, namespace),
+    async () => upsertFrpsDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacement(deps.db, tenantId)),
   );
 
   // 4. NetworkPolicy. Allow ingress from the Traefik controller
@@ -528,6 +531,7 @@ async function upsertPerWorkerService(
 async function upsertFrpsDeployment(
   apps: k8s.AppsV1Api,
   namespace: string,
+  placement: TenantPodPlacement,
 ): Promise<void> {
   const body: k8s.V1Deployment = {
     apiVersion: 'apps/v1',
@@ -548,6 +552,10 @@ async function upsertFrpsDeployment(
           labels: { 'app.kubernetes.io/name': FRPS_DEPLOYMENT_NAME },
         },
         spec: {
+          // The tenant's pin, and the overhead class: frps is the platform's
+          // pod, so the tenant's quota never refuses it and the placement
+          // check never sees the tenant "drifted" because of it.
+          ...platformPodPlacement(placement),
           volumes: [
             {
               name: 'config',
@@ -596,7 +604,7 @@ async function upsertFrpsDeployment(
     await apps.replaceNamespacedDeployment({
       name: FRPS_DEPLOYMENT_NAME,
       namespace,
-      body,
+      body: carryQuiesceHold(existing as k8s.V1Deployment, body),
     } as never);
   } catch (err) {
     if (!isNotFound(err)) throw err;

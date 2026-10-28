@@ -19,6 +19,7 @@ import { CustomContainersTab } from '@/components/custom-deployments/CustomConta
 import { getStatusColor } from '@/lib/status-colors';
 import ErrorPanel from '@/components/ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import type { CatalogEntry, Deployment } from '@/types/api';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
@@ -26,6 +27,10 @@ import { cpuCeilingCores, cpuCores, formatCpuCeiling } from '@/lib/cpu-ceiling';
 import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resource-availability';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
+import { useApplicationUsage, applicationRoom } from '@/hooks/use-application-usage';
+import ApplicationUsagePill, { applicationLimitNotice } from '@/components/ApplicationUsagePill';
+import { usePrivateWorkersAccess } from '@/hooks/use-private-workers-access';
+import PrivateWorkers from '@/pages/PrivateWorkers';
 
 type Tab = TabOf<'/applications'>;
 
@@ -33,6 +38,7 @@ const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'installed', label: 'Installed Apps' },
   { id: 'catalog', label: 'Application Catalog' },
   { id: 'custom', label: 'Custom Containers' },
+  { id: 'workers', label: 'Private Workers' },
 ] as const;
 
 const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Static', 'Databases', 'Services'] as const;
@@ -70,10 +76,19 @@ export default function Applications() {
   // and stay manageable under "Installed Apps". Migration 0078.
   const { data: subscription } = useSubscription(tenantId ?? undefined);
   const allowCustomContainers = subscription?.data.allowCustomContainers ?? false;
+  // Private workers come with "Allow Custom Containers": the tab is there
+  // while the subscription allows them — or while the tenant still has
+  // workers from before, since this is the only place to delete them.
+  const privateWorkers = usePrivateWorkersAccess(tenantId ?? undefined);
   const visibleTabs = useMemo(
-    () => TABS.filter((tab) => tab.id !== 'custom' || allowCustomContainers),
-    [allowCustomContainers],
+    () => TABS.filter((tab) => (tab.id !== 'custom' || allowCustomContainers)
+      && (tab.id !== 'workers' || privateWorkers.listed)),
+    [allowCustomContainers, privateWorkers.listed],
   );
+  // The subscription's application limit (deployments/application-limit.ts).
+  // Unknown counts as room — the API refuses a deploy that does not fit.
+  const { data: appUsage } = useApplicationUsage(tenantId ?? undefined);
+  const { atLimit } = applicationRoom(appUsage);
   const { data: deploymentsForNames } = useDeployments(tenantId ?? undefined);
   const existingDeploymentNames = useMemo(
     () => (deploymentsForNames?.data ?? []).filter(d => d.status !== 'deleted').map(d => d.name),
@@ -107,7 +122,10 @@ export default function Applications() {
             <AppWindow size={20} />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="applications-heading">Applications</h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="applications-heading">Applications</h1>
+              <ApplicationUsagePill usage={appUsage} />
+            </div>
             <p className="text-sm text-gray-500 dark:text-gray-400">Browse the catalog and manage your deployed applications.</p>
           </div>
         </div>
@@ -115,7 +133,9 @@ export default function Applications() {
           <button
             type="button"
             onClick={() => openDeployModal()}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            disabled={atLimit}
+            title={atLimit && appUsage ? applicationLimitNotice(appUsage) : undefined}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-blue-600"
             data-testid="deploy-button"
           >
             <Rocket size={14} />
@@ -125,6 +145,17 @@ export default function Applications() {
       </div>
 
       {!canManage && <ReadOnlyNotice message="You have read-only access. Deploying, updating, and deleting applications require administrator access." />}
+
+      {canManage && atLimit && appUsage && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+          data-testid="applications-limit-notice"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>{applicationLimitNotice(appUsage)}</span>
+        </div>
+      )}
 
       <div className="border-b border-gray-200 dark:border-gray-700">
         <nav className="-mb-px flex gap-6" data-testid="tab-bar">
@@ -146,11 +177,12 @@ export default function Applications() {
         </nav>
       </div>
 
-      {activeTab === 'catalog' && <CatalogTab onDeploy={openDeployModal} />}
-      {activeTab === 'installed' && <InstalledTab onDeploy={() => openDeployModal()} />}
+      {activeTab === 'catalog' && <CatalogTab onDeploy={atLimit ? undefined : openDeployModal} />}
+      {activeTab === 'installed' && <InstalledTab atLimit={atLimit} />}
       {activeTab === 'custom' && allowCustomContainers && tenantId && (
-        <CustomContainersTab tenantId={tenantId} canManage={canManage} />
+        <CustomContainersTab tenantId={tenantId} canManage={canManage} atLimit={atLimit} />
       )}
+      {activeTab === 'workers' && privateWorkers.listed && <PrivateWorkers embedded />}
 
       <DeployWorkloadModal
         open={deployModalOpen}
@@ -290,7 +322,8 @@ function AppIcon({ entryId, size = 40 }: { readonly entryId?: string | null; rea
 
 // ─── Catalog Tab ───────────────────────────────────────────────────────────
 
-function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void }) {
+/** `onDeploy` is absent when the subscription has no room for another application. */
+function CatalogTab({ onDeploy }: { readonly onDeploy?: (imageId: string) => void }) {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('All');
@@ -1223,7 +1256,7 @@ function DeploymentListView({
   );
 }
 
-function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
+function InstalledTab({ atLimit }: { readonly atLimit: boolean }) {
   const { tenantId } = useTenantContext();
   const queryClient = useQueryClient();
   const { data: catalogData } = useCatalog();
@@ -1701,6 +1734,11 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
             <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">Recently Deleted</h3>
             <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
           </div>
+          {/* A refused restore says why — the application limit, most often.
+              It used to fail without a word. */}
+          {restoreDeployment.error && (
+            <ErrorPanel error={extractOperatorError(restoreDeployment.error)} compact testId="restore-app-error" />
+          )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {visibleDeleted.map((deployment) => (
               <div
@@ -1739,7 +1777,8 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); restoreDeployment.mutate(deployment.id); }}
-                    disabled={restoreDeployment.isPending}
+                    disabled={restoreDeployment.isPending || atLimit}
+                    title={atLimit ? 'Your subscription has no room for another application — delete one you no longer need first.' : undefined}
                     className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-green-300 dark:border-green-700 px-3 py-2 text-sm font-medium text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid={`restore-app-${deployment.id}`}
                   >

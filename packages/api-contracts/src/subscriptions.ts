@@ -36,6 +36,8 @@ export const hostingPlanSchema = z.object({
   // Phase 1 (tenant-panel email parity round 2): per-plan cap on
   // total mailboxes across the tenant's email domains.
   maxMailboxes: z.number(),
+  // Per-plan cap on the tenant's applications (application-limits.ts).
+  maxApplications: z.number(),
   // Plan-level ADR-036 custom-container toggle (default false). Migration 0078.
   allowCustomContainers: z.boolean().default(false),
   features: z.unknown().nullable(),

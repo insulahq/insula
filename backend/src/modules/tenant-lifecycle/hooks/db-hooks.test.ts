@@ -26,6 +26,7 @@ interface DbCall {
   op: 'update' | 'delete';
   patch?: Record<string, unknown>;
   whereVal?: unknown;
+  where?: unknown;
 }
 
 function makeFakeDb() {
@@ -50,7 +51,7 @@ function makeFakeDb() {
       update: (t: unknown) => ({
         set: (patch: Record<string, unknown>) => ({
           where: async (cond: { val?: unknown }) => {
-            calls.push({ table: tableOf(t), op: 'update', patch, whereVal: cond?.val });
+            calls.push({ table: tableOf(t), op: 'update', patch, whereVal: cond?.val, where: cond });
             return [];
           },
         }),
@@ -195,6 +196,16 @@ describe('deployments-status hook', () => {
       expect(r.status).toBe('ok');
       expect(fake.calls.at(-1)).toMatchObject({ table: 'deployments', patch: { status: 'stopped' } });
     }
+  });
+
+  it('★ leaves deleted applications deleted', async () => {
+    // Stopping them too brought every Recently Deleted application back on
+    // suspend or archive — and counted it against the application limit.
+    await deploymentsStatusHook.run({ ...ctx('suspended'), db: fake.db as never });
+    const where = JSON.stringify(fake.calls.at(-1)?.where, (_k, v) => (typeof v === 'object' && v && 'table' in v && 'name' in v ? `col:${v.name}` : v));
+    expect(where).toContain('col:status');
+    expect(where).toContain('"deleted"');
+    expect(where).toContain('<>');
   });
 });
 

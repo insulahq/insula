@@ -576,6 +576,22 @@ platform does not actually provide today either.
 enforced statements. Preemption returns to being exceptional. The 5765m of phantom
 reservation is released.
 
+### Amendment: the request quota is a backstop, not a budget
+
+The tiered `requests.cpu` was first sized from the tenant's running pods plus one pod of surge, and
+later widened only when a catalog application was deployed. Custom containers, compose stacks and
+private workers never widened it, so a tenant could be refused by a limit the platform set itself
+and nobody had sold. Production: an Ultimate tenant at 530m of 530m added a 25m private worker; the
+refusal, and an auto-heal that restarted the tenant over it, cost the tenant its main site.
+
+`requests.cpu` on a tiered namespace is now a fixed backstop (`TIERED_REQUEST_CPU_BACKSTOP_CORES`,
+1000 cores) that no tenant reaches. It over-commits nothing: each container still requests exactly
+its tier share, and the scheduler never places more requests on a node than it holds — the quota
+was never what protected the nodes. What bounds a tenant is its subscription's application limit
+(`max_applications`), its memory quota, and each container's burst ceiling in the LimitRange. Every
+boot's quota reconcile raises existing namespaces to the backstop; a legacy namespace keeps the plan's
+reservation until it is migrated.
+
 ## Alternatives rejected
 
 - **Enforce CPU limits at the request level** (the "conventional Kubernetes" option).

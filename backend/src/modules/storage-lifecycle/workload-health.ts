@@ -61,6 +61,11 @@ import {
   STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
 } from '../../shared/scale-deployment.js';
 import type { QuiesceSnapshot } from './quiesce.js';
+import { parseK8sQuantity } from '../../shared/k8s-quantity.js';
+import {
+  describeQuotaRefusal, quotaRefusalVerdict, refusalForWorkload,
+  type LiveQuota, type QuotaRefusal, type QuotaVerdict, type TerminatingPod,
+} from './quota-refusal.js';
 
 /**
  * How long a workload may be unavailable before it counts as an outage.
@@ -275,7 +280,7 @@ export function isHealable(reason: HealReason): boolean {
   switch (reason) {
     case 'volume_attach':      // a stale staging dir / stuck attachment — the whole point
     case 'stranded_at_zero':   // restore from the op snapshot
-    case 'quota_rejected':     // a still-terminating pod holding the quota frees up
+    case 'quota_rejected':     // ONLY when terminating pods make the room — see healableNow
     case 'unknown':            // no diagnosis; one bounded attempt is reasonable
       return true;
     case 'image':              // needs a corrected image reference
@@ -286,16 +291,33 @@ export function isHealable(reason: HealReason): boolean {
   }
 }
 
+/**
+ * `isHealable`, with the live quota's say for a refusal. A refusal is worth a
+ * restart only when the refused workloads would fit once the pods already
+ * terminating are gone; a FULL quota — or one that cannot be read — is not:
+ * restarting the namespace only reshuffles which workload is admitted first
+ * (production: the established site lost its slot to a pod added minutes
+ * earlier, three restarts running). Pure.
+ */
+export function healableNow(reason: HealReason, quota: QuotaVerdict | null): boolean {
+  if (!isHealable(reason)) return false;
+  if (reason !== 'quota_rejected') return true;
+  return quota?.kind === 'fits';
+}
+
 /** What to tell the operator to go and do, per cause. */
-function recommendedAction(reason: HealReason): string {
+export function recommendedAction(reason: HealReason, detail?: string | null, workload?: string): string {
+  if (reason === 'quota_rejected') {
+    const figures = describeQuotaRefusal(detail, workload);
+    return `The namespace quota is full${figures ? ` (${figures})` : ''}. `
+      + 'Raise that limit for the tenant, or stop or remove one of its applications — '
+      + 'restarting the tenant cannot make room, so auto-heal leaves a full quota alone.';
+  }
   switch (reason) {
     case 'stranded_at_zero':
       return 'The tenant is parked at 0 replicas by a storage operation that did not finish. '
         + 'Auto-heal restores from the operation\u2019s persisted replica snapshot; if that keeps failing, '
         + 'use Reset to idle on the tenant\u2019s Storage Operations card, then check the ResourceQuota has room.';
-    case 'quota_rejected':
-      return 'Raise the tenant’s plan limits or free memory in the namespace — the pod cannot be admitted until it fits. '
-        + 'Note that a still-terminating pod counts against the quota, so a restore can need roughly double the headroom for a moment.';
     case 'volume_attach':
       return 'Check the kubelet journal for this PV (`journalctl -u k3s | grep <pv-name>`) and count MountDevice succeeded vs failed. '
         + 'A stale staging directory needs the volume fully detached and re-staged; auto-heal already tried exactly that.';
@@ -475,6 +497,75 @@ async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<strin
     }).listNamespacedEvent({ namespace })).items ?? [];
   } catch { /* events may be rotated or RBAC-restricted */ }
   return currentEvidence(pods, events, Date.now());
+}
+
+const QUOTA_KEYS = ['requests.cpu', 'requests.memory', 'limits.cpu', 'limits.memory'] as const;
+
+interface PodResourceSpec {
+  readonly resources?: { readonly requests?: Record<string, string>; readonly limits?: Record<string, string> };
+}
+
+/** What one pod counts against a quota per key: containers summed, or the largest init container if bigger. Pure. */
+export function podQuotaHolds(spec: {
+  readonly containers?: readonly PodResourceSpec[];
+  readonly initContainers?: readonly PodResourceSpec[];
+}): Record<string, string> {
+  const read = (c: PodResourceSpec, key: (typeof QUOTA_KEYS)[number]): number => {
+    const [kind, res] = key.split('.') as ['requests' | 'limits', string];
+    const v = c.resources?.[kind]?.[res];
+    return v === undefined ? 0 : (parseK8sQuantity(v) ?? 0);
+  };
+  const out: Record<string, string> = {};
+  for (const key of QUOTA_KEYS) {
+    const sum = (spec.containers ?? []).reduce((s, c) => s + read(c, key), 0);
+    const init = Math.max(0, ...(spec.initContainers ?? []).map((c) => read(c, key)));
+    const v = Math.max(sum, init);
+    if (v > 0) out[key] = String(v);
+  }
+  return out;
+}
+
+/**
+ * The namespace's quotas and what its terminating pods still hold — what a
+ * quota refusal is judged against (quota-refusal.ts). Empty on a read
+ * failure, which the verdict reads as "cannot tell": no restart.
+ */
+async function quotaFactsFor(k8s: K8sClients, namespace: string): Promise<{
+  quotas: Map<string, LiveQuota>; terminating: TerminatingPod[];
+}> {
+  const quotas = new Map<string, LiveQuota>();
+  const terminating: TerminatingPod[] = [];
+  try {
+    const list = await (k8s.core as unknown as {
+      listNamespacedResourceQuota: (a: { namespace: string }) => Promise<{ items?: Array<{
+        metadata?: { name?: string };
+        spec?: { hard?: Record<string, string>; scopeSelector?: { matchExpressions?: Array<{ scopeName?: string; operator?: string; values?: string[] }> } };
+        status?: { hard?: Record<string, string>; used?: Record<string, string> };
+      }> }>;
+    }).listNamespacedResourceQuota({ namespace });
+    for (const q of list.items ?? []) {
+      const name = q.metadata?.name;
+      if (!name) continue;
+      const pc = (q.spec?.scopeSelector?.matchExpressions ?? [])
+        .find((e) => e.scopeName === 'PriorityClass' && e.operator === 'In');
+      quotas.set(name, {
+        hard: q.status?.hard ?? q.spec?.hard ?? {},
+        used: q.status?.used ?? {},
+        priorityClasses: pc?.values ?? null,
+      });
+    }
+    const pods = await k8s.core.listNamespacedPod({ namespace } as never) as {
+      items?: Array<{ metadata?: { deletionTimestamp?: unknown }; spec?: { priorityClassName?: string } & Parameters<typeof podQuotaHolds>[0] }>;
+    };
+    for (const p of pods.items ?? []) {
+      if (!p.metadata?.deletionTimestamp || !p.spec) continue;
+      terminating.push({ priorityClassName: p.spec.priorityClassName ?? null, holds: podQuotaHolds(p.spec) });
+    }
+  } catch (err) {
+    console.warn(`[workload-health] ${namespace}: quota read failed, a quota refusal cannot be judged: ${err instanceof Error ? err.message : String(err)}`);
+    return { quotas: new Map(), terminating: [] };
+  }
+  return { quotas, terminating };
 }
 
 /**
@@ -752,6 +843,7 @@ async function nodeReadiness(k8s: K8sClients): Promise<Map<string, boolean>> {
 /** See the call site. Never throws: one tenant's error must not stop the sweep. */
 async function resetRecoveredAutohealFailures(
   db: Database,
+  k8s: K8sClients,
   deployments: readonly DeploymentView[],
   byNs: ReadonlyMap<string, { id: string; status: string; lifecycle_state: string; active_op_id: string | null }>,
   downByNs: ReadonlyMap<string, DeploymentView[]>,
@@ -761,7 +853,14 @@ async function resetRecoveredAutohealFailures(
     if (!t || t.status !== 'active' || t.lifecycle_state !== 'failed' || t.active_op_id !== null) continue;
     if (downByNs.has(ns)) continue;
     const mine = deployments.filter((d) => d.namespace === ns);
-    if (mine.some((d) => d.held || (d.desired > 0 && d.available < d.desired))) continue;
+    // A hold on a workload that is back at its replica count is a leftover,
+    // not an outage: the heal that set it gave up while the workload could
+    // not be admitted, and it came up later by itself. Production: sitewright
+    // ran 1/1 under its hold, and this reset waited for the 15-minute
+    // watchdog while the tenant panel kept saying a storage operation failed.
+    // Held at 0 is still stranded and still blocks.
+    if (mine.some((d) => (d.held && d.desired === 0) || (d.desired > 0 && d.available < d.desired))) continue;
+    const staleHolds = mine.filter((d) => d.held);
     try {
       const res = await db.execute(sql`
         UPDATE tenants
@@ -777,6 +876,18 @@ async function resetRecoveredAutohealFailures(
       `);
       if ((res.rowCount ?? 0) > 0) {
         console.warn(`[workload-health] ${ns}: every workload is up again — storage state FAILED, left by a failed auto-heal, reset to idle`);
+        if (staleHolds.length > 0) {
+          // Best-effort: watchdog Leg B clears whatever this misses. Only while
+          // no operation has claimed the tenant since the reset above — a hold
+          // set by a NEW operation is not ours to clear.
+          const [owner] = (await db.execute<{ op: string | null }>(sql`
+            SELECT active_storage_op_id AS op FROM tenants WHERE id = ${t.id}
+          `)).rows ?? [];
+          if (owner && owner.op === null) {
+            const { clearQuiesceHold } = await import('./quiesce.js');
+            for (const d of staleHolds) await clearQuiesceHold(k8s, ns, d.name);
+          }
+        }
       }
     } catch (err) {
       console.warn(`[workload-health] resetting the failed state of ${ns} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -817,7 +928,7 @@ async function dispatchDownAlerts(
       detail: g.detail ?? undefined,
       healSummary: healSummary(g.attempts),
       lastHealError: g.lastHealError ?? undefined,
-      recommendedAction: recommendedAction(g.reason),
+      recommendedAction: recommendedAction(g.reason, g.detail),
     }, `workloads-down:${g.key}:admin:${claimedEpisodesKey(mine)}`);
 
     // The ADMIN copy is the one that matters: it is the alert whose absence let a
@@ -1101,7 +1212,7 @@ export async function reconcileTenantWorkloadHealth(
   // up and none still carries the quiesce hold, a FAILED whose last operation
   // is that auto-heal is over. A failed resize/restore/fsck stays FAILED:
   // those need the operator.
-  await resetRecoveredAutohealFailures(db, deployments, byNs, downByNs);
+  await resetRecoveredAutohealFailures(db, k8s, deployments, byNs, downByNs);
 
   // ── Act on episodes that have outlived the grace window ──
   const due = await db.execute<{
@@ -1109,9 +1220,19 @@ export async function reconcileTenantWorkloadHealth(
     detail: string | null; heal_attempts: number; last_heal_error: string | null;
     first_seen_at: string; down_minutes: number; notify_count: number;
     last_notified_at: string | null; tenant_name: string; pin: string | null;
+    ns_attempts: number;
   }>(sql`
     SELECT e.tenant_id, e.workload, e.namespace, e.reason, e.detail,
            e.heal_attempts, e.last_heal_error, e.first_seen_at,
+           -- The heal budget is the NAMESPACE's: a heal restarts every workload
+           -- in it, whichever one's episode claimed it. Per-episode budgets let
+           -- two workloads that knocked each other out take turns — production:
+           -- two full restarts three and a half minutes apart. Episodes closed
+           -- within the flap window still count, as they do for one workload.
+           COALESCE((SELECT MAX(x.heal_attempts) FROM tenant_workload_health_events x
+                      WHERE x.tenant_id = e.tenant_id AND x.namespace = e.namespace
+                        AND (x.cleared_at IS NULL OR x.cleared_at > now() - ${FLAP_QUIET_SQL}::interval)), 0)::int
+             AS ns_attempts,
            FLOOR(EXTRACT(EPOCH FROM (now() - e.first_seen_at)) / 60)::int AS down_minutes,
            e.notify_count, e.last_notified_at, t.name AS tenant_name, t.node_name AS pin
       FROM tenant_workload_health_events e
@@ -1125,18 +1246,36 @@ export async function reconcileTenantWorkloadHealth(
 
   const healedNamespaces = new Set<string>();
   const failedNamespaces = new Set<string>();
+  // Per namespace, read once per tick and only when a quota refusal is due.
+  const quotaVerdicts = new Map<string, QuotaVerdict>();
+  const quotaVerdictFor = async (namespace: string): Promise<QuotaVerdict> => {
+    const known = quotaVerdicts.get(namespace);
+    if (known) return known;
+    const refusals = (due.rows ?? [])
+      .filter((r) => r.namespace === namespace && r.reason === 'quota_rejected')
+      .map((r) => refusalForWorkload(r.detail, r.workload))
+      .filter((r): r is QuotaRefusal => r !== null);
+    const facts = await quotaFactsFor(k8s, namespace);
+    const verdict = quotaRefusalVerdict(refusals, facts.quotas, facts.terminating);
+    quotaVerdicts.set(namespace, verdict);
+    return verdict;
+  };
   // Collected through the loop and dispatched after it, grouped: one alert
   // per tenant (per node when the node is the cause), never one per workload.
   const alertRows: AlertRow[] = [];
   const claimed: Array<{ row: AlertRow; notifyCount: number; lastNotifiedAt: string | null }> = [];
 
   for (const row of due.rows ?? []) {
+    const reason = row.reason as HealReason;
+    const quota = reason === 'quota_rejected' ? await quotaVerdictFor(row.namespace) : null;
+    const healable = healableNow(reason, quota);
+    const nsAttempts = Math.max(row.ns_attempts ?? 0, row.heal_attempts);
     if (failedNamespaces.has(row.namespace)) {
       // One heal per namespace per tick — the action is namespace-wide.
     } else if (
       !healedNamespaces.has(row.namespace)
-      && row.heal_attempts < MAX_HEAL_ATTEMPTS
-      && isHealable(row.reason as HealReason)
+      && nsAttempts < MAX_HEAL_ATTEMPTS
+      && healable
     ) {
       // Claim the attempt. A single conditional UPDATE across every open
       // episode in this namespace, so exactly one api replica proceeds and the
@@ -1147,22 +1286,33 @@ export async function reconcileTenantWorkloadHealth(
       // not a statement to leave resting on one uniqueness index in another
       // table. Both columns are on the row; use both.
       const backoffSec = Math.round(
-        (HEAL_BACKOFF_BASE_MS * Math.pow(4, row.heal_attempts)) / 1000,
+        (HEAL_BACKOFF_BASE_MS * Math.pow(4, nsAttempts)) / 1000,
       );
+      const backoff = `${backoffSec} seconds`;
+      // The per-row conditions are the cross-replica guard: a second replica's
+      // UPDATE waits on the first one's row locks and re-checks them against
+      // the rows the first one just stamped. The NOT EXISTS is the namespace's
+      // budget — it sees the episodes this statement does not update.
       const claim = await db.execute(sql`
         UPDATE tenant_workload_health_events
-           SET heal_attempts = heal_attempts + 1, last_heal_at = now()
+           SET heal_attempts = ${nsAttempts + 1}, last_heal_at = now()
          WHERE tenant_id = ${row.tenant_id}
            AND namespace = ${row.namespace}
            AND cleared_at IS NULL
            AND heal_attempts < ${MAX_HEAL_ATTEMPTS}
-           AND (last_heal_at IS NULL OR last_heal_at < now() - ${`${backoffSec} seconds`}::interval)
+           AND (last_heal_at IS NULL OR last_heal_at < now() - ${backoff}::interval)
+           AND NOT EXISTS (
+             SELECT 1 FROM tenant_workload_health_events x
+              WHERE x.tenant_id = ${row.tenant_id}
+                AND x.namespace = ${row.namespace}
+                AND (x.cleared_at IS NULL OR x.cleared_at > now() - ${FLAP_QUIET_SQL}::interval)
+                AND (x.heal_attempts >= ${MAX_HEAL_ATTEMPTS} OR x.last_heal_at > now() - ${backoff}::interval))
       `);
       if ((claim.rowCount ?? 0) > 0) {
         healAttempted += 1;
         console.warn(
           `[workload-health] ${row.namespace}/${row.workload} unavailable for ${row.down_minutes}min `
-          + `(${row.reason}) — attempt ${row.heal_attempts + 1}/${MAX_HEAL_ATTEMPTS}: re-staging the volume`,
+          + `(${row.reason}) — attempt ${nsAttempts + 1}/${MAX_HEAL_ATTEMPTS}: re-staging the volume`,
         );
         try {
           await healNamespace(
@@ -1201,12 +1351,12 @@ export async function reconcileTenantWorkloadHealth(
 
     // ── Alert. Only reached when healing was tried and did not fix it, or the
     // attempt budget is spent. The ladder stops it becoming wallpaper.
-    const attempts = failedNamespaces.has(row.namespace) ? row.heal_attempts + 1 : row.heal_attempts;
+    const attempts = failedNamespaces.has(row.namespace) ? nsAttempts + 1 : nsAttempts;
     // Alert when auto-heal has been tried and failed, when its budget is spent,
     // or when the cause is one auto-heal deliberately will not attempt — in that
     // last case the budget is never spent, so waiting for it would mean a tenant
     // with a bad image stays down and silent forever.
-    const notHealable = !isHealable(row.reason as HealReason);
+    const notHealable = !healable;
     const exhausted = failedNamespaces.has(row.namespace)
       || attempts >= MAX_HEAL_ATTEMPTS
       || notHealable;

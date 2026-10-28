@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceAvailability as useTenantCpuModel, CPU_TIER_LABEL } from '@/hooks/use-resource-availability';
 import { useSubscription } from '@/hooks/use-subscription';
+import { useApplicationUsage } from '@/hooks/use-application-usage';
 import { formatRenewalDate } from '@/lib/format-renewal-date';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { formatCurrency } from '@/lib/format-currency';
@@ -10,6 +11,7 @@ import { formatCurrency } from '@/lib/format-currency';
 export default function Settings() {
   const { tenantId } = useTenantContext();
   const { data, isLoading } = useSubscription(tenantId ?? undefined);
+  const { data: appUsage } = useApplicationUsage(tenantId ?? undefined);
   const { data: tenantCpuData } = useTenantCpuModel(tenantId ?? undefined);
   const tenantCpu = tenantCpuData?.data;
   const tieredCpu = tenantCpu?.cpuModel === 'tiered';
@@ -116,6 +118,14 @@ export default function Settings() {
                 <div>
                   <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Max Mailboxes</dt>
                   <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{plan.maxMailboxes}</dd>
+                </div>
+                {/* The EFFECTIVE limit (a per-tenant override wins over the
+                    plan) and the count against it — not the plan's figure. */}
+                <div>
+                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Applications</dt>
+                  <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="settings-applications">
+                    {appUsage ? `${appUsage.current} of ${appUsage.limit} deployed` : '—'}
+                  </dd>
                 </div>
               </>
             )}

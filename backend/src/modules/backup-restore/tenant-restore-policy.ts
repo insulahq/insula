@@ -104,6 +104,8 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
       // scripts/ci-tenant-restore-policy-check.sh catches typos.
       'max_sub_users_override',
       'max_mailboxes_override',
+      // The application count cap (migration 0166) — same class.
+      'max_applications_override',
       // added when ci-tenant-restore-policy-check.sh was finally
       // wired into CI and flagged them. Same class as the limit-overrides
       // above — operator-set caps a tenant must NOT be able to reset by

@@ -53,6 +53,7 @@ import { parseCompose } from './compose-parser.js';
 import { withResolvedLines } from './yaml-line-map.js';
 import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 import { planRoutesForPortEdit } from './route-port.js';
+import { assertApplicationRoom, refuseDeleted, withApplicationSlot } from '../deployments/application-limit.js';
 
 type CallerRole = ValidatorContext['callerRole'];
 
@@ -276,6 +277,8 @@ export async function createSimpleDeployment(
   }
   await assertCustomContainersAllowed(db, tenantId);
   if (input.pull_credential) await assertInlineCredentialAllowed(db);
+  // The subscription's application limit; re-checked under the lock at the insert.
+  await assertApplicationRoom(db, tenantId, 'deploy');
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
@@ -323,7 +326,8 @@ export async function createSimpleDeployment(
   // retry (matches the catalog path).
   const id = randomUUID();
   const storagePath = `custom-deployment/${input.name}`;
-  await db.insert(deployments).values({
+  // Under the per-tenant lock — two creates racing for the last slot.
+  await withApplicationSlot(db, tenantId, 'deploy', (tx) => tx.insert(deployments).values({
     id,
     tenantId,
     catalogEntryId: null,
@@ -336,7 +340,7 @@ export async function createSimpleDeployment(
     configuration: null,
     storagePath,
     status: 'deploying',
-  });
+  }));
 
   // Credential BEFORE deploy — deployToCluster reads the row to build the
   // pull Secret, so writing it afterwards would miss the very first pull.
@@ -436,6 +440,9 @@ export async function createComposeDeployment(
   if (!input.name) {
     throw new ApiError('MISSING_REQUIRED_FIELD', 'Stack name is required to create a deployment.', 400, { field: 'name' });
   }
+  const stackName: string = input.name;
+  // A stack is ONE application, however many services it has.
+  await assertApplicationRoom(db, tenantId, 'deploy');
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
@@ -500,20 +507,21 @@ export async function createComposeDeployment(
 
   const id = randomUUID();
   const storagePath = `custom-deployment/${input.name}`;
-  await db.insert(deployments).values({
+  // Under the per-tenant lock — two creates racing for the last slot.
+  await withApplicationSlot(db, tenantId, 'deploy', (tx) => tx.insert(deployments).values({
     id,
     tenantId,
     catalogEntryId: null,
     source: 'custom',
     customSpec: finalSpec as unknown as Record<string, unknown>,
-    name: input.name,
+    name: stackName,
     replicaCount: 1,
     cpuRequest: totals.cpuRequest,
     memoryRequest: totals.memoryRequest,
     configuration: null,
     storagePath,
     status: 'deploying',
-  });
+  }));
 
   // Same ordering rule as the simple path: the pull Secret is built from this
   // row inside deployToCluster.
@@ -549,6 +557,7 @@ export async function updateCustomDeployment(
   patch: UpdateCustomDeploymentInput,
 ): Promise<CustomDeploymentRow> {
   const current = await getCustomDeployment(db, tenantId, id);
+  refuseDeleted(current, 'change');
   let nextSpec = current.customSpec;
   let needsRedeploy = false;
   const isCompose = current.customSpec.sourceMode === 'compose';
@@ -831,6 +840,7 @@ export async function pullAndRedeploy(
   now: () => Date = () => new Date(),
 ): Promise<UpdateNowResult> {
   const current = await getCustomDeployment(db, tenantId, id);
+  refuseDeleted(current, 'redeploy');
   // Tenant-active is asserted by loadTenantContext below, with the correct
   // action label — no separate check needed here.
 
@@ -937,6 +947,7 @@ export async function startCustomDeployment(
   id: string,
 ): Promise<CustomDeploymentRow> {
   const current = await getCustomDeployment(db, tenantId, id);
+  refuseDeleted(current, 'start');
   const namespace = await loadTenantNamespace(db, tenantId);
   const patched = await scaleCustomDeployment(k8s, namespace, id, 1);
   await db.update(deployments)

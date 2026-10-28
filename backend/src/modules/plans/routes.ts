@@ -95,6 +95,8 @@ export async function planRoutes(app: FastifyInstance) {
       monthlyPriceUsd: parsed.data.monthly_price_usd,
       maxSubUsers: (body.max_sub_users as number) ?? 3,
       maxMailboxes: (body.max_mailboxes as number) ?? 50,
+      // Omitted -> DB default (application-limits.ts).
+      ...(parsed.data.max_applications !== undefined ? { maxApplications: parsed.data.max_applications } : {}),
       // Omitted -> DB default (100 GB/month).
       ...(parsed.data.bandwidth_gb_limit !== undefined
         ? { bandwidthGbLimit: parsed.data.bandwidth_gb_limit }
@@ -159,6 +161,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = parsed.data.monthly_price_usd;
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
     if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;
+    if (parsed.data.max_applications !== undefined) updateValues.maxApplications = parsed.data.max_applications;
     if (parsed.data.max_mailbox_size_mb !== undefined) updateValues.maxMailboxSizeMb = parsed.data.max_mailbox_size_mb;
     if (parsed.data.email_hourly_send_limit !== undefined) updateValues.emailHourlySendLimit = parsed.data.email_hourly_send_limit;
     if (parsed.data.email_daily_send_limit !== undefined) updateValues.emailDailySendLimit = parsed.data.email_daily_send_limit;

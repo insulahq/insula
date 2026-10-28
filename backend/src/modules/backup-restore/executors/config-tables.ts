@@ -21,6 +21,7 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import type { RestoreItem } from '../../../db/schema.js';
+import { withinApplicationLimitForCart } from './application-limit-guard.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
 import { redactRowForTenant, type TenantRestorePolicy } from '../tenant-restore-policy.js';
 
@@ -97,31 +98,40 @@ export async function execConfigTablesItem(args: {
   }
 
   let totalUpserts = 0;
-  await app.db.transaction(async (tx) => {
-    for (const camelTable of pickedCamel) {
-      const sqlTable = ALLOWED_TABLE_TO_SQL[camelTable]!;
-      const rows = dump.tables[camelTable] ?? [];
-      for (const row of rows) {
-        // Tenant-cart paths redact denied columns before upsert.
-        // Admin path leaves rows untouched.
-        const safeRow = tenantPolicy
-          ? redactRowForTenant(sqlTable, row as Record<string, unknown>, tenantPolicy)
-          : row;
-        // Stalwart object ids are CLUSTER-LOCAL:
-        // a bundle restored on another cluster (or after a mail-store
-        // rebuild) carries source-side ids that point at nothing — or
-        // worse, at someone else's object. Null them on replay; the
-        // reconciles re-provision from the authoritative row state.
-        const withoutStalwartIds =
-          sqlTable === 'email_aliases'
-            ? { ...(safeRow as Record<string, unknown>), stalwart_list_id: null }
-            : sqlTable === 'mailboxes'
-              ? { ...(safeRow as Record<string, unknown>), stalwart_principal_id: null }
-              : safeRow;
-        await upsertRow(tx, sqlTable, withoutStalwartIds);
-        totalUpserts++;
+  // Applications coming back through a TENANT cart count against its limit.
+  await withinApplicationLimitForCart({
+    app,
+    restoreJobId: item.restoreJobId,
+    tenantCart: tenantPolicy !== undefined,
+    bundleRows: pickedCamel.includes('deployments')
+      ? (dump.tables.deployments ?? []) as Array<Record<string, unknown>>
+      : [],
+    write: () => app.db.transaction(async (tx) => {
+      for (const camelTable of pickedCamel) {
+        const sqlTable = ALLOWED_TABLE_TO_SQL[camelTable]!;
+        const rows = dump.tables[camelTable] ?? [];
+        for (const row of rows) {
+          // Tenant-cart paths redact denied columns before upsert.
+          // Admin path leaves rows untouched.
+          const safeRow = tenantPolicy
+            ? redactRowForTenant(sqlTable, row as Record<string, unknown>, tenantPolicy)
+            : row;
+          // Stalwart object ids are CLUSTER-LOCAL:
+          // a bundle restored on another cluster (or after a mail-store
+          // rebuild) carries source-side ids that point at nothing — or
+          // worse, at someone else's object. Null them on replay; the
+          // reconciles re-provision from the authoritative row state.
+          const withoutStalwartIds =
+            sqlTable === 'email_aliases'
+              ? { ...(safeRow as Record<string, unknown>), stalwart_list_id: null }
+              : sqlTable === 'mailboxes'
+                ? { ...(safeRow as Record<string, unknown>), stalwart_principal_id: null }
+                : safeRow;
+          await upsertRow(tx, sqlTable, withoutStalwartIds);
+          totalUpserts++;
+        }
       }
-    }
+    }),
   });
 
   // Estimate bundle size from the gunzipped JSON we already read.

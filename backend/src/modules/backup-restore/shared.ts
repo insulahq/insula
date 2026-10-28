@@ -307,7 +307,8 @@ export async function dispatchExecutor(
       await execDatabasesByIdItem({ app, item, store });
       return;
     case 'deployments-by-id':
-      await execDeploymentsByIdItem({ app, item, store });
+      // A tenant cart is held to the application limit (application-limit-guard.ts).
+      await execDeploymentsByIdItem({ app, item, store, tenantCart: tenantPolicy !== undefined });
       return;
     case 'domains-by-id':
       await execDomainsByIdItem({ app, item, store });

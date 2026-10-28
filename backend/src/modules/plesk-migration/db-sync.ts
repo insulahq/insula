@@ -37,6 +37,7 @@ import { resolvePlatformImage } from '../../shared/platform-images.js';
 // straight to MariaDB / the tenant volume. The root filesystem is read-only, so
 // this capped emptyDir is the job's only node-disk write (R37).
 import { TENANT_EMPTYDIR_SIZE_LIMIT } from '../tenant-disk/pod-bounds.js';
+import { TENANT_OVERHEAD_PRIORITY_CLASS } from '../tenant-placement/pod-placement.js';
 
 const MIGRATION_TOOLS_IMAGE =
   resolvePlatformImage('migration-tools');
@@ -315,6 +316,8 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
         metadata: { labels: { 'app.kubernetes.io/name': 'plesk-db-sync' } },
         spec: {
           restartPolicy: 'Never',
+          // A platform Job: never charged to the tenant's quota.
+          priorityClassName: TENANT_OVERHEAD_PRIORITY_CLASS,
           securityContext: { runAsNonRoot: true, runAsUser: 65534, fsGroup: 65534, seccompProfile: { type: 'RuntimeDefault' } },
           containers: [{
             name: 'db-sync',

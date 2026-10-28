@@ -131,6 +131,8 @@ export const backupMetaTenantSchema = z.object({
   memoryLimitOverride: z.number().nullable(),
   maxSubUsersOverride: z.number().int().nullable(),
   maxMailboxesOverride: z.number().int().nullable(),
+  // Bundles from before the application limit carry none: inherit the plan.
+  maxApplicationsOverride: z.number().int().nullable().optional(),
   monthlyPriceOverride: z.number().nullable(),
   emailSendRateLimit: z.number().int().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
@@ -146,6 +148,8 @@ export const backupMetaTenantSchema = z.object({
     storageLimit: z.number(),
     maxSubUsers: z.number().int(),
     maxMailboxes: z.number().int(),
+    // Absent from bundles captured before the application limit existed.
+    maxApplications: z.number().int().optional(),
     maxMailboxSizeMb: z.number().int(),
     emailHourlySendLimit: z.number().int(),
     emailDailySendLimit: z.number().int(),

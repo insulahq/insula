@@ -308,7 +308,15 @@ function EmptyState({ canCreate, onCreate }: EmptyStateProps) {
   );
 }
 
-export default function PrivateWorkers() {
+interface PrivateWorkersProps {
+  /**
+   * Rendered as the Applications page's Private Workers tab: the page title
+   * is the tab's, so this one is left out.
+   */
+  readonly embedded?: boolean;
+}
+
+export default function PrivateWorkers({ embedded = false }: PrivateWorkersProps = {}) {
   const { tenantId } = useTenantContext();
   const canManage = useCanManage();
   const { data, isLoading, error } = usePrivateWorkers(tenantId ?? undefined);
@@ -364,15 +372,17 @@ export default function PrivateWorkers() {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <Cable size={28} className="text-gray-700 dark:text-gray-300" />
-          <h1
-            className="text-2xl font-bold text-gray-900 dark:text-gray-100"
-            data-testid="private-workers-heading"
-          >
-            Private Workers
-          </h1>
-        </div>
+        {embedded ? <span /> : (
+          <div className="flex items-center gap-3">
+            <Cable size={28} className="text-gray-700 dark:text-gray-300" />
+            <h1
+              className="text-2xl font-bold text-gray-900 dark:text-gray-100"
+              data-testid="private-workers-heading"
+            >
+              Private Workers
+            </h1>
+          </div>
+        )}
         {canCreate && workers.length > 0 && (
           <button
             type="button"

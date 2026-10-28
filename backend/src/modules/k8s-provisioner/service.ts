@@ -585,7 +585,9 @@ export async function applyResourceQuota(
  *                        namespace that has the LimitRange to satisfy it.
  *   db says legacy    -> no ceiling. Anything found is dropped by writing
  *                        the legacy shape.
- *   db not consulted  -> follow the cluster.
+ *   db not consulted  -> follow the cluster: with the tenant LimitRange it is
+ *                        tiered and gets the backstop (TIERED_REQUEST_CPU_
+ *                        BACKSTOP_CORES); without, the plan reservation.
  */
 async function resolveCpuHard(
   k8s: K8sClients,
@@ -620,7 +622,12 @@ async function resolveCpuHard(
     || Boolean(liveCeiling)
     || await tenantLimitRangeExists(k8s, namespace);
 
-  return { 'requests.cpu': tiered ? (liveHard?.['requests.cpu'] ?? planCpu) : planCpu };
+  // A tiered namespace's requests.cpu is the backstop (TIERED_REQUEST_CPU_
+  // BACKSTOP_CORES), never the plan's retired core count — every boot's quota
+  // reconcile raises any namespace still on the old snapshot-sized figure.
+  if (!tiered) return { 'requests.cpu': planCpu };
+  const { tieredRequestCpuHard } = await import('../cpu-migration/tiered-namespace.js');
+  return { 'requests.cpu': tieredRequestCpuHard(liveHard?.['requests.cpu']) };
 }
 
 /**

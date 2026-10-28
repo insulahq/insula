@@ -23,6 +23,7 @@ export interface SubscriptionPlan {
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;
+  readonly maxApplications?: number;
   readonly status: string;
 }
 

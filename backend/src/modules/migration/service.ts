@@ -162,6 +162,8 @@ export async function importMigrationTenants(
             storageLimitOverride: String(e.storageLimit),
             maxSubUsersOverride: e.maxSubUsers,
             maxMailboxesOverride: e.maxMailboxes,
+            // Absent from bundles captured before the limit: inherit the plan.
+            ...(e.maxApplications !== undefined ? { maxApplicationsOverride: e.maxApplications } : {}),
             maxMailboxSizeMbOverride: e.maxMailboxSizeMb,
             emailSendRateLimit: e.emailHourlySendLimit,
             emailSendRateLimitDaily: e.emailDailySendLimit,
