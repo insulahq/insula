@@ -24,6 +24,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The mail server has room for its read cache again.** It ran at its 1800 MiB memory limit,
+  so the kernel kept dropping the cached mail-store files and reads went back to disk. Half of
+  the mail database's memory was allocator overhead: its C++ part could open one 64 MiB malloc
+  arena per busy thread, and on a production node 25 of them held about twice what the database
+  uses. The mail server now runs with `MALLOC_ARENA_MAX=2`, and its limit is 2 GiB (the request
+  is unchanged, so small nodes still schedule it). Applying it restarts the mail server once;
+  mail is unavailable for under a minute.
 - **Mail programs waiting for new mail are no longer cut off after 10 minutes.** When a mail
   connection lands on a server that is not the mail node, haproxy closed IMAP connections that had
   been quiet for 10 minutes, while mail programs waiting for new mail stay quiet for up to 29 and the

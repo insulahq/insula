@@ -683,6 +683,19 @@ spec:
                   name: stalwart-admin-creds
                   key: recoveryAdmin
                   optional: true
+            # Cap glibc malloc at 2 arenas. Stalwart's Rust code allocates
+            # through jemalloc, but its embedded RocksDB is C++ and uses glibc
+            # malloc, which opens one 64 MiB arena per busy thread (up to
+            # 8 x cores). Measured on a production node: 25 arenas holding
+            # ~600 MB resident for a RocksDB that needs ~300 MB (128 MiB block
+            # cache + memtables capped at 128 MiB + table readers). Freed
+            # chunks scattered across many arenas are not returned to the OS,
+            # and with transparent huge pages set to `always` (the Debian and
+            # RHEL kernel default) each partly used 2 MiB page stays resident.
+            # The cost is more lock contention between RocksDB threads in
+            # malloc, which is small at mail-server concurrency.
+            - name: MALLOC_ARENA_MAX
+              value: "2"
           volumeMounts:
             - name: config
               mountPath: /etc/stalwart
@@ -704,7 +717,17 @@ spec:
               # kill. The kill was anon-rss, i.e. genuine heap growth rather
               # than reclaimable page cache, so the ceiling was the binding
               # constraint and not a bookkeeping artifact.
-              memory: 1800Mi
+              #
+              # Raised 1800Mi -> 2Gi: at 1800Mi the container sat at its limit
+              # continuously (cgroup memory.events `max` in the hundreds of
+              # thousands), so the kernel kept evicting the page cache that
+              # RocksDB reads SST and blob files through, and mail reads went
+              # back to disk (millions of `workingset_refault_file`). The page
+              # cache is charged to this cgroup, so the limit must leave room
+              # for it on top of the heap. This is a ceiling, not a
+              # reservation: the request stays small, so small nodes still
+              # schedule the pod.
+              memory: 2Gi
           startupProbe:
             # exec probe: Stalwart 0.16 management API restricts remote
             # connections by default. httpGet from the kubelet comes from

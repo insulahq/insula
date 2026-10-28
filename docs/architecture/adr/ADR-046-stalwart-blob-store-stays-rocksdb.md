@@ -152,6 +152,19 @@ per-message sha256 verification) established the facts this decision rests on.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).
+- **RocksDB's memory is glibc's, not jemalloc's.** Stalwart's Rust code allocates
+  through jemalloc, but the embedded RocksDB is C++ and allocates through glibc
+  malloc. Measured on a production node: RocksDB needs about 300 MB (128 MiB
+  block cache, memtables capped at 128 MiB across all 27 column families, table
+  readers for ~0.9 GB of SSTs) but held about 600 MB resident in 25 glibc arenas,
+  and 91 % of the process's anonymous memory sat in transparent huge pages
+  (`always` is the Debian and RHEL kernel default). The container ran at its
+  1800Mi limit, and because the page cache RocksDB reads through is charged to
+  the same cgroup, the kernel kept evicting it. Mitigation: `MALLOC_ARENA_MAX=2`
+  and a 2Gi limit (`k8s/base/stalwart-mail/stalwart/deployment.yaml`). Not done:
+  switching hosts to THP `madvise`. That would need a host migration, and MongoDB
+  8+ tenants want THP on. Re-measure resident memory, arena count and
+  `memory.events` after a release.
 
 ## References
 
