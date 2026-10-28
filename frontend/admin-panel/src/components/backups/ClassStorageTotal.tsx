@@ -12,6 +12,8 @@
 import { HardDrive, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { classStoredTotal, type BackupUsageClass } from '@insula/api-contracts';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatBytes } from '@/lib/format-bytes';
 import { useBackupTargetUsage } from '@/hooks/use-backup-config';
 import { timeAgo } from './TargetStorage';
@@ -33,10 +35,24 @@ const ICON: Record<BackupUsageClass, string> = {
 };
 
 export default function ClassStorageTotal({ cls }: { readonly cls: BackupUsageClass }) {
-  const { data, isLoading } = useBackupTargetUsage();
+  const { data, isLoading, error, refetch, isFetching } = useBackupTargetUsage();
   const { bytes, holders, unlisted, unmeasured, measuredAt } = classStoredTotal(data?.data.targets ?? [], cls);
   const id = `${cls}-storage-total`;
   const link = 'font-medium text-brand-600 hover:underline dark:text-brand-400';
+
+  // A failed read is not "never measured": with no figure to show, say what failed.
+  if (error && !data) {
+    return (
+      <ErrorPanel
+        error={extractOperatorError(error)}
+        severity="warn"
+        compact
+        onRetry={() => { void refetch(); }}
+        retryPending={isFetching}
+        testId={`${id}-error`}
+      />
+    );
+  }
 
   return (
     <section

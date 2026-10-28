@@ -8,8 +8,11 @@ import { MemoryRouter } from 'react-router-dom';
 import type { BackupUsageClass, TargetUsageRow } from '@insula/api-contracts';
 
 let targets: TargetUsageRow[] = [];
+let failure: Error | null = null;
 vi.mock('@/hooks/use-backup-config', () => ({
-  useBackupTargetUsage: () => ({ data: { data: { targets } }, isLoading: false }),
+  useBackupTargetUsage: () => (failure
+    ? { data: undefined, isLoading: false, error: failure, refetch: vi.fn(), isFetching: false }
+    : { data: { data: { targets } }, isLoading: false, error: null, refetch: vi.fn(), isFetching: false }),
 }));
 const ClassStorageTotal = (await import('@/components/backups/ClassStorageTotal')).default;
 
@@ -25,7 +28,7 @@ const t = (id: string, bytes: number | null, bound: boolean, cls: BackupUsageCla
 });
 
 const renderIt = (cls: BackupUsageClass = 'tenant') => render(<MemoryRouter><ClassStorageTotal cls={cls} /></MemoryRouter>);
-beforeEach(() => { targets = []; });
+beforeEach(() => { targets = []; failure = null; });
 
 describe('ClassStorageTotal', () => {
   it('shows the folder the way the target counts it: decimal GB', () => {
@@ -73,6 +76,14 @@ describe('ClassStorageTotal', () => {
     renderIt();
     expect(screen.getByTestId('tenant-storage-total-bytes')).toHaveTextContent('20.0 GB');
     expect(screen.getByTestId('tenant-storage-total-unmeasured')).toHaveTextContent('NewBox not measured yet');
+  });
+
+  it('a failed read is an error, not "not measured yet"', () => {
+    // Seen on DEV: a rate-limited read rendered "Not measured yet — measure a target".
+    failure = new Error('Too many requests. Please retry after 14 seconds');
+    renderIt('mail');
+    expect(screen.getByTestId('mail-storage-total-error')).toHaveTextContent('Too many requests');
+    expect(screen.queryByTestId('mail-storage-total-none')).toBeNull();
   });
 
   it('says when it has not been measured, instead of 0', () => {
