@@ -30,7 +30,7 @@ describe('MailObjectBackupCard', () => {
     const stats = screen.getByTestId('mail-object-backup-stats');
     expect(stats).toHaveTextContent('Used by kept snapshots46.5 GB');
     expect(stats).not.toHaveTextContent(/Total repo size|GiB/);
-    expect(screen.getByTestId('mail-object-backup-size-note')).toHaveTextContent(/repository on the target is larger/);
+    expect(screen.getByTestId('mail-object-backup-size-note')).toHaveTextContent(/repository on the target can be larger/);
   });
 
   it('shows no figure, not 0 B, when restic stats failed', () => {

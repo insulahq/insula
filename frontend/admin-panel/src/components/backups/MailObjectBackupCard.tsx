@@ -72,9 +72,9 @@ export default function MailObjectBackupCard({ ov, loading }: { ov: SystemBackup
           : 'Never'} />
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="mail-object-backup-size-note">
-        The data the kept snapshots use, as restic counts it. The repository on the target is larger — see
-        the storage used by mail backups above: it also holds data from snapshots removed since the last
-        daily clean-up, and restic&apos;s index.
+        The data the kept snapshots use, as restic counts it. The repository on the target can be larger —
+        see the storage used by mail backups above: it also holds data from snapshots removed since the
+        last daily clean-up, and restic&apos;s index.
       </p>
 
       <div className="flex items-center gap-2">
