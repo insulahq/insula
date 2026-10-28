@@ -16,6 +16,7 @@
 
 import { type CpuTier } from '@insula/api-contracts';
 import { tierMillis } from './tiers.js';
+import { parseK8sQuantity } from '../../shared/k8s-quantity.js';
 
 /**
  * ★ REMOVED: the namespace-wide `limits.cpu` budget (was burst x 4).
@@ -81,11 +82,10 @@ export function tieredRequestCpuHard(liveHard: string | undefined | null): strin
   return live > TIERED_REQUEST_CPU_BACKSTOP_MILLIS ? liveHard! : String(TIERED_REQUEST_CPU_BACKSTOP_CORES);
 }
 
+/** Millicores of any CPU quantity — the API server stores 1000 as "1k". */
 function millisOf(q: string): number {
-  const t = q.trim();
-  if (t.endsWith('m')) return Number(t.slice(0, -1)) || 0;
-  const n = Number(t);
-  return Number.isFinite(n) ? n * 1000 : 0;
+  const cores = parseK8sQuantity(q);
+  return cores === null ? 0 : cores * 1000;
 }
 
 export interface TieredQuotaInput {
