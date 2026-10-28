@@ -63,6 +63,8 @@ import {
   type ParsedUnitResult,
 } from './import-job.js';
 import { signUploadToken } from './upload-token.js';
+import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
+import { loadTenantPodPlacement } from '../tenant-placement/pod-placement.js';
 import {
   deleteAbortedImportRow,
   forgetImportSnapshots,
@@ -141,6 +143,24 @@ export function buildImportLabel(note?: string | null): string {
 /** Canonical object-store filename for a small component. */
 function artifactNameFor(component: 'config' | 'secrets'): string {
   return component === 'config' ? 'db-rows.json.gz' : 'tls.json.gz.enc';
+}
+
+/**
+ * Where the import Job runs: the node holding the tenant's volume (it mounts
+ * that RWO volume). A placement hint, so a lookup failure means "unpinned",
+ * never a failed import.
+ */
+async function importJobNode(
+  deps: { readonly db: Database; readonly k8s: K8sClients },
+  input: { readonly tenantId: string; readonly namespace: string; readonly pvcName: string },
+): Promise<string | undefined> {
+  try {
+    const pin = (await loadTenantPodPlacement(deps.db, input.tenantId)).nodeName;
+    const choice = await resolveTenantDataNode(deps.k8s, { namespace: input.namespace, pvcName: input.pvcName, pinNode: pin });
+    return choice.node ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runBundleImport(
@@ -302,7 +322,10 @@ export async function runBundleImport(
       internalApiBase: deps.platformApiUrl,
       archiveEncrypted: !!input.archivePassphrase,
       passphraseKey: input.archivePassphrase ? ARCHIVE_PASSPHRASE_KEY : undefined,
-      pinToNode: input.pinToNode,
+      // The Job mounts the tenant's RWO volume: it must run where the volume
+      // is (or its replica is). Unpinned it landed wherever the scheduler
+      // liked and could not attach beside the tenant's running pods.
+      pinToNode: input.pinToNode ?? await importJobNode(deps, input),
       activeDeadlineSeconds: Math.max(60, Math.ceil(timeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
     });
 

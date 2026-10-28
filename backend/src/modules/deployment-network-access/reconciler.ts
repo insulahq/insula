@@ -35,6 +35,8 @@ import {
   markReconciled,
 } from './service.js';
 import type { Database } from '../../db/index.js';
+import { loadTenantPodPlacementByNamespace, platformPodPlacement, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
+import { carryQuiesceHold } from '../../shared/scale-deployment.js';
 
 const ZITI_PROXY_NAME = 'ziti-tunneler';
 const ZROK_FRONTDOOR_NAME = 'zrok-frontdoor';
@@ -172,7 +174,7 @@ async function ensureZitiTunneler(
   await upsertService(deps.k8s.core, namespace, ZITI_PROXY_NAME, [
     { name: 'http-proxy', port: 8080, targetPort: 8080 },
   ]);
-  const wasNew = await upsertZitiDeployment(deps.k8s.apps, namespace);
+  const wasNew = await upsertZitiDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace));
   await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'ziti-tunneler', true, null);
   return wasNew;
 }
@@ -189,7 +191,7 @@ async function ensureZrokFrontdoor(
   await upsertService(deps.k8s.core, namespace, ZROK_FRONTDOOR_NAME, [
     { name: 'http', port: 8080, targetPort: 8080 },
   ]);
-  const wasNew = await upsertZrokDeployment(deps.k8s.apps, namespace);
+  const wasNew = await upsertZrokDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace));
   await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'zrok-frontdoor', true, null);
   return wasNew;
 }
@@ -288,7 +290,7 @@ async function upsertService(
   }
 }
 
-async function upsertZitiDeployment(apps: k8s.AppsV1Api, namespace: string): Promise<boolean> {
+async function upsertZitiDeployment(apps: k8s.AppsV1Api, namespace: string, placement: TenantPodPlacement): Promise<boolean> {
   // Userspace mode: ziti-edge-tunnel run-host -i /etc/ziti/identity.json
   // would normally enroll on first call; for v1 we mount the JWT and
   // run the enrollment + run flow as a single command.
@@ -302,6 +304,8 @@ async function upsertZitiDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
       template: {
         metadata: { labels: { 'app.kubernetes.io/name': ZITI_PROXY_NAME } },
         spec: {
+          // The tenant's pin, and the overhead class (tenant-placement/pod-placement.ts).
+          ...platformPodPlacement(placement),
           volumes: [
             { name: 'identity', emptyDir: {} },
             { name: 'config', configMap: { name: ZITI_PROXY_NAME } },
@@ -336,7 +340,7 @@ async function upsertZitiDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
   try {
     const existing = await apps.readNamespacedDeployment({ name: ZITI_PROXY_NAME, namespace } as never);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-    await apps.replaceNamespacedDeployment({ name: ZITI_PROXY_NAME, namespace, body } as never);
+    await apps.replaceNamespacedDeployment({ name: ZITI_PROXY_NAME, namespace, body: carryQuiesceHold(existing, body) } as never);
     return false;
   } catch (err) {
     if (!isNotFound(err)) throw err;
@@ -345,7 +349,7 @@ async function upsertZitiDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
   }
 }
 
-async function upsertZrokDeployment(apps: k8s.AppsV1Api, namespace: string): Promise<boolean> {
+async function upsertZrokDeployment(apps: k8s.AppsV1Api, namespace: string, placement: TenantPodPlacement): Promise<boolean> {
   // zrok access private <token> binds the share to localhost:<port>;
   // we expose that port on a Service so the tenant Ingress can dial it.
   const body: k8s.V1Deployment = {
@@ -358,6 +362,8 @@ async function upsertZrokDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
       template: {
         metadata: { labels: { 'app.kubernetes.io/name': ZROK_FRONTDOOR_NAME } },
         spec: {
+          // The tenant's pin, and the overhead class (tenant-placement/pod-placement.ts).
+          ...platformPodPlacement(placement),
           volumes: [
             { name: 'config', configMap: { name: ZROK_FRONTDOOR_NAME } },
             { name: 'state', emptyDir: {} },
@@ -400,7 +406,7 @@ async function upsertZrokDeployment(apps: k8s.AppsV1Api, namespace: string): Pro
   try {
     const existing = await apps.readNamespacedDeployment({ name: ZROK_FRONTDOOR_NAME, namespace } as never);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-    await apps.replaceNamespacedDeployment({ name: ZROK_FRONTDOOR_NAME, namespace, body } as never);
+    await apps.replaceNamespacedDeployment({ name: ZROK_FRONTDOOR_NAME, namespace, body: carryQuiesceHold(existing, body) } as never);
     return false;
   } catch (err) {
     if (!isNotFound(err)) throw err;

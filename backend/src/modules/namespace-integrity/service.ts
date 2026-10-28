@@ -48,7 +48,13 @@ async function exists(call: () => Promise<unknown>): Promise<boolean> {
 /** Effective plan limits, as the tenant's subscription expresses them. */
 export interface SubscriptionLimits {
   /** GiB */ readonly storageGi: number;
-  /** cores */ readonly cpuCores: number;
+  /**
+   * cores — null for a TIERED tenant, whose CPU is not a subscription
+   * quantity at all (ADR-062): its quota carries a backstop no tenant reaches
+   * (TIERED_REQUEST_CPU_BACKSTOP_CORES), so comparing it with the retired
+   * core count would call every tiered tenant "enforced differs".
+   */
+  readonly cpuCores: number | null;
   /** GiB */ readonly memoryGi: number;
 }
 
@@ -162,8 +168,8 @@ export function compareSubscriptionToCluster(
       // volume ASKED for, not what has been written into it.
       provisioned: cluster.pvcRequest,
     },
-    {
-      resource: 'cpu',
+    ...(limits.cpuCores === null ? [] : [{
+      resource: 'cpu' as const,
       label: 'CPU',
       subscription: String(limits.cpuCores),
       exact: limits.cpuCores,
@@ -171,7 +177,7 @@ export function compareSubscriptionToCluster(
       // No standing "provisioned" figure: CPU is consumed by pods, which come
       // and go, and that is exactly what the quota's own `used` tracks.
       provisioned: null,
-    },
+    }]),
     {
       resource: 'memory',
       label: 'Memory',
@@ -361,7 +367,7 @@ export async function checkTenantNamespaceIntegrity(
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
   const limits: SubscriptionLimits = {
     storageGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 0),
-    cpuCores: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 0),
+    cpuCores: tenant.cpuSchedulingMode === 'tiered' ? null : Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 0),
     memoryGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 0),
   };
 

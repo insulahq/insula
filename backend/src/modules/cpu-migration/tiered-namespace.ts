@@ -16,6 +16,7 @@
 
 import { type CpuTier } from '@insula/api-contracts';
 import { tierMillis } from './tiers.js';
+import { parseK8sQuantity } from '../../shared/k8s-quantity.js';
 
 /**
  * ★ REMOVED: the namespace-wide `limits.cpu` budget (was burst x 4).
@@ -48,6 +49,44 @@ import { tierMillis } from './tiers.js';
  * than empty. One tier step is enough to let the first pod in.
  */
 export const MIN_QUOTA_REQUEST_MILLIS = 5;
+
+/**
+ * ★ The tiered `requests.cpu` is a BACKSTOP, not a budget — fixed far above
+ * anything a tenant reaches, so it never refuses a pod.
+ *
+ * It used to be sized from what the namespace ran at migration plus one pod
+ * of surge, and widened only when a CATALOG application was added. Every
+ * other pod creator — custom containers, compose stacks, private workers —
+ * left it alone, so each tenant was one or two workloads away from "exceeded
+ * quota" on a limit the platform set itself and nobody had sold. Production:
+ * an Ultimate tenant at 530m of 530m added a 25m private worker; the refusal
+ * cost it its main site for an hour.
+ *
+ * Raising it over-commits nothing. Every container still requests exactly its
+ * tier share, and the scheduler never places more requests on a node than
+ * the node has — the quota was never what protected the nodes. What a tenant
+ * may run is bounded by its subscription's application limit
+ * (`max_applications`), its memory quota, and each container's burst ceiling
+ * in the LimitRange. A sum of tier shares bounds nothing a tenant bought.
+ *
+ * Kept as a value rather than removed: six writers and several readers know
+ * the key, a legacy namespace still uses it as its reservation, and a figure
+ * no tenant can reach is as good as none.
+ */
+export const TIERED_REQUEST_CPU_BACKSTOP_CORES = 1000;
+export const TIERED_REQUEST_CPU_BACKSTOP_MILLIS = TIERED_REQUEST_CPU_BACKSTOP_CORES * 1000;
+
+/** At least the backstop; a live figure above it (never seen) is kept. */
+export function tieredRequestCpuHard(liveHard: string | undefined | null): string {
+  const live = liveHard ? millisOf(liveHard) : 0;
+  return live > TIERED_REQUEST_CPU_BACKSTOP_MILLIS ? liveHard! : String(TIERED_REQUEST_CPU_BACKSTOP_CORES);
+}
+
+/** Millicores of any CPU quantity — the API server stores 1000 as "1k". */
+function millisOf(q: string): number {
+  const cores = parseK8sQuantity(q);
+  return cores === null ? 0 : cores * 1000;
+}
 
 export interface TieredQuotaInput {
   /** One entry per container the tenant runs; sums to requests.cpu. */
@@ -84,6 +123,7 @@ export function buildTieredQuotaHard(input: TieredQuotaInput): Record<string, st
   const surge = Math.max(input.largestPodMillis, tierMillis('highest'));
   const requestMillis = Math.max(
     MIN_QUOTA_REQUEST_MILLIS,
+    TIERED_REQUEST_CPU_BACKSTOP_MILLIS,
     Math.max(summed, input.liveUsedMillis) + surge,
   );
   /**

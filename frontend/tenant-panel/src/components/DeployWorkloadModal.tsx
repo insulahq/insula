@@ -361,6 +361,10 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     // <Workers|Server> in System Settings to deploy.") so we just render
     // it in a dedicated amber state instead of a generic red error.
     const isHostPortsBlocked = errorCode === 'HOST_PORTS_DISABLED';
+    // The subscription's application limit: not a failure to retry, a
+    // decision — the message names the limit and what to do.
+    const isAppLimit = errorCode === 'APPLICATION_LIMIT_REACHED';
+    const isAdvisory = isDuplicate || isHostPortsBlocked || isAppLimit;
     const errorMessage = err instanceof Error
       ? err.message
       : 'Deployment failed. Please try again.';
@@ -379,13 +383,21 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
           </div>
           <div className="flex flex-col items-center justify-center py-16 px-6">
-            <AlertCircle size={48} className={(isDuplicate || isHostPortsBlocked) ? 'text-amber-500 mb-4' : 'text-red-500 mb-4'} />
+            <AlertCircle size={48} className={isAdvisory ? 'text-amber-500 mb-4' : 'text-red-500 mb-4'} />
             <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-              {isDuplicate ? 'Name already in use' : isHostPortsBlocked ? 'Host network ports disabled' : 'Deployment Failed'}
+              {isDuplicate ? 'Name already in use' : isHostPortsBlocked ? 'Host network ports disabled' : isAppLimit ? 'Application limit reached' : 'Deployment Failed'}
             </p>
-            <p className={`text-sm ${isHostPortsBlocked ? 'text-amber-700 dark:text-amber-300' : 'text-red-600 dark:text-red-400'} mb-2 text-center max-w-md`}>
+            <p
+              className={`text-sm ${isHostPortsBlocked || isAppLimit ? 'text-amber-700 dark:text-amber-300' : 'text-red-600 dark:text-red-400'} mb-2 text-center max-w-md`}
+              data-testid="deploy-error-message"
+            >
               {errorMessage}
             </p>
+            {isAppLimit && (
+              <p className="text-xs text-gray-600 dark:text-gray-400 mb-8 text-center max-w-md" data-testid="app-limit-hint">
+                Delete an application you no longer need, or upgrade your plan, then deploy again.
+              </p>
+            )}
             {isHostPortsBlocked && (
               <p className="text-xs text-gray-600 dark:text-gray-400 mb-8 text-center max-w-md" data-testid="host-ports-blocked-hint">
                 Ask an administrator to flip the matching toggle in <strong>System Settings → Host Network Ports</strong>, then retry.
@@ -406,7 +418,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                 }}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                {isDuplicate ? 'Change name' : 'Retry'}
+                {isDuplicate ? 'Change name' : isAppLimit ? 'Back' : 'Retry'}
               </button>
               <button
                 type="button"

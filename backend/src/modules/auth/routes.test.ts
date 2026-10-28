@@ -63,7 +63,12 @@ vi.mock('../oidc/service.js', () => ({
   isLocalAuthDisabled: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('./storage-notice-load.js', () => ({
+  loadStorageNotice: vi.fn().mockResolvedValue(null),
+}));
+
 const { authRoutes } = await import('./routes.js');
+const storageNoticeLoad = await import('./storage-notice-load.js');
 const authService = await import('./service.js');
 const totpService = await import('./totp-service.js');
 
@@ -173,6 +178,41 @@ describe('auth routes', () => {
       storageLifecycleState: 'restoring',
       activeStorageOperation: { id: 'op-1', isSnapshotRestore: true },
     });
+  });
+
+  it('GET /api/v1/auth/me says which application is down after a failed automatic restart', async () => {
+    const limit = vi.fn()
+      .mockResolvedValueOnce([{ ...mockUser, tenantId: 't1', panel: 'tenant' }])
+      .mockResolvedValueOnce([{ status: 'active', state: 'failed', opId: null }]);
+    mockSelectWhere.mockReturnValueOnce({ limit }).mockReturnValueOnce({ limit });
+    vi.mocked(storageNoticeLoad.loadStorageNotice)
+      .mockResolvedValueOnce({ kind: 'workloads_down', workloads: ['sitewright'] });
+    const token = app.jwt.sign({ sub: 'u1', role: 'tenant_admin', panel: 'tenant', iat: Math.floor(Date.now() / 1000) });
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { authorization: `Bearer ${token}` } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({
+      storageLifecycleState: 'failed',
+      storageNotice: { kind: 'workloads_down', workloads: ['sitewright'] },
+    });
+    expect(storageNoticeLoad.loadStorageNotice).toHaveBeenLastCalledWith(expect.anything(), 't1', 'failed', null);
+  });
+
+  it('GET /api/v1/auth/me still answers when the storage notice cannot be read', async () => {
+    const limit = vi.fn()
+      .mockResolvedValueOnce([{ ...mockUser, tenantId: 't1', panel: 'tenant' }])
+      .mockResolvedValueOnce([{ status: 'active', state: 'failed', opId: null }]);
+    mockSelectWhere.mockReturnValueOnce({ limit }).mockReturnValueOnce({ limit });
+    vi.mocked(storageNoticeLoad.loadStorageNotice).mockRejectedValueOnce(new Error('db down'));
+    const token = app.jwt.sign({ sub: 'u1', role: 'tenant_admin', panel: 'tenant', iat: Math.floor(Date.now() / 1000) });
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { authorization: `Bearer ${token}` } });
+
+    expect(res.statusCode).toBe(200);
+    // Absent, not null: the banner falls back to the bare state.
+    expect(res.json().data).toMatchObject({ storageLifecycleState: 'failed' });
+    expect(res.json().data).not.toHaveProperty('storageNotice');
   });
 
   it('GET /api/v1/auth/me should reject without token', async () => {

@@ -30,6 +30,8 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
     keywords: ['install', 'marketplace', 'templates', 'wordpress', 'nextcloud', 'available'] },
   { id: 'applications.custom', label: 'Custom Containers', group: 'Applications', to: '/applications/custom',
     keywords: ['docker', 'image', 'compose', 'bring your own', 'byoi', 'registry'] },
+  { id: 'applications.workers', label: 'Private Workers', group: 'Applications', to: '/applications/workers',
+    keywords: ['tunnel', 'remote', 'own server', 'connect', 'token', 'byo node'] },
 
   { id: 'database-manager', label: 'SQL Manager', group: 'Hosting', to: '/database-manager',
     keywords: ['database', 'mysql', 'mariadb', 'postgres', 'postgresql', 'sqlite', 'phpmyadmin', 'query', 'tables'] },
@@ -63,9 +65,6 @@ export const TENANT_SEARCH_REGISTRY: readonly RegistryEntry[] = [
 
   { id: 'sftp', label: 'SFTP Access', group: 'Access', to: '/sftp',
     keywords: ['ftp', 'file transfer', 'credentials', 'upload', 'scp'] },
-
-  { id: 'private-workers', label: 'Private Workers', group: 'Access', to: '/private-workers',
-    keywords: ['tunnel', 'remote', 'own server', 'connect', 'token', 'byo node'] },
 
   { id: 'monitoring-traffic', label: 'Traffic', group: 'Account', to: '/monitoring/traffic',
     keywords: ['traffic', 'bandwidth', 'egress', 'inbound', 'outbound', 'transfer', 'requests', 'latency', 'graph'] },

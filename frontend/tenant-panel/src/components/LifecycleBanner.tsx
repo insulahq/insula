@@ -1,4 +1,5 @@
 import { AlertTriangle, Ban, Archive, Loader2 } from 'lucide-react';
+import type { StorageLifecycleState, StorageOperationType, TenantStorageNotice } from '@insula/api-contracts';
 import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 
 /**
@@ -6,17 +7,19 @@ import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
  * of their account. Renders nothing when everything is healthy and
  * the orchestrator is idle.
  *
- * State → message mapping:
- *   - tenantStatus=suspended → red banner, destructive actions blocked
- *   - tenantStatus=archived → gray banner, read-only access
- *   - storageLifecycleState != idle → blue banner, "operation in
- *     progress, some actions may appear slow or temporarily fail"
+ *   - tenantStatus=suspended → red, destructive actions blocked
+ *   - tenantStatus=archived → gray, read-only access
+ *   - storage → the server's `storageNotice`, which knows what is behind the
+ *     state: an operation running now (blue), applications an automatic
+ *     restart could not bring back (red), or an operation that stopped partway
+ *     (red). The bare state cannot tell those apart — `failed` used to read
+ *     "until the operation completes" with nothing running at all.
  */
 export default function LifecycleBanner() {
   const { data } = useMyLifecycle();
   if (!data) return null;
 
-  const { tenantStatus, storageLifecycleState } = data;
+  const { tenantStatus, storageLifecycleState, storageNotice } = data;
 
   if (tenantStatus === 'suspended') {
     return (
@@ -34,22 +37,72 @@ export default function LifecycleBanner() {
     );
   }
 
-  if (storageLifecycleState && storageLifecycleState !== 'idle') {
-    const label = storageLifecycleState === 'resizing' ? 'Resizing your storage'
-      : storageLifecycleState === 'snapshotting' ? 'Creating a snapshot of your data'
-      : storageLifecycleState === 'restoring' ? 'Restoring your data'
-      : storageLifecycleState === 'archiving' ? 'Archiving your account'
-      : storageLifecycleState === 'failed' ? 'A storage operation failed'
-      : 'A storage operation is in progress';
-    const tone = storageLifecycleState === 'failed' ? 'red' : 'blue';
-    return (
-      <Banner tone={tone} icon={tone === 'red' ? <AlertTriangle size={16} /> : <Loader2 size={16} className="animate-spin" />}>
-        <strong>{label}.</strong> Some parts of the control panel may appear slow or return errors until the operation completes.
-      </Banner>
-    );
-  }
+  const notice = storageNotice === undefined ? legacyNotice(storageLifecycleState) : storageNotice;
+  return notice ? <StorageBanner notice={notice} state={storageLifecycleState} /> : null;
+}
 
-  return null;
+/** An API that predates `storageNotice`: say only what the state alone supports. */
+function legacyNotice(state: StorageLifecycleState | null): TenantStorageNotice | null {
+  if (!state || state === 'idle') return null;
+  return state === 'failed'
+    ? { kind: 'operation_failed', opType: null }
+    : { kind: 'operation_running', opType: null };
+}
+
+const RUNNING_LABEL: Partial<Record<StorageLifecycleState, string>> = {
+  resizing: 'Resizing your storage',
+  snapshotting: 'Creating a snapshot of your data',
+  restoring: 'Restoring your data',
+  archiving: 'Archiving your account',
+};
+
+const OPERATION_NAME: Record<StorageOperationType, string> = {
+  snapshot: 'snapshot',
+  resize: 'storage resize',
+  suspend: 'suspension',
+  resume: 'reactivation',
+  archive: 'archive',
+  restore: 'restore',
+  fsck: 'storage check',
+  autoheal: 'automatic restart',
+  relocate: 'server move',
+};
+
+function StorageBanner({ notice, state }: { readonly notice: TenantStorageNotice; readonly state: StorageLifecycleState | null }) {
+  switch (notice.kind) {
+    case 'operation_running':
+      if (notice.opType === 'autoheal') {
+        return (
+          <Banner tone="blue" icon={<Loader2 size={16} className="animate-spin" />}>
+            <strong>Restarting your applications automatically.</strong> They should be back within a few minutes.
+          </Banner>
+        );
+      }
+      return (
+        <Banner tone="blue" icon={<Loader2 size={16} className="animate-spin" />}>
+          <strong>{(state && RUNNING_LABEL[state]) ?? 'A storage operation is in progress'}.</strong> Some pages may be slow or briefly show errors until it finishes.
+        </Banner>
+      );
+    case 'workloads_down': {
+      const one = notice.workloads.length === 1;
+      return (
+        <Banner tone="red" icon={<AlertTriangle size={16} />}>
+          <strong>{joinNames(notice.workloads)} {one ? 'is' : 'are'} not running.</strong> An automatic restart did not bring {one ? 'it' : 'them'} back, and our operators have been notified.
+        </Banner>
+      );
+    }
+    case 'operation_failed':
+      return (
+        <Banner tone="red" icon={<AlertTriangle size={16} />}>
+          <strong>The last {notice.opType ? OPERATION_NAME[notice.opType] : 'storage operation'} on your account did not finish.</strong> Our operators have been notified. Storage changes such as resizing and restores are on hold until they resolve it.
+        </Banner>
+      );
+  }
+}
+
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function Banner({ tone, icon, children }: {

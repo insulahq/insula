@@ -126,6 +126,9 @@ export const updateTenantSchema = z.object({
   // tenant (tenant.status) is the bigger hammer — it stops everything,
   // not just mail — so 0 has to be expressible here.
   max_mailboxes_override: z.number().int().min(0).max(10000).nullable().optional(),
+  // Per-tenant application count override. null = inherit the plan's
+  // max_applications; 0 = no applications for this tenant.
+  max_applications_override: z.number().int().min(0).max(1000).nullable().optional(),
   // Per-tenant max mailbox SIZE override (MB). null = inherit from the
   // plan's max_mailbox_size_mb.
   max_mailbox_size_mb_override: z.number().int().min(50).max(102400).nullable().optional(),
@@ -226,6 +229,7 @@ export const tenantResponseSchema = z.object({
   bandwidthCapped: z.boolean().nullable().optional(),
   maxSubUsersOverride: z.number().nullable(),
   maxMailboxesOverride: z.number().nullable().optional(),
+  maxApplicationsOverride: z.number().nullable().optional(),
   maxMailboxSizeMbOverride: z.number().nullable().optional(),
   monthlyPriceOverride: z.string().nullable(),
   emailSendRateLimit: z.number().nullable().optional(),

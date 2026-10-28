@@ -416,7 +416,7 @@ const privateWorkerProvider: SearchProvider = {
       type: 'private_worker' as const,
       title: r.name,
       subtitle: null,
-      href: '/private-workers',
+      href: '/applications/workers',
       badge: r.status,
     }));
   },

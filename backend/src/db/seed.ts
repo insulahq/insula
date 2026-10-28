@@ -136,11 +136,12 @@ console.log('  Seeded regions');
 // Plan ladder ascends Starter < Premium < Ultimate; code and display name
 // agree (migration 0064 renamed the old 'business'->'premium' and
 // 'premium'->'ultimate' codes on existing clusters). maxMailboxSizeMb is the
-// per-mailbox size ceiling (MB).
+// per-mailbox size ceiling (MB). maxApplications follows
+// DEFAULT_PLAN_MAX_APPLICATIONS (migration 0166 sets the same on existing clusters).
 await db.insert(hostingPlans).values([
-  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.25', cpuTier: 'normal', cpuBurstCores: '1.00', memoryLimit: '0.25', storageLimit: '2.00', monthlyPriceUsd: '5.00', maxSubUsers: 1, maxMailboxes: 5, maxMailboxSizeMb: 1024, features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Dedicated pod with more resources', cpuLimit: '1.00', cpuTier: 'high', cpuBurstCores: '2.00', memoryLimit: '1.00', storageLimit: '5.00', monthlyPriceUsd: '15.00', maxSubUsers: 3, maxMailboxes: 10, maxMailboxSizeMb: 2048, features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
-  { id: crypto.randomUUID(), code: 'ultimate', name: 'Ultimate', description: 'Maximum resources with priority support', cpuLimit: '2.00', cpuTier: 'highest', cpuBurstCores: '4.00', memoryLimit: '2.00', storageLimit: '10.00', monthlyPriceUsd: '40.00', maxSubUsers: 10, maxMailboxes: 10, maxMailboxSizeMb: 5120, features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'starter', name: 'Starter', description: 'Shared hosting for small sites', cpuLimit: '0.25', cpuTier: 'normal', cpuBurstCores: '1.00', memoryLimit: '0.25', storageLimit: '2.00', monthlyPriceUsd: '5.00', maxSubUsers: 1, maxMailboxes: 5, maxApplications: 2, maxMailboxSizeMb: 1024, features: { shared_pod: true, ssl: true, backups: 'daily' }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'premium', name: 'Premium', description: 'Dedicated pod with more resources', cpuLimit: '1.00', cpuTier: 'high', cpuBurstCores: '2.00', memoryLimit: '1.00', storageLimit: '5.00', monthlyPriceUsd: '15.00', maxSubUsers: 3, maxMailboxes: 10, maxApplications: 5, maxMailboxSizeMb: 2048, features: { dedicated_pod: true, ssl: true, backups: 'daily', waf: true }, status: 'active' },
+  { id: crypto.randomUUID(), code: 'ultimate', name: 'Ultimate', description: 'Maximum resources with priority support', cpuLimit: '2.00', cpuTier: 'highest', cpuBurstCores: '4.00', memoryLimit: '2.00', storageLimit: '10.00', monthlyPriceUsd: '40.00', maxSubUsers: 10, maxMailboxes: 10, maxApplications: 20, maxMailboxSizeMb: 5120, features: { dedicated_pod: true, ssl: true, backups: 'hourly', waf: true, priority_support: true }, status: 'active' },
 ]).onConflictDoUpdate({ target: hostingPlans.code, set: { name: sql`excluded.name` } });
 console.log('  Seeded hosting plans');
 

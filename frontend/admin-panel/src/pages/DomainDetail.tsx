@@ -14,7 +14,7 @@ import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
 import { useIngressSettings } from '@/hooks/use-ingress-settings';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
-import { useDeployments } from '@/hooks/use-deployments';
+import { useDeployments, useTenantPrivateWorkers } from '@/hooks/use-deployments';
 import TenantFolderPicker from '@/components/TenantFolderPicker';
 import { useCatalog } from '@/hooks/use-catalog';
 import { useSortable } from '@/hooks/use-sortable';
@@ -275,6 +275,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
 
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
+  // A private worker is a route target too; the selector listed deployments only.
+  const { data: workersData } = useTenantPrivateWorkers(tenantId);
+  const routableWorkers = (workersData?.data?.items ?? []).filter((w) => w.status !== 'revoked');
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [removal, setRemoval] = useState<RouteRemovalResult | null>(null);
@@ -316,9 +319,14 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     );
   };
 
-  const handleAssignDeployment = (routeId: string, deploymentId: string | null) => {
+  const handleAssignDeployment = (routeId: string, value: string | null) => {
     setRemoval(null);
-    updateRoute.mutate({ routeId, deployment_id: deploymentId });
+    // One target per route: a worker clears the deployment, and back.
+    if (value?.startsWith('pw:')) {
+      updateRoute.mutate({ routeId, private_worker_id: value.slice(3), deployment_id: null });
+      return;
+    }
+    updateRoute.mutate({ routeId, deployment_id: value, private_worker_id: null });
   };
 
   const [folderPickerRouteId, setFolderPickerRouteId] = useState<string | null>(null);
@@ -441,7 +449,7 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5">
                       <select
-                        value={route.deploymentId ?? ''}
+                        value={route.privateWorkerId ? `pw:${route.privateWorkerId}` : route.deploymentId ?? ''}
                         onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
                         // One update at a time: the mutation tracks only the latest
                         // call, so a second row changed mid-flight would hide the
@@ -454,6 +462,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         {deployments.map((d) => (
                           <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
                         ))}
+                        {routableWorkers.length > 0 && (
+                          <optgroup label="Private workers">
+                            {routableWorkers.map((w) => (
+                              <option key={w.id} value={`pw:${w.id}`}>
+                                {w.name} (private worker{w.status === 'pending' ? ', not connected yet' : ''})
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
                       </select>
                       {updatingThis && (
                         <Loader2 size={14} className="animate-spin text-brand-500" aria-label="Updating route" data-testid={`route-updating-${route.id}`} />

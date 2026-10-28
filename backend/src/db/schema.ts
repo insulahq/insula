@@ -332,6 +332,10 @@ export const hostingPlans = pgTable('hosting_plans', {
   // email domains. Can be overridden per-tenant via
   // tenants.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
+  // How many applications a tenant may have: catalog apps, custom containers
+  // and compose stacks, stopped ones included (deployments/application-limit.ts).
+  // Per-tenant override: tenants.max_applications_override. Migration 0166.
+  maxApplications: integer('max_applications').notNull().default(20),
   // Plan-level ceiling on an INDIVIDUAL mailbox's size (MB). Defaults the
   // quota of new mailboxes and caps quota edits (mailboxes/limit.ts +
   // mailboxes/service.ts). Per-tenant override via
@@ -440,6 +444,9 @@ export const tenants = pgTable('tenants', {
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
   maxMailboxesOverride: integer('max_mailboxes_override'),
+  // Per-customer application count override. null = inherit the plan's
+  // max_applications; 0 = no applications. Migration 0166.
+  maxApplicationsOverride: integer('max_applications_override'),
   // Per-customer max mailbox SIZE override (MB). null = inherit from the
   // plan's max_mailbox_size_mb. Used by the size cap in
   // mailboxes/service.ts (limit.ts:getTenantMailboxSizeLimit). Migration 0064.

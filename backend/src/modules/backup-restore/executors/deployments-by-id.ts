@@ -37,6 +37,7 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { deployments, type RestoreItem } from '../../../db/schema.js';
+import { withinApplicationLimitForCart } from './application-limit-guard.js';
 import { readAndAuthorizeConfigDump, applyIdFilteredUpsert } from './_shared.js';
 
 interface Selector {
@@ -142,8 +143,10 @@ export async function execDeploymentsByIdItem(args: {
   app: FastifyInstance;
   item: RestoreItem;
   store: BackupStore;
+  /** A tenant's own cart: bringing applications back counts against its limit. */
+  tenantCart?: boolean;
 }): Promise<void> {
-  const { app, item, store } = args;
+  const { app, item, store, tenantCart = false } = args;
   const selector = item.selector as unknown as Selector;
   const dump = await readAndAuthorizeConfigDump({ app, item, store });
 
@@ -156,18 +159,25 @@ export async function execDeploymentsByIdItem(args: {
     throw new Error(`deployments-by-id: unsupported selector ${JSON.stringify(selector)}`);
   }
 
-  await applyIdFilteredUpsert({
+  // Which ids land — 'all' means every deployment row in the bundle.
+  const bundleRows = (dump.tables.deployments ?? []) as Array<Record<string, unknown>>;
+  const picked = ids === 'all' ? bundleRows : bundleRows.filter((r) => ids.includes(r.id as string));
+  await withinApplicationLimitForCart({
     app,
-    item,
-    dump,
-    cartItemTable: 'deployments',
-    sqlTable: 'deployments',
-    ids,
-    bundleSizeBytes: JSON.stringify(dump.tables.deployments ?? []).length,
+    restoreJobId: item.restoreJobId,
+    tenantCart,
+    bundleRows: picked,
+    write: () => applyIdFilteredUpsert({
+      app,
+      item,
+      dump,
+      cartItemTable: 'deployments',
+      sqlTable: 'deployments',
+      ids,
+      bundleSizeBytes: JSON.stringify(dump.tables.deployments ?? []).length,
+    }),
   });
 
-  // Which ids actually landed — 'all' means every deployment row in the bundle.
-  const bundleRows = (dump.tables.deployments ?? []) as Array<Record<string, unknown>>;
   const restoredIds = (ids === 'all'
     ? bundleRows.map((r) => r.id)
     : ids

@@ -4,6 +4,7 @@ import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourc
 import { triggerUpgradeSchema, batchUpgradeSchema, folderProblem } from '@insula/api-contracts';
 import * as service from './service.js';
 import * as upgradeVersion from './upgrade-version.js';
+import { getApplicationUsage, refuseDeleted } from './application-limit.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -62,6 +63,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     const result = await service.listDeployments(app.db, tenantId, { ...paginationParams, includeDeleted });
     return paginated(result.data, result.pagination);
+  });
+
+  // GET /api/v1/tenants/:tenantId/applications/usage — the subscription's
+  // application limit and how much of it is used (application-limit.ts).
+  // The Applications page pill, the deploy buttons and Settings read it.
+  app.get('/tenants/:tenantId/applications/usage', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    return success(await getApplicationUsage(app.db, tenantId));
   });
 
   // GET /api/v1/tenants/:tenantId/deployments/storage-folders?path=media/library
@@ -292,6 +301,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.post('/tenants/:tenantId/deployments/:id/restart', async (request) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const deployment = await service.getDeploymentById(app.db, tenantId, id);
+    refuseDeleted(deployment, 'restart');
 
     const k8s = getK8s();
     if (!k8s) {

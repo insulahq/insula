@@ -38,6 +38,8 @@ import AppPreviewModal from '@/components/AppPreviewModal';
 interface CustomContainersTabProps {
   readonly tenantId: string;
   readonly canManage: boolean;
+  /** The subscription has no room for another application. */
+  readonly atLimit?: boolean;
 }
 
 type ActiveModal =
@@ -49,7 +51,7 @@ type ActiveModal =
   | { kind: 'edit-simple'; row: CustomDeploymentRow }
   | { kind: 'edit-compose'; row: CustomDeploymentRow };
 
-export function CustomContainersTab({ tenantId, canManage }: CustomContainersTabProps) {
+export function CustomContainersTab({ tenantId, canManage, atLimit = false }: CustomContainersTabProps) {
   const [activeModal, setActiveModal] = useState<ActiveModal>({ kind: 'none' });
   const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null);
 
@@ -150,7 +152,9 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
           <button
             type="button"
             onClick={() => setActiveModal({ kind: 'simple-wizard' })}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            disabled={atLimit}
+            title={atLimit ? 'Your subscription has no room for another application.' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-blue-600"
             data-testid="custom-new-container"
           >
             New Container
@@ -158,7 +162,9 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
           <button
             type="button"
             onClick={() => setActiveModal({ kind: 'compose-editor' })}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            disabled={atLimit}
+            title={atLimit ? 'Your subscription has no room for another application.' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             data-testid="custom-new-stack"
           >
             <FileText size={14} />

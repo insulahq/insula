@@ -30,6 +30,7 @@ import {
   type TenantDiskLimits,
 } from '../tenant-disk/pod-bounds.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import { tenantPodScheduling, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
 import {
   deploymentKey,
   podsForApp,
@@ -777,12 +778,12 @@ export async function deployCatalogEntry(
         break;
 
       case 'cronjob':
-        await deployK8sCronJob(k8s, diskLimitMb, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent);
+        await deployK8sCronJob(k8s, diskLimitMb, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent, { nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null });
         break;
 
       case 'job':
         // Jobs are one-shot; create only
-        await deployK8sJob(k8s, diskLimitMb, namespace, name, labels, container, input.storagePath, mountsForComponent);
+        await deployK8sJob(k8s, diskLimitMb, namespace, name, labels, container, input.storagePath, mountsForComponent, { nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null });
         break;
     }
 
@@ -1258,32 +1259,10 @@ async function deployK8sDeployment(
     // a name is an admission error, so take the union rather than concatenate.
     ...(mergePodVolumes(spec?.podVolumes, mh.volumes)),
   };
-  if (nodeName) {
-    if (storageTier === 'ha') {
-      // HA tier: soft preference. Pod prefers the pin node for locality
-      // but k8s is free to schedule elsewhere when that node is
-      // NotReady — so the pod can fail over to a node holding the
-      // surviving replica.
-      podSpec.affinity = {
-        nodeAffinity: {
-          preferredDuringSchedulingIgnoredDuringExecution: [{
-            weight: 100,
-            preference: {
-              matchExpressions: [{
-                key: 'kubernetes.io/hostname',
-                operator: 'In',
-                values: [nodeName],
-              }],
-            },
-          }],
-        },
-      };
-    } else {
-      // Local tier (or unset → defaults to local semantics): hard pin.
-      // The single replica only exists here, so the pod must run here.
-      podSpec.nodeSelector = { 'kubernetes.io/hostname': nodeName };
-    }
-  }
+  // The tenant's pin: hard on the local tier, a preference on HA (the pod may
+  // fail over to a node holding a surviving replica). One helper for every
+  // tenant pod creator — ci-tenant-pod-placement.sh.
+  Object.assign(podSpec, tenantPodScheduling({ nodeName: nodeName ?? null, storageTier: storageTier ?? null }));
 
   // Pod-template metadata: labels are mandatory for the selector; annotations
   // are conditional so non-firewall apps render a clean Pod spec.
@@ -1333,6 +1312,7 @@ async function deployK8sCronJob(
   schedule: string,
   storagePath: string = '',
   volumes: MountSpec[] = [],
+  placement: TenantPodPlacement = { nodeName: null, storageTier: null },
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
@@ -1354,6 +1334,9 @@ async function deployK8sCronJob(
               automountServiceAccountToken: false,
               restartPolicy: 'OnFailure',
               ...(spec ? { volumes: spec.podVolumes } : {}),
+              // Unpinned, a run could land on another node than the one
+              // holding the tenant's RWO volume and never attach it.
+              ...tenantPodScheduling(placement),
             }, diskLimitMb),
           },
         },
@@ -1381,6 +1364,7 @@ async function deployK8sJob(
   container: Record<string, unknown>,
   storagePath: string = '',
   volumes: MountSpec[] = [],
+  placement: TenantPodPlacement = { nodeName: null, storageTier: null },
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
@@ -1398,6 +1382,7 @@ async function deployK8sJob(
           automountServiceAccountToken: false,
           restartPolicy: 'Never',
           ...(spec ? { volumes: spec.podVolumes } : {}),
+          ...tenantPodScheduling(placement),
         }, diskLimitMb),
       },
       backoffLimit: 3,

@@ -52,6 +52,27 @@ describe('quantityToMillis', () => {
     expect(quantityToMillis('0.5')).toBe(500);
   });
 
+  it('★ reads the canonical form the API server stores — the backstop comes back as "1k"', () => {
+    // Read as 0, it made ensureTieredQuotaRoom shrink a 1000-core quota to
+    // used + 100m on the first deploy into a new tenant (seen on DEV).
+    expect(quantityToMillis('1k')).toBe(1_000_000);
+    expect(quantityToMillis('1000')).toBe(1_000_000);
+    expect(quantityToMillis('1500m')).toBe(1500);
+  });
+
+  it('★ a deploy never shrinks the backstop', async () => {
+    const patch = vi.fn();
+    const k8s = {
+      core: {
+        readNamespacedResourceQuota: vi.fn().mockResolvedValue({ spec: { hard: { 'requests.cpu': '1k' } }, status: { used: { 'requests.cpu': '10m' } } }),
+        readNamespacedLimitRange: vi.fn().mockResolvedValue({}),
+        patchNamespacedResourceQuota: patch,
+      },
+    } as never;
+    await ensureTieredQuotaRoom(k8s, 'tenant-x', 5);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   // A garbage quantity must read as 0 and not NaN — NaN would propagate into
   // a quota body and be rejected, or worse, serialised as "NaNm".
   it('never yields NaN', () => {
