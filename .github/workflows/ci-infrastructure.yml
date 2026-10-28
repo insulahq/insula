@@ -225,6 +225,24 @@ jobs:
       - run: docker build -t local/tenant-backup-tools:ci images/tenant-backup-tools
       - run: TOOLS_IMAGE=local/tenant-backup-tools:ci ./scripts/test-mail-restore-init.sh
 
+  stalwart-launcher:
+    # Stalwart starts from a capability-free copy of its binary through a perl
+    # launcher (transparent huge pages off for the process, MALLOC_ARENA_MAX
+    # honoured) and binds the mail ports through a pod sysctl. A drift in any
+    # piece stops mail from starting, and an upstream image bump can move the
+    # binary or drop perl. Both halves are checked here, before anything ships:
+    # the manifest invariants on base + every overlay, and the start-up chain
+    # rendered from the manifest and run in the pinned image.
+    name: Stalwart launcher (pinned image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 -m pip install --user pyyaml
+      - name: Manifest invariants (base + development/staging/production)
+        run: ./scripts/ci-stalwart-launcher-check.sh
+      - name: Start-up chain in the pinned image
+        run: ./scripts/test-stalwart-launcher.sh
+
   shell-unit-tests:
     name: Shell unit tests
     runs-on: ubuntu-latest

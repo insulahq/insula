@@ -163,15 +163,25 @@ per-message sha256 verification) established the facts this decision rests on.
   the same cgroup, the kernel kept evicting it. Mitigation: a 2Gi limit
   (`k8s/base/stalwart-mail/stalwart/deployment.yaml`).
 
-  Capping the arenas with `MALLOC_ARENA_MAX` does **not** work for the upstream
-  image: `/usr/local/bin/stalwart` carries the file capability
-  `cap_net_bind_service=ep`, so the process runs with `AT_SECURE=1` and glibc
-  ignores malloc tunables from the environment. Measured: still 20 arenas with
-  the variable set. Making it work would need a copy of the binary without the
-  capability, plus `net.ipv4.ip_unprivileged_port_start=0` in the pod so it can
-  still bind the mail ports. Also not done: switching hosts to THP `madvise`.
-  That would need a host migration, and MongoDB 8+ tenants want THP on.
-  Re-measure resident memory, arena count and `memory.events` after a release.
+  `MALLOC_ARENA_MAX` alone does **not** work for the upstream image:
+  `/usr/local/bin/stalwart` carries the file capability `cap_net_bind_service=ep`,
+  so the process runs with `AT_SECURE=1`, and glibc ignores malloc tunables from
+  the environment. Measured: still 20 arenas with the variable set. So Stalwart
+  starts differently:
+  - the `stalwart-binary` init container copies the binary into an emptyDir;
+    a plain `cp` drops the capability, so glibc honours `MALLOC_ARENA_MAX=2`;
+  - the pod sets `net.ipv4.ip_unprivileged_port_start=0`, so the copy still
+    binds the mail ports as uid 2000;
+  - a perl launcher (perl-base is Essential in Debian) calls
+    `prctl(PR_SET_THP_DISABLE)` for the process only, then execs the copy.
+
+  Hosts keep their THP setting (`always` by default), which MongoDB 8+ tenants
+  want, and nothing changes server-wide. Guards:
+  `scripts/ci-stalwart-launcher-check.sh` checks the manifest invariants on base
+  and every overlay; `scripts/test-stalwart-launcher.sh` (CI job "Stalwart
+  launcher") runs the chain in the pinned image. A Stalwart bump that moves the
+  binary or drops perl fails there. Re-measure resident memory, arena count and
+  `memory.events` after a release.
 
 ## References
 

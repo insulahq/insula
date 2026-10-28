@@ -27,10 +27,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The mail server has room for its read cache again.** It ran at its 1800 MiB memory limit,
   so the kernel kept dropping the cached mail-store files and reads went back to disk. Its limit
   is now 2 GiB (the request is unchanged, so small nodes still schedule it). Applying it
-  restarts the mail server once; mail is unavailable for under a minute. About half of the mail
-  database's memory is allocator overhead (25 malloc arenas on a production node); capping the
-  arenas with `MALLOC_ARENA_MAX` has no effect on the upstream Stalwart binary, which runs in
-  glibc's secure mode because of its file capability.
+  restarts the mail server once; mail is unavailable for under a minute.
+- **The mail server no longer wastes about half its database memory.** Its database part held
+  25 malloc arenas of 64 MiB on a production node, about twice what it uses, and huge pages kept
+  partly used memory resident. Stalwart now starts through a small launcher. The launcher turns
+  transparent huge pages off for the mail server process only (servers keep their own setting,
+  so MongoDB 8 and other workloads that want them are unaffected) and runs a copy of the binary
+  without its file capability. That copy honours `MALLOC_ARENA_MAX=2`, which the original binary
+  ignored. A pod setting (`net.ipv4.ip_unprivileged_port_start=0`) lets the copy bind the mail
+  ports. Two CI checks guard the arrangement: one checks the manifests, and one runs the start-up
+  chain in the pinned Stalwart image, so a Stalwart update that breaks it fails before release.
 - **Mail programs waiting for new mail are no longer cut off after 10 minutes.** When a mail
   connection lands on a server that is not the mail node, haproxy closed IMAP connections that had
   been quiet for 10 minutes, while mail programs waiting for new mail stay quiet for up to 29 and the

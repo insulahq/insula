@@ -123,7 +123,8 @@ for g in ci-notification-template-coverage ci-notification-variable-contract \
          ci-drizzle-array-binding-check \
          ci-workflow-paths-parity \
          ci-integration-coverage ci-admin-auth-check ci-no-pinned-domains \
-         ci-system-tenant-check ci-gitops-structure-check; do
+         ci-system-tenant-check ci-gitops-structure-check \
+         ci-stalwart-launcher-check; do
   if [[ -x "scripts/$g.sh" ]]; then run_guard "$g"; fi
 done
 echo
