@@ -49,6 +49,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The manual-capture error no longer says bundles go to "S3 or SSH".** `POST
   /api/v1/admin/tenant-bundles` without a `targetConfigId` now asks for the target tenant backups are
   bound to; SMB targets work too.
+- **Backup sizes in the admin panel no longer read low.** Several pages divided by 1024 and printed
+  "GB", so a tenant folder of 204.4 GB showed as 190.3 GB. Backups, snapshots, bundles and transfers
+  now count in decimal units everywhere, as the target does. Volume and disk sizes stay in GiB,
+  labelled as such, because they are set in GiB. The tenant panel's bundle progress dialog had the
+  same fault.
+- **Each backup class page shows what the class takes up on the target.** The Mail and System pages
+  now open with the size of their folder, as the Tenants page already did. The mail card's figure is
+  now labelled "Used by kept snapshots": it is restic's count, which leaves out data from snapshots
+  removed since the last daily clean-up. The Postgres card's "Total size" is now "Base copies": it
+  never counted the write-ahead log, etcd snapshots or DR bundles. The dashboard's Backups tile reads
+  the same folder sizes for Tenant and Mail, which it used to take from restic and the repository
+  table.
 
 ## [2026.10.20] - 2026-10-27
 

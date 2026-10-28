@@ -4,7 +4,7 @@ import { utcOffsetLabel } from '@/lib/format-traffic';
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import type { DrRecoveryBundle, DrRecoveryInfo } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
-import { formatBytes } from '@/lib/format-snapshot-size';
+import { formatBytes } from '@/lib/format-bytes';
 
 
 function age(iso: string, now = Date.now()): string {

@@ -190,16 +190,17 @@ export const adminDashboardSummarySchema = z.object({
       /** Why `healthy` is what it is, in the operator's words. */
       healthDetail: z.string().nullable().default(null),
       /**
-       * Bytes this class stores at its target: system — everything under the
-       * system target's prefixes (database base backups + WAL, etcd, DR
-       * bundles); tenant — the tenant repositories; mail — the mail store's
-       * snapshot repository (separate from the mailbox data inside tenant
-       * bundles). Null when it has not been measured.
+       * Bytes this class takes up on its targets — its folder, as the class
+       * pages show it: system — everything under the system target's prefixes
+       * (database base backups + WAL, etcd, DR bundles); tenant — every
+       * tenant's repositories and bundle files on every target holding any;
+       * mail — the mail store's snapshot repository (separate from the mailbox
+       * data inside tenant bundles). Null when it has not been measured.
        */
       repoBytes: z.number().nullable(),
-      /** When `repoBytes` was measured, where the source says. */
+      /** When `repoBytes` was measured (the oldest measurement it sums). */
       repoMeasuredAt: z.string().nullable().default(null),
-      /** `repoBytes` is a floor: the measurement was cut short or some repositories are unmeasured. */
+      /** `repoBytes` is a floor: the measurement was cut short, or a target the class is bound to could not be listed. */
       repoBytesPartial: z.boolean().default(false),
     })),
     bundles: z.number(),

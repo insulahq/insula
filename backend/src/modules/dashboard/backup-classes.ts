@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
-import type { AdminDashboardSummary } from '@insula/api-contracts';
+import { classStoredTotal, type AdminDashboardSummary, type BackupUsageClass, type TargetUsageRow } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
+import { listTargetUsage } from '../backup-config/target-usage.js';
 import { evaluateFreshness, resolveScheduleZone } from '../backup-health/freshness.js';
 import { fromCnpgCron } from '../backup-schedules/cadence/targets.js';
 import { readSystemBackupFacts } from '../system-backup/footprint-store.js';
@@ -12,18 +13,29 @@ type BackupClassRow = BackupsData['classes'][number];
  * The Backups & DR card: per class, when it last WORKED, how much it stores,
  * and whether it is on schedule — each from that class's own source.
  *
+ * Size is what the class takes up on its targets: the class folder. Not a
+ * figure the backup tool keeps — restic counts only
+ * the data its kept snapshots use, and the repositories' own totals leave out
+ * bundle files and deleted tenants' data still in retention. On production the
+ * card read tenant 149.9 GB and mail 46.5 GB against folders of 204.4 GB and
+ * 63.7 GB.
+ *
  *   system — the platform database's CNPG base backups (+ WAL), etcd snapshots
  *            and DR bundles at the system target. Last success: the newest
  *            completed base backup (recorded by the CNPG health tick). Size: an
- *            hourly LIST of the system target. NOT `system_backup_runs`: that
- *            holds only manual operator exports, so it showed a months-old
- *            secrets export as the last system backup.
+ *            hourly LIST of the system folder on the bound target (the
+ *            footprint). The System page sums the 6-hourly target measurement
+ *            over every target, so the two can differ by what changed between
+ *            the measurements, or by what a class switch left on an old target.
+ *            NOT `system_backup_runs`: that holds only manual operator exports,
+ *            so it showed a months-old secrets export as the last system backup.
  *   tenant — tenant bundles. Last success: the newest FINISHED bundle. Size:
- *            the tenant repositories' measured totals (`repo_total_bytes`), not
- *            the bytes the last snapshot processed.
+ *            the target measurement's tenant folders (`classStoredTotal`), as
+ *            the Tenants page shows them.
  *   mail   — the whole mail store's snapshot repository (Stalwart), separate
- *            from the per-tenant mailbox data in the tenant repos. Last success
- *            and size: what the snapshot job reports after each run.
+ *            from the per-tenant mailbox data in the tenant repos. Last success:
+ *            what the snapshot job reports after each run. Size: the target
+ *            measurement's mail folders.
  *
  * DB-only, like the rest of the summary: the k8s- and target-backed facts are
  * persisted by their schedulers and read here.
@@ -55,24 +67,15 @@ export async function buildBackupClasses(db: Database, now: Date = new Date()): 
       FROM backup_jobs WHERE status = 'completed'
   `);
   const f = (fresh.rows ?? [])[0];
-  // One row per (tenant, component); since the repository merge a tenant's
-  // second component is anchored to 0, so the plain sum is the stored total.
-  const repo = await db.execute<{ total: string | number | null; unmeasured: number }>(sql`
-    SELECT SUM(repo_total_bytes)::bigint AS total,
-           COUNT(*) FILTER (WHERE repo_total_bytes IS NULL)::int AS unmeasured
-      FROM tenant_restic_repo_state
-  `);
-  const repoRow = (repo.rows ?? [])[0];
-  const tenantBytes = repoRow?.total == null ? null : Number(repoRow.total);
+  const usage = await listTargetUsage(db, now);
+  const tenantStored = stored(usage, 'tenant');
 
   // ── mail ──
   const mail = await db.execute<{ stats: { runAt?: string; totalSnapshotSizeBytes?: number } | null }>(sql`
     SELECT mail_snapshot_last_run_stats AS stats FROM system_settings WHERE id = 'system'
   `);
   const mailStats = (mail.rows ?? [])[0]?.stats ?? null;
-  // The job posts 0 when `restic stats` fails; a repository that just took a
-  // successful snapshot is never empty, so 0 here means "not measured".
-  const mailBytes = mailStats?.totalSnapshotSizeBytes ? Number(mailStats.totalSnapshotSizeBytes) : null;
+  const mailStored = stored(usage, 'mail');
 
   // ── system ──
   const { lastSuccess: sysLast, footprint } = await readSystemBackupFacts(db);
@@ -100,17 +103,13 @@ export async function buildBackupClasses(db: Database, now: Date = new Date()): 
     },
     tenant: {
       lastSuccessAt: iso(f?.newest),
-      repoBytes: tenantBytes,
-      repoMeasuredAt: null,
-      repoBytesPartial: Number(repoRow?.unmeasured ?? 0) > 0,
+      ...tenantStored,
       schedule: scheduleOf('tenant_bundle'),
       zone: platformZone,
     },
     mail: {
       lastSuccessAt: mailStats?.runAt ? iso(mailStats.runAt) : null,
-      repoBytes: mailBytes,
-      repoMeasuredAt: mailBytes !== null && mailStats?.runAt ? iso(mailStats.runAt) : null,
-      repoBytesPartial: false,
+      ...mailStored,
       schedule: scheduleOf('mail'),
       zone: platformZone,
     },
@@ -134,9 +133,21 @@ export async function buildBackupClasses(db: Database, now: Date = new Date()): 
       };
     }),
     bundles: Number(f?.bundles ?? 0),
-    repoBytes: tenantBytes,
+    repoBytes: tenantStored.repoBytes,
     tenantsNeverBackedUp: Number((never.rows ?? [])[0]?.n ?? 0),
   };
+}
+
+/**
+ * One class's size from the target measurement. No figure (null) until a target
+ * holding the class has been measured; a floor when a target the class is bound
+ * to could not be listed or has not been measured yet.
+ */
+function stored(usage: readonly TargetUsageRow[], cls: BackupUsageClass): Pick<BackupClassRow, 'repoBytes' | 'repoMeasuredAt' | 'repoBytesPartial'> {
+  const total = classStoredTotal(usage, cls);
+  if (total.holders.length === 0) return { repoBytes: null, repoMeasuredAt: null, repoBytesPartial: false };
+  const missing = total.unlisted.length + total.unmeasured.length;
+  return { repoBytes: total.bytes, repoMeasuredAt: total.measuredAt, repoBytesPartial: missing > 0 };
 }
 
 export interface Schedule {

@@ -12,14 +12,7 @@ import { Check, AlertTriangle, Mail, Play, Loader2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { SystemBackupsOverview, MailSnapshotTriggerResponse } from '@insula/api-contracts';
-
-function formatBytes(b: number): string {
-  if (b === 0) return '0 B';
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(2)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(2)} MiB`;
-  if (b >= 1024) return `${(b / 1024).toFixed(2)} KiB`;
-  return `${b} B`;
-}
+import { formatBytes } from '@/lib/format-bytes';
 
 function formatAge(seconds: number | null): string {
   if (seconds === null) return 'never';
@@ -69,13 +62,20 @@ export default function MailObjectBackupCard({ ov, loading }: { ov: SystemBackup
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3" data-testid="mail-object-backup-stats">
         <Kv label="Stored snapshots" value={loading ? '…' : String(m?.snapshotCount ?? 0)} />
-        <Kv label="Total repo size" value={loading ? '…' : formatBytes(m?.totalSnapshotSizeBytes ?? 0)} />
+        {/* restic's own count. The job posts 0 when `restic stats` failed, and a
+            repository that just took a snapshot is never empty: 0 is no figure. */}
+        <Kv label="Used by kept snapshots" value={loading ? '…' : m?.totalSnapshotSizeBytes ? formatBytes(m.totalSnapshotSizeBytes) : 'not measured'} />
         <Kv label="Last run" value={loading
           ? '…'
           : m?.lastRunAt
           ? `${formatAge(m.secondsSinceLastRun)} ago`
           : 'Never'} />
       </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="mail-object-backup-size-note">
+        The data the kept snapshots use, as restic counts it. The repository on the target is larger — see
+        the storage used by mail backups above: it also holds data from snapshots removed since the last
+        daily clean-up, and restic&apos;s index.
+      </p>
 
       <div className="flex items-center gap-2">
         <button

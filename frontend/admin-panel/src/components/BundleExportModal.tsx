@@ -27,6 +27,7 @@ import { AlertTriangle, CheckCircle2, Download, FileText, Loader2, Lock, Mail, D
 
 import { apiFetch } from '@/lib/api-client';
 import { downloadBundleExport } from '@/hooks/use-backup-bundles';
+import { formatBytes } from '@/lib/format-bytes';
 
 /** Mirrors `ExportPreflight` in backend/src/modules/tenant-bundles/export-preflight.ts. */
 interface ExportPreflight {
@@ -60,15 +61,6 @@ const STEPS: ReadonlyArray<{ readonly key: Phase; readonly label: string }> = [
 
 /** Order used to decide whether a step is done, active, or still ahead. */
 const ORDER: ReadonlyArray<Phase> = ['checking', 'awaiting-confirm', 'minting', 'handoff', 'started'];
-
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
 
 function componentIcon(c: string) {
   if (c === 'files') return <FileText className="h-4 w-4" />;

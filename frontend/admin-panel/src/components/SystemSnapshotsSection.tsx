@@ -13,14 +13,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
 import type { SortDirection } from '@/hooks/use-sortable';
 import type { SystemPvcSnapshotSummary } from '@insula/api-contracts';
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
-}
+import { formatBytes, formatVolumeBytes } from '@/lib/format-bytes';
 
 function SystemSnapshotsSection() {
   const { data, isLoading, error } = useSystemSnapshots();
@@ -167,7 +160,7 @@ function SystemSnapshotsSection() {
                           CNPG · {g.replicas.length} replica{g.replicas.length === 1 ? '' : 's'}
                         </span>
                       </td>
-                      <td className="px-4 py-2.5 tabular-nums text-gray-700 dark:text-gray-300">{formatBytes(g.volumeSizeBytes)}</td>
+                      <td className="px-4 py-2.5 tabular-nums text-gray-700 dark:text-gray-300">{formatVolumeBytes(g.volumeSizeBytes)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{g.snapshotCount}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{formatBytes(g.snapshotBytesTotal)}</td>
                       <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs">
@@ -203,7 +196,7 @@ function SystemSnapshotsSection() {
                           </div>
                           <div className="text-[11px] font-mono text-gray-500 dark:text-gray-400">{r.longhornVolumeName}</div>
                         </td>
-                        <td className="px-4 py-2 tabular-nums text-gray-700 dark:text-gray-300">{formatBytes(r.volumeSizeBytes)}</td>
+                        <td className="px-4 py-2 tabular-nums text-gray-700 dark:text-gray-300">{formatVolumeBytes(r.volumeSizeBytes)}</td>
                         <td className="px-4 py-2 text-right tabular-nums">{r.snapshotCount}</td>
                         <td className="px-4 py-2 text-right tabular-nums">{formatBytes(r.snapshotBytesTotal)}</td>
                         <td className="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs">
@@ -237,7 +230,7 @@ function SystemSnapshotsSection() {
                     <div className="font-medium text-gray-900 dark:text-gray-100">{v.namespace}/{v.pvcName}</div>
                     <div className="text-[11px] font-mono text-gray-500 dark:text-gray-400">{v.longhornVolumeName}</div>
                   </td>
-                  <td className="px-4 py-2.5 tabular-nums text-gray-700 dark:text-gray-300">{formatBytes(v.volumeSizeBytes)}</td>
+                  <td className="px-4 py-2.5 tabular-nums text-gray-700 dark:text-gray-300">{formatVolumeBytes(v.volumeSizeBytes)}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums">{v.snapshotCount}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums">{formatBytes(v.snapshotBytesTotal)}</td>
                   <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs">

@@ -28,6 +28,7 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 import type { CnpgBackupCatalogueResponse } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 /**
  * Resolve the (namespace, objectStoreName) pair to query for backups.
@@ -293,10 +294,4 @@ function describeBackup(b: {
       )}
     </span>
   );
-}
-
-function formatBytes(b: number): string {
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
-  return `${(b / 1024).toFixed(0)} KiB`;
 }

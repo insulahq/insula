@@ -32,6 +32,7 @@ import {
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { CACHE_BAND, triadFigures } from '@/lib/resource-triad';
+import { formatBytes } from '@/lib/format-bytes';
 
 /**
  * Where the disk went, for the Storage tile's hover card.
@@ -83,15 +84,6 @@ const ago = (iso: string | null): string => {
   if (mins < 60) return `${mins}m`;
   const hrs = Math.round(mins / 60);
   return hrs < 48 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
-};
-
-/** Stored bytes in the unit that says something: "0.0 GB" for 990 KB reads as empty. */
-const bytesToGb = (b: number | null): string => {
-  if (b == null) return '—';
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
-  if (b >= 1e6) return `${(b / 1e6).toFixed(0)} MB`;
-  if (b >= 1e3) return `${(b / 1e3).toFixed(0)} KB`;
-  return `${b} B`;
 };
 
 export default function Dashboard() {
@@ -502,7 +494,7 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
   if (!b) return <SectionFallback title="Backups & DR" to="/backups" section={summary?.backups ?? { state: 'stale', reason: null, observedAt: null }} />;
 
   const size = (c: (typeof b.classes)[number]): string =>
-    c.repoBytes == null ? 'not measured yet' : `${c.repoBytesPartial ? '≥ ' : ''}${bytesToGb(c.repoBytes)}`
+    c.repoBytes == null ? 'not measured yet' : `${c.repoBytesPartial ? '≥ ' : ''}${formatBytes(c.repoBytes)}`
       + (c.repoMeasuredAt ? ` (measured ${ago(c.repoMeasuredAt)} ago)` : '');
 
   return (
@@ -537,7 +529,7 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
               className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400"
               title={size(c)}
             >
-              {c.repoBytes == null ? '—' : `${c.repoBytesPartial ? '≥' : ''}${bytesToGb(c.repoBytes)}`}
+              {c.repoBytes == null ? '—' : `${c.repoBytesPartial ? '≥' : ''}${formatBytes(c.repoBytes)}`}
             </span>
           </div>
         ))}

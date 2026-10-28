@@ -32,11 +32,13 @@ import type {
 } from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import MailObjectBackupCard from '@/components/backups/MailObjectBackupCard';
+import ClassStorageTotal from '@/components/backups/ClassStorageTotal';
 import { useMailBackups, useRestoreMailBackup, useUnlockMailRestic } from '@/hooks/use-mail-backups';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { useMailPlacement } from '@/hooks/use-mail-placement';
 import MailMigrationProgressModal from '@/components/MailMigrationProgressModal';
+import { formatBytes } from '@/lib/format-bytes';
 
 function useSystemOverview() {
   return useQuery({
@@ -47,14 +49,6 @@ function useSystemOverview() {
       ),
     staleTime: 15_000,
   });
-}
-
-function formatBytes(b: number | null | undefined): string {
-  if (b == null) return '—';
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 ** 2) return `${(b / 1024).toFixed(1)} KiB`;
-  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MiB`;
-  return `${(b / 1024 ** 3).toFixed(2)} GiB`;
 }
 
 function formatAgo(iso: string): string {
@@ -273,6 +267,7 @@ export default function MailBackupsPage() {
         scheduleSubsystems={['mail']}
         backupsTab={
           <div className="space-y-4">
+            <ClassStorageTotal cls="mail" />
             <MailObjectBackupCard ov={overview} loading={ovLoading} />
 
             <section className="rounded border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">

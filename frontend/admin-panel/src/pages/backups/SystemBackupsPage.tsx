@@ -31,6 +31,7 @@ import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
 import ReleasedSystemPvsCard from '@/components/backups/ReleasedSystemPvsCard';
 import SystemStorageCard from '@/components/SystemStorageCard';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
+import ClassStorageTotal from '@/components/backups/ClassStorageTotal';
 import SystemBackupListSection from '@/components/system-backup/SystemBackupListSection';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 import { useCnpgBackupNow } from '@/hooks/use-cnpg-backup-now';
@@ -105,6 +106,7 @@ export default function SystemBackupsPage() {
                 <RotateCw size={14} /> Restore postgres…
               </button>
             </div>
+            <ClassStorageTotal cls="system" />
             {/* CNPG ScheduledBackup health (rolled-up cluster-side state). */}
             <CnpgBackupHealthCard />
             {/* Phase 3 (2026-05-24): sibling section showing the

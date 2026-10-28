@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { Gauge, Loader2, CheckCircle, AlertCircle, X, Upload, Download, Trash2, Database } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import { formatBytes } from '@/lib/format-bytes';
 
 interface SpeedtestProgressModalProps {
   readonly operationId: string;
@@ -49,12 +50,6 @@ const STAGES = [
   { key: 'download', label: 'Download payload', icon: Download, pct: 80 },
   { key: 'cleanup', label: 'Cleanup remote', icon: Trash2, pct: 100 },
 ] as const;
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / (1024 ** 3)).toFixed(1)} GiB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / (1024 ** 2)).toFixed(0)} MiB`;
-  return `${(bytes / 1024).toFixed(0)} KiB`;
-}
 
 export default function SpeedtestProgressModal({
   operationId,

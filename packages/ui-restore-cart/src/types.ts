@@ -52,15 +52,20 @@ export const TERMINAL_BUNDLE_STATES: ReadonlySet<BundleStatus> = new Set([
 ]);
 
 /**
- * 1024-based byte formatter used by the progress modal. Returns '-'
- * for zero / nullish to keep the UI readable while a component is
- * still initializing.
+ * Byte formatter used by the progress modal: decimal units (1 GB = 10^9
+ * bytes), as the admin panel counts backups (`lib/format-bytes.ts`) — it used
+ * to divide by 1024 and print "GB". Returns '-' for zero / nullish to keep the
+ * UI readable while a component is still initializing.
  */
 export function formatBundleBytes(b: number | null | undefined): string {
   // !b covers null, undefined, 0, NaN — keeps the UI clean while a
   // component is still initialising (size_bytes default is 0).
-  if (!b) return '-';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
-  return `${(b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  if (!b || b < 0 || !Number.isFinite(b)) return '-';
+  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+  const whole = Math.round(b);
+  if (whole < 1000) return `${whole} B`;
+  let i = Math.min(Math.floor(Math.log10(whole) / 3), units.length - 1);
+  // 999.96 kB would print as "1000.0 kB"; it is 1.0 MB.
+  if (i < units.length - 1 && Number((whole / 1000 ** i).toFixed(1)) >= 1000) i += 1;
+  return `${(whole / 1000 ** i).toFixed(1)} ${units[i]}`;
 }

@@ -24,6 +24,7 @@ import { MANUAL_IMPORT_LABEL } from '@insula/api-contracts';
 
 import { apiFetch, API_BASE } from '@/lib/api-client';
 import { uploadChunked } from '@/lib/chunked-upload';
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 /** Mirrors `bundleImportPreflightSchema` in @insula/api-contracts. */
 interface ImportPreflight {
@@ -69,13 +70,6 @@ export interface BundleImportModalProps {
 }
 
 type Step = 'pick' | 'uploading' | 'inspecting' | 'review' | 'importing' | 'done';
-
-function fmtBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
-  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
-  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
-}
 
 function componentIcon(component: string): ReactElement {
   if (component === 'mailboxes') return <Mail className="h-4 w-4 text-blue-500 dark:text-blue-400" />;
@@ -239,7 +233,7 @@ export function BundleImportModal(props: BundleImportModalProps): ReactElement |
 
               {file && (
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  {file.name} — {fmtBytes(file.size)}
+                  {file.name} — {formatVolumeBytes(file.size)}
                   {encrypted && <span className="ml-2 text-amber-600 dark:text-amber-400">(encrypted)</span>}
                 </p>
               )}
@@ -321,7 +315,7 @@ export function BundleImportModal(props: BundleImportModalProps): ReactElement |
                 <div className="h-full bg-blue-600 transition-all dark:bg-blue-500" style={{ width: `${pct}%` }} />
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                {fmtBytes(uploaded)} of {fmtBytes(file?.size ?? 0)} ({pct}%)
+                {formatVolumeBytes(uploaded)} of {formatVolumeBytes(file?.size ?? 0)} ({pct}%)
               </p>
             </div>
           )}
@@ -397,10 +391,10 @@ export function BundleImportModal(props: BundleImportModalProps): ReactElement |
 
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                 <dt className="text-gray-500 dark:text-gray-400">Bundle size</dt>
-                <dd className="text-gray-900 dark:text-gray-100">{fmtBytes(preflight.totalBytes)}</dd>
+                <dd className="text-gray-900 dark:text-gray-100">{formatVolumeBytes(preflight.totalBytes)}</dd>
                 <dt className="text-gray-500 dark:text-gray-400">Storage allowance</dt>
                 <dd className={preflight.quota.fits ? 'text-gray-900 dark:text-gray-100' : 'text-red-600 dark:text-red-400'}>
-                  {preflight.quota.limitBytes > 0 ? fmtBytes(preflight.quota.limitBytes) : 'not set'}
+                  {preflight.quota.limitBytes > 0 ? formatVolumeBytes(preflight.quota.limitBytes) : 'not set'}
                 </dd>
                 <dt className="text-gray-500 dark:text-gray-400">Source bundle</dt>
                 <dd className="font-mono text-xs text-gray-900 dark:text-gray-100">{preflight.sourceBundleId ?? 'unknown'}</dd>
@@ -442,7 +436,7 @@ export function BundleImportModal(props: BundleImportModalProps): ReactElement |
                 <dt className="text-gray-500 dark:text-gray-400">Label</dt>
                 <dd className="text-gray-900 dark:text-gray-100">{result.label}</dd>
                 <dt className="text-gray-500 dark:text-gray-400">Size</dt>
-                <dd className="text-gray-900 dark:text-gray-100">{fmtBytes(result.sizeBytes)}</dd>
+                <dd className="text-gray-900 dark:text-gray-100">{formatVolumeBytes(result.sizeBytes)}</dd>
                 <dt className="text-gray-500 dark:text-gray-400">Parts</dt>
                 <dd className="text-gray-900 dark:text-gray-100">{result.unitCount + result.objectCount}</dd>
               </dl>

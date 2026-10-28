@@ -6,7 +6,10 @@
  * The bug this pins: SYSTEM showed a months-old manual secrets export as "the
  * last system backup" (and its 246 KB as the size), MAIL showed the tenant
  * bundles' mailbox component with no size, and TENANT's size was the bytes the
- * last snapshot PROCESSED rather than what the repositories hold.
+ * last snapshot PROCESSED rather than what the repositories hold. Then the
+ * sizes came from what restic and the repository table count — tenant 149.9 GB
+ * and mail 46.5 GB on production, against folders of 204.4 GB and 63.7 GB on
+ * the target — so the card under-read every class page.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +45,23 @@ describe.skipIf(!dbAvailable)('dashboard backup classes (integration)', () => {
     const planId = (await seedPlan(db())).id;
     tenantId = (await seedTenant(db(), regionId, planId)).id;
   });
+
+  /** A target measurement, as target-usage.ts stores it. `null` = the folder could not be listed. */
+  const measure = async (id: string, folders: Partial<Record<'system' | 'tenant' | 'mail', number | null>>, measuredAt = hoursAgo(1)) => {
+    const classes: Record<string, { bytes: number; objects: number } | null> = { system: null, tenant: null, mail: null };
+    const errors: Record<string, string> = {};
+    for (const [cls, bytes] of Object.entries(folders)) {
+      if (bytes === null) errors[cls] = 'directory not found';
+      else classes[cls] = { bytes: bytes!, objects: 1 };
+    }
+    const value = {
+      measuredAt: measuredAt.toISOString(), durationMs: 1, classes,
+      usedByBackupsBytes: Object.values(classes).reduce((n, c) => n + (c?.bytes ?? 0), 0),
+      capacity: null, capacityNote: 'not reported by S3', errors,
+    };
+    await db().execute(sql`INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+      VALUES (${`backup_target_usage:${id}`}, ${JSON.stringify(value)}, now())`);
+  };
 
   const health = (finishedHoursAgo: number, name = 'system-db-backup-1'): ClusterBackupHealth[] => [{
     clusterName: 'system-db', namespace: 'platform', state: 'healthy',
@@ -104,11 +124,13 @@ describe.skipIf(!dbAvailable)('dashboard backup classes (integration)', () => {
     expect(sys.lastSuccessAt).toBe(hoursAgo(1).toISOString());
   });
 
-  it('MAIL: the mail store snapshot — its run time and repository size', async () => {
+  it('MAIL: the mail store snapshot — its run time, and its folder on the target as the size', async () => {
+    // restic counts 46.5 GB in use by the kept snapshots; the folder holds 63.7 GB.
     await db().execute(sql`
       INSERT INTO system_settings (id, mail_snapshot_last_run_stats)
-      VALUES ('system', ${JSON.stringify({ runAt: hoursAgo(0.2).toISOString(), snapshotCount: 53, totalSnapshotSizeBytes: 38_833_929_049 })}::jsonb)
+      VALUES ('system', ${JSON.stringify({ runAt: hoursAgo(0.2).toISOString(), snapshotCount: 48, totalSnapshotSizeBytes: 46_491_882_262 })}::jsonb)
       ON CONFLICT (id) DO UPDATE SET mail_snapshot_last_run_stats = EXCLUDED.mail_snapshot_last_run_stats`);
+    await measure(targetId, { mail: 63_739_157_939 }, hoursAgo(2));
     await db().execute(sql`INSERT INTO backup_schedules (subsystem, enabled, cron_expression) VALUES ('mail', true, '37 * * * *')`);
     // A tenant bundle's mailbox component is NOT the mail class.
     await db().execute(sql`INSERT INTO backup_jobs (id, tenant_id, initiator, status, target_kind, target_uri, retention_days, created_at, finished_at)
@@ -116,7 +138,8 @@ describe.skipIf(!dbAvailable)('dashboard backup classes (integration)', () => {
 
     const mail = (await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'mail')!;
     expect(mail.lastSuccessAt).toBe(hoursAgo(0.2).toISOString());
-    expect(mail.repoBytes).toBe(38_833_929_049);
+    expect(mail.repoBytes).toBe(63_739_157_939);
+    expect(mail.repoMeasuredAt).toBe(hoursAgo(2).toISOString());
     expect(mail.healthy).toBe(true);
   });
 
@@ -137,34 +160,55 @@ describe.skipIf(!dbAvailable)('dashboard backup classes (integration)', () => {
     }
   });
 
-  it('MAIL: a 0 posted by a failed `restic stats` is "not measured", not an empty repository', async () => {
+  it('MAIL: no target measured yet is "not measured", whatever restic reported', async () => {
     await db().execute(sql`
       INSERT INTO system_settings (id, mail_snapshot_last_run_stats)
-      VALUES ('system', ${JSON.stringify({ runAt: hoursAgo(0.2).toISOString(), snapshotCount: 0, totalSnapshotSizeBytes: 0 })}::jsonb)
+      VALUES ('system', ${JSON.stringify({ runAt: hoursAgo(0.2).toISOString(), snapshotCount: 48, totalSnapshotSizeBytes: 46_491_882_262 })}::jsonb)
       ON CONFLICT (id) DO UPDATE SET mail_snapshot_last_run_stats = EXCLUDED.mail_snapshot_last_run_stats`);
     const mail = (await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'mail')!;
     expect(mail.repoBytes).toBeNull();
   });
 
-  it('TENANT: stored bytes are the repositories\' totals, and the time is when the newest bundle FINISHED', async () => {
+  it('TENANT: stored bytes are the tenant folders on every target, and the time is when the newest bundle FINISHED', async () => {
     await db().execute(sql`INSERT INTO backup_jobs (id, tenant_id, initiator, status, target_kind, target_uri, retention_days, created_at, finished_at)
       VALUES ('bkp-1', ${tenantId}, 'system', 'completed', 's3', 's3://example.test/b', 7, ${hoursAgo(9)}, ${hoursAgo(8)})`);
     for (const [component, processed, total] of [['files', 10_000, 70_000_000_000], ['mailboxes', 90_000, 0]] as const) {
       await db().execute(sql`INSERT INTO tenant_restic_repo_state (tenant_id, component, repo_uri, target_config_id, last_repo_size_bytes, repo_total_bytes)
         VALUES (${tenantId}, ${component}, 's3:http://shim/tenant/t1', ${targetId}, ${processed}, ${total})`);
     }
+    // The repositories count 70 GB; the folders also hold bundle files, and an
+    // old target keeps what a class switch left there.
+    const oldTarget = randomUUID();
+    await db().execute(sql`INSERT INTO backup_configurations (id, name, "storageType") VALUES (${oldTarget}, 'OldBox', 's3')`);
+    await measure(targetId, { tenant: 80_000_000_000 }, hoursAgo(1));
+    await measure(oldTarget, { tenant: 5_000_000_000 }, hoursAgo(3));
     const out = await buildBackupClasses(db(), NOW);
     const tenant = out.classes.find((c) => c.backupClass === 'tenant')!;
     expect(tenant.lastSuccessAt).toBe(hoursAgo(8).toISOString());
-    expect(tenant.repoBytes).toBe(70_000_000_000);
+    expect(tenant.repoBytes).toBe(85_000_000_000);
+    expect(tenant.repoMeasuredAt).toBe(hoursAgo(3).toISOString());
     expect(tenant.repoBytesPartial).toBe(false);
-    expect(out.repoBytes).toBe(70_000_000_000);
+    expect(out.repoBytes).toBe(85_000_000_000);
   });
 
-  it('TENANT: a repository not measured yet makes the total a floor', async () => {
-    await db().execute(sql`INSERT INTO tenant_restic_repo_state (tenant_id, component, repo_uri, target_config_id, last_repo_size_bytes, repo_total_bytes)
-      VALUES (${tenantId}, 'files', 's3:http://shim/tenant/t1', ${targetId}, 5, NULL)`);
+  it('TENANT: a bound target whose folder could not be listed makes the total a floor, or leaves no figure', async () => {
+    const oldTarget = randomUUID();
+    await db().execute(sql`INSERT INTO backup_configurations (id, name, "storageType") VALUES (${oldTarget}, 'OldBox', 's3')`);
+    await measure(targetId, { tenant: null });
+    expect((await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'tenant')!.repoBytes).toBeNull();
+
+    await measure(oldTarget, { tenant: 5_000_000_000 });
     const tenant = (await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'tenant')!;
+    expect(tenant.repoBytes).toBe(5_000_000_000);
+    expect(tenant.repoBytesPartial).toBe(true);
+  });
+
+  it('TENANT: a bound target not measured yet makes what the old one holds a floor', async () => {
+    const oldTarget = randomUUID();
+    await db().execute(sql`INSERT INTO backup_configurations (id, name, "storageType") VALUES (${oldTarget}, 'OldBox', 's3')`);
+    await measure(oldTarget, { tenant: 5_000_000_000 });
+    const tenant = (await buildBackupClasses(db(), NOW)).classes.find((c) => c.backupClass === 'tenant')!;
+    expect(tenant.repoBytes).toBe(5_000_000_000);
     expect(tenant.repoBytesPartial).toBe(true);
   });
 

@@ -15,13 +15,7 @@ import { useMemo } from 'react';
 import { Camera, Loader2, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { useTaskCenter } from '@/hooks/use-task-center';
 import type { TaskRow, TaskStatus } from '@insula/api-contracts';
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
+import { formatBytes } from '@/lib/format-bytes';
 
 interface Props {
   readonly onClose: () => void;
