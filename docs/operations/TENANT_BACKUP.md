@@ -14,7 +14,8 @@ SSHFS architecture.
 ## Concept
 
 A **bundle** is one snapshot of one client's data, stored
-off-cluster on an S3 or SSH target. Bundles are split into four
+off-cluster on the target tenant backups are bound to (S3, SFTP or
+SMB). Bundles are split into four
 **components**:
 
 | Component | What | Source |

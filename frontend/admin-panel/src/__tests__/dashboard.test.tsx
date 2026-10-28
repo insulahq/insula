@@ -356,7 +356,7 @@ describe('Operator console — capacity', () => {
       backups: okSection({ ...data, classes: data.classes.map((c) => c.backupClass === 'mail' ? { ...c, repoBytes: 991_634 } : c) }),
     }) }, isLoading: false });
     show();
-    expect(screen.getByTestId('backups-class-mail')).toHaveTextContent('992 KB');
+    expect(screen.getByTestId('backups-class-mail')).toHaveTextContent('991.6 kB');
   });
 
   it('states plainly that one node has no redundancy', () => {

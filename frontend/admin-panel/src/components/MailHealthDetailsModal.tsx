@@ -44,7 +44,7 @@ import { timeAgo } from './MailHealthBanner';
 import MailEndpointsSection from './MailEndpointsSection';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
-import { formatBytes } from '@/lib/format-snapshot-size';
+import { formatVolumeBytes } from '@/lib/format-bytes';
 import type {
   DeliverabilityProbeSeverity,
   MailHealthBlocklistProbe,
@@ -465,7 +465,7 @@ function StorageCard({ data }: { readonly data: MailHealthStorageComponent | und
       />
     );
   }
-  const size = (b: number | null) => (b === null ? '?' : formatBytes(b));
+  const size = (b: number | null) => (b === null ? '?' : formatVolumeBytes(b));
   return (
     <ProbeCard
       title="Disk headroom"

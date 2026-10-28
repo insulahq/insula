@@ -41,6 +41,7 @@ import {
   HardDrive,
   Package,
 } from 'lucide-react';
+import { formatBytes } from '@/lib/format-bytes';
 
 export type RestoreKind = 'snapshot' | 'backup' | 'tenant-bundle';
 
@@ -97,15 +98,6 @@ export interface RestorationWizardProps {
   readonly onSubmit: (selection: RestoreSelection) => Promise<{ taskId: string }>;
   /** Optional hook called with the taskId after submit resolves. */
   readonly onCompleted?: (taskId: string) => void;
-}
-
-function formatBytes(b?: number): string | null {
-  if (b == null) return null;
-  if (b === 0) return '0 B';
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(2)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(1)} MiB`;
-  if (b >= 1024) return `${(b / 1024).toFixed(0)} KiB`;
-  return `${b} B`;
 }
 
 const ARTIFACT_ICON: Record<RestoreKind, typeof Archive> = {
@@ -189,7 +181,7 @@ export default function RestorationWizard({
                 {artifact.createdAt && (
                   <> · created {new Date(artifact.createdAt).toLocaleString()}</>
                 )}
-                {formatBytes(artifact.sizeBytes) && <> · {formatBytes(artifact.sizeBytes)}</>}
+                {artifact.sizeBytes != null && <> · {formatBytes(artifact.sizeBytes)}</>}
               </p>
             </div>
           </div>

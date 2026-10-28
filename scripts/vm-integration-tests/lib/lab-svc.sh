@@ -125,8 +125,14 @@ fi
 have sftp || docker run -d --name sftp --restart=always --ulimit "nofile=${SFTP_NOFILE}:${SFTP_NOFILE}" -p 2222:22 \
   -v "$D/sftp:/home/${SFTP_USER}/upload" "$LAB_SFTP_IMAGE" "${SFTP_USER}:${SFTP_PW}:1001:100:upload"
 chmod 0777 "$D/smb"
+# -r: no recycle bin. The image's default moves every deleted file to .deleted/ on
+# the share, so a deleted bundle kept its space and still read as present on disk.
+if have samba && ! docker inspect samba --format '{{range .Args}}{{.}}{{"\n"}}{{end}}' | grep -qx -- '-r'; then
+  docker rm -f samba >/dev/null
+  rm -rf "${D:?}/smb/.deleted"
+fi
 have samba || docker run -d --name samba --restart=always --network host -v "$D/smb:/share" "$LAB_SMB_IMAGE" \
-  -p -u "backup;${SMB_PW}" -s "backups;/share;yes;no;no;backup;backup" -w WORKGROUP
+  -p -r -u "backup;${SMB_PW}" -s "backups;/share;yes;no;no;backup;backup" -w WORKGROUP
 
 echo "lab-services: pdns step-ca s3 sftp samba up"
 SCRIPT

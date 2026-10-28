@@ -2,7 +2,7 @@ import { Archive, Loader2, Play } from 'lucide-react';
 import { useTenantArchive } from '@/hooks/use-tenant-archive';
 import { useStorageOperations } from '@/hooks/use-storage-lifecycle';
 import { FailedStorageOperation } from './FailedStorageOperation';
-import { formatBytes } from '@/lib/format-snapshot-size';
+import { formatBytes } from '@/lib/format-bytes';
 
 const longDate = (iso: string): string =>
   new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });

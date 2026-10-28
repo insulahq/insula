@@ -5,14 +5,7 @@ import { useStorageOverview, useImageInventory, usePurgeImages } from '@/hooks/u
 import type { ImageEntry } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 export default function StorageUsageTab() {
   const { data: overviewData, isLoading: overviewLoading } = useStorageOverview();
@@ -59,13 +52,13 @@ export default function StorageUsageTab() {
       {/* System Usage Summary */}
       {overview && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <StatTile label="Platform DB" value={formatBytes(overview.system.platformDatabase.usedBytes)} />
+          <StatTile label="Platform DB" value={formatVolumeBytes(overview.system.platformDatabase.usedBytes)} />
           <StatTile
             label="Docker Images"
-            value={formatBytes(overview.system.dockerImages.totalBytes)}
+            value={formatVolumeBytes(overview.system.dockerImages.totalBytes)}
             sublabel={`${overview.system.dockerImages.count} images`}
           />
-          <StatTile label="Total Tenant Data" value={formatBytes(overview.total.tenantBytes)} />
+          <StatTile label="Total Tenant Data" value={formatVolumeBytes(overview.total.tenantBytes)} />
         </div>
       )}
 
@@ -94,9 +87,9 @@ export default function StorageUsageTab() {
                   <td className="px-5 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300" data-testid={`tenant-storage-${tenant.tenantId}`}>
                     {tenant.approximate ? (
                       <span title="Includes a volume nothing has mounted right now — shown at its allocated size, which reads higher than the files in it.">
-                        ≈ {formatBytes(tenant.usedBytes)}
+                        ≈ {formatVolumeBytes(tenant.usedBytes)}
                       </span>
-                    ) : formatBytes(tenant.usedBytes)}
+                    ) : formatVolumeBytes(tenant.usedBytes)}
                   </td>
                 </tr>
               ))}
@@ -112,7 +105,7 @@ export default function StorageUsageTab() {
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Docker Image Inventory
               <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
-                ({inventory.images.length} images, {formatBytes(inventory.totalBytes)} total)
+                ({inventory.images.length} images, {formatVolumeBytes(inventory.totalBytes)} total)
               </span>
             </h3>
             <div className="flex items-center gap-2">
@@ -140,7 +133,7 @@ export default function StorageUsageTab() {
                 data-testid="purge-preview-button"
               >
                 {purgeMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                Purge Cache ({formatBytes(inventory.purgeableBytes)})
+                Purge Cache ({formatVolumeBytes(inventory.purgeableBytes)})
               </button>
             </div>
           </div>
@@ -178,7 +171,7 @@ export default function StorageUsageTab() {
                         <span className="inline-flex rounded-full bg-red-100 dark:bg-red-900/40 px-2 py-0.5 text-[10px] font-medium text-red-700 dark:text-red-300">purgeable</span>
                       )}
                     </td>
-                    <td className="px-5 py-2 text-right font-mono text-xs text-gray-600 dark:text-gray-400">{formatBytes(img.sizeBytes)}</td>
+                    <td className="px-5 py-2 text-right font-mono text-xs text-gray-600 dark:text-gray-400">{formatVolumeBytes(img.sizeBytes)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -207,7 +200,7 @@ export default function StorageUsageTab() {
             {purgeMutation.data.data.dryRun ? (
               <>
                 <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
-                  This will remove {purgeMutation.data.data.removedImages.length} unused images, freeing <strong>{formatBytes(purgeMutation.data.data.freedBytes)}</strong>. Protected and in-use images will NOT be touched.
+                  This will remove {purgeMutation.data.data.removedImages.length} unused images, freeing <strong>{formatVolumeBytes(purgeMutation.data.data.freedBytes)}</strong>. Protected and in-use images will NOT be touched.
                 </p>
                 <div className="max-h-48 overflow-y-auto rounded-lg bg-gray-50 dark:bg-gray-900 p-3 mb-4">
                   {purgeMutation.data.data.removedImages.length === 0 ? (
@@ -241,7 +234,7 @@ export default function StorageUsageTab() {
             ) : (
               <>
                 <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
-                  Removed {purgeMutation.data.data.removedImages.length} images. Freed <strong>{formatBytes(purgeMutation.data.data.freedBytes)}</strong>.
+                  Removed {purgeMutation.data.data.removedImages.length} images. Freed <strong>{formatVolumeBytes(purgeMutation.data.data.freedBytes)}</strong>.
                 </p>
                 {purgeMutation.data.data.errors.length > 0 && (
                   <div className="rounded-lg bg-red-50 dark:bg-red-900/20 p-3 mb-4">

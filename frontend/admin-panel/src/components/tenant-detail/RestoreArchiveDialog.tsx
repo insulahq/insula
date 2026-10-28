@@ -3,7 +3,7 @@ import { Loader2, Play } from 'lucide-react';
 import type { RestoreArchivedTenantRequest, TenantArchiveInfo } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { formatBytes } from '@/lib/format-snapshot-size';
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 const GIB = 1024 ** 3;
 const AUTO = '__auto__';
@@ -143,7 +143,7 @@ export default function RestoreArchiveDialog({
               data-testid="restore-size-input"
             />
             <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400" data-testid="restore-size-hint">
-              {info.filesBytes > 0 ? `The archive's files take ${formatBytes(info.filesBytes)}. ` : ''}
+              {info.filesBytes > 0 ? `The archive's files take ${formatVolumeBytes(info.filesBytes)}. ` : ''}
               The tenant's storage is {info.storageGi} GiB.
             </span>
             {!sizeValid && (

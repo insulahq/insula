@@ -34,6 +34,7 @@ import type {
   WalArchiveCluster,
   WalArchiveSummary,
 } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 interface Envelope<T> { readonly data: T; }
 
@@ -441,12 +442,6 @@ function Step1Pick({
       </div>
     </div>
   );
-}
-
-function formatBytes(b: number): string {
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
-  return `${(b / 1024).toFixed(0)} KiB`;
 }
 
 // ── Step 2: target name + instances ──────────────────────────────────

@@ -25,21 +25,9 @@ import { formatRelativeTime } from '@/lib/format-relative-time';
 import type {
   MigrationTenant, MigrationImportResult, MigrationImportRequest,
 } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 type Scope = 'selected' | 'all';
-
-function humanizeBytes(n: number): string {
-  if (!n || n <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  let value = n;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const rounded = value >= 10 || unit === 0 ? Math.round(value).toString() : value.toFixed(1);
-  return `${rounded} ${units[unit]}`;
-}
 
 /**
  * When the bundle this row would import was captured — the scan imports each
@@ -408,7 +396,7 @@ function TenantTable({
                   <CapturedAt tenantId={t.tenantId} capturedAt={t.latestCreatedAt} />
                 </td>
                 <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{t.bundleCount}</td>
-                <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{humanizeBytes(t.totalSizeBytes)}</td>
+                <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{formatBytes(t.totalSizeBytes)}</td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap gap-1">
                     {t.components.length === 0

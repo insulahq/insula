@@ -152,6 +152,36 @@ per-message sha256 verification) established the facts this decision rests on.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).
+- **RocksDB's memory is glibc's, not jemalloc's.** Stalwart's Rust code allocates
+  through jemalloc, but the embedded RocksDB is C++ and allocates through glibc
+  malloc. Measured on a production node: RocksDB needs about 300 MB (128 MiB
+  block cache, memtables capped at 128 MiB across all 27 column families, table
+  readers for ~0.9 GB of SSTs) but held about 600 MB resident in 25 glibc arenas,
+  and 91 % of the process's anonymous memory sat in transparent huge pages
+  (`always` is the Debian and RHEL kernel default). The container ran at its
+  1800Mi limit, and because the page cache RocksDB reads through is charged to
+  the same cgroup, the kernel kept evicting it. Mitigation: a 2Gi limit
+  (`k8s/base/stalwart-mail/stalwart/deployment.yaml`).
+
+  `MALLOC_ARENA_MAX` alone does **not** work for the upstream image:
+  `/usr/local/bin/stalwart` carries the file capability `cap_net_bind_service=ep`,
+  so the process runs with `AT_SECURE=1`, and glibc ignores malloc tunables from
+  the environment. Measured: still 20 arenas with the variable set. So Stalwart
+  starts differently:
+  - the `stalwart-binary` init container copies the binary into an emptyDir;
+    a plain `cp` drops the capability, so glibc honours `MALLOC_ARENA_MAX=2`;
+  - the pod sets `net.ipv4.ip_unprivileged_port_start=0`, so the copy still
+    binds the mail ports as uid 2000;
+  - a perl launcher (perl-base is Essential in Debian) calls
+    `prctl(PR_SET_THP_DISABLE)` for the process only, then execs the copy.
+
+  Hosts keep their THP setting (`always` by default), which MongoDB 8+ tenants
+  want, and nothing changes server-wide. Guards:
+  `scripts/ci-stalwart-launcher-check.sh` checks the manifest invariants on base
+  and every overlay; `scripts/test-stalwart-launcher.sh` (CI job "Stalwart
+  launcher") runs the chain in the pinned image. A Stalwart bump that moves the
+  binary or drops perl fails there. Re-measure resident memory, arena count and
+  `memory.events` after a release.
 
 ## References
 

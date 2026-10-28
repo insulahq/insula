@@ -12,15 +12,12 @@ import {
 } from '@/hooks/use-plesk-migration';
 import { useTenants } from '@/hooks/use-tenants';
 import type { PleskSourceResponse, PleskSubscription, PleskMigrationResponse, PleskMigrationLeg } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 const INPUT = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 function fmtBytes(n: number | null | undefined): string {
-  if (!n || n <= 0) return '—';
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n; let i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
+  return n && n > 0 ? formatBytes(n) : '—';
 }
 
 export default function PleskMigrationPage() {

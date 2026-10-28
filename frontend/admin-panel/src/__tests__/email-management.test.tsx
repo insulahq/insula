@@ -102,7 +102,7 @@ describe('EmailManagement page', () => {
     // Asserting the VALUE, not just the label — a tile stuck on '...' or '—'
     // would pass a label-only check while showing the operator nothing.
     await waitFor(() => {
-      expect(screen.getByText('5 GB')).toBeInTheDocument();
+      expect(screen.getByText('5.0 GiB')).toBeInTheDocument();
     });
   });
 

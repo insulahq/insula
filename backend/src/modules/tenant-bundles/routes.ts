@@ -375,7 +375,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // an explicit targetConfigId.
     if (!input.targetConfigId) {
       throw new ApiError('VALIDATION_ERROR',
-        'targetConfigId is required: bundles must be written to an active off-site backup target (S3 or SSH).',
+        'targetConfigId is required: name the off-site backup target tenant backups are bound to.',
         400);
     }
     // The bundle is written through the shim, to the BOUND target, and the row

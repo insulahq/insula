@@ -7,6 +7,7 @@ import type { BundleSummary } from '@insula/api-contracts';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
+import { formatBytes } from '@/lib/format-bytes';
 
 function TabLoading() {
   return (
@@ -22,13 +23,6 @@ function TabError({ message }: { readonly message: string }) {
 
 function TabEmpty({ resource }: { readonly resource: string }) {
   return <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="tab-empty">No {resource} found for this tenant.</p>;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
 /**

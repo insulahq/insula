@@ -31,7 +31,7 @@ import {
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
 import { apiFetch } from '@/lib/api-client';
-import { formatBytes } from '@/hooks/use-platform-storage';
+import { formatBytes } from '@/lib/format-bytes';
 import { PLATFORM_DEFAULT_ARCHIVE_TIMEOUT } from '@insula/api-contracts';
 import type { WalArchiveCluster, CnpgBackupCatalogueResponse, WalArchiveSummary } from '@insula/api-contracts';
 

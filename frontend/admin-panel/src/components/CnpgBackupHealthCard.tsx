@@ -8,6 +8,7 @@ import type {
   CnpgClusterBackupHealth,
   WalArchiveCluster,
 } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 interface Props {
   /**
@@ -160,8 +161,9 @@ function ClusterRow({
             <span className="italic">not archiving</span>
           )}
         </div>
-        {/* Phase 2 (2026-05-24) metric: total backup-size disk usage —
-            sum of dataSizeBytes from the catalogue. Lazy-fetched per
+        {/* The base copies' size — sum of dataSizeBytes from the catalogue.
+            Not the archive's whole footprint: the write-ahead log is not in
+            it (the class total on this page has both). Lazy-fetched per
             row so the operator's page-load isn't blocked on an S3 LIST
             (the catalogue endpoint can be slow on large archives). */}
         <div>
@@ -213,12 +215,6 @@ function ClusterRow({
           the source + targetTime pre-seeded. */}
     </div>
   );
-}
-
-function formatBytes(b: number): string {
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
-  return `${(b / 1024).toFixed(0)} KiB`;
 }
 
 function paletteForState(state: CnpgClusterBackupHealth['state']) {
@@ -353,7 +349,7 @@ function BackupSizeTotal({
   if (!objectStoreName) {
     return (
       <>
-        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="text-gray-500 dark:text-gray-400">Base copies:</span>{' '}
         <span className="italic text-gray-400">no object store</span>
       </>
     );
@@ -361,7 +357,7 @@ function BackupSizeTotal({
   if (q.isLoading) {
     return (
       <>
-        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="text-gray-500 dark:text-gray-400">Base copies:</span>{' '}
         <span className="italic text-gray-400">computing…</span>
       </>
     );
@@ -370,7 +366,7 @@ function BackupSizeTotal({
   if (!cat || cat.source !== 'object-store') {
     return (
       <>
-        <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
+        <span className="text-gray-500 dark:text-gray-400">Base copies:</span>{' '}
         <span className="italic text-gray-400" title={cat?.unavailableReason ?? ''}>unavailable</span>
       </>
     );
@@ -378,9 +374,12 @@ function BackupSizeTotal({
   const total = cat.backups.reduce((acc, b) => acc + (b.dataSizeBytes ?? 0), 0);
   return (
     <>
-      <span className="text-gray-500 dark:text-gray-400">Total size:</span>{' '}
-      <span title={`${cat.backups.length} backups`} data-testid="cnpg-total-backup-size">
-        {formatBytes(total)} ({cat.backups.length})
+      <span className="text-gray-500 dark:text-gray-400">Base copies:</span>{' '}
+      <span
+        title="The base copies' data alone. The write-ahead log is counted with them in the storage used by system backups."
+        data-testid="cnpg-total-backup-size"
+      >
+        {formatBytes(total)} in {cat.backups.length} {cat.backups.length === 1 ? 'copy' : 'copies'}
       </span>
     </>
   );
