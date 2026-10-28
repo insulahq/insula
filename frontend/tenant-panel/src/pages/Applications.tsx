@@ -74,7 +74,7 @@ export default function Applications() {
   // Custom Containers (ADR-036) is gated by the tenant's subscription. When not
   // allowed, hide the tab entirely — existing custom deployments still appear
   // and stay manageable under "Installed Apps". Migration 0078.
-  const { data: subscription } = useSubscription(tenantId ?? undefined);
+  const { data: subscription, isError: subscriptionFailed } = useSubscription(tenantId ?? undefined);
   const allowCustomContainers = subscription?.data.allowCustomContainers ?? false;
   // Private workers come with "Allow Custom Containers": the tab is there
   // while the subscription allows them — or while the tenant still has
@@ -98,9 +98,14 @@ export default function Applications() {
   const [activeTab, setActiveTab] = useTabParam('/applications');
   // If the active tab is no longer visible (e.g. Custom Containers access was
   // revoked mid-session), fall back to Installed so the body isn't left blank.
+  // Only once the tabs are KNOWN: while the subscription (and, for Private
+  // Workers, the worker list) is loading, both gated tabs read as hidden, and
+  // a deep link to /applications/workers or /applications/custom bounced to
+  // Installed before they appeared.
+  const tabsSettled = (subscription !== undefined || subscriptionFailed) && privateWorkers.settled;
   useEffect(() => {
-    if (!visibleTabs.some((tab) => tab.id === activeTab)) setActiveTab('installed');
-  }, [visibleTabs, activeTab]);
+    if (tabsSettled && !visibleTabs.some((tab) => tab.id === activeTab)) setActiveTab('installed');
+  }, [visibleTabs, activeTab, tabsSettled]);
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
 

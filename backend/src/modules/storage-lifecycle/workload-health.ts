@@ -309,9 +309,9 @@ export function healableNow(reason: HealReason, quota: QuotaVerdict | null): boo
 export function recommendedAction(reason: HealReason, detail?: string | null, workload?: string): string {
   if (reason === 'quota_rejected') {
     const figures = describeQuotaRefusal(detail, workload);
+    // The heal summary already says whether a restart was tried and why not.
     return `The namespace quota is full${figures ? ` (${figures})` : ''}. `
-      + 'Raise that limit for the tenant, or stop or remove one of its applications — '
-      + 'restarting the tenant cannot make room, so auto-heal leaves a full quota alone.';
+      + 'Raise that limit for the tenant, or stop or remove one of its applications.';
   }
   switch (reason) {
     case 'stranded_at_zero':

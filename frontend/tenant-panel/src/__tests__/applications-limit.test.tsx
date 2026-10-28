@@ -9,6 +9,7 @@ import type { ApplicationUsage } from '@insula/api-contracts';
 // boundary; the page and the pill are real.
 let usage: ApplicationUsage | undefined;
 let workersListed = false;
+let workersSettled = true;
 let allowCustom = true;
 
 const authState = {
@@ -30,7 +31,7 @@ vi.mock('../hooks/use-application-usage', async (orig) => ({
   useApplicationUsage: () => ({ data: usage }),
 }));
 vi.mock('../hooks/use-private-workers-access', () => ({
-  usePrivateWorkersAccess: () => ({ known: true, canCreate: workersListed, listed: workersListed }),
+  usePrivateWorkersAccess: () => ({ known: workersSettled, canCreate: workersListed, listed: workersListed, settled: workersSettled }),
 }));
 vi.mock('../pages/PrivateWorkers', () => ({
   default: ({ embedded }: { embedded?: boolean }) => <div data-testid="private-workers-tab-body">{String(embedded)}</div>,
@@ -66,6 +67,7 @@ function renderAt(path = '/applications') {
 beforeEach(() => {
   usage = { limit: 5, current: 3, remaining: 2, source: 'plan' };
   workersListed = false;
+  workersSettled = true;
   allowCustom = true;
 });
 
@@ -112,6 +114,24 @@ describe('Applications page — Private Workers tab', () => {
   it('is absent when the subscription does not include it', () => {
     renderAt();
     expect(screen.queryByTestId('tab-workers')).toBeNull();
+  });
+
+  it('★ a deep link waits for the tab to be known instead of falling back to Installed', () => {
+    // First render: the worker list has not answered yet, so the tab reads as hidden.
+    workersSettled = false;
+    workersListed = false;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A fresh element each time: React skips re-rendering an identical one.
+    const tree = () => (
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/applications/workers']}><Applications key={String(workersSettled)} /></MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree());
+    workersSettled = true;
+    workersListed = true;
+    rerender(tree());
+    expect(screen.getByTestId('private-workers-tab-body')).toBeInTheDocument();
   });
 
   it('renders the Private Workers page embedded at /applications/workers', () => {

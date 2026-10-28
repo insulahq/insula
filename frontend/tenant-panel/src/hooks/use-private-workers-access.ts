@@ -8,6 +8,13 @@ export interface PrivateWorkersAccess {
   readonly canCreate: boolean;
   /** The page belongs in the navigation. */
   readonly listed: boolean;
+  /**
+   * `listed` is final: the subscription has answered and, when it says no,
+   * so has the worker list. Before that `listed` reads false for a tenant
+   * that will turn out to have the tab — a deep link must wait for this
+   * rather than fall back to another tab.
+   */
+  readonly settled: boolean;
 }
 
 /**
@@ -29,7 +36,8 @@ export function usePrivateWorkersAccess(tenantId: string | undefined): PrivateWo
   const { data: subscription, isError } = useSubscription(tenantId);
   const known = subscription !== undefined || isError;
   const canCreate = isError || (subscription?.data.allowCustomContainers ?? false);
-  const { data: workers } = usePrivateWorkers(known && !canCreate ? tenantId : undefined);
+  const { data: workers, isFetched, isError: workersFailed } = usePrivateWorkers(known && !canCreate ? tenantId : undefined);
   const hasWorkers = (workers?.data?.items.length ?? 0) > 0;
-  return { known, canCreate, listed: canCreate || hasWorkers };
+  const settled = known && (canCreate || isFetched || workersFailed);
+  return { known, canCreate, listed: canCreate || hasWorkers, settled };
 }
