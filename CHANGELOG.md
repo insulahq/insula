@@ -24,6 +24,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Mail programs waiting for new mail are no longer cut off after 10 minutes.** When a mail
+  connection lands on a server that is not the mail node, haproxy closed IMAP connections that had
+  been quiet for 10 minutes, while mail programs waiting for new mail stay quiet for up to 29 and the
+  mail server allows 30. On home and mobile connections the cut often never reached the device, so its
+  next sync or send waited on a dead connection; users saw mail sitting in the outbox for minutes.
+  IMAP now waits 31 minutes, and every mail connection gets TCP keepalive (5 minutes, then every 30
+  seconds), which keeps live connections open through routers and closes ones whose device went away
+  after about 7 minutes. Other mail ports keep 10 minutes. Applying it restarts the haproxy pods
+  one server at a time, so mail programs connected through them reconnect once.
 - **The manual-capture error no longer says bundles go to "S3 or SSH".** `POST
   /api/v1/admin/tenant-bundles` without a `targetConfigId` now asks for the target tenant backups are
   bound to; SMB targets work too.

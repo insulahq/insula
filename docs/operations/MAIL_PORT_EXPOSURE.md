@@ -69,6 +69,30 @@ the active mail node is unknown on a multi-node cluster, where it could not keep
 haproxy off Stalwart's node. A migration row stuck in flight is reaped after 2 h
 by the migration reconciler, which also releases the sync.
 
+### Idle connections and TCP keepalive
+
+haproxy's limits for a connection that sends nothing (`k8s/base/stalwart-mail/haproxy/configmap.yaml`):
+
+| Ports | Idle limit | Why |
+|---|---|---|
+| IMAP 143 / 993 | 31 min | A client waiting for new mail (IDLE) stays silent for up to 29 min (RFC 9051). Stalwart's own IMAP timeouts are 30 min, so Stalwart ends the session first with a proper `BYE`. |
+| SMTP 25 / 465 / 587, POP3 995, ManageSieve 4190 | 10 min | Their clients do not idle (a filter editor left open on ManageSieve simply reconnects); RFC 5321 asks for at least 5 minutes for SMTP and RFC 1939 for at least 10 for POP3. |
+
+Every connection, on both the client and the Stalwart side, has TCP keepalive: the first probe after 5 min of
+silence, then every 30 s, and the connection is closed after 4 missed answers. That keeps the NAT
+entry of a live idle client fresh at home routers and mobile carriers, and closes a connection whose
+peer vanished (a laptop put to sleep) after about 7 minutes. Probes carry no data, so they do not
+extend the idle limit.
+
+Before this, every IMAP connection through haproxy was cut after 10 idle minutes while the active mail
+node's direct path kept 30. A cut that does not reach the client leaves its next sync or send waiting
+on a dead connection until the mail program gives up, which users report as mail stuck in the outbox.
+In haproxy's log a cut by the idle limit ends in `cD`.
+
+A change to the ConfigMap reaches the haproxy pods through Reloader
+(`configmap.reloader.stakater.com/reload` on the DaemonSet), which rolls them one node at a time; the
+`subPath` mount never updates a running pod on its own.
+
 ---
 
 ## Triggering a flip
