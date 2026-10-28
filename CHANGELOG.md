@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.21-rc.1] - 2026-10-28
-
 ### Changed
 
 - **The backup shim gives a target two minutes to answer at start, up from 60 seconds.** After every
