@@ -25,18 +25,11 @@ import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import RestorationWizard, { type RestoreArtifact, type RestorationWizardPrecheck } from '@/components/backups/RestorationWizard';
 import PitrProgressModal from '@/components/backups/PitrProgressModal';
+import { formatBytes, formatVolumeBytes } from '@/lib/format-bytes';
 
 interface SystemSnapshotsModalProps {
   readonly volume: SystemPvcSnapshotSummary;
   readonly onClose: () => void;
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let n = bytes; let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return `${n.toFixed(n < 10 ? 2 : 1)} ${u[i]}`;
 }
 
 /**
@@ -151,7 +144,7 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
               Snapshots — <span className="font-mono">{volume.namespace}/{volume.pvcName}</span>
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {volume.longhornVolumeName} · {formatBytes(volume.volumeSizeBytes)} · {volume.snapshotCount} snapshot(s) · {formatBytes(volume.snapshotBytesTotal)}
+              {volume.longhornVolumeName} · {formatVolumeBytes(volume.volumeSizeBytes)} · {volume.snapshotCount} snapshot(s) · {formatBytes(volume.snapshotBytesTotal)}
             </p>
           </div>
           <button

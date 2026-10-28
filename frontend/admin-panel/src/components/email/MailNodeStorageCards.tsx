@@ -2,6 +2,7 @@ import { HardDrive, AlertTriangle, Loader2, Activity, Snowflake } from 'lucide-r
 import { useMailNodeStorage } from '@/hooks/use-mail-node-storage';
 import type { MailNodeStorage } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 /**
  * Per-mail-node storage cards — replaces the legacy single MailStorageCard.
@@ -145,13 +146,13 @@ function NodeStorageCard({ node }: { readonly node: MailNodeStorage }) {
 
       {/* Stats grid */}
       <div className="grid grid-cols-2 gap-3 text-xs">
-        <Stat label="Total disk" value={formatBytes(node.totalBytes)} />
-        <Stat label="Mail data used" value={formatBytes(node.mailUsedBytes)} />
+        <Stat label="Total disk" value={formatVolumeBytes(node.totalBytes)} />
+        <Stat label="Mail data used" value={formatVolumeBytes(node.mailUsedBytes)} />
         <Stat
           label="Free space"
           value={
             headroom != null && headroomPct != null
-              ? `${formatBytes(headroom)} (${headroomPct.toFixed(0)}%)`
+              ? `${formatVolumeBytes(headroom)} (${headroomPct.toFixed(0)}%)`
               : '—'
           }
           valueCls={headroomCls}
@@ -204,14 +205,6 @@ function roleClass(role: string): string {
     default:
       return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300';
   }
-}
-
-function formatBytes(n: number | null): string {
-  if (n == null || !Number.isFinite(n) || n < 0) return '—';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 
 function formatAge(iso: string | null): string | null {

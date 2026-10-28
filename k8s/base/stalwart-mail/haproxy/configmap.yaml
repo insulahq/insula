@@ -26,6 +26,25 @@
 #   traffic) and the masquerade collapsed every client to one tunnel IP, which
 #   Stalwart's portScanning then banned. platform-api now resolves externalIPs
 #   to []. See backend/src/modules/mail-admin/port-exposure-modes.ts.
+#
+# IDLE TIMEOUTS + TCP KEEPALIVE:
+#   An IMAP client waiting for new mail (IDLE) sends nothing for up to 29
+#   minutes (RFC 9051 tells clients to re-issue IDLE at least that often), and
+#   Stalwart's own IMAP timeouts are 30 minutes. With the 600 s default here,
+#   haproxy cut every waiting client at 10 minutes, but only on the nodes it runs
+#   on: the active mail node's hostPort path kept the full 30. A cut that never
+#   reaches the client (home routers and mobile carrier NAT drop it) leaves the
+#   client sending its next sync or send into a dead connection until its own
+#   timeout fires, which users see as mail stuck in the outbox. So the IMAP
+#   frontends/backends wait 31 minutes. Stalwart ends idle sessions itself at 30
+#   with a proper BYE; haproxy's limit is only the backstop.
+#   TCP keepalive (5 min idle, then every 30 s, give up after 4 missed) keeps
+#   NAT mappings of live idle connections fresh and closes connections whose
+#   peer vanished (a laptop put to sleep) after ~7 minutes, sooner than the old
+#   10-minute cut. The kernel default would wait 2 hours before its first probe,
+#   so the timing must be set here. Keepalive probes carry no data and do not
+#   reset `timeout client/server`. SMTP, POP3 and ManageSieve keep 600 s: their
+#   RFCs ask for at least 5 / 10 minutes and their clients do not idle.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -49,6 +68,14 @@ data:
       timeout connect 5s
       timeout client  600s
       timeout server  600s
+      option clitcpka
+      option srvtcpka
+      clitcpka-idle  300s
+      clitcpka-intvl 30s
+      clitcpka-cnt   4
+      srvtcpka-idle  300s
+      srvtcpka-intvl 30s
+      srvtcpka-cnt   4
 
     frontend smtp_in
       bind :::25 v4v6
@@ -73,16 +100,20 @@ data:
 
     frontend imap_in
       bind :::143 v4v6
+      timeout client 31m
       default_backend stalwart_imap
 
     backend stalwart_imap
+      timeout server 31m
       server stalwart stalwart-mail.mail.svc.cluster.local:12143 send-proxy-v2 check inter 10s
 
     frontend imaps_in
       bind :::993 v4v6
+      timeout client 31m
       default_backend stalwart_imaps
 
     backend stalwart_imaps
+      timeout server 31m
       server stalwart stalwart-mail.mail.svc.cluster.local:12993 send-proxy-v2 check inter 10s
 
     frontend pop3s_in

@@ -9,21 +9,16 @@
  *                  since the previous snapshot. The two must never render the
  *                  same — `formatDataSize(null)` is "—", `formatDataSize(0)`
  *                  is "0 B".
+ *
+ * Their units differ too: a volume is sized in GiB, data is counted in GB
+ * (`format-bytes.ts`).
  */
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+import { formatBytes, formatVolumeBytes } from './format-bytes';
 
-/** Binary-unit bytes ("64.3 MB"). Assumes a finite, non-negative count. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—';
-  if (bytes === 0) return '0 B';
-  const i = Math.min(UNITS.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${UNITS[i]}`;
-}
-
-/** Volume size: 0 is "not known yet", shown as "—". */
+/** Volume size: 0 is "not known yet", shown as "—". GiB, as volumes are sized. */
 export function formatVolumeSize(bytes: number): string {
-  return bytes > 0 ? formatBytes(bytes) : '—';
+  return bytes > 0 ? formatVolumeBytes(bytes) : '—';
 }
 
 /** Data size: null is "not measured" ("—"); 0 is a measurement ("0 B"). */

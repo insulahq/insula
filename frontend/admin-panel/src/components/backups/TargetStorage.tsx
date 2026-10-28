@@ -10,7 +10,7 @@
 import { Loader2, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { BackupUsageClass, TargetUsageRow } from '@insula/api-contracts';
-import { formatBytes } from '@/lib/format-snapshot-size';
+import { formatBytes } from '@/lib/format-bytes';
 
 const CLASS_LABEL: Record<BackupUsageClass, string> = { system: 'System', tenant: 'Tenants', mail: 'Mail' };
 const CLASS_BAR: Record<BackupUsageClass, string> = {

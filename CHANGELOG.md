@@ -12,6 +12,56 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **The backup shim gives a target two minutes to answer at start, up from 60 seconds.** After every
+  node of a lab cluster booted at once, healthy targets took up to 46 seconds to open, close to
+  the old limit, and going over it costs a restart with back-off. A target switch now waits up to four
+  minutes for the shim to roll (was two). That is long enough to see a shim that never serves stopped
+  and restarted, so a switch to a target that never answers is still reported as failed.
+- **The operator manual says what an SMB share's recycle bin does to bundles.** Deleted and expired
+  bundles keep their space until the recycle bin is emptied; turn it off for the backup share.
+
+### Fixed
+
+- **The mail server has room for its read cache again.** It ran at its 1800 MiB memory limit,
+  so the kernel kept dropping the cached mail-store files and reads went back to disk. Its limit
+  is now 2 GiB (the request is unchanged, so small nodes still schedule it). Applying it
+  restarts the mail server once; mail is unavailable for under a minute.
+- **The mail server no longer wastes about half its database memory.** Its database part held
+  25 malloc arenas of 64 MiB on a production node, about twice what it uses, and huge pages kept
+  partly used memory resident. Stalwart now starts through a small launcher. The launcher turns
+  transparent huge pages off for the mail server process only (servers keep their own setting,
+  so MongoDB 8 and other workloads that want them are unaffected) and runs a copy of the binary
+  without its file capability. That copy honours `MALLOC_ARENA_MAX=2`, which the original binary
+  ignored. A pod setting (`net.ipv4.ip_unprivileged_port_start=0`) lets the copy bind the mail
+  ports. Two CI checks guard the arrangement: one checks the manifests, and one runs the start-up
+  chain in the pinned Stalwart image, so a Stalwart update that breaks it fails before release.
+- **Mail programs waiting for new mail are no longer cut off after 10 minutes.** When a mail
+  connection lands on a server that is not the mail node, haproxy closed IMAP connections that had
+  been quiet for 10 minutes, while mail programs waiting for new mail stay quiet for up to 29 and the
+  mail server allows 30. On home and mobile connections the cut often never reached the device, so its
+  next sync or send waited on a dead connection; users saw mail sitting in the outbox for minutes.
+  IMAP now waits 31 minutes, and every mail connection gets TCP keepalive (5 minutes, then every 30
+  seconds), which keeps live connections open through routers and closes ones whose device went away
+  after about 7 minutes. Other mail ports keep 10 minutes. Applying it restarts the haproxy pods
+  one server at a time, so mail programs connected through them reconnect once.
+- **The manual-capture error no longer says bundles go to "S3 or SSH".** `POST
+  /api/v1/admin/tenant-bundles` without a `targetConfigId` now asks for the target tenant backups are
+  bound to; SMB targets work too.
+- **Backup sizes in the admin panel no longer read low.** Several pages divided by 1024 and printed
+  "GB", so a tenant folder of 204.4 GB showed as 190.3 GB. Backups, snapshots, bundles and transfers
+  now count in decimal units everywhere, as the target does. Volume and disk sizes stay in GiB,
+  labelled as such, because they are set in GiB. The tenant panel's bundle progress dialog had the
+  same fault.
+- **Each backup class page shows what the class takes up on the target.** The Mail and System pages
+  now open with the size of their folder, as the Tenants page already did. The mail card's figure is
+  now labelled "Used by kept snapshots": it is restic's count, which leaves out data from snapshots
+  removed since the last daily clean-up. The Postgres card's "Total size" is now "Base copies": it
+  never counted the write-ahead log, etcd snapshots or DR bundles. The dashboard's Backups tile reads
+  the same folder sizes for Tenant and Mail, which it used to take from restic and the repository
+  table.
+
 ## [2026.10.20] - 2026-10-27
 
 ### Changed

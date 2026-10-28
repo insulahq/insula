@@ -214,9 +214,9 @@ describe('Status block — what the archive holds', () => {
     routeApi(ON);
     renderWith(<PostgresBackupsSection />);
     const s = await screen.findByTestId('pg-storage-system-db');
-    // 3.0 + 3.1 GB of base copies plus 3.4 GB of log = 8.85 GiB total; the
-    // panel formats in binary units. Arrives with the catalogue query.
-    await waitFor(() => expect(s.textContent).toMatch(/8\.85 GiB/));
+    // 3.0 + 3.1 GB of base copies plus 3.4 GB of log = 9.5 GB total, in the
+    // decimal units the target counts in. Arrives with the catalogue query.
+    await waitFor(() => expect(s.textContent).toMatch(/9\.5 GB/));
     expect(s).toHaveTextContent(/base copies/);
     expect(s).toHaveTextContent(/812 segments/);
   });
@@ -225,7 +225,7 @@ describe('Status block — what the archive holds', () => {
     routeApi(ON, { walSummary: { ...WAL_SUMMARY, state: 'measuring' } });
     renderWith(<PostgresBackupsSection />);
     const s = await screen.findByTestId('pg-storage-system-db');
-    await waitFor(() => expect(s).toHaveTextContent(/8\.85 GiB/));
+    await waitFor(() => expect(s).toHaveTextContent(/9\.5 GB/));
     expect(s).toHaveTextContent(/measured/);
     expect(s).toHaveTextContent(/refreshing/);
   });
@@ -288,7 +288,7 @@ describe('Status block — what the archive holds', () => {
     renderWith(<PostgresBackupsSection />);
     const s = await screen.findByTestId('pg-storage-system-db');
     await waitFor(() => expect(s).toHaveTextContent(/base copies only/));
-    expect(s).toHaveTextContent(/5\.68 GiB/);
+    expect(s).toHaveTextContent(/6\.1 GB/);
     expect(s).toHaveTextContent(/log volume not counted/);
     expect(s.textContent).not.toMatch(/could not measure/);
   });
@@ -431,6 +431,17 @@ describe('WAL chip on the health card', () => {
     routeApi(OFF);
     renderWith(<CnpgBackupHealthCard />);
     expect(await screen.findByTestId('cnpg-wal-badge-disabled')).toHaveTextContent('Backups off');
+  });
+
+  it('calls its size what it is — the base copies, not the archive', async () => {
+    // It read "Total size: 1.5 GB" beside a system folder of 6.0 GB: the log,
+    // etcd snapshots and DR bundles are not in it.
+    routeApi(ON);
+    renderWith(<CnpgBackupHealthCard />);
+    const size = await screen.findByTestId('cnpg-total-backup-size');
+    expect(size).toHaveTextContent('6.1 GB in 2 copies');
+    expect(size.parentElement).toHaveTextContent(/^Base copies:/);
+    expect(size.parentElement).not.toHaveTextContent(/Total size/);
   });
 });
 

@@ -96,8 +96,8 @@ describe('TenantSnapshotsPanel (admin)', () => {
   it('shows Data size next to Volume size, and "—" (not 0) when unmeasured', () => {
     snapshots = [ready, { ...ready, id: 'snap-2', dataSizeBytes: null }, { ...ready, id: 'snap-3', dataSizeBytes: 0 }];
     render(<TenantSnapshotsPanel tenantId={TENANT} />);
-    expect(screen.getByTestId('admin-snapshot-volume-size-snap-1').textContent).toBe('2.0 GB');
-    expect(screen.getByTestId('admin-snapshot-data-size-snap-1').textContent).toBe('64.3 MB');
+    expect(screen.getByTestId('admin-snapshot-volume-size-snap-1').textContent).toBe('2.0 GiB');
+    expect(screen.getByTestId('admin-snapshot-data-size-snap-1').textContent).toBe('67.4 MB');
     const unknown = screen.getByTestId('admin-snapshot-data-size-snap-2');
     expect(unknown.textContent).toBe('—');
     expect(unknown.getAttribute('title')).toMatch(/Not measured/);

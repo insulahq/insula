@@ -133,9 +133,10 @@ describe("RemoteStorageTargetsPage", () => {
         measuringSince: null,
         usage: {
           measuredAt: new Date().toISOString(), durationMs: 1000,
-          classes: { system: { bytes: 3 * 1024 ** 3, objects: 1 }, tenant: { bytes: 500 * 1024 ** 3, objects: 1 }, mail: { bytes: 60 * 1024 ** 3, objects: 1 } },
-          usedByBackupsBytes: 563 * 1024 ** 3,
-          capacity: { totalBytes: 1024 ** 4, usedBytes: 600 * 1024 ** 3, freeBytes: 424 * 1024 ** 3 },
+          // Decimal, as the target reports it.
+          classes: { system: { bytes: 3e9, objects: 1 }, tenant: { bytes: 500e9, objects: 1 }, mail: { bytes: 60e9, objects: 1 } },
+          usedByBackupsBytes: 563e9,
+          capacity: { totalBytes: 1e12, usedBytes: 576e9, freeBytes: 424e9 },
           capacityNote: null, errors: {},
         },
       }],

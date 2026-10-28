@@ -139,9 +139,10 @@ runcmd:
   # Bounded nofile: under containerd's ~1e9 default the chrooted internal-sftp closes
   # every possible fd first and answers only minutes later (lib/lab-svc.sh). ---
   - "docker run -d --name sftp --restart=always --ulimit nofile=65536:65536 -p 2222:22 atmoz/sftp:latest ${SFTP_USER}:${SFTP_PW}:::upload"
-  # CIFS/SMB (dperson/samba) — user ${SMB_USER}, writable share 'backups' at /share on :445. ---
+  # CIFS/SMB (dperson/samba) — user ${SMB_USER}, writable share 'backups' at /share on :445.
+  # -r: no recycle bin, so a file deleted over SMB is gone (the image keeps it in .deleted/). ---
   - "mkdir -p /srv/smb && chmod 0777 /srv/smb"
-  - "docker run -d --name samba --restart=always --network host -v /srv/smb:/share dperson/samba:latest -p -u '${SMB_USER};${SMB_PW}' -s 'backups;/share;yes;no;no;${SMB_USER};${SMB_USER}' -w WORKGROUP"
+  - "docker run -d --name samba --restart=always --network host -v /srv/smb:/share dperson/samba:latest -p -r -u '${SMB_USER};${SMB_PW}' -s 'backups;/share;yes;no;no;${SMB_USER};${SMB_USER}' -w WORKGROUP"
 UD
 cat > "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" <<MD
 instance-id: ${SVC}

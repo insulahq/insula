@@ -11,7 +11,7 @@ vi.mock('@/lib/api-client', () => ({
 }));
 
 const mockApiFetch = vi.mocked(apiFetch);
-const GB = 1024 ** 3;
+const GiB = 1024 ** 3;
 
 const BASE: MailHealthResponse = {
   healthy: false,
@@ -28,15 +28,15 @@ const BASE: MailHealthResponse = {
       status: 'fail',
       error: '1 standby node has no copy younger than 30 min. A failover restores the newest complete copy (or the backup, if that is newer), so mail received since would be lost.',
       maxAgeSeconds: 1800,
-      nodes: [{ node: 'node-2', ageSeconds: 3600, durationSeconds: 900, sizeBytes: 40 * GB, fresh: false }],
+      nodes: [{ node: 'node-2', ageSeconds: 3600, durationSeconds: 900, sizeBytes: 40 * GiB, fresh: false }],
     },
     storage: {
       healthy: false,
       status: 'fail',
       error: '1 mail node has less free space than its mail data.',
       nodes: [
-        { node: 'node-1', role: 'active', freeBytes: 4 * GB, mailBytes: 10 * GB, enough: false },
-        { node: 'node-2', role: 'standby', freeBytes: 50 * GB, mailBytes: 10 * GB, enough: true },
+        { node: 'node-1', role: 'active', freeBytes: 4 * GiB, mailBytes: 10 * GiB, enough: false },
+        { node: 'node-2', role: 'standby', freeBytes: 50 * GiB, mailBytes: 10 * GiB, enough: true },
       ],
     },
   },
@@ -68,7 +68,7 @@ describe('MailHealthDetailsModal — capacity', () => {
   it('shows free space against mail data per node', async () => {
     renderModal();
     expect(await screen.findByText('Disk headroom')).toBeInTheDocument();
-    expect(screen.getByText('node-1 (active): 4.0 GB free, 10.0 GB mail • node-2 (standby): 50.0 GB free, 10.0 GB mail')).toBeInTheDocument();
+    expect(screen.getByText('node-1 (active): 4.0 GiB free, 10.0 GiB mail • node-2 (standby): 50.0 GiB free, 10.0 GiB mail')).toBeInTheDocument();
     expect(screen.getByText(/holds the old and new files until it finishes/)).toBeInTheDocument();
   });
 

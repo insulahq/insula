@@ -230,8 +230,9 @@ locally with standard `openssl`. The command and download routes are in the
 runbook above.
 
 ??? info "Under the hood"
-    Bundles are written via a `BackupStore` abstraction (S3 or SFTP) through the
-    rclone-shim. The global scheduler runs every 5 minutes on each platform-api
+    Bundles are written through the rclone shim, which serves S3 to the backup
+    Jobs and stores on the target tenant backups are bound to (S3, SFTP or
+    SMB). The global scheduler runs every 5 minutes on each platform-api
     replica, firing within ±5 minutes of the cron HH:MM, with `last_fired_at` as
     the dedup marker. Restore items are idempotent (`INSERT … ON CONFLICT DO
     UPDATE` per allow-listed table; tar-extract per file path; per-mailbox

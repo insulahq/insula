@@ -30,6 +30,7 @@ import type {
   MailArchiveRun,
   MailArchiveScheduleInterval,
 } from '@insula/api-contracts';
+import { formatBytes } from '@/lib/format-bytes';
 
 /**
  * Email Management → Mail Archive card.
@@ -914,12 +915,4 @@ function formatElapsedMs(ms: number): string {
   const min = Math.floor(ms / 60_000);
   const sec = Math.floor((ms % 60_000) / 1000);
   return sec === 0 ? `${min}m` : `${min}m ${sec}s`;
-}
-
-function formatBytes(n: number | null | undefined): string {
-  if (n == null) return '—';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }

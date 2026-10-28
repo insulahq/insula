@@ -3,6 +3,7 @@ import StatCard from '@/components/ui/StatCard';
 import MailHealthBanner from '@/components/MailHealthBanner';
 import { useAdminEmailDomains } from '@/hooks/use-email';
 import { useMailNodeStorage } from '@/hooks/use-mail-node-storage';
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 /**
  * Shared header for every `/email/*` child page.
@@ -23,17 +24,6 @@ import { useMailNodeStorage } from '@/hooks/use-mail-node-storage';
  * moved Email out of /settings/email into its own sidebar group with
  * per-section child pages.
  */
-/** Bytes → short human string. Mirrors MailNodeStorageCards' formatter so the
- *  tile and the per-node cards below it never disagree on units. */
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v >= 10 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
-
 export default function EmailPageHeader({ subtitle }: { readonly subtitle?: string }) {
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
@@ -84,7 +74,7 @@ export default function EmailPageHeader({ subtitle }: { readonly subtitle?: stri
               ? '...'
               : mailUsedBytes == null
                 ? '—'
-                : formatBytes(mailUsedBytes)
+                : formatVolumeBytes(mailUsedBytes)
           }
           icon={HardDrive}
           accent="brand"

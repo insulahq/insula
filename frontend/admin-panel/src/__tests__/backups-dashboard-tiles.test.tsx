@@ -224,15 +224,16 @@ describe('Backups dashboard — before the roll-up arrives', () => {
 });
 
 describe('Backups dashboard — storage by target', () => {
-  const GiB = 1024 ** 3;
+  // Decimal, as the target reports it: a tile shows 563.0 GB for 563e9 bytes.
+  const GB = 1e9;
   const target = (over: Partial<TargetUsageRow> & { id: string }): TargetUsageRow => ({
     targetId: over.id, name: over.name ?? over.id, storageType: over.storageType ?? 'cifs', enabled: over.enabled ?? true,
     readOnly: false, boundClasses: over.boundClasses ?? ['system', 'tenant', 'mail'], measuringSince: over.measuringSince ?? null,
     usage: over.usage === undefined ? {
       measuredAt: hoursAgo(2), durationMs: 1,
-      classes: { system: { bytes: 3 * GiB, objects: 1 }, tenant: { bytes: 500 * GiB, objects: 1 }, mail: { bytes: 60 * GiB, objects: 1 } },
-      usedByBackupsBytes: 563 * GiB,
-      capacity: { totalBytes: 1024 * GiB, usedBytes: 600 * GiB, freeBytes: 424 * GiB },
+      classes: { system: { bytes: 3 * GB, objects: 1 }, tenant: { bytes: 500 * GB, objects: 1 }, mail: { bytes: 60 * GB, objects: 1 } },
+      usedByBackupsBytes: 563 * GB,
+      capacity: { totalBytes: 1000 * GB, usedBytes: 576 * GB, freeBytes: 424 * GB },
       capacityNote: null, errors: {},
     } : over.usage,
   });

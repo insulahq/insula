@@ -134,7 +134,16 @@ spec:
             matchLabels:
               app: stalwart-mail
       securityContext:
-        runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
+        runAsNonRoot: false  # the image runs as uid 2000 (`stalwart`); some init containers run as their image's user
+        # Stalwart runs from a copy of its binary WITHOUT the image's
+        # cap_net_bind_service file capability (see the stalwart-binary init
+        # container), so the unprivileged user needs this to bind the mail ports
+        # (25/143/465/587/993/995/4190/80). Namespaced to this pod's network
+        # namespace; a Kubernetes "safe" sysctl, allowed by default.
+        # CI: scripts/ci-stalwart-launcher-check.sh + scripts/test-stalwart-launcher.sh.
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: "0"
       initContainers:
         # protect-from-silent-data-loss: refuse to start
         # Stalwart with an empty PVC when the platform DB still
@@ -603,11 +612,76 @@ spec:
             - name: standby-data
               mountPath: /standby-data
               readOnly: true
+        # Copy the Stalwart binary into an emptyDir. A plain `cp` does not copy
+        # the security.capability xattr, so the copy has no file capability and
+        # the kernel starts it with AT_SECURE=0 — the only way glibc honours
+        # MALLOC_ARENA_MAX for it (in secure mode glibc drops malloc tunables).
+        # Binding the mail ports without the capability is what the pod's
+        # net.ipv4.ip_unprivileged_port_start sysctl is for.
+        # The image MUST be the same as the `stalwart` container's (CI guard).
+        - name: stalwart-binary
+          image: docker.io/stalwartlabs/stalwart:v0.16.27
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /usr/local/bin/stalwart /opt/stalwart-bin/stalwart.tmp
+              chmod 0555 /opt/stalwart-bin/stalwart.tmp
+              mv -f /opt/stalwart-bin/stalwart.tmp /opt/stalwart-bin/stalwart
+              if getcap /opt/stalwart-bin/stalwart 2>/dev/null | grep -q cap_; then
+                echo "stalwart-binary: the copy kept a file capability; glibc would ignore MALLOC_ARENA_MAX" >&2
+                exit 1
+              fi
+              echo "stalwart-binary: capability-free copy ready"
+          volumeMounts:
+            - name: stalwart-bin
+              mountPath: /opt/stalwart-bin
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
       containers:
         - name: stalwart
           image: docker.io/stalwartlabs/stalwart:v0.16.27
           imagePullPolicy: IfNotPresent
-          # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
+          # Launcher instead of the image ENTRYPOINT (/usr/local/bin/stalwart
+          # --config /etc/stalwart/config.json):
+          #   1. prctl(PR_SET_THP_DISABLE): transparent huge pages off for this
+          #      process only. The flag survives execve. Hosts keep their own
+          #      THP setting (Debian/RHEL default `always`, which e.g. MongoDB 8+
+          #      tenants want), but RocksDB's malloc arenas are partly used, and
+          #      under THP every touched 2 MiB stays resident. Measured on a
+          #      production node: 91 % of Stalwart's anonymous memory was THP.
+          #      Fail-open: without a syscall number for the CPU, or if prctl
+          #      fails, Stalwart starts with THP unchanged and a warning is logged.
+          #   2. exec the capability-free copy (stalwart-binary init container),
+          #      so MALLOC_ARENA_MAX below takes effect.
+          # perl is in every Debian image (perl-base is Essential). `$$` is
+          # Flux's escape for `$` (postBuild substitution).
+          # CI: scripts/ci-stalwart-launcher-check.sh (manifest invariants) and
+          # scripts/test-stalwart-launcher.sh (runs this launcher in the pinned
+          # image, as the cluster would).
+          command:
+            - perl
+            - -e
+            - |
+              my %nr = (x86_64 => 157, aarch64 => 167);
+              chomp(my $$arch = `uname -m`);
+              if (!exists $$nr{$$arch}) {
+                warn "stalwart-launcher: no prctl syscall number for $$arch; transparent huge pages unchanged\n";
+              } elsif (syscall($$nr{$$arch}, 41, 1, 0, 0, 0) != 0) {
+                warn "stalwart-launcher: PR_SET_THP_DISABLE failed ($$!); transparent huge pages unchanged\n";
+              }
+              exec { $$ARGV[0] } @ARGV or die "stalwart-launcher: exec $$ARGV[0]: $$!\n";
+            - --
+          args:
+            - /opt/stalwart-bin/stalwart
+            - --config
+            - /etc/stalwart/config.json
           # The ConfigMap is mounted directly at /etc/stalwart so Stalwart
           # picks up the fully-resolved config without any initContainer.
           # Mail ports — NO hostPort here. Phase 7 streamline
@@ -683,7 +757,20 @@ spec:
                   name: stalwart-admin-creds
                   key: recoveryAdmin
                   optional: true
+            # Cap glibc malloc at 2 arenas. Stalwart's Rust code allocates
+            # through jemalloc; its embedded RocksDB is C++ and uses glibc
+            # malloc, which opened ~20-25 arenas of 64 MiB (one per busy
+            # thread) holding about twice what RocksDB uses. Only effective
+            # because the launcher runs the capability-free copy: for the
+            # image's own binary (cap_net_bind_service=ep → AT_SECURE=1) glibc
+            # ignores this variable. Cost: more malloc lock contention between
+            # RocksDB threads, small at mail-server concurrency.
+            - name: MALLOC_ARENA_MAX
+              value: "2"
           volumeMounts:
+            - name: stalwart-bin
+              mountPath: /opt/stalwart-bin
+              readOnly: true
             - name: config
               mountPath: /etc/stalwart
               readOnly: true
@@ -704,7 +791,17 @@ spec:
               # kill. The kill was anon-rss, i.e. genuine heap growth rather
               # than reclaimable page cache, so the ceiling was the binding
               # constraint and not a bookkeeping artifact.
-              memory: 1800Mi
+              #
+              # Raised 1800Mi -> 2Gi: at 1800Mi the container sat at its limit
+              # continuously (cgroup memory.events `max` in the hundreds of
+              # thousands), so the kernel kept evicting the page cache that
+              # RocksDB reads SST and blob files through, and mail reads went
+              # back to disk (millions of `workingset_refault_file`). The page
+              # cache is charged to this cgroup, so the limit must leave room
+              # for it on top of the heap. This is a ceiling, not a
+              # reservation: the request stays small, so small nodes still
+              # schedule the pod.
+              memory: 2Gi
           startupProbe:
             # exec probe: Stalwart 0.16 management API restricts remote
             # connections by default. httpGet from the kubelet comes from
@@ -796,6 +893,11 @@ spec:
         - name: config
           configMap:
             name: stalwart-config
+        # Capability-free copy of the Stalwart binary (~100 MB), written by the
+        # stalwart-binary init container, mounted read-only into `stalwart`.
+        - name: stalwart-bin
+          emptyDir:
+            sizeLimit: 512Mi
         - name: stalwart-data
           persistentVolumeClaim:
             # A2.5: consolidated PVC. Stalwart subtree at

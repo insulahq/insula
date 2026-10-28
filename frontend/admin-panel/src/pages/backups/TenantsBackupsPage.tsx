@@ -50,7 +50,8 @@ import SnapshotDataSize from '@/components/SnapshotDataSize';
 import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressModal';
 import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 import DeletedTenantsCard from '@/components/backups/DeletedTenantsCard';
-import TenantStorageTotal from '@/components/backups/TenantStorageTotal';
+import ClassStorageTotal from '@/components/backups/ClassStorageTotal';
+import { formatBytes } from '@/lib/format-bytes';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -58,13 +59,6 @@ import TenantStorageTotal from '@/components/backups/TenantStorageTotal';
 type TenantSnapshotRow = TenantSnapshotListRow;
 
 // ── Formatters ───────────────────────────────────────────────────────
-
-function formatBytes(b: number): string {
-  if (!b) return '—';
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
-  return `${(b / 1024).toFixed(0)} KiB`;
-}
 
 // ── Hooks ────────────────────────────────────────────────────────────
 
@@ -642,7 +636,7 @@ function TenantBundleTable({
                 )}
               </td>
               <td className="px-2 py-1"><StatusPill status={r.status} /></td>
-              <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
+              <td className="px-2 py-1 text-right tabular-nums text-xs">{r.sizeBytes > 0 ? formatBytes(r.sizeBytes) : '—'}</td>
               <td className="px-2 py-1 text-right tabular-nums text-xs">
                 {r.resticAddedBytes == null
                   // Not 0: bundles captured before this shipped have no
@@ -1011,7 +1005,7 @@ function BackupsTab(p: BackupsTabProps) {
                         Refresh repo size
                       </button>
                       <span className="text-gray-500 dark:text-gray-400">
-                        Last backup size {roll ? formatBytes(roll.bundleBytes / Math.max(roll.bundleCount, 1)) : '—'} avg ·
+                        Last backup size {roll && roll.bundleBytes > 0 ? formatBytes(roll.bundleBytes / Math.max(roll.bundleCount, 1)) : '—'} avg ·
                         {' '}
                         {/* The SIZE and a TIME, not just a date. This read
                             "repo measured <date>" with no figure and no
@@ -1326,7 +1320,7 @@ export default function TenantsBackupsPage() {
         backupsTab={
           <div className="space-y-3">
             {errorBanner}
-            <TenantStorageTotal />
+            <ClassStorageTotal cls="tenant" />
             <DeletedTenantsCard />
             <div className="flex items-center justify-end">
               <button

@@ -6,14 +6,7 @@ import { useStorageOperations, useTenantStoragePlacement, useFsckCheck, useFsckR
 import { useTableSearch } from '@/hooks/use-table-search';
 import { Pin } from 'lucide-react';
 import NodeName from '@/components/nodes/NodeName';
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(1)} ${units[i]}`;
-}
+import { formatVolumeBytes } from '@/lib/format-bytes';
 
 /**
  * The tenant's volumes: where each is attached (the ACTIVE node, where the
@@ -128,11 +121,11 @@ export function PvcPlacementSection({ tenantId, pinnedNode = null, activeNodes =
                     {fsLabel}
                   </span>
                 </td>
-                <td className="px-3 py-2">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
+                <td className="px-3 py-2">{p.sizeBytes > 0 ? formatVolumeBytes(p.sizeBytes) : '—'}</td>
                 <td className="px-3 py-2">
-                  {p.usedBytes > 0 ? formatBytes(p.usedBytes) : '0 B'}
+                  {p.usedBytes > 0 ? formatVolumeBytes(p.usedBytes) : '0 B'}
                   {p.allocatedBytes > 0 && (
-                    <span className="ml-1 text-gray-500 dark:text-gray-400">({formatBytes(p.allocatedBytes)})</span>
+                    <span className="ml-1 text-gray-500 dark:text-gray-400">({formatVolumeBytes(p.allocatedBytes)})</span>
                   )}
                 </td>
                 <td className="px-3 py-2">

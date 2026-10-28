@@ -3,6 +3,7 @@ import { X, ArrowRight, CheckCircle, XCircle, Loader2, Ban } from 'lucide-react'
 import { useMailMigrationStatus, useCancelMailMigration } from '@/hooks/use-mail-migration';
 import type { MailMigrationStatusResponse } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
+import { formatBytes } from '@/lib/format-bytes';
 
 // Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
 // in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline
@@ -239,13 +240,6 @@ function MigrationStepList({ status }: { readonly status: MailMigrationStatusRes
       })}
     </ol>
   );
-}
-
-function formatBytes(b: number): string {
-  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(2)} GiB`;
-  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(2)} MiB`;
-  if (b >= 1024) return `${(b / 1024).toFixed(2)} KiB`;
-  return `${b} B`;
 }
 
 function formatSeconds(s: number): string {

@@ -50,6 +50,11 @@ storage type. The form changes per type:
 === "SMB / CIFS"
 
     - **Host**, **share/path**, **username**, **password**.
+    - If the share has a recycle bin (Samba's `vfs_recycle`, a NAS's
+      per-share recycle bin), files Insula deletes move there. Deleted and
+      expired bundles keep their space until it is emptied: the target's used
+      space counts them, the per-class sizes do not. Turn the recycle bin off
+      for the backup share, or have it emptied on a schedule.
 
 !!! warning "NFS is not supported"
     NFS was removed as a target type — rclone has no NFS backend and the shim is
@@ -129,7 +134,7 @@ goes to the bound target; naming another is refused (`BUNDLE_TARGET_NOT_BOUND`).
 
 A target that accepts a connection and never answers holds the shim for every
 class, since it opens all of its targets before it serves. The shim reports
-Ready only once it serves, stops a start that has not served within 60 seconds
+Ready only once it serves, stops a start that has not served within two minutes
 (the pod restarts with back-off), and a switch to such a target fails, saying so.
 One case seen in the lab: an OpenSSH `internal-sftp` server in a chroot under a
 container with an unbounded open-files limit (`ulimit -n` around 10⁹) spends
