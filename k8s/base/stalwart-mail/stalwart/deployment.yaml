@@ -683,19 +683,15 @@ spec:
                   name: stalwart-admin-creds
                   key: recoveryAdmin
                   optional: true
-            # Cap glibc malloc at 2 arenas. Stalwart's Rust code allocates
-            # through jemalloc, but its embedded RocksDB is C++ and uses glibc
-            # malloc, which opens one 64 MiB arena per busy thread (up to
-            # 8 x cores). Measured on a production node: 25 arenas holding
-            # ~600 MB resident for a RocksDB that needs ~300 MB (128 MiB block
-            # cache + memtables capped at 128 MiB + table readers). Freed
-            # chunks scattered across many arenas are not returned to the OS,
-            # and with transparent huge pages set to `always` (the Debian and
-            # RHEL kernel default) each partly used 2 MiB page stays resident.
-            # The cost is more lock contention between RocksDB threads in
-            # malloc, which is small at mail-server concurrency.
-            - name: MALLOC_ARENA_MAX
-              value: "2"
+            # Do NOT add MALLOC_ARENA_MAX / GLIBC_TUNABLES here: glibc ignores
+            # them for this binary. The upstream image gives
+            # /usr/local/bin/stalwart the file capability
+            # cap_net_bind_service=ep (it binds 25/143/... as uid 2000), so the
+            # kernel starts it with AT_SECURE=1, and glibc drops malloc tunables
+            # from the environment in secure mode. Measured: with the variable
+            # set, the process still had 20 glibc arenas. Those arenas are
+            # RocksDB's (C++, glibc malloc; the Rust side uses jemalloc); see
+            # the ADR-046 watch item on RocksDB memory.
           volumeMounts:
             - name: config
               mountPath: /etc/stalwart
