@@ -13,7 +13,7 @@ import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { quoteId } from '@/lib/quote-sql-identifier';
+import { quoteId, quoteSqlString } from '@/lib/quote-sql-identifier';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import {
   useDeployments,
@@ -690,19 +690,20 @@ export default function DatabaseManager() {
 
   const executeDdl = useCallback(
     async (sql: string): Promise<void> => {
+      // The query endpoint reports an engine failure INSIDE a 200 result (the
+      // query tab renders it). Resolving on 200 alone let a failed row edit,
+      // insert, delete or DDL close its form as if it had been applied.
+      const settle = (resolve: () => void, reject: (err: unknown) => void) => ({
+        onSuccess: (res: { data: QueryResult }) => (res.data?.error ? reject(new Error(res.data.error)) : resolve()),
+        onError: (err: unknown) => reject(err),
+      });
       if (isSqlite && sqliteFile) {
         await new Promise<void>((resolve, reject) => {
-          sqliteExecuteQuery.mutate(
-            { filePath: sqliteFile, query: sql },
-            { onSuccess: () => resolve(), onError: (err) => reject(err) },
-          );
+          sqliteExecuteQuery.mutate({ filePath: sqliteFile, query: sql }, settle(resolve, reject));
         });
       } else if (selectedDatabase) {
         await new Promise<void>((resolve, reject) => {
-          deployExecuteQuery.mutate(
-            { database: selectedDatabase, query: sql },
-            { onSuccess: () => resolve(), onError: (err) => reject(err) },
-          );
+          deployExecuteQuery.mutate({ database: selectedDatabase, query: sql }, settle(resolve, reject));
         });
       }
     },
@@ -847,7 +848,7 @@ export default function DatabaseManager() {
     const pkValue = rowData[browseTablePkColumn];
     if (pkValue === undefined) return;
 
-    const sql = `DELETE FROM ${quoteId(browseTable, dbRuntime)} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `DELETE FROM ${quoteId(browseTable, dbRuntime)} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = ${quoteSqlString(pkValue, dbRuntime)}`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -860,7 +861,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, browseTablePkColumn, executeDdl, invalidateTableQueries]);
+  }, [browseTable, browseTablePkColumn, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Edit Row (save) ──────────────────────────────────────────────────────
 
@@ -873,7 +874,7 @@ export default function DatabaseManager() {
       .filter(([key, val]) => val !== editRowOriginal[key])
       .map(([key, val]) => {
         if (val === '' || val === 'NULL') return `${quoteId(key, dbRuntime)} = NULL`;
-        return `${quoteId(key, dbRuntime)} = '${val.replace(/'/g, "''")}'`;
+        return `${quoteId(key, dbRuntime)} = ${quoteSqlString(val, dbRuntime)}`;
       });
 
     if (setClauses.length === 0) {
@@ -882,7 +883,7 @@ export default function DatabaseManager() {
       return;
     }
 
-    const sql = `UPDATE ${quoteId(browseTable, dbRuntime)} SET ${setClauses.join(', ')} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `UPDATE ${quoteId(browseTable, dbRuntime)} SET ${setClauses.join(', ')} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = ${quoteSqlString(pkValue, dbRuntime)}`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -896,7 +897,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, browseTablePkColumn, editRowData, editRowOriginal, executeDdl, invalidateTableQueries]);
+  }, [browseTable, browseTablePkColumn, editRowData, editRowOriginal, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Insert Row ────────────────────────────────────────────────────────────
 
@@ -906,7 +907,7 @@ export default function DatabaseManager() {
     if (entries.length === 0) return;
 
     const colNames = entries.map(([key]) => quoteId(key, dbRuntime)).join(', ');
-    const values = entries.map(([, val]) => `'${val.replace(/'/g, "''")}'`).join(', ');
+    const values = entries.map(([, val]) => quoteSqlString(val, dbRuntime)).join(', ');
     const sql = `INSERT INTO ${quoteId(browseTable, dbRuntime)} (${colNames}) VALUES (${values})`;
 
     setRowActionPending(true);
@@ -922,7 +923,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, insertRowData, executeDdl, invalidateTableQueries]);
+  }, [browseTable, insertRowData, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Column helpers for create table form ──────────────────────────────────
 

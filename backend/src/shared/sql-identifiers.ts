@@ -24,25 +24,51 @@ import { ApiError } from './errors.js';
  */
 export const MAX_EXISTING_NAME_LENGTH = 255;
 
-export type ExistingNameKind = 'table' | 'column';
+/** Database names: MariaDB/MySQL and MongoDB cap them at 64, PostgreSQL at 63 bytes. */
+export const MAX_EXISTING_DATABASE_NAME_LENGTH = 64;
+
+export type ExistingNameKind = 'database' | 'table' | 'column';
+
+const INVALID_NAME_CODE: Record<ExistingNameKind, string> = {
+  database: 'INVALID_DATABASE_NAME',
+  table: 'INVALID_TABLE_NAME',
+  column: 'INVALID_COLUMN_NAME',
+};
 
 /**
  * Reject only what no engine can hold: a non-string (a repeated query
  * parameter arrives as an array), an empty name, a NUL, or an absurd length.
+ *
+ * A database name also reaches command lines (dump, restore, psql). Those
+ * paths must pass it so that it can never read as an option or a connection
+ * string — `--` before a positional name, `--db=`/`--database=` forms, and
+ * {@link pgConnInfoDbName} for libpq — rather than restricting the name.
  */
 export function validateExistingName(value: unknown, kind: ExistingNameKind): asserts value is string {
+  const max = kind === 'database' ? MAX_EXISTING_DATABASE_NAME_LENGTH : MAX_EXISTING_NAME_LENGTH;
   const valid = typeof value === 'string'
     && value.length > 0
-    && value.length <= MAX_EXISTING_NAME_LENGTH
+    && value.length <= max
     && !value.includes('\0');
   if (!valid) {
     throw new ApiError(
-      kind === 'table' ? 'INVALID_TABLE_NAME' : 'INVALID_COLUMN_NAME',
-      `Invalid ${kind} name: must be 1-${MAX_EXISTING_NAME_LENGTH} characters and contain no NUL character`,
+      INVALID_NAME_CODE[kind],
+      `Invalid ${kind} name: must be 1-${max} characters and contain no NUL character`,
       400,
       { [kind]: typeof value === 'string' ? value : String(value) },
     );
   }
+}
+
+/**
+ * A libpq connection string that selects exactly this database. psql,
+ * pg_dump and pg_restore treat a `-d`/`--dbname` value containing `=` (or a
+ * `postgres://` prefix) as a whole connection string, so a database named
+ * `host=elsewhere` would redirect the connection. Quoting the name as
+ * `dbname='…'` (backslash-escaping `\` and `'`) makes every name literal.
+ */
+export function pgConnInfoDbName(database: string): string {
+  return `dbname='${database.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
 /** MariaDB/MySQL identifier: backticks, an embedded backtick doubled. */

@@ -13,6 +13,7 @@ import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import { quoteAnsiIdentifier, validateExistingName } from '../../shared/sql-identifiers.js';
+import { dbEngineApiError } from '../deployments/db-errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { QueryResult, ColumnInfo, ImportResult } from '../deployments/db-manager.js';
 
@@ -325,7 +326,7 @@ export async function listTables(
     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
   );
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
   return result.rows.map((r) => r[0]).filter(Boolean);
 }
@@ -351,7 +352,7 @@ export async function describeTable(
   );
 
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
 
   // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
@@ -396,7 +397,7 @@ export async function browseTable(
   );
   // Same as describeTable/countRows: an inline error would render as an empty table.
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
   return result;
 }
@@ -422,7 +423,7 @@ export async function countRows(
   );
 
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
 
   return parseInt(result.rows[0]?.[0] ?? '0', 10) || 0;

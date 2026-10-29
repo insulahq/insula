@@ -34,6 +34,8 @@ import {
   countRows,
   exportDatabase,
   importSql,
+  exportDatabaseToPvc,
+  dropDatabase,
 } from './db-manager.js';
 
 function createMockK8s(pods: Array<{ name: string; phase: string }>): K8sClients {
@@ -447,7 +449,12 @@ describe('db-manager', () => {
         rootPassword: 'pw',
       };
 
-      await expect(createUser(ctx, 'good_user', 'pass', 'bad-db')).rejects.toThrow('Invalid database name');
+      // The grant names an EXISTING database, so any name it holds is fine — quoted.
+      setupExecSuccess('');
+      await createUser(ctx, 'good_user', 'pass', '2024-school');
+      const grant = mockExecFn.mock.calls.map((c) => (c[3] as string[]).find((a) => a.startsWith('GRANT'))).find(Boolean);
+      expect(grant).toBe("GRANT ALL PRIVILEGES ON `2024-school`.* TO 'good_user'@'%'");
+      await expect(createUser(ctx, 'good_user', 'pass', 'a\0b')).rejects.toThrow('Invalid database name');
     });
 
     it('should create user with database grant for mysql', async () => {
@@ -814,10 +821,15 @@ describe('db-manager', () => {
       ).rejects.toThrow('exceeds maximum length');
     });
 
-    it('should reject invalid database names', async () => {
-      await expect(
-        executeQuery(mariaCtx, '../../etc', 'SELECT 1'),
-      ).rejects.toThrow('Invalid database name');
+    // A database the engine holds is valid by definition; it is quoted, never
+    // placed raw. Only what no engine can hold is refused.
+    it('quotes any existing database name and refuses only impossible ones', async () => {
+      setupExecSuccess('1\n1');
+      await executeQuery(mariaCtx, '2024-we`ird', 'SELECT 1');
+      expect((mockExecFn.mock.calls[0][3] as string[])).toContain('USE `2024-we``ird`; SELECT 1');
+      await expect(executeQuery(mariaCtx, '', 'SELECT 1')).rejects.toThrow('Invalid database name');
+      await expect(executeQuery(mariaCtx, 'a\0b', 'SELECT 1')).rejects.toThrow('Invalid database name');
+      await expect(executeQuery(mariaCtx, 'x'.repeat(65), 'SELECT 1')).rejects.toThrow('Invalid database name');
     });
   });
 
@@ -923,7 +935,48 @@ describe('db-manager', () => {
         rootPassword: 'pw',
       };
 
-      await expect(listTables(ctx, '../etc')).rejects.toThrow('Invalid database name');
+      setupExecSuccess('t1');
+      await listTables(ctx, '2024-school');
+      expect((mockExecFn.mock.calls[0][3] as string[])).toContain('SHOW TABLES FROM `2024-school`');
+      await expect(listTables(ctx, '')).rejects.toThrow('Invalid database name');
+    });
+
+    it('reports a database that is gone as 404 DATABASE_NOT_FOUND', async () => {
+      setupExecFailure("ERROR 1049 (42000): Unknown database 'gone'");
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(listTables(ctx, 'gone')).rejects.toMatchObject({
+        code: 'DATABASE_NOT_FOUND', status: 404,
+        details: { operatorError: expect.objectContaining({ title: 'Database not found' }) },
+      });
+    });
+
+    it('reads table sizes through DATABASE(), with no schema-name literal', async () => {
+      setupExecSuccess('t1\t16384\t3');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await listTablesWithSize(ctx, "it's");
+      const sql = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('information_schema'));
+      expect(sql).toContain("USE `it's`; SELECT TABLE_NAME");
+      expect(sql).toContain('WHERE TABLE_SCHEMA = DATABASE()');
+    });
+
+    it('passes a postgresql database name as a quoted connection string', async () => {
+      setupExecSuccess('tablename\nt1');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+
+      await listTables(ctx, 'host=elsewhere');
+      const args = (mockExecFn.mock.calls[0][3] as string[]);
+      expect(args[args.indexOf('-d') + 1]).toBe("dbname='host=elsewhere'");
     });
   });
 
@@ -1040,7 +1093,9 @@ describe('db-manager', () => {
       expect(mockExecFn).not.toHaveBeenCalled();
     });
 
-    it('surfaces the engine error as DB_EXEC_ERROR', async () => {
+    // A table renamed or dropped since the list loaded is the caller asking for
+    // something absent: 404 with a code the panel names, not a 500 "platform fault".
+    it('reports a missing table as 404 TABLE_NOT_FOUND with the engine message', async () => {
       setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'mydb.gone' doesn't exist");
       const ctx = {
         kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
@@ -1048,7 +1103,21 @@ describe('db-manager', () => {
       };
 
       await expect(describeTable(ctx, 'mydb', 'gone')).rejects.toMatchObject({
-        code: 'DB_EXEC_ERROR', message: expect.stringContaining("doesn't exist"),
+        code: 'TABLE_NOT_FOUND', status: 404, message: expect.stringContaining("doesn't exist"),
+        details: { operatorError: expect.objectContaining({ code: 'TABLE_NOT_FOUND', title: 'Table not found' }) },
+      });
+    });
+
+    it('keeps any other engine failure a 500 DB_EXEC_ERROR with a titled envelope', async () => {
+      setupExecFailure('ERROR 1045 (28000): Access denied for user \'root\'@\'localhost\'');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(describeTable(ctx, 'mydb', 'users')).rejects.toMatchObject({
+        code: 'DB_EXEC_ERROR', status: 500,
+        details: { operatorError: expect.objectContaining({ title: 'The database returned an error' }) },
       });
     });
   });
@@ -1147,7 +1216,7 @@ describe('db-manager', () => {
 
     // The query tab renders engine errors inline; browsing has no such surface,
     // so an inline error used to arrive as HTTP 200 and render as an empty table.
-    it('turns an engine failure into a DB_EXEC_ERROR instead of an empty 200 result', async () => {
+    it('turns an engine failure into an error response instead of an empty 200 result', async () => {
       setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'school.old_courses' doesn't exist");
       const ctx = {
         kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
@@ -1155,8 +1224,36 @@ describe('db-manager', () => {
       };
 
       await expect(browseTable(ctx, 'school', 'old_courses')).rejects.toMatchObject({
-        code: 'DB_EXEC_ERROR', status: 500, message: expect.stringContaining("doesn't exist"),
+        code: 'TABLE_NOT_FOUND', status: 404, message: expect.stringContaining("doesn't exist"),
       });
+    });
+
+    it('reports sorting by a column that is gone as 404 COLUMN_NOT_FOUND', async () => {
+      setupExecFailure("ERROR 1054 (42S22) at line 1: Unknown column 'gone' in 'ORDER BY'");
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(browseTable(ctx, 'school', 'CityTb', { orderBy: 'gone' })).rejects.toMatchObject({
+        code: 'COLUMN_NOT_FOUND', status: 404,
+      });
+    });
+
+    // --batch escapes data cells; the grid (and a row edit built from it) must
+    // see the stored value, and a row whose only cell is '' is still a row.
+    it('returns cell values as stored, keeping empty single-cell rows', async () => {
+      setupExecSuccess('path\nC:\\\\new\\tdir\n\nline\\nbreak\n');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      const result = await browseTable(ctx, 'school', 'paths');
+
+      expect(result.columns).toEqual(['path']);
+      expect(result.rows).toEqual([['C:\\new\tdir'], [''], ['line\nbreak']]);
+      expect(result.rowCount).toBe(3);
     });
 
     it('rejects a sort column no engine can hold', async () => {
@@ -1232,14 +1329,24 @@ describe('db-manager', () => {
       expect(mockExecFn.mock.calls[0][3]).toContain('SELECT COUNT(*) FROM `school`.`1-StudentsTb`');
     });
 
-    it('surfaces the engine error as DB_EXEC_ERROR', async () => {
+    it('reports a missing table as 404 TABLE_NOT_FOUND', async () => {
       setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'mydb.gone' doesn't exist");
       const ctx = {
         kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
         engine: 'mariadb' as const, rootPassword: 'pw',
       };
 
-      await expect(countRows(ctx, 'mydb', 'gone')).rejects.toMatchObject({ code: 'DB_EXEC_ERROR' });
+      await expect(countRows(ctx, 'mydb', 'gone')).rejects.toMatchObject({ code: 'TABLE_NOT_FOUND', status: 404 });
+    });
+
+    it('reports a missing postgresql relation as 404 TABLE_NOT_FOUND', async () => {
+      setupExecFailure('ERROR:  relation "gone" does not exist\nLINE 1: SELECT COUNT(*) FROM "gone"');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+
+      await expect(countRows(ctx, 'mydb', 'gone')).rejects.toMatchObject({ code: 'TABLE_NOT_FOUND', status: 404 });
     });
 
     it('rejects an empty table name', async () => {
@@ -1300,11 +1407,101 @@ describe('db-manager', () => {
         rootPassword: 'pw',
       };
 
-      await expect(exportDatabase(ctx, '../etc')).rejects.toThrow('Invalid database name');
+      // `--` ends the options, so a database named `-x` cannot read as one.
+      setupExecSuccess('-- dump');
+      await exportDatabase(ctx, '-weird');
+      expect((mockExecFn.mock.calls[0][3] as string[]).slice(-2)).toEqual(['--', '-weird']);
+      await expect(exportDatabase(ctx, '')).rejects.toThrow('Invalid database name');
+    });
+
+    it('exports a postgresql database through a quoted connection string', async () => {
+      setupExecSuccess('-- dump');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+
+      await exportDatabase(ctx, "it's");
+      expect((mockExecFn.mock.calls[0][3] as string[])).toContain("--dbname=dbname='it\\'s'");
     });
   });
 
   // ─── Import SQL Tests ──────────────────────────────────────────────────
+
+  // ─── Database names the engine holds (`2024-school`, `-weird`, `x=y`) ────
+
+  describe('odd database names on command lines', () => {
+    const shCommand = (call: number): string => (mockExecFn.mock.calls[call][3] as string[])[2];
+
+    // The backup predump writes through this path: a name that failed the old
+    // regex left that database with no logical dump at all.
+    it('dumps a MariaDB database whose name starts with a digit or a hyphen', async () => {
+      setupExecSuccess('123');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw', rootUsername: 'root',
+      };
+
+      await exportDatabaseToPvc(ctx, '-2024-school', 'predump-x.sql', 'databases/m', { moveToExports: false });
+
+      expect(shCommand(0)).toContain("--triggers -- '-2024-school' > '/var/lib/mysql/predump-x.sql'");
+    });
+
+    it('dumps a PostgreSQL database through a quoted connection string', async () => {
+      setupExecSuccess('123');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '', rootUsername: 'postgres',
+      };
+
+      await exportDatabaseToPvc(ctx, 'host=elsewhere', 'predump-x.sql', 'databases/p', { moveToExports: false });
+
+      expect(shCommand(0)).toContain(`pg_dump -U postgres '--dbname=dbname='\\''host=elsewhere'\\'''`);
+    });
+
+    it('dumps a MongoDB database with --db=, so a leading hyphen is not an option', async () => {
+      setupExecSuccess('123');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mongodb',
+        engine: 'mongodb' as const, rootPassword: 'pw', rootUsername: 'root',
+      };
+
+      await exportDatabaseToPvc(ctx, '-weird', 'predump-x.archive.gz', 'databases/g', { moveToExports: false });
+
+      expect(shCommand(0)).toContain("mongodump '--db=-weird'");
+    });
+
+    it('drops an existing database whatever its name, quoted per engine', async () => {
+      setupExecSuccess('');
+      const maria = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+      await dropDatabase(maria, '2024-we`ird');
+      expect(mockExecFn.mock.calls[0][3]).toContain('DROP DATABASE IF EXISTS `2024-we``ird`');
+
+      const pg = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+      await dropDatabase(pg, '2024-"x"');
+      expect(mockExecFn.mock.calls[1][3]).toContain('DROP DATABASE IF EXISTS "2024-""x"""');
+    });
+
+    // A newline in a name used to end the mongosh string literal.
+    it('embeds a MongoDB database name as a valid JS string, control characters included', async () => {
+      setupExecSuccess('t1');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mongodb',
+        engine: 'mongodb' as const, rootPassword: 'pw', rootUsername: 'root',
+      };
+
+      await listTables(ctx, 'line\nbreak"q');
+
+      const script = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('getSiblingDB'));
+      expect(script).toContain('getSiblingDB("line\\nbreak\\"q")');
+    });
+  });
 
   describe('importSql', () => {
     it('should import sql into a mysql database', async () => {
@@ -1382,7 +1579,10 @@ describe('db-manager', () => {
         rootPassword: 'pw',
       };
 
-      await expect(importSql(ctx, '../etc', 'SELECT 1')).rejects.toThrow('Invalid database name');
+      setupExecSuccess('');
+      await importSql(ctx, '-weird', 'SELECT 1');
+      expect((mockExecFn.mock.calls[0][3] as string[])).toContain('--database=-weird');
+      await expect(importSql(ctx, '', 'SELECT 1')).rejects.toThrow('Invalid database name');
     });
   });
 });

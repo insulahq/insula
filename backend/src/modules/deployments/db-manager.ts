@@ -17,8 +17,10 @@ import {
   findSystemStatement, GREP_FAILED, grepScanCommand, parseGrepHit, systemImportPattern, systemImportRefusal,
 } from './import-system-guard.js';
 import {
-  quoteAnsiIdentifier, quoteMysqlIdentifier, quotePgStringLiteral, unescapeMysqlBatchField, validateExistingName,
+  pgConnInfoDbName, quoteAnsiIdentifier, quoteMysqlIdentifier, quotePgStringLiteral, unescapeMysqlBatchField,
+  validateExistingName,
 } from '../../shared/sql-identifiers.js';
+import { dbEngineApiError } from './db-errors.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -61,9 +63,14 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** Escape a string for safe interpolation inside double-quoted JavaScript/mongosh strings. */
+/**
+ * Escape a string for safe interpolation inside double-quoted JavaScript/mongosh
+ * strings. JSON's escaping is a valid JS string body for every character —
+ * quotes, backslashes AND control characters (a newline in a name or password
+ * used to end the string literal).
+ */
 function mongoEscapeString(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return JSON.stringify(s).slice(1, -1);
 }
 
 // ─── K8s Pod Exec ─────────────────────────────────────────────────────────────
@@ -107,7 +114,7 @@ function execFailure(status: Record<string, unknown>, stderr: string): DbExecErr
 }
 
 function asDbApiError(err: unknown): unknown {
-  return err instanceof DbExecError ? new ApiError('DB_EXEC_ERROR', err.message, 500) : err;
+  return err instanceof DbExecError ? dbEngineApiError(err.message) : err;
 }
 
 async function execInPod(
@@ -402,7 +409,7 @@ async function mysqlExec(
   }
   const { stdout, stderr } = result;
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
+    throw dbEngineApiError(redactDbSecrets(stderr));
   }
   return stdout;
 }
@@ -412,8 +419,10 @@ async function mysqlListDatabases(
 ): Promise<readonly DbDatabase[]> {
   const systemDbs = new Set(['information_schema', 'performance_schema', 'mysql', 'sys', '']);
   const out = await mysqlExec(kp, ns, pod, cn, pw, 'SHOW DATABASES');
+  // Names are --batch data cells: unescape so `a\b` is not listed as `a\\b`.
   return out
     .split('\n')
+    .map(unescapeMysqlBatchField)
     .filter((name) => !systemDbs.has(name))
     .map((name) => ({ name }));
 }
@@ -450,7 +459,7 @@ async function mysqlCreateDatabase(
 async function mysqlDropDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
 ): Promise<void> {
-  await mysqlExec(kp, ns, pod, cn, pw, `DROP DATABASE IF EXISTS \`${dbName}\``);
+  await mysqlExec(kp, ns, pod, cn, pw, `DROP DATABASE IF EXISTS ${quoteMysqlIdentifier(dbName)}`);
 }
 
 async function mysqlListUsers(
@@ -479,8 +488,9 @@ async function mysqlListUsers(
   );
   const grantsByUser = new Map<string, string[]>();
   for (const line of dbGrantsOut.split('\n').filter(Boolean)) {
-    const [user, db] = line.split('\t');
-    if (!user || !db) continue;
+    const [user, rawDb] = line.split('\t');
+    if (!user || !rawDb) continue;
+    const db = unescapeMysqlBatchField(rawDb);
     const existing = grantsByUser.get(user) ?? [];
     if (!existing.includes(db)) existing.push(db);
     grantsByUser.set(user, existing);
@@ -526,7 +536,7 @@ async function mysqlCreateUser(
   if (dbName) {
     await mysqlExec(
       kp, ns, pod, cn, pw,
-      `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${username}'@'%'`,
+      `GRANT ALL PRIVILEGES ON ${quoteMysqlIdentifier(dbName)}.* TO '${username}'@'%'`,
     );
   } else {
     // No database chosen = the panel's "All databases" option. It used to fall
@@ -614,20 +624,27 @@ async function mysqlExecWithHeaders(
   }
   const { stdout, stderr } = result;
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
+    throw dbEngineApiError(redactDbSecrets(stderr));
   }
   return stdout;
 }
 
 /**
  * Parse MySQL --batch output (tab-separated with header row) into columns and rows.
+ *
+ * --batch escapes DATA cells (`\\`, `\t`, `\n`, `\0`) so tabs and newlines
+ * inside a value cannot break the grid; they are unescaped here, so the panel
+ * shows — and a row edit writes back — the value the database holds, not
+ * `C:\\path`. The header row is printed raw. Only the trailing newline is
+ * dropped: an empty line is a real row whose only cell is ''.
  */
 function parseMysqlBatchOutput(output: string): { columns: string[]; rows: string[][] } {
-  const lines = output.split('\n').filter(Boolean);
+  const lines = output.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
   if (lines.length === 0) return { columns: [], rows: [] };
 
   const columns = lines[0].split('\t');
-  const rows = lines.slice(1).map((line) => line.split('\t'));
+  const rows = lines.slice(1).map((line) => line.split('\t').map(unescapeMysqlBatchField));
   return { columns, rows };
 }
 
@@ -649,7 +666,7 @@ async function pgExec(
     ['psql', '-U', 'postgres', '-t', '-A', '-c', sql],
   );
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
+    throw dbEngineApiError(redactDbSecrets(stderr));
   }
   return stdout;
 }
@@ -679,7 +696,7 @@ async function pgCreateDatabase(
 async function pgDropDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, dbName: string,
 ): Promise<void> {
-  await pgExec(kp, ns, pod, cn, `DROP DATABASE IF EXISTS "${dbName}"`);
+  await pgExec(kp, ns, pod, cn, `DROP DATABASE IF EXISTS ${quoteAnsiIdentifier(dbName)}`);
 }
 
 async function pgListUsers(
@@ -710,7 +727,7 @@ async function pgListUsers(
     for (const db of allDbs) {
       const hasAccess = await pgExec(
         kp, ns, pod, cn,
-        `SELECT has_database_privilege('${user.username}', '${db}', 'CONNECT')`,
+        `SELECT has_database_privilege('${user.username}', ${quotePgStringLiteral(db)}, 'CONNECT')`,
       );
       if (hasAccess.trim() === 't') {
         userDbs.push(db);
@@ -751,7 +768,7 @@ async function pgCreateUser(
   if (dbName) {
     await pgExec(
       kp, ns, pod, cn,
-      `GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${username}"`,
+      `GRANT ALL PRIVILEGES ON DATABASE ${quoteAnsiIdentifier(dbName)} TO "${username}"`,
     );
   } else {
     // "All databases". PostgreSQL has no `*.*`, so grant on each non-template
@@ -808,10 +825,11 @@ async function pgExecCsv(
     namespace,
     podName,
     containerName,
-    ['psql', '-U', 'postgres', '-d', database, '-c', sql, '--csv'],
+    // A bare `-d x=y` is read as a connection string; see pgConnInfoDbName.
+    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database), '-c', sql, '--csv'],
   );
   if (stderr && stderr.includes('ERROR')) {
-    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
+    throw dbEngineApiError(redactDbSecrets(stderr));
   }
   return stdout;
 }
@@ -899,7 +917,7 @@ async function mongoExec(
     ['mongosh', '--quiet', ...authArgs, '--eval', command],
   );
   if (stderr && stderr.includes('MongoServerError')) {
-    throw new ApiError('DB_EXEC_ERROR', redactDbSecrets(stderr), 500);
+    throw dbEngineApiError(redactDbSecrets(stderr));
   }
   return stdout;
 }
@@ -1130,7 +1148,8 @@ async function mongoExportDatabase(ctx: DbManagerContext, database: string): Pro
   try {
     const { stdout, stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mongodump', '--db', database, ...authArgs, '--archive=/dev/stdout', '--gzip'],
+      // `--db=<name>`: as a separate argument a name starting with `-` reads as an option.
+      ['mongodump', `--db=${database}`, ...authArgs, '--archive=/dev/stdout', '--gzip'],
     );
     if (stderr && stderr.includes('error')) {
       throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
@@ -1162,7 +1181,7 @@ async function mongoImportDatabase(
   try {
     const { stderr } = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mongorestore', '--db', database, ...authArgs, '--archive=/dev/stdin', '--gzip'],
+      ['mongorestore', `--db=${database}`, ...authArgs, '--archive=/dev/stdin', '--gzip'],
       data,
     );
     if (stderr && stderr.includes('error')) {
@@ -1254,7 +1273,8 @@ export async function createDatabase(ctx: DbManagerContext, name: string): Promi
 }
 
 export async function dropDatabase(ctx: DbManagerContext, name: string): Promise<void> {
-  validateIdentifier(name, 'database name');
+  // Dropping names an EXISTING database (`2024-old` included); creating stays strict.
+  validateDatabaseName(name);
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     return mysqlDropDatabase(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
@@ -1296,7 +1316,8 @@ export async function createUser(
 ): Promise<void> {
   try {
     validateIdentifier(username, 'username');
-    if (database) validateIdentifier(database, 'database name');
+    // The grant targets an EXISTING database; only the username is created here.
+    if (database) validateDatabaseName(database);
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       return await mysqlCreateUser(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
@@ -1386,17 +1407,14 @@ function validateQueryLength(query: string): void {
   }
 }
 
+/**
+ * A database the engine already holds (`2024-school`, `it's`): judged like any
+ * existing name, not by the CREATE charset (validateIdentifier, which still
+ * guards names the platform creates). Every command line that takes it passes
+ * it so it cannot read as an option or a connection string.
+ */
 function validateDatabaseName(database: string): void {
-  // Relaxed validation: allow hyphens in database names since some tools create them.
-  // This is less strict than validateIdentifier which is for CREATE operations.
-  if (!/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/.test(database)) {
-    throw new ApiError(
-      'INVALID_DATABASE_NAME',
-      'Invalid database name',
-      400,
-      { database },
-    );
-  }
+  validateExistingName(database, 'database');
 }
 
 /**
@@ -1443,7 +1461,7 @@ async function mysqlExecuteQuery(
   query: string,
   startTime: number,
 ): Promise<QueryResult> {
-  const sql = `USE \`${database}\`; ${query}`;
+  const sql = `USE ${quoteMysqlIdentifier(database)}; ${query}`;
   const output = await mysqlExecWithHeaders(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword, sql,
@@ -1483,18 +1501,26 @@ async function pgExecuteQuery(
 // ─── Table Listing ──────────────────────────────────────────────────────────
 
 /**
- * List all tables (or collections) in a given database.
+ * List all tables (or collections) in a given database. A database that is
+ * gone answers 404 DATABASE_NOT_FOUND (asDbApiError), not a generic 500.
  */
 export async function listTables(
   ctx: DbManagerContext,
   database: string,
 ): Promise<readonly string[]> {
   validateDatabaseName(database);
+  try {
+    return await listTablesOf(ctx, database);
+  } catch (err) {
+    throw asDbApiError(err);
+  }
+}
 
+async function listTablesOf(ctx: DbManagerContext, database: string): Promise<readonly string[]> {
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     const out = await mysqlExec(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, `SHOW TABLES FROM \`${database}\``,
+      ctx.rootPassword, `SHOW TABLES FROM ${quoteMysqlIdentifier(database)}`,
     );
     return out.split('\n').filter(Boolean).map(unescapeMysqlBatchField);
   }
@@ -1536,12 +1562,20 @@ export async function listTablesWithSize(
   database: string,
 ): Promise<readonly TableWithSize[]> {
   validateDatabaseName(database);
+  try {
+    return await listTablesWithSizeOf(ctx, database);
+  } catch (err) {
+    throw asDbApiError(err);
+  }
+}
 
+async function listTablesWithSizeOf(ctx: DbManagerContext, database: string): Promise<readonly TableWithSize[]> {
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     const out = await mysqlExec(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       ctx.rootPassword,
-      `SELECT TABLE_NAME, COALESCE(DATA_LENGTH + INDEX_LENGTH, 0), TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${database}' ORDER BY TABLE_NAME`,
+      // DATABASE() after USE: no string literal to escape for the schema name.
+      `USE ${quoteMysqlIdentifier(database)}; SELECT TABLE_NAME, COALESCE(DATA_LENGTH + INDEX_LENGTH, 0), TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME`,
     );
     return out.split('\n').filter(Boolean).map((line) => {
       const [name, size, rows] = line.split('\t');
@@ -1553,7 +1587,11 @@ export async function listTablesWithSize(
     const csvOut = await pgExecCsv(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       database,
-      "SELECT tablename, pg_total_relation_size(schemaname || '.' || tablename), COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = tablename), 0) FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+      // format('%I.%I') quotes the name. The bare `schemaname || '.' || tablename`
+      // folded `CityTb` to citytb and choked on `1-StudentsTb`, failing the whole list.
+      "SELECT t.tablename, pg_total_relation_size(format('%I.%I', t.schemaname, t.tablename)::regclass), COALESCE(s.n_live_tup, 0) "
+        + "FROM pg_tables t LEFT JOIN pg_stat_user_tables s ON s.schemaname = t.schemaname AND s.relname = t.tablename "
+        + "WHERE t.schemaname = 'public' ORDER BY t.tablename",
     );
     const { rows } = parsePgCsvOutput(csvOut);
     return rows.filter((r) => r[0]).map((r) => ({
@@ -1589,7 +1627,7 @@ export async function listDatabasesWithSize(
       ctx.rootPassword,
       'SHOW DATABASES',
     );
-    return out.split('\n').filter(Boolean)
+    return out.split('\n').filter(Boolean).map(unescapeMysqlBatchField)
       .filter((name) => !systemDbs.has(name))
       .map((name) => ({ name, sizeBytes: 0 }));
   }
@@ -1656,9 +1694,9 @@ async function mysqlDescribeTable(
   const { rows } = parseMysqlBatchOutput(output);
 
   // DESCRIBE output columns: Field, Type, Null, Key, Default, Extra.
-  // Field is a data cell, so --batch escaped it; the panel quotes it back.
+  // parseMysqlBatchOutput already unescaped the cells — do not unescape twice.
   return rows.map((row) => ({
-    name: unescapeMysqlBatchField(row[0] ?? ''),
+    name: row[0] ?? '',
     type: row[1] ?? '',
     nullable: (row[2] ?? 'NO') === 'YES',
     defaultValue: row[4] === 'NULL' || row[4] === undefined ? null : row[4],
@@ -1750,7 +1788,7 @@ export async function browseTable(
   // renders them as the result. Browsing has no such surface: an inline error
   // looked like an empty table, so it becomes an error response here.
   if (result.error) {
-    throw new ApiError('DB_EXEC_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error);
   }
   return result;
 }
@@ -1828,13 +1866,14 @@ async function mysqlExportDatabase(ctx: DbManagerContext, database: string): Pro
   try {
     result = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mariadb-dump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', database],
+      // `--` ends the options: a database named `-x` must not read as one.
+      ['mariadb-dump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', '--', database],
     );
   } catch (err) {
     if (!isBinaryNotFoundError(err)) throw err;
     result = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mysqldump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', database],
+      ['mysqldump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', '--', database],
     );
   }
   if (result.stderr && result.stderr.includes('ERROR')) {
@@ -1846,7 +1885,7 @@ async function mysqlExportDatabase(ctx: DbManagerContext, database: string): Pro
 async function pgExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
   const { stdout, stderr } = await execInPod(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ['pg_dump', '-U', 'postgres', database],
+    ['pg_dump', '-U', 'postgres', `--dbname=${pgConnInfoDbName(database)}`],
   );
   if (stderr && stderr.includes('ERROR')) {
     throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
@@ -1905,7 +1944,7 @@ async function mysqlImportSql(
   try {
     result = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mariadb', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      ['mariadb', '-u', 'root', `-p${ctx.rootPassword}`, `--database=${database}`],
       sql,
     );
   } catch (err) {
@@ -1915,7 +1954,7 @@ async function mysqlImportSql(
     }
     result = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mysql', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      ['mysql', '-u', 'root', `-p${ctx.rootPassword}`, `--database=${database}`],
       sql,
     );
   }
@@ -1932,7 +1971,7 @@ async function pgImportSql(
 ): Promise<ImportResult> {
   const { stderr } = await execInPodWithStdin(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ['psql', '-U', 'postgres', '-d', database],
+    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database)],
     sql,
   );
   if (stderr && stderr.includes('ERROR')) {
@@ -2158,7 +2197,7 @@ export async function importSqlFromPvcFile(
       // fails because sh itself succeeds even when the inner command is not found.
       const dbCli = ctx.engine === 'mysql' ? 'mysql' : 'mariadb';
       result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `cat ${shellEscape(importPath)} | ${dbCli} -u root -p${shellEscape(ctx.rootPassword)} ${shellEscape(database)}`]);
+        ['sh', '-c', `cat ${shellEscape(importPath)} | ${dbCli} -u root -p${shellEscape(ctx.rootPassword)} ${shellEscape(`--database=${database}`)}`]);
       // Clean up import file after import (best-effort)
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -2168,10 +2207,10 @@ export async function importSqlFromPvcFile(
         // in containerized environments. Only exit 2+ indicates fatal errors.
         // --no-owner --no-privileges avoids most warnings from dumps made on different servers.
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges -d ${shellEscape(database)} ${shellEscape(importPath)} 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
+          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} ${shellEscape(importPath)} 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
       } else {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat ${shellEscape(importPath)} | psql -U postgres ${shellEscape(database)}`]);
+          ['sh', '-c', `cat ${shellEscape(importPath)} | psql -U postgres -d ${shellEscape(pgConnInfoDbName(database))}`]);
       }
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -2376,7 +2415,7 @@ export async function exportDatabaseToPvc(
     // consistent-hot-backup flags; the pre-existing flags stay.
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `${dumpCli} -u root -p${shellEscape(ctx.rootPassword)} --single-transaction --quick --routines --triggers ${shellEscape(database)} > ${shellEscape(exportPath)}`],
+      ['sh', '-c', `${dumpCli} -u root -p${shellEscape(ctx.rootPassword)} --single-transaction --quick --routines --triggers -- ${shellEscape(database)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'postgresql') {
@@ -2384,7 +2423,7 @@ export async function exportDatabaseToPvc(
     // hot snapshot, no lock. No extra flag needed for consistency.
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `pg_dump -U postgres ${shellEscape(database)} > ${shellEscape(exportPath)}`],
+      ['sh', '-c', `pg_dump -U postgres ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'mongodb') {
@@ -2401,7 +2440,7 @@ export async function exportDatabaseToPvc(
     try {
       const { stderr } = await execInPod(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `mongodump --db ${shellEscape(database)} ${authArgs} --archive=${shellEscape(exportPath)} --gzip`],
+        ['sh', '-c', `mongodump ${shellEscape(`--db=${database}`)} ${authArgs} --archive=${shellEscape(exportPath)} --gzip`],
       );
       // mongodump writes progress to stderr; only a line containing "error"
       // (case-insensitive, mongodump's own convention) is a real failure.

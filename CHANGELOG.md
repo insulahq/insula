@@ -66,6 +66,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   MongoDB). Failed reads now show the database's own error instead of "No data" or "No columns".
   Creating, picking or deleting a database now clears the selected table, so the panel no longer asks
   the new database for a table that only existed in the previous one.
+- **SQL Manager row edits keep backslashes, and failed edits say so.** On MariaDB/MySQL a value like
+  `C:\new` was saved as `C:`, a line break and `ew`, and values containing a backslash, tab or line
+  break were shown escaped. Values now display and save exactly as stored. A row edit, insert or
+  delete the database refuses now shows the database's message and keeps the form open, instead of
+  closing as if it had worked. A single-column row holding an empty string no longer disappears.
+- **SQL Manager handles databases whose names start with a digit or contain other characters.**
+  `2024-school`, `it's db` and the like can now be browsed, queried, exported, imported, dropped and
+  granted to a user. The platform's backup logical dumps now cover them too; before, those
+  databases had only the raw-files snapshot. On PostgreSQL, the table list no longer fails when one
+  table name has an uppercase letter or a hyphen.
+- **A table, database or column that no longer exists is reported as "not found" (404).** It used to
+  be a 500 server error. The panel now titles the message and says to reload the list.
 - **Auto-heal no longer restarts a tenant over a quota that is simply full.** It treated every quota
   refusal as a pod still shutting down, scaled every workload to zero and back, and the newest pod won
   the room. On production that moved the outage from a new private worker onto the tenant's

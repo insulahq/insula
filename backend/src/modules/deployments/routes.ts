@@ -776,7 +776,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { deploymentSubPath, ...ctx } = await buildDbCtx(tenantId, id);
 
     // PVC-based export (recommended for large databases)
-    const fileName = `${database}-export-${Date.now()}.sql`;
+    // The database name is any name the engine holds (`it's/db` included), so
+    // it never reaches the PVC path raw — same charset as the backup predumps.
+    const fileName = `${database.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}-export-${Date.now()}.sql`;
     const result = await dbManager.exportDatabaseToPvc(ctx, database, fileName, deploymentSubPath);
 
     return success({

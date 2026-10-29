@@ -47,6 +47,7 @@ let tableDataQuery: MockQuery = idleQuery;
 let structureQuery: MockQuery = idleQuery;
 let rowCountQuery: MockQuery = idleQuery;
 let createDbMutation: Record<string, unknown> = { ...idleMutation };
+let executeQueryMutation: Record<string, unknown> = { ...idleMutation };
 // The (database, table) the page asked for on its most recent render.
 const tableDataArgs = vi.fn();
 
@@ -71,7 +72,7 @@ vi.mock('@/hooks/use-deployments', () => ({
 }));
 
 vi.mock('@/hooks/use-sql-manager', () => ({
-  useExecuteQuery: () => ({ ...idleMutation }),
+  useExecuteQuery: () => executeQueryMutation,
   useListTables: (_t: unknown, _d: unknown, database: string | undefined) => ({
     ...idleQuery,
     data: { data: database === 'school' ? ['1-StudentsTb', 'CityTb'] : ['legacy_records'] },
@@ -130,6 +131,7 @@ describe('SQL Manager table reads', () => {
     structureQuery = { ...idleQuery };
     rowCountQuery = { ...idleQuery };
     createDbMutation = { ...idleMutation };
+    executeQueryMutation = { ...idleMutation };
     tableDataArgs.mockClear();
   });
 
@@ -215,5 +217,65 @@ describe('SQL Manager table reads', () => {
 
     expect(lastTableDataArgs()).toEqual(['school', undefined]);
     expect(tableDataArgs.mock.calls).not.toContainEqual(['school', 'legacy_records']);
+  });
+});
+
+describe('SQL Manager row edits', () => {
+  const sent: string[] = [];
+  const browseRow = (path: string) => ({
+    ...idleQuery,
+    data: { data: { columns: ['id', 'path'], rows: [['1', path]], rowCount: 1, executionTimeMs: 1 } },
+  });
+  const pkStructure = {
+    ...idleQuery,
+    data: { data: [
+      { name: 'id', type: 'int(11)', nullable: false, defaultValue: null, key: 'PRI' },
+      { name: 'path', type: 'varchar(80)', nullable: true, defaultValue: null, key: '' },
+    ] },
+  };
+  // Answer every executed statement with the given inline result.
+  const answerWith = (result: Record<string, unknown>) => ({
+    ...idleMutation,
+    mutate: (vars: { query: string }, opts?: { onSuccess?: (res: unknown) => void }) => {
+      sent.push(vars.query);
+      opts?.onSuccess?.({ data: { columns: [], rows: [], rowCount: 1, executionTimeMs: 1, ...result } });
+    },
+  });
+
+  beforeEach(() => {
+    sent.length = 0;
+    rowCountQuery = { ...idleQuery, data: { data: { count: 1 } } };
+    structureQuery = pkStructure;
+    createDbMutation = { ...idleMutation };
+    tableDataArgs.mockClear();
+  });
+
+  async function editPath(to: string) {
+    await renderPage();
+    await openTable('legacy_records');
+    fireEvent.click(await screen.findByTestId('edit-row-0'));
+    fireEvent.change(screen.getByTestId('edit-field-path'), { target: { value: to } });
+    fireEvent.click(screen.getByTestId('save-edit-row'));
+  }
+
+  // MariaDB reads `\n` inside a literal as a newline: the value used to be
+  // stored as `C:`, a newline and `ew`.
+  it('writes a backslash in a MariaDB value as a backslash', async () => {
+    tableDataQuery = browseRow('old');
+    executeQueryMutation = answerWith({});
+
+    await editPath('C:\\new');
+
+    expect(sent).toEqual(["UPDATE `legacy_records` SET `path` = 'C:\\\\new' WHERE `id` = '1'"]);
+  });
+
+  it('keeps the edit open and shows why when the database refuses it', async () => {
+    tableDataQuery = browseRow('old');
+    executeQueryMutation = answerWith({ error: "ERROR 1406 (22001): Data too long for column 'path' at row 1" });
+
+    await editPath('x'.repeat(200));
+
+    expect(await screen.findByText(/Data too long for column 'path'/)).toBeTruthy();
+    expect(screen.getByTestId('edit-row-form')).toBeTruthy();
   });
 });
