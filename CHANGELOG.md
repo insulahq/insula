@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.22-rc.2] - 2026-10-29
+
 ### BREAKING
 
 - **Subscriptions now limit how many applications a tenant may have.** A new plan field, **Max
