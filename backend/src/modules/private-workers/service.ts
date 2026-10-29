@@ -12,7 +12,7 @@
  */
 
 import crypto from 'crypto';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 import {
   tenants,
   privateWorkerAudit,
@@ -23,6 +23,7 @@ import {
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
 import { isCustomContainersAllowedByPlan } from '../subscriptions/service.js';
+import { withApplicationSlot } from '../deployments/application-limit.js';
 import type { Database } from '../../db/index.js';
 import type {
   CreatePrivateWorkerInput,
@@ -467,46 +468,47 @@ export async function createPrivateWorker(
   // is a separate operator-runtime concern, declared via the
   // PRIVATE_WORKER_TARGET env var on the agent container.
   //
+  // A worker is an application on the subscription's limit, so the insert
+  // takes the tenant's application slot — the same lock a deploy takes, so
+  // a worker and a deploy cannot share the last slot either.
+  //
   // Race protection: the DB has a unique (tenant_id, exposed_port)
-  // index (migration 0089). On concurrent creates, both pick the same
-  // lowest-free candidate, the second INSERT fails 23505, we retry.
-  // The retry budget is small (port pool is huge vs realistic worker
-  // counts) — capped at 8 to avoid pathological loops.
+  // index (migration 0089). The slot lock now serialises this tenant's
+  // creates, so two of them no longer pick the same port; the retry stays
+  // as the backstop it was. Each attempt runs in its own savepoint —
+  // inside the slot's transaction a failed INSERT would otherwise abort
+  // every statement after it. The retry budget is small (port pool is huge
+  // vs realistic worker counts) — capped at 8 to avoid pathological loops.
   const MAX_PORT_RETRIES = 8;
-  let exposedPort = -1;
-  let inserted = false;
-  for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
-    exposedPort = await pickExposedPortCandidate(db, tenantId);
-    try {
-      await db.insert(privateWorkers).values({
-        id,
-        tenantId,
-        name: input.name,
-        slug,
-        workerTokenHash,
-        status: 'pending',
-        exposedPort,
-        description: input.description ?? null,
-        createdBy,
-      });
-      inserted = true;
-      break;
-    } catch (err) {
-      if (isUniqueViolation(err)) {
-        // Most likely the (tenant_id, exposed_port) index — racing create.
-        // Retry with a new candidate.
-        continue;
+  const exposedPort = await withApplicationSlot(db, tenantId, 'worker', async (tx) => {
+    for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
+      const candidate = await pickExposedPortCandidate(tx, tenantId);
+      try {
+        await tx.transaction(async (sp) => {
+          await sp.insert(privateWorkers).values({
+            id,
+            tenantId,
+            name: input.name,
+            slug,
+            workerTokenHash,
+            status: 'pending',
+            exposedPort: candidate,
+            description: input.description ?? null,
+            createdBy,
+          });
+        });
+        return candidate;
+      } catch (err) {
+        if (isUniqueViolation(err)) continue;
+        throw err;
       }
-      throw err;
     }
-  }
-  if (!inserted) {
     throw new ApiError(
       'PORT_ALLOCATION_RETRY_EXHAUSTED',
       `Could not allocate an unused port after ${MAX_PORT_RETRIES} attempts`,
       503,
     );
-  }
+  });
 
   await writeAudit(db, id, 'mint', requesterIp ?? null, {
     createdBy,
@@ -599,13 +601,12 @@ export async function rotatePrivateWorker(
   // workers under a tenant share the same secret. Rotating one worker
   // rotates the secret for every sibling worker. The UI warns about this.
   const newSharedSecret = generateSecret();
-  await db
-    .update(tenants)
-    .set({ privateWorkerSharedSecret: newSharedSecret })
-    .where(eq(tenants.id, tenantId));
-
   const workerTokenHash = hashSecret(newSharedSecret);
-  await db
+  // Never onto a row revoked since the read above (a concurrent revoke, the
+  // archive hook): that would bring a revoked worker back to active without
+  // the application slot a new worker needs. First, so a refused rotate has
+  // not yet changed the tenant's shared secret.
+  const rotated = await db
     .update(privateWorkers)
     .set({
       workerTokenHash,
@@ -613,7 +614,20 @@ export async function rotatePrivateWorker(
       revokedBy: null,
       status: existing.status === 'suspended' ? 'suspended' : 'active',
     })
-    .where(eq(privateWorkers.id, workerId));
+    .where(and(eq(privateWorkers.id, workerId), ne(privateWorkers.status, 'revoked')))
+    .returning({ id: privateWorkers.id });
+  if (rotated.length === 0) {
+    throw new ApiError(
+      'PRIVATE_WORKER_REVOKED',
+      'Cannot rotate token for a revoked private worker; create a new one',
+      400,
+    );
+  }
+
+  await db
+    .update(tenants)
+    .set({ privateWorkerSharedSecret: newSharedSecret })
+    .where(eq(tenants.id, tenantId));
 
   // Bump the workerTokenHash on every other active worker for this
   // tenant so the UI reflects the rotation.

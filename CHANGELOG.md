@@ -35,6 +35,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Private Workers moved onto the Applications page**, as the tab after Custom Containers. It is
   there while the subscription allows custom containers, or while the tenant still has workers to
   delete. Old links land on the tab.
+- **Private workers count as applications.** Each worker that is not revoked takes one of the
+  subscription's applications, like a custom container: at the limit the worker **Create** button is
+  disabled and the API refuses a new one with `APPLICATION_LIMIT_REACHED` (*Creating another private
+  worker would exceed…*). A worker and a deploy can no longer share the last slot. A revoked worker
+  frees its slot. The pill's tooltip, Settings and the usage endpoint (`privateWorkers`) show how much
+  of the count is workers. Existing workers keep running if this puts a tenant over its limit.
 - **A tenant's CPU request quota no longer refuses applications.** It was sized from what the tenant
   ran when it was last measured, plus one spare container, and only a catalog deploy ever raised it;
   a custom container or a private worker could be refused by a limit nobody had sold. On production an

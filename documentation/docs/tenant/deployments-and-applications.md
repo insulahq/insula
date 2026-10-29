@@ -25,13 +25,16 @@ Open **Applications** from the left menu. It has three tabs:
 
 Your subscription allows a number of applications. The pill beside the
 **Applications** title shows it — *3 / 5 applications deployed*. Catalog apps,
-custom containers and compose stacks all count, **stopped ones included**;
-deleted ones do not. The platform's own helpers (the file manager, a private
-worker's server) are not applications and never count.
+custom containers, compose stacks and private workers all count, **stopped ones
+included**; deleted applications and revoked workers do not. Hover the pill to
+see how many of the count are private workers. The platform's own helpers (the
+file manager, the server your private workers connect to) are not applications
+and never count.
 
 Once you are at the limit, **Deploy Application**, **New Container**, **New
-Stack** and **Restore** are disabled, and the page says so. Delete an
-application you no longer need (or ask for a bigger plan) to make room. If your
+Stack**, **Restore** and the Private Workers **Create** button are disabled,
+and the page says so. Delete an application or private worker you no longer
+need (or ask for a bigger plan) to make room. If your
 plan was lowered below what you already have, everything keeps running — you
 only cannot add another until you are back under the limit.
 

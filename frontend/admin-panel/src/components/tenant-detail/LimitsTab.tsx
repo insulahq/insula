@@ -89,7 +89,11 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
     usage.customContainers = { value: custom, text: `${custom} deployed` };
   }
   // What the application limit counts, from the server that enforces it.
-  if (appUsageRes?.data) usage.applications = { value: appUsageRes.data.current, text: `${appUsageRes.data.current} deployed` };
+  if (appUsageRes?.data) {
+    const { current, privateWorkers = 0 } = appUsageRes.data;
+    const workers = privateWorkers > 0 ? ` (${privateWorkers} of them private worker${privateWorkers === 1 ? '' : 's'})` : '';
+    usage.applications = { value: current, text: `${current} deployed${workers}` };
+  }
   const inUse = Object.fromEntries(Object.entries(usage).map(([k, v]) => [k, v!.value])) as Partial<Record<LimitId, number>>;
 
   const [editing, setEditing] = useState(false);

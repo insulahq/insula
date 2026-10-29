@@ -147,3 +147,24 @@ describe('Private Workers page — creating needs "Allow Custom Containers"', ()
     expect(screen.getByTestId('add-private-worker-button')).toBeInTheDocument();
   });
 });
+
+describe('Private Workers page — a worker counts as an application', () => {
+  it('★ at the application limit, both Create buttons are disabled and say why', () => {
+    wrap(<PrivateWorkers embedded atLimit />);
+    const empty = screen.getByTestId('add-private-worker-button-empty');
+    expect(empty).toBeDisabled();
+    expect(empty).toHaveAttribute('title', expect.stringContaining('a private worker counts as one'));
+
+    workerItems = [WORKER];
+    wrap(<PrivateWorkers embedded atLimit />);
+    expect(screen.getByTestId('add-private-worker-button')).toBeDisabled();
+    // Existing workers stay manageable.
+    expect(screen.getByTestId('pw-row-w1')).toBeInTheDocument();
+  });
+
+  it('with room, Create is enabled', () => {
+    workerItems = [WORKER];
+    wrap(<PrivateWorkers embedded atLimit={false} />);
+    expect(screen.getByTestId('add-private-worker-button')).toBeEnabled();
+  });
+});

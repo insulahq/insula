@@ -187,7 +187,7 @@ export default function Applications() {
       {activeTab === 'custom' && allowCustomContainers && tenantId && (
         <CustomContainersTab tenantId={tenantId} canManage={canManage} atLimit={atLimit} />
       )}
-      {activeTab === 'workers' && privateWorkers.listed && <PrivateWorkers embedded />}
+      {activeTab === 'workers' && privateWorkers.listed && <PrivateWorkers embedded atLimit={atLimit} />}
 
       <DeployWorkloadModal
         open={deployModalOpen}
