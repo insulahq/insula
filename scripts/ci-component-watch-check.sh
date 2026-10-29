@@ -8,9 +8,13 @@
 #                 enum values; every ledger `component` exists in the registry.
 #   2. DRIFT    — for every component with `pin_check: true`, the `pinned` literal
 #                 MUST appear in its `pin_source` file (registry == reality).
-#   3. COVERAGE — every distinct image:/imageName: under k8s/ AND every version pin
-#                 in scripts/bootstrap.sh maps to a registry component (nothing
-#                 ships untracked).
+#   3. COVERAGE — every distinct image:/imageName: under k8s/, every version pin
+#                 in scripts/bootstrap.sh, AND every upstream image platform-api
+#                 creates at runtime (scripts/lib/runtime-images.py) maps to a
+#                 registry component (nothing ships untracked); a runtime image's
+#                 tag must be the component's `pinned` (or listed in its
+#                 `also_pinned`, with `also_pinned_reason`) — a second copy at
+#                 another version is drift, not coverage.
 #   4. SLA      — every `open` ledger entry that is KEV or critical AND past its
 #                 tier SLA MUST carry a non-empty `mitigation`.
 #
@@ -96,6 +100,11 @@ for i, c in enumerate(components):
         err(f"{cid}: invalid scan '{c.get('scan')}'")
     if "pin_check" in c and not isinstance(c["pin_check"], bool):
         err(f"{cid}: pin_check must be true/false")
+    if c.get("also_pinned") is not None:
+        if not isinstance(c["also_pinned"], list) or not all(isinstance(x, str) for x in c["also_pinned"]):
+            err(f"{cid}: also_pinned must be a list of tags")
+        if not str(c.get("also_pinned_reason") or "").strip():
+            err(f"{cid}: also_pinned needs also_pinned_reason (why a second version ships, and how it goes away)")
 
 # ── 2. DRIFT: pinned literal present in pin_source ──────────────────────────────
 for c in components:
@@ -189,6 +198,40 @@ for var, val in sorted(boot_pins.items()):
         continue
     if val not in pinned_values:
         err(f"COVERAGE — bootstrap pin {var}=\"{val}\" maps to no registry component")
+
+# ── 3c. COVERAGE + DRIFT: images platform-api creates at runtime ────────────────
+# k8s/ and bootstrap.sh are not everything that runs: the backend writes images
+# into pods itself (the route sign-in's oauth2-proxy, helper Jobs, init
+# containers). The route sign-in ran oauth2-proxy v7.6.0 — published
+# authentication bypasses — while this registry said v7.15.5, because the
+# second copy lived in TypeScript where nothing looked.
+import subprocess
+rt = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "lib", "runtime-images.py"), REPO],
+                    capture_output=True, text=True)
+if rt.returncode != 0:
+    err(f"runtime-images.py failed: {rt.stderr.strip()[:300]}")
+by_repo = {}
+for c in components:
+    for r in (c.get("repos") or []):
+        by_repo.setdefault(norm_repo(str(r)), []).append(c)
+for line in rt.stdout.splitlines():
+    if "\t" not in line:
+        continue
+    src_file, ref = line.split("\t", 1)
+    repo = norm_repo(ref)
+    tag = ref.split("@", 1)[0].rsplit(":", 1)[1] if ":" in ref.split("@", 1)[0].split("/")[-1] else ""
+    owners = by_repo.get(repo, [])
+    if not owners:
+        err(f"COVERAGE — runtime image '{ref}' ({src_file}) maps to no registry component — add it to a component's repos")
+        continue
+    allowed = set()
+    for c in owners:
+        allowed.add(str(c.get("pinned", "")))
+        allowed.update(str(x) for x in (c.get("also_pinned") or []))
+    if tag not in allowed:
+        pins = ", ".join(f"{c['id']}={c.get('pinned')} ({c.get('pin_source')})" for c in owners)
+        err(f"DRIFT — runtime image '{ref}' ({src_file}) is not the registry's version [{pins}]: "
+            "bump it to the pinned version, or list the tag under also_pinned with a reason")
 
 # ── 1b. SCHEMA + 4. SLA: ledger ─────────────────────────────────────────────────
 SLA_DAYS = {  # critical/KEV remediation window per tier, in days ("next-release"/etc → no day-clock)

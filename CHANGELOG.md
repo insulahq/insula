@@ -41,6 +41,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   authentication-bypass advisories. It was pinned in TypeScript, where the image scan and the
   component registry (both read `k8s/base`) never saw it; it now uses the panels' gate's
   constant, which a test keeps equal to the manifest.
+- **The image scan and the component registry see the images platform-api creates at
+  runtime.** The weekly Trivy scan and `ci-component-watch-check.sh` covered only `k8s/` and
+  `bootstrap.sh`; images the backend writes into pods itself (helper Jobs, init containers,
+  proxies) were invisible to both. `scripts/lib/runtime-images.py` lists them, the scan includes
+  them, and the registry check now requires each to be registered at the registry's version
+  (a known second version is listed with its reason). Recorded so far: mail HAProxy on the 2.9
+  branch (end of life since 2025-03-21), busybox 1.36 in tenant workloads' init container,
+  rclone 1.74.1 in two helper Jobs, an nginx 1.27 fallback and an image-purge helper on k3s
+  v1.33 — each to be moved in a release of its own.
 
 ### Fixed
 

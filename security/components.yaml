@@ -64,6 +64,11 @@ components:
     pinned: "v1.36.5+k3s1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
+    repos: [rancher/k3s]
+    also_pinned: ["v1.33.10-k3s1"]
+    also_pinned_reason: >-
+      storage/service.ts's image-purge pod uses the rancher/k3s image only for crictl against the node's
+      containerd; it does not follow the cluster version. Pin it to the cluster's when touched.
     watch: { type: github_releases, repo: k3s-io/k3s, advisories: kubernetes/kubernetes }
     scan: manual
     owner: platform
@@ -436,6 +441,7 @@ components:
     pinned: "v0.71.1"
     pin_source: k8s/base/platform-config.yaml
     pin_check: true
+    repos: [fatedier/frps]
     watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
     scan: trivy
     owner: platform
@@ -461,6 +467,10 @@ components:
     pinned: "1.74.4"
     pin_source: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml
     pin_check: true
+    also_pinned: ["1.74.1"]
+    also_pinned_reason: >-
+      backup-config/speedtest.ts and storage-lifecycle/streaming-store.ts run one-off Jobs on 1.74.1;
+      bump them to the pinned patch release with the next backup change (read the 1.74.2–1.74.4 notes).
     repos: [rclone/rclone]
     watch: { type: github_releases, repo: rclone/rclone, advisories: rclone/rclone }
     scan: trivy
@@ -554,6 +564,7 @@ components:
     pinned: "2.319"
     pin_source: backend/src/modules/mail-imapsync/service.ts
     pin_check: true
+    repos: [gilleslamiral/imapsync]
     watch: { type: docker_hub, repo: gilleslamiral/imapsync }
     scan: trivy
     owner: platform
@@ -569,6 +580,7 @@ components:
     pinned: "1.18.3"
     pin_source: backend/src/modules/deployment-network-access/reconciler.ts
     pin_check: true
+    repos: [openziti/ziti-edge-tunnel]
     watch: { type: docker_hub, repo: openziti/ziti-edge-tunnel }
     scan: trivy
     owner: platform
@@ -580,6 +592,7 @@ components:
     pinned: "1.1.11"
     pin_source: backend/src/modules/deployment-network-access/reconciler.ts
     pin_check: true
+    repos: [openziti/zrok]
     watch: { type: docker_hub, repo: openziti/zrok }
     scan: trivy
     owner: platform
@@ -701,6 +714,21 @@ components:
     owner: platform
     notes: Watches ConfigMaps/Secrets and triggers rolling restarts.
 
+  - id: haproxy-mail
+    name: HAProxy (mail port front, DaemonSet built by platform-api)
+    tier: "1"
+    kind: image
+    pinned: "2.9-alpine"
+    pin_source: backend/src/modules/mail-admin/haproxy-builder.ts
+    pin_check: true
+    repos: [haproxy]
+    watch: { type: dockerhub, repo: haproxy, advisories: haproxy/haproxy }
+    scan: trivy
+    owner: platform
+    notes: >-
+      Runtime image, not in k8s/. The 2.9 branch reached end of life on 2025-03-21: move to a supported
+      LTS branch (3.0/3.2) — the mail path, so with the operator's OK and a mail E2E.
+
   - id: nginx-standalone
     name: nginx (suspended-tenant + error pages)
     tier: "2"
@@ -708,6 +736,11 @@ components:
     pinned: "1.31-alpine"
     pin_source: k8s/base/platform-suspended.yaml
     pin_check: true
+    repos: [nginx]
+    also_pinned: ["1.27-alpine"]
+    also_pinned_reason: >-
+      k8s-manifests/generator.ts falls back to nginx:1.27-alpine for a catalog entry that names no
+      image. Move the fallback to this pin when that path is next changed.
     watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
     scan: trivy
     owner: platform
@@ -739,6 +772,12 @@ components:
     pinned: "1.37"
     pin_source: k8s/base/valkey/statefulset.yaml
     pin_check: true
+    also_pinned: ["1.36", "1.37-musl"]
+    also_pinned_reason: >-
+      1.36 is the init-dirs init container of every catalog workload (deployments/k8s-deployer.ts) and the
+      mail cleanup pods; 1.37-musl the custom containers' init container. Changing the init container's tag
+      changes every tenant workload's pod template, i.e. restarts every tenant app: align them in a
+      release that says so.
     repos: [busybox]
     watch: { type: dockerhub, repo: busybox, advisories: mirror/busybox }
     scan: trivy
@@ -765,6 +804,7 @@ components:
     pinned: "3.20"
     pin_source: k8s/base
     pin_check: false
+    repos: [alpine]
     watch: { type: alpine_secdb, repo: alpinelinux/alpine, advisories: alpinelinux/alpine }
     scan: trivy
     owner: platform
