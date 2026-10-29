@@ -74,7 +74,7 @@ describe('replaceComposeDeploymentWith', () => {
     expect(Object.keys(written.customSpec.services as object)).toEqual(['web']);
     expect(written.customSpec).toMatchObject({ allowRoot: true, autoUpdate: true, pullCredentialId: '11111111-1111-4111-8111-111111111111' });
     expect(h.deployed).toHaveLength(1);
-    expect(pruneMock).toHaveBeenCalledWith({}, 'tenant-ns', 'd1', expect.objectContaining({ services: expect.objectContaining({ web: expect.anything() }) }));
+    expect(pruneMock).toHaveBeenCalledWith({}, 'tenant-ns', 'd1', 'stack', expect.objectContaining({ services: expect.objectContaining({ web: expect.anything() }) }));
   });
 
   it('refuses an edit that leaves a route with no port — before writing', async () => {

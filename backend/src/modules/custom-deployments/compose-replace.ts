@@ -136,7 +136,7 @@ export async function replaceComposeDeploymentWith(
 
   const ctx = await deps.loadTenantContext(db, tenantId);
   await deps.deployToCluster(nextSpec, ctx);
-  await pruneRemovedStackObjects(k8s, ctx.namespace, id, nextSpec);
+  await pruneRemovedStackObjects(k8s, ctx.namespace, id, current.name, nextSpec);
 
   if (boundRoutes.length > 0) {
     try {

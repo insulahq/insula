@@ -998,36 +998,54 @@ export async function deleteCustomDeployment(
 }
 
 /**
- * After an in-place edit (compose-replace.ts): remove what the new spec no
- * longer has. Deployments and Services of a dropped service (selected by the
- * stack-service label), and the stack's ConfigMaps / Secrets whose rendered
- * name the new spec does not produce. The image-pull Secret
- * (`image-pull-<id>`) carries neither the stack-service label nor the
- * `cd-<id>-cfg-` / `cd-<id>-sec-` prefix, so it is never touched.
+ * After an in-place edit (compose-replace.ts): remove every stack object the
+ * new spec does not render. Compared BY NAME, not by service label: object
+ * names depend on how many services the stack has (`<stack>` for one,
+ * `<stack>-<service>` for several), so going from two services to one
+ * RENAMES the survivor and the old `<stack>-web` Deployment would keep running
+ * next to the new `<stack>` one (DEV, 2026-10-29). Deployments and Services
+ * are the stack's own (deployment-id + stack-service labels); ConfigMaps and
+ * Secrets carry the `cd-<id>-cfg-` / `cd-<id>-sec-` prefix. The image-pull
+ * Secret (`image-pull-<id>`) has neither and is never touched.
  */
 export async function pruneRemovedStackObjects(
   k8s: K8sClients,
   namespace: string,
   deploymentId: string,
+  deploymentName: string,
   spec: CustomDeploymentSpec,
 ): Promise<void> {
-  const keep = Object.keys(spec.services);
-  if (keep.length === 0) return;
-  const dropped = `insula.host/deployment-id=${deploymentId},insula.host/stack-service,insula.host/stack-service notin (${keep.join(',')})`;
-  await deleteByLabel(k8s, namespace, dropped, 'deployment');
-  await deleteByLabel(k8s, namespace, dropped, 'service');
+  const services = Object.entries(spec.services);
+  if (services.length === 0) return;
+  const count = services.length;
+  const keepWorkloads = new Set(services.map(([svc]) => serviceResourceName(deploymentName, svc, count)));
+  const keepServices = new Set(services.flatMap(([svc, def]) =>
+    def.ports.filter((port) => port.exposeAsService).map((port) => serviceObjectName(deploymentName, svc, count, port.name))));
+  const stackObjects = `insula.host/deployment-id=${deploymentId},insula.host/stack-service`;
+  type Listed = { items: Array<{ metadata?: { name?: string } }> };
+
+  const workloads = await k8s.apps.listNamespacedDeployment({ namespace, labelSelector: stackObjects } as Parameters<typeof k8s.apps.listNamespacedDeployment>[0]) as unknown as Listed;
+  for (const item of workloads.items ?? []) {
+    const n = item.metadata?.name;
+    if (n && !keepWorkloads.has(n)) await k8s.apps.deleteNamespacedDeployment({ name: n, namespace }).catch(swallow404);
+  }
+  const svcs = await k8s.core.listNamespacedService({ namespace, labelSelector: stackObjects } as Parameters<typeof k8s.core.listNamespacedService>[0]) as unknown as Listed;
+  for (const item of svcs.items ?? []) {
+    const n = item.metadata?.name;
+    if (n && !keepServices.has(n)) await k8s.core.deleteNamespacedService({ name: n, namespace }).catch(swallow404);
+  }
 
   const owned = `insula.host/deployment-id=${deploymentId}`;
   const keepCm = new Set(spec.configMaps.map((c) => renderConfigMapName(deploymentId, c.name)));
   const keepSec = new Set(spec.secrets.map((x) => renderSecretName(deploymentId, x.name)));
-  const cms = await k8s.core.listNamespacedConfigMap({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedConfigMap>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  const cms = await k8s.core.listNamespacedConfigMap({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedConfigMap>[0]) as unknown as Listed;
   for (const item of cms.items ?? []) {
     const n = item.metadata?.name;
     if (n && n.startsWith(`cd-${deploymentId}-cfg-`) && !keepCm.has(n)) {
       await k8s.core.deleteNamespacedConfigMap({ name: n, namespace }).catch(swallow404);
     }
   }
-  const secs = await k8s.core.listNamespacedSecret({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedSecret>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  const secs = await k8s.core.listNamespacedSecret({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedSecret>[0]) as unknown as Listed;
   for (const item of secs.items ?? []) {
     const n = item.metadata?.name;
     if (n && n.startsWith(`cd-${deploymentId}-sec-`) && !keepSec.has(n)) {
