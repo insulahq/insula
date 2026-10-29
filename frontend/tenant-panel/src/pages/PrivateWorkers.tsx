@@ -246,12 +246,16 @@ function CreateModal({ tenantId, onClose, onCreated }: CreateModalProps) {
 
 const SEARCH_THRESHOLD = 5;
 
+/** Why Create is disabled at the application limit (the page's notice says what to do). */
+const AT_LIMIT_TITLE = 'Your subscription has no room for another application — a private worker counts as one. Delete one you no longer need first.';
+
 interface EmptyStateProps {
   readonly canCreate: boolean;
+  readonly atLimit: boolean;
   readonly onCreate: () => void;
 }
 
-function EmptyState({ canCreate, onCreate }: EmptyStateProps) {
+function EmptyState({ canCreate, atLimit, onCreate }: EmptyStateProps) {
   return (
     <div
       className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 p-10 text-center"
@@ -297,7 +301,9 @@ function EmptyState({ canCreate, onCreate }: EmptyStateProps) {
           <button
             type="button"
             onClick={onCreate}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
+            disabled={atLimit}
+            title={atLimit ? AT_LIMIT_TITLE : undefined}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-brand-500"
             data-testid="add-private-worker-button-empty"
           >
             <Plus size={14} /> Create your first private worker
@@ -314,9 +320,14 @@ interface PrivateWorkersProps {
    * is the tab's, so this one is left out.
    */
   readonly embedded?: boolean;
+  /**
+   * The subscription's application limit is reached. A worker counts as an
+   * application, so Create is disabled; existing workers stay manageable.
+   */
+  readonly atLimit?: boolean;
 }
 
-export default function PrivateWorkers({ embedded = false }: PrivateWorkersProps = {}) {
+export default function PrivateWorkers({ embedded = false, atLimit = false }: PrivateWorkersProps = {}) {
   const { tenantId } = useTenantContext();
   const canManage = useCanManage();
   const { data, isLoading, error } = usePrivateWorkers(tenantId ?? undefined);
@@ -387,7 +398,9 @@ export default function PrivateWorkers({ embedded = false }: PrivateWorkersProps
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
+            disabled={atLimit}
+            title={atLimit ? AT_LIMIT_TITLE : undefined}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-brand-500"
             data-testid="add-private-worker-button"
           >
             <Plus size={14} /> Create
@@ -431,7 +444,7 @@ export default function PrivateWorkers({ embedded = false }: PrivateWorkersProps
           <Loader2 className="animate-spin text-brand-500" size={32} />
         </div>
       ) : workers.length === 0 ? (
-        <EmptyState canCreate={canCreate} onCreate={() => setCreateOpen(true)} />
+        <EmptyState canCreate={canCreate} atLimit={atLimit} onCreate={() => setCreateOpen(true)} />
       ) : (
         <>
           {showSearch && (

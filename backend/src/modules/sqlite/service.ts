@@ -12,6 +12,8 @@
 import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
+import { quoteAnsiIdentifier, validateExistingName } from '../../shared/sql-identifiers.js';
+import { dbEngineApiError } from '../deployments/db-errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { QueryResult, ColumnInfo, ImportResult } from '../deployments/db-manager.js';
 
@@ -324,7 +326,7 @@ export async function listTables(
     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
   );
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
   return result.rows.map((r) => r[0]).filter(Boolean);
 }
@@ -339,21 +341,18 @@ export async function describeTable(
   filePath: string,
   table: string,
 ): Promise<readonly ColumnInfo[]> {
-  // Validate table name to prevent injection
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table)) {
-    throw new ApiError('INVALID_TABLE_NAME', 'Invalid table name', 400, { table });
-  }
+  validateExistingName(table, 'table');
 
   const result = await executeQuery(
     k8s,
     kubeconfigPath,
     namespace,
     filePath,
-    `PRAGMA table_info("${table}")`,
+    `PRAGMA table_info(${quoteAnsiIdentifier(table)})`,
   );
 
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
 
   // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
@@ -377,9 +376,7 @@ export async function browseTable(
   table: string,
   options: { readonly limit?: number; readonly offset?: number; readonly orderBy?: string; readonly orderDir?: 'asc' | 'desc' } = {},
 ): Promise<QueryResult> {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table)) {
-    throw new ApiError('INVALID_TABLE_NAME', 'Invalid table name', 400, { table });
-  }
+  validateExistingName(table, 'table');
 
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
   const offset = Math.max(options.offset ?? 0, 0);
@@ -387,19 +384,22 @@ export async function browseTable(
 
   let orderClause = '';
   if (options.orderBy) {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(options.orderBy)) {
-      throw new ApiError('INVALID_COLUMN_NAME', 'Invalid column name', 400, { column: options.orderBy });
-    }
-    orderClause = ` ORDER BY "${options.orderBy}" ${orderDir}`;
+    validateExistingName(options.orderBy, 'column');
+    orderClause = ` ORDER BY ${quoteAnsiIdentifier(options.orderBy)} ${orderDir}`;
   }
 
-  return executeQuery(
+  const result = await executeQuery(
     k8s,
     kubeconfigPath,
     namespace,
     filePath,
-    `SELECT * FROM "${table}"${orderClause} LIMIT ${limit} OFFSET ${offset}`,
+    `SELECT * FROM ${quoteAnsiIdentifier(table)}${orderClause} LIMIT ${limit} OFFSET ${offset}`,
   );
+  // Same as describeTable/countRows: an inline error would render as an empty table.
+  if (result.error) {
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
+  }
+  return result;
 }
 
 /**
@@ -412,20 +412,18 @@ export async function countRows(
   filePath: string,
   table: string,
 ): Promise<number> {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table)) {
-    throw new ApiError('INVALID_TABLE_NAME', 'Invalid table name', 400, { table });
-  }
+  validateExistingName(table, 'table');
 
   const result = await executeQuery(
     k8s,
     kubeconfigPath,
     namespace,
     filePath,
-    `SELECT COUNT(*) FROM "${table}"`,
+    `SELECT COUNT(*) FROM ${quoteAnsiIdentifier(table)}`,
   );
 
   if (result.error) {
-    throw new ApiError('SQLITE_ERROR', result.error, 500);
+    throw dbEngineApiError(result.error, 'SQLITE_ERROR');
   }
 
   return parseInt(result.rows[0]?.[0] ?? '0', 10) || 0;

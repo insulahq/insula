@@ -25,13 +25,16 @@ Open **Applications** from the left menu. It has three tabs:
 
 Your subscription allows a number of applications. The pill beside the
 **Applications** title shows it — *3 / 5 applications deployed*. Catalog apps,
-custom containers and compose stacks all count, **stopped ones included**;
-deleted ones do not. The platform's own helpers (the file manager, a private
-worker's server) are not applications and never count.
+custom containers, compose stacks and private workers all count, **stopped ones
+included**; deleted applications and revoked workers do not. Hover the pill to
+see how many of the count are private workers. The platform's own helpers (the
+file manager, the server your private workers connect to) are not applications
+and never count.
 
 Once you are at the limit, **Deploy Application**, **New Container**, **New
-Stack** and **Restore** are disabled, and the page says so. Delete an
-application you no longer need (or ask for a bigger plan) to make room. If your
+Stack**, **Restore** and the Private Workers **Create** button are disabled,
+and the page says so. Delete an application or private worker you no longer
+need (or ask for a bigger plan) to make room. If your
 plan was lowered below what you already have, everything keeps running — you
 only cannot add another until you are back under the limit.
 
@@ -396,6 +399,12 @@ container images instead of catalog apps. Two ways:
     Click **New Stack (compose)** to define several services together using a
     Docker-Compose-style editor. Good for an app plus its database, cache, etc.
 
+When a custom container cannot start or keeps stopping — your plan has no room
+left for it, it runs out of memory, its image cannot be pulled, or it crashes —
+its row on the tab turns **Failed** with the reason, and you get a notification
+(in the panel and by email) naming the container and the reason. The tab
+updates on its own; there is no need to reload.
+
 ### Storage in a stack
 
 A named volume is a folder on your storage. By default it lives at
@@ -481,6 +490,52 @@ If an issue has no **line** button, the problem is not in the YAML: it is
 either a form field beside the editor (the stack name) or something the parser
 could not place. Red entries block deployment; orange ones are advisory and you
 can deploy anyway.
+
+**Deploy** runs the same check first, so you never need to press Validate
+yourself. A stack with a red entry is not created, and a field the platform does
+not support (for example `privileged`, `devices` or `cap_add: [SYS_ADMIN]`) is
+always refused, never quietly left out.
+
+**Editing a stack** (**Edit** in its menu, then **Update stack**) changes it in
+place: it keeps its name, its routes, its registry credential and its settings.
+An edit that is refused changes nothing — the running stack carries on as it
+was. A service you remove from the YAML is removed from the stack; an edit that
+would leave one of your routes with no port to send traffic to is refused and
+names the route.
+
+### Container capabilities
+
+Containers run without extra Linux capabilities. `cap_add` accepts only
+`NET_BIND_SERVICE` (to listen on a port below 1024); `privileged: true` and
+capabilities such as `SYS_ADMIN` are refused, because they reach past the
+container into the server it shares with others.
+
+Most images that ask for `SYS_ADMIN` in their own examples have a setting to run
+without it. **Collabora Online (CODE)**, for instance, stops with *"Capabilities
+are not set for the coolforkit program"* until you turn its capability check
+off; it then isolates each document with the kernel's own sandbox instead of a
+chroot:
+
+```yaml
+services:
+  collabora:
+    image: collabora/code:latest   # pin the version tag you tested
+    ports:
+      - "9980"
+    environment:
+      aliasgroup1: "https://cloud.example.test:443"   # your Nextcloud / WOPI host
+      username: admin
+      password: "change-me"
+      extra_params: "--o:ssl.enable=false --o:ssl.termination=true --o:security.capabilities=false --o:mount_jail_tree=false"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+```
+
+`ssl.termination=true` tells it the platform terminates TLS in front of it, so
+the links it hands your Nextcloud are `https://`. Route a hostname to port 9980
+on the **Routing** tab of a domain.
 
 ### CPU and memory for a stack
 

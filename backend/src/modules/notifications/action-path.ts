@@ -90,6 +90,7 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.email_quota_exceeded': '/email',
   'tenant.email_quota_warning': '/email',
   'tenant.custom_deployment_rolled_back': '/applications',
+  'tenant.custom_deployment_failed': '/applications/custom',
   'tenant.suspended': '/settings',
   'tenant.archive_scheduled': '/settings',
   'tenant.archived': '/settings',

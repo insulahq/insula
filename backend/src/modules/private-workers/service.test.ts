@@ -73,4 +73,18 @@ describe('rotatePrivateWorker — an existing worker stays manageable', () => {
     expect(getSettingsMock).not.toHaveBeenCalled();
     expect(allowedByPlanMock).not.toHaveBeenCalled();
   });
+
+  it('★ a revoke that lands after the read is not undone: no row updated → refused, shared secret untouched', async () => {
+    // The read sees an active worker; the guarded UPDATE (status <> revoked) matches nothing.
+    const tables: unknown[] = [];
+    const update = vi.fn((table: unknown) => {
+      tables.push(table);
+      return { set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })) };
+    });
+    const select = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([{ id: 'w1', tenantId: 't1', status: 'active' }]) })) }));
+    const db = { select, update, insert: vi.fn() } as never;
+    await expect(rotatePrivateWorker(db, 't1', 'w1', 'u1')).rejects.toMatchObject({ code: 'PRIVATE_WORKER_REVOKED' });
+    const { privateWorkers } = await import('../../db/schema.js');
+    expect(tables).toEqual([privateWorkers]);
+  });
 });

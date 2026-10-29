@@ -5,7 +5,7 @@
 // (Validate → Issues tab, and markers on the offending lines). Falls back to a plain <textarea> via ErrorBoundary if Monaco fails
 // to load (e.g. in low-end environments or during tests).
 
-import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
+import { useRef, useState, Suspense, lazy, Component, type ReactNode } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, CornerDownRight, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Tooltip } from '@/components/ui/Tooltip';
@@ -17,7 +17,7 @@ import {
   toPullCredentialInput,
   type PullCredentialDraft,
 } from './PrivateRegistryFields';
-import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
+import { useCreateCustomDeployment, useValidateCustomDeployment, useReplaceComposeDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@insula/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
@@ -193,7 +193,11 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
 
   const validateMutation = useValidateCustomDeployment(tenantId, existingDeployment?.id);
   const createMutation = useCreateCustomDeployment(tenantId);
-  const deleteMutation = useDeleteCustomDeployment(tenantId);
+  const replaceMutation = useReplaceComposeDeployment(tenantId);
+  // One Deploy at a time: Validate (with its image probes) can take seconds
+  // before any mutation is pending, and a second click used to run it all twice.
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const nameError = (() => {
     if (!name) return null;
@@ -211,7 +215,8 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
       : {}),
   });
 
-  const runValidate = async () => {
+  /** Validate on the server; true when the stack has no error. Deploy runs it first. */
+  const runValidate = async (): Promise<boolean> => {
     setSubmitError(null);
     try {
       // OMIT `name` when it is blank rather than sending ''. The schema marks
@@ -234,25 +239,46 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
       const errs = r.data.issues.filter(i => i.severity === 'error').length;
       const warns = r.data.issues.filter(i => i.severity === 'warning').length;
       setValidateState(errs > 0 ? 'error' : warns > 0 ? 'warning' : 'success');
+      return r.data.ok;
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'validation failed');
       setValidateState('error');
+      return false;
     }
   };
 
   const submit = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
     setSubmitError(null);
     try {
+      // Validate first, so Deploy never needs a Validate click and a refusal
+      // shows in the Issues tab with its lines.
+      if (!(await runValidate())) return;
       if (isEdit && existingDeployment) {
-        // Compose has no partial-patch surface — delete the old deployment and
-        // recreate from the new YAML. The name is locked in edit mode so the
-        // new record reclaims the same name immediately after deletion.
-        await deleteMutation.mutateAsync(existingDeployment.id);
+        // In place: the stack keeps its id, routes, credential and settings,
+        // and a refused edit changes nothing. (It used to be delete + create.)
+        await replaceMutation.mutateAsync({ id: existingDeployment.id, compose_yaml: yaml });
+      } else {
+        await createMutation.mutateAsync(buildInput());
       }
-      await createMutation.mutateAsync(buildInput());
       onCreated();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'operation failed');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  // Issues describe the YAML they were found in: an edit clears them, so a
+  // fixed stack can be deployed without pressing Validate again.
+  const onYamlChange = (next: string) => {
+    setYaml(next);
+    if (issues.length > 0 || validateState !== 'idle') {
+      setIssues([]);
+      setValidateState('idle');
     }
   };
 
@@ -265,7 +291,7 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
   const canSubmit = Boolean(
     name && yaml.trim() && !nameError && errorCount === 0 && !credentialError
     && (!usePrivateRegistry || pullCredentialComplete(pullCredential))
-    && !createMutation.isPending && !deleteMutation.isPending,
+    && !submitting && !createMutation.isPending && !replaceMutation.isPending,
   );
 
   return (
@@ -308,15 +334,19 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
           {nameError && <span className="text-xs text-red-600 dark:text-red-400">{nameError}</span>}
         </div>
 
-        <div className="border-b border-gray-200 px-6 py-2 dark:border-gray-700">
-          <PrivateRegistryFields
-            enabled={usePrivateRegistry}
-            onEnabledChange={setUsePrivateRegistry}
-            value={pullCredential}
-            onChange={setPullCredential}
-            error={credentialError}
-          />
-        </div>
+        {/* An edit keeps the stack's stored registry credential (change it from
+            the stack's own menu); the fields only apply to a new stack. */}
+        {!isEdit && (
+          <div className="border-b border-gray-200 px-6 py-2 dark:border-gray-700">
+            <PrivateRegistryFields
+              enabled={usePrivateRegistry}
+              onEnabledChange={setUsePrivateRegistry}
+              value={pullCredential}
+              onChange={setPullCredential}
+              error={credentialError}
+            />
+          </div>
+        )}
 
         <div className="flex flex-1 overflow-hidden">
           {/* Editor */}
@@ -325,12 +355,12 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
               compose.yaml
               <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes, and deploy.resources for CPU/memory. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
             </div>
-            <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
-              <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
+            <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={onYamlChange} />}>
+              <Suspense fallback={<TextareaFallback value={yaml} onChange={onYamlChange} />}>
                 {MonacoYamlEditor ? (
                   <MonacoYamlEditor
                     value={yaml}
-                    onChange={setYaml}
+                    onChange={onYamlChange}
                     jsonSchema={jsonSchema}
                     markers={issues
                       .filter((i): i is typeof i & { line: number } => typeof i.line === 'number')
@@ -338,7 +368,7 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
                     revealLine={reveal}
                   />
                 ) : (
-                  <TextareaFallback value={yaml} onChange={setYaml} />
+                  <TextareaFallback value={yaml} onChange={onYamlChange} />
                 )}
               </Suspense>
             </EditorErrorBoundary>
@@ -466,7 +496,9 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
             )}
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit} className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="custom-compose-submit">
-            {deleteMutation.isPending ? 'Removing old…' : createMutation.isPending ? (isEdit ? 'Recreating…' : 'Creating…') : isEdit ? 'Recreate stack' : 'Deploy stack'}
+            {submitting
+              ? (validateMutation.isPending ? 'Checking…' : isEdit ? 'Updating…' : 'Creating…')
+              : isEdit ? 'Update stack' : 'Deploy stack'}
           </button>
         </footer>
       </div>

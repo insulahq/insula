@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { applicationUsageKey } from '@/hooks/use-application-usage';
 import type {
   CreatePrivateWorkerInput,
   PrivateWorkerResponse,
@@ -82,6 +83,8 @@ export function useCreatePrivateWorker(tenantId: string | undefined) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['private-workers', tenantId] });
+      // A worker is an application on the subscription's limit.
+      qc.invalidateQueries({ queryKey: applicationUsageKey(tenantId) });
     },
   });
 }
@@ -118,6 +121,8 @@ export function useRevokePrivateWorker(tenantId: string | undefined) {
     onSuccess: (_data, workerId) => {
       qc.invalidateQueries({ queryKey: ['private-workers', tenantId] });
       qc.invalidateQueries({ queryKey: ['private-workers', tenantId, workerId] });
+      // A revoked worker no longer counts against the application limit.
+      qc.invalidateQueries({ queryKey: applicationUsageKey(tenantId) });
     },
   });
 }
@@ -132,6 +137,7 @@ export function useDeletePrivateWorker(tenantId: string | undefined) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['private-workers', tenantId] });
+      qc.invalidateQueries({ queryKey: applicationUsageKey(tenantId) });
     },
   });
 }

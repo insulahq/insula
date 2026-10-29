@@ -759,6 +759,28 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitMax: 8,
   },
   {
+    // The tenant's half of admin.custom_deployment_failed. Only the operator
+    // was told; the tenant — whose container and whose plan it is — saw it
+    // only on the Custom Containers tab, and only after a reload. Class
+    // `action` so it reaches the panel (an `availability` class would be
+    // email-only — see workload-disk-limit-channels.test.ts).
+    id: 'tenant.custom_deployment_failed',
+    cls: 'action',
+    reportsOn: 'compute',
+    displayName: 'Container failed to start',
+    description: 'One of your custom containers could not start or keeps stopping — for example '
+      + 'your plan has no room left for it, it runs out of memory, its image cannot be pulled, or '
+      + 'it crashes on start. The notification names the container and the reason. It keeps '
+      + 'retrying until it is fixed or stopped.',
+    audience: 'tenant',
+    defaultSeverity: 'error',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'contract',
+    rateLimitWindowS: 3600, // dedupeKey fires once per (deployment, reason); cap the fan-out too
+    rateLimitMax: 20,
+  },
+  {
     id: 'tenant.custom_deployment_rolled_back',
     cls: 'action',
     reportsOn: 'compute',

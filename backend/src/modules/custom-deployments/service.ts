@@ -45,12 +45,15 @@ import {
   type CustomDeploymentIssue,
   type CreateCustomDeploymentSimpleInput,
   type CreateCustomDeploymentComposeInput,
+  type ReplaceCustomDeploymentComposeInput,
   type UpdateCustomDeploymentInput,
   type UpdateNowResult,
 } from './schema.js';
 import { CUSTOM_SPEC_VERSION } from './schema.js';
 import { parseCompose } from './compose-parser.js';
 import { withResolvedLines } from './yaml-line-map.js';
+import { composeSpecForCreate, firstErrorIssue } from './compose-create-gate.js';
+import { replaceComposeDeploymentWith } from './compose-replace.js';
 import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 import { planRoutesForPortEdit } from './route-port.js';
 import { assertApplicationRoom, refuseDeleted, withApplicationSlot } from '../deployments/application-limit.js';
@@ -446,17 +449,11 @@ export async function createComposeDeployment(
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
-  // Phase 1: parse → validate → reject if errors.
+  // Phase 1: parse → validate → reject if errors. A refused field is an error
+  // here as it is in Validate (compose-create-gate.ts), not silently dropped.
   const parsed = parseCompose({ composeYaml: input.compose_yaml, envFiles: input.env_files });
-  if (!parsed.spec) {
-    throw new ApiError(
-      'CUSTOM_DEPLOYMENT_INVALID',
-      firstErrorIssue(parsed.issues),
-      422,
-      { issues: withResolvedLines(input.compose_yaml, parsed.issues) },
-    );
-  }
-  const validation = validateCustomSpec(parsed.spec, {
+  const spec = composeSpecForCreate(parsed, input.compose_yaml);
+  const validation = validateCustomSpec(spec, {
     callerRole: ctx.role,
     warnUnpinnedTags: settings.customDeploymentsWarnUnpinnedTags,
     singleServiceOnly: false,
@@ -475,7 +472,7 @@ export async function createComposeDeployment(
   // instead of deploying the stack and waiting for ImagePullBackOff.
   // Same as the simple path: probe with the PAT when one was supplied so a
   // wrong token is a create-time error, not a later ImagePullBackOff.
-  const imageIssues = await checkSpecImagesReachable(parsed.spec, probeCredentialOf(input));
+  const imageIssues = await checkSpecImagesReachable(spec, probeCredentialOf(input));
   if (imageIssues.some((i) => i.severity === 'error')) {
     throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
@@ -495,15 +492,15 @@ export async function createComposeDeployment(
   // For multi-service, the row-level resource fields summarise the
   // stack as the SUM of all services. Used for UI display + future
   // plan-quota math. The customSpec carries per-service values.
-  const totals = sumResources(parsed.spec);
+  const totals = sumResources(spec);
 
   // Attach PAT id from the input (compose body never carries
   // cleartext credentials — those go through the PAT routes).
   // ParseResult.spec is `readonly`, so we copy with the field set
   // rather than reassigning.
   const finalSpec: CustomDeploymentSpec = input.pull_credential_id
-    ? { ...parsed.spec, pullCredentialId: input.pull_credential_id }
-    : parsed.spec;
+    ? { ...spec, pullCredentialId: input.pull_credential_id }
+    : spec;
 
   const id = randomUUID();
   const storagePath = `custom-deployment/${input.name}`;
@@ -710,6 +707,33 @@ export async function updateCustomDeployment(
     }
   }
 
+  return getCustomDeployment(db, tenantId, id);
+}
+
+/**
+ * Edit a compose stack in place from new YAML (compose-replace.ts) — the
+ * editor's edit no longer deletes and recreates the stack.
+ */
+export async function replaceComposeDeployment(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+  input: ReplaceCustomDeploymentComposeInput,
+): Promise<CustomDeploymentRow> {
+  await replaceComposeDeploymentWith({
+    getCustomDeployment,
+    // The stack's stored credential, as Validate in edit mode uses it: a
+    // private image must not be probed anonymously and refused.
+    checkImages: async (spec, deploymentId) =>
+      checkSpecImagesReachable(spec, await storedProbeCredential(db, deploymentId, process.env.PLATFORM_ENCRYPTION_KEY)),
+    sumResources,
+    loadTenantContext,
+    deployToCluster: async (spec, ctx) => {
+      const row = await getCustomDeployment(db, tenantId, id);
+      await deployToCluster(db, k8s, id, ctx.namespace, row.name, row.storagePath ?? `custom-deployment/${row.name}`, spec, ctx.nodeName, ctx.storageTier);
+    },
+  }, db, k8s, tenantId, id, input);
   return getCustomDeployment(db, tenantId, id);
 }
 
@@ -1344,11 +1368,6 @@ function withServiceMutation(
     ...spec,
     services: { ...spec.services, [serviceName]: fn(spec.services[serviceName]) },
   };
-}
-
-function firstErrorIssue(issues: readonly CustomDeploymentIssue[]): string {
-  const err = issues.find((i) => i.severity === 'error');
-  return err ? `${err.code}: ${err.message}` : 'Validation failed';
 }
 
 /**

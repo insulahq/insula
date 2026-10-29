@@ -33,6 +33,7 @@ describe.skipIf(!url)('application limit (real Postgres)', () => {
       max_applications_override integer)`);
     await pool.query(`CREATE TABLE deployments (id varchar(36) PRIMARY KEY, tenant_id varchar(36) NOT NULL,
       name text NOT NULL, status text NOT NULL)`);
+    await pool.query('CREATE TABLE private_workers (id varchar(36) PRIMARY KEY, tenant_id varchar(36) NOT NULL, status text NOT NULL)');
     await pool.query('CREATE TABLE restore_jobs (id varchar(64) PRIMARY KEY, tenant_id varchar(36) NOT NULL)');
     db = drizzle(pool, { schema }) as unknown as Database;
   });
@@ -43,7 +44,7 @@ describe.skipIf(!url)('application limit (real Postgres)', () => {
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE hosting_plans, tenants, deployments, restore_jobs');
+    await pool.query('TRUNCATE hosting_plans, tenants, deployments, private_workers, restore_jobs');
     await pool.query("INSERT INTO restore_jobs (id, tenant_id) VALUES ('job-1', $1)", [TENANT]);
     await pool.query('INSERT INTO hosting_plans (id, max_applications) VALUES ($1, 2)', [PLAN]);
     await pool.query('INSERT INTO tenants (id, plan_id) VALUES ($1, $2)', [TENANT, PLAN]);
@@ -54,7 +55,13 @@ describe.skipIf(!url)('application limit (real Postgres)', () => {
 
   it('counts stopped applications and not deleted ones', async () => {
     await pool.query(`INSERT INTO deployments VALUES ('d1', $1, 'a', 'stopped'), ('d2', $1, 'b', 'deleted'), ('d3', $1, 'c', 'failed')`, [TENANT]);
-    expect(await getApplicationUsage(db, TENANT)).toEqual({ limit: 2, current: 2, remaining: 0, source: 'plan' });
+    expect(await getApplicationUsage(db, TENANT)).toEqual({ limit: 2, current: 2, privateWorkers: 0, remaining: 0, source: 'plan' });
+  });
+
+  it('counts private workers that are not revoked, and only this tenant\'s', async () => {
+    await pool.query(`INSERT INTO deployments VALUES ('d1', $1, 'a', 'running')`, [TENANT]);
+    await pool.query(`INSERT INTO private_workers VALUES ('w1', $1, 'active'), ('w2', $1, 'suspended'), ('w3', $1, 'revoked'), ('w4', 'someone-else', 'active')`, [TENANT]);
+    expect(await getApplicationUsage(db, TENANT)).toEqual({ limit: 2, current: 3, privateWorkers: 2, remaining: 0, source: 'plan' });
   });
 
   it('★ two deploys racing for the last slot: exactly one gets it', async () => {

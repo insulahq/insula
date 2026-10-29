@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.22-rc.1] - 2026-10-28
-
 ### BREAKING
 
 - **Subscriptions now limit how many applications a tenant may have.** A new plan field, **Max
@@ -31,12 +29,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   message names the limit and the count. Restoring a deleted application through a tenant's own
   restore cart is held to the same limit; an operator's cart is not. Settings shows the effective
   limit, and the operator's plan editor and Limits tab have the field.
+- **A tenant is told when one of their custom containers fails.** Only the operator was notified
+  (*Custom deployment failed*); the tenant, whose container and plan it is, saw it only on the
+  Custom Containers tab. A new tenant notification, *Container failed to start*, names the
+  container and the reason the tab shows, in the panel and by email, once per failure reason.
 
 ### Changed
 
 - **Private Workers moved onto the Applications page**, as the tab after Custom Containers. It is
   there while the subscription allows custom containers, or while the tenant still has workers to
   delete. Old links land on the tab.
+- **Private workers count as applications.** Each worker that is not revoked takes one of the
+  subscription's applications, like a custom container: at the limit the worker **Create** button is
+  disabled and the API refuses a new one with `APPLICATION_LIMIT_REACHED` (*Creating another private
+  worker would exceed…*). A worker and a deploy can no longer share the last slot. A revoked worker
+  frees its slot. The pill's tooltip, Settings and the usage endpoint (`privateWorkers`) show how much
+  of the count is workers. Existing workers keep running if this puts a tenant over its limit.
 - **A tenant's CPU request quota no longer refuses applications.** It was sized from what the tenant
   ran when it was last measured, plus one spare container, and only a catalog deploy ever raised it;
   a custom container or a private worker could be refused by a limit nobody had sold. On production an
@@ -55,6 +63,49 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A compose stack with a field the platform refuses is refused, not deployed without it.** The
+  editor's Validate reported `cap_add: [SYS_ADMIN]`, `privileged`, `devices` or `mem_limit` as an
+  error, but Deploy needed no Validate first and the API accepted the stack with the field
+  silently dropped — a container that "deployed fine" without the capability or memory its YAML
+  asked for. The API now refuses exactly what Validate refuses, and Deploy validates first.
+- **Editing a compose stack changes it in place.** The editor deleted the stack and created it
+  again. The delete took the stack's registry credential and network-access settings with it and
+  left its routes pointing at a deployment that no longer existed; when the new YAML was then
+  refused (a refused field, or a private image probed without the credential just deleted), the
+  stack was gone. `PUT …/custom-deployments/:id` now replaces the spec on the same stack,
+  with the checks a create makes (the stack's own credential for private images), re-pins or
+  refuses routes whose port moves, and removes services the YAML dropped. Deploy cannot run twice
+  from a double-click, and fixing refused YAML re-enables it without another Validate.
+- **The Custom Containers tab shows a failed container without a reload.** It read its list once
+  and never again, so a container that failed after it was created (a quota refusal, a crash loop)
+  stayed *Deploying*. It now re-reads every 3 seconds while a container is changing state and every
+  15 seconds otherwise; the Installed tab does the same (it polled every 15 seconds throughout).
+- **A compose stack with more than one service reaches *running*.** Its status was read from one
+  Deployment named after the stack, which only a single-service stack has, so a healthy
+  multi-service stack stayed *deploying* and was marked failed after 60 minutes ("k8s Deployment was
+  not created"). The status now reads every service: running when all are ready, failed when any
+  crashes or is refused, stopped when all are scaled to zero.
+- **The operator's *Custom deployment failed* message no longer ends a reason with two full
+  stops.**
+- **SQL Manager opens tables whose names start with a digit or contain a hyphen.** Names like
+  `1-StudentsTb` were refused before the database was asked, and the panel showed the refusal
+  as "No data", so a freshly imported schema looked empty. Any table or column name the database
+  holds now opens, is quoted safely, and can be sorted and edited (MariaDB/MySQL, PostgreSQL, SQLite,
+  MongoDB). Failed reads now show the database's own error instead of "No data" or "No columns".
+  Creating, picking or deleting a database now clears the selected table, so the panel no longer asks
+  the new database for a table that only existed in the previous one.
+- **SQL Manager row edits keep backslashes, and failed edits say so.** On MariaDB/MySQL a value like
+  `C:\new` was saved as `C:`, a line break and `ew`, and values containing a backslash, tab or line
+  break were shown escaped. Values now display and save exactly as stored. A row edit, insert or
+  delete the database refuses now shows the database's message and keeps the form open, instead of
+  closing as if it had worked. A single-column row holding an empty string no longer disappears.
+- **SQL Manager handles databases whose names start with a digit or contain other characters.**
+  `2024-school`, `it's db` and the like can now be browsed, queried, exported, imported, dropped and
+  granted to a user. The platform's backup logical dumps now cover them too; before, those
+  databases had only the raw-files snapshot. On PostgreSQL, the table list no longer fails when one
+  table name has an uppercase letter or a hyphen.
+- **A table, database or column that no longer exists is reported as "not found" (404).** It used to
+  be a 500 server error. The panel now titles the message and says to reload the list.
 - **Auto-heal no longer restarts a tenant over a quota that is simply full.** It treated every quota
   refusal as a pod still shutting down, scaled every workload to zero and back, and the newest pod won
   the room. On production that moved the outage from a new private worker onto the tenant's
@@ -77,6 +128,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   time anyway. A worker whose client logged a successful login stayed *pending* with no last-seen
   time. The platform now asks each tenant's frps once a minute. A worker with an online tunnel on its
   port is active with a current last-seen time, and each new connection is in its audit log.
+- **Rotating a private worker's token no longer marks it connected.** Rotate set every worker that
+  was not suspended to *active*, so a worker whose agent had never connected read **Connected**. It
+  could also undo a suspension that landed while it ran, or bring back a worker revoked at the same
+  moment. Rotate now changes only the token; the connection check and the tenant's lifecycle set the
+  status.
 - **A private worker can be chosen as a route's target.** The API always accepted one, but the
   Routing tab's selector, in both panels, listed deployments only. Workers now appear there, a
   pending one included.

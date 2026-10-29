@@ -124,7 +124,11 @@ export default function Settings() {
                 <div>
                   <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Applications</dt>
                   <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="settings-applications">
-                    {appUsage ? `${appUsage.current} of ${appUsage.limit} deployed` : '—'}
+                    {appUsage
+                      ? `${appUsage.current} of ${appUsage.limit} deployed${(appUsage.privateWorkers ?? 0) > 0
+                        ? ` (${appUsage.privateWorkers} of them private worker${appUsage.privateWorkers === 1 ? '' : 's'})`
+                        : ''}`
+                      : '—'}
                   </dd>
                 </div>
               </>
