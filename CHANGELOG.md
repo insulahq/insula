@@ -80,6 +80,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and never again, so a container that failed after it was created (a quota refusal, a crash loop)
   stayed *Deploying*. It now re-reads every 3 seconds while a container is changing state and every
   15 seconds otherwise; the Installed tab does the same (it polled every 15 seconds throughout).
+- **A compose stack with more than one service reaches *running*.** Its status was read from one
+  Deployment named after the stack, which only a single-service stack has, so a healthy
+  multi-service stack stayed *deploying* and was marked failed after 60 minutes ("k8s Deployment was
+  not created"). The status now reads every service: running when all are ready, failed when any
+  crashes or is refused, stopped when all are scaled to zero.
 - **The operator's *Custom deployment failed* message no longer ends a reason with two full
   stops.**
 - **SQL Manager opens tables whose names start with a digit or contain a hyphen.** Names like
