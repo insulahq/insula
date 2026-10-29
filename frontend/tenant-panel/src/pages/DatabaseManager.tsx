@@ -571,7 +571,9 @@ export default function DatabaseManager() {
     setBrowseSortCol(undefined);
     setResultsView('browse');
     // Scroll the results area into view
-    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    // Optional-call: scrollIntoView is not implemented everywhere (jsdom), and
+    // this fires 50 ms later, after a test may already have finished.
+    setTimeout(() => resultsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 50);
   }, []);
 
   const handleViewStructure = useCallback((tableName: string) => {

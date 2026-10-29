@@ -113,6 +113,10 @@ async function renderPage() {
 
 async function openTable(name: string) {
   fireEvent.doubleClick(await screen.findByTitle(`Double-click to browse ${name}`));
+  // Opening a table scrolls the results into view 50 ms later. Let that timer
+  // fire inside the test, so a crash there fails THIS test instead of landing
+  // as an unhandled error after it.
+  await new Promise((resolve) => setTimeout(resolve, 80));
 }
 
 function lastTableDataArgs(): [string | undefined, string | undefined] {
