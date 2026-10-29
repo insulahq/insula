@@ -196,9 +196,11 @@ export default function DatabaseManager() {
   // A table selection belongs to ONE database, so every database switch goes
   // through here. "Create database" used to switch to the new database but
   // keep the previous table, and the panel then asked the new database for a
-  // table it never had.
+  // table it never had. The Browse/Structure tabs vanish with the table, so
+  // the results pane returns to the query tab.
   const selectDatabase = useCallback((name: string) => {
     setSelectedDatabase(name);
+    setResultsView('query');
     setBrowseTable('');
     setBrowsePage(1);
     setBrowseSortCol(undefined);

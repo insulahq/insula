@@ -197,6 +197,8 @@ describe('SQL Manager table reads', () => {
     // Before: ['courses', 'legacy_records'] — a table the new database never had.
     expect(lastTableDataArgs()).toEqual(['courses', undefined]);
     expect(tableDataArgs.mock.calls).not.toContainEqual(['courses', 'legacy_records']);
+    // The Browse tab went with the table; the pane is back on the query tab.
+    expect(screen.getByText('Run a query to see results')).toBeTruthy();
   });
 
   // Already true before the fix (the picker cleared the table itself); kept so
