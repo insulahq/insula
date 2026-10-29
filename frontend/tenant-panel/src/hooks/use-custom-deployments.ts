@@ -118,7 +118,8 @@ export function useReplaceComposeDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, ...input }: { id: string } & ReplaceCustomDeploymentComposeInput) =>
-      apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}/compose`, {
+      // PUT /<id>: raw transport is allowed past the WAF on one segment only.
+      apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}`, {
         method: 'PUT',
         headers: RAW_JSON_HEADERS,
         body: JSON.stringify(input),

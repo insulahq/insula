@@ -195,11 +195,16 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     return success(row);
   });
 
-  // PUT …/:id/compose — edit a compose stack IN PLACE from new YAML
+  // PUT …/:id — edit a compose stack IN PLACE from new YAML
   // (compose-replace.ts). The editor used to delete the stack and create it
   // again, which lost its routes, credential and settings, and lost the
   // stack itself when the new YAML was then refused.
-  app.put('/tenants/:tenantId/custom-deployments/:id/compose', async (request) => {
+  //
+  // ONE segment after custom-deployments, on purpose: the panel sends the
+  // YAML as raw transport (application/octet-stream), and WAF rule 9000115
+  // allows that only on `custom-deployments(/<one segment>)?` — `/:id/compose`
+  // was refused at the edge (waf-raw-transport-scope.test.ts).
+  app.put('/tenants/:tenantId/custom-deployments/:id', async (request) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const parsed = replaceCustomDeploymentComposeSchema.safeParse(request.body);
     if (!parsed.success) {

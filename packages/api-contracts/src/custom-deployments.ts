@@ -497,7 +497,7 @@ export const createCustomDeploymentComposeSchema = z.object({
 });
 
 /**
- * Edit a compose stack in place from new YAML (PUT …/custom-deployments/:id/compose).
+ * Edit a compose stack in place from new YAML (PUT …/custom-deployments/:id).
  * The stack keeps its id, name, routes, pull credential and settings; nothing
  * is deleted. Name, registry credential and mode are not part of an edit.
  */

@@ -72,7 +72,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   again. The delete took the stack's registry credential and network-access settings with it and
   left its routes pointing at a deployment that no longer existed; when the new YAML was then
   refused (a refused field, or a private image probed without the credential just deleted), the
-  stack was gone. `PUT …/custom-deployments/:id/compose` now replaces the spec on the same stack,
+  stack was gone. `PUT …/custom-deployments/:id` now replaces the spec on the same stack,
   with the checks a create makes (the stack's own credential for private images), re-pins or
   refuses routes whose port moves, and removes services the YAML dropped. Deploy cannot run twice
   from a double-click, and fixing refused YAML re-enables it without another Validate.
