@@ -5,6 +5,7 @@ import type {
   IngressAuthConfigResponse,
   IngressAuthTestResponse,
   OidcProviderInput,
+  OidcProviderUpdateInput,
   OidcProviderResponse,
 } from '@insula/api-contracts';
 
@@ -14,7 +15,7 @@ interface ApiEnvelope<T> {
 
 const PROVIDERS_KEY = (cid: string) => ['oidc-providers', cid] as const;
 
-/** List per-client OIDC providers — feeds the dropdown in OidcSection. */
+/** The tenant's OIDC providers — the dropdown in OidcSection and the providers page. */
 export function useOidcProviders(tenantId: string | undefined) {
   return useQuery({
     queryKey: PROVIDERS_KEY(tenantId ?? ''),
@@ -45,14 +46,18 @@ export function useCreateOidcProvider(tenantId: string) {
 export function useUpdateOidcProvider(tenantId: string, providerId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: Partial<OidcProviderInput>) => {
+    mutationFn: async (input: OidcProviderUpdateInput) => {
       const res = await apiFetch<ApiEnvelope<OidcProviderResponse>>(
         `/api/v1/tenants/${tenantId}/oidc-providers/${providerId}`,
         { method: 'PATCH', body: JSON.stringify(input) },
       );
       return res.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY(tenantId) }),
+    // A provider change reaches every route using it: refresh their status too.
+    onSettled: () => Promise.all([
+      qc.invalidateQueries({ queryKey: PROVIDERS_KEY(tenantId) }),
+      qc.invalidateQueries({ queryKey: ['ingress-auth', tenantId] }),
+    ]),
   });
 }
 
@@ -94,7 +99,12 @@ export function useUpsertIngressAuth(tenantId: string, routeId: string) {
       );
       return res.data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: KEY(tenantId, routeId) }),
+    // Settled, not success: a save whose sign-in did not start is still saved,
+    // and the form must show the stored state and its error.
+    onSettled: () => Promise.all([
+      qc.invalidateQueries({ queryKey: KEY(tenantId, routeId) }),
+      qc.invalidateQueries({ queryKey: PROVIDERS_KEY(tenantId) }),
+    ]),
   });
 }
 
@@ -107,7 +117,10 @@ export function useDeleteIngressAuth(tenantId: string, routeId: string) {
         { method: 'DELETE' },
       );
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: KEY(tenantId, routeId) }),
+    onSettled: () => Promise.all([
+      qc.invalidateQueries({ queryKey: KEY(tenantId, routeId) }),
+      qc.invalidateQueries({ queryKey: PROVIDERS_KEY(tenantId) }),
+    ]),
   });
 }
 

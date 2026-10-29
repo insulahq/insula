@@ -2490,6 +2490,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const privateWorkerPollStop = startPrivateWorkerConnectionPoller({ db: app.db, k8s: k8sForImapsync, log: app.log });
         app.addHook('onClose', () => privateWorkerPollStop());
 
+        // Route sign-in gates: a startup pass brings every tenant's oauth2-proxy
+        // onto this release's spec, then a leased pass every 10 minutes retries
+        // one that failed to start (ingress-auth/scheduler.ts).
+        const encryptionKeyForGates = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY;
+        if (encryptionKeyForGates) {
+          const { startSignInGateReconciler } = await import('./modules/ingress-auth/scheduler.js');
+          const signInGateStop = startSignInGateReconciler({ db: app.db, k8s: k8sForImapsync, encryptionKey: encryptionKeyForGates, log: app.log });
+          app.addHook('onClose', () => signInGateStop());
+        }
+
         // Dead-pod sweep. Kubernetes garbage-collects terminal pods only past
         // --terminated-pod-gc-threshold (default 12500, unset here), so the
         // records accumulate monotonically: every node reboot adds a batch and

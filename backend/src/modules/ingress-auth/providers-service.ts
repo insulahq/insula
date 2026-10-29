@@ -1,26 +1,27 @@
 /**
- * Per-client OIDC provider CRUD.
+ * Per-tenant OIDC provider CRUD.
  *
- * Providers are reusable across N ingresses for the same tenant.
- * Secret encryption uses the existing PLATFORM_ENCRYPTION_KEY (32-byte
- * hex). Secrets are NEVER returned in responses; only a `secretSet`
- * flag exposes presence.
+ * Providers are reusable across a tenant's routes. Secrets are encrypted with
+ * PLATFORM_ENCRYPTION_KEY and NEVER returned; only `secretSet` exposes
+ * presence. Every enabled route of a tenant must use the same provider (one
+ * oauth2-proxy per tenant namespace), so changing a provider changes the sign-in
+ * of every route that uses it — the caller reconciles the tenant afterwards.
  *
- * Delete semantics: ON DELETE RESTRICT at the DB level. The route
- * layer surfaces FK violations as 409 with the consumer count so
- * the operator can decide whether to delete the dependent ingress
- * configs first.
+ * Delete: refused with 409 PROVIDER_IN_USE while any route config references
+ * the provider (the FK itself is ON DELETE CASCADE so tenant deletion passes).
  */
 
-import { eq, and, count } from 'drizzle-orm';
+import { eq, and, count, inArray } from 'drizzle-orm';
 import {
   tenantOidcProviders,
   ingressAuthConfigs,
+  ingressRoutes,
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { TenantOidcProvider } from '../../db/schema.js';
+import { buildCallbackUrl, servedHost } from './hosts.js';
 
 export interface ProviderInput {
   readonly name: string;
@@ -28,8 +29,6 @@ export interface ProviderInput {
   readonly oauthClientId: string;
   /** Plaintext. Required on create; optional on update (omitted = keep). */
   readonly oauthClientSecret?: string;
-  readonly authMethod?: 'client_secret_basic' | 'client_secret_post';
-  readonly responseType?: 'code' | 'id_token' | 'code_id_token';
   readonly usePkce?: boolean;
   readonly defaultScopes?: string;
 }
@@ -40,11 +39,10 @@ export interface ProviderResponse {
   readonly issuerUrl: string;
   readonly oauthClientId: string;
   readonly secretSet: boolean;
-  readonly authMethod: 'client_secret_basic' | 'client_secret_post';
-  readonly responseType: 'code' | 'id_token' | 'code_id_token';
   readonly usePkce: boolean;
   readonly defaultScopes: string;
   readonly consumerCount: number;
+  readonly callbackUrls: ReadonlyArray<string>;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -53,30 +51,46 @@ interface Ctx {
   readonly encryptionKey: string;
 }
 
-function toResponse(row: TenantOidcProvider, consumerCount: number): ProviderResponse {
+interface Consumers {
+  readonly count: number;
+  readonly callbackUrls: ReadonlyArray<string>;
+}
+
+function toResponse(row: TenantOidcProvider, consumers: Consumers): ProviderResponse {
   return {
     id: row.id,
     name: row.name,
     issuerUrl: row.issuerUrl,
     oauthClientId: row.oauthClientId,
     secretSet: row.oauthClientSecretEncrypted.length > 0,
-    authMethod: row.authMethod as ProviderResponse['authMethod'],
-    responseType: row.responseType as ProviderResponse['responseType'],
     usePkce: row.usePkce,
     defaultScopes: row.defaultScopes,
-    consumerCount,
+    consumerCount: consumers.count,
+    callbackUrls: consumers.callbackUrls,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
-async function consumerCount(db: Database, providerId: string): Promise<number> {
-  const [row] = await db
-    .select({ n: count() })
+/** Route configs per provider, with the redirect URI each one needs at the IdP. */
+async function consumersOf(db: Database, providerIds: ReadonlyArray<string>): Promise<Map<string, Consumers>> {
+  const out = new Map<string, { count: number; urls: Set<string> }>();
+  if (providerIds.length === 0) return new Map();
+  const rows = await db
+    .select({ providerId: ingressAuthConfigs.providerId, hostname: ingressRoutes.hostname, wwwRedirect: ingressRoutes.wwwRedirect })
     .from(ingressAuthConfigs)
-    .where(eq(ingressAuthConfigs.providerId, providerId));
-  return Number(row?.n ?? 0);
+    .innerJoin(ingressRoutes, eq(ingressRoutes.id, ingressAuthConfigs.ingressRouteId))
+    .where(inArray(ingressAuthConfigs.providerId, [...providerIds]));
+  for (const r of rows) {
+    const entry = out.get(r.providerId) ?? { count: 0, urls: new Set<string>() };
+    entry.count += 1;
+    entry.urls.add(buildCallbackUrl(servedHost(r.hostname, r.wwwRedirect)));
+    out.set(r.providerId, entry);
+  }
+  return new Map([...out].map(([id, e]) => [id, { count: e.count, callbackUrls: [...e.urls].sort() }]));
 }
+
+const NO_CONSUMERS: Consumers = { count: 0, callbackUrls: [] };
 
 export async function listProviders(
   db: Database,
@@ -86,19 +100,8 @@ export async function listProviders(
     .select()
     .from(tenantOidcProviders)
     .where(eq(tenantOidcProviders.tenantId, tenantId));
-  // Per-row consumerCount: cheap join would be nicer but requires a
-  // groupBy. Two-step: collect ids, fetch counts in one query.
-  const idCounts = new Map<string, number>();
-  if (rows.length > 0) {
-    const counts = await db
-      .select({ providerId: ingressAuthConfigs.providerId, n: count() })
-      .from(ingressAuthConfigs)
-      .groupBy(ingressAuthConfigs.providerId);
-    for (const c of counts) {
-      if (c.providerId) idCounts.set(c.providerId, Number(c.n));
-    }
-  }
-  return rows.map((r) => toResponse(r, idCounts.get(r.id) ?? 0));
+  const consumers = await consumersOf(db, rows.map((r) => r.id));
+  return rows.map((r) => toResponse(r, consumers.get(r.id) ?? NO_CONSUMERS));
 }
 
 export async function getProvider(
@@ -111,7 +114,8 @@ export async function getProvider(
     .from(tenantOidcProviders)
     .where(and(eq(tenantOidcProviders.id, id), eq(tenantOidcProviders.tenantId, tenantId)));
   if (!row) return null;
-  return toResponse(row, await consumerCount(db, id));
+  const consumers = await consumersOf(db, [id]);
+  return toResponse(row, consumers.get(id) ?? NO_CONSUMERS);
 }
 
 export async function createProvider(
@@ -135,8 +139,6 @@ export async function createProvider(
     issuerUrl: input.issuerUrl,
     oauthClientId: input.oauthClientId,
     oauthClientSecretEncrypted: encrypt(input.oauthClientSecret, ctx.encryptionKey),
-    authMethod: input.authMethod ?? 'client_secret_basic',
-    responseType: input.responseType ?? 'code',
     usePkce: input.usePkce ?? true,
     defaultScopes: input.defaultScopes ?? 'openid profile email',
   });
@@ -163,8 +165,6 @@ export async function updateProvider(
   if (input.oauthClientSecret) {
     set.oauthClientSecretEncrypted = encrypt(input.oauthClientSecret, ctx.encryptionKey);
   }
-  if (input.authMethod !== undefined) set.authMethod = input.authMethod;
-  if (input.responseType !== undefined) set.responseType = input.responseType;
   if (input.usePkce !== undefined) set.usePkce = input.usePkce;
   if (input.defaultScopes !== undefined) set.defaultScopes = input.defaultScopes;
   if (Object.keys(set).length > 0) {
@@ -178,24 +178,21 @@ export async function updateProvider(
   return updated;
 }
 
-/**
- * Delete a provider. Surfaces a 409 with the consumer count when any
- * ingress_auth_config still references it. This API-level guard is the
- * ONLY protection since migration 0049 — the FK is ON DELETE CASCADE
- * so the tenant-deletion cascade can pass through (a RESTRICT made
- * tenants with attached auth configs undeletable).
- */
 export async function deleteProvider(
   db: Database,
   tenantId: string,
   id: string,
 ): Promise<void> {
-  const consumers = await consumerCount(db, id);
+  const [row] = await db
+    .select({ n: count() })
+    .from(ingressAuthConfigs)
+    .where(eq(ingressAuthConfigs.providerId, id));
+  const consumers = Number(row?.n ?? 0);
   if (consumers > 0) {
     throw new ApiError(
       'PROVIDER_IN_USE',
-      `Provider is in use by ${consumers} ingress${consumers === 1 ? '' : 'es'}; ` +
-        'disable auth on those ingresses before deleting the provider.',
+      `Provider is used by ${consumers} route${consumers === 1 ? '' : 's'}; ` +
+        'turn sign-in off on those routes, or point them at another provider, before deleting it.',
       409,
       { consumers },
     );
@@ -205,9 +202,7 @@ export async function deleteProvider(
     .where(and(eq(tenantOidcProviders.id, id), eq(tenantOidcProviders.tenantId, tenantId)));
 }
 
-/**
- * Decrypt the provider's tenant secret for reconciler consumption.
- */
+/** The provider's client secret, decrypted for the reconciler. */
 export function decryptProviderSecret(
   row: TenantOidcProvider,
   encryptionKey: string,

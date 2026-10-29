@@ -74,11 +74,13 @@ export const CONFIG_DUMP_TABLES = [
   // envelope-encrypted registry PAT so a same-cluster re-create can redeploy a
   // private-image workload (the cipher decrypts under the same platform key).
   'customDeploymentImageCredentials',
-  'ingressAuthConfigs',
   'sslCertificates',
   'cronJobs',
   'resourceQuotas',
   'tenantOidcProviders',
+  // Must follow `tenantOidcProviders` — FK provider_id → tenant_oidc_providers.id
+  // (restored in this order inside one transaction; the FK is not deferrable).
+  'ingressAuthConfigs',
   'tenantMtlsProviders',
   'tenantZitiProviders',
   'tenantZrokAccounts',

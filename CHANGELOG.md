@@ -28,6 +28,79 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   any name the shared check cannot see, and checks each route on its own. The API paths are
   unchanged. To check an installation for past use, look in the audit log for writes to these
   paths whose tenant id differs from the acting user's tenant; reads are not audited.
+- **A route's sign-in now admits only who it says.** The allow lists (emails, email domains,
+  groups) and the post-login page were saved but never applied: oauth2-proxy ran with
+  `email_domains=["*"]`, so anyone who could sign in at the provider passed — with Google, any
+  Google account. Claim rules were skipped too: oauth2-proxy answers 202 for a valid session and
+  the policy sidecar only checked for 200, and its rules were keyed by an id the requests never
+  carried. A visitor now passes when every list is empty or any entry matches, and every claim
+  rule holds; anyone else sees *Access denied* with a sign-out link. A malformed rule refuses
+  instead of passing, a multi-`@` address never matches a domain, and the identity headers can
+  no longer be forged by the visitor (every `X-Auth-Request-*` name is replaced).
+- **The route sign-in runs oauth2-proxy v7.15.5, not v7.6.0.** v7.6.0 is affected by published
+  authentication-bypass advisories. It was pinned in TypeScript, where the image scan and the
+  component registry (both read `k8s/base`) never saw it; it now uses the panels' gate's
+  constant, which a test keeps equal to the manifest.
+
+### Fixed
+
+- **Requiring a sign-in on a route works.** A signed-out visitor got a bare `Unauthorized`: the
+  route asked oauth2-proxy's `/oauth2/auth`, which only answers 401 (the NGINX-era sign-in
+  redirect had no Traefik equivalent). The route's gate now asks oauth2-proxy's proxy endpoint,
+  which sends the visitor straight to the identity provider, back to the page asked for after
+  signing in. `/oauth2/*` is served inside the route's own router, so it keeps the route's
+  client-certificate requirement, WAF, CrowdSec and allow list (a separate router dropped them —
+  and turned an mTLS route's certificate requirement off), and it goes away with the route
+  instead of outliving it. On a route with a www redirect, the sign-in lives on the host the site
+  is served on.
+- **Entering a provider on the route's form works.** The form sent `clientId` / `clientSecret`,
+  the API read `tenantId` / `tenantSecret` (left over from a rename), and refused every inline
+  provider as missing its credentials. Inline credentials now always create a new provider, never
+  edit one other routes share.
+- **The redirect URI to register is shown where it is needed:** first in the route's form with a
+  copy button and the Google steps, and on each provider with the URIs of the routes using it.
+- **Sign-in changes take effect.** oauth2-proxy reads its settings once, at start, and nothing
+  restarted it, so a rotated client secret, a new protected host or changed rules never reached
+  it; saving a provider did not even try. Every change now restarts the sign-in service, and the
+  save waits until it runs: when it does not start, the form says why (issuer mismatch,
+  untrusted certificate, unreachable provider), with the service's log, and the route answers
+  with an error instead of opening up. Every API start and a pass every 10 minutes bring each
+  tenant's sign-in service onto the current settings, and remove it once its last protected route,
+  domain or the tenant is gone.
+- **One provider per tenant, said out loud.** All of a tenant's protected routes share one
+  sign-in service, which used the first route's provider for all of them; a second provider is
+  now refused with `OIDC_PROVIDER_CONFLICT`. Wildcard routes are refused (`OIDC_WILDCARD_ROUTE`),
+  a cookie domain must cover the route's host, cookie refresh must be shorter than expiry, and
+  scopes must include `openid`.
+- **Password-protected folders on a route with a www redirect ask for the password again.** The
+  folder's router matched the host that only redirects, so on the served host the folder opened
+  without one.
+- **"Test issuer" checks the issuer as the provider publishes it** and saving uses that form, so a
+  trailing-slash difference no longer crash-loops the sign-in service. It goes through the
+  platform's guarded fetch: an internal address is not probed from platform-api.
+- **The sign-in trusts the platform's extra root CAs** (`bootstrap.sh --trust-ca`), so an
+  identity provider behind a private CA works.
+- **A partial provider update keeps what it does not name.** `PATCH` applied the create
+  defaults, so rotating only the secret reset PKCE and the scopes.
+- **Tenant bundles restore route sign-in**: the providers are restored before the route
+  settings that reference them (the restore failed on the foreign key).
+- **The route form and the providers page show every failure** through the standard error panel,
+  including a refused read and a failed removal, have dark-mode variants throughout, keep
+  commas in an `in` / `not_in` claim rule while typing, and follow the saved state after a
+  removal.
+
+### Changed
+
+- **Route sign-in settings that never applied are gone:** the provider's *Authentication Method*
+  and *Response Type* (oauth2-proxy detects the first and supports only the code flow) and the
+  per-route scopes (one sign-in service holds one scope list; the provider's scopes apply).
+  Migration 0167 drops their columns. During the upgrade, until the old API pods are replaced,
+  route sign-in and provider reads on those pods fail for a few minutes.
+- **New route sign-ins pass less to the app by default:** the access token, the ID token and the
+  `Authorization: Bearer` header are off, and a session is not re-checked before its cookie
+  expires (Google issues no refresh token by default, so a re-check signed visitors out every
+  hour). Existing routes keep their settings. Turn `Authorization: Bearer` off for apps with their
+  own login (Immich, Nextcloud, Gitea): they reject every call with it.
 
 ## [2026.10.22] - 2026-10-29
 
