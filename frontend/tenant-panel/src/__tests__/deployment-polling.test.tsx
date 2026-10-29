@@ -11,6 +11,7 @@ const apiFetchMock = vi.fn();
 vi.mock('@/lib/api-client', () => ({ apiFetch: (...args: unknown[]) => apiFetchMock(...args) }));
 
 const { useCustomDeployments } = await import('../hooks/use-custom-deployments');
+const { useApplicationUsage } = await import('../hooks/use-application-usage');
 
 const row = (status: string) => ({ data: [{ id: 'c1', name: 'collabora', status }] });
 
@@ -47,5 +48,20 @@ describe('useCustomDeployments with pollByStatus', () => {
     expect(apiFetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(10_500);
     expect(apiFetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useApplicationUsage', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); apiFetchMock.mockReset(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('re-reads the count every 15 s — an app added elsewhere shows without a reload', async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({ data: { limit: 5, current: 2, privateWorkers: 0, remaining: 3, source: 'plan' } })
+      .mockResolvedValue({ data: { limit: 5, current: 3, privateWorkers: 0, remaining: 2, source: 'plan' } });
+    const { result } = renderHook(() => useApplicationUsage('t1'), { wrapper });
+    await waitFor(() => expect(result.current.data?.current).toBe(2));
+    await vi.advanceTimersByTimeAsync(15_500);
+    await waitFor(() => expect(result.current.data?.current).toBe(3));
   });
 });
