@@ -1003,7 +1003,7 @@ export async function deleteCustomDeployment(
  * names depend on how many services the stack has (`<stack>` for one,
  * `<stack>-<service>` for several), so going from two services to one
  * RENAMES the survivor and the old `<stack>-web` Deployment would keep running
- * next to the new `<stack>` one (DEV, 2026-10-29). Deployments and Services
+ * next to the new `<stack>` one. Deployments and Services
  * are the stack's own (deployment-id + stack-service labels); ConfigMaps and
  * Secrets carry the `cd-<id>-cfg-` / `cd-<id>-sec-` prefix. The image-pull
  * Secret (`image-pull-<id>`) has neither and is never touched.
