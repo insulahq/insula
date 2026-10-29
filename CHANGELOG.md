@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.22-rc.2] - 2026-10-29
-
 ### BREAKING
 
 - **Subscriptions now limit how many applications a tenant may have.** A new plan field, **Max
@@ -87,6 +85,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   multi-service stack stayed *deploying* and was marked failed after 60 minutes ("k8s Deployment was
   not created"). The status now reads every service: running when all are ready, failed when any
   crashes or is refused, stopped when all are scaled to zero.
+- **A workload's outage is put down to its own cause.** The watchdog read one list of evidence per
+  namespace and judged every down workload by all of it: on staging a starting file manager was
+  recorded as refused by the quota because another application's ReplicaSet had been. Since the
+  quota is checked before the volume, a real mount failure next to a quota refusal elsewhere would
+  never have been treated as one. Pod and ReplicaSet evidence now counts only for the Deployment it
+  belongs to; evidence that cannot be attributed still counts for all.
 - **The operator's *Custom deployment failed* message no longer ends a reason with two full
   stops.**
 - **SQL Manager opens tables whose names start with a digit or contain a hyphen.** Names like

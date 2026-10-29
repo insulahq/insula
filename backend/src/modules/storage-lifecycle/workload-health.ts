@@ -400,7 +400,11 @@ async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]>
 
 /** A pod, as far as its present state matters to the diagnosis. */
 export interface EvidencePod {
-  readonly metadata?: { readonly uid?: string };
+  readonly metadata?: {
+    readonly uid?: string;
+    readonly name?: string;
+    readonly ownerReferences?: ReadonlyArray<{ readonly kind?: string; readonly name?: string }>;
+  };
   readonly status?: {
     readonly phase?: string;
     readonly conditions?: ReadonlyArray<{ type?: string; status?: string; reason?: string; message?: string }>;
@@ -413,7 +417,7 @@ export interface EvidenceEvent {
   readonly type?: string;
   readonly reason?: string;
   readonly message?: string;
-  readonly involvedObject?: { readonly kind?: string; readonly uid?: string };
+  readonly involvedObject?: { readonly kind?: string; readonly uid?: string; readonly name?: string };
   readonly lastTimestamp?: Date | string | null;
   readonly eventTime?: Date | string | null;
   readonly series?: { readonly lastObservedTime?: Date | string | null } | null;
@@ -457,35 +461,75 @@ function eventLastSeenMs(e: EvidenceEvent): number | null {
  * by nature.
  */
 export function currentEvidence(pods: readonly EvidencePod[], events: readonly EvidenceEvent[], nowMs: number): string[] {
-  const msgs: string[] = [];
-  const notStarted = new Set<string>();
+  return currentEvidenceByOwner(pods, events, nowMs).map((e) => e.msg).slice(0, 20);
+}
+
+/** One piece of evidence and the Deployment it is about, or null when that cannot be told. */
+export interface OwnedEvidence {
+  readonly owner: string | null;
+  readonly msg: string;
+}
+
+/** The Deployment a ReplicaSet belongs to: its generated name is `<deployment>-<hash>`. Pure. */
+export function deploymentOfReplicaSet(name: string | undefined): string | null {
+  if (!name) return null;
+  const at = name.lastIndexOf('-');
+  return at > 0 ? name.slice(0, at) : null;
+}
+
+/** The Deployment a pod belongs to, read from its ReplicaSet owner. Null for a pod no ReplicaSet owns. Pure. */
+export function deploymentOfPod(pod: EvidencePod): string | null {
+  const rs = pod.metadata?.ownerReferences?.find((o) => o.kind === 'ReplicaSet');
+  return deploymentOfReplicaSet(rs?.name);
+}
+
+/**
+ * currentEvidence with each message's owner. The evidence is read once per
+ * namespace, but the cause is decided per workload: a starting file manager
+ * was recorded as `quota_rejected` because ANOTHER Deployment's ReplicaSet had
+ * a quota FailedCreate in the namespace (seen on staging) — and the quota
+ * check runs before the volume one, so a real mount failure next to a quota
+ * refusal elsewhere would never have been treated as one. See evidenceFor.
+ */
+export function currentEvidenceByOwner(pods: readonly EvidencePod[], events: readonly EvidenceEvent[], nowMs: number): OwnedEvidence[] {
+  const out: OwnedEvidence[] = [];
+  const notStarted = new Map<string, string | null>();
   for (const p of pods) {
     if (p.status?.phase === 'Succeeded') continue;
-    if (p.status?.phase === 'Pending' && p.metadata?.uid) notStarted.add(p.metadata.uid);
+    const owner = deploymentOfPod(p);
+    if (p.status?.phase === 'Pending' && p.metadata?.uid) notStarted.set(p.metadata.uid, owner);
     for (const c of p.status?.conditions ?? []) {
-      if (c.status === 'False' && c.message) msgs.push(`${c.reason ?? c.type}: ${c.message}`);
+      if (c.status === 'False' && c.message) out.push({ owner, msg: `${c.reason ?? c.type}: ${c.message}` });
     }
     for (const cs of p.status?.containerStatuses ?? []) {
       const w = cs.state?.waiting;
-      if (w?.reason) msgs.push(`${w.reason}: ${w.message ?? ''}`);
+      if (w?.reason) out.push({ owner, msg: `${w.reason}: ${w.message ?? ''}` });
     }
   }
   for (const e of events) {
     if (e.type !== 'Warning' || !e.message) continue;
+    let owner: string | null = null;
     if (e.involvedObject?.kind === 'Pod') {
       if (!e.involvedObject.uid || !notStarted.has(e.involvedObject.uid)) continue;
+      owner = notStarted.get(e.involvedObject.uid) ?? null;
     } else {
       const seen = eventLastSeenMs(e);
       // An event nobody can date is not evidence of the present.
       if (seen === null || nowMs - seen > RECENT_EVENT_MS) continue;
+      if (e.involvedObject?.kind === 'ReplicaSet') owner = deploymentOfReplicaSet(e.involvedObject.name);
     }
-    msgs.push(`${e.reason ?? 'Warning'}: ${e.message}`);
+    out.push({ owner, msg: `${e.reason ?? 'Warning'}: ${e.message}` });
   }
-  return msgs.slice(0, 20);
+  return out;
+}
+
+/** The evidence about one Deployment: its own, plus what cannot be attributed to any. Pure. */
+export function evidenceFor(workload: string, evidence: readonly OwnedEvidence[]): string[] {
+  return evidence.filter((e) => e.owner === null || e.owner === workload).map((e) => e.msg).slice(0, 20);
 }
 
 /** The namespace's present pod states and events — where FailedMount/globalmount shows up. */
-async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<string[]> {
+async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<OwnedEvidence[]> {
   let pods: readonly EvidencePod[] = [];
   let events: readonly EvidenceEvent[] = [];
   try {
@@ -496,7 +540,7 @@ async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<strin
       listNamespacedEvent: (a: { namespace: string }) => Promise<{ items?: EvidenceEvent[] }>;
     }).listNamespacedEvent({ namespace })).items ?? [];
   } catch { /* events may be rotated or RBAC-restricted */ }
-  return currentEvidence(pods, events, Date.now());
+  return currentEvidenceByOwner(pods, events, Date.now());
 }
 
 const QUOTA_KEYS = ['requests.cpu', 'requests.memory', 'limits.cpu', 'limits.memory'] as const;
@@ -578,7 +622,7 @@ async function quotaFactsFor(k8s: K8sClients, namespace: string): Promise<{
 const EVIDENCE_REFRESH_MS = 5 * 60 * 1000;
 
 /** Per namespace: since when THIS process has seen it down, and the evidence it last read. */
-const evidenceSeen = new Map<string, { since: number; at: number; msgs: string[] }>();
+const evidenceSeen = new Map<string, { since: number; at: number; msgs: OwnedEvidence[] }>();
 
 /** Whether the namespace's evidence has to be read again. Pure. */
 export function evidenceIsStale(seen: { since: number; at: number } | undefined, nowMs: number): boolean {
@@ -1123,7 +1167,7 @@ export async function reconcileTenantWorkloadHealth(
               detail: 'Deployment is at 0 replicas with the storage-quiesce hold still set — '
                 + 'a storage operation scaled it down and never successfully scaled it back up.',
             }
-          : classifyUnavailability(d.replicaFailure, podMsgs);
+          : classifyUnavailability(d.replicaFailure, evidenceFor(d.name, podMsgs));
       // Open or refresh. `first_seen_at` is left alone on conflict — it is the
       // hysteresis clock and must measure the OUTAGE, not the last tick.
       // Same isolation as the clear path: one tenant must not abort the sweep.
