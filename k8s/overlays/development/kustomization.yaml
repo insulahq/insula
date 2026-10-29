@@ -210,11 +210,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20261029083951-332c835" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20261029092255-6af1c19" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20261029083952-332c835" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20261029092256-6af1c19" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20261029083946-332c835" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20261029092258-6af1c19" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
