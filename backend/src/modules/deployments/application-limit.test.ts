@@ -14,14 +14,20 @@ describe('computeTenantApplicationLimit', () => {
 });
 
 describe('applicationLimitError', () => {
-  it('names the limit, the count and that stopped applications count', () => {
+  it('names the limit, the count and that stopped applications and private workers count', () => {
     const e = applicationLimitError({ limit: 2, current: 2, source: 'plan' }, 'deploy');
     expect(e.code).toBe('APPLICATION_LIMIT_REACHED');
     expect(e.status).toBe(409);
     expect(e.message).toBe(
-      "Deploying another application would exceed your subscription's limit of 2 applications: 2 are deployed, stopped ones included.",
+      "Deploying another application would exceed your subscription's limit of 2 applications: 2 are deployed, stopped ones and private workers included.",
     );
+    expect(e.remediation).toBe('Delete an application or private worker you no longer need, or upgrade your plan, then try again.');
     expect(e.details).toMatchObject({ limit: 2, current: 2, adding: 1 });
+  });
+
+  it('words a new private worker as one', () => {
+    expect(applicationLimitError({ limit: 2, current: 2, source: 'plan' }, 'worker').message)
+      .toMatch(/^Creating another private worker would exceed your subscription's limit of 2 applications: 2 are deployed/);
   });
 
   it('words a restore as a restore, and several at once as several', () => {

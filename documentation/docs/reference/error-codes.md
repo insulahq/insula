@@ -21,7 +21,7 @@ ships with the source.
 | `STEP_UP_UNAVAILABLE` | 409 | Action needs a fresh credential check, but your account has no re-checkable credential (OIDC-only) |
 | `CUSTOM_CONTAINERS_NOT_IN_PLAN` | 403 | The tenant's subscription does not allow custom containers — needed to deploy one or to create a private worker. Enable **Allow Custom Containers** on the plan or on the tenant |
 | `CUSTOM_DEPLOYMENTS_DISABLED` | 403 | Custom containers (and with them new private workers) are switched off platform-wide |
-| `APPLICATION_LIMIT_REACHED` | 409 | The tenant has as many applications as its subscription allows (stopped ones count). Delete one, or raise **Max Applications** on the plan or on the tenant |
+| `APPLICATION_LIMIT_REACHED` | 409 | The tenant has as many applications as its subscription allows (stopped ones and private workers count). Delete one, revoke a worker, or raise **Max Applications** on the plan or on the tenant |
 | `DEPLOYMENT_DELETED` | 409 | The application is deleted. Restore it from **Recently Deleted** first — restoring checks the application limit |
 
 ## Validation

@@ -822,8 +822,8 @@ data:
     # WAF'd request.
     #
     # SCOPE — `(/[^/]+)?(\?|$)` is load-bearing, do not relax it to a bare
-    # prefix. Only three routes send raw transport: POST <base>, POST /validate
-    # and PATCH /<id>. A bare prefix also matched the sibling mutations that
+    # prefix. Only four routes send raw transport: POST <base>, POST /validate,
+    # PATCH /<id> and PUT /<id> (a compose stack edited in place). A bare prefix also matched the sibling mutations that
     # still send JSON — /<id>/pull-credentials, /upgrade-tag, /auto-update,
     # /stop, /start, /update-now — and, because the octet-stream body parser is
     # registered for the whole plugin, let a caller post an opaque uninspected

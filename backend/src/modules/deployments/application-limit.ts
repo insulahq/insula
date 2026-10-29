@@ -4,21 +4,24 @@
  *
  * What counts is exactly what the tenant's Applications page lists: every
  * row of `deployments` (catalog apps, custom containers, compose stacks) that
- * is not deleted. Stopped ones count — they keep their volume, their name and
- * their place, and starting one again needs no free slot. Platform pods in the
- * namespace (file manager, private-worker server, auth and mesh proxies) are
- * not applications and are not in this table at all.
+ * is not deleted, and every private worker that is not revoked. Stopped ones
+ * count — they keep their volume, their name and their place, and starting
+ * one again needs no free slot. A revoked worker is the worker's "deleted":
+ * its tunnel is closed for good and nothing brings it back. Platform pods in
+ * the namespace (file manager, the private-worker server, auth and mesh
+ * proxies) are not applications and are in neither table.
  *
  * Enforced where an application comes INTO existence or back from the
- * deleted list: catalog deploy, custom create (simple and compose), restore
- * from Recently Deleted, and a tenant's restore cart that brings deployments
- * back. A tenant already over its limit (a plan lowered, a limit introduced)
- * keeps everything it runs; it only cannot add.
+ * deleted list: catalog deploy, custom create (simple and compose), a new
+ * private worker, restore from Recently Deleted, and a tenant's restore cart
+ * that brings deployments back (bundles never carry workers). A tenant
+ * already over its limit (a plan lowered, a limit introduced) keeps
+ * everything it runs; it only cannot add.
  */
 import { and, eq, ne, sql } from 'drizzle-orm';
 import type { ApplicationLimitSource, ApplicationUsage } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
-import { deployments, hostingPlans, tenants } from '../../db/schema.js';
+import { deployments, hostingPlans, privateWorkers, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 
 export interface EffectiveApplicationLimit {
@@ -50,29 +53,44 @@ export async function getTenantApplicationLimit(db: Database, tenantId: string):
   return computeTenantApplicationLimit(row);
 }
 
-/** Applications as the Applications page lists them: every row not deleted. */
-export async function countTenantApplications(db: Database, tenantId: string): Promise<number> {
-  const [row] = await db
+export interface TenantApplicationCount {
+  /** Deployments not deleted. */
+  readonly deployments: number;
+  /** Private workers not revoked. */
+  readonly privateWorkers: number;
+}
+
+/**
+ * Applications as the Applications page lists them: deployments not deleted, workers not revoked.
+ * One query after the other, never in parallel: under withApplicationSlot `db` is a transaction —
+ * one connection — and pg refuses (from v9) a query issued while another is still running on it.
+ */
+export async function countTenantApplications(db: Database, tenantId: string): Promise<TenantApplicationCount> {
+  const [apps] = await db
     .select({ count: sql<number>`count(*)` })
     .from(deployments)
     .where(and(eq(deployments.tenantId, tenantId), ne(deployments.status, 'deleted')));
-  return Number(row?.count ?? 0);
+  const [workers] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(privateWorkers)
+    .where(and(eq(privateWorkers.tenantId, tenantId), ne(privateWorkers.status, 'revoked')));
+  return { deployments: Number(apps?.count ?? 0), privateWorkers: Number(workers?.count ?? 0) };
 }
 
 export async function getApplicationUsage(db: Database, tenantId: string): Promise<ApplicationUsage> {
-  const [effective, current] = await Promise.all([
-    getTenantApplicationLimit(db, tenantId),
-    countTenantApplications(db, tenantId),
-  ]);
+  const effective = await getTenantApplicationLimit(db, tenantId);
+  const counted = await countTenantApplications(db, tenantId);
+  const current = counted.deployments + counted.privateWorkers;
   return {
     limit: effective.limit,
     current,
+    privateWorkers: counted.privateWorkers,
     remaining: Math.max(0, effective.limit - current),
     source: effective.source,
   };
 }
 
-export type ApplicationLimitAction = 'deploy' | 'restore';
+export type ApplicationLimitAction = 'deploy' | 'restore' | 'worker';
 
 /** The refusal the tenant reads. One wording for every path that adds an application. Pure. */
 export function applicationLimitError(
@@ -92,14 +110,16 @@ export function applicationLimitError(
   }
   const what = action === 'restore'
     ? (adding === 1 ? 'Restoring this application' : `Restoring ${adding} applications`)
-    : (adding === 1 ? 'Deploying another application' : `Deploying ${adding} applications`);
+    : action === 'worker'
+      ? 'Creating another private worker'
+      : (adding === 1 ? 'Deploying another application' : `Deploying ${adding} applications`);
   return new ApiError(
     'APPLICATION_LIMIT_REACHED',
     `${what} would exceed your subscription's limit of ${usage.limit} application${usage.limit === 1 ? '' : 's'}: `
-      + `${usage.current} ${usage.current === 1 ? 'is' : 'are'} deployed, stopped ones included.`,
+      + `${usage.current} ${usage.current === 1 ? 'is' : 'are'} deployed, stopped ones and private workers included.`,
     409,
     details,
-    'Delete an application you no longer need, or upgrade your plan, then try again.',
+    'Delete an application or private worker you no longer need, or upgrade your plan, then try again.',
   );
 }
 

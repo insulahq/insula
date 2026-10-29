@@ -71,6 +71,12 @@ export const OPERATOR_ERROR_CODES = {
   EMAIL_IN_USE: 'EMAIL_IN_USE',
   // Bulk table actions (admin panel) — some rows updated, some did not
   BULK_PARTIAL_FAILURE: 'BULK_PARTIAL_FAILURE',
+  // Tenant databases (SQL Manager) — the engine refused or could not find the object
+  DB_EXEC_ERROR: 'DB_EXEC_ERROR',
+  SQLITE_ERROR: 'SQLITE_ERROR',
+  DATABASE_NOT_FOUND: 'DATABASE_NOT_FOUND',
+  TABLE_NOT_FOUND: 'TABLE_NOT_FOUND',
+  COLUMN_NOT_FOUND: 'COLUMN_NOT_FOUND',
   // Generic
   UNKNOWN: 'UNKNOWN',
 } as const;

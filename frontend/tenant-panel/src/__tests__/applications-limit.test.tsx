@@ -34,7 +34,9 @@ vi.mock('../hooks/use-private-workers-access', () => ({
   usePrivateWorkersAccess: () => ({ known: workersSettled, canCreate: workersListed, listed: workersListed, settled: workersSettled }),
 }));
 vi.mock('../pages/PrivateWorkers', () => ({
-  default: ({ embedded }: { embedded?: boolean }) => <div data-testid="private-workers-tab-body">{String(embedded)}</div>,
+  default: ({ embedded, atLimit }: { embedded?: boolean; atLimit?: boolean }) => (
+    <div data-testid="private-workers-tab-body" data-at-limit={String(atLimit)}>{String(embedded)}</div>
+  ),
 }));
 vi.mock('../hooks/use-deployments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hooks/use-deployments')>()),
@@ -65,7 +67,7 @@ function renderAt(path = '/applications') {
 }
 
 beforeEach(() => {
-  usage = { limit: 5, current: 3, remaining: 2, source: 'plan' };
+  usage = { limit: 5, current: 3, privateWorkers: 0, remaining: 2, source: 'plan' };
   workersListed = false;
   workersSettled = true;
   allowCustom = true;
@@ -80,16 +82,24 @@ describe('Applications page — the subscription\'s application limit', () => {
   });
 
   it('★ at the limit: Deploy is disabled and the page says what to do', () => {
-    usage = { limit: 2, current: 2, remaining: 0, source: 'plan' };
+    usage = { limit: 2, current: 2, privateWorkers: 0, remaining: 0, source: 'plan' };
     renderAt();
     expect(screen.getByTestId('deploy-button')).toBeDisabled();
     expect(screen.getByTestId('applications-limit-notice')).toHaveTextContent(
-      'You have deployed 2 of the 2 applications your subscription allows. Stopped applications count too.',
+      'You have deployed 2 of the 2 applications your subscription allows. Stopped applications and private workers count too.',
     );
   });
 
+  it('★ private workers are in the count, and the pill says how many of it they are', () => {
+    usage = { limit: 5, current: 3, privateWorkers: 1, remaining: 2, source: 'plan' };
+    renderAt();
+    const pill = screen.getByTestId('applications-usage');
+    expect(pill).toHaveTextContent('3 / 5 applications deployed');
+    expect(pill).toHaveAttribute('title', expect.stringMatching(/^2 applications and 1 private worker of the 5 your subscription allows\./));
+  });
+
   it('over the limit (a plan lowered): nothing is taken away, and it says how many to delete', () => {
-    usage = { limit: 2, current: 3, remaining: 0, source: 'plan' };
+    usage = { limit: 2, current: 3, privateWorkers: 0, remaining: 0, source: 'plan' };
     renderAt();
     expect(screen.getByTestId('applications-limit-notice')).toHaveTextContent('Everything you have keeps running');
     expect(screen.getByTestId('applications-limit-notice')).toHaveTextContent('delete 2 you no longer need');
@@ -138,5 +148,14 @@ describe('Applications page — Private Workers tab', () => {
     workersListed = true;
     renderAt('/applications/workers');
     expect(screen.getByTestId('private-workers-tab-body')).toHaveTextContent('true');
+    expect(screen.getByTestId('private-workers-tab-body')).toHaveAttribute('data-at-limit', 'false');
+  });
+
+  it('★ hands the tab the application limit — a worker counts as an application', () => {
+    workersListed = true;
+    usage = { limit: 2, current: 2, privateWorkers: 1, remaining: 0, source: 'plan' };
+    renderAt('/applications/workers');
+    expect(screen.getByTestId('private-workers-tab-body')).toHaveAttribute('data-at-limit', 'true');
+    expect(screen.getByTestId('applications-limit-notice')).toHaveTextContent('add a private worker');
   });
 });

@@ -216,7 +216,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
             data-testid="plan-max-applications-input"
           />
           <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
-            Catalog apps, custom containers and stacks; stopped ones count. A tenant already above it keeps what it has.
+            Catalog apps, custom containers, stacks and private workers; stopped ones count. A tenant already above it keeps what it has.
           </p>
         </div>
       </div>

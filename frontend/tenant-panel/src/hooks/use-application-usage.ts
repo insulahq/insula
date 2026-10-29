@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { ApplicationUsage } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
+import { DEPLOYMENT_POLL_IDLE_MS } from '@/lib/deployment-polling';
 
 /**
  * The subscription's application limit and how much of it is used — what the
@@ -16,6 +17,10 @@ export function useApplicationUsage(tenantId: string | undefined) {
     queryKey: applicationUsageKey(tenantId),
     queryFn: () => apiFetch<{ data: ApplicationUsage }>(`/api/v1/tenants/${tenantId}/applications/usage`),
     enabled: Boolean(tenantId),
+    // Re-read like the application lists do: an application added or removed
+    // anywhere but this panel (the API, an operator, another tab) otherwise
+    // left the pill on the old count until a reload.
+    refetchInterval: DEPLOYMENT_POLL_IDLE_MS,
     select: (r) => r.data,
   });
 }

@@ -28,6 +28,7 @@ import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resour
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
 import { useApplicationUsage, applicationRoom } from '@/hooks/use-application-usage';
+import { isTransitionalDeploymentStatus } from '@/lib/deployment-polling';
 import ApplicationUsagePill, { applicationLimitNotice } from '@/components/ApplicationUsagePill';
 import { usePrivateWorkersAccess } from '@/hooks/use-private-workers-access';
 import PrivateWorkers from '@/pages/PrivateWorkers';
@@ -187,7 +188,7 @@ export default function Applications() {
       {activeTab === 'custom' && allowCustomContainers && tenantId && (
         <CustomContainersTab tenantId={tenantId} canManage={canManage} atLimit={atLimit} />
       )}
-      {activeTab === 'workers' && privateWorkers.listed && <PrivateWorkers embedded />}
+      {activeTab === 'workers' && privateWorkers.listed && <PrivateWorkers embedded atLimit={atLimit} />}
 
       <DeployWorkloadModal
         open={deployModalOpen}
@@ -1153,7 +1154,7 @@ function DeploymentListView({
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
           {sortedData.map((deployment) => {
-            const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
+            const isTransitioning = isTransitionalDeploymentStatus(deployment.status);
             const showStopOnStuck = deployment.status === 'failed';
             return (
               <tr
@@ -1314,10 +1315,12 @@ function InstalledTab({ atLimit }: { readonly atLimit: boolean }) {
   }, []);
 
   // ─── Deployments with auto-refresh ─────────────────────────────────────────
-  // Always poll at 15s to detect crashes without page reload; use faster 3s for transitioning states
+  // Poll at 15 s to catch a crash without a page reload, and every 3 s while a
+  // row is changing state (the comment here promised that; the code polled
+  // at 15 s throughout).
   const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(
     tenantId ?? undefined,
-    { refetchInterval: 15_000 },
+    { pollByStatus: true },
   );
 
   const allDeployments = deploymentsData?.data ?? [];
@@ -1516,7 +1519,7 @@ function InstalledTab({ atLimit }: { readonly atLimit: boolean }) {
           ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {visibleActive.map((deployment) => {
-              const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
+              const isTransitioning = isTransitionalDeploymentStatus(deployment.status);
               // Long-stuck = pending/deploying with a stale updated_at (>5min) OR
               // any failed row. The status-reconciler escalates pending→failed
               // after 60min, but the customer needs an escape hatch sooner —

@@ -20,10 +20,12 @@ import { deployments, tenants } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
+import { notifyAdminCustomDeploymentFailed, notifyTenantCustomDeploymentFailed } from '../notifications/events.js';
 import { isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 import { formatQuotaExceededMessage } from '../deployments/k8s-deployer.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import { serviceResourceName } from './k8s-deployer.js';
+import { tenantVisibleText } from '../../shared/operator-only-text.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -51,16 +53,43 @@ interface ReconcileOutcome {
  * thrown so the parent reconciler can surface them in its
  * `errors[]` summary.
  */
+/**
+ * The k8s Deployment names of a custom row: the stack name for one service,
+ * `<stack>-<service>` for each of several (k8s-deployer serviceResourceName).
+ * Reading only `row.name` never found a multi-service stack, so it sat at
+ * `deploying` and was failed at 60 minutes as "not created". Pure.
+ */
+export function stackWorkloadNames(row: { readonly name: string; readonly customSpec: unknown }): string[] {
+  const services = Object.keys((row.customSpec as { services?: Record<string, unknown> } | null)?.services ?? {});
+  if (services.length <= 1) return [row.name];
+  return services.map((svc) => serviceResourceName(row.name, svc, services.length));
+}
+
+/** One observation for the whole stack: the first failure / pending reason, the oldest pod. Pure. */
+export function mergePodObservations(observations: readonly PodObservation[]): PodObservation {
+  // "Every pod is newer than X" holds for the stack only if it holds for every
+  // service, so one unknown (null) makes the whole stack's unknown.
+  const times = observations.map((o) => o.oldestCreatedAtMs);
+  const oldest = times.some((t) => t === null) ? null : Math.min(...(times as number[]));
+  return {
+    node: observations.find((o) => o.node)?.node ?? null,
+    failureReason: observations.find((o) => o.failureReason)?.failureReason ?? null,
+    pendingReason: observations.find((o) => o.pendingReason)?.pendingReason ?? null,
+    oldestCreatedAtMs: observations.length === 0 ? null : oldest,
+  };
+}
+
 export async function reconcileCustomRow(
   db: Database,
   k8s: K8sClients,
   row: typeof deployments.$inferSelect,
   namespace: string,
 ): Promise<ReconcileOutcome> {
-  const k8sDeployment = await readDeploymentSafe(k8s, namespace, row.name);
+  const names = stackWorkloadNames(row);
+  const workloads = await Promise.all(names.map((n) => readDeploymentSafe(k8s, namespace, n)));
 
-  if (k8sDeployment === null) {
-    // Deployment not found in the cluster — either we've just
+  if (workloads.some((w) => w === null)) {
+    // A Deployment not found in the cluster — either we've just
     // created the DB row and the k8s apply is in flight, or
     // someone deleted the underlying object out-of-band.
     if (row.status === 'deploying' || row.status === 'pending') {
@@ -76,9 +105,11 @@ export async function reconcileCustomRow(
     }
     return { status: 'failed', statusMessage: 'k8s Deployment is missing.', node: null };
   }
+  const present = workloads as K8sDeploymentLike[];
 
-  const ready = k8sDeployment.status?.readyReplicas ?? 0;
-  const desired = k8sDeployment.spec?.replicas ?? 1;
+  const counts = present.map((w) => ({ ready: w.status?.readyReplicas ?? 0, desired: w.spec?.replicas ?? 1 }));
+  const allRunning = counts.every((c) => c.desired > 0 && c.ready >= c.desired);
+  const allStopped = counts.every((c) => c.desired === 0);
 
   // Capture host node + run audit in parallel with the status read —
   // both are read-only ops and don't depend on the reconcile outcome.
@@ -89,7 +120,7 @@ export async function reconcileCustomRow(
   // — a `:latest` container permanently showing "unknown" update status — with
   // nothing in the logs connecting the two. Log it; keep going.
   const [podObservation] = await Promise.all([
-    readFirstPodObservation(k8s, namespace, row.name),
+    Promise.all(names.map((n) => readFirstPodObservation(k8s, namespace, n))).then(mergePodObservations),
     recordImageAudit(db, k8s, row.id, namespace, row.name).catch((err: unknown) => {
       console.warn(
         `[custom-deployments] image audit failed for ${row.id} (${row.name}): `
@@ -106,12 +137,12 @@ export async function reconcileCustomRow(
   // failure.
   let status: DbStatus;
   let statusMessage: string | null = null;
-  if (ready >= desired && desired > 0) {
+  if (allRunning) {
     status = 'running';
   } else if (podObservation.failureReason) {
     status = 'failed';
     statusMessage = podObservation.failureReason;
-  } else if (desired === 0) {
+  } else if (allStopped) {
     status = 'stopped';
   } else {
     status = 'pending';
@@ -137,7 +168,11 @@ export async function reconcileCustomRow(
     // on their own. Something has to change — the request, the quota, or a
     // neighbour — and the operator is the one who has to do it.
     if (!statusMessage) {
-      const createFailure = await readReplicaCreateFailure(k8s, namespace, row.name);
+      let createFailure: string | null = null;
+      for (const n of names) {
+        createFailure = await readReplicaCreateFailure(k8s, namespace, n);
+        if (createFailure) break;
+      }
       if (createFailure) {
         status = 'failed';
         statusMessage = createFailure;
@@ -158,7 +193,7 @@ export async function reconcileCustomRow(
     status,
     statusMessage,
     node: podObservation.node,
-    heldByStorageOp: k8sDeployment.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true',
+    heldByStorageOp: present.some((w) => w.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true'),
     oldestPodCreatedAtMs: podObservation.oldestCreatedAtMs,
   };
 }
@@ -367,6 +402,18 @@ async function readDeploymentSafe(
   }
 }
 
+/** Notifications carry the start of a long reason; the tab shows it whole. Pure. */
+export function capReason(text: string, max = 400): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** A reason as one sentence: trimmed, ending in exactly one full stop (or ? / !). Pure. */
+export function asSentence(text: string): string {
+  const t = text.trim().replace(/[.\s]+$/, '');
+  if (!t) return t;
+  return /[!?…]$/.test(t) ? t : `${t}.`;
+}
+
 /** Apply the reconcile outcome to the DB row. Idempotent — no-op
  *  when nothing changed. */
 export async function applyReconcileOutcome(
@@ -398,7 +445,9 @@ export async function applyReconcileOutcome(
         .from(tenants)
         .where(eq(tenants.id, current.tenantId))
         .limit(1);
-      const reason = outcome.statusMessage ?? 'no diagnostic reason reported';
+      // One sentence, so the templates can follow it with the next one ("…the
+      // plan.. It keeps restarting" was the old admin text).
+      const reason = asSentence(outcome.statusMessage ?? 'no diagnostic reason reported');
       // dedupe_key is varchar(128): NEVER inline the full reason (it can exceed
       // that and make the delivery INSERT throw, which dispatchSafe swallows — the
       // notification then vanishes silently). Key on the deployment + a short hash
@@ -410,6 +459,17 @@ export async function applyReconcileOutcome(
         current.tenantId,
         { tenantLabel: t?.name ?? current.tenantId, deploymentName: current.name, reason },
         `cdfail:${rowId}:${reasonHash}`,
+      );
+      // The tenant's own container: they are told too, with the reason the
+      // Custom Containers tab shows them (operator-only detail cut).
+      await notifyTenantCustomDeploymentFailed(
+        db,
+        current.tenantId,
+        {
+          deploymentName: current.name,
+          reason: asSentence(capReason(tenantVisibleText(outcome.statusMessage ?? 'no reason was reported'))),
+        },
+        `cdfail-t:${rowId}:${reasonHash}`,
       );
     } catch {
       // status is already persisted; the notification is advisory.

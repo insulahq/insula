@@ -13,6 +13,7 @@ import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import { quoteId, quoteSqlString } from '@/lib/quote-sql-identifier';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import {
   useDeployments,
@@ -122,12 +123,6 @@ function detectEngine(catalogEntryName: string | undefined): DbEngine {
   return 'sql';
 }
 
-/** Quote an identifier for the target database engine. MariaDB/MySQL use backticks; PostgreSQL/SQLite use double quotes. */
-function quoteId(name: string, runtime: string | undefined): string {
-  const r = (runtime ?? '').toLowerCase();
-  if (r.includes('mariadb') || r.includes('mysql')) return `\`${name}\``;
-  return `"${name}"`;
-}
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
@@ -198,6 +193,25 @@ export default function DatabaseManager() {
   const [rowActionPending, setRowActionPending] = useState(false);
   const [rowActionError, setRowActionError] = useState<string | null>(null);
 
+  // A table selection belongs to ONE database, so every database switch goes
+  // through here. "Create database" used to switch to the new database but
+  // keep the previous table, and the panel then asked the new database for a
+  // table it never had. The Browse/Structure tabs vanish with the table, so
+  // the results pane returns to the query tab.
+  const selectDatabase = useCallback((name: string) => {
+    setSelectedDatabase(name);
+    setResultsView('query');
+    setBrowseTable('');
+    setBrowsePage(1);
+    setBrowseSortCol(undefined);
+    setStructureTable('');
+    setEditRowData(null);
+    setEditRowOriginal(null);
+    setInsertRowOpen(false);
+    setConfirmDeleteRow(null);
+    setRowActionError(null);
+  }, []);
+
   // ─── Data queries ───────────────────────────────────────────────────────────
 
   const { data: catalogData } = useCatalog();
@@ -241,9 +255,9 @@ export default function DatabaseManager() {
   useEffect(() => {
     if (selectedDeployment && ['stopped', 'failed', 'deleted'].includes(selectedDeployment.status)) {
       setSelectedDeploymentId('');
-      setSelectedDatabase('');
+      selectDatabase('');
     }
-  }, [selectedDeployment?.status]);
+  }, [selectedDeployment?.status, selectDatabase]);
 
   // Databases for selected deployment (deployment mode only)
   // `error` is deliberately read, not just `data`. A failed request left
@@ -266,9 +280,9 @@ export default function DatabaseManager() {
   // Auto-select first database (deployment mode only)
   useEffect(() => {
     if (!isSqlite && databases.length > 0 && !selectedDatabase) {
-      setSelectedDatabase(databases[0].name);
+      selectDatabase(databases[0].name);
     }
-  }, [isSqlite, databases, selectedDatabase]);
+  }, [isSqlite, databases, selectedDatabase, selectDatabase]);
 
   // ─── Deployment-mode hooks ────────────────────────────────────────────────
 
@@ -283,14 +297,14 @@ export default function DatabaseManager() {
     isSqlite ? undefined : (selectedDeploymentId || undefined),
   );
 
-  const { data: deployStructureData, isLoading: deployStructureLoading } = useTableStructure(
+  const { data: deployStructureData, isLoading: deployStructureLoading, error: deployStructureError, refetch: refetchDeployStructure } = useTableStructure(
     isSqlite ? undefined : tenantId,
     isSqlite ? undefined : (selectedDeploymentId || undefined),
     isSqlite ? undefined : (selectedDatabase || undefined),
     isSqlite ? undefined : (structureTable || undefined),
   );
 
-  const { data: deployBrowseData, isLoading: deployBrowseLoading } = useTableData(
+  const { data: deployBrowseData, isLoading: deployBrowseLoading, error: deployBrowseError, refetch: refetchDeployBrowse } = useTableData(
     isSqlite ? undefined : tenantId,
     isSqlite ? undefined : (selectedDeploymentId || undefined),
     isSqlite ? undefined : (selectedDatabase || undefined),
@@ -298,7 +312,7 @@ export default function DatabaseManager() {
     { page: browsePage, pageSize: PAGE_SIZE, orderBy: browseSortCol, orderDir: browseSortDir },
   );
 
-  const { data: deployRowCountData } = useRowCount(
+  const { data: deployRowCountData, error: deployRowCountError } = useRowCount(
     isSqlite ? undefined : tenantId,
     isSqlite ? undefined : (selectedDeploymentId || undefined),
     isSqlite ? undefined : (selectedDatabase || undefined),
@@ -318,20 +332,20 @@ export default function DatabaseManager() {
 
   const sqliteExecuteQuery = useSqliteQuery(isSqlite ? tenantId : undefined);
 
-  const { data: sqliteStructureData, isLoading: sqliteStructureLoading } = useSqliteTableStructure(
+  const { data: sqliteStructureData, isLoading: sqliteStructureLoading, error: sqliteStructureError, refetch: refetchSqliteStructure } = useSqliteTableStructure(
     isSqlite ? tenantId : undefined,
     sqliteFile,
     isSqlite ? (structureTable || undefined) : undefined,
   );
 
-  const { data: sqliteBrowseData, isLoading: sqliteBrowseLoading } = useSqliteTableData(
+  const { data: sqliteBrowseData, isLoading: sqliteBrowseLoading, error: sqliteBrowseError, refetch: refetchSqliteBrowse } = useSqliteTableData(
     isSqlite ? tenantId : undefined,
     sqliteFile,
     isSqlite ? (browseTable || undefined) : undefined,
     { page: browsePage, pageSize: PAGE_SIZE, orderBy: browseSortCol, orderDir: browseSortDir },
   );
 
-  const { data: sqliteRowCountData } = useSqliteRowCount(
+  const { data: sqliteRowCountData, error: sqliteRowCountError } = useSqliteRowCount(
     isSqlite ? tenantId : undefined,
     sqliteFile,
     isSqlite ? (browseTable || undefined) : undefined,
@@ -373,11 +387,19 @@ export default function DatabaseManager() {
     ? (sqliteStructureData?.data ?? [])
     : (deployStructureData?.data ?? []);
   const structureLoading = isSqlite ? sqliteStructureLoading : deployStructureLoading;
+  // Read every error, not just `data`: a refused or failed table read used to
+  // leave `data` undefined and render as "No data" / "No columns" — the tenant
+  // saw an empty table where the engine held rows.
+  const structureError = isSqlite ? sqliteStructureError : deployStructureError;
+  const refetchStructure = isSqlite ? refetchSqliteStructure : refetchDeployStructure;
 
   const browseResult = isSqlite
     ? (sqliteBrowseData?.data ?? null)
     : (deployBrowseData?.data ?? null);
   const browseLoading = isSqlite ? sqliteBrowseLoading : deployBrowseLoading;
+  const browseError = isSqlite ? sqliteBrowseError : deployBrowseError;
+  const refetchBrowse = isSqlite ? refetchSqliteBrowse : refetchDeployBrowse;
+  const rowCountError = isSqlite ? sqliteRowCountError : deployRowCountError;
 
   const totalRows = isSqlite
     ? (sqliteRowCountData?.data?.count ?? 0)
@@ -424,11 +446,11 @@ export default function DatabaseManager() {
           setNewDbName('');
           setCreateDbOpen(false);
           // Auto-select the newly created database
-          setSelectedDatabase(createdName);
+          selectDatabase(createdName);
         },
       },
     );
-  }, [newDbName, selectedDeploymentId, createDbDatabase]);
+  }, [newDbName, selectedDeploymentId, createDbDatabase, selectDatabase]);
 
   const handleDropDb = useCallback(
     (dbName: string) => {
@@ -439,13 +461,13 @@ export default function DatabaseManager() {
           onSuccess: () => {
             setConfirmDeleteDb(null);
             if (selectedDatabase === dbName) {
-              setSelectedDatabase('');
+              selectDatabase('');
             }
           },
         },
       );
     },
-    [selectedDeploymentId, selectedDatabase, dropDbDatabase],
+    [selectedDeploymentId, selectedDatabase, dropDbDatabase, selectDatabase],
   );
 
   const handleCreateUser = useCallback(() => {
@@ -503,14 +525,12 @@ export default function DatabaseManager() {
   const handleDeploymentChange = useCallback(
     (id: string) => {
       setSelectedDeploymentId(id);
-      setSelectedDatabase('');
+      selectDatabase('');
       setQueryResult(null);
       setQueryError(null);
-      setBrowseTable('');
-      setStructureTable('');
       setSearchParams({ deploymentId: id });
     },
-    [setSearchParams],
+    [setSearchParams, selectDatabase],
   );
 
   const handleRunQuery = useCallback(() => {
@@ -551,7 +571,9 @@ export default function DatabaseManager() {
     setBrowseSortCol(undefined);
     setResultsView('browse');
     // Scroll the results area into view
-    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    // Optional-call: scrollIntoView is not implemented everywhere (jsdom), and
+    // this fires 50 ms later, after a test may already have finished.
+    setTimeout(() => resultsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 50);
   }, []);
 
   const handleViewStructure = useCallback((tableName: string) => {
@@ -668,19 +690,20 @@ export default function DatabaseManager() {
 
   const executeDdl = useCallback(
     async (sql: string): Promise<void> => {
+      // The query endpoint reports an engine failure INSIDE a 200 result (the
+      // query tab renders it). Resolving on 200 alone let a failed row edit,
+      // insert, delete or DDL close its form as if it had been applied.
+      const settle = (resolve: () => void, reject: (err: unknown) => void) => ({
+        onSuccess: (res: { data: QueryResult }) => (res.data?.error ? reject(new Error(res.data.error)) : resolve()),
+        onError: (err: unknown) => reject(err),
+      });
       if (isSqlite && sqliteFile) {
         await new Promise<void>((resolve, reject) => {
-          sqliteExecuteQuery.mutate(
-            { filePath: sqliteFile, query: sql },
-            { onSuccess: () => resolve(), onError: (err) => reject(err) },
-          );
+          sqliteExecuteQuery.mutate({ filePath: sqliteFile, query: sql }, settle(resolve, reject));
         });
       } else if (selectedDatabase) {
         await new Promise<void>((resolve, reject) => {
-          deployExecuteQuery.mutate(
-            { database: selectedDatabase, query: sql },
-            { onSuccess: () => resolve(), onError: (err) => reject(err) },
-          );
+          deployExecuteQuery.mutate({ database: selectedDatabase, query: sql }, settle(resolve, reject));
         });
       }
     },
@@ -825,7 +848,7 @@ export default function DatabaseManager() {
     const pkValue = rowData[browseTablePkColumn];
     if (pkValue === undefined) return;
 
-    const sql = `DELETE FROM ${quoteId(browseTable, dbRuntime)} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `DELETE FROM ${quoteId(browseTable, dbRuntime)} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = ${quoteSqlString(pkValue, dbRuntime)}`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -838,7 +861,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, browseTablePkColumn, executeDdl, invalidateTableQueries]);
+  }, [browseTable, browseTablePkColumn, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Edit Row (save) ──────────────────────────────────────────────────────
 
@@ -851,7 +874,7 @@ export default function DatabaseManager() {
       .filter(([key, val]) => val !== editRowOriginal[key])
       .map(([key, val]) => {
         if (val === '' || val === 'NULL') return `${quoteId(key, dbRuntime)} = NULL`;
-        return `${quoteId(key, dbRuntime)} = '${val.replace(/'/g, "''")}'`;
+        return `${quoteId(key, dbRuntime)} = ${quoteSqlString(val, dbRuntime)}`;
       });
 
     if (setClauses.length === 0) {
@@ -860,7 +883,7 @@ export default function DatabaseManager() {
       return;
     }
 
-    const sql = `UPDATE ${quoteId(browseTable, dbRuntime)} SET ${setClauses.join(', ')} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `UPDATE ${quoteId(browseTable, dbRuntime)} SET ${setClauses.join(', ')} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = ${quoteSqlString(pkValue, dbRuntime)}`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -874,7 +897,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, browseTablePkColumn, editRowData, editRowOriginal, executeDdl, invalidateTableQueries]);
+  }, [browseTable, browseTablePkColumn, editRowData, editRowOriginal, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Insert Row ────────────────────────────────────────────────────────────
 
@@ -884,7 +907,7 @@ export default function DatabaseManager() {
     if (entries.length === 0) return;
 
     const colNames = entries.map(([key]) => quoteId(key, dbRuntime)).join(', ');
-    const values = entries.map(([, val]) => `'${val.replace(/'/g, "''")}'`).join(', ');
+    const values = entries.map(([, val]) => quoteSqlString(val, dbRuntime)).join(', ');
     const sql = `INSERT INTO ${quoteId(browseTable, dbRuntime)} (${colNames}) VALUES (${values})`;
 
     setRowActionPending(true);
@@ -900,7 +923,7 @@ export default function DatabaseManager() {
     } finally {
       setRowActionPending(false);
     }
-  }, [browseTable, insertRowData, executeDdl, invalidateTableQueries]);
+  }, [browseTable, insertRowData, dbRuntime, executeDdl, invalidateTableQueries]);
 
   // ─── Column helpers for create table form ──────────────────────────────────
 
@@ -1129,11 +1152,7 @@ export default function DatabaseManager() {
                 <select
                   id="database-select"
                   value={selectedDatabase}
-                  onChange={(e) => {
-                    setSelectedDatabase(e.target.value);
-                    setBrowseTable('');
-                    setStructureTable('');
-                  }}
+                  onChange={(e) => selectDatabase(e.target.value)}
                   className="flex-1 min-w-0 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   data-testid="database-selector"
                 >
@@ -1903,6 +1922,10 @@ export default function DatabaseManager() {
               <BrowsePanel
                 result={browseResult}
                 isLoading={browseLoading}
+                error={browseError}
+                rowCountError={rowCountError}
+                onRetry={() => { void refetchBrowse(); }}
+                tableName={browseTable}
                 page={browsePage}
                 totalPages={totalPages}
                 totalRows={totalRows}
@@ -1938,6 +1961,8 @@ export default function DatabaseManager() {
               <StructurePanel
                 columns={columns}
                 isLoading={structureLoading}
+                error={structureError}
+                onRetry={() => { void refetchStructure(); }}
                 tableName={structureTable}
                 addColumnOpen={addColumnOpen}
                 addColumnName={addColumnName}
@@ -2454,6 +2479,10 @@ function QueryResultsPanel({
 function BrowsePanel({
   result,
   isLoading,
+  error,
+  rowCountError,
+  onRetry,
+  tableName,
   page,
   totalPages,
   totalRows,
@@ -2484,6 +2513,10 @@ function BrowsePanel({
 }: {
   readonly result: QueryResult | null;
   readonly isLoading: boolean;
+  readonly error: unknown;
+  readonly rowCountError: unknown;
+  readonly onRetry: () => void;
+  readonly tableName: string;
   readonly page: number;
   readonly totalPages: number;
   readonly totalRows: number;
@@ -2520,9 +2553,32 @@ function BrowsePanel({
     );
   }
 
+  // "No data" is a claim about the table. Make it only when the read
+  // succeeded: a refused or failed request renders as the engine's error.
+  if (error || result?.error) {
+    return (
+      <div className="p-4">
+        <ErrorPanel
+          error={extractOperatorError(error ?? new Error(result?.error ?? 'Failed to read the table'))}
+          severity="error"
+          onRetry={onRetry}
+          testId="table-data-error"
+        />
+      </div>
+    );
+  }
+
+  if (!tableName) {
+    return (
+      <div className="flex items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+        <p className="text-sm">Select a table to browse its rows</p>
+      </div>
+    );
+  }
+
   if (!result) {
     return (
-      <div className="flex items-center justify-center py-12 text-gray-400">
+      <div className="flex items-center justify-center py-12 text-gray-400 dark:text-gray-500">
         <p className="text-sm">No data</p>
       </div>
     );
@@ -2536,6 +2592,13 @@ function BrowsePanel({
 
   return (
     <div className="flex flex-col flex-1">
+      {/* The rows loaded but the count did not: keep the rows, say why paging is off. */}
+      {rowCountError != null && (
+        <div className="px-4 pt-3">
+          <ErrorPanel error={extractOperatorError(rowCountError)} severity="warn" compact testId="table-row-count-error" />
+        </div>
+      )}
+
       {/* Row action bar */}
       {pkColumn && (
         <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-4 py-2">
@@ -2809,6 +2872,8 @@ function BrowsePanel({
 function StructurePanel({
   columns,
   isLoading,
+  error,
+  onRetry,
   tableName,
   addColumnOpen,
   addColumnName,
@@ -2827,6 +2892,8 @@ function StructurePanel({
 }: {
   readonly columns: readonly ColumnInfo[];
   readonly isLoading: boolean;
+  readonly error: unknown;
+  readonly onRetry: () => void;
   readonly tableName: string;
   readonly addColumnOpen: boolean;
   readonly addColumnName: string;
@@ -2851,9 +2918,25 @@ function StructurePanel({
     );
   }
 
+  if (error) {
+    return (
+      <div className="p-4">
+        <ErrorPanel error={extractOperatorError(error)} severity="error" onRetry={onRetry} testId="table-structure-error" />
+      </div>
+    );
+  }
+
+  if (!tableName) {
+    return (
+      <div className="flex items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+        <p className="text-sm">Select a table to view its structure</p>
+      </div>
+    );
+  }
+
   if (columns.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12 text-gray-400">
+      <div className="flex items-center justify-center py-12 text-gray-400 dark:text-gray-500">
         <p className="text-sm">No structure data for {tableName}</p>
       </div>
     );

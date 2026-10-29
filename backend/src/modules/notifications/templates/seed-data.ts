@@ -2004,7 +2004,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Custom deployment failed: {{deploymentName}} ({{tenantLabel}})',
     bodyTemplate: emailMjml(
       'Custom deployment failed',
-      'Tenant {{tenantLabel}} — deployment {{deploymentName}} entered a failed state: {{reason}}. '
+      'Tenant {{tenantLabel}} — deployment {{deploymentName}} entered a failed state: {{reason}} '
       + 'The container keeps restarting until the image/config is fixed or the deployment is stopped. '
       + 'Investigate in the tenant’s Custom Containers tab.',
     ),
@@ -2021,7 +2021,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Custom deployment failed: {{deploymentName}}',
-    bodyTemplate: 'Tenant {{tenantLabel}} — {{deploymentName}} failed: {{reason}}. It keeps restarting until fixed or stopped (Custom Containers tab).',
+    bodyTemplate: 'Tenant {{tenantLabel}} — {{deploymentName}} failed: {{reason}} It keeps restarting until fixed or stopped (Custom Containers tab).',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
@@ -2477,6 +2477,42 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'list', type: 'string', required: true },
       { name: 'severity', type: 'string', required: true },
       { name: 'lookupUrl', type: 'string', required: false },
+    ],
+  },
+
+  // ── tenant.custom_deployment_failed (the tenant's half of admin.custom_deployment_failed) ──
+  {
+    categoryId: 'tenant.custom_deployment_failed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[CONTAINER] {{deploymentName}} failed to start',
+    bodyTemplate: emailMjml(
+      '{{deploymentName}} failed to start',
+      'Your container {{deploymentName}} could not start: {{reason}} It keeps retrying until '
+      + 'the cause is fixed or you stop it.',
+      // No CTA of its own: the dispatcher's action buttons are absolute URLs
+      // to the Custom Containers tab (action-path.ts); a `{{panelUrl}}` here
+      // would be a relative, dead link in an email.
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.custom_deployment_failed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[CONTAINER] {{deploymentName}} failed to start',
+    bodyTemplate: 'Your container {{deploymentName}} could not start: {{reason}} It keeps retrying '
+      + 'until the cause is fixed or you stop it.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
     ],
   },
 

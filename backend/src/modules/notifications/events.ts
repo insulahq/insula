@@ -1897,6 +1897,26 @@ export async function notifyAdminCustomDeploymentFailed(
   await dispatchSafe(db, 'admin.custom_deployment_failed', { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
+export interface TenantCustomDeploymentFailedPayload {
+  /** The custom deployment's name, as the tenant's panel shows it. */
+  readonly deploymentName: string;
+  /** The reason the panel shows on the row (tenant-visible part only). */
+  readonly reason: string;
+}
+/**
+ * The tenant's half of notifyAdminCustomDeploymentFailed: their container went
+ * into `failed`. Same transition, same dedupe scheme (one per deployment and
+ * reason) — the tenant used to learn of it only from the Custom Containers tab.
+ */
+export async function notifyTenantCustomDeploymentFailed(
+  db: Database,
+  tenantId: string,
+  payload: TenantCustomDeploymentFailedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.custom_deployment_failed', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
 // ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
 
 export interface AdminBandwidthPayload {
