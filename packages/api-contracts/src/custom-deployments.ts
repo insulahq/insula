@@ -496,6 +496,16 @@ export const createCustomDeploymentComposeSchema = z.object({
   pull_credential: pullCredentialInputSchema.optional(),
 });
 
+/**
+ * Edit a compose stack in place from new YAML (PUT …/custom-deployments/:id/compose).
+ * The stack keeps its id, name, routes, pull credential and settings; nothing
+ * is deleted. Name, registry credential and mode are not part of an edit.
+ */
+export const replaceCustomDeploymentComposeSchema = z.object({
+  compose_yaml: z.string().min(1).max(256 * 1024),
+  env_files: z.record(z.string().min(1).max(255), z.string().max(64 * 1024)).optional(),
+});
+
 export const createCustomDeploymentSchema = z.discriminatedUnion('mode', [
   createCustomDeploymentSimpleSchema,
   createCustomDeploymentComposeSchema,
@@ -675,6 +685,7 @@ export type CustomDeploymentConfigMap = z.infer<typeof customConfigMapSchema>;
 export type CustomDeploymentSecret = z.infer<typeof customSecretSchema>;
 export type CreateCustomDeploymentSimpleInput = z.infer<typeof createCustomDeploymentSimpleSchema>;
 export type CreateCustomDeploymentComposeInput = z.infer<typeof createCustomDeploymentComposeSchema>;
+export type ReplaceCustomDeploymentComposeInput = z.infer<typeof replaceCustomDeploymentComposeSchema>;
 export type CreateCustomDeploymentInput = z.infer<typeof createCustomDeploymentSchema>;
 export type UpdateCustomDeploymentInput = z.infer<typeof updateCustomDeploymentSchema>;
 export type SetAllowRootInput = z.infer<typeof setAllowRootSchema>;

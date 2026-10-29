@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { deploymentListPollMs } from '@/lib/deployment-polling';
 import type { Deployment, PaginatedResponse } from '@/types/api';
 import type { z } from 'zod';
 import type { createDeploymentSchema, updateDeploymentSchema } from '@insula/api-contracts';
@@ -10,12 +11,19 @@ import type { createDeploymentSchema, updateDeploymentSchema } from '@insula/api
 type CreateDeploymentInput = z.input<typeof createDeploymentSchema>;
 type UpdateDeploymentInput = z.input<typeof updateDeploymentSchema>;
 
-export function useDeployments(tenantId: string | undefined, options?: { refetchInterval?: number | false }) {
+/**
+ * `pollByStatus`: re-read every 3 s while a row is changing state, every 15 s
+ * otherwise (lib/deployment-polling.ts) — so a deploy that fails afterwards
+ * shows as failed without a reload.
+ */
+export function useDeployments(tenantId: string | undefined, options?: { refetchInterval?: number | false; pollByStatus?: boolean }) {
   return useQuery({
     queryKey: ['deployments', tenantId],
     queryFn: () => apiFetch<PaginatedResponse<Deployment>>(`/api/v1/tenants/${tenantId}/deployments?include_deleted=true`),
     enabled: Boolean(tenantId),
-    refetchInterval: options?.refetchInterval,
+    refetchInterval: options?.pollByStatus
+      ? (query) => deploymentListPollMs(query.state.data?.data?.filter((d) => d.status !== 'deleted'))
+      : options?.refetchInterval,
   });
 }
 

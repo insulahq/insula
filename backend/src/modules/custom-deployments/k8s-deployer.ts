@@ -997,6 +997,45 @@ export async function deleteCustomDeployment(
   await deleteByLabel(k8s, namespace, selector, 'secret');
 }
 
+/**
+ * After an in-place edit (compose-replace.ts): remove what the new spec no
+ * longer has. Deployments and Services of a dropped service (selected by the
+ * stack-service label), and the stack's ConfigMaps / Secrets whose rendered
+ * name the new spec does not produce. The image-pull Secret
+ * (`image-pull-<id>`) carries neither the stack-service label nor the
+ * `cd-<id>-cfg-` / `cd-<id>-sec-` prefix, so it is never touched.
+ */
+export async function pruneRemovedStackObjects(
+  k8s: K8sClients,
+  namespace: string,
+  deploymentId: string,
+  spec: CustomDeploymentSpec,
+): Promise<void> {
+  const keep = Object.keys(spec.services);
+  if (keep.length === 0) return;
+  const dropped = `insula.host/deployment-id=${deploymentId},insula.host/stack-service,insula.host/stack-service notin (${keep.join(',')})`;
+  await deleteByLabel(k8s, namespace, dropped, 'deployment');
+  await deleteByLabel(k8s, namespace, dropped, 'service');
+
+  const owned = `insula.host/deployment-id=${deploymentId}`;
+  const keepCm = new Set(spec.configMaps.map((c) => renderConfigMapName(deploymentId, c.name)));
+  const keepSec = new Set(spec.secrets.map((x) => renderSecretName(deploymentId, x.name)));
+  const cms = await k8s.core.listNamespacedConfigMap({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedConfigMap>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  for (const item of cms.items ?? []) {
+    const n = item.metadata?.name;
+    if (n && n.startsWith(`cd-${deploymentId}-cfg-`) && !keepCm.has(n)) {
+      await k8s.core.deleteNamespacedConfigMap({ name: n, namespace }).catch(swallow404);
+    }
+  }
+  const secs = await k8s.core.listNamespacedSecret({ namespace, labelSelector: owned } as Parameters<typeof k8s.core.listNamespacedSecret>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  for (const item of secs.items ?? []) {
+    const n = item.metadata?.name;
+    if (n && n.startsWith(`cd-${deploymentId}-sec-`) && !keepSec.has(n)) {
+      await k8s.core.deleteNamespacedSecret({ name: n, namespace }).catch(swallow404);
+    }
+  }
+}
+
 async function deleteByLabel(
   k8s: K8sClients,
   namespace: string,

@@ -55,7 +55,9 @@ export function CustomContainersTab({ tenantId, canManage, atLimit = false }: Cu
   const [activeModal, setActiveModal] = useState<ActiveModal>({ kind: 'none' });
   const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null);
 
-  const { data, isLoading, error, refetch } = useCustomDeployments(tenantId);
+  // Polls: a container that fails after it was created (quota, crash loop,
+  // image pull) only shows as failed when the list is read again.
+  const { data, isLoading, error, refetch } = useCustomDeployments(tenantId, { pollByStatus: true });
   const rows = useMemo(() => data?.data ?? [], [data]);
 
   const deploymentIds = useMemo(() => rows.map((r) => r.id), [rows]);

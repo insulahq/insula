@@ -29,6 +29,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   message names the limit and the count. Restoring a deleted application through a tenant's own
   restore cart is held to the same limit; an operator's cart is not. Settings shows the effective
   limit, and the operator's plan editor and Limits tab have the field.
+- **A tenant is told when one of their custom containers fails.** Only the operator was notified
+  (*Custom deployment failed*); the tenant, whose container and plan it is, saw it only on the
+  Custom Containers tab. A new tenant notification, *Container failed to start*, names the
+  container and the reason the tab shows, in the panel and by email, once per failure reason.
 
 ### Changed
 
@@ -59,6 +63,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A compose stack with a field the platform refuses is refused, not deployed without it.** The
+  editor's Validate reported `cap_add: [SYS_ADMIN]`, `privileged`, `devices` or `mem_limit` as an
+  error, but Deploy needed no Validate first and the API accepted the stack with the field
+  silently dropped — a container that "deployed fine" without the capability or memory its YAML
+  asked for. The API now refuses exactly what Validate refuses, and Deploy validates first.
+- **Editing a compose stack changes it in place.** The editor deleted the stack and created it
+  again. The delete took the stack's registry credential and network-access settings with it and
+  left its routes pointing at a deployment that no longer existed; when the new YAML was then
+  refused (a refused field, or a private image probed without the credential just deleted), the
+  stack was gone. `PUT …/custom-deployments/:id/compose` now replaces the spec on the same stack,
+  with the checks a create makes (the stack's own credential for private images), re-pins or
+  refuses routes whose port moves, and removes services the YAML dropped. Deploy cannot run twice
+  from a double-click, and fixing refused YAML re-enables it without another Validate.
+- **The Custom Containers tab shows a failed container without a reload.** It read its list once
+  and never again, so a container that failed after it was created (a quota refusal, a crash loop)
+  stayed *Deploying*. It now re-reads every 3 seconds while a container is changing state and every
+  15 seconds otherwise; the Installed tab does the same (it polled every 15 seconds throughout).
+- **The operator's *Custom deployment failed* message no longer ends a reason with two full
+  stops.**
 - **SQL Manager opens tables whose names start with a digit or contain a hyphen.** Names like
   `1-StudentsTb` were refused before the database was asked, and the panel showed the refusal
   as "No data", so a freshly imported schema looked empty. Any table or column name the database

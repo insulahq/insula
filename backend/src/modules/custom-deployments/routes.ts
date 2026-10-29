@@ -27,6 +27,7 @@ import * as service from './service.js';
 import {
   createCustomDeploymentSchema,
   updateCustomDeploymentSchema,
+  replaceCustomDeploymentComposeSchema,
   submitPullCredentialSchema,
   checkUpdatesBatchSchema,
   setAllowRootSchema,
@@ -191,6 +192,26 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
       id,
       parsed.data,
     );
+    return success(row);
+  });
+
+  // PUT …/:id/compose — edit a compose stack IN PLACE from new YAML
+  // (compose-replace.ts). The editor used to delete the stack and create it
+  // again, which lost its routes, credential and settings, and lost the
+  // stack itself when the new YAML was then refused.
+  app.put('/tenants/:tenantId/custom-deployments/:id/compose', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const parsed = replaceCustomDeploymentComposeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+    const row = await service.replaceComposeDeployment(app.db, requireK8s(), tenantId, id, parsed.data);
     return success(row);
   });
 

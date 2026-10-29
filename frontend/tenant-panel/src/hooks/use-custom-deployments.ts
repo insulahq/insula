@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type {
+import { deploymentListPollMs } from '@/lib/deployment-polling';
+import type { ReplaceCustomDeploymentComposeInput,
   CreateCustomDeploymentInput,
   CreateCustomDeploymentSimpleInput,
   CreateCustomDeploymentComposeInput,
@@ -37,12 +38,15 @@ const BASE = (tenantId: string) => `/api/v1/tenants/${tenantId}/custom-deploymen
 
 // ─── List / Get ─────────────────────────────────────────────────────────────
 
-export function useCustomDeployments(tenantId: string | undefined, options?: { refetchInterval?: number | false }) {
+/** `pollByStatus`: as useDeployments — fast while a row is changing state, slow otherwise. */
+export function useCustomDeployments(tenantId: string | undefined, options?: { refetchInterval?: number | false; pollByStatus?: boolean }) {
   return useQuery({
     queryKey: ['custom-deployments', tenantId],
     queryFn: () => apiFetch<{ data: readonly CustomDeploymentRow[] }>(BASE(tenantId!)),
     enabled: Boolean(tenantId),
-    refetchInterval: options?.refetchInterval,
+    refetchInterval: options?.pollByStatus
+      ? (query) => deploymentListPollMs(query.state.data?.data)
+      : options?.refetchInterval,
   });
 }
 
@@ -100,6 +104,27 @@ export function useCreateCustomDeployment(tenantId: string | undefined) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
       // The Installed list and the application count (APPLICATION_USAGE_KEY).
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+    },
+  });
+}
+
+/**
+ * Edit a compose stack in place from new YAML. The editor used to delete the
+ * stack and create it again, losing its routes, credential and settings — and
+ * the stack itself when the new YAML was refused.
+ */
+export function useReplaceComposeDeployment(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: { id: string } & ReplaceCustomDeploymentComposeInput) =>
+      apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}/compose`, {
+        method: 'PUT',
+        headers: RAW_JSON_HEADERS,
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
     },
   });

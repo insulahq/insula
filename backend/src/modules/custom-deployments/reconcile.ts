@@ -20,10 +20,11 @@ import { deployments, tenants } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
+import { notifyAdminCustomDeploymentFailed, notifyTenantCustomDeploymentFailed } from '../notifications/events.js';
 import { isOomTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 import { formatQuotaExceededMessage } from '../deployments/k8s-deployer.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
+import { tenantVisibleText } from '../../shared/operator-only-text.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -367,6 +368,18 @@ async function readDeploymentSafe(
   }
 }
 
+/** Notifications carry the start of a long reason; the tab shows it whole. Pure. */
+export function capReason(text: string, max = 400): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** A reason as one sentence: trimmed, ending in exactly one full stop (or ? / !). Pure. */
+export function asSentence(text: string): string {
+  const t = text.trim().replace(/[.\s]+$/, '');
+  if (!t) return t;
+  return /[!?…]$/.test(t) ? t : `${t}.`;
+}
+
 /** Apply the reconcile outcome to the DB row. Idempotent — no-op
  *  when nothing changed. */
 export async function applyReconcileOutcome(
@@ -398,7 +411,9 @@ export async function applyReconcileOutcome(
         .from(tenants)
         .where(eq(tenants.id, current.tenantId))
         .limit(1);
-      const reason = outcome.statusMessage ?? 'no diagnostic reason reported';
+      // One sentence, so the templates can follow it with the next one ("…the
+      // plan.. It keeps restarting" was the old admin text).
+      const reason = asSentence(outcome.statusMessage ?? 'no diagnostic reason reported');
       // dedupe_key is varchar(128): NEVER inline the full reason (it can exceed
       // that and make the delivery INSERT throw, which dispatchSafe swallows — the
       // notification then vanishes silently). Key on the deployment + a short hash
@@ -410,6 +425,17 @@ export async function applyReconcileOutcome(
         current.tenantId,
         { tenantLabel: t?.name ?? current.tenantId, deploymentName: current.name, reason },
         `cdfail:${rowId}:${reasonHash}`,
+      );
+      // The tenant's own container: they are told too, with the reason the
+      // Custom Containers tab shows them (operator-only detail cut).
+      await notifyTenantCustomDeploymentFailed(
+        db,
+        current.tenantId,
+        {
+          deploymentName: current.name,
+          reason: asSentence(capReason(tenantVisibleText(outcome.statusMessage ?? 'no reason was reported'))),
+        },
+        `cdfail-t:${rowId}:${reasonHash}`,
       );
     } catch {
       // status is already persisted; the notification is advisory.
