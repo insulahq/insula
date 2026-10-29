@@ -602,18 +602,17 @@ export async function rotatePrivateWorker(
   // rotates the secret for every sibling worker. The UI warns about this.
   const newSharedSecret = generateSecret();
   const workerTokenHash = hashSecret(newSharedSecret);
-  // Never onto a row revoked since the read above (a concurrent revoke, the
-  // archive hook): that would bring a revoked worker back to active without
-  // the application slot a new worker needs. First, so a refused rotate has
-  // not yet changed the tenant's shared secret.
+  // Rotation changes the token only. The status is the connection poller's
+  // (pending → active once frps reports the agent online) and the lifecycle
+  // hooks' (suspended, revoked): writing `active` here showed a worker that
+  // never connected as "Connected", and could undo a suspension that landed
+  // after the read above.
+  // Never onto a row revoked since that read (a concurrent revoke, the
+  // archive hook), which is refused like a revoked one. First, so a refused
+  // rotate has not yet changed the tenant's shared secret.
   const rotated = await db
     .update(privateWorkers)
-    .set({
-      workerTokenHash,
-      revokedAt: null,
-      revokedBy: null,
-      status: existing.status === 'suspended' ? 'suspended' : 'active',
-    })
+    .set({ workerTokenHash })
     .where(and(eq(privateWorkers.id, workerId), ne(privateWorkers.status, 'revoked')))
     .returning({ id: privateWorkers.id });
   if (rotated.length === 0) {

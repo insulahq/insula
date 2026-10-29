@@ -152,10 +152,16 @@ describe.skipIf(!url)('private workers count as applications (real Postgres)', (
     }
   });
 
-  it('rotate keeps a live worker live; a revoked one is refused and stays revoked', async () => {
+  it('rotate changes the token, not the status; a revoked worker is refused and stays revoked', async () => {
     const w = await createPrivateWorker(db, TENANT, { name: 'home-nas' }, 'u1');
+    // Never connected: rotating must not make it read "Connected".
     const rotated = await rotatePrivateWorker(db, TENANT, w.workerId, 'u1');
-    expect(rotated.worker.status).toBe('active');
+    expect(rotated.worker.status).toBe('pending');
+    // Suspended with its tenant: rotating must not undo that.
+    await pool.query("UPDATE private_workers SET status = 'suspended'");
+    expect((await rotatePrivateWorker(db, TENANT, w.workerId, 'u1')).worker.status).toBe('suspended');
+    await pool.query("UPDATE private_workers SET status = 'active'");
+    expect((await rotatePrivateWorker(db, TENANT, w.workerId, 'u1')).worker.status).toBe('active');
     await revokePrivateWorker(db, TENANT, w.workerId, 'u1');
     const secretBefore = (await pool.query('SELECT private_worker_shared_secret AS s FROM tenants')).rows[0].s;
     await expect(rotatePrivateWorker(db, TENANT, w.workerId, 'u1')).rejects.toMatchObject({ code: 'PRIVATE_WORKER_REVOKED' });

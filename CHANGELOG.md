@@ -81,6 +81,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   time anyway. A worker whose client logged a successful login stayed *pending* with no last-seen
   time. The platform now asks each tenant's frps once a minute. A worker with an online tunnel on its
   port is active with a current last-seen time, and each new connection is in its audit log.
+- **Rotating a private worker's token no longer marks it connected.** Rotate set every worker that
+  was not suspended to *active*, so a worker whose agent had never connected read **Connected**. It
+  could also undo a suspension that landed while it ran, or bring back a worker revoked at the same
+  moment. Rotate now changes only the token; the connection check and the tenant's lifecycle set the
+  status.
 - **A private worker can be chosen as a route's target.** The API always accepted one, but the
   Routing tab's selector, in both panels, listed deployments only. Workers now appear there, a
   pending one included.
