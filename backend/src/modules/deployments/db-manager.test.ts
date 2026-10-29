@@ -28,6 +28,7 @@ import {
   setUserPassword,
   executeQuery,
   listTables,
+  listTablesWithSize,
   describeTable,
   browseTable,
   countRows,
@@ -839,6 +840,47 @@ describe('db-manager', () => {
       expect(tables).toEqual(['users', 'posts', 'comments']);
     });
 
+    // SHOW TABLES rows are data cells, which --batch escapes. Without undoing
+    // that, `back\slash` is listed as `back\\slash` and can never be opened.
+    it('returns mysql table names exactly as the engine holds them', async () => {
+      setupExecSuccess('1-StudentsTb\nback\\\\slash\ntab\\tx');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      expect(await listTables(ctx, 'school')).toEqual(['1-StudentsTb', 'back\\slash', 'tab\tx']);
+    });
+
+    it('returns table names with sizes exactly as the engine holds them', async () => {
+      // Cells are tab-separated; a tab INSIDE a name arrives escaped as `\t`.
+      setupExecSuccess('1-StudentsTb\t278528\t1000\nback\\\\slash\t16384\t2\ntab\\tx\t16384\t1');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      expect(await listTablesWithSize(ctx, 'school')).toEqual([
+        { name: '1-StudentsTb', sizeBytes: 278528, rowCount: 1000 },
+        { name: 'back\\slash', sizeBytes: 16384, rowCount: 2 },
+        { name: 'tab\tx', sizeBytes: 16384, rowCount: 1 },
+      ]);
+    });
+
+    it('quotes mongodb collection names and sort keys as JS string literals', async () => {
+      setupExecSuccess('[]');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'mongodb',
+        engine: 'mongodb' as const, rootPassword: 'pw', rootUsername: 'root',
+      };
+
+      await browseTable(ctx, 'school', '1-students"x', { orderBy: 'a"b', orderDir: 'desc' });
+
+      const script = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('getCollection'));
+      expect(script).toContain('getCollection("1-students\\"x")');
+      expect(script).toContain('.sort({"a\\"b":-1})');
+    });
+
     it('should list postgresql tables from a database', async () => {
       setupExecSuccess('tablename\nusers\nposts\ncomments');
 
@@ -941,18 +983,73 @@ describe('db-manager', () => {
       ]);
     });
 
-    it('should reject invalid table names', async () => {
+    // An imported schema named its tables `1-StudentsTb`, `2-…`: the old
+    // CREATE-time charset check refused them with a 400 that the panel showed
+    // as an empty table. Any name the engine holds must be describable.
+    it('describes tables whose names start with a digit or contain a hyphen', async () => {
+      setupExecSuccess('Field\tType\tNull\tKey\tDefault\tExtra\nSTUDENTID\tint(11)\tNO\tPRI\tNULL\t');
       const ctx = {
-        kubeconfigPath: '/tmp/kc',
-        namespace: 'ns',
-        podName: 'pod',
-        containerName: 'mariadb',
-        engine: 'mariadb' as const,
-        rootPassword: 'pw',
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
       };
 
-      await expect(describeTable(ctx, 'mydb', 'bad-table')).rejects.toThrow('Invalid table name');
-      await expect(describeTable(ctx, 'mydb', '123table')).rejects.toThrow('Invalid table name');
+      const columns = await describeTable(ctx, 'mydb', '1-StudentsTb');
+
+      expect(columns.map((c) => c.name)).toEqual(['STUDENTID']);
+      const argv: string[] = mockExecFn.mock.calls[0][3];
+      expect(argv).toContain('DESCRIBE `mydb`.`1-StudentsTb`');
+    });
+
+    it('doubles an embedded backtick and unescapes batch-escaped column names', async () => {
+      // --batch prints a backslash inside a data cell as `\\`.
+      setupExecSuccess('Field\tType\tNull\tKey\tDefault\tExtra\nc\\\\d\tint(11)\tYES\t\tNULL\t');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      const columns = await describeTable(ctx, 'mydb', 'we`ird');
+
+      expect(columns[0].name).toBe('c\\d');
+      expect(mockExecFn.mock.calls[0][3]).toContain('DESCRIBE `mydb`.`we``ird`');
+    });
+
+    it('quotes a postgresql table name as a string literal', async () => {
+      setupExecSuccess('column_name,data_type,is_nullable,column_default,key_type\n');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+
+      await describeTable(ctx, 'mydb', "it's-here");
+
+      const sql = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('information_schema.columns'));
+      expect(sql).toContain("c.table_name = 'it''s-here'");
+    });
+
+    it('rejects only names no engine can hold', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(describeTable(ctx, 'mydb', '')).rejects.toThrow('Invalid table name');
+      await expect(describeTable(ctx, 'mydb', 'a\0b')).rejects.toThrow('Invalid table name');
+      await expect(describeTable(ctx, 'mydb', 'x'.repeat(256))).rejects.toThrow('Invalid table name');
+      await expect(describeTable(ctx, 'mydb', ['a', 'b'] as unknown as string)).rejects.toThrow('Invalid table name');
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the engine error as DB_EXEC_ERROR', async () => {
+      setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'mydb.gone' doesn't exist");
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(describeTable(ctx, 'mydb', 'gone')).rejects.toMatchObject({
+        code: 'DB_EXEC_ERROR', message: expect.stringContaining("doesn't exist"),
+      });
     });
   });
 
@@ -1020,6 +1117,57 @@ describe('db-manager', () => {
       const sqlArg = execCall[3].find((arg: string) => arg.includes('LIMIT'));
       expect(sqlArg).toContain('LIMIT 1000');
     });
+
+    it('browses a hyphenated table and quotes the sort column', async () => {
+      setupExecSuccess('CITYID\tCITY\n1\tNorthfield');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      const result = await browseTable(ctx, 'school', '1-StudentsTb', { orderBy: 'first name', orderDir: 'desc' });
+
+      expect(result.rows).toEqual([['1', 'Northfield']]);
+      const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('LIMIT'));
+      expect(sqlArg).toBe('USE `school`; SELECT * FROM `1-StudentsTb` ORDER BY `first name` DESC LIMIT 50 OFFSET 0');
+    });
+
+    it('quotes postgresql names with doubled double quotes', async () => {
+      setupExecSuccess('id\n1');
+      const ctx = {
+        kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'postgresql',
+        engine: 'postgresql' as const, rootPassword: '',
+      };
+
+      await browseTable(ctx, 'mydb', 'a"b', { orderBy: 'c"d' });
+
+      const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('LIMIT'));
+      expect(sqlArg).toBe('SELECT * FROM "a""b" ORDER BY "c""d" ASC LIMIT 50 OFFSET 0');
+    });
+
+    // The query tab renders engine errors inline; browsing has no such surface,
+    // so an inline error used to arrive as HTTP 200 and render as an empty table.
+    it('turns an engine failure into a DB_EXEC_ERROR instead of an empty 200 result', async () => {
+      setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'school.old_courses' doesn't exist");
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(browseTable(ctx, 'school', 'old_courses')).rejects.toMatchObject({
+        code: 'DB_EXEC_ERROR', status: 500, message: expect.stringContaining("doesn't exist"),
+      });
+    });
+
+    it('rejects a sort column no engine can hold', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(browseTable(ctx, 'mydb', 'users', { orderBy: 'a\0b' })).rejects.toThrow('Invalid column name');
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
   });
 
   // ─── Row Count Tests ────────────────────────────────────────────────────
@@ -1073,17 +1221,34 @@ describe('db-manager', () => {
       expect(count).toBe(0);
     });
 
-    it('should reject invalid table names', async () => {
+    it('counts rows of a hyphenated table', async () => {
+      setupExecSuccess('1000');
       const ctx = {
-        kubeconfigPath: '/tmp/kc',
-        namespace: 'ns',
-        podName: 'pod',
-        containerName: 'mariadb',
-        engine: 'mariadb' as const,
-        rootPassword: 'pw',
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
       };
 
-      await expect(countRows(ctx, 'mydb', 'bad-table')).rejects.toThrow('Invalid table name');
+      expect(await countRows(ctx, 'school', '1-StudentsTb')).toBe(1000);
+      expect(mockExecFn.mock.calls[0][3]).toContain('SELECT COUNT(*) FROM `school`.`1-StudentsTb`');
+    });
+
+    it('surfaces the engine error as DB_EXEC_ERROR', async () => {
+      setupExecFailure("ERROR 1146 (42S02) at line 1: Table 'mydb.gone' doesn't exist");
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(countRows(ctx, 'mydb', 'gone')).rejects.toMatchObject({ code: 'DB_EXEC_ERROR' });
+    });
+
+    it('rejects an empty table name', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
+        engine: 'mariadb' as const, rootPassword: 'pw',
+      };
+
+      await expect(countRows(ctx, 'mydb', '')).rejects.toThrow('Invalid table name');
     });
   });
 

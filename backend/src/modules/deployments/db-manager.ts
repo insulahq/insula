@@ -16,6 +16,9 @@ import { isOomTermination, isReplacedPodRecord, messageIndicatesOom } from '../.
 import {
   findSystemStatement, GREP_FAILED, grepScanCommand, parseGrepHit, systemImportPattern, systemImportRefusal,
 } from './import-system-guard.js';
+import {
+  quoteAnsiIdentifier, quoteMysqlIdentifier, quotePgStringLiteral, unescapeMysqlBatchField, validateExistingName,
+} from '../../shared/sql-identifiers.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -1035,7 +1038,7 @@ async function mongoDescribeCollection(
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `EJSON.stringify(Object.keys(db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").findOne() || {}))`,
+    `EJSON.stringify(Object.keys(db.getSiblingDB("${mongoEscapeString(database)}").getCollection(${JSON.stringify(collection)}).findOne() || {}))`,
     ctx.rootUsername,
   );
 
@@ -1071,14 +1074,13 @@ async function mongoBrowseCollection(
 
   let sortExpr = '{}';
   if (options.orderBy) {
-    validateTableName(options.orderBy);
-    sortExpr = `{"${mongoEscapeString(options.orderBy)}":${orderDir}}`;
+    sortExpr = `{${JSON.stringify(options.orderBy)}:${orderDir}}`;
   }
 
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `EJSON.stringify(db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
+    `EJSON.stringify(db.getSiblingDB("${mongoEscapeString(database)}").getCollection(${JSON.stringify(collection)}).find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
     ctx.rootUsername,
   );
   const start = Date.now();
@@ -1112,7 +1114,7 @@ async function mongoCountDocuments(
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").countDocuments()`,
+    `db.getSiblingDB("${mongoEscapeString(database)}").getCollection(${JSON.stringify(collection)}).countDocuments()`,
     ctx.rootUsername,
   );
   return parseInt(out.trim(), 10) || 0;
@@ -1397,17 +1399,6 @@ function validateDatabaseName(database: string): void {
   }
 }
 
-function validateTableName(table: string): void {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table)) {
-    throw new ApiError(
-      'INVALID_TABLE_NAME',
-      'Invalid table name: must start with a letter or underscore, contain only alphanumerics/underscores, and be 1-64 characters',
-      400,
-      { table },
-    );
-  }
-}
-
 /**
  * Execute an arbitrary SQL query against a database and return structured results.
  */
@@ -1505,7 +1496,7 @@ export async function listTables(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       ctx.rootPassword, `SHOW TABLES FROM \`${database}\``,
     );
-    return out.split('\n').filter(Boolean);
+    return out.split('\n').filter(Boolean).map(unescapeMysqlBatchField);
   }
 
   if (ctx.engine === 'postgresql') {
@@ -1554,7 +1545,7 @@ export async function listTablesWithSize(
     );
     return out.split('\n').filter(Boolean).map((line) => {
       const [name, size, rows] = line.split('\t');
-      return { name, sizeBytes: parseInt(size, 10) || 0, rowCount: parseInt(rows, 10) || 0 };
+      return { name: unescapeMysqlBatchField(name), sizeBytes: parseInt(size, 10) || 0, rowCount: parseInt(rows, 10) || 0 };
     });
   }
 
@@ -1633,16 +1624,22 @@ export async function describeTable(
   table: string,
 ): Promise<readonly ColumnInfo[]> {
   validateDatabaseName(database);
-  validateTableName(table);
+  validateExistingName(table, 'table');
 
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    return mysqlDescribeTable(ctx, database, table);
-  }
-  if (ctx.engine === 'postgresql') {
-    return pgDescribeTable(ctx, database, table);
-  }
-  if (ctx.engine === 'mongodb') {
-    return mongoDescribeCollection(ctx, database, table);
+  // asDbApiError: the panel must see the engine's own message ("Table … doesn't
+  // exist"), not a generic 500.
+  try {
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlDescribeTable(ctx, database, table);
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgDescribeTable(ctx, database, table);
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoDescribeCollection(ctx, database, table);
+    }
+  } catch (err) {
+    throw asDbApiError(err);
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table description not supported`, 400);
 }
@@ -1654,13 +1651,14 @@ async function mysqlDescribeTable(
 ): Promise<readonly ColumnInfo[]> {
   const output = await mysqlExecWithHeaders(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ctx.rootPassword, `DESCRIBE \`${database}\`.\`${table}\``,
+    ctx.rootPassword, `DESCRIBE ${quoteMysqlIdentifier(database)}.${quoteMysqlIdentifier(table)}`,
   );
   const { rows } = parseMysqlBatchOutput(output);
 
-  // DESCRIBE output columns: Field, Type, Null, Key, Default, Extra
+  // DESCRIBE output columns: Field, Type, Null, Key, Default, Extra.
+  // Field is a data cell, so --batch escaped it; the panel quotes it back.
   return rows.map((row) => ({
-    name: row[0] ?? '',
+    name: unescapeMysqlBatchField(row[0] ?? ''),
     type: row[1] ?? '',
     nullable: (row[2] ?? 'NO') === 'YES',
     defaultValue: row[4] === 'NULL' || row[4] === undefined ? null : row[4],
@@ -1684,7 +1682,7 @@ async function pgDescribeTable(
     ON c.table_name = kcu.table_name AND c.column_name = kcu.column_name AND c.table_schema = kcu.table_schema
   LEFT JOIN information_schema.table_constraints tc
     ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
-  WHERE c.table_name = '${table}' AND c.table_schema = 'public'
+  WHERE c.table_name = ${quotePgStringLiteral(table)} AND c.table_schema = 'public'
   ORDER BY c.ordinal_position`;
 
   const output = await pgExecCsv(
@@ -1728,36 +1726,33 @@ export async function browseTable(
   options: BrowseOptions = {},
 ): Promise<QueryResult> {
   validateDatabaseName(database);
-  validateTableName(table);
+  validateExistingName(table, 'table');
+  if (options.orderBy) validateExistingName(options.orderBy, 'column');
 
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
   const offset = Math.max(options.offset ?? 0, 0);
   const orderDir = options.orderDir === 'desc' ? 'DESC' : 'ASC';
 
-  // Build ORDER BY clause if specified
-  let orderClause = '';
-  if (options.orderBy) {
-    validateTableName(options.orderBy); // reuse for column name validation
-    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      orderClause = ` ORDER BY \`${options.orderBy}\` ${orderDir}`;
-    } else {
-      orderClause = ` ORDER BY "${options.orderBy}" ${orderDir}`;
-    }
-  }
-
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    return executeQuery(ctx, database, `SELECT * FROM \`${table}\`${orderClause} LIMIT ${limit} OFFSET ${offset}`);
-  }
-
-  if (ctx.engine === 'postgresql') {
-    return executeQuery(ctx, database, `SELECT * FROM "${table}"${orderClause} LIMIT ${limit} OFFSET ${offset}`);
-  }
-
   if (ctx.engine === 'mongodb') {
     return mongoBrowseCollection(ctx, database, table, { limit, offset, orderBy: options.orderBy, orderDir: options.orderDir });
   }
 
-  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table browsing not supported`, 400);
+  const quote = ctx.engine === 'mariadb' || ctx.engine === 'mysql' ? quoteMysqlIdentifier
+    : ctx.engine === 'postgresql' ? quoteAnsiIdentifier
+    : undefined;
+  if (!quote) {
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table browsing not supported`, 400);
+  }
+
+  const orderClause = options.orderBy ? ` ORDER BY ${quote(options.orderBy)} ${orderDir}` : '';
+  const result = await executeQuery(ctx, database, `SELECT * FROM ${quote(table)}${orderClause} LIMIT ${limit} OFFSET ${offset}`);
+  // executeQuery reports engine errors inline — right for the query tab, which
+  // renders them as the result. Browsing has no such surface: an inline error
+  // looked like an empty table, so it becomes an error response here.
+  if (result.error) {
+    throw new ApiError('DB_EXEC_ERROR', result.error, 500);
+  }
+  return result;
 }
 
 // ─── Row Count ──────────────────────────────────────────────────────────────
@@ -1771,27 +1766,31 @@ export async function countRows(
   table: string,
 ): Promise<number> {
   validateDatabaseName(database);
-  validateTableName(table);
+  validateExistingName(table, 'table');
 
-  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    const out = await mysqlExec(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, `SELECT COUNT(*) FROM \`${database}\`.\`${table}\``,
-    );
-    return parseInt(out.trim(), 10) || 0;
-  }
+  try {
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      const out = await mysqlExec(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ctx.rootPassword, `SELECT COUNT(*) FROM ${quoteMysqlIdentifier(database)}.${quoteMysqlIdentifier(table)}`,
+      );
+      return parseInt(out.trim(), 10) || 0;
+    }
 
-  if (ctx.engine === 'postgresql') {
-    const out = await pgExecCsv(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      database, `SELECT COUNT(*) FROM "${table}"`,
-    );
-    const { rows } = parsePgCsvOutput(out);
-    return parseInt(rows[0]?.[0] ?? '0', 10) || 0;
-  }
+    if (ctx.engine === 'postgresql') {
+      const out = await pgExecCsv(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        database, `SELECT COUNT(*) FROM ${quoteAnsiIdentifier(table)}`,
+      );
+      const { rows } = parsePgCsvOutput(out);
+      return parseInt(rows[0]?.[0] ?? '0', 10) || 0;
+    }
 
-  if (ctx.engine === 'mongodb') {
-    return mongoCountDocuments(ctx, database, table);
+    if (ctx.engine === 'mongodb') {
+      return await mongoCountDocuments(ctx, database, table);
+    }
+  } catch (err) {
+    throw asDbApiError(err);
   }
 
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} row counting not supported`, 400);

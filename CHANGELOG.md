@@ -59,6 +59,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **SQL Manager opens tables whose names start with a digit or contain a hyphen.** Names like
+  `1-StudentsTb` were refused before the database was asked, and the panel showed the refusal
+  as "No data", so a freshly imported schema looked empty. Any table or column name the database
+  holds now opens, is quoted safely, and can be sorted and edited (MariaDB/MySQL, PostgreSQL, SQLite,
+  MongoDB). Failed reads now show the database's own error instead of "No data" or "No columns".
+  Creating, picking or deleting a database now clears the selected table, so the panel no longer asks
+  the new database for a table that only existed in the previous one.
 - **Auto-heal no longer restarts a tenant over a quota that is simply full.** It treated every quota
   refusal as a pod still shutting down, scaled every workload to zero and back, and the newest pod won
   the room. On production that moved the outage from a new private worker onto the tenant's
