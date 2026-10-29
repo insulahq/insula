@@ -1,18 +1,19 @@
 /**
  * HTTP routes for OpenZiti provider CRUD.
  *
- *   GET    /api/v1/tenants/:cid/ziti-providers
- *   POST   /api/v1/tenants/:cid/ziti-providers
- *   PATCH  /api/v1/tenants/:cid/ziti-providers/:pid
- *   DELETE /api/v1/tenants/:cid/ziti-providers/:pid
- *   POST   /api/v1/tenants/:cid/ziti-providers/:pid/test
+ *   GET    /api/v1/tenants/:tenantId/ziti-providers
+ *   POST   /api/v1/tenants/:tenantId/ziti-providers
+ *   PATCH  /api/v1/tenants/:tenantId/ziti-providers/:pid
+ *   DELETE /api/v1/tenants/:tenantId/ziti-providers/:pid
+ *   POST   /api/v1/tenants/:tenantId/ziti-providers/:pid/test
  *
- * Auth: tenant_admin / super_admin / admin. All handlers verify
- * cross-tenant ownership via the tenant FK on the provider row.
+ * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
+ * tenant only (requireTenantAccess), and handlers scope provider rows by
+ * that id.
  */
 
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { zitiProviderInputSchema } from '@insula/api-contracts';
@@ -37,43 +38,46 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // The caller's own tenant only: a tenant token naming another tenant's id
+  // in the path is refused before any handler runs.
+  app.addHook('onRequest', requireTenantAccess());
 
-  app.get('/tenants/:cid/ziti-providers', async (request) => {
-    const { cid } = request.params as { cid: string };
-    const rows = await listProviders(app.db, cid);
+  app.get('/tenants/:tenantId/ziti-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const rows = await listProviders(app.db, tenantId);
     return success(rows);
   });
 
-  app.post('/tenants/:cid/ziti-providers', async (request) => {
-    const { cid } = request.params as { cid: string };
+  app.post('/tenants/:tenantId/ziti-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = zitiProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const created = await createProvider(app.db, encryptionKey, cid, parsed.data);
+    const created = await createProvider(app.db, encryptionKey, tenantId, parsed.data);
     return success(created);
   });
 
-  app.patch('/tenants/:cid/ziti-providers/:pid', async (request) => {
-    const { cid, pid } = request.params as { cid: string; pid: string };
+  app.patch('/tenants/:tenantId/ziti-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = zitiProviderInputSchema.partial().safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const updated = await updateProvider(app.db, encryptionKey, cid, pid, parsed.data);
+    const updated = await updateProvider(app.db, encryptionKey, tenantId, pid, parsed.data);
     return success(updated);
   });
 
-  app.delete('/tenants/:cid/ziti-providers/:pid', async (request) => {
-    const { cid, pid } = request.params as { cid: string; pid: string };
-    await deleteProvider(app.db, cid, pid);
+  app.delete('/tenants/:tenantId/ziti-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
+    await deleteProvider(app.db, tenantId, pid);
     return success({ deleted: true });
   });
 
   // Probes the controller's CA bundle endpoint to validate reachability.
   // Doesn't persist or modify anything.
-  app.post('/tenants/:cid/ziti-providers/:pid/test', async (request) => {
-    const { cid: _cid, pid: _pid } = request.params as { cid: string; pid: string };
+  app.post('/tenants/:tenantId/ziti-providers/:pid/test', async (request) => {
+    const { tenantId: _cid, pid: _pid } = request.params as { tenantId: string; pid: string };
     // For v1, the test just probes the configured controller URL —
     // resolving the provider row first is unnecessary because the
     // probe target comes from the request body. This avoids leaking

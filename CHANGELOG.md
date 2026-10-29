@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,
+  Ziti or zrok settings.** Six API modules (route OIDC, OIDC providers, route mTLS, deployment
+  network access, Ziti providers, zrok providers) checked that the caller was a tenant
+  administrator but not *which* tenant: their tenant path parameter was named `:cid`, and the
+  shared tenant check reads only `:tenantId` / `:id`. Any tenant administrator could list another
+  tenant's identity providers, or turn off its sign-in gate or client-certificate requirement and
+  expose its site, by putting that tenant's id in the URL. Every route of those modules now refuses
+  another tenant's id with 403 `CLIENT_ACCESS_DENIED` before it runs. So does
+  `GET /tenants/:tenantId/resource-quota`, which let any signed-in tenant read another's CPU and
+  memory limits. The CI guard `ci-tenant-scope-check.sh` only looked for `:tenantId` routes and
+  passed any file that mentioned the tenant check; it now covers every tenant parameter, fails on
+  any name the shared check cannot see, and checks each route on its own. The API paths are
+  unchanged. To check an installation for past use, look in the audit log for writes to these
+  paths whose tenant id differs from the acting user's tenant; reads are not audited.
+
 ## [2026.10.22] - 2026-10-29
 
 ### BREAKING

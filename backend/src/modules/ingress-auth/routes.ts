@@ -1,19 +1,19 @@
 /**
  * HTTP routes for per-ingress OAuth2/OIDC access control.
  *
- *   GET    /api/v1/tenants/:cid/ingress-routes/:rid/auth
- *   PATCH  /api/v1/tenants/:cid/ingress-routes/:rid/auth
- *   DELETE /api/v1/tenants/:cid/ingress-routes/:rid/auth
- *   POST   /api/v1/tenants/:cid/ingress-routes/:rid/auth/test
+ *   GET    /api/v1/tenants/:tenantId/ingress-routes/:rid/auth
+ *   PATCH  /api/v1/tenants/:tenantId/ingress-routes/:rid/auth
+ *   DELETE /api/v1/tenants/:tenantId/ingress-routes/:rid/auth
+ *   POST   /api/v1/tenants/:tenantId/ingress-routes/:rid/auth/test
  *
- * Auth: tenant_admin / super_admin / admin. Cross-tenant safety —
- * every handler verifies the route belongs to a domain that belongs
- * to the requested tenantId.
+ * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
+ * tenant only (requireTenantAccess), and every handler checks that the
+ * route belongs to a domain of that tenant.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import {
@@ -77,19 +77,22 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // The caller's own tenant only: a tenant token naming another tenant's id
+  // in the path is refused before any handler runs.
+  app.addHook('onRequest', requireTenantAccess());
 
   // GET — return current config (decrypted-omit) or null.
-  app.get('/tenants/:cid/ingress-routes/:rid/auth', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    await assertRouteBelongsToTenant(app, cid, rid);
+  app.get('/tenants/:tenantId/ingress-routes/:rid/auth', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    await assertRouteBelongsToTenant(app, tenantId, rid);
     const cfg = await getAuthConfig(app.db, rid);
     return success(cfg);
   });
 
   // PATCH — upsert + reconcile.
-  app.patch('/tenants/:cid/ingress-routes/:rid/auth', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    const { namespace } = await assertRouteBelongsToTenant(app, cid, rid);
+  app.patch('/tenants/:tenantId/ingress-routes/:rid/auth', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    const { namespace } = await assertRouteBelongsToTenant(app, tenantId, rid);
     const parsed = ingressAuthConfigSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
@@ -107,15 +110,15 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
       //    the still-running sidecar transparently forwards traffic
       //    via the new :4180 annotation path until it's rolled away.
       try {
-        await reconcileIngress(app.db, k8s, cid, namespace);
+        await reconcileIngress(app.db, k8s, tenantId, namespace);
       } catch (err) {
-        request.log.warn({ err, cid, rid }, 'Auth saved, but Ingress annotation sync failed (next reconcile tick will retry)');
+        request.log.warn({ err, tenantId, rid }, 'Auth saved, but Ingress annotation sync failed (next reconcile tick will retry)');
       }
       // 2) Provision/update the per-tenant oauth2-proxy (+/- the
       //    claim-validator sidecar) to match the new state.
       const outcome = await reconcileTenant(
         { db: app.db, k8s, encryptionKey },
-        cid,
+        tenantId,
       );
       if (outcome.error) {
         throw new ApiError(
@@ -129,20 +132,20 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // DELETE — disable + reconcile (tears down the proxy when last).
-  app.delete('/tenants/:cid/ingress-routes/:rid/auth', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    const { namespace } = await assertRouteBelongsToTenant(app, cid, rid);
+  app.delete('/tenants/:tenantId/ingress-routes/:rid/auth', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    const { namespace } = await assertRouteBelongsToTenant(app, tenantId, rid);
     await deleteAuthConfig(app.db, rid);
     if (k8s) {
       // Annotations first — drops auth-* annotations from the route
       // so NGINX stops gating before resources are torn down (avoids
       // 502s when the proxy goes away).
       try {
-        await reconcileIngress(app.db, k8s, cid, namespace);
+        await reconcileIngress(app.db, k8s, tenantId, namespace);
       } catch (err) {
-        request.log.warn({ err, cid, rid }, 'Auth deleted, but Ingress annotation sync failed (next reconcile tick will retry)');
+        request.log.warn({ err, tenantId, rid }, 'Auth deleted, but Ingress annotation sync failed (next reconcile tick will retry)');
       }
-      await reconcileTenant({ db: app.db, k8s, encryptionKey }, cid);
+      await reconcileTenant({ db: app.db, k8s, encryptionKey }, tenantId);
     }
     return success({ deleted: true });
   });
@@ -151,9 +154,9 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
   // validate that authorization_endpoint + token_endpoint are present.
   // Doesn't persist anything. Returns a typed response shape so the UI
   // can render the result without re-fetching.
-  app.post('/tenants/:cid/ingress-routes/:rid/auth/test', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    await assertRouteBelongsToTenant(app, cid, rid);
+  app.post('/tenants/:tenantId/ingress-routes/:rid/auth/test', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    await assertRouteBelongsToTenant(app, tenantId, rid);
     const body = request.body as { issuerUrl?: string };
     const issuerUrl = (body?.issuerUrl ?? '').trim();
     if (!/^https?:\/\//.test(issuerUrl)) {
