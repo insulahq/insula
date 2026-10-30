@@ -28,7 +28,7 @@ data:
   # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
   # image overwrites these with `:<tag>@sha256:<digest>`.
   tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:e0f6dea@sha256:a1d9419105b5ef1150309a692671d570799cac3f447a5cea8627ee99e3f4983f"
-  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:aa51607@sha256:26ccc98ef9f969b1793e81a0e07a087b8682431ba7ba045c18bac71a763e417f"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:e0f6dea@sha256:2d8201e212d630314c55e0524636b013073d25b4710ddc16f0dfc671cccbad96"
   claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:e0f6dea@sha256:5c13925e7f686e0eb2e75166f9de478b53bd1832a2da37bca60dcb90463f1f87"
   node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:e0f6dea@sha256:debc211ad209b3eef54bf159d737dee1abf577f6cf14931f3215674aa8b42e5d"
   # Longhorn dashboard URL for the Storage Configuration iframe.
