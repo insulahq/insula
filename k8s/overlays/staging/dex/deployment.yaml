@@ -90,7 +90,7 @@ spec:
               memory: 64Mi
       containers:
         - name: dex
-          image: ghcr.io/dexidp/dex:v2.45.1
+          image: ghcr.io/dexidp/dex:v2.46.1
           command: ["dex", "serve", "/etc/dex/config.yaml"]
           env:
             # Dex supports $ENV substitution in config.yaml. The

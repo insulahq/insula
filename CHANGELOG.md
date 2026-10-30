@@ -81,11 +81,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   backend `traefik/whoami` → v1.12.0. The two criticals left in `alpine/k8s` sit in a bundled
   `kustomize` no job runs and in aws-cli's certifi (it still trusts a root with compromised
   intermediates, as does every Alpine CA bundle until Mozilla's distrust ships); both are
-  ledger entries scoped to that file / package version. Traefik's two init containers still run
-  `alpine/k8s` 1.33.13: they are Helm values, and changing them rolls Traefik on every node, so
-  they move with the next Traefik values change (their criticals are unreachable there and are
-  ledger entries scoped to that image's packages). The image scan and the registry now also read
-  the images `bootstrap.sh` and the host migrations write, where these had been invisible.
+  ledger entries scoped to that file / package version. The image scan and the registry now
+  also read the images `bootstrap.sh` and the host migrations write, where these had been
+  invisible.
 - **Mail HAProxy 2.9 → 3.4 (LTS, supported to 2031).** Same configuration; the config now says
   `uid 0` / `gid 0` explicitly (the DaemonSet binds the mail ports as root with only
   `NET_BIND_SERVICE`), which 3.x otherwise warns about at every start.
@@ -107,6 +105,63 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - the component watch's *behind upstream* list compares stable tags shaped like the pin (a Helm
     chart version is no longer read as behind its app, a pre-release is never an upgrade) and
     lists what it could not compare.
+
+- **The platform database moves to PostgreSQL 18.6** (from 18.3). 18.4 and 18.6 fix server
+  crashes and memory-disclosure / code-execution bugs reachable by a signed-in database user
+  (CVE-2026-16239, CVE-2026-14669, a regexp buffer overrun, startup-packet recursion), and the
+  18.3 image carried 14 fixable critical OS CVEs (Perl, GnuTLS). The Cluster now names CNPG's
+  **immutable** build tag: the rolling `18.x-minimal-trixie` tag moves weekly, so each node ran
+  whichever build it pulled first. No dump/restore; the release's post-upgrade notes (logical
+  decoding output plugins, pgcrypto PGP ciphers, GIN reltuples, btree_gist/ltree) concern
+  features the platform database does not use. **The database restarts once on upgrade** (see
+  *Changed*).
+- **The Postgres backup plugin moves to barman-cloud v0.15.1** (from v0.13.0). The sidecar it
+  injects into every Postgres pod carried a critical PyJWT CVE, and the plugin a gRPC one.
+- **Traefik's init containers no longer run `alpine/k8s` 1.33.13**, whose OpenSSL, Python,
+  brotli and grpc-go carried critical CVEs for two shell lines (a `chown` and a curl loop). They
+  run `curlimages/curl` 8.23.0, which is exactly those tools. The same change moves the CrowdSec
+  bouncer plugin v1.6.0 → v1.8.1: in stream mode a stream's deletions are now applied before its
+  new decisions, so a replaced ban is no longer dropped. Existing clusters get both from host
+  migration 2026.10.23/0004 in one Traefik roll; it rolls back by itself if any Traefik pod
+  reports its plugins disabled.
+- **The snapshot-controller runs v8.7.0.** Upstream's manifest at a release tag names the
+  *previous* release's image, so clusters on the v8.6.0 pin ran v8.5.0, with a critical grpc-go
+  CVE. bootstrap.sh and host migration 2026.10.23/0003 now set the image to the pinned version,
+  and install the VolumeGroupSnapshot CRDs v8.7.0 expects (without them it waits and logs errors
+  at every start).
+- **cert-manager v1.21.3** (Go security fixes, including distrust of the compromised eMudhra
+  intermediates; host migration 2026.10.23/0002).
+- **Bulwark webmail 1.17.1 → 1.18.0**, inside the 7-day soak for its security fixes: a re-opened
+  draft could run another client's markup in the webmail (GHSA-g35q-3gpc-x2rr), a stale stored
+  credential was retried until Stalwart banned the webmail's address for every user
+  (GHSA-g6c7-r7wq-xrm2), and more mixed-account actions could hit another account's message.
+  Bulwark signs admin sessions out once. Roundcube's 1.7.5 image moves to its rebuild (brotli).
+- **The system-upgrade-controller's node-drain Jobs used kubectl v1.30.3** (upstream's default:
+  six minors behind the cluster, a critical crypto/tls CVE). They use v1.36.2; the controller
+  is v0.20.2.
+- **zrok 1.1.13, ziti-edge-tunnel 1.20.0, imapsync 2.326, curlimages/curl 8.23.0.** zrok's
+  remaining criticals are in controller-side modules every zrok release still ships (zrok 2.0.8
+  included); the frontdoor runs only `zrok enable`. They are ledger entries scoped to that image.
+- **The private-worker panel's compose hint named an image nobody publishes:**
+  `ghcr.io/k8s-hosting/private-worker-agent:latest`, an unclaimed registry namespace — whoever
+  registered it would have had tenants run their image, with the worker's token, on their own
+  hardware. The hint now names the image the API hands out (the new `agentImage` field). **If you
+  copied the compose hint from a worker's details, change its `image:` line** to the one in the
+  create/rotate snippet. `ci-image-org-check.sh` now checks image references in the backend and
+  panel source too.
+- **The private-worker agent's `:latest` is the newest stable release.** It moved with every
+  development build, so tenants who pulled `:latest` ran unreleased code. The release workflow
+  now builds the agent at the tag (amd64 and arm64), scans it, tags it `:<version>` and, for a
+  stable release, moves `:latest`; development builds publish `:edge`.
+- **The image scan sees every image the platform runs.** Besides `image:` fields it now lists
+  the CNPG `imageName` (the database), `*_IMAGE` ConfigMap and Secret values (the backup
+  sidecar, the drain kubectl), the cluster components `bootstrap.sh` installs from charts and
+  manifests at their pinned versions (Traefik, cert-manager, Longhorn, Calico, Flux, CNPG,
+  sealed-secrets, snapshot-controller, k3s's own images), and the Official Catalog's tenant
+  images. A ledger waiver can be scoped to an image repository (`trivy_scope.images`), so a
+  reachability verdict for one image no longer hides the same CVE in another. The first scan
+  found Longhorn 1.13.0's expat, Flux's kustomize-controller's brotli and Calico's trust store:
+  none reachable in those images, none fixed upstream yet; they are scoped ledger entries.
 
 ### Fixed
 
@@ -155,7 +210,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   commas in an `in` / `not_in` claim rule while typing, and follow the saved state after a
   removal.
 
+- **Fresh installs completed again: they stopped at installing Flux.** `bootstrap.sh` fetched
+  Flux's installer from `fluxcd.io/install.sh`, which follows Flux's main branch; a comment fix
+  there changed its checksum, and the pinned-checksum check refused it. It is fetched at the
+  `FLUX_VERSION` tag now, which does not move, and a test checks the k3s, Helm and Flux
+  installer pins against upstream daily and on every `bootstrap.sh` change. Existing clusters
+  were not affected.
+- **Bundle re-import's file manager image fell back to a repository that does not exist**
+  (`ghcr.io/insulahq/file-manager`); it uses the platform's file-manager image resolver.
+
 ### Changed
+
+- **Upgrading restarts the platform database once** (PostgreSQL 18.6 and the backup plugin's new
+  sidecar; with one instance that is a short API outage, with three a switchover), **rolls
+  Traefik once** (host migration 2026.10.23/0004 — ingress on each node blips while its pod
+  restarts), and rolls cert-manager and the snapshot-controller.
+- **`component-watch.sh --latest` says what to take now.** A release younger than 7 days (14
+  for a new major) is shown as in soak until its date, matching Dependabot's cooldown, and a
+  component can carry a deliberate ceiling with its reason (`watch.hold`): k3s stays on 1.36
+  while cert-manager, Flux and Longhorn do not support 1.37; Stalwart stays on 0.16 because 1.0
+  is a data migration; BusyBox's 1.38 is labelled unstable. The weekly sweep lists both.
+- **age v1.3.2** for hosts whose distribution has no age package, now SHA-256 verified like
+  rclone. Valkey's pin (not deployed) moves to 9.1.3, Dex (dev/staging) to v2.46.1.
 
 - **Upgrading restarts the mail server once and rolls the mail HAProxy DaemonSet:** the Stalwart
   pod's rsync sidecar changes image, and HAProxy changes version and configuration. On a

@@ -37,7 +37,11 @@ on:
       - 'scripts/test-trivy-helpers.py'
       - 'scripts/lib/component-latest.py'
       - 'scripts/test-component-latest.py'
+      - 'scripts/test-image-listers.py'
+      - 'scripts/lib/*.py'
+      - 'scripts/list-*-images.sh'
       - 'scripts/ci-component-watch-check.sh'
+      - 'scripts/test-bootstrap-installer-verify.sh'
   schedule:
     # WHY DAILY: a dependency is compromised on the advisory's clock, not ours.
     # Nothing in the lockfile has to change for a package already in it to turn
@@ -70,6 +74,7 @@ jobs:
         run: |
           python3 scripts/test-trivy-helpers.py
           python3 scripts/test-component-latest.py
+          python3 scripts/test-image-listers.py
       # The ONLINE half of the rocksdb↔Stalwart coupling: fetch Stalwart's
       # Cargo.lock at the pinned tag and confirm the mapping recorded in
       # components.yaml is actually true upstream, not merely self-consistent.
@@ -79,6 +84,18 @@ jobs:
       # — the only user of the checkpoint image — is switched off.
       - name: rocksdb pin matches Stalwart's upstream lockfile (dormant with the mail archive)
         run: ./scripts/ci-rocksdb-stalwart-pin-check.sh --online
+      # bootstrap.sh runs the k3s, Helm and Flux installers as root only when
+      # each matches its pinned digest. Daily, so an installer that changes
+      # under its pin fails here, not on an operator's fresh install.
+      - name: Pinned installer digests still match upstream
+        run: ./scripts/test-bootstrap-installer-verify.sh
+      # The weekly image scan's network-bound lists, exercised on every change so
+      # a broken lister fails a PR rather than a Monday scan (each exits non-zero
+      # on a source it cannot read).
+      - name: Image lists render (cluster components, Official Catalog)
+        run: |
+          n=$(scripts/list-chart-images.sh | wc -l); echo "cluster components: $n images"; [ "$n" -ge 20 ]
+          n=$(python3 scripts/lib/catalog-images.py | wc -l); echo "catalog: $n images"; [ "$n" -ge 5 ]
 
   dep-scan:
     name: OSV dependency scan (gate on malicious + new HIGH/CRITICAL)

@@ -16,7 +16,9 @@ runs:
       shell: bash
       run: |
         python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user --quiet pyyaml
-        python3 scripts/cve-ledger-trivyignore.py --yaml security/cve-ledger.yaml > "$RUNNER_TEMP/trivyignore-ledger.yaml"
+        python3 scripts/cve-ledger-trivyignore.py --yaml --image "$IMAGE_REF" security/cve-ledger.yaml > "$RUNNER_TEMP/trivyignore-ledger.yaml"
+      env:
+        IMAGE_REF: ${{ inputs.image-ref }}
     - name: Fail on an untracked fixable CRITICAL
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:

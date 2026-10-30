@@ -59,6 +59,29 @@ for pin in ("sha256:4a76", "multiple", "external", "ci-pinned", "latest", "githu
 row = cl.check({"id": "x", "pinned": "1.0", "watch": {"type": "manual"}}, "")
 check("manual watch is not compared", row["compared"] is False)
 
+# Soak and hold (compare() on a fixed date).
+import datetime
+cl.TODAY = datetime.date(2026, 10, 30)
+def cmp(pinned, dated, w=None, docker=False):
+    return cl.compare({"pinned": pinned}, pinned, dated, w or {}, docker)
+r = cmp("2.9.6", [("v2.10.0", "2026-10-26T10:00:00Z"), ("v2.9.6", "2026-10-01T00:00:00Z")])
+check("soak: a 4-day-old minor is in soak, the pin is not behind", not r["behind"] and r.get("soak") == "v2.10.0" and r["soak_until"] == "2026-11-02")
+r = cmp("v1.21.2", [("v1.21.3", "2026-10-23T00:00:00Z"), ("v1.21.2", "2026-07-01T00:00:00Z")])
+check("soak: 7 days old is out of it", r["behind"] and not r.get("soak"))
+r = cmp("v0.16.27", [("v1.0.1", "2026-10-28T00:00:00Z"), ("v1.0.0", "2026-10-20T00:00:00Z"), ("v0.16.27", "2026-10-18T00:00:00Z")])
+check("soak: a major waits 14 days (1.0.0 at 10 days still soaks)", not r["behind"] and r.get("soak") == "v1.0.1" and r["soak_until"] == "2026-11-11")
+r = cmp("v0.13.0", [("v0.15.1", "2026-09-30T00:00:00Z"), ("v0.15.0", "2026-10-25T00:00:00Z")])
+check("soak: on 0.x the minor is the major, but an old 0.15.1 counts", r["behind"])
+r = cmp("v1.4.22", [("v1.4.23", "2026-10-27T00:00:00Z"), ("v1.4.22", "2026-09-01T00:00:00Z"), ("v1.4.21", "2026-08-01T00:00:00Z")])
+check("soak: the newest out of soak is not newer than the pin → not behind", not r["behind"] and r.get("soak") == "v1.4.23")
+r = cmp("v1.36.5+k3s1", [("v1.37.1+k3s1", "2026-09-30T00:00:00Z"), ("v1.36.6+k3s1", "2026-10-01T00:00:00Z"), ("v1.36.5+k3s1", "2026-09-30T00:00:00Z")],
+        {"hold": {"below": "1.37", "reason": "cert-manager"}})
+check("hold: 1.37 is held, 1.36.6 under it is behind", r["behind"] and r.get("held", "").startswith("v1.37.1+k3s1 held below 1.37") and r.get("eligible") == "v1.36.6+k3s1")
+r = cmp("1.37", [("1.38", None), ("1.37", None)], {"hold": {"below": "1.38", "reason": "unstable"}}, docker=True)
+check("hold: nothing under the hold is newer → not behind, still says held", not r["behind"] and "held below 1.38" in r.get("held", ""))
+r = cmp("1.37", [("1.39", None), ("1.38", None), ("1.37", None)], {"hold": {"below": "1.38", "reason": "unstable"}}, docker=True)
+check("hold: undated docker tags get no soak", not r.get("soak"))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {failures}")

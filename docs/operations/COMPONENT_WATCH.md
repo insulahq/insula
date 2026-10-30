@@ -55,11 +55,33 @@ Why each part exists — what happened without it:
 - **An image is scanned when it is built.** One nobody rebuilds keeps its CVEs;
   the weekly scan covers what production pins, and Alpine/Debian final stages
   upgrade their packages at build time.
+- **A scan sees only the images it lists.** The platform database
+  (`imageName:`), the backup sidecar in every Postgres pod (a base64 Secret
+  value), the upgrade Jobs' kubectl (a ConfigMap value), every component
+  bootstrap.sh installs from a chart or manifest, and the catalog's tenant images
+  were all unlisted — PostgreSQL ran with 14 fixable criticals, the
+  snapshot-controller with a critical grpc CVE. The weekly scan's lists:
+
+  | List | Source |
+  |---|---|
+  | upstream | `scripts/list-scan-images.sh`: `image:` in k8s/base, `scripts/lib/runtime-images.py` (backend), `script-images.py` (bootstrap.sh, host migrations), `config-images.py` (imageName, `*_IMAGE` values) |
+  | first-party | `scripts/list-first-party-images.sh` (production's pins) |
+  | cluster | `scripts/list-chart-images.sh` — each chart/manifest rendered at bootstrap.sh's pin |
+  | catalog | `scripts/lib/catalog-images.py` — the Official Catalog's manifests |
 
 Waivers are ledger entries. A bare ID is skipped in **every** image; give an
 entry `trivy_scope: { paths: [...] }` or `{ purls: [...] }` to waive it only
 there (a Go stdlib CVE in one unused binary must not hide the same CVE in
-another image).
+another image), or `{ images: [<repository>…] }` to waive it in those images
+only — a reachability verdict is about one image's use of a package (brotli
+that nginx never links is not brotli that curl decodes). The ignore file is
+rendered per image (`cve-ledger-trivyignore.py --yaml --image <ref>`).
+
+A shipped host migration's body never changes, so an image a later migration
+replaces stays in its text. Its `# superseded-images: <image>… (<version>/<NNNN>)`
+header says so: `script-images.py` leaves those images out, and
+`ci-host-migrations-check.sh` checks the script writes them and the named
+migration exists.
 
 `--latest` (`scripts/lib/component-latest.py`) compares only stable upstream
 tags shaped like the pin, at the pin's precision. When the upstream tag stream
@@ -67,6 +89,15 @@ is not the pin's, say so in the component's `watch:` — `version_repo` (a chart
 released from its own repo), `tag_regex` (group 1 is the version), or
 `pinned_version` (the version a digest pin stands for). A pin that is not a
 version is listed as *not compared*, never as behind.
+
+"Behind" means *take it now*. A GitHub release younger than 7 days (14 when it
+changes the major — the minor on 0.x) is listed as **in soak** until its date,
+the same minimum age as Dependabot's cooldown; a release with a security fix
+that affects us is taken inside the soak by decision. A deliberate ceiling is
+`watch.hold: { below: "<version>", reason: "…" }` — versions at or above it are
+listed as **held** with the reason, and the pin is compared with the newest
+release under it (k3s held below 1.37 still shows 1.36.6 as behind). The guard
+requires a reason. The weekly sweep lists soaks and holds under *Waiting*.
 
 ```bash
 scripts/component-watch.sh --status        # tiered table + open CVE counts

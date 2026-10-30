@@ -311,7 +311,7 @@ ObjectStore + mail restic repo present).
 
 The CNPG cluster `platform/system-db` ships with the
 `barman-cloud.cloudnative-pg.io` plugin attached. The plugin Deployment
-lives in `cnpg-system/` (`k8s/base/cnpg-system/plugin-barman-cloud-v0.12.0.yaml`,
+lives in `cnpg-system/` (`k8s/base/cnpg-system/plugin-barman-cloud-v0.15.1.yaml`,
 vendored from upstream v0.12.0). When the operator binds the SYSTEM
 shim class to a backup target, `platform-api`'s `postgres-objectstore`
 reconciler materialises:

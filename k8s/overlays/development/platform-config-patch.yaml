@@ -24,7 +24,9 @@ data:
   # ingress (set up at install time, no per-tenant DNS work needed).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.71.1"
-  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+  # DEV hands out the development build (`edge`); `latest` is the newest release
+  # (release.yml), which is what production and staging hand out.
+  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:edge"
   # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
   # image overwrites these with `:<tag>@sha256:<digest>`.
   tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:e0f6dea@sha256:a1d9419105b5ef1150309a692671d570799cac3f447a5cea8627ee99e3f4983f"

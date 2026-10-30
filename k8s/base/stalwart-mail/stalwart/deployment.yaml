@@ -165,7 +165,7 @@ spec:
         # transient backend outage. The case we're catching here is
         # the DELIBERATE-looking-but-actually-accidental wipe.
         - name: protect-from-silent-data-loss
-          image: curlimages/curl:8.21.0
+          image: curlimages/curl:8.23.0
           imagePullPolicy: IfNotPresent
           command:
             - sh

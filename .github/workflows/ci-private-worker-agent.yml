@@ -49,7 +49,12 @@ jobs:
             # its pre-cutover build on 2026-06-22. Fixed across all image
             # workflows; see ci-sftp-gateway (bc278063) and ci-file-manager
             # (5c30f200) for the two that were caught first.
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            # `edge`, NOT `latest`: this image is what TENANTS run on their own
+            # hardware (the snippet the panel hands out names `:latest`), so
+            # `latest` must be the newest RELEASED agent — release.yml builds it
+            # at the tag and moves `latest` on a stable release. Every
+            # development push used to move it, so tenants pulled unreleased code.
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/development' }}
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
             type=ref,event=tag
 

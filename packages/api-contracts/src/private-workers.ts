@@ -57,6 +57,10 @@ export const privateWorkerResponseSchema = z.object({
   tunnelUrl: z
     .string()
     .describe('Operator-facing tunnel dial-in URL — wss://tunnels.${DOMAIN}/c/{slug}/'),
+  agentImage: z
+    .string()
+    .optional()
+    .describe('The agent image this platform hands out (PRIVATE_WORKER_AGENT_IMAGE) — what a compose/run snippet must name. Optional only so a newer panel reads an older API during a rolling deploy'),
   lastSeenAt: z.string().nullable(),
   lastUsedIp: z.string().nullable(),
   bytesIn: z.number().int(),

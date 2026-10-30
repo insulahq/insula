@@ -98,6 +98,12 @@ for i, c in enumerate(components):
             err(f"{cid}: missing required field '{fld}'")
     if str(c.get("tier")) not in TIERS:
         err(f"{cid}: invalid tier '{c.get('tier')}' (allowed: {sorted(TIERS)})")
+    # watch.hold is a deliberate ceiling for `--latest`; without a reason it is
+    # just a way to make "behind" go quiet.
+    hold = (c.get("watch") or {}).get("hold") if isinstance(c.get("watch"), dict) else None
+    if hold is not None and (not isinstance(hold, dict) or not re.match(r"^\d+(\.\d+)*$", str(hold.get("below", "")))
+                             or len(str(hold.get("reason", "")).strip()) < 20):
+        err(f"{cid}: watch.hold must be {{below: \"<version>\", reason: \"<why, 20+ chars>\"}}")
     if c.get("kind") not in VALID_KIND:
         err(f"{cid}: invalid kind '{c.get('kind')}'")
     if c.get("scan") not in VALID_SCAN:
@@ -203,6 +209,19 @@ for var, val in sorted(boot_pins.items()):
     if val not in pinned_values:
         err(f"COVERAGE — bootstrap pin {var}=\"{val}\" maps to no registry component")
 
+# ── 3b'. kubectl images follow K3S_VERSION's minor ───────────────────────────────
+# kubectl is supported one minor either side of the API server. The CronJobs'
+# alpine/k8s and the upgrade Jobs' rancher/kubectl are pinned by hand; a k3s
+# bump that leaves them behind drifts them out of skew one minor at a time (the
+# SUC default sat six minors behind).
+k3s_minor = re.match(r"v?(\d+)\.(\d+)", boot_pins.get("K3S_VERSION", ""))
+for kid in ("alpine-k8s", "suc-kubectl"):
+    c = by_id.get(kid)
+    m = re.match(r"v?(\d+)\.(\d+)", str((c or {}).get("pinned", "")))
+    if k3s_minor and c and m and m.groups() != k3s_minor.groups():
+        err(f"{kid}: pinned {c.get('pinned')} is not on K3S_VERSION's minor "
+            f"({boot_pins['K3S_VERSION']}) — move it with the k3s pin")
+
 # ── 3c. COVERAGE + DRIFT: images platform-api creates at runtime ────────────────
 # k8s/ and bootstrap.sh are not everything that runs: the backend writes images
 # into pods itself (the route sign-in's oauth2-proxy, helper Jobs, init
@@ -213,7 +232,9 @@ for var, val in sorted(boot_pins.items()):
 # (Traefik's init containers, install-time pods): scripts/lib/script-images.py.
 import subprocess
 rt_out = []
-for scanner in ("runtime-images.py", "script-images.py"):
+# …and k8s/base's images held as data — a CNPG imageName, *_IMAGE ConfigMap and
+# Secret values (scripts/lib/config-images.py).
+for scanner in ("runtime-images.py", "script-images.py", "config-images.py"):
     rt = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "lib", scanner), REPO],
                         capture_output=True, text=True)
     if rt.returncode != 0:
@@ -267,10 +288,16 @@ for i, e in enumerate(entries):
         err(f"{eid}: status 'accepted' requires a review_by date")
     scope = e.get("trivy_scope")
     if scope is not None:
-        lists = {k: v for k, v in (scope.items() if isinstance(scope, dict) else []) if k in ("paths", "purls")}
-        if (not isinstance(scope, dict) or set(scope) - {"paths", "purls"} or not lists
+        lists = {k: v for k, v in (scope.items() if isinstance(scope, dict) else []) if k in ("paths", "purls", "images")}
+        if (not isinstance(scope, dict) or set(scope) - {"paths", "purls", "images"} or not lists
                 or not all(isinstance(v, list) and v and all(isinstance(x, str) and x for x in v) for v in lists.values())):
-            err(f"{eid}: trivy_scope must be {{paths: [..], purls: [..]}} with non-empty string lists")
+            err(f"{eid}: trivy_scope must be {{paths: [..], purls: [..], images: [..]}} with non-empty string lists")
+        # An image scope names a repository the registry knows: a typo would
+        # leave the waiver applying nowhere, which reads as tracked while the
+        # scan still fails — or worse, a stale name nobody re-checks.
+        for img in (scope.get("images") or []) if isinstance(scope, dict) else []:
+            if norm_repo(str(img)) not in by_repo:
+                err(f"{eid}: trivy_scope.images '{img}' is no registry component's repo")
     # SLA clock
     if e.get("status") == "open" and (e.get("kev") or e.get("severity") == "critical"):
         tier = str(by_id.get(comp, {}).get("tier", ""))

@@ -322,6 +322,7 @@ function mapPrivateWorkerToResponse(row: PrivateWorker): PrivateWorkerResponse {
     description: row.description ?? null,
     serviceName: `pw-${row.id}`,
     tunnelUrl: buildWorkerServerUrl(row.slug),
+    agentImage: getAgentImage(),
     lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
     lastUsedIp: row.lastUsedIp ?? null,
     bytesIn: row.bytesIn,

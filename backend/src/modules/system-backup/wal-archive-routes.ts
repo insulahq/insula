@@ -301,7 +301,7 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       `  namespace: ${ns}`,
       `spec:`,
       `  instances: 1`,
-      `  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie`,
+      `  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-202610260820-minimal-trixie`,
       `  plugins:`,
       `    - name: barman-cloud.cloudnative-pg.io`,
       `      parameters:`,

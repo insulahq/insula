@@ -66,6 +66,22 @@ check("yaml scopes id + aliases to their purls",
       and by_id["CVE-2026-7"]["purls"] == ["pkg:pypi/certifi@2026.6.17"])
 check("yaml of an empty ledger has no rules", yaml.safe_load(ign.render_yaml({}))["vulnerabilities"] == [])
 
+# images: a waiver for one image repository, rendered per image.
+by_image = {"entries": [
+    {"id": "CVE-B", "status": "not_affected", "trivy_scope": {"images": ["nginx"]}},
+    {"id": "CVE-Z", "status": "not_affected", "trivy_scope": {"images": ["openziti/zrok"], "paths": ["usr/local/bin/zrok"]}},
+]}
+ids_for = lambda img: sorted(r["id"] for r in yaml.safe_load(ign.render_yaml(by_image, img))["vulnerabilities"] or [])
+check("images: no --image → an image-scoped waiver applies nowhere", ids_for(None) == [])
+check("images: a listed repo gets its waiver", ids_for("nginx:1.31.8-alpine") == ["CVE-B"])
+check("images: docker.io/library/ and a digest normalise to the same repo",
+      ids_for("docker.io/library/nginx:1.30-alpine@sha256:abc") == ["CVE-B"])
+check("images: another image does not", ids_for("curlimages/curl:8.21.0") == [])
+check("images: a repo that only shares a suffix does not", ids_for("nginxinc/nginx-unprivileged:1.31-alpine") == [])
+zr = [r for r in yaml.safe_load(ign.render_yaml(by_image, "openziti/zrok:1.1.13"))["vulnerabilities"] if r["id"] == "CVE-Z"]
+check("images + paths: the path scope is kept", zr and zr[0].get("paths") == ["usr/local/bin/zrok"])
+check("images: never in the plain format", "CVE-B" not in ign.render(by_image))
+
 # ── trivy-scan-summary ──
 report = {"ArtifactName": "docker.io/x/y:1", "Results": [
     {"Vulnerabilities": [

@@ -57,7 +57,7 @@ const sourceCluster = {
   metadata: { name: 'system-db', namespace: 'platform', uid: 'src-uid' },
   spec: {
     instances: 3,
-    imageName: 'ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie',
+    imageName: 'ghcr.io/cloudnative-pg/postgresql:18.6-202610260820-minimal-trixie',
     storage: { storageClass: 'longhorn-r3', size: '10Gi' },
     bootstrap: { initdb: { database: 'app', owner: 'app' } },
     plugins: [

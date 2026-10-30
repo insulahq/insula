@@ -47,9 +47,9 @@ const ZROK_FRONTDOOR_NAME = 'zrok-frontdoor';
 // manifest digests, so pinning changed no behaviour today; it only stops the
 // image drifting under us on the next upstream push.
 const ZITI_TUNNEL_IMAGE = process.env.ZITI_EDGE_TUNNEL_IMAGE
-  ?? 'openziti/ziti-edge-tunnel:1.18.3';
+  ?? 'openziti/ziti-edge-tunnel:1.20.0';
 const ZROK_FRONTDOOR_IMAGE = process.env.ZROK_FRONTDOOR_IMAGE
-  ?? 'openziti/zrok:1.1.11';
+  ?? 'openziti/zrok:1.1.13';
 
 export interface ReconcileDeps {
   readonly db: Database;

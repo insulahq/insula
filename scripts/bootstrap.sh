@@ -606,6 +606,11 @@ assert_k3s_installer_pin() {
 then pass --k3s-installer-sha256 <sha256 of that file>."
 }
 HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae379d259bb"
+# Flux's installer as it is at the FLUX_VERSION tag (install_flux reads it from
+# raw.githubusercontent.com/fluxcd/flux2/v${FLUX_VERSION}/install/flux.sh). The
+# old source, fluxcd.io/install.sh, follows flux2's main branch: a one-word
+# comment fix there changed its digest and every fresh install stopped at
+# install_flux. A tag does not move, so this pin changes only with FLUX_VERSION.
 FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
 
 # Helm's installer is pinned to a TAG, not `main` — `main` is a moving target
@@ -682,10 +687,12 @@ fetch_verified_script() {
 # every panel + tenant IngressRoute (the `crowdsec@traefik` Middleware
 # in k8s/base/traefik/middlewares-crowdsec.yaml).
 CROWDSEC_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
-# v1.6.0: slog logging + appsec content-length bypass fix.
-# Upgrading from v1.4.4 — same Config struct shape so the Middleware spec
-# in k8s/base/traefik/middlewares-crowdsec.yaml needs no further changes.
-CROWDSEC_PLUGIN_VERSION="v1.6.0"
+# v1.8.1: in stream mode (ours) a stream's deletions are applied before its new
+# decisions, so a replaced ban is no longer deleted, and the stream and metrics
+# tickers no longer share a channel. No option renamed or removed; the new
+# streamStartupBlock defaults to v1.6.0's synchronous first pull. Existing
+# clusters: host-migration 2026.10.23/0004 (the plugin is a Traefik value).
+CROWDSEC_PLUGIN_VERSION="v1.8.1"
 # ModSecurity-CRS proxy — tenant-opt-in WAF (the `modsecurity-crs@
 # traefik` Middleware). NOT fetched from the catalog: the platform carries its
 # own copy (k8s/base/traefik/plugins/modsecurity/README.md — upstream v1.6.0
@@ -704,8 +711,8 @@ MODSECURITY_PLUGIN_MODULE="github.com/insulahq/insula/traefik-plugins/modsecurit
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.21.2"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
-SEALED_SECRETS_CHART_VERSION="2.20.0"    # controller v0.40.0 (0.41.x has no chart yet)
+CERT_MANAGER_CHART_VERSION="v1.21.3"     # Go 1.26.10 (x509 eMudhra distrust) + certificates/status key-copy fix; existing clusters: host-migration 2026.10.23/0002. v1.21: ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
+SEALED_SECRETS_CHART_VERSION="2.20.0"    # controller v0.40.0. Chart 2.22.0 (controller 0.41.2) is out; it heals hand-edited owned Secrets (#2073)
 CNPG_CHART_VERSION="0.29.1"              # CloudNative-PG operator v1.30.1 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
@@ -2636,7 +2643,14 @@ install_age_if_missing() {
     aarch64|arm64) arch="arm64" ;;
     *) error "install_age_if_missing: unsupported arch '$(uname -m)'" ;;
   esac
-  local age_ver="v1.3.1"
+  local age_ver="v1.3.2"
+  # SHA-256 of the release tarballs (GitHub's asset digests), so a swapped
+  # download is refused like rclone's below — age encrypts the Tier-1 bundle.
+  local age_sha
+  case "$arch" in
+    amd64) age_sha="cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10" ;;
+    arm64) age_sha="6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4" ;;
+  esac
   local url="https://github.com/FiloSottile/age/releases/download/${age_ver}/age-${age_ver}-linux-${arch}.tar.gz"
   log "  age package not available — installing static binary ${age_ver}/${arch} from upstream..."
   local tmpdir
@@ -2644,6 +2658,10 @@ install_age_if_missing() {
   if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download age from ${url}. Check outbound HTTPS connectivity to github.com."
+  fi
+  if ! echo "${age_sha}  ${tmpdir}/age.tar.gz" | sha256sum -c - >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    error "age ${age_ver} download does not match its pinned SHA-256 — refusing to install it."
   fi
   tar -xzf "${tmpdir}/age.tar.gz" -C "$tmpdir"
   install -m 0755 "${tmpdir}/age/age"        /usr/local/bin/age
@@ -5753,7 +5771,7 @@ install_flux_cli() {
   fi
   # The official installer honours FLUX_VERSION (bare semver, no 'v').
   local flux_installer
-  flux_installer="$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" || exit 1
+  flux_installer="$(fetch_verified_script "https://raw.githubusercontent.com/fluxcd/flux2/v${FLUX_VERSION}/install/flux.sh" "$FLUX_INSTALLER_SHA256" flux)" || exit 1
   # A zero-byte payload would be piped into `sh`, which succeeds and installs
   # NOTHING — a failed fetch must never look like a clean install.
   [[ -n "$flux_installer" ]] || { printf 'ERROR: empty flux installer payload — refusing to execute.\n' >&2; exit 1; }
@@ -6161,6 +6179,12 @@ deployment:
       configMap:
         name: traefik-plugin-modsecurity
   initContainers:
+    # Both run curlimages/curl — busybox sh, mkdir, chown and curl, which is all
+    # they need — not alpine/k8s, whose kubectl/helm/eksctl/aws-cli/Python
+    # brought critical CVEs to two shell lines. Same image as the platform's
+    # HTTP-probe init containers (security/components.yaml `curl`). Existing
+    # clusters: host-migration 2026.10.23/0004.
+    #
     # The mount alone is NOT enough, verified on a live node.
     #
     # The kubelet creates a hostPath directory as root:root 0755, and Traefik
@@ -6176,7 +6200,7 @@ deployment:
     # ownership per pod, which means every node gets it — including nodes added
     # to the cluster later, which a host-side mkdir in this script would miss.
     - name: prepare-access-log
-      image: alpine/k8s:1.33.13
+      image: curlimages/curl:8.23.0
       imagePullPolicy: IfNotPresent
       securityContext:
         # Root is required to chown a root-owned directory, and nothing less
@@ -6209,7 +6233,7 @@ deployment:
           mkdir -p /var/log/traefik
           chown 65532:65532 /var/log/traefik
     - name: wait-for-plugin-registry
-      image: alpine/k8s:1.33.13
+      image: curlimages/curl:8.23.0
       imagePullPolicy: IfNotPresent
       securityContext:
         runAsNonRoot: true
@@ -7217,17 +7241,25 @@ install_longhorn() {
   #   - CNPG bootstrap.recovery.volumeSnapshots — the Postgres PITR
   #     auto-promote endpoint depends on this to wrap an existing
   #     Longhorn snapshot for CNPG to recover from.
-  # Pinned to v8.6.0 (latest stable). v8 requires k8s >= 1.25 (CRD CEL
+  # Pinned to v8.7.0 (latest stable). v8 requires k8s >= 1.25 (CRD CEL
   # validation rules) — we run >= 1.35, so this is satisfied. The
   # VolumeSnapshot storage version is v1 (since external-snapshotter
   # v4.1); no v1beta1 objects exist on our clusters, so the CRD bump is
-  # purely additive. VolumeGroupSnapshot CRDs are intentionally NOT
-  # applied — the controller is Ready on the v1 VolumeSnapshot CRD set
-  # alone and group snapshots stay disabled (no --enable-volume-group-
-  # snapshots flag). Realigns the controller with the v8.x CRD set
-  # referenced by k8s/base/longhorn/csi-snapshots.yaml.
+  # purely additive.
+  #
+  # Two things the tag alone does not give you:
+  #   * The controller IMAGE. Upstream's setup-snapshot-controller.yaml at a
+  #     tag deploys the PREVIOUS release's image (v8.7.0's names v8.6.0, and
+  #     v8.6.0's named v8.5.0 — what clusters on the v8.6.0 pin actually ran),
+  #     so the image is rewritten to snap_ver below.
+  #   * The VolumeGroupSnapshot CRDs. From v8.7.0 the group-snapshot feature
+  #     is GA and on: without its CRDs the controller logs list errors for up
+  #     to 30s at every start, then a warning, and runs without it. They are
+  #     upstream's standard CRD set (client/config/crd/kustomization.yaml);
+  #     Longhorn does not create group snapshots, so nothing uses them.
+  # Existing clusters: host-migration 2026.10.23/0003.
   log "Installing external-snapshotter CRDs + controller (CNPG PITR + VolumeSnapshotClass dep)…"
-  local snap_ver="v8.6.0"
+  local snap_ver="v8.7.0"
   local snap_base="https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${snap_ver}"
 
   # external-snapshotter v7+ renamed the snapshot-controller pod selector
@@ -7251,6 +7283,9 @@ install_longhorn() {
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml" \
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml" \
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
+    "client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshotclasses.yaml" \
+    "client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshotcontents.yaml" \
+    "client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshots.yaml" \
     "deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
     "deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"; do
     # Same masked-failure story as tigera-operator above: this used to apply
@@ -7259,6 +7294,8 @@ install_longhorn() {
     # VolumeSnapshotClass" while applying the platform overlay.
     local _snap_cache="/var/lib/insula/cache/external-snapshotter-${snap_ver}-$(basename "$f")"
     if fetch_manifest_cached "${snap_base}/${f}" "$_snap_cache"; then
+      # The controller image named by the tag lags one release (see above).
+      sed -i -E "s#(registry\.k8s\.io/sig-storage/snapshot-controller:)v[0-9.]+#\1${snap_ver}#" "$_snap_cache"
       kctl apply -f "$_snap_cache" 2>&1 | grep -v "unchanged" || true
     else
       warn "  skipping ${f##*/} — VolumeSnapshot CRDs will be missing and Longhorn's VolumeSnapshotClass apply will fail"

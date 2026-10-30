@@ -142,7 +142,7 @@ spec:
   # New cluster — 1 instance is enough to validate the restore.
   # Operator scales out manually after rename + cutover.
   instances: 1
-  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-202610260820-minimal-trixie
   storage:
     size: 5Gi
     storageClass: longhorn-system-local

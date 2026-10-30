@@ -23,6 +23,11 @@ ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
     | sed -E 's/^image:[[:space:]]*"?//'
   python3 "$ROOT/scripts/lib/runtime-images.py" "$ROOT" | cut -f2
   python3 "$ROOT/scripts/lib/script-images.py" "$ROOT" | cut -f2
+  # …and the images k8s/base holds as DATA, not in an `image:` field: the CNPG
+  # Cluster's imageName (the platform database ran 18.3 with 14 fixable
+  # criticals while no scan listed it), *_IMAGE ConfigMap/Secret values (the
+  # barman sidecar in every Postgres pod, the upgrade Jobs' kubectl).
+  python3 "$ROOT/scripts/lib/config-images.py" "$ROOT" | cut -f2
 } \
   | grep -E '[:@]' \
   | grep -vE '^ghcr\.io/insulahq/' \

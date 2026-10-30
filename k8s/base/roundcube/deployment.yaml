@@ -75,7 +75,7 @@ spec:
           #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.7.5-fpm-alpine
           # Check the PHP inside too: a same-version tag can be rebuilt on an
           # older PHP than the newest tag carries.
-          image: roundcube/roundcubemail@sha256:7b5be4f46c775e705f8093ff1950a8decf7c59cf6c73115fb562a1c65634ef3b
+          image: roundcube/roundcubemail@sha256:9e937fa38d957d88d6e5b85143b5225ad3d34821da59dbd13dab2857c9e5c058
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
