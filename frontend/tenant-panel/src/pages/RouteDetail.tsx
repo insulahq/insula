@@ -5,7 +5,13 @@ import {
   ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
-import type { WafMode, WafRuleExclusionScope } from '@insula/api-contracts';
+import {
+  isWafExclusionScopeValidForRule,
+  WAF_CONTENT_TYPE_RULE_ID,
+  wafRuleExclusionPathRegexSchema,
+  type WafMode,
+  type WafRuleExclusionScope,
+} from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
@@ -1394,6 +1400,8 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
             <code className="text-[11px]">args_names_only</code> is narrower but does
             nothing for rules that match parameter <em>values</em> (930120, 932160, …).
             Use <code className="text-[11px]">full_disable</code> only as a last resort.
+            Give a <strong>path</strong> to limit an exclusion to one page or endpoint
+            instead of the whole domain.
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -1427,6 +1435,7 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
                 <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 uppercase">
                   <tr>
                     <th className="px-3 py-2 text-left">Rule ID</th>
+                    <th className="px-3 py-2 text-left">Path</th>
                     <th className="px-3 py-2 text-left">Scope</th>
                     <th className="px-3 py-2 text-left">Reason</th>
                     <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added ({utcOffsetLabel()})</th>
@@ -1489,7 +1498,8 @@ function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCan
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete WAF exclusion?</h3>
         <p className="text-sm text-gray-700 dark:text-gray-300">
           The OWASP CRS rule <code className="font-mono text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">{ex.ruleId}</code>{' '}
-          will start enforcing again on <strong className="font-mono">{hostname}</strong> within ~10s
+          will start enforcing again on <strong className="font-mono">{hostname}</strong>
+          {ex.pathRegex && <> for paths matching <code className="font-mono text-xs">{ex.pathRegex}</code></>} within ~10s
           (modsec-crs pods roll). Any traffic that was previously allowed because of this exclusion
           may begin being blocked.
         </p>
@@ -1537,13 +1547,16 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
   return (
     <tr data-testid={`waf-exclusion-row-${ex.id}`}>
       <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{ex.ruleId}</td>
+      <td className="px-3 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-300 break-all" data-testid={`waf-exclusion-path-${ex.id}`}>
+        {ex.pathRegex ?? <span className="font-sans italic text-gray-500 dark:text-gray-400">every path</span>}
+      </td>
       <td className="px-3 py-2">
         <span className={clsx(
           'inline-flex rounded px-2 py-0.5 text-[10px] uppercase font-medium',
           ex.scope === 'full_disable'
             ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
             : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
-        )}>{ex.scope}</span>
+        )}>{ex.scope === 'text_plain_as_json' ? 'text/plain as JSON' : ex.scope}</span>
       </td>
       <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[280px] truncate" title={ex.reason}>{ex.reason}</td>
       <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
@@ -1571,12 +1584,23 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
   readonly onClose: () => void;
 }) {
   const [ruleId, setRuleId] = useState('');
+  const [pathRegex, setPathRegex] = useState('');
   const [scope, setScope] = useState<WafRuleExclusionScope>('args');
   const [reason, setReason] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const create = useCreateRouteWafExclusion(tenantId, routeId);
 
-  const valid = /^[0-9]+$/.test(ruleId.trim()) && reason.trim().length > 0;
+  const pathTrimmed = pathRegex.trim();
+  // The contract's own message: it names the rule broken (anchor, quote, syntax the WAF cannot compile).
+  const pathError = pathTrimmed === ''
+    ? null
+    : wafRuleExclusionPathRegexSchema.safeParse(pathTrimmed).error?.issues[0]?.message ?? null;
+  const pathValid = pathError === null;
+  const isContentTypeRule = ruleId.trim() === WAF_CONTENT_TYPE_RULE_ID;
+  const valid = /^[0-9]+$/.test(ruleId.trim())
+    && pathValid
+    && isWafExclusionScopeValidForRule(scope, ruleId.trim())
+    && reason.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
@@ -1591,7 +1615,11 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
             <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
             <input
               value={ruleId}
-              onChange={(e) => setRuleId(e.target.value)}
+              onChange={(e) => {
+                setRuleId(e.target.value);
+                // The JSON scope exists for 920420 only.
+                if (scope === 'text_plain_as_json' && e.target.value.trim() !== WAF_CONTENT_TYPE_RULE_ID) setScope('args');
+              }}
               placeholder="930120"
               className={INPUT_CLASS + ' font-mono'}
               data-testid="add-waf-exclusion-rule-id"
@@ -1600,6 +1628,27 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
               The 6-digit CRS rule number — find it in the WAF Log column for the
               false-positive event you want to suppress.
             </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Path (optional — empty = the whole domain)</span>
+            <input
+              value={pathRegex}
+              onChange={(e) => setPathRegex(e.target.value)}
+              placeholder={'^/lib/ajax/service\\.php$'}
+              className={INPUT_CLASS + ' font-mono'}
+              data-testid="add-waf-exclusion-path-regex"
+              aria-invalid={!pathValid}
+            />
+            {!pathValid ? (
+              <span className="text-[10px] text-red-600 dark:text-red-400" data-testid="add-waf-exclusion-path-error">
+                {pathError}
+              </span>
+            ) : (
+              <span className="text-[10px] text-gray-500">
+                A regular expression for the request path (without the query string), e.g.{' '}
+                <code>^/mod/forum/post\.php$</code> for one page. End with $ to match one path exactly.
+              </span>
+            )}
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Scope</span>
@@ -1612,7 +1661,16 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
               <option value="args">args — stop this rule scanning parameters (recommended)</option>
               <option value="args_names_only">args_names_only — parameter names only (no-op for most rules)</option>
               <option value="full_disable">full_disable — disable the rule entirely for this domain</option>
+              {isContentTypeRule && (
+                <option value="text_plain_as_json">text_plain_as_json — accept text/plain, inspect it as JSON (920420)</option>
+              )}
             </select>
+            {scope === 'text_plain_as_json' && (
+              <span className="text-[10px] text-gray-500" data-testid="add-waf-exclusion-text-plain-help">
+                Accepts a text/plain body (browser beacons, e.g. Moodle H5P progress saves) and has
+                the WAF parse it as JSON, so it is still inspected. Other body types stay refused.
+              </span>
+            )}
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Reason</span>
@@ -1644,7 +1702,7 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
             onClick={() => {
               setErr(null);
               create.mutate(
-                { ruleId: ruleId.trim(), scope, reason: reason.trim() },
+                { ruleId: ruleId.trim(), pathRegex: pathTrimmed === '' ? null : pathTrimmed, scope, reason: reason.trim() },
                 {
                   onSuccess: onClose,
                   onError: (e) => setErr(e instanceof Error ? e.message : 'Failed to add exclusion'),

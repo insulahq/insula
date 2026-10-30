@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A WAF exclusion can be limited to one path.** Exclusions covered a whole host, so a rule that
+  false-positived on one endpoint had to be switched off for the entire site. An exclusion now
+  takes an optional path regex (matched against the request path without the query string; it
+  must start with `^/`), in the admin panel's Web Defense dialog and on a tenant route's WAF
+  Exclusions panel alike. The admin dialog offers the WAF event's own path with one click. The
+  same rule can be excluded on several paths of a host, or host-wide and on a path. Rows without
+  a path render exactly as before, so upgrading does not restart the WAF. The WAF compiles the
+  regex with PCRE, and a pattern PCRE cannot compile would stop it loading its rules for every
+  site. So only syntax both engines read alike is accepted; lookarounds, named groups,
+  back-references and letter escapes other than `\d \w \s` are refused, by the API and again by
+  the renderer.
+- **Rule 920420 can accept `text/plain` bodies and still inspect them** (new scope
+  `text_plain_as_json`). Browsers send `navigator.sendBeacon` data as `text/plain`, and apps put
+  JSON in it: Moodle saves H5P progress this way, and 920420 ("content type not allowed")
+  refused every save. Switching 920420 off is not a fix. The WAF parses only body types it
+  knows, so with the rule off any body could be sent as an unparsed type and never be
+  inspected, while an app that reads the raw body (Moodle's AJAX endpoint does) still
+  processes it. The new scope removes 920420 only for `text/plain` requests and has the WAF
+  parse their body as JSON. A body that is not JSON is blocked, and every other unlisted type
+  is still refused. It is accepted for rule 920420 only (the API, the panels and a database
+  CHECK all refuse it on any other rule).
+
 ### Security
 
 - **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,

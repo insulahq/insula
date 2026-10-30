@@ -13,9 +13,11 @@
  * SELECT.
  */
 
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
+  isWafExclusionScopeValidForRule,
+  WAF_CONTENT_TYPE_RULE_ID,
   type CreateTenantWafRuleExclusionRequest,
   type CreateWafRuleExclusionRequest,
   type UpdateWafRuleExclusionRequest,
@@ -39,6 +41,8 @@ export class WafRuleExclusionError extends Error {
       | 'NOT_FOUND'
       | 'OVER_CAPACITY'
       | 'INVALID_REGEX'
+      // text_plain_as_json on a rule other than 920420.
+      | 'INVALID_SCOPE'
       // B2: tenant-scoped operations.
       | 'ROUTE_NOT_FOUND'
       | 'NOT_TENANT_OWNED',
@@ -64,6 +68,24 @@ export class WafRuleExclusionError extends Error {
 const buildHostnameRegexFromHostname = (hostname: string): string => {
   const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return `^${escaped}$`;
+};
+
+/** NULL-safe equality on path_regex: a host-wide row (NULL) and a path row are different exclusions. */
+const samePath = (pathRegex: string | null): SQL =>
+  pathRegex === null ? isNull(wafRuleExclusions.pathRegex) : eq(wafRuleExclusions.pathRegex, pathRegex);
+
+/** "<host>" or "<host> path <path>" — for duplicate messages. */
+const describeTarget = (host: string, pathRegex: string | null): string =>
+  pathRegex === null ? host : `${host} path ${pathRegex}`;
+
+/** Defence in depth behind the contract's refine (and the DB CHECK): a scope/rule pair that means nothing. */
+const assertScopeFitsRule = (scope: WafRuleExclusion['scope'], ruleId: string): void => {
+  if (!isWafExclusionScopeValidForRule(scope, ruleId)) {
+    throw new WafRuleExclusionError(
+      'INVALID_SCOPE',
+      `scope ${scope} applies to rule ${WAF_CONTENT_TYPE_RULE_ID} only, not ${ruleId}`,
+    );
+  }
 };
 
 /**
@@ -102,6 +124,7 @@ const rowToContract = (row: typeof wafRuleExclusions.$inferSelect): WafRuleExclu
   id: row.id,
   ruleId: row.ruleId,
   hostnameRegex: row.hostnameRegex,
+  pathRegex: row.pathRegex ?? null,
   scope: row.scope as WafRuleExclusion['scope'],
   reason: row.reason,
   createdBy: row.createdBy,
@@ -143,6 +166,7 @@ export const listExclusionsForAdmin = async (
       id: wafRuleExclusions.id,
       ruleId: wafRuleExclusions.ruleId,
       hostnameRegex: wafRuleExclusions.hostnameRegex,
+      pathRegex: wafRuleExclusions.pathRegex,
       scope: wafRuleExclusions.scope,
       reason: wafRuleExclusions.reason,
       createdBy: wafRuleExclusions.createdBy,
@@ -161,6 +185,7 @@ export const listExclusionsForAdmin = async (
     id: row.id,
     ruleId: row.ruleId,
     hostnameRegex: row.hostnameRegex,
+    pathRegex: row.pathRegex ?? null,
     scope: row.scope as WafRuleExclusion['scope'],
     reason: row.reason,
     createdBy: row.createdBy,
@@ -197,6 +222,8 @@ export const createExclusion = async (
   input: CreateWafRuleExclusionRequest,
   createdBy: string,
 ): Promise<WafRuleExclusion> => {
+  assertScopeFitsRule(input.scope, input.ruleId);
+  const pathRegex = input.pathRegex ?? null;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${ADVISORY_LOCK_ID})`);
 
@@ -212,9 +239,9 @@ export const createExclusion = async (
       );
     }
 
-    // Duplicate check — same (rule_id, hostname_regex, scope) enabled row.
-    // The partial unique index will also catch this but the explicit
-    // check yields a friendlier error code.
+    // Duplicate check — same (rule_id, hostname_regex, path_regex, scope)
+    // enabled row. The partial unique index will also catch this but the
+    // explicit check yields a friendlier error code.
     const existing = await tx
       .select({ id: wafRuleExclusions.id })
       .from(wafRuleExclusions)
@@ -222,6 +249,7 @@ export const createExclusion = async (
         and(
           eq(wafRuleExclusions.ruleId, input.ruleId),
           eq(wafRuleExclusions.hostnameRegex, input.hostnameRegex),
+          samePath(pathRegex),
           eq(wafRuleExclusions.scope, input.scope),
           eq(wafRuleExclusions.disabled, false),
         ),
@@ -230,7 +258,7 @@ export const createExclusion = async (
     if (existing.length > 0) {
       throw new WafRuleExclusionError(
         'DUPLICATE',
-        `an enabled exclusion already exists for rule ${input.ruleId} on ${input.hostnameRegex} (${input.scope})`,
+        `an enabled exclusion already exists for rule ${input.ruleId} on ${describeTarget(input.hostnameRegex, pathRegex)} (${input.scope})`,
       );
     }
 
@@ -240,6 +268,7 @@ export const createExclusion = async (
       id,
       ruleId: input.ruleId,
       hostnameRegex: input.hostnameRegex,
+      pathRegex,
       scope: input.scope,
       reason: input.reason,
       createdBy,
@@ -274,10 +303,13 @@ export const updateExclusion = async (
     // currently-enabled rows.
     const next = {
       hostnameRegex: input.hostnameRegex ?? current.hostnameRegex,
+      // undefined keeps the stored path; null clears it (every path again).
+      pathRegex: input.pathRegex === undefined ? (current.pathRegex ?? null) : input.pathRegex,
       scope: (input.scope ?? current.scope) as WafRuleExclusion['scope'],
       reason: input.reason ?? current.reason,
       disabled: input.disabled ?? current.disabled,
     };
+    assertScopeFitsRule(next.scope, current.ruleId);
 
     if (!next.disabled) {
       // Re-enabling a disabled row also counts against MAX_ENABLED — without
@@ -305,6 +337,7 @@ export const updateExclusion = async (
           and(
             eq(wafRuleExclusions.ruleId, current.ruleId),
             eq(wafRuleExclusions.hostnameRegex, next.hostnameRegex),
+            samePath(next.pathRegex),
             eq(wafRuleExclusions.scope, next.scope),
             eq(wafRuleExclusions.disabled, false),
           ),
@@ -313,7 +346,7 @@ export const updateExclusion = async (
       if (otherDupe) {
         throw new WafRuleExclusionError(
           'DUPLICATE',
-          `an enabled exclusion already exists for rule ${current.ruleId} on ${next.hostnameRegex} (${next.scope})`,
+          `an enabled exclusion already exists for rule ${current.ruleId} on ${describeTarget(next.hostnameRegex, next.pathRegex)} (${next.scope})`,
         );
       }
     }
@@ -322,6 +355,7 @@ export const updateExclusion = async (
       .update(wafRuleExclusions)
       .set({
         hostnameRegex: next.hostnameRegex,
+        pathRegex: next.pathRegex,
         scope: next.scope,
         reason: next.reason,
         disabled: next.disabled,
@@ -392,6 +426,8 @@ export const createExclusionForTenantRoute = async (
   input: CreateTenantWafRuleExclusionRequest,
   createdBy: string,
 ): Promise<WafRuleExclusion> => {
+  assertScopeFitsRule(input.scope, input.ruleId);
+  const pathRegex = input.pathRegex ?? null;
   return db.transaction(async (tx) => {
     // Take the advisory lock BEFORE the ownership check so a concurrent
     // route delete can't slip past loadTenantRoute and then fire a raw
@@ -420,6 +456,7 @@ export const createExclusionForTenantRoute = async (
         and(
           eq(wafRuleExclusions.ruleId, input.ruleId),
           eq(wafRuleExclusions.hostnameRegex, hostnameRegex),
+          samePath(pathRegex),
           eq(wafRuleExclusions.scope, input.scope),
           eq(wafRuleExclusions.disabled, false),
         ),
@@ -428,7 +465,7 @@ export const createExclusionForTenantRoute = async (
     if (dupes.length > 0) {
       throw new WafRuleExclusionError(
         'DUPLICATE',
-        `an enabled exclusion already exists for rule ${input.ruleId} on ${route.hostname} (${input.scope})`,
+        `an enabled exclusion already exists for rule ${input.ruleId} on ${describeTarget(route.hostname, pathRegex)} (${input.scope})`,
       );
     }
 
@@ -438,6 +475,7 @@ export const createExclusionForTenantRoute = async (
       id,
       ruleId: input.ruleId,
       hostnameRegex,
+      pathRegex,
       scope: input.scope,
       reason: input.reason,
       createdBy,

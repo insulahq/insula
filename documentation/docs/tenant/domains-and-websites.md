@@ -126,6 +126,11 @@ Click any route to open its detail page, which has these tabs:
   *detected · not blocked*, but blocks nothing: run it against your real
   traffic for as long as you need, add exclusions for anything your site
   legitimately does, then switch to *Enforced*, which blocks with a 403.
+  An exclusion (under **WAF Exclusions**) switches one rule off for your
+  website, or — when you give it a **path** such as `^/lib/ajax/service\.php$`
+  — only for the pages whose address matches. For rule 920420 there is also
+  **text_plain_as_json**, which accepts browser beacons sent as `text/plain`
+  and still inspects them.
 - **Access Control** — [require a sign-in](#require-a-sign-in-oidc),
   client certificates (mTLS) and
   [password-protected folders](protected-directories.md).

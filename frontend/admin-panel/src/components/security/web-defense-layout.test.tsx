@@ -83,9 +83,12 @@ vi.mock('@/hooks/use-waf-events', () => ({
 }));
 
 const wafExclusions = vi.fn(() => ok({ exclusions: [] }));
+// The body the Add / Whitelist modal would POST.
+const createExclusionMutate = vi.fn();
 vi.mock('@/hooks/use-waf-rule-exclusions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/hooks/use-waf-rule-exclusions')>()),
   useWafRuleExclusions: () => wafExclusions(),
+  useCreateWafRuleExclusion: () => ({ mutate: createExclusionMutate, isPending: false }),
 }));
 vi.mock('@/components/ui/UserLabel', () => ({ default: ({ userId }: { userId: string }) => <span>{userId}</span> }));
 
@@ -119,6 +122,7 @@ beforeEach(() => {
   setDetectionState.mockReturnValue({ mutate: setDetection, isPending: false, isError: false, error: null, data: undefined });
   simulationBusy.mockReturnValue(false);
   wafExclusions.mockReturnValue(ok({ exclusions: [] }));
+  createExclusionMutate.mockReset();
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -476,5 +480,97 @@ describe('WAF times — shown in the browser time zone', () => {
     const body = screen.getByTestId('autoban-recent-decisions-body');
     expect(within(body).getByText('2026-01-01 09:00:00')).toHaveAttribute('title', '2026-01-01 00:00:00 UTC');
     expect(within(body).getByTestId('sort-triggeredAt')).toHaveTextContent('When (UTC+9)');
+  });
+});
+
+// Path-scoped exclusions: an exception can cover one path of a host, and rule
+// 920420 can accept text/plain bodies as JSON instead of being switched off.
+describe('WAF exclusions — path scope', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: '00000000-0000-4000-8000-0000000000f1', ruleId: '920420', hostnameRegex: '^moodle\\.example\\.test$', pathRegex: null,
+    scope: 'full_disable', reason: 'r', createdBy: 'operator', createdAt: '2026-10-23T18:05:09.000Z',
+    updatedAt: '2026-10-23T18:05:09.000Z', disabled: false, tenantId: null, routeId: null, tenantName: null, ...over,
+  });
+  const openAdd = () => {
+    render(<WafExclusionsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('exclusions-add'));
+    fireEvent.change(screen.getByTestId('whitelist-modal-host-regex'), { target: { value: '^moodle\\.example\\.test$' } });
+    fireEvent.change(screen.getByTestId('whitelist-modal-reason'), { target: { value: 'H5P beacons' } });
+  };
+
+  it('the list shows each exclusion\'s path, or that it covers every path', () => {
+    wafExclusions.mockReturnValue(ok({ exclusions: [
+      row({}),
+      row({ id: '00000000-0000-4000-8000-0000000000f2', pathRegex: '^/lib/ajax/service\\.php$', scope: 'text_plain_as_json' }),
+    ] }));
+    render(<WafExclusionsTab />, { wrapper });
+    expect(screen.getByTestId('exclusion-path-00000000-0000-4000-8000-0000000000f1')).toHaveTextContent('every path');
+    expect(screen.getByTestId('exclusion-path-00000000-0000-4000-8000-0000000000f2')).toHaveTextContent('path ^/lib/ajax/service\\.php$');
+    expect(screen.getByTestId('exclusion-row-00000000-0000-4000-8000-0000000000f2')).toHaveTextContent('text/plain as JSON');
+  });
+
+  it('sends the path it was given, and null when the field is empty', () => {
+    openAdd();
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '941100' } });
+    fireEvent.click(screen.getByTestId('whitelist-modal-submit'));
+    expect(createExclusionMutate.mock.calls[0]?.[0]).toMatchObject({ ruleId: '941100', pathRegex: null, scope: 'args' });
+
+    fireEvent.change(screen.getByTestId('whitelist-modal-path-regex'), { target: { value: ' ^/mod/forum/post\\.php$ ' } });
+    fireEvent.click(screen.getByTestId('whitelist-modal-submit'));
+    expect(createExclusionMutate.mock.calls[1]?.[0]).toMatchObject({ pathRegex: '^/mod/forum/post\\.php$' });
+  });
+
+  it.each(['/lib/ajax', '^/a"b', '^/(a'])('refuses the path %j before it reaches the API', (bad) => {
+    openAdd();
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '941100' } });
+    fireEvent.change(screen.getByTestId('whitelist-modal-path-regex'), { target: { value: bad } });
+    expect(screen.getByTestId('whitelist-modal-path-error')).toBeInTheDocument();
+    expect(screen.getByTestId('whitelist-modal-submit')).toBeDisabled();
+  });
+
+  it('names why a path is refused — here, syntax the WAF\'s PCRE cannot compile', () => {
+    openAdd();
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '941100' } });
+    fireEvent.change(screen.getByTestId('whitelist-modal-path-regex'), { target: { value: '^/x\\q' } });
+    expect(screen.getByTestId('whitelist-modal-path-error')).toHaveTextContent('the WAF cannot compile');
+    fireEvent.change(screen.getByTestId('whitelist-modal-path-regex'), { target: { value: 'lib/' } });
+    expect(screen.getByTestId('whitelist-modal-path-error')).toHaveTextContent('must start with ^/');
+  });
+
+  it('offers "text/plain as JSON" for rule 920420 only, and drops it when the rule changes', () => {
+    openAdd();
+    const scope = () => screen.getByTestId('whitelist-modal-scope') as HTMLSelectElement;
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '941100' } });
+    expect(within(scope()).queryByRole('option', { name: /text_plain_as_json/ })).toBeNull();
+
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '920420' } });
+    fireEvent.change(scope(), { target: { value: 'text_plain_as_json' } });
+    expect(screen.getByTestId('whitelist-modal-text-plain-help')).toHaveTextContent('parse it as JSON');
+    fireEvent.click(screen.getByTestId('whitelist-modal-submit'));
+    expect(createExclusionMutate.mock.calls[0]?.[0]).toMatchObject({ ruleId: '920420', scope: 'text_plain_as_json' });
+
+    fireEvent.change(screen.getByTestId('whitelist-modal-rule-id'), { target: { value: '941160' } });
+    expect(scope().value).toBe('args');
+  });
+
+  it('whitelisting from an event offers that event\'s path without applying it', () => {
+    wafEvents.mockReturnValue({
+      ...ok({
+        events: [{
+          id: '00000000-0000-4000-8000-0000000000f3', scope: 'tenant-route', hostname: 'moodle.example.test', routeId: null, tenantId: null,
+          ruleId: '920420', severity: 'critical', message: 'Request content type is not allowed by policy',
+          requestUri: '/lib/ajax/service.php?sesskey=abc', requestMethod: 'POST', sourceIp: '192.0.2.60', occurredAt: '2026-01-01T00:00:00.000Z',
+        }],
+        truncated: false,
+        stats: { windowSeconds: 86_400, totalEvents: 1, totalEventsAdminHost: 0, totalEventsTenantRoute: 1, topRules: [], topHosts: [], mostRecentAt: null },
+        scraperStatus: { hasRunOnce: true, modsecPodFound: true, lastRunAt: null, scrapeIntervalMs: 30_000, lastCycleErrors: [] },
+      }),
+    });
+    render(<WafEventsTab />, { wrapper });
+    fireEvent.click(screen.getByRole('button', { name: 'Whitelist rule 920420 for moodle.example.test' }));
+    expect(screen.getByTestId('whitelist-modal-path-regex')).toHaveValue('');
+    fireEvent.click(screen.getByTestId('whitelist-modal-use-event-path'));
+    expect(screen.getByTestId('whitelist-modal-path-regex')).toHaveValue('^/lib/ajax/service\\.php$');
+    expect(screen.queryByTestId('whitelist-modal-use-event-path')).toBeNull();
   });
 });

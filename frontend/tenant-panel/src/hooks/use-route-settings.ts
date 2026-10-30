@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { z } from 'zod';
-import type { IngressRouteResponse, WafMode, WafRuleExclusionScope } from '@insula/api-contracts';
+import type { CreateTenantWafRuleExclusionRequest, IngressRouteResponse, WafMode, WafRuleExclusion } from '@insula/api-contracts';
 import { updateRedirectSettingsSchema } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
@@ -284,19 +284,8 @@ export function useRouteWafLogs(tenantId: string | undefined, routeId: string | 
 
 // ─── WAF Exclusions (B2 — tenant-scoped) ────────────────────────────────────
 
-export interface WafRuleExclusionEntry {
-  readonly id: string;
-  readonly ruleId: string;
-  readonly hostnameRegex: string;
-  readonly scope: WafRuleExclusionScope;
-  readonly reason: string;
-  readonly createdBy: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly disabled: boolean;
-  readonly tenantId: string | null;
-  readonly routeId: string | null;
-}
+// The contract's row shape; a local copy of it drifted silently before.
+export type WafRuleExclusionEntry = WafRuleExclusion;
 
 export function useRouteWafExclusions(
   tenantId: string | undefined,
@@ -318,11 +307,7 @@ export function useCreateRouteWafExclusion(
 ) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: {
-      readonly ruleId: string;
-      readonly scope: WafRuleExclusionScope;
-      readonly reason: string;
-    }) =>
+    mutationFn: (input: CreateTenantWafRuleExclusionRequest) =>
       apiFetch<{ data: WafRuleExclusionEntry }>(
         `${routeBasePath(tenantId!, routeId!)}/waf-exclusions`,
         { method: 'POST', body: JSON.stringify(input) },

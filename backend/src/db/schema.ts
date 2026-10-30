@@ -1452,6 +1452,8 @@ export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
   id: varchar('id', { length: 36 }).primaryKey(),
   ruleId: varchar('rule_id', { length: 16 }).notNull(),
   hostnameRegex: varchar('hostname_regex', { length: 255 }).notNull(),
+  // 0168: narrows the exclusion to matching request paths; NULL = every path.
+  pathRegex: varchar('path_regex', { length: 255 }),
   scope: varchar('scope', { length: 32 }).notNull(),
   reason: text('reason').notNull(),
   createdBy: varchar('created_by', { length: 255 }).notNull(),
