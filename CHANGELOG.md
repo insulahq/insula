@@ -55,6 +55,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Security
 
+- **The zrok and OpenZiti provider "test connection" API routes are removed.**
+  `POST /tenants/:tenantId/zrok-providers/:pid/test` and `…/ziti-providers/:pid/test` fetched
+  whatever controller URL the request sent, from platform-api, and answered with the result. zrok
+  returned the response body, ziti its status and size. So any tenant administrator could read or
+  probe HTTP services inside the cluster or on the platform's networks. Ending the URL in `?`
+  turned the appended version path into a query string. No panel called either route. The tunnel
+  agents in the tenant's own namespace are what talk to the controller, so nothing else changes.
 - **A tenant can no longer manage another tenant's password-protected folders or read its WAF
   log.** The routes for a protected folder's users (list, add, enable/disable, delete, change
   password), the route's folder list and its WAF log checked the tenant id in the URL against the
