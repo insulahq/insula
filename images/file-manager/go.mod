@@ -3,8 +3,8 @@ module github.com/insulahq/file-manager
 go 1.26.5
 
 require (
-	github.com/pkg/sftp v1.13.11
-	golang.org/x/sys v0.48.0
+	github.com/pkg/sftp v1.13.12
+	golang.org/x/sys v0.49.0
 )
 
 require (
