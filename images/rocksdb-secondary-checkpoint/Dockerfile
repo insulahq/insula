@@ -26,7 +26,7 @@
 # rust:1.95-bookworm is the current stable Rust toolchain (released
 # 2026-05-09) on Debian 12 (glibc 2.36). librocksdb-sys 0.17.3+10.4.2
 # requires Rust ≥ 1.85; 1.95 satisfies that.
-FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
+FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS build
 
 # librocksdb-sys compile-time deps. snappy/zlib/lz4/zstd/bz2 are linked in
 # statically by the librocksdb-sys build script; we install the -dev headers.
