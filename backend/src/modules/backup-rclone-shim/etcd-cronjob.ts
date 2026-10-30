@@ -108,25 +108,12 @@ const JOB_TEMPLATE_ANNOTATIONS: Readonly<Record<string, string>> = {
 export const ETCD_CRONJOB_PRIORITY_CLASS = 'platform-maintenance';
 const PRIORITY_CLASS_POINTER = '/spec/jobTemplate/spec/template/spec/priorityClassName';
 
-/**
- * The rclone image the CronJob runs. Seed-then-disown again: the manifest's image
- * reaches fresh installs only, so a bump there left every existing cluster on its
- * old rclone (DEV and production ran 1.74.4 after the manifest moved on). Kept
- * equal to k8s/base/backup/etcd-snap-via-shim-cronjob.yaml by a test, and to the
- * registry's rclone pin by ci-component-watch-check.sh.
- */
-export const ETCD_CRONJOB_RCLONE_IMAGE = 'rclone/rclone:1.75.2';
-
-/**
- * The JSON-Patch op that moves the `rclone` container to ETCD_CRONJOB_RCLONE_IMAGE,
- * or null when it already runs it (or the container is not there to patch).
- */
-export function rcloneImageOp(live: CronJobView): { op: 'replace'; path: string; value: string } | null {
-  const containers = live.spec?.jobTemplate?.spec?.template?.spec?.containers ?? [];
-  const i = containers.findIndex((c) => c?.name === 'rclone');
-  if (i < 0 || containers[i]?.image === ETCD_CRONJOB_RCLONE_IMAGE) return null;
-  return { op: 'replace', path: `/spec/jobTemplate/spec/template/spec/containers/${i}/image`, value: ETCD_CRONJOB_RCLONE_IMAGE };
-}
+// The IMAGE is the one seed-then-disown field this reconciler must not converge:
+// ValidatingAdmissionPolicy platform-api-workload-scope forbids platform-api to
+// change a system workload's image (by design — a stolen API token must not swap
+// one), and a JSON patch is atomic, so an image op here would 403 every other op
+// with it. A release that moves this CronJob's image ships a host migration that
+// sets it with the node's admin kubeconfig (2026.10.23/0001 for rclone 1.75.2).
 
 /**
  * The priority class to write, or null when the live object already carries it.
@@ -167,7 +154,7 @@ interface CronJobView {
       spec?: {
         template?: {
           spec?: {
-            containers?: Array<{ name?: string; image?: string; env?: Array<{ name?: string; value?: string }>; args?: string[] }>;
+            containers?: Array<{ env?: Array<{ name?: string; value?: string }>; args?: string[] }>;
             priorityClassName?: string;
           };
         };
@@ -440,10 +427,6 @@ export async function reconcileEtcdCronJob(
   const desiredPc = desiredPriorityClass(live);
   if (desiredPc) {
     ops.push({ op: 'add', path: PRIORITY_CLASS_POINTER, value: desiredPc });
-  }
-  const imageOp = rcloneImageOp(live);
-  if (imageOp) {
-    ops.push(imageOp);
   }
   const scriptRepair = findScriptRepair(live);
   if (scriptRepair) {

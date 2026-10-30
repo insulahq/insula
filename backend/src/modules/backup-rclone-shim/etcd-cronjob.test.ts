@@ -11,14 +11,12 @@
  *     drift; left alone once converged; combined with the suspend toggle.
  */
 
-import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   reconcileEtcdCronJob,
   ETCD_CRONJOB_NAME,
   ETCD_CRONJOB_NAMESPACE,
-  ETCD_CRONJOB_RCLONE_IMAGE,
 } from './etcd-cronjob.js';
 import type { Database } from '../../db/index.js';
 
@@ -72,7 +70,7 @@ function fakeBatch(
      *  every existing cluster was in before the reconciler converged them. */
     jobTemplateLabels?: boolean;
   priorityClass?: false;
-    /** The live `rclone` container's image; defaults to the current one. */
+    /** The live `rclone` container's image. */
     rcloneImage?: string;
   } = {},
 ) {
@@ -117,7 +115,7 @@ function fakeBatch(
         : { priorityClassName: 'platform-maintenance' };
       if (opts.prefixEnv !== undefined) {
         podSpec.containers = [
-          { name: 'rclone', image: opts.rcloneImage ?? ETCD_CRONJOB_RCLONE_IMAGE, env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
+          { name: 'rclone', image: opts.rcloneImage ?? 'rclone/rclone:1.75.2', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
         ];
       }
       if (Object.keys(podSpec).length > 0) {
@@ -268,25 +266,14 @@ describe('reconcileEtcdCronJob', () => {
   // platform-critical, alone among the eight. Asserting the OP here, not just
   // the helper that computes it, because a value the reconciler never patches
   // in is a value that never reaches the cluster.
-  it('moves an existing cluster off its seeded rclone image', async () => {
+  it('never patches the image, even when it differs (platform-api-workload-scope would 403 the whole patch)', async () => {
     const db = fakeDb([{ enabled: 1 }], 'cid-123');
-    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-123', rcloneImage: 'rclone/rclone:1.74.4' });
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-123', rcloneImage: 'rclone/rclone:1.74.4', priorityClass: false });
     const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
 
     expect(r.patched).toBe(true);
-    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
-    expect(body).toEqual([
-      {
-        op: 'replace',
-        path: '/spec/jobTemplate/spec/template/spec/containers/0/image',
-        value: ETCD_CRONJOB_RCLONE_IMAGE,
-      },
-    ]);
-  });
-
-  it('runs the image the manifest seeds fresh installs with', () => {
-    const manifest = readFileSync(new URL('../../../../k8s/base/backup/etcd-snap-via-shim-cronjob.yaml', import.meta.url), 'utf8');
-    expect(manifest).toContain(`image: ${ETCD_CRONJOB_RCLONE_IMAGE}`);
+    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: Array<{ path: string }> }).body;
+    expect(body.map((o) => o.path)).toEqual(['/spec/jobTemplate/spec/template/spec/priorityClassName']);
   });
 
   it('writes the maintenance priority class onto a cluster that still lacks it', async () => {
