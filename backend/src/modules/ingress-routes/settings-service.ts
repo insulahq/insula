@@ -15,6 +15,7 @@ import {
   getWwwCompanionHostname,
 } from './service.js';
 import type { Database } from '../../db/index.js';
+import { assertRouteOwnedByTenant } from './route-ownership.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -217,7 +218,8 @@ export async function updateAdvancedSettings(
 
 // ─── WAF Logs ───────────────────────────────────────────────────────────────
 
-export async function listWafLogs(db: Database, routeId: string, limit = 50) {
+export async function listWafLogs(db: Database, routeId: string, tenantId: string, limit = 50) {
+  await assertRouteOwnedByTenant(db, routeId, tenantId);
   const capped = Math.min(limit, 100);
   return db
     .select()

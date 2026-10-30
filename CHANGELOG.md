@@ -38,6 +38,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Security
 
+- **A tenant can no longer manage another tenant's password-protected folders or read its WAF
+  log.** The routes for a protected folder's users (list, add, enable/disable, delete, change
+  password), the route's folder list and its WAF log checked the tenant id in the URL against the
+  caller but looked the route and folder up by their own ids alone. Anyone who knew another
+  tenant's route or folder id could put it after their own tenant id and add themselves a login
+  to that folder, lock out or delete its users, reset their passwords, or read the route's WAF
+  events (visitor IPs and request URIs). Every one of them now checks that the route belongs to
+  the tenant and the folder to the route, and answers 404 otherwise. The ids are random UUIDs
+  that the panels never show to another tenant, which limited the exposure. To look for past use,
+  check the audit log for writes to `…/protected-dirs/…/users…` whose tenant id does not own the
+  route in the path.
 - **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,
   Ziti or zrok settings.** Six API modules (route OIDC, OIDC providers, route mTLS, deployment
   network access, Ziti providers, zrok providers) checked that the caller was a tenant

@@ -7,31 +7,19 @@
 
 import { eq, and, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
-import { routeProtectedDirs, routeAuthUsers, ingressRoutes, domains } from '../../db/schema.js';
+import { routeProtectedDirs, routeAuthUsers } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
+import { assertRouteOwnedByTenant } from './route-ownership.js';
 
 const SALT_ROUNDS = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function verifyRouteOwnership(db: Database, routeId: string, tenantId: string) {
-  const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
-  if (!route) {
-    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found`, 404);
-  }
-
-  const [domain] = await db
-    .select()
-    .from(domains)
-    .where(and(eq(domains.id, route.domainId), eq(domains.tenantId, tenantId)));
-
-  if (!domain) {
-    throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found for tenant`, 404);
-  }
-
-  return route;
-}
+// Every function below that takes (routeId, tenantId) checks that the route
+// belongs to the tenant, and a dirId that it belongs to the route, before it
+// reads or writes: the handler's tenant check covers :tenantId only.
+const verifyRouteOwnership = assertRouteOwnedByTenant;
 
 async function getDirOrThrow(db: Database, dirId: string) {
   const [dir] = await db.select().from(routeProtectedDirs).where(eq(routeProtectedDirs.id, dirId));
@@ -76,7 +64,8 @@ function mapDirToResponse(dir: typeof routeProtectedDirs.$inferSelect, userCount
 
 // ─── Protected Directory CRUD ───────────────────────────────────────────────
 
-export async function listProtectedDirs(db: Database, routeId: string) {
+export async function listProtectedDirs(db: Database, routeId: string, tenantId: string) {
+  await verifyRouteOwnership(db, routeId, tenantId);
   const dirs = await db
     .select()
     .from(routeProtectedDirs)
@@ -183,7 +172,8 @@ export async function deleteProtectedDir(
 
 // ─── Directory-Scoped Auth User CRUD ────────────────────────────────────────
 
-export async function listDirUsers(db: Database, dirId: string) {
+export async function listDirUsers(db: Database, dirId: string, routeId: string, tenantId: string) {
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   const users = await db
     .select({
       id: routeAuthUsers.id,
@@ -205,9 +195,12 @@ export async function listDirUsers(db: Database, dirId: string) {
 export async function createDirUser(
   db: Database,
   dirId: string,
+  routeId: string,
+  tenantId: string,
   username: string,
   password: string,
 ) {
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   // Check for duplicate username on this dir
   const [existing] = await db
     .select({ id: routeAuthUsers.id })
@@ -246,7 +239,8 @@ export async function createDirUser(
   };
 }
 
-export async function deleteDirUser(db: Database, dirId: string, userId: string) {
+export async function deleteDirUser(db: Database, dirId: string, routeId: string, tenantId: string, userId: string) {
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   const [user] = await db
     .select()
     .from(routeAuthUsers)
@@ -262,9 +256,12 @@ export async function deleteDirUser(db: Database, dirId: string, userId: string)
 export async function toggleDirUser(
   db: Database,
   dirId: string,
+  routeId: string,
+  tenantId: string,
   userId: string,
   enabled: boolean,
 ) {
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   const [user] = await db
     .select()
     .from(routeAuthUsers)
@@ -283,9 +280,12 @@ export async function toggleDirUser(
 export async function changeDirUserPassword(
   db: Database,
   dirId: string,
+  routeId: string,
+  tenantId: string,
   userId: string,
   newPassword: string,
 ) {
+  await verifyDirOwnership(db, dirId, routeId, tenantId);
   const [user] = await db
     .select()
     .from(routeAuthUsers)
