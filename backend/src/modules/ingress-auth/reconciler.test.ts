@@ -219,10 +219,11 @@ function notFound(): Error {
   return e;
 }
 
-function cluster(opts: { stateRow?: boolean; ready?: boolean; extraCa?: string } = {}) {
+function cluster(opts: { stateRow?: boolean; ready?: boolean; extraCa?: string; oldPod?: boolean } = {}) {
   const calls: Array<{ op: string; kind: string; body?: unknown }> = [];
   const dbWrites: Array<{ op: string; values?: unknown }> = [];
   let deploymentHash: string | null = null;
+  let listCalls = 0;
   const db = {
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
@@ -252,12 +253,18 @@ function cluster(opts: { stateRow?: boolean; ready?: boolean; extraCa?: string }
     deleteNamespacedService: vi.fn(recordK('delete', 'service')),
     deleteNamespacedConfigMap: vi.fn(recordK('delete', 'configmap')),
     deleteNamespacedSecret: vi.fn(recordK('delete', 'secret')),
-    listNamespacedPod: vi.fn(async () => ({
-      items: opts.ready ? [{
+    listNamespacedPod: vi.fn(async () => {
+      listCalls += 1;
+      const current = opts.ready ? [{
         metadata: { name: 'gate-1', annotations: { 'insula.host/config-hash': deploymentHash } },
         status: { conditions: [{ type: 'Ready', status: 'True' }], containerStatuses: [] },
-      }] : [],
-    })),
+      }] : [];
+      const old = opts.oldPod ? [{
+        metadata: { name: 'gate-0', annotations: { 'insula.host/config-hash': 'previous' } },
+        status: { conditions: [{ type: 'Ready', status: 'True' }], containerStatuses: [] },
+      }] : [];
+      return { items: [...current, ...old] };
+    }),
     readNamespacedPodLog: vi.fn(async () => ''),
   };
   const apps = {
@@ -272,7 +279,7 @@ function cluster(opts: { stateRow?: boolean; ready?: boolean; extraCa?: string }
     deleteNamespacedCustomObject: vi.fn(async (args: { name: string }) => { calls.push({ op: 'delete', kind: `ingressroute:${args.name}` }); }),
   };
   const lock = <T>(_id: string, fn: () => Promise<T>) => fn();
-  return { deps: { db: db as never, k8s: { core, apps, custom, networking: {} } as never, encryptionKey: 'k', lock }, calls, dbWrites };
+  return { deps: { db: db as never, k8s: { core, apps, custom, networking: {} } as never, encryptionKey: 'k', lock }, calls, dbWrites, listCalls: () => listCalls };
 }
 
 describe('reconcileTenant', () => {
@@ -310,6 +317,15 @@ describe('reconcileTenant', () => {
     const q = await reconcileTenant(quick.deps, 't-1');
     expect(q.error).toBeNull();
     expect(quick.dbWrites.some((w) => (w.values as { lastError?: unknown } | undefined)?.lastError === null)).toBe(false);
+  });
+
+  it('waits while the previous pod still serves, then reports ready (never an error) at the deadline', async () => {
+    listEnabledMock.mockResolvedValue([row()]);
+    const c = cluster({ ready: true, oldPod: true });
+    const out = await reconcileTenant(c.deps, 't-1', { wait: true, waitTimeoutMs: 2_500 });
+    expect(out.error).toBeNull();
+    // It looked more than once: the old pod kept it from returning at once.
+    expect(c.listCalls()).toBeGreaterThan(1);
   });
 
   it('★ tears everything down when no protected route is left, a half-finished setup included', async () => {

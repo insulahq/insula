@@ -539,8 +539,14 @@ async function gateState(
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const pods = await k8sc.core.listNamespacedPod({ namespace, labelSelector: 'app.kubernetes.io/name=oauth2-proxy' });
-    const current = pods.items.filter((p) => p.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] === hash && !p.metadata?.deletionTimestamp);
-    if (current.some((p) => (p.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'))) return 'ready';
+    const live = pods.items.filter((p) => !p.metadata?.deletionTimestamp);
+    const current = live.filter((p) => p.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] === hash);
+    const currentReady = current.some((p) => (p.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'));
+    // Ready once the new pod serves AND the previous one is on its way out:
+    // until then a request can still reach the old configuration (a route
+    // protected a moment ago would answer "no sign-in policy").
+    const previousServing = live.some((p) => p.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] !== hash);
+    if (currentReady && (!previousServing || Date.now() >= deadline)) return 'ready';
     const problem = fatalGateProblem(current);
     if (problem) {
       const log = await logTail(k8sc.core, namespace, problem.pod, problem.container);
@@ -548,9 +554,10 @@ async function gateState(
       return { error: `The sign-in service did not start: ${why}. The route stays closed until it does.`, ...(log ? { proxyLog: log } : {}) };
     }
     if (Date.now() >= deadline) {
-      return timeoutMs > 0
-        ? { error: 'The sign-in service did not become ready in time. The route stays closed until it does.' }
-        : 'starting';
+      if (timeoutMs > 0 && !currentReady) {
+        return { error: 'The sign-in service did not become ready in time. The route stays closed until it does.' };
+      }
+      return currentReady ? 'ready' : 'starting';
     }
     await new Promise((r) => setTimeout(r, 2_000));
   }
