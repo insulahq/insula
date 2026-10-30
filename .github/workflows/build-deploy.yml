@@ -131,6 +131,11 @@ jobs:
           sarif_file: trivy-results.sarif
           category: backend
 
+      - name: Trivy gate (untracked fixable CRITICAL)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
       - id: tag
         name: Extract timestamp tag (for kustomization.yaml pin)
         env:
@@ -192,6 +197,11 @@ jobs:
           sarif_file: trivy-results.sarif
           category: admin-panel
 
+      - name: Trivy gate (untracked fixable CRITICAL)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
       - id: tag
         name: Extract timestamp tag
         env:
@@ -248,6 +258,11 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: tenant-panel
+
+      - name: Trivy gate (untracked fixable CRITICAL)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
 
       - id: tag
         name: Extract timestamp tag
@@ -307,8 +322,13 @@ jobs:
       # origin/development precisely because concurrent pins are expected.
       group: pin-development-platform-${{ github.ref }}
       cancel-in-progress: false
+    # always() so skipped builds (paths filter) don't skip the pin; but a FAILED
+    # build — a test, or the Trivy gate on a fixable CRITICAL — stops it, or DEV
+    # would get the images that passed next to the old one that did not, under a
+    # version stamp naming the new commit.
     if: |
       always() &&
+      !contains(needs.*.result, 'failure') &&
       github.ref == 'refs/heads/development' &&
       !contains(github.event.head_commit.message, '[skip version]')
     permissions:

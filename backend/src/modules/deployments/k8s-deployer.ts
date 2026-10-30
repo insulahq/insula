@@ -508,7 +508,7 @@ function buildVolumeMountSpec(
 
   const initDirsContainer = {
     name: 'init-dirs',
-    image: 'busybox:1.36',
+    image: 'busybox:1.37',
     command: ['sh', '-c', mkdirCmd],
     volumeMounts: [{ name: 'tenant-storage', mountPath: '/data' }],
     // Asymmetric QoS (ADR-037): CPU request only, memory request==limit.
@@ -1239,7 +1239,7 @@ async function deployK8sDeployment(
   } else if (sessionDirs.length > 0) {
     initContainersList.push({
       name: 'init-dirs',
-      image: 'busybox:1.36',
+      image: 'busybox:1.37',
       command: ['sh', '-c', sessionDirs.join(' && ')],
       volumeMounts: [sessionVolumeMount],
       resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },

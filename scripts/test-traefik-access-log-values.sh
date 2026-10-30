@@ -37,10 +37,20 @@ jq -S --slurpfile mig "$WORK/mig.json" \
   || no "bootstrap's accessLog.enabled is not true"
 [[ "$(jq -r '.accessLog.filePath' "$WORK/boot.json")" == "/var/log/traefik/access.log" ]] \
   && ok "bootstrap writes the file the CrowdSec agent tails" || no "unexpected accessLog.filePath"
-if diff -u "$WORK/boot.json" "$WORK/mig.json" > "$WORK/diff.txt"; then
-  ok "migration DESIRED values == bootstrap's fresh-install values"
+# The init containers' IMAGE is the one field a later migration moves: 0002 is
+# shipped (its body is frozen) and says so in its `# superseded-images:`
+# header; 2026.10.23/0004 sets the image fresh installs get. So the chain is what
+# must equal bootstrap: 0002's values with 0004's image.
+SUP="$HERE/platform/host-migrations/2026.10.23/0004-traefik-init-images-crowdsec-plugin.sh"
+sup_img=$(sed -n 's/^INIT_IMAGE="\(.*\)"$/\1/p' "$SUP")
+grep -q "^# superseded-images: .*(2026.10.23/0004" "$MIG" \
+  && ok "0002 names 2026.10.23/0004 as the migration that replaces its init image" \
+  || no "0002 has no '# superseded-images:' header pointing at 2026.10.23/0004"
+jq -S --arg img "$sup_img" '.deployment.initContainers |= map(.image = $img)' "$WORK/mig.json" > "$WORK/mig.chain.json"
+if diff -u "$WORK/boot.json" "$WORK/mig.chain.json" > "$WORK/diff.txt"; then
+  ok "migration DESIRED values (+ 0004's init image ${sup_img}) == bootstrap's fresh-install values"
 else
-  no "migration and bootstrap disagree:"; sed 's/^/      /' "$WORK/diff.txt"
+  no "migration chain and bootstrap disagree:"; sed 's/^/      /' "$WORK/diff.txt"
 fi
 grep -q -- '--reuse-values' "$MIG" && grep -q -- '--version "${deployed_ver}"' "$MIG" \
   && ok "migration keeps the release values and never moves the chart" \

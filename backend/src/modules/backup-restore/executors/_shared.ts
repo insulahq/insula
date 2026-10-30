@@ -82,6 +82,9 @@ export const RETIRED_BUNDLE_COLUMNS: Readonly<Record<string, readonly string[]>>
   // Per-domain spam thresholds the mail server never applied (its threshold
   // is server-wide, mail-admin/spam-policy.ts); dropped by migration 0165.
   email_domains: ['spam_threshold_junk', 'spam_threshold_reject'],
+  // Route sign-in settings oauth2-proxy never used; dropped by migration 0167.
+  tenant_oidc_providers: ['auth_method', 'response_type'],
+  ingress_auth_configs: ['scopes_override'],
 };
 
 /**

@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:4a766a3f966b0ee382a68475b59aea91b334e633644196eac4aada07c8fd4958
+          image: ghcr.io/bulwarkmail/webmail@sha256:a985e7e40eccc70f7c7dc5d6eceaf3429ab3b644a6cf58deb240a04d39a77738
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.17.1 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.18.0 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,7 +360,7 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.17.1.
+          # from tag 1.18.0.
           #
           # 1.16.0 stops an HTML attachment preview from running the sender's
           # script in the webmail origin, and makes delete/move act on the
@@ -369,7 +369,18 @@ spec:
           # Brotli out-of-bounds write a signed-in user could reach through the
           # server's calendar, WebDAV and plugin fetches. Do not roll back past
           # 1.17.0.
-          image: ghcr.io/bulwarkmail/webmail@sha256:4a766a3f966b0ee382a68475b59aea91b334e633644196eac4aada07c8fd4958
+          #
+          # 1.17.2 sanitizes the quoted original and signature of a re-opened
+          # draft, which could run another client's markup in the webmail
+          # (GHSA-g35q-3gpc-x2rr). 1.18.0 closes a security review: a stale
+          # stored credential is no longer retried in a loop that got the
+          # webmail's address banned by Stalwart for every user
+          # (GHSA-g6c7-r7wq-xrm2), more mixed-account actions name their account
+          # (GHSA-8x23-qw3w-mhrx), plugin approval refuses uploads while plugins
+          # are off (GHSA-qc44-275p-gqw9). Taken inside the 7-day soak for those
+          # fixes. It also runs on Stalwart 1.0 as well as 0.16, and signs admin
+          # sessions out once. Do not roll back past 1.18.0.
+          image: ghcr.io/bulwarkmail/webmail@sha256:a985e7e40eccc70f7c7dc5d6eceaf3429ab3b644a6cf58deb240a04d39a77738
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

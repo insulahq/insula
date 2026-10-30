@@ -138,7 +138,7 @@ export async function spawnStandbyDeelectionCleanupJob(
           containers: [
             {
               name: 'rename',
-              image: 'busybox:1.36',
+              image: 'busybox:1.37',
               command: ['sh', '-c'],
               args: [
                 // Absolute paths (under the /host hostPath mount); the

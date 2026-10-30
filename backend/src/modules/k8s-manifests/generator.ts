@@ -205,7 +205,7 @@ export async function generateTenantManifests(
 
     // Resolve container image from catalog entry components or fallback
     const primaryComponent = entry?.components?.[0];
-    const containerImage = primaryComponent?.image ?? entry?.image ?? 'nginx:1.27-alpine';
+    const containerImage = primaryComponent?.image ?? entry?.image ?? 'nginx:1.31-alpine';
     const containerPort = primaryComponent?.ports?.[0]?.port ?? 8080;
     const diskLimitMb = diskLimitMbFor(diskLimits, componentDiskClass(entry?.type, (primaryComponent as { database?: string } | undefined)?.database));
 

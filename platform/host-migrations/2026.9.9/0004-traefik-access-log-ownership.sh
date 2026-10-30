@@ -5,6 +5,7 @@
 #             patched DaemonSet write nothing and do not roll the pods.
 # allow-paths: (none — cluster-only change via kube-API, touches no host file)
 # blocks-on-failure: no    # ADR-056: Traefik keeps serving traffic either way.
+# superseded-images: alpine/k8s:1.33.13 (2026.10.23/0004 moves these init containers to curlimages/curl; a node replaying this script runs that one after it)
 #                          # What is lost is the access log, so the CrowdSec
 #                          # agent detects nothing. Degraded detection, not an
 #                          # outage; the converger retries next pass.

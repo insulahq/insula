@@ -72,8 +72,11 @@ def main() -> int:
         print(f"component-watch-gate: cannot read ledger {ledger_path}: {e}", file=sys.stderr)
         return 2
     entries = [e for e in (ledger.get("entries") or []) if e.get("id")]
+    # An entry with a trivy_scope waives that ID only for the scoped files /
+    # packages inside container images; it says nothing about our lockfiles.
     tracked = {
-        str(e.get("id")) for e in entries if e.get("status") in TRACKED_STATUSES
+        str(e.get("id")) for e in entries
+        if e.get("status") in TRACKED_STATUSES and not e.get("trivy_scope")
     }
     cleared_malicious = {
         str(e.get("id")) for e in entries

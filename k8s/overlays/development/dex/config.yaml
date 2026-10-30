@@ -90,6 +90,16 @@ staticClients:
       # admin host is what made `protectTenantViaProxy` unusable.
       - https://admin.${DOMAIN}/oauth2/callback
       - https://tenant.${DOMAIN}/oauth2/callback
+  # A tenant ROUTE's sign-in gate (backend/src/modules/ingress-auth): the E2E
+  # protects test routes on these hosts and signs in through this client. The
+  # callback lives on the host a route serves — a www-redirect route's
+  # canonical form, hence the www entry. Same secret as the client above.
+  - id: route-gate-e2e
+    name: Route sign-in E2E
+    secretEnv: OAUTH2_PROXY_CLIENT_SECRET
+    redirectURIs:
+      - https://gate-e2e.${DOMAIN}/oauth2/callback
+      - https://www.gate-e2e-www.${DOMAIN}/oauth2/callback
 
 connectors: []
 

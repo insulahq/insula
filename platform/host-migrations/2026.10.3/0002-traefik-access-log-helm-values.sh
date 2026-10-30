@@ -2,6 +2,7 @@
 # idempotent: the guard reads the LIVE DaemonSet args and the release values and exits 0 when Traefik already runs with --accesslog.filepath and accessLog.enabled is true in the values, so a re-run costs two reads and changes nothing. Runs on CONTROL-PLANE nodes only (helm needs the admin kubeconfig); a second server finds the first one's result and skips.
 # allow-paths: none — operates solely on the cluster via helm + the node kubeconfig; helm's cache/config/data dirs are redirected to a private mktemp -d (PrivateTmp) and removed on EXIT, because ProtectHome=yes makes $HOME/.config unwritable.
 # blocks-on-failure: no    # ADR-056: detection quality only. Without it the CrowdSec agent parses no HTTP access log; ingress itself is unaffected, and nothing later depends on this script.
+# superseded-images: alpine/k8s:1.33.13 (2026.10.23/0004 moves these init containers to curlimages/curl; a node replaying this script runs that one after it)
 set -euo pipefail
 
 # Turn Traefik's access log on, durably, through the Helm release values.

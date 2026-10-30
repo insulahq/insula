@@ -1,9 +1,10 @@
-# VENDORED from rancher/system-upgrade-controller v0.19.2 — system-upgrade-controller.yaml
-# https://github.com/rancher/system-upgrade-controller/releases/download/v0.19.2/system-upgrade-controller.yaml
+# VENDORED from rancher/system-upgrade-controller v0.20.2 — system-upgrade-controller.yaml
+# https://github.com/rancher/system-upgrade-controller/releases/download/v0.20.2/system-upgrade-controller.yaml
 # Controller is INERT until a Plan CR exists; Plan creation is gated by
 # `platform-ops cluster upgrade` (never committed declaratively). The controller
 # itself runs non-root/drops-ALL-caps; only the per-node upgrade Jobs it spawns
-# are privileged (SYSTEM_UPGRADE_JOB_PRIVILEGED). Do not hand-edit; re-vendor on bump.
+# are privileged (SYSTEM_UPGRADE_JOB_PRIVILEGED). Re-vendor on bump and keep the
+# two LOCAL EDITs: the insula.host/server-only toleration and the kubectl image.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -206,7 +207,13 @@ data:
   SYSTEM_UPGRADE_JOB_ACTIVE_DEADLINE_SECONDS: "900"
   SYSTEM_UPGRADE_JOB_BACKOFF_LIMIT: "99"
   SYSTEM_UPGRADE_JOB_IMAGE_PULL_POLICY: Always
-  SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE: rancher/kubectl:v1.30.3
+  # LOCAL EDIT (keep on re-vendor): upstream defaults this to rancher/kubectl:v1.30.3,
+  # the kubectl a Plan's Jobs drain and uncordon nodes with (worker Plans drain —
+  # backend/src/cli/platform-ops/operations/k3s-plan.ts). Six minors behind the
+  # cluster and outside kubectl's one-minor skew, with a critical crypto/tls CVE.
+  # Follows bootstrap.sh's K3S_VERSION minor (newest rancher/kubectl of it); the
+  # registry's `suc-kubectl` keeps it scanned (scripts/lib/config-images.py).
+  SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE: rancher/kubectl:v1.36.2
   SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE_WINDOWS: ""
   SYSTEM_UPGRADE_JOB_PRIVILEGED: "true"
   SYSTEM_UPGRADE_JOB_TTL_SECONDS_AFTER_FINISH: "900"
@@ -271,7 +278,7 @@ spec:
         envFrom:
         - configMapRef:
             name: default-controller-env
-        image: rancher/system-upgrade-controller:v0.19.2
+        image: rancher/system-upgrade-controller:v0.20.2
         imagePullPolicy: IfNotPresent
         name: system-upgrade-controller
         securityContext:

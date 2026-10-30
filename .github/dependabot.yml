@@ -159,7 +159,7 @@ updates:
   #
   # Every external FROM is pinned by DIGEST (2026-08-07). A digest is immutable,
   # which is the point — but it also means the base stops receiving upstream
-  # security rebuilds, since `alpine:3.20` moves and `alpine:3.20@sha256:d9e853…`
+  # security rebuilds, since `alpine:3.24` moves and `alpine:3.24@sha256:be2656…`
   # does not. Digest pinning without an updater is how you end up frozen on a
   # base with known CVEs.
   #
@@ -178,10 +178,11 @@ updates:
     schedule: { interval: weekly }
     groups: { base-images: { update-types: [minor, patch] } }
     # Same soak rationale as the ecosystems above — a freshly published base tag
-    # is the one most likely to be compromised or simply broken.
+    # is the one most likely to be compromised or simply broken. default-days
+    # only: Dependabot rejects the semver-* keys for docker, and an invalid key
+    # drops the whole block (this updater never ran while it carried one).
     cooldown:
       default-days: 7
-      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
   # ── GitHub Actions (CI toolchain) ──
@@ -200,8 +201,7 @@ updates:
     #
     # This delays VERSION updates only. Dependabot SECURITY updates (advisory
     # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
-    # Majors wait longer: they are the least urgent and the most disruptive.
+    # default-days only: Dependabot rejects the semver-* keys for github-actions.
     cooldown:
       default-days: 7
-      semver-major-days: 14
     labels: ["dependencies", "ci"]

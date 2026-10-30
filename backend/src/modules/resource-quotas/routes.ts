@@ -12,8 +12,11 @@ import { auditLogs } from '../../db/schema.js';
 export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
-  // GET /api/v1/tenants/:tenantId/resource-quota — anyone authenticated can view
-  app.get('/tenants/:tenantId/resource-quota', async (request) => {
+  // GET /api/v1/tenants/:tenantId/resource-quota — platform staff, or the
+  // tenant's own users (any tenant could read any other's limits before).
+  app.get('/tenants/:tenantId/resource-quota', {
+    onRequest: [authenticate, requireTenantAccess()],
+  }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const quota = await service.getResourceQuota(app.db, tenantId);
     return success(quota);

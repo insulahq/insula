@@ -296,12 +296,17 @@ function AuditTable({ tenantId, workerId }: AuditTableProps) {
  * Operators see this in the post-create drawer as a recipe placeholder
  * — the literal token is `<paste your saved PRIVATE_WORKER_TOKEN>` so
  * they can drop in the value they captured from the token modal.
+ *
+ * The image is the one the API hands out (PRIVATE_WORKER_AGENT_IMAGE), never a
+ * literal here: this hint used to name ghcr.io/k8s-hosting/…, a registry
+ * namespace nobody holds — whoever claimed it would have had tenants run their
+ * image, with the worker's token, on their own hardware.
  */
 function buildComposeHint(worker: PrivateWorkerResponse): string {
   return [
     'services:',
     `  ${worker.slug}-agent:`,
-    '    image: ghcr.io/k8s-hosting/private-worker-agent:latest',
+    `    image: ${worker.agentImage ?? '<the image in your create/rotate snippet>'}`,
     '    restart: unless-stopped',
     '    extra_hosts:',
     '      - "host.docker.internal:host-gateway"',

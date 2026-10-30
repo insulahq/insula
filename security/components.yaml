@@ -64,14 +64,25 @@ components:
     pinned: "v1.36.5+k3s1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
-    watch: { type: github_releases, repo: k3s-io/k3s, advisories: kubernetes/kubernetes }
-    scan: manual
+    repos: [rancher/k3s]
+    watch:
+      type: github_releases
+      repo: k3s-io/k3s
+      advisories: kubernetes/kubernetes
+      hold:
+        below: "1.37"
+        reason: >-
+          cert-manager v1.21 (supports 1.33–1.36), Flux 2.9 (1.34–1.36) and Longhorn 1.13
+          (documented to 1.36) do not support Kubernetes 1.37 yet, and its etcd 3.7 is
+          one-way once every member runs it. Lift with those three; take 1.36.x meanwhile.
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: >-
       Control plane + node runtime. Bundles CoreDNS, metrics-server, kube-proxy,
       local-path (disabled), Traefik (we replace via Helm). Upgrades are SEQUENTIAL
       (one minor at a time) via system-upgrade-controller Plans. Track k8s CVEs +
-      the embedded containerd/runc.
+      the embedded containerd/runc. storage/service.ts's image-purge pod runs
+      rancher/k3s at this version (tag form v…-k3s1) for crictl.
 
   - id: calico
     name: Calico CNI (network policy + WireGuard)
@@ -81,7 +92,8 @@ components:
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
+    repos: [calico/node, tigera/operator]
     owner: platform
     notes: Enforces NetworkPolicy segmentation + WireGuard pod-to-pod encryption. Compromise = segmentation loss.
 
@@ -94,7 +106,7 @@ components:
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: traefik/traefik-helm-chart, advisories: traefik/traefik }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: Internet-facing edge. Terminates TLS, hosts the CrowdSec + ModSecurity middleware plugins. TRAEFIK_CHART_VERSION.
 
@@ -102,11 +114,11 @@ components:
     name: cert-manager (ACME / all platform TLS)
     tier: "0"
     kind: chart
-    pinned: "v1.21.2"
+    pinned: "v1.21.3"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: cert-manager/cert-manager, advisories: cert-manager/cert-manager }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: Issues every cert in the cluster. CERT_MANAGER_CHART_VERSION.
 
@@ -118,8 +130,8 @@ components:
     app_version: "v1.30.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
-    watch: { type: github_releases, repo: cloudnative-pg/cloudnative-pg, advisories: cloudnative-pg/cloudnative-pg }
-    scan: manual
+    watch: { type: github_releases, repo: cloudnative-pg/cloudnative-pg, advisories: cloudnative-pg/cloudnative-pg, version_repo: cloudnative-pg/charts, tag_regex: '^cloudnative-pg-v(\d+\.\d+\.\d+)$' }
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: Manages the platform Postgres cluster (HA, PITR, failover). CNPG_CHART_VERSION.
 
@@ -127,7 +139,7 @@ components:
     name: PostgreSQL (platform DB — CNPG-managed)
     tier: "0"
     kind: image
-    pinned: "18.3-minimal-trixie"
+    pinned: "18.6-202610260820-minimal-trixie"
     pin_source: k8s/base/database.yaml
     pin_check: true
     repos: [cloudnative-pg/postgresql]
@@ -136,7 +148,10 @@ components:
     owner: platform
     notes: >-
       System DB at rest (all platform data, hashed creds). imageName: in the CNPG
-      Cluster CR. PG major upgrades are an explicit runbook (PG_MAJOR_UPGRADE.md).
+      Cluster CR, on CNPG's immutable build tag (the rolling minor tag moves weekly).
+      PG major upgrades are an explicit runbook (PG_MAJOR_UPGRADE.md). The image
+      scan reads imageName: (scripts/lib/config-images.py) — until it did, 18.3
+      ran with 14 fixable criticals that no scan saw.
 
   - id: stalwart
     name: Stalwart mail server (SMTP/IMAP/JMAP)
@@ -146,7 +161,16 @@ components:
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
-    watch: { type: github_releases, repo: stalwartlabs/stalwart, advisories: stalwartlabs/stalwart }
+    watch:
+      type: github_releases
+      repo: stalwartlabs/stalwart
+      advisories: stalwartlabs/stalwart
+      hold:
+        below: "1.0"
+        reason: >-
+          1.0 cannot be installed over 0.16: stalwart-migrate copies the data into a new
+          store, OAuth tokens are not carried over and the configuration model changed —
+          a planned mail migration with its own runbook, not a version bump.
     scan: trivy
     owner: platform
     notes: Internet-facing mail (ports 25/465/587/993/JMAP). Handles mailbox creds + mail data. RocksDB store (see rocksdb-secondary-checkpoint).
@@ -159,8 +183,8 @@ components:
     app_version: "v0.40.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
-    watch: { type: github_releases, repo: bitnami-labs/sealed-secrets, advisories: bitnami-labs/sealed-secrets }
-    scan: manual
+    watch: { type: github_releases, repo: bitnami-labs/sealed-secrets, advisories: bitnami-labs/sealed-secrets, tag_regex: '^helm-v(\d+\.\d+\.\d+)$' }
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: Holds the private key that decrypts all SealedSecrets. SEALED_SECRETS_CHART_VERSION.
 
@@ -207,13 +231,13 @@ components:
     name: CrowdSec bouncer Traefik plugin
     tier: "0"
     kind: plugin
-    pinned: "v1.6.0"
+    pinned: "v1.8.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: maxlerebourg/crowdsec-bouncer-traefik-plugin, advisories: maxlerebourg/crowdsec-bouncer-traefik-plugin }
     scan: manual
     owner: platform
-    notes: Yaegi plugin loaded into Traefik. CROWDSEC_PLUGIN_VERSION.
+    notes: Yaegi plugin loaded into Traefik. CROWDSEC_PLUGIN_VERSION. A Traefik Helm value, so existing clusters move with a Traefik values host migration (2026.10.23/0004).
 
   - id: modsecurity-traefik-plugin
     name: Traefik ModSecurity plugin (Insula's copy; forwards to CRS sidecar)
@@ -277,11 +301,11 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:4a766a3f966b0ee382a68475b59aea91b334e633644196eac4aada07c8fd4958"
+    pinned: "sha256:a985e7e40eccc70f7c7dc5d6eceaf3429ab3b644a6cf58deb240a04d39a77738"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
-    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail }
+    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.18.0" }
     scan: trivy
     owner: platform
     notes: Internet-facing webmail, handles mail creds/content. Digest-pinned (good). Upstream advisories sparse → also watch manually.
@@ -290,17 +314,16 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:7b5be4f46c775e705f8093ff1950a8decf7c59cf6c73115fb562a1c65634ef3b"
+    pinned: "sha256:9e937fa38d957d88d6e5b85143b5225ad3d34821da59dbd13dab2857c9e5c058"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
-    watch: { type: github_releases, repo: roundcube/roundcubemail, advisories: roundcube/roundcubemail }
+    watch: { type: github_releases, repo: roundcube/roundcubemail, advisories: roundcube/roundcubemail, pinned_version: "1.7.5" }
     scan: trivy
     owner: platform
     notes: >-
-      Internet-facing webmail (frequent XSS CVEs upstream — watch closely). Active
-      deployment is digest-pinned. NOTE: legacy k8s/base/roundcube-deployment.yaml
-      still references roundcube/roundcubemail:latest-fpm (floating) — consolidate.
+      Internet-facing webmail (frequent XSS CVEs upstream — watch closely). The
+      deployment is digest-pinned.
 
   - id: sftp-gateway
     name: SFTP gateway (chroot jail, k8s-exec into tenant storage)
@@ -325,7 +348,8 @@ components:
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: longhorn/longhorn, advisories: longhorn/longhorn }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
+    repos: [longhornio/longhorn-manager, longhornio/longhorn-engine, longhornio/longhorn-instance-manager, longhornio/longhorn-share-manager, longhornio/longhorn-ui, longhornio/backing-image-manager]
     owner: platform
     notes: Backs every PVC (DB, mail, tenant storage). LONGHORN_VERSION.
 
@@ -337,7 +361,8 @@ components:
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
+    repos: [fluxcd/source-controller, fluxcd/kustomize-controller, fluxcd/helm-controller, fluxcd/notification-controller]
     owner: platform
     notes: >-
       Pinned 2026-06-12 (was CLI-latest, the last unpinned core component).
@@ -436,6 +461,7 @@ components:
     pinned: "v0.71.1"
     pin_source: k8s/base/platform-config.yaml
     pin_check: true
+    repos: [fatedier/frps]
     watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
     scan: trivy
     owner: platform
@@ -452,26 +478,26 @@ components:
     watch: { type: first_party }
     scan: trivy
     owner: platform
-    notes: First-party (alpine@digest + rclone 1.74.1 SHA-verified). Data egress to backup targets; holds target creds.
+    notes: First-party (alpine@digest + rclone 1.75.2 SHA-verified). Data egress to backup targets; holds target creds.
 
   - id: rclone
     name: rclone (upstream binary/image)
     tier: "1"
     kind: image
-    pinned: "1.74.4"
+    pinned: "1.75.2"
     pin_source: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml
     pin_check: true
     repos: [rclone/rclone]
     watch: { type: github_releases, repo: rclone/rclone, advisories: rclone/rclone }
     scan: trivy
     owner: platform
-    notes: rclone/rclone image (etcd-snapshot-via-shim CronJob) + the SHA-verified binary baked into backup-rclone. Backup data path.
+    notes: rclone/rclone image (etcd-snapshot-via-shim CronJob, the speedtest + streaming-store Jobs) + the SHA-verified binary baked into backup-rclone. Backup data path.
 
   - id: rclone-binary
     name: rclone (host binary installed by bootstrap.sh)
     tier: "1"
     kind: binary
-    pinned: "v1.74.4"
+    pinned: "v1.75.2"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     repos: [rclone/rclone]
@@ -491,7 +517,7 @@ components:
     watch: { type: first_party }
     scan: trivy
     owner: platform
-    notes: First-party (debian:trixie-slim + restic). Mail backup data path; SSH keys. Watch restic CVEs (Debian pkg).
+    notes: First-party (debian:trixie-slim + restic + rsync). Mail backup data path; SSH keys; also the Stalwart pod's rsyncd sidecar that the standby replicates from. Watch restic + rsync CVEs (Debian pkgs).
 
   - id: rocksdb-secondary-checkpoint
     name: rocksdb-secondary-checkpoint (mail-archive checkpoint Job) — DORMANT, not shipped
@@ -551,9 +577,10 @@ components:
     name: imapsync (tenant mailbox migration Job)
     tier: "2"
     kind: image
-    pinned: "2.319"
+    pinned: "2.326"
     pin_source: backend/src/modules/mail-imapsync/service.ts
     pin_check: true
+    repos: [gilleslamiral/imapsync]
     watch: { type: docker_hub, repo: gilleslamiral/imapsync }
     scan: trivy
     owner: platform
@@ -566,9 +593,10 @@ components:
     name: OpenZiti edge tunnel (deployment network access)
     tier: "2"
     kind: image
-    pinned: "1.18.3"
+    pinned: "1.20.0"
     pin_source: backend/src/modules/deployment-network-access/reconciler.ts
     pin_check: true
+    repos: [openziti/ziti-edge-tunnel]
     watch: { type: docker_hub, repo: openziti/ziti-edge-tunnel }
     scan: trivy
     owner: platform
@@ -577,13 +605,20 @@ components:
     name: zrok frontdoor (deployment network access)
     tier: "2"
     kind: image
-    pinned: "1.1.11"
+    pinned: "1.1.13"
     pin_source: backend/src/modules/deployment-network-access/reconciler.ts
     pin_check: true
+    repos: [openziti/zrok]
     watch: { type: docker_hub, repo: openziti/zrok }
     scan: trivy
     owner: platform
-    notes: Third-party. Opt-in per-deployment public-share frontdoor.
+    notes: >-
+      Third-party. Opt-in per-deployment public-share frontdoor; today it only runs
+      `zrok enable` and waits (share wiring is a later milestone). Newest 1.x; zrok 2
+      is a separate image (openziti/zrok2) for zrok-2 controllers. Every release of
+      both lines, 2.0.8 included, ships the same controller-side Go modules and a
+      bundled ziti CLI and kubectl with critical CVEs — not reached by `zrok enable`;
+      see the image-scoped ledger entries.
 
   - id: coraza-plugin
     name: traefik-plugin-coraza (WASM WAF — currently disabled)
@@ -602,7 +637,7 @@ components:
     name: Rancher system-upgrade-controller (k3s upgrade Plans)
     tier: "1"
     kind: image
-    pinned: "v0.19.2"
+    pinned: "v0.20.2"
     pin_source: k8s/base/system-upgrade-controller/controller.yaml
     pin_check: true
     repos: [rancher/system-upgrade-controller]
@@ -611,43 +646,77 @@ components:
     owner: platform
     notes: Runs privileged upgrade jobs on nodes. Drives sequential k3s upgrades.
 
+  - id: suc-kubectl
+    name: rancher/kubectl (system-upgrade-controller drain image)
+    tier: "1"
+    kind: image
+    pinned: "v1.36.2"
+    pin_source: k8s/base/system-upgrade-controller/controller.yaml
+    pin_check: true
+    repos: [rancher/kubectl]
+    watch:
+      type: dockerhub
+      repo: rancher/kubectl
+      advisories: kubernetes/kubernetes
+      hold: { below: "1.37", reason: "follows bootstrap.sh's K3S_VERSION minor (k3s is held below 1.37)." }
+    scan: trivy
+    owner: platform
+    notes: >-
+      SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE — what a k3s upgrade Plan drains and uncordons
+      nodes with. Upstream SUC still defaults it to v1.30.3 (six minors behind, a
+      critical crypto/tls CVE); a local edit of the vendored manifest keeps it on
+      bootstrap.sh's K3S_VERSION minor. A ConfigMap value, so only config-images.py
+      puts it in the image scan.
+
   - id: external-snapshotter
     name: external-snapshotter (CSI VolumeSnapshot CRDs + controller)
     tier: "1"
     kind: binary
-    pinned: "v8.6.0"
+    pinned: "v8.7.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: kubernetes-csi/external-snapshotter, advisories: kubernetes-csi/external-snapshotter }
-    scan: manual
+    scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
-    notes: snap_ver in install step. CNPG PITR + Longhorn VolumeSnapshotClass dependency.
+    notes: >-
+      snap_ver in install step. CNPG PITR + Longhorn VolumeSnapshotClass dependency.
+      Upstream's manifest at a tag names the PREVIOUS release's controller image, so
+      bootstrap.sh and 2026.10.23/0003 rewrite it to snap_ver (on the v8.6.0 pin the
+      clusters ran v8.5.0, with a critical grpc-go CVE).
 
   - id: barman-cloud-plugin
     name: CNPG Barman Cloud plugin (Postgres backups)
     tier: "1"
     kind: image
-    pinned: "v0.13.0"
-    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.13.0.yaml
+    pinned: "v0.15.1"
+    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.15.1.yaml
     pin_check: true
-    repos: [cloudnative-pg/plugin-barman-cloud]
+    repos: [cloudnative-pg/plugin-barman-cloud, cloudnative-pg/plugin-barman-cloud-sidecar]
     watch: { type: github_releases, repo: cloudnative-pg/plugin-barman-cloud, advisories: cloudnative-pg/plugin-barman-cloud }
     scan: trivy
     owner: platform
-    notes: Postgres backup data path (WAL/base backups to object storage).
+    notes: >-
+      Postgres backup data path (WAL/base backups to object storage). The plugin
+      injects its sidecar (plugin-barman-cloud-sidecar, same version — SIDECAR_IMAGE,
+      base64 in the vendored Secret) into every Postgres pod; a version change rolls
+      the database pods.
 
   - id: valkey
     name: Valkey (cache)
     tier: "1"
     kind: image
-    pinned: "8.1-alpine"
+    pinned: "9.1.3-alpine"
     pin_source: k8s/base/valkey/statefulset.yaml
     pin_check: true
     repos: [valkey/valkey]
     watch: { type: github_releases, repo: valkey-io/valkey, advisories: valkey-io/valkey }
     scan: trivy
     owner: platform
-    notes: Redis-compatible cache (Redis removed M14). Tier 1 if it holds session/token material.
+    dormant: true
+    notes: >-
+      Redis-compatible cache (Redis removed M14) — not deployed by any overlay; the
+      manifests are kept for re-activation. Pinned to a patch tag: 9.1.0–9.1.2 spin a
+      CPU on VMs without the TSC clock source.
 
   - id: file-manager
     name: file-manager (tenant web file browser sidecar)
@@ -679,20 +748,23 @@ components:
     name: age (secrets-bundle encryption tool)
     tier: "1"
     kind: binary
-    pinned: "v1.3.1"
+    pinned: "v1.3.2"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: FiloSottile/age, advisories: FiloSottile/age }
     scan: manual
     owner: platform
-    notes: age_ver in bootstrap. Encrypts the Tier-1 secrets bundle (SECRETS_LIFECYCLE.md). Also baked into the backend image.
+    notes: >-
+      age_ver in bootstrap (only where the distro has no age package; SHA-256-checked).
+      Encrypts the Tier-1 secrets bundle (SECRETS_LIFECYCLE.md). The backend image
+      takes Alpine's age package, not this pin.
 
   # ───────────────────────────── Tier 2 — Moderate ─────────────────────────────
   - id: reloader
     name: Stakater Reloader (rollout on ConfigMap/Secret change)
     tier: "2"
     kind: image
-    pinned: "v1.4.0"
+    pinned: "v1.4.22"
     pin_source: k8s/base/reloader/reloader.yaml
     pin_check: true
     repos: [stakater/reloader]
@@ -701,6 +773,22 @@ components:
     owner: platform
     notes: Watches ConfigMaps/Secrets and triggers rolling restarts.
 
+  - id: haproxy-mail
+    name: HAProxy (mail port front, DaemonSet built by platform-api)
+    tier: "1"
+    kind: image
+    pinned: "3.4-alpine"
+    pin_source: backend/src/modules/mail-admin/haproxy-builder.ts
+    pin_check: true
+    repos: [haproxy]
+    watch: { type: dockerhub, repo: haproxy, advisories: haproxy/haproxy }
+    scan: trivy
+    owner: platform
+    notes: >-
+      Runtime image, not in k8s/ (the API builds the DaemonSet). 3.4 is the current LTS
+      branch (supported to 2031-Q2). The mail path: a bump runs a mail E2E through
+      the DaemonSet (SMTP + IMAP, PROXY v2 client address in Stalwart's log).
+
   - id: nginx-standalone
     name: nginx (suspended-tenant + error pages)
     tier: "2"
@@ -708,10 +796,11 @@ components:
     pinned: "1.31-alpine"
     pin_source: k8s/base/platform-suspended.yaml
     pin_check: true
-    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
+    repos: [nginx]
+    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d+\.\d+)$' }
     scan: trivy
     owner: platform
-    notes: Static-page nginx for suspended tenants + custom error pages. (Frontend panels embed nginx:1.27-alpine separately, see base-images.)
+    notes: Static-page nginx for suspended tenants + custom error pages. Also k8s-manifests/generator.ts's image for a catalog entry that names none. (The panels build on nginx:1.30-alpine, see base-images.)
 
   # postgres-client-backup removed 2026-08-26: the legacy pg_dump
   # CronJob was retired with the target-activate path (its shim-era
@@ -722,14 +811,24 @@ components:
     name: alpine/k8s (kubectl utility image for CronJobs)
     tier: "2"
     kind: image
-    pinned: "1.33.13"
+    pinned: "1.36.5"
     pin_source: k8s/base/job-gc-cronjob.yaml
     pin_check: true
     repos: [alpine/k8s]
-    watch: { type: dockerhub, repo: alpine/k8s, advisories: kubernetes/kubernetes }
+    watch:
+      type: dockerhub
+      repo: alpine/k8s
+      advisories: kubernetes/kubernetes
+      hold: { below: "1.37", reason: "follows bootstrap.sh's K3S_VERSION minor (k3s is held below 1.37)." }
     scan: trivy
     owner: platform
-    notes: kubectl-in-a-pod for GC/update-checker/backup/cluster-state CronJobs. Two tags in use (1.33.3 dominant + 1.33.4 in ingress-external-ips/cronjob.yaml) — consolidate.
+    notes: >-
+      kubectl-in-a-pod for GC/update-checker/backup/cluster-state CronJobs and the
+      Traefik plugin guard, on one tag that follows bootstrap.sh's K3S_VERSION minor
+      (kubectl's ±1-minor skew covers a cluster one behind). Its bundled kustomize and
+      aws-cli certifi carry ledger entries. Traefik's init containers no longer use
+      it (curlimages/curl, 2026.10.23/0004); the older host migrations that wrote
+      1.33.13 say so in a `# superseded-images:` header.
 
   # ───────────────────────────── Tier 3 — Low / utility / base ─────────────────────────────
   - id: busybox
@@ -740,54 +839,49 @@ components:
     pin_source: k8s/base/valkey/statefulset.yaml
     pin_check: true
     repos: [busybox]
-    watch: { type: dockerhub, repo: busybox, advisories: mirror/busybox }
+    watch:
+      type: dockerhub
+      repo: busybox
+      advisories: mirror/busybox
+      hold: { below: "1.38", reason: "the official image tags 1.38 `unstable` (BusyBox's own label for a x.y.0 line); 1.37 is the newest line it does not." }
     scan: trivy
     owner: platform
-    notes: initContainers/janitors. Two tags in use (1.37 in valkey/dex + 1.36 in mail standby-janitor) — consolidate.
+    notes: initContainers/janitors, k8s/ and the backend (catalog + custom-container init-dirs, mail cleanup pods) on one tag. A changed init image reaches each tenant app at its next save/redeploy, not at upgrade.
 
   - id: curl
     name: curlimages/curl (probe/init utility)
     tier: "3"
     kind: image
-    pinned: "8.21.0"
+    pinned: "8.23.0"
     pin_source: k8s/base
     pin_check: false
     repos: [curlimages/curl]
-    watch: { type: github_releases, repo: curl/curl, advisories: curl/curl }
+    watch: { type: github_releases, repo: curl/curl, advisories: curl/curl, tag_regex: '^curl-(\d+_\d+_\d+)$' }
     scan: trivy
     owner: platform
-    notes: HTTP probe init container. pin_check off (multiple manifests) — covered by image scan.
+    notes: >-
+      HTTP probe init containers (k8s/base) and Traefik's two init containers
+      (bootstrap.sh TRAEFIKVALUES, 2026.10.23/0004). pin_check off (multiple files) —
+      covered by the image scan and ci-component-watch-check's literal check.
 
   - id: alpine-util
     name: alpine (utility/init base in manifests)
     tier: "3"
     kind: image
-    pinned: "3.20"
+    pinned: "3.24"
     pin_source: k8s/base
     pin_check: false
+    repos: [alpine]
     watch: { type: alpine_secdb, repo: alpinelinux/alpine, advisories: alpinelinux/alpine }
     scan: trivy
     owner: platform
     notes: Bare alpine init/utility containers + the FROM base for most first-party images.
 
-  - id: rsync-ssh
-    name: instrumentisto/rsync-ssh (mail standby replication)
-    tier: "3"
-    kind: image
-    pinned: "alpine3.23-r3"
-    pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
-    pin_check: true
-    repos: [instrumentisto/rsync-ssh]
-    watch: { type: dockerhub, repo: instrumentisto/rsync-ssh, advisories: WayneD/rsync }
-    scan: trivy
-    owner: platform
-    notes: rsync over SSH for mail HA standby replication.
-
   - id: traefik-whoami
     name: traefik/whoami (WAF test stub)
     tier: "3"
     kind: image
-    pinned: "v1.11.0"
+    pinned: "v1.12.0"
     pin_source: k8s/base/modsecurity-crs/deployment-stub.yaml
     pin_check: true
     repos: [traefik/whoami]
@@ -807,10 +901,12 @@ components:
     scan: trivy
     owner: platform
     notes: >-
-      FROM bases for first-party images, covered transitively by per-image Trivy:
-      node:22-alpine, nginx:1.27-alpine, golang:1.25-alpine,
+      FROM bases for first-party images, digest-pinned and kept fresh by Dependabot's
+      docker updater; each image's build fails on an untracked fixable CRITICAL, and
+      Alpine/Debian final stages upgrade their packages at build time: node:22-alpine,
+      node:22-slim, nginx:1.30-alpine, golang:1.26-alpine, alpine:3.24,
       rust:1.95-bookworm, debian:trixie-slim, gcr.io/distroless/static,
-      gcr.io/distroless/cc-debian12, busybox:1.37, tini, age, openssl, openssh-client.
+      gcr.io/distroless/cc-debian12, busybox:1.37.
 
   - id: ci-toolchain
     name: CI toolchain (GitHub Actions + cosign + osv-scanner)
@@ -836,7 +932,7 @@ components:
     pinned: "node:22-alpine"
     pin_source: catalog-images/node22/Dockerfile
     pin_check: true
-    watch: { type: github_releases, repo: nodejs/node, advisories: nodejs/node }
+    watch: { type: github_releases, repo: nodejs/node, advisories: nodejs/node, tag_regex: '^v(22\.\d+\.\d+)$' }
     scan: trivy
     owner: catalog
     notes: Tenant-facing runtime. Per-tenant blast radius. Rebuild + tenant redeploy to remediate.
@@ -848,7 +944,7 @@ components:
     pinned: "nginx:1.30-alpine"
     pin_source: catalog-images/static-nginx/Dockerfile
     pin_check: true
-    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
+    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d*[02468]\.\d+)$' }
     scan: trivy
     owner: catalog
     notes: Tenant static hosting runtime.
@@ -896,7 +992,7 @@ components:
     name: Dex OIDC (IdP — dev/staging only)
     tier: "X"
     kind: external
-    pinned: "v2.45.1"
+    pinned: "v2.46.1"
     pin_source: k8s/overlays/dind/dex/deployment.yaml
     pin_check: true
     repos: [dexidp/dex]
@@ -991,7 +1087,7 @@ components:
     name: alpine/socat (dev oauth patch fixture)
     tier: "3"
     kind: image
-    pinned: "1.8.0.0"
+    pinned: "1.8.1.3"
     pin_source: k8s/overlays/dind/bulwark/oauth-patch.yaml
     pin_check: true
     repos: [alpine/socat]

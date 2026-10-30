@@ -159,7 +159,7 @@ export default function RouteDetail() {
       {activeTab === 'redirects' && <RedirectsTab tenantId={tenantId!} routeId={routeId!} route={route} dnsMode={dnsMode} />}
       {activeTab === 'security' && <SecurityTab tenantId={tenantId!} routeId={routeId!} route={route} />}
       {activeTab === 'access-control' && (
-        <AccessControlTab tenantId={tenantId!} routeId={routeId!} hostname={route.hostname} />
+        <AccessControlTab tenantId={tenantId!} routeId={routeId!} hostname={route.hostname} wwwRedirect={route.wwwRedirect} />
       )}
       {activeTab === 'advanced' && <AdvancedTab tenantId={tenantId!} routeId={routeId!} route={route} />}
     </div>
@@ -763,14 +763,16 @@ function AccessControlTab({
   tenantId,
   routeId,
   hostname,
+  wwwRedirect,
 }: {
   readonly tenantId: string;
   readonly routeId: string;
   readonly hostname: string;
+  readonly wwwRedirect: string | null | undefined;
 }) {
   return (
     <div className="space-y-8" data-testid="access-control-tab">
-      <OidcSection tenantId={tenantId} routeId={routeId} hostname={hostname} />
+      <OidcSection tenantId={tenantId} routeId={routeId} hostname={hostname} wwwRedirect={wwwRedirect} />
       <MtlsSection tenantId={tenantId} routeId={routeId} />
       <ProtectedDirsSection tenantId={tenantId} routeId={routeId} />
     </div>

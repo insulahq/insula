@@ -196,7 +196,7 @@ export async function spawnMailPvcReaperJobs(
             tolerations: [{ operator: 'Exists' }],
             containers: [{
               name: 'reap',
-              image: 'busybox:1.36',
+              image: 'busybox:1.37',
               command: ['sh', '-c'],
               args: [script],
               securityContext: { runAsUser: 0, runAsNonRoot: false },

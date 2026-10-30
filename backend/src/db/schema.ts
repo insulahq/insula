@@ -2765,8 +2765,6 @@ export const tenantOidcProviders = pgTable('tenant_oidc_providers', {
   issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
   oauthClientId: varchar('oauth_client_id', { length: 255 }).notNull(),
   oauthClientSecretEncrypted: text('oauth_client_secret_encrypted').notNull(),
-  authMethod: varchar('auth_method', { length: 32 }).notNull().default('client_secret_basic'),
-  responseType: varchar('response_type', { length: 32 }).notNull().default('code'),
   usePkce: boolean('use_pkce').notNull().default(true),
   defaultScopes: varchar('default_scopes', { length: 500 }).notNull().default('openid profile email'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -2795,11 +2793,6 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   providerId: varchar('provider_id', { length: 36 })
     .notNull()
     .references(() => tenantOidcProviders.id, { onDelete: 'cascade' }),
-  // Optional override of the provider's default_scopes. NULL = use
-  // provider's value. Allows one provider to serve ingresses with
-  // different scope requirements (e.g. one ingress also wants
-  // 'groups' for claim-rule matching).
-  scopesOverride: varchar('scopes_override', { length: 500 }),
   // Optional fixed redirect destination after a successful login.
   // When NULL the user lands back at the URL they originally
   // requested (oauth2-proxy default behaviour). When set, every
@@ -2810,13 +2803,13 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   allowedEmailDomains: text('allowed_email_domains'),
   allowedGroups: text('allowed_groups'),
   claimRules: jsonb('claim_rules').$type<ReadonlyArray<IngressClaimRule>>(),
-  passAuthorizationHeader: boolean('pass_authorization_header').notNull().default(true),
-  passAccessToken: boolean('pass_access_token').notNull().default(true),
-  passIdToken: boolean('pass_id_token').notNull().default(true),
+  passAuthorizationHeader: boolean('pass_authorization_header').notNull().default(false),
+  passAccessToken: boolean('pass_access_token').notNull().default(false),
+  passIdToken: boolean('pass_id_token').notNull().default(false),
   passUserHeaders: boolean('pass_user_headers').notNull().default(true),
   setXauthrequest: boolean('set_xauthrequest').notNull().default(true),
   cookieDomain: varchar('cookie_domain', { length: 255 }),
-  cookieRefreshSeconds: integer('cookie_refresh_seconds').notNull().default(3600),
+  cookieRefreshSeconds: integer('cookie_refresh_seconds').notNull().default(0),
   cookieExpireSeconds: integer('cookie_expire_seconds').notNull().default(86400),
   lastError: text('last_error'),
   lastReconciledAt: timestamp('last_reconciled_at'),

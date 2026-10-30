@@ -10,7 +10,7 @@
 # linked with cgo (capabilities are per-thread and the Go runtime is
 # multi-threaded). With cgo the privilege drop fails closed and the process
 # refuses to serve — see images/file-manager/cmd/sftp-serve/main.go.
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS chroot-builder
+FROM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS chroot-builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,7 +19,10 @@ RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o sftp-serve ./cmd/sftp-serve
 
 # Stage 3: Runtime
 FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
-RUN apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync
+# Package fixes published after the base image was built (an image is only
+# rebuilt when its sources change): take them at build time.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync
 COPY --from=chroot-builder /build/sftp-serve /usr/local/bin/sftp-serve
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/sftp-serve

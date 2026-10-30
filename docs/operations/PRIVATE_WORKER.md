@@ -103,6 +103,12 @@ docker run -e PRIVATE_WORKER_TOKEN=pwt_<base64url-blob> \
   ghcr.io/insulahq/insula/private-worker-agent:latest
 ```
 
+`:latest` is the agent of the newest **stable release**: the release workflow
+builds it from the release tag (amd64 and arm64), scans it, and only then moves
+`latest`. Each release is also tagged `:<version>`. Builds of the `development`
+branch publish `:edge`, which is what the DEV cluster hands out. A tenant picks
+up a fixed agent by pulling `:latest` again.
+
 The blob is base64url-encoded JSON:
 
 ```json

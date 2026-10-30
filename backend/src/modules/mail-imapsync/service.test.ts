@@ -618,7 +618,7 @@ describe('spam-folder remapping', () => {
     mailboxAddress: 'alice@acme.com', sourceHost: 'imap.example.test', sourcePort: 993,
     sourceUsername: 'alice@example.test', sourceSsl: true,
     destHost: 'stalwart-mail.mail.svc.cluster.local', destPort: 143,
-    image: 'gilleslamiral/imapsync:2.319',
+    image: 'gilleslamiral/imapsync:2.326',
     ...over,
   });
   const expr = () => buildFolderRemapExpression({ dest: DEFAULT_SPAM_FOLDER, aliases: SPAM_ALIASES });
@@ -726,7 +726,7 @@ describe('re-sync rebuilds the folder mapping', () => {
     sourceSsl: true,
     destHost: 'stalwart-mail.mail.svc.cluster.local',
     destPort: 143,
-    image: 'gilleslamiral/imapsync:2.319',
+    image: 'gilleslamiral/imapsync:2.326',
     options: storedOptions,
   });
 

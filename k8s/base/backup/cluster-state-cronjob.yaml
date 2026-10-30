@@ -108,7 +108,7 @@ spec:
             - name: cluster-state
               # alpine/k8s bundles kubectl + aws + jq. bitnami/kubectl
               # pinned tags sunsetted from Docker Hub in 2026.
-              image: alpine/k8s:1.33.13
+              image: alpine/k8s:1.36.5
               imagePullPolicy: IfNotPresent
               # Operator-set retention, written by platform-api into a ConfigMap
               # it owns EXCLUSIVELY — Flux is given no manifest for it.

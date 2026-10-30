@@ -1,14 +1,17 @@
 /**
  * HTTP routes for per-deployment Network Access.
  *
- *   GET    /api/v1/tenants/:cid/deployments/:did/network-access
- *   PATCH  /api/v1/tenants/:cid/deployments/:did/network-access
- *   DELETE /api/v1/tenants/:cid/deployments/:did/network-access
+ *   GET    /api/v1/tenants/:tenantId/deployments/:did/network-access
+ *   PATCH  /api/v1/tenants/:tenantId/deployments/:did/network-access
+ *   DELETE /api/v1/tenants/:tenantId/deployments/:did/network-access
+ *
+ * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
+ * tenant only (requireTenantAccess), and handlers scope rows by that id.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { deploymentNetworkAccessInputSchema } from '@insula/api-contracts';
@@ -54,17 +57,20 @@ export async function deploymentNetworkAccessRoutes(app: FastifyInstance): Promi
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // The caller's own tenant only: a tenant token naming another tenant's id
+  // in the path is refused before any handler runs.
+  app.addHook('onRequest', requireTenantAccess());
 
-  app.get('/tenants/:cid/deployments/:did/network-access', async (request) => {
-    const { cid, did } = request.params as { cid: string; did: string };
-    await assertDeploymentBelongsToTenant(app, cid, did);
+  app.get('/tenants/:tenantId/deployments/:did/network-access', async (request) => {
+    const { tenantId, did } = request.params as { tenantId: string; did: string };
+    await assertDeploymentBelongsToTenant(app, tenantId, did);
     const cfg = await getConfig(app.db, did);
     return success(cfg);
   });
 
-  app.patch('/tenants/:cid/deployments/:did/network-access', async (request) => {
-    const { cid, did } = request.params as { cid: string; did: string };
-    await assertDeploymentBelongsToTenant(app, cid, did);
+  app.patch('/tenants/:tenantId/deployments/:did/network-access', async (request) => {
+    const { tenantId, did } = request.params as { tenantId: string; did: string };
+    await assertDeploymentBelongsToTenant(app, tenantId, did);
     const parsed = deploymentNetworkAccessInputSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
@@ -73,7 +79,7 @@ export async function deploymentNetworkAccessRoutes(app: FastifyInstance): Promi
     if (k8s) {
       // Reconcile the per-tenant mesh proxy AND re-sync ingresses
       // so the suppress_public_ingress flag is honoured.
-      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, cid);
+      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, tenantId);
       if (outcome.error) {
         throw new ApiError(
           'RECONCILE_FAILED',
@@ -82,24 +88,24 @@ export async function deploymentNetworkAccessRoutes(app: FastifyInstance): Promi
         );
       }
       try {
-        await reconcileIngress(app.db, k8s, cid, outcome.namespace);
+        await reconcileIngress(app.db, k8s, tenantId, outcome.namespace);
       } catch (err) {
-        request.log.warn({ err, cid, did }, 'Network-access saved + proxy provisioned, but Ingress sync failed');
+        request.log.warn({ err, tenantId, did }, 'Network-access saved + proxy provisioned, but Ingress sync failed');
       }
     }
     return success(cfg);
   });
 
-  app.delete('/tenants/:cid/deployments/:did/network-access', async (request) => {
-    const { cid, did } = request.params as { cid: string; did: string };
-    await assertDeploymentBelongsToTenant(app, cid, did);
+  app.delete('/tenants/:tenantId/deployments/:did/network-access', async (request) => {
+    const { tenantId, did } = request.params as { tenantId: string; did: string };
+    await assertDeploymentBelongsToTenant(app, tenantId, did);
     await deleteConfig(app.db, did);
     if (k8s) {
-      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, cid);
+      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, tenantId);
       try {
-        await reconcileIngress(app.db, k8s, cid, outcome.namespace);
+        await reconcileIngress(app.db, k8s, tenantId, outcome.namespace);
       } catch (err) {
-        request.log.warn({ err, cid, did }, 'Network-access deleted + proxy torn down, but Ingress sync failed');
+        request.log.warn({ err, tenantId, did }, 'Network-access deleted + proxy torn down, but Ingress sync failed');
       }
     }
     return success({ deleted: true });

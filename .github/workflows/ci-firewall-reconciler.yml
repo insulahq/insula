@@ -108,6 +108,12 @@ jobs:
           sarif_file: trivy-results.sarif
           category: firewall-reconciler
 
+      - name: Trivy gate (untracked fixable CRITICAL)
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml — a transparency-log attestation for the internal
       # image. Gated to non-PR (fork PRs get a read-only token anyway).

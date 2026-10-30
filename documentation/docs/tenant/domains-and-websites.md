@@ -126,10 +126,65 @@ Click any route to open its detail page, which has these tabs:
   *detected · not blocked*, but blocks nothing: run it against your real
   traffic for as long as you need, add exclusions for anything your site
   legitimately does, then switch to *Enforced*, which blocks with a 403.
-- **Access Control** — sign-in gates and
+- **Access Control** — [require a sign-in](#require-a-sign-in-oidc),
+  client certificates (mTLS) and
   [password-protected folders](protected-directories.md).
 - **Advanced** — custom error pages, extra response headers, and
   [HSTS](#hsts-https-only-enforcement).
+
+### Require a sign-in (OIDC)
+
+A route can admit only visitors who sign in at an identity provider first —
+Google, Microsoft, Zitadel, Keycloak, Authentik or any other OpenID Connect
+provider. The app behind it needs no changes: the platform checks the visitor
+before the request reaches it.
+
+1. **Create an OAuth client at your provider.** For Google: Google Cloud
+   Console → APIs & Services → Credentials → *Create credentials* → *OAuth
+   client ID*, type **Web application**. Under **Authorized redirect URIs**
+   add the redirect URI the route's Access Control tab shows:
+   `https://<host>/oauth2/callback`. For a route with a www redirect that is
+   the host the site is served on (for *add www*, the `www.` form).
+2. **Add the provider** under **Settings → OIDC Providers** (or enter it
+   directly on the route): the issuer URL (Google: `https://accounts.google.com`),
+   the client ID and the client secret. **Test issuer** checks the issuer and
+   shows it exactly as the provider publishes it.
+3. On the route's **Access Control** tab, open **Sign-in (OIDC)**, choose the
+   provider and say **who may open the site**: email addresses, email
+   domains (exact — `example.com` does not include `sub.example.com`), or
+   groups from the ID token. Anyone matching any entry gets in. Leave them all
+   empty and anyone who can sign in at the provider gets in — with Google, that
+   is anyone with a Google account. **Claim rules** add conditions on the ID
+   token's claims on top.
+4. **Save.** The platform starts the sign-in service and waits until it runs;
+   if it does not (a wrong issuer, an unreachable provider, an untrusted
+   certificate), the form says why and the route answers with an error rather
+   than opening up.
+
+A visitor who is signed in but not allowed sees *Access denied* and can sign
+out to try another account.
+
+**What the app receives.** The visitor's identity, as `X-Auth-Request-User`,
+`-Email`, `-Preferred-Username` and `-Groups` headers. The access token and the
+ID token can be passed too. **Authorization: Bearer** replaces the request's
+own `Authorization` header with the ID token — leave it off for apps that have
+their own login or API tokens (Immich, Nextcloud, Gitea, …), which would reject
+every call with it, and on routes with password-protected folders.
+
+**Good to know.**
+
+- `/oauth2/` on a protected host belongs to the sign-in.
+- All of a tenant's protected routes use the same provider. The session
+  settings (how long a sign-in lasts, how often it is re-checked) are shared,
+  and the shortest values apply. *Re-check* needs a provider that issues
+  refresh tokens; Google does not by default, so leave it at 0 there.
+- A **cookie domain** that is a parent of the route's host (`example.com` for
+  `photos.example.com`) shares one sign-in across protected sub-domains.
+- Mobile and desktop apps that talk to the protected host directly (an app's
+  own sync client, for example) cannot sign in through a browser page and are
+  refused.
+- Wildcard routes cannot be protected: the provider needs one redirect URI per
+  host.
 
 ### Serve a specific folder (multi-host apps)
 

@@ -1,18 +1,18 @@
 /**
  * HTTP routes for per-ingress mTLS access control.
  *
- *   GET    /api/v1/tenants/:cid/ingress-routes/:rid/mtls
- *   PATCH  /api/v1/tenants/:cid/ingress-routes/:rid/mtls
- *   DELETE /api/v1/tenants/:cid/ingress-routes/:rid/mtls
+ *   GET    /api/v1/tenants/:tenantId/ingress-routes/:rid/mtls
+ *   PATCH  /api/v1/tenants/:tenantId/ingress-routes/:rid/mtls
+ *   DELETE /api/v1/tenants/:tenantId/ingress-routes/:rid/mtls
  *
- * Auth: tenant_admin / super_admin / admin. Cross-tenant safety —
- * every handler verifies the route belongs to a domain that belongs
- * to the requested tenantId.
+ * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
+ * tenant only (requireTenantAccess), and every handler checks that the
+ * route belongs to a domain of that tenant.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { ingressMtlsConfigSchema } from '@insula/api-contracts';
@@ -65,17 +65,20 @@ export async function ingressMtlsRoutes(app: FastifyInstance): Promise<void> {
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // The caller's own tenant only: a tenant token naming another tenant's id
+  // in the path is refused before any handler runs.
+  app.addHook('onRequest', requireTenantAccess());
 
-  app.get('/tenants/:cid/ingress-routes/:rid/mtls', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    await assertRouteBelongsToTenant(app, cid, rid);
+  app.get('/tenants/:tenantId/ingress-routes/:rid/mtls', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    await assertRouteBelongsToTenant(app, tenantId, rid);
     const cfg = await getMtlsConfig(app.db, rid);
     return success(cfg);
   });
 
-  app.patch('/tenants/:cid/ingress-routes/:rid/mtls', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    const { namespace } = await assertRouteBelongsToTenant(app, cid, rid);
+  app.patch('/tenants/:tenantId/ingress-routes/:rid/mtls', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    const { namespace } = await assertRouteBelongsToTenant(app, tenantId, rid);
     const parsed = ingressMtlsConfigSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
@@ -85,23 +88,23 @@ export async function ingressMtlsRoutes(app: FastifyInstance): Promise<void> {
       // Re-sync the Ingress — annotation-sync.ts picks up the mTLS
       // config and emits auth-tls-* annotations + the CA Secret.
       try {
-        await reconcileIngress(app.db, k8s, cid, namespace);
+        await reconcileIngress(app.db, k8s, tenantId, namespace);
       } catch (err) {
-        request.log.warn({ err, cid, rid }, 'mTLS saved but Ingress annotation sync failed');
+        request.log.warn({ err, tenantId, rid }, 'mTLS saved but Ingress annotation sync failed');
       }
     }
     return success(cfg);
   });
 
-  app.delete('/tenants/:cid/ingress-routes/:rid/mtls', async (request) => {
-    const { cid, rid } = request.params as { cid: string; rid: string };
-    const { namespace } = await assertRouteBelongsToTenant(app, cid, rid);
+  app.delete('/tenants/:tenantId/ingress-routes/:rid/mtls', async (request) => {
+    const { tenantId, rid } = request.params as { tenantId: string; rid: string };
+    const { namespace } = await assertRouteBelongsToTenant(app, tenantId, rid);
     await deleteMtlsConfig(app.db, rid);
     if (k8s) {
       try {
-        await reconcileIngress(app.db, k8s, cid, namespace);
+        await reconcileIngress(app.db, k8s, tenantId, namespace);
       } catch (err) {
-        request.log.warn({ err, cid, rid }, 'mTLS deleted but Ingress annotation sync failed');
+        request.log.warn({ err, tenantId, rid }, 'mTLS deleted but Ingress annotation sync failed');
       }
     }
     return success({ deleted: true });

@@ -32,12 +32,72 @@ Three artifacts, one guard:
 Automation: `.github/workflows/component-watch.yml` runs a weekly sweep and opens
 a rolling tracking issue (now with a **⚠️ Tier-0 components behind upstream**
 callout so critical drift isn't buried); `.github/dependabot.yml` proposes
-dependency-bump PRs; **first-party** image builds Trivy-scan and upload SARIF to
-the repo **Security** tab; and `.github/workflows/image-cve-scan.yml` runs a
-weekly **Trivy scan of the UPSTREAM images** (Stalwart, Postgres, CrowdSec, …)
-for OS/library CVEs the version+advisory watch can't see — entirely in CI (no
-cluster). It skips findings already in `cve-ledger.yaml` and fails on a new,
-untracked HIGH/CRITICAL → triage the finding or upgrade the pin.
+dependency-bump PRs, including the digest-pinned Dockerfile bases (its docker
+block); **first-party** image builds Trivy-scan, upload SARIF to the repo
+**Security** tab, and **fail on an untracked fixable CRITICAL**
+(`.github/actions/trivy-gate`, also run on the three release images in
+`release.yml`); and `.github/workflows/image-cve-scan.yml` runs a weekly **Trivy
+scan of the upstream images and of the first-party images production pins** —
+entirely in CI (no cluster). Only findings with a fix count, ledger entries are
+skipped, a fixable CRITICAL fails the run (HIGH is reported), and the results
+land in the rolling issue *"🛡 Image scan — fixable HIGH/CRITICAL"*.
+
+Why each part exists — what happened without it:
+
+- **Report-only scans go unread.** The weekly scan was report-only and printed
+  its findings into a run summary; the per-image scans only uploaded SARIF. Both
+  panels shipped a critical OpenSSL CVE for months with the alert open.
+- **A digest pin without an updater freezes.** Dependabot dropped the docker
+  block over one unsupported cooldown key and never ran it; every `FROM` stayed
+  on the digest of the day it was pinned. The guard (§5) now checks the config
+  and that every Dockerfile directory is covered — GitHub reports such errors
+  only in the repo's Insights tab.
+- **An image is scanned when it is built.** One nobody rebuilds keeps its CVEs;
+  the weekly scan covers what production pins, and Alpine/Debian final stages
+  upgrade their packages at build time.
+- **A scan sees only the images it lists.** The platform database
+  (`imageName:`), the backup sidecar in every Postgres pod (a base64 Secret
+  value), the upgrade Jobs' kubectl (a ConfigMap value), every component
+  bootstrap.sh installs from a chart or manifest, and the catalog's tenant images
+  were all unlisted — PostgreSQL ran with 14 fixable criticals, the
+  snapshot-controller with a critical grpc CVE. The weekly scan's lists:
+
+  | List | Source |
+  |---|---|
+  | upstream | `scripts/list-scan-images.sh`: `image:` in k8s/base, `scripts/lib/runtime-images.py` (backend), `script-images.py` (bootstrap.sh, host migrations), `config-images.py` (imageName, `*_IMAGE` values) |
+  | first-party | `scripts/list-first-party-images.sh` (production's pins) |
+  | cluster | `scripts/list-chart-images.sh` — each chart/manifest rendered at bootstrap.sh's pin |
+  | catalog | `scripts/lib/catalog-images.py` — the Official Catalog's manifests |
+
+Waivers are ledger entries. A bare ID is skipped in **every** image; give an
+entry `trivy_scope: { paths: [...] }` or `{ purls: [...] }` to waive it only
+there (a Go stdlib CVE in one unused binary must not hide the same CVE in
+another image), or `{ images: [<repository>…] }` to waive it in those images
+only — a reachability verdict is about one image's use of a package (brotli
+that nginx never links is not brotli that curl decodes). The ignore file is
+rendered per image (`cve-ledger-trivyignore.py --yaml --image <ref>`).
+
+A shipped host migration's body never changes, so an image a later migration
+replaces stays in its text. Its `# superseded-images: <image>… (<version>/<NNNN>)`
+header says so: `script-images.py` leaves those images out, and
+`ci-host-migrations-check.sh` checks the script writes them and the named
+migration exists.
+
+`--latest` (`scripts/lib/component-latest.py`) compares only stable upstream
+tags shaped like the pin, at the pin's precision. When the upstream tag stream
+is not the pin's, say so in the component's `watch:` — `version_repo` (a chart
+released from its own repo), `tag_regex` (group 1 is the version), or
+`pinned_version` (the version a digest pin stands for). A pin that is not a
+version is listed as *not compared*, never as behind.
+
+"Behind" means *take it now*. A GitHub release younger than 7 days (14 when it
+changes the major — the minor on 0.x) is listed as **in soak** until its date,
+the same minimum age as Dependabot's cooldown; a release with a security fix
+that affects us is taken inside the soak by decision. A deliberate ceiling is
+`watch.hold: { below: "<version>", reason: "…" }` — versions at or above it are
+listed as **held** with the reason, and the pin is compared with the newest
+release under it (k3s held below 1.37 still shows 1.36.6 as behind). The guard
+requires a reason. The weekly sweep lists soaks and holds under *Waiting*.
 
 ```bash
 scripts/component-watch.sh --status        # tiered table + open CVE counts
@@ -236,10 +296,10 @@ weekly issue until `status: fixed`. `accepted` requires a `review_by` date.
 - ~~`postgres-client-backup` PG 17 vs server PG 18~~ — resolved 2026-08-26: the
   legacy pg_dump CronJob (and its image) was retired with the target-activate
   path; CNPG base backups + WAL are the replacement.
-- `alpine/k8s` (1.33.3 vs 1.33.4) and `busybox` (1.36 vs 1.37) each have two tags
-  in use — consolidate to one.
-- `roundcube-deployment.yaml` (legacy) still references `:latest-fpm`; the active
-  `roundcube/deployment.yaml` is digest-pinned — remove the floating reference.
+- ~~`alpine/k8s` and `busybox` each have two tags in use~~ — resolved: one tag
+  each (`alpine/k8s` 1.36.5, `busybox` 1.37), backend init containers included.
+- ~~legacy `roundcube-deployment.yaml` with a floating tag~~ — resolved: the file
+  is removed; `roundcube/deployment.yaml` (digest-pinned) is the only manifest.
 - Flux is installed via `flux install` (CLI **latest**, unpinned) — consider
   pinning to a release.
 

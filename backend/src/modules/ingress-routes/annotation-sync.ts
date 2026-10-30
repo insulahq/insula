@@ -27,7 +27,6 @@ import {
   ingressRoutes,
   routeProtectedDirs,
   routeAuthUsers,
-  domains,
   tenants,
   ingressAuthConfigs,
 } from '../../db/schema.js';
@@ -615,9 +614,16 @@ export async function buildRouteSpec(
   //    forward-cert Middleware so upstream apps see the cert.)
   const mtlsResult = await syncMtlsSecretAndBuildSpec(db, k8s, namespace, routeId);
 
-  // 4. OIDC ForwardAuth Middleware (per-route, since the auth URL
-  //    encodes ?route=<id> for the claim-validator sidecar).
-  const oidcRefs = await buildOidcMiddleware(db, namespace, routeId, route.hostname);
+  // The host the route serves: with a www redirect the other form only
+  // redirects, so per-path routers (folders, /oauth2) belong on this one.
+  const { canonical: servedHost } = wwwRedirectHosts(
+    route.hostname,
+    route.wwwRedirect as 'none' | 'add-www' | 'remove-www',
+  );
+
+  // 4. OIDC ForwardAuth Middleware (per-route: the auth URL carries
+  //    ?route=<id> so the gate sidecar applies this route's policy).
+  const oidcRefs = await buildOidcMiddleware(db, namespace, routeId);
 
   // Platform-wide CrowdSec bouncer — every tenant route attaches it as
   // the FIRST middleware so known-bad IPs short-circuit before any
@@ -668,17 +674,37 @@ export async function buildRouteSpec(
   // 5. Protected-directory child routes — one TraefikRoute per
   //    enabled dir with users. Each child route references its own
   //    basicAuth Middleware (pointing at the route-auth-<dirId> Secret).
-  //    `combinedRefs` flows into the child routes too, so crowdsec
-  //    gates the protected-dir paths as well.
+  //    The route's other refs flow into the child routes too, so crowdsec
+  //    and the sign-in gate cover the protected-dir paths as well — but a
+  //    sign-in that replaces Authorization would delete the visitor's
+  //    `Basic` credentials before basicAuth reads them, so folders get the
+  //    variant that leaves Authorization alone.
+  const dirRefs = combinedRefs.map((r) => (oidcRefs.forFolders && r.name === oidcRefs.refs[0]?.name ? oidcRefs.forFolders : r));
   const childRoutes = await buildProtectedDirChildRoutes(
     db,
     routeId,
-    route.hostname,
+    servedHost,
     namespace,
     serviceName,
     servicePort,
-    combinedRefs,
+    dirRefs,
   );
+
+  // 6. The sign-in's own endpoints (/oauth2/start, /callback, /sign_out) on
+  //    the served host, straight to oauth2-proxy and NOT through the gate
+  //    (which would loop). It is part of this route's IngressRoute, so it
+  //    has the route's TLS options (mTLS), WAF, CrowdSec and allow list, and
+  //    goes away with the route.
+  const signInRoutes: TraefikRoute[] = oidcRefs.refs.length > 0
+    ? [{
+      // With the slash: /oauth2foo is the app's, not the sign-in's.
+      match: routeMatch(servedHost, '/oauth2/'),
+      kind: 'Rule',
+      priority: OAUTH2_ROUTE_PRIORITY,
+      middlewares: combinedRefs.filter((r) => !oidcRefs.refs.some((o) => o.name === r.name)),
+      services: [{ name: OIDC_GATE_SERVICE, port: OIDC_PROXY_PORT }],
+    }]
+    : [];
 
   return {
     middlewares: [
@@ -689,7 +715,7 @@ export async function buildRouteSpec(
       ...childRoutes.basicAuthMiddlewares,
     ],
     middlewareRefs: combinedRefs,
-    childRoutes: childRoutes.routes,
+    childRoutes: [...signInRoutes, ...childRoutes.routes],
   };
 }
 
@@ -824,81 +850,65 @@ export async function deleteProtectedDirIngress(
 
 // ─── OIDC ForwardAuth Middleware ────────────────────────────────────────────
 
+/** The tenant's sign-in gate Service (ingress-auth/reconciler.ts). */
+const OIDC_GATE_SERVICE = 'oauth2-proxy';
+const OIDC_PROXY_PORT = 4180;
+const OIDC_GATE_PORT = 4181;
 /**
- * True when at least one enabled auth config under the same tenant as
- * `routeId` has a non-empty claim_rules array. The claim-validator
- * sidecar is deployed only when this is true; in that case the
- * ForwardAuth address points at the sidecar (port 4181), otherwise
- * directly at oauth2-proxy (port 4180).
+ * Above every other router of the host: the protected-folder children sit at
+ * 100 and a plain route's default priority is its rule's length, so a long
+ * host could otherwise outrank /oauth2 and send the callback to the app.
  */
-export async function tenantHasActiveClaimRules(
-  db: Database,
-  routeId: string,
-): Promise<boolean> {
-  const [routeRow] = await db
-    .select({ tenantId: domains.tenantId })
-    .from(ingressRoutes)
-    .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
-    .where(eq(ingressRoutes.id, routeId));
-  if (!routeRow) return false;
+const OAUTH2_ROUTE_PRIORITY = 10_000;
 
-  const rows = await db
-    .select({ claimRules: ingressAuthConfigs.claimRules })
-    .from(ingressAuthConfigs)
-    .innerJoin(ingressRoutes, eq(ingressAuthConfigs.ingressRouteId, ingressRoutes.id))
-    .innerJoin(domains, eq(ingressRoutes.domainId, domains.id))
-    .where(
-      and(
-        eq(ingressAuthConfigs.enabled, true),
-        eq(domains.tenantId, routeRow.tenantId),
-      ),
-    );
-  return rows.some((r) => Array.isArray(r.claimRules) && r.claimRules.length > 0);
-}
+/**
+ * Every identity header the gate can answer with. Traefik deletes each listed
+ * name from the visitor's request before copying the gate's answer, so a route
+ * that does not pass one still cannot receive a forged one. Authorization is
+ * listed only when the route passes it: listing it would otherwise delete the
+ * visitor's own Authorization header (an API token, Basic credentials).
+ */
+/** The gate's session cookie (ingress-auth/reconciler.ts --cookie-name) and its split parts. */
+const OIDC_SESSION_COOKIES = ['_insula_gate', '_insula_gate_0', '_insula_gate_1', '_insula_gate_2', '_insula_gate_3'];
+
+const OIDC_IDENTITY_HEADERS = [
+  'X-Auth-Request-User',
+  'X-Auth-Request-Email',
+  'X-Auth-Request-Preferred-Username',
+  'X-Auth-Request-Groups',
+  'X-Auth-Request-Access-Token',
+  'X-Auth-Request-Id-Token',
+];
 
 async function buildOidcMiddleware(
   db: Database,
   namespace: string,
   routeId: string,
-  _hostname: string,
-): Promise<{ middlewares: MiddlewareBody[]; refs: Array<{ name: string; namespace: string }> }> {
+): Promise<{
+  middlewares: MiddlewareBody[];
+  refs: Array<{ name: string; namespace: string }>;
+  /** The same gate without Authorization, for protected folders (basicAuth reads it). */
+  forFolders: { name: string; namespace: string } | null;
+}> {
   const [cfg] = await db
     .select()
     .from(ingressAuthConfigs)
     .where(eq(ingressAuthConfigs.ingressRouteId, routeId));
-  if (!cfg || !cfg.enabled) return { middlewares: [], refs: [] };
+  if (!cfg || !cfg.enabled) return { middlewares: [], refs: [], forFolders: null };
 
-  const sidecarPresent = await tenantHasActiveClaimRules(db, routeId);
-  const proxyHost = `oauth2-proxy.${namespace}.svc.cluster.local`;
-  // When the sidecar is present, claim-validator at :4181/auth accepts
-  // ?route=<id> to select the matching rule set; otherwise we hit
-  // oauth2-proxy directly at :4180/oauth2/auth.
-  const address = sidecarPresent
-    ? `http://${proxyHost}:4181/auth?route=${routeId}`
-    : `http://${proxyHost}:4180/oauth2/auth`;
-
-  // Headers oauth2-proxy populates on a successful auth_request — Traefik
-  // copies them into the upstream request via authResponseHeaders.
-  const responseHeaders: string[] = [];
-  if (cfg.passUserHeaders) {
-    responseHeaders.push('X-Auth-Request-User', 'X-Auth-Request-Email', 'X-Auth-Request-Preferred-Username');
-  }
-  if (cfg.setXauthrequest) responseHeaders.push('X-Auth-Request-Groups');
-  if (cfg.passAccessToken) responseHeaders.push('X-Auth-Request-Access-Token');
-  if (cfg.passIdToken) responseHeaders.push('X-Auth-Request-Id-Token');
-  if (cfg.passAuthorizationHeader) responseHeaders.push('Authorization');
-
-  const name = middlewareName(routeId, 'oidc');
-  const body = buildMiddleware({
+  const address = `http://${OIDC_GATE_SERVICE}.${namespace}.svc.cluster.local:${OIDC_GATE_PORT}/auth?route=${routeId}`;
+  const gate = (name: string, withAuthorization: boolean): MiddlewareBody => buildMiddleware({
     name,
     namespace,
     spec: forwardAuthSpec({
       address,
-      // Inherit forwardAuthSpec's safe default (false). Traefik's
-      // entryPoint trustedIPs=127.0.0.1/32 already strips attacker XFF
-      // upstream; oauth2-proxy / claim-validator don't need the
-      // tenant IP — they enforce auth via cookie/JWT.
-      authResponseHeaders: responseHeaders.length > 0 ? responseHeaders : undefined,
+      // forwardAuthSpec's default (false): Traefik sets X-Forwarded-* itself
+      // from the real request — the gate and oauth2-proxy build the redirect
+      // and callback from them, so they must not come from the visitor.
+      authResponseHeaders: withAuthorization ? [...OIDC_IDENTITY_HEADERS, 'Authorization'] : OIDC_IDENTITY_HEADERS,
+      // A session oauth2-proxy refreshed on this request (it splits a large
+      // one into _0, _1, …).
+      addAuthCookiesToResponse: OIDC_SESSION_COOKIES,
     }),
     labels: {
       'hosting-platform/route-id': routeId,
@@ -906,7 +916,15 @@ async function buildOidcMiddleware(
     },
   });
 
-  return { middlewares: [body], refs: [{ name, namespace }] };
+  const name = middlewareName(routeId, 'oidc');
+  const middlewares = [gate(name, cfg.passAuthorizationHeader)];
+  let forFolders: { name: string; namespace: string } | null = null;
+  if (cfg.passAuthorizationHeader) {
+    const folderName = middlewareName(routeId, 'oidc-dirs');
+    middlewares.push(gate(folderName, false));
+    forFolders = { name: folderName, namespace };
+  }
+  return { middlewares, refs: [{ name, namespace }], forFolders };
 }
 
 // ─── mTLS Secret + Middleware ──────────────────────────────────────────────

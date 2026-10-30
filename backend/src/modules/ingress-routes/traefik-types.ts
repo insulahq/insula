@@ -405,6 +405,8 @@ export interface ForwardAuthArgs {
   trustForwardHeader?: boolean;
   authResponseHeaders?: string[];
   authRequestHeaders?: string[];
+  /** Cookies from a 2xx auth answer to copy onto the app's response (a refreshed session). */
+  addAuthCookiesToResponse?: string[];
 }
 export function forwardAuthSpec(args: ForwardAuthArgs): Record<string, unknown> {
   return {
@@ -421,6 +423,7 @@ export function forwardAuthSpec(args: ForwardAuthArgs): Record<string, unknown> 
       trustForwardHeader: args.trustForwardHeader ?? false,
       ...(args.authResponseHeaders ? { authResponseHeaders: args.authResponseHeaders } : {}),
       ...(args.authRequestHeaders ? { authRequestHeaders: args.authRequestHeaders } : {}),
+      ...(args.addAuthCookiesToResponse ? { addAuthCookiesToResponse: args.addAuthCookiesToResponse } : {}),
     },
   };
 }

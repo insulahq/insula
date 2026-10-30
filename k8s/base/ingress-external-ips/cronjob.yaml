@@ -70,8 +70,8 @@ spec:
               # (rancher/kubectl is distroless, has no shell, broke our
               # entrypoint script). bitnami/kubectl was removed from
               # Docker Hub in 2026 so we can't use it either. Pinned to
-              # 1.33.4 to match the cluster's k3s v1.33.x.
-              image: alpine/k8s:1.33.13
+              # the cluster's k3s minor (bootstrap.sh K3S_VERSION).
+              image: alpine/k8s:1.36.5
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

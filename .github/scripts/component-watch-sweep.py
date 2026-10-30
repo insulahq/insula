@@ -120,6 +120,25 @@ def main() -> int:
             out.append(f"| {r.get('id')} | {r.get('tier')} | "
                        f"`{r.get('pinned')}` | `{r.get('latest')}` |")
         out.append("")
+    # A newer release the soak or a hold keeps back is still news: list it with
+    # its date or reason, so "not behind" never hides that something is coming.
+    waiting = [r for r in latest if r.get("soak") or r.get("held")]
+    if waiting:
+        out.append(f"<details><summary>Waiting ({len(waiting)}) — in the 7/14-day soak, or held on purpose</summary>\n")
+        for r in sorted(waiting, key=lambda r: (str(r.get("tier")), r.get("id", ""))):
+            if r.get("soak"):
+                out.append(f"- **{r.get('id')}** `{r.get('pinned')}` → `{r.get('soak')}` in soak until {r.get('soak_until')}")
+            if r.get("held"):
+                out.append(f"- **{r.get('id')}** `{r.get('pinned')}` — {r.get('held')}")
+        out.append("\n</details>\n")
+    # Say what was not compared, so "current" is never read into a gap.
+    skipped = [r for r in latest if r.get("compared") is False and not str(r.get("note", "")).startswith("watch type 'first_party'")]
+    if skipped:
+        out.append(f"<details><summary>Not compared ({len(skipped)}) — check these by hand</summary>\n")
+        for r in sorted(skipped, key=lambda r: (str(r.get("tier")), r.get("id", ""))):
+            out.append(f"- **{r.get('id')}** `{r.get('pinned')}` — {r.get('note')}")
+        out.append("\n</details>\n")
+    out.append("_First-party images are covered by the weekly image scan (`image-cve-scan.yml`)._\n")
 
     out.append("\n---\n_Process: [docs/operations/COMPONENT_WATCH.md]"
                "(../blob/main/docs/operations/COMPONENT_WATCH.md)_")

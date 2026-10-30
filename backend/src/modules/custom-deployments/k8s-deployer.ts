@@ -88,7 +88,7 @@ export interface DeployCustomInput {
   readonly replicas?: number;
 }
 
-const INIT_DIRS_IMAGE = 'busybox:1.37-musl';
+const INIT_DIRS_IMAGE = 'busybox:1.37';
 
 // ─── Top-level deploy ───────────────────────────────────────────────────────
 

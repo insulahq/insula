@@ -315,14 +315,14 @@ TXT   default._domainkey    -> (DKIM public key from admin panel)
 TXT   _dmarc.example.com   -> "v=DMARC1; p=quarantine; rua=mailto:dmarc@your-domain.com"
 ```
 
-### 8.3 Deploy Roundcube Webmail
+### 8.3 Check Roundcube Webmail
+
+Roundcube is part of the Flux-managed base (`k8s/base/roundcube/`); there is
+nothing to apply by hand.
 
 ```bash
-# Apply the Roundcube Deployment, Service, and Ingress
-kubectl apply -f k8s/base/roundcube-deployment.yaml
-
 # Wait for Roundcube to be ready
-kubectl -n platform-system wait --for=condition=ready pod -l app=roundcube --timeout=120s
+kubectl -n mail wait --for=condition=ready pod -l app=roundcube --timeout=120s
 
 # Verify webmail is accessible
 curl -s -o /dev/null -w "%{http_code}" https://webmail.your-domain.com/

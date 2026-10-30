@@ -92,6 +92,29 @@ else
   fi
 fi
 
+# Helm's and Flux's installers, at the tags bootstrap.sh fetches them from.
+# Flux's used to come from fluxcd.io/install.sh, which follows flux2's main
+# branch: a comment fix there changed its digest and every fresh install
+# stopped at install_flux while nothing ran this file. CI runs it now, on
+# every bootstrap.sh change and weekly (component-watch.yml).
+HELM_REF=$(grep -E '^HELM_INSTALLER_REF=' "$BOOTSTRAP" | cut -d'"' -f2)
+FLUX_VERSION_PIN=$(grep -E '^FLUX_VERSION=' "$BOOTSTRAP" | cut -d'"' -f2)
+for row in \
+  "HELM_INSTALLER_SHA256|https://raw.githubusercontent.com/helm/helm/${HELM_REF}/scripts/get-helm-3" \
+  "FLUX_INSTALLER_SHA256|https://raw.githubusercontent.com/fluxcd/flux2/v${FLUX_VERSION_PIN}/install/flux.sh"; do
+  var=${row%%|*}; url=${row#*|}
+  pin=$(grep -E "^${var}=" "$BOOTSTRAP" | cut -d'"' -f2)
+  if [[ "$pin" =~ ^[0-9a-f]{64}$ ]]; then ok "$var is a sha256"; else bad "$var is not a sha256: [$pin]"; fi
+  got=$(curl --retry 2 -fsSL "$url" 2>/dev/null | sha256sum | awk '{print $1}')
+  if [[ -z "$got" || "$got" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]]; then
+    echo "  ⊘ SKIP $var freshness — could not reach $url"
+  else
+    check "$var matches the installer at $url" "$got" "$pin"
+  fi
+done
+has "$(grep -F 'fetch_verified_script "https://raw.githubusercontent.com/fluxcd/flux2/v${FLUX_VERSION}/install/flux.sh"' "$BOOTSTRAP")" \
+  'fluxcd/flux2/v${FLUX_VERSION}' "install_flux fetches the installer at the FLUX_VERSION tag, not fluxcd.io/install.sh"
+
 echo ""
 echo "call sites — an empty payload must never reach sh"
 sites=$(grep -c 'installer="$(fetch_verified_script' "$BOOTSTRAP")

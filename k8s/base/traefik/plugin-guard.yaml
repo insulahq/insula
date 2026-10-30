@@ -176,8 +176,8 @@ spec:
             - name: guard
               # alpine/k8s ships kubectl on Alpine and provides /bin/sh
               # (rancher/kubectl is distroless — no shell). Pinned to match
-              # the cluster's k3s v1.33.x, same as ingress-external-ips.
-              image: alpine/k8s:1.33.13
+              # bootstrap.sh's K3S_VERSION minor, same as ingress-external-ips.
+              image: alpine/k8s:1.36.5
               imagePullPolicy: IfNotPresent
               securityContext:
                 allowPrivilegeEscalation: false
