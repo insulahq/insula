@@ -11,10 +11,28 @@
 # Sources: the overlay's `images:` (name + newTag / digest) and the
 # platform-config patch's `*-image:` values (images the API starts at runtime).
 #
+# The overlay is read at the newest STABLE release tag (PROD_REF overrides): the
+# working tree's copy is only right on main. On development the production
+# overlay still holds the stamps of the last release merged back — a dispatch
+# from development scanned June's images and reported them as production's.
+# Without tags (a shallow checkout) it falls back to the working tree and says so.
+#
 # Usage: scripts/list-first-party-images.sh [repo-root]   → one image ref per line
 set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 OVERLAY="$ROOT/k8s/overlays/production"
+REF="${PROD_REF:-$(git -C "$ROOT" tag -l 'v*' 2>/dev/null | grep -v -- '-' | sort -V | tail -n1 || true)}"
+if [ -n "$REF" ]; then
+  WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+  for f in kustomization.yaml platform-config-patch.yaml; do
+    git -C "$ROOT" show "${REF}:k8s/overlays/production/$f" > "$WORK/$f" 2>/dev/null || rm -f "$WORK/$f"
+  done
+  [ -s "$WORK/kustomization.yaml" ] || { echo "list-first-party-images: ${REF} has no production overlay" >&2; exit 1; }
+  OVERLAY="$WORK"
+  echo "list-first-party-images: production overlay at ${REF}" >&2
+else
+  echo "list-first-party-images: no release tag here — reading the working tree's production overlay" >&2
+fi
 
 python3 - "$OVERLAY" <<'PY'
 import os, re, sys
